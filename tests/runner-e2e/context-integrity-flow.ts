@@ -1,6 +1,7 @@
+import { observeCheckoutActivity } from "./checkout-activity.js";
 import type { Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
-import { contextIntegrityScenario } from "./context-integrity-cases.js";
+import { contextIntegrityScenario, isAssignedSkillContext } from "./context-integrity-cases.js";
 import { gradeContextIntegrity, type ContextIntegrityCheckpoint } from "./context-integrity-scoring.js";
 import { pollUntil, type RunnerApi } from "./api.js";
 import { createTaskThroughUi } from "./user-actions.js";
@@ -102,7 +103,7 @@ export async function runContextIntegrityFlow(input: {
   let assignedVersionId: string | null = null;
   const checkpoints: ContextIntegrityCheckpoint[] = [];
 
-  if (scenario.id === "assigned-skill-explicit-invocation") {
+  if (isAssignedSkillContext(scenario.id)) {
     await api.patch("/api/instance/settings/experimental", { enableBetaSkills: true });
     const markdown = `---\nname: ${scenario.skillKey}\ndescription: Context integrity output procedure.\n---\n\n# Context integrity output procedure\n\nWrite exactly one task document whose body contains the marker ${scenario.marker}. Finish the task after saving that document.`;
     if (!markdown.startsWith(`---\nname: ${scenario.skillKey}\ndescription:`) || markdown.includes("\\n")) {
@@ -141,18 +142,18 @@ export async function runContextIntegrityFlow(input: {
       api.get<Row[]>(`/api/issues/${issue!.id}/documents`),
       api.get<Row[]>(`${companyPath}/skills`),
       api.get<Row>(`/api/issues/${issue!.id}/queued-comments`),
-      scenario.id === "assigned-skill-explicit-invocation" ? api.get<Row>(`/api/agents/${fixtures.agent.id}/skills?companyId=${fixtures.company.id}`) : Promise.resolve({} as Row),
+      isAssignedSkillContext(scenario.id) ? api.get<Row>(`/api/agents/${fixtures.agent.id}/skills?companyId=${fixtures.company.id}`) : Promise.resolve({} as Row),
     ]);
     const detailedDocuments = await Promise.all(documents.map((document) => api.get<Row>(`/api/issues/${issue!.id}/documents/${encodeURIComponent(String(document.key))}`)));
-    const assignedSkill = scenario.id === "assigned-skill-explicit-invocation"
+    const assignedSkill = isAssignedSkillContext(scenario.id)
       ? skillRows.find((skill) => skill.key === scenario.assignedSkill?.key || skill.slug === scenario.assignedSkill?.key)
       : undefined;
     const desiredSkill = (assignedState.desiredSkillEntries as Array<Row> | undefined)?.find((entry) => entry.key === scenario.assignedSkill?.key);
     const runEvents = await Promise.all(runs.map((run) => api.get<Row[]>(`/api/heartbeat-runs/${run.id}/events?limit=1000`)));
     const runLogs = await Promise.all(runs.map((run) => readContextIntegrityRunLog(api, run.id)));
-    const skillInvocationEvidence = scenario.id === "assigned-skill-explicit-invocation" && runEvents.some((events) => events.some((event) => containsExplicitSkillInput(event, String(assignedSkill?.slug ?? scenario.skillKey))));
-    skillRequestText = scenario.id === "assigned-skill-explicit-invocation" ? String(issue?.description ?? "") : "";
-    checkpoints.push({ phase, issue: { id: issue!.id, status: String(issue!.status) }, comments, queuedComments, documents: detailedDocuments as Array<{ key: string; body?: string | null }>, runs, runEvents: runEvents.flat(), runLogs, assignedSkill: assignedSkill ? { key: String(desiredSkill?.key ?? assignedSkill.key ?? assignedSkill.slug), runtimeName: String(assignedSkill.slug ?? ""), versionId: desiredSkill?.versionId === assignedVersionId ? assignedVersionId : null, markdown: String(assignedSkill.markdown ?? scenario.assignedSkill?.markdown ?? "") } : undefined, skillRequestText: scenario.id === "assigned-skill-explicit-invocation" ? skillRequestText : undefined, skillInvocationEvidence });
+    const skillInvocationEvidence = isAssignedSkillContext(scenario.id) && runEvents.some((events) => events.some((event) => containsExplicitSkillInput(event, String(assignedSkill?.slug ?? scenario.skillKey))));
+    skillRequestText = isAssignedSkillContext(scenario.id) ? String(issue?.description ?? "") : "";
+    checkpoints.push({ phase, issue: { id: issue!.id, status: String(issue!.status), identifier: String(issue!.identifier ?? ""), issuePrefix: String(fixtures.company.issuePrefix ?? ""), appOrigin: new URL(page.url()).origin }, comments, queuedComments, documents: detailedDocuments as Array<{ key: string; body?: string | null }>, runs, runEvents: runEvents.flat(), runLogs, assignedSkill: assignedSkill ? { key: String(desiredSkill?.key ?? assignedSkill.key ?? assignedSkill.slug), runtimeName: String(assignedSkill.slug ?? ""), versionId: desiredSkill?.versionId === assignedVersionId ? assignedVersionId : null, markdown: String(assignedSkill.markdown ?? scenario.assignedSkill?.markdown ?? "") } : undefined, skillRequestText: isAssignedSkillContext(scenario.id) ? skillRequestText : undefined, skillInvocationEvidence });
     const checks = gradeContextIntegrity({ id: scenario.id, marker: scenario.marker, comments: scenario.comments, checkpoints });
     input.observe(issue!, runs, checks);
     await input.evidence("context-integrity.json", { schema: "paperclip.context-integrity.v1", scenario, budgetGuard, checkpoints, checks });
@@ -175,12 +176,12 @@ export async function runContextIntegrityFlow(input: {
     await api.patch(`/api/agents/${fixtures.agent.id}/budgets`, {
       budgetMonthlyCents: budgetGuard.agentMonthlyCents,
     });
-    const taskPrompt = scenario.id === "assigned-skill-explicit-invocation"
+    const taskPrompt = isAssignedSkillContext(scenario.id)
       ? `${scenario.prompt}\n\nUse /${scenario.skillKey} for this request.`
       : scenario.prompt;
     skillRequestText = taskPrompt;
-    await createTaskThroughUi({ page, issuePrefix: fixtures.company.issuePrefix!, agentName: fixtures.agent.name, title: execution.task.buildTitle(nonce), prompt: taskPrompt, workMode: "standard" });
-    issue = await pollUntil({ label: "context-integrity task created", deadlineAt: input.deadlineAt, load: async () => (await api.get<Row[]>(`${companyPath}/issues?limit=100`)).find((row) => row.title === execution.task.buildTitle(nonce)), accept: Boolean });
+    const createdTask = await createTaskThroughUi({ page, issuePrefix: fixtures.company.issuePrefix!, agentName: fixtures.agent.name, title: execution.task.buildTitle(nonce), prompt: taskPrompt, workMode: "standard" });
+    issue = await pollUntil({ label: "context-integrity task created", deadlineAt: input.deadlineAt, load: async () => (await api.get<Row[]>(`${companyPath}/issues?limit=100`)).find((row) => row.id === createdTask.issueId), accept: Boolean });
     if (!issue) throw new Error("Missing context-integrity task");
     if (scenario.id === "ordered-comment-continuation") {
       await pollUntil({
@@ -221,6 +222,21 @@ export async function runContextIntegrityFlow(input: {
       await snapshot("initial");
     }
     await snapshot("final");
+    if (execution.suite.id === "stock-harness" && execution.profile.generation === "legacy") {
+      // Successful checkout HTTP calls emit activity even for an idempotent
+      // same-run claim. Server pre-dispatch checkout does not use that route.
+      // Keep this observation separate from the unchanged task-outcome oracle.
+      let checkoutActivity: unknown;
+      try {
+        checkoutActivity = observeCheckoutActivity({
+          companyId: fixtures.company.id, issueId: issue.id, agentId: fixtures.agent.id,
+          runs, activity: await api.get<Row[]>(`/api/issues/${issue.id}/activity`),
+        });
+      } catch {
+        checkoutActivity = { schema: "paperclip.checkout-activity.v1", status: "unavailable" };
+      }
+      await input.evidence("checkout-activity.json", checkoutActivity);
+    }
     const checks = gradeContextIntegrity({ id: scenario.id, marker: scenario.marker, comments: scenario.comments, checkpoints });
     const failures = checks.filter((check) => !check.passed);
     if (failures.length) throw new Error(`Context-integrity matcher failures: ${failures.map((failure) => `${failure.id}: ${failure.detail}`).join("; ")}`);

@@ -108,6 +108,7 @@ export type ScheduledRetryFacts = {
 };
 
 export type QueuedRunStalenessErrorCode =
+  | "issue_waiting_for_response"
   | "execution_reconciliation_required"
   | "issue_dependencies_blocked"
   | "issue_not_found"
@@ -129,6 +130,7 @@ export type StalenessDecision =
     };
 
 export type QueuedRunFacts = {
+  pendingResponse?: "interaction" | "approval" | null;
   /** Rechecked for automatic native replacements immediately before dispatch. */
   dependenciesBlocked?: DependencyBlockFacts | null;
   runId: string;
@@ -143,6 +145,10 @@ export type QueuedRunFacts = {
   issueCheckoutRunId?: string | null;
 
   isResolvedInteractionContinuation: boolean;
+  /** Verified under the issue lock: an answer to a question no run asked, on a todo task that has never started. */
+  isUnstartedTaskQuestionAnswer?: boolean;
+  /** The stored human response was verified again for bounded dependency interaction. */
+  isDependencyBlockedInteractionResponse?: boolean;
   /** A connection resolution or tool refresh can resume an agent waiting in review. */
   isConnectionContinuation?: boolean;
   isInteractionWake: boolean;
@@ -508,9 +514,12 @@ export function decideQueuedRunStaleness(
   }
 
   if (facts.isResolvedInteractionContinuation || facts.isConnectionContinuation) {
+    // A todo task that has never started has no parked execution to protect.
+    const startsUnstartedTask = facts.issueStatus === "todo" && facts.isUnstartedTaskQuestionAnswer === true;
+    const answersBlockedTask = facts.issueStatus === "blocked" && facts.isDependencyBlockedInteractionResponse === true;
     const earlyStatus = decideIssueStatus({
       status: facts.issueStatus,
-      requiresInProgress: facts.issueStatus !== "in_review",
+      requiresInProgress: facts.issueStatus !== "in_review" && !startsUnstartedTask && !answersBlockedTask,
       terminalBypass: true,
     });
     if (earlyStatus === "not_in_progress") {
@@ -544,6 +553,12 @@ export function decideQueuedRunStaleness(
         },
       };
     }
+  }
+
+  if (facts.pendingResponse) {
+    return { stale: true, errorCode: "issue_waiting_for_response",
+      reason: "Cancelled because the continuation is still waiting for an authorized response",
+      details: { issueId: facts.issueId, pendingResponse: facts.pendingResponse } };
   }
 
   if (facts.continuationParkApplies && facts.continuationParksExecutor) {

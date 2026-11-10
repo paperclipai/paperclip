@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   boundedOpenCodeTerminalError,
@@ -8,17 +8,59 @@ import {
   shouldAnnounceOpenCodeProxyTurn,
   shouldForwardOpenCodeProxyItem,
 } from "./opencode-proxy-events.js";
+import { createOpenCodeProxyOutput } from "./opencode-proxy-output.js";
 
 describe("OpenCode runnerd proxy event boundary", () => {
   it("drops only the duplicate session-scoped model item", () => {
-    expect(shouldForwardOpenCodeProxyItem({ kind: "model" })).toBe(false);
+    expect(shouldForwardOpenCodeProxyItem({ payload: { kind: "model" } })).toBe(false);
     expect(
       shouldForwardOpenCodeProxyItem({
         turnId: "turn-1",
-        kind: "model",
+        payload: { kind: "model" },
       }),
     ).toBe(true);
-    expect(shouldForwardOpenCodeProxyItem({ kind: "agentMessage" })).toBe(true);
+    expect(shouldForwardOpenCodeProxyItem({ payload: { kind: "agentMessage" } })).toBe(true);
+  });
+
+  it("keeps per-token deltas runnerd discards from queueing ahead of a tool call", () => {
+    const framesBeforeToolCall = (tokens: number) => {
+      vi.useFakeTimers();
+      try {
+        const written: Array<{ method?: string }> = [];
+        const output = createOpenCodeProxyOutput(frame => written.push(frame as { method?: string }));
+        const forward = (eventType: "item.started" | "item.delta" | "item.completed", itemId: string, payload: Record<string, unknown>) => {
+          if (shouldForwardOpenCodeProxyItem({ eventType, turnId: "turn-1", payload }))
+            output.send(openCodeProxyItemNotification({ eventType, threadId: "thread-1", turnId: "turn-1", itemId, payload }));
+        };
+        for (let index = 0; index < tokens; index += 1) {
+          forward("item.delta", "reasoning-1", { kind: "reasoning", channel: "detail", providerPhase: "reasoning", text: `token ${index} `,
+            item: { id: "reasoning-1", type: "reasoning", text: `token ${index} ` } });
+          forward("item.delta", "tool-1", { kind: "tool", text: `line ${index}\n`, item: { id: "tool-1", type: "tool", state: { status: "running" } } });
+        }
+        forward("item.completed", "reasoning-1", { kind: "reasoning", text: "Reasoning summary.",
+          item: { id: "reasoning-1", type: "reasoning", text: "Reasoning summary." } });
+        output.send({ id: "opencode-1", method: "item/tool/call", params: { tool: "search_api" } });
+        const position = written.findIndex(frame => frame.method === "item/tool/call");
+        expect(position).toBeGreaterThanOrEqual(0);
+        expect(written.some(frame => frame.method === "item/delta")).toBe(false);
+        expect(written.at(position - 1)).toMatchObject({ method: "item/completed", params: { kind: "reasoning" } });
+        return position;
+      } finally {
+        vi.useRealTimers();
+      }
+    };
+    expect(framesBeforeToolCall(1_000)).toBe(framesBeforeToolCall(1));
+  });
+
+  it("still forwards streamed assistant text for runnerd's live reply", () => {
+    const payload = { kind: "agentMessage", channel: "progress", text: "Checking the plugin.", item: { type: "agentMessage" } };
+    expect(shouldForwardOpenCodeProxyItem({ eventType: "item.delta", turnId: "turn-1", payload })).toBe(true);
+    expect(shouldForwardOpenCodeProxyItem({ eventType: "item.delta", turnId: "turn-1",
+      payload: { kind: "text", text: "Legacy text part." } })).toBe(true);
+    expect(shouldForwardOpenCodeProxyItem({ eventType: "item.delta", turnId: "turn-1",
+      payload: { kind: "reasoning", text: "Private reasoning" } })).toBe(false);
+    expect(shouldForwardOpenCodeProxyItem({ eventType: "item.completed", turnId: "turn-1",
+      payload: { kind: "reasoning", text: "Private reasoning" } })).toBe(true);
   });
 
   it("announces one outer turn when SSE wins the response race", () => {

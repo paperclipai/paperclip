@@ -1,5 +1,5 @@
 import { createCodexTaskEnvelope } from "../contracts/codex.js";
-import { NATIVE_EXECUTION_INPUT_SCHEMA } from "../contracts/native-execution.js";
+import { NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V9, NATIVE_EXECUTION_INPUT_SCHEMA_V10 } from "../contracts/native-execution.js";
 import type { NativeExecutionInput } from "../contracts/native-execution.js";
 import type { NativeSessionBackend } from "../contracts/native-session-backend.js";
 import { OpenCodeServerDriver, type OpenCodeServerDriverOptions } from "../drivers/opencode/opencode-server-driver.js";
@@ -13,11 +13,10 @@ export function createOpenCodeNativeSessionBackend(
   if (input.provider.kind !== "opencode" || !input.provider.model) {
     throw new Error("OpenCode native backend requires a persisted OpenCode provider/model selection");
   }
-  const preparedContext = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA;
-  const constraints = [
-      ...nativeTaskConstraints(input),
-      "Return one semantic completion result through paperclip_finish or paperclip_block.",
-    ];
+  const preparedContext = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA
+    || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7
+    || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V9 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10;
+  const constraints = nativeTaskConstraints(input);
 
   return new HarnessDriverBackend(new OpenCodeServerDriver({
     ...options,

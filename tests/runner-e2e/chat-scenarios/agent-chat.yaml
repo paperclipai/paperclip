@@ -1,0 +1,90 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: agent-chat
+status: planned
+scenarios:
+  - id: agent-chat.reopen-conversation
+    capabilities:
+      - agent-chat/discovery
+      - agent-chat/history
+    context: >-
+      The person previously chatted with Morgan; the conversation is still accessible and Chat
+      is enabled. Opening the page itself must not start work.
+    query: >-
+      Take me back to my conversation with Morgan.
+    expected_outcome: >-
+      The supported human navigation path opens the person's existing conversation, with the
+      right agent and retained history. No duplicate standing chat or provider execution is
+      created just by navigation. The agent does not enumerate another person's private chat
+      list to satisfy the request.
+  - id: agent-chat.remember-and-follow-up
+    capabilities:
+      - agent-chat/history
+    context: >-
+      The previous turn selected a blue design and contains a saved preview file; the browser
+      has since reloaded.
+    query: >-
+      Use the blue design we picked earlier, and show me that preview again.
+    expected_outcome: >-
+      The reply resolves the reference from persisted conversation history and returns the same
+      accessible preview. It preserves the selected design in any follow-up task. The agent asks
+      a focused clarification if the history does not establish the choice rather than
+      fabricating a prior agreement.
+  - id: agent-chat.track-delegated-work
+    capabilities:
+      - agent-chat/handoff
+      - tasks/create
+    context: >-
+      This conversation already created a website task assigned to Morgan, and it is still
+      running.
+    query: >-
+      How is the website coming along?
+    expected_outcome: >-
+      The agent reads the linked task and available execution evidence, gives its current status
+      and links to real output when present. It does not create another website task or convert
+      the standing chat into the execution task. Completion updates remain associated with the
+      original request.
+  - id: agent-chat.multiple-handoffs
+    capabilities:
+      - agent-chat/handoff
+      - agent-chat/history
+    context: >-
+      The conversation has one active website task and a separate completed logo task.
+    query: >-
+      Change the website headline to Launch sooner, and leave the logo alone.
+    expected_outcome: >-
+      The new requirement reaches the existing website task and its authorized worker once. The
+      logo task and delivered logo remain unchanged. Chat identifies the affected task and
+      distinguishes feedback saved for later from feedback consumed by an active run.
+  - id: agent-chat.conference-room
+    capabilities:
+      - agent-chat/conference-room
+    context: >-
+      The separate board conference-room experiment is enabled only in the supported
+      local-trusted deployment; ordinary Agent Chat is also available.
+    query: >-
+      Let us discuss the launch in the conference room.
+    expected_outcome: >-
+      The agent points the person to the gated board discussion surface and explains its actual
+      scope. The journey opens that surface only in the supported deployment and retains normal
+      company context. It does not promise ordinary standing-chat history or execution parity
+      where the board-chat protocol differs.
+  - id: agent-chat.chat-disabled
+    capabilities:
+      - agent-chat/discovery
+      - agent-chat/conference-room
+      - developer-labs/route-gates
+    context: >-
+      Agent Chat is always available. The separate Conference Room experiment is off on this
+      target, and its opt-in is not offered in settings, so the board discussion surface is
+      unavailable. The person follows an old Conference Room link.
+    query: >-
+      Open the conference room so I can talk with Morgan.
+    expected_outcome: >-
+      The person does not land on a broken route or a Conference Room that cannot work: the old
+      link opens a working company page and navigation does not offer the Conference Room. The
+      supported alternative, an ordinary chat with Morgan, opens from Chat. The board discussion
+      API refuses while the experiment is off, and nothing creates a task, chat or run that
+      claims to be the conference room. Turning the experiment on is an instance operator
+      decision; an ordinary agent cannot change the instance setting.

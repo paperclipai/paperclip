@@ -508,7 +508,7 @@ describe("codex_local ACP lane", () => {
     });
   });
 
-  it.each([["gpt-6-astra", "ultra"], ["gpt-6-sol", "ultra"], ["gpt-6-luna", "max"], ["gpt-5.6-sol", "ultra"], ["gpt-5.6-terra", "ultra"], ["gpt-5.6-luna", "max"]])("forwards %s controls to the ACPX Codex target", (model, effort) => {
+  it.each([["gpt-6-astra", "ultra"], ["gpt-6.1-sol", "ultra"], ["gpt-6-sol", "ultra"], ["gpt-6-luna", "max"], ["gpt-5.6-sol", "ultra"], ["gpt-5.6-terra", "ultra"], ["gpt-5.6-luna", "max"]])("forwards %s controls to the ACPX Codex target", (model, effort) => {
     expect(buildCodexAcpConfig({
       engine: "acp",
       model,
@@ -780,11 +780,16 @@ describe("codex_local ACP lane", () => {
     expect(runtimes[0]?.setConfigInputs).toEqual([]);
     expect(meta[0]?.commandNotes?.join("\n")).toContain("Prepared ACPX Codex skill home");
     expect(meta[0]?.env?.CODEX_HOME).toBe(path.join(root, "codex-home"));
-    expect(JSON.parse(String(meta[0]?.env?.CODEX_CONFIG))).toEqual({
+    expect(JSON.parse(String(meta[0]?.env?.CODEX_CONFIG))).toMatchObject({
       model: "gpt-5.5",
       model_reasoning_effort: "high",
       service_tier: "fast",
       features: { fast_mode: true },
+      shell_environment_policy: {
+        inherit: "all",
+        ignore_default_excludes: true,
+        include_only: expect.arrayContaining(["PATH", "CODEX_HOME"]),
+      },
     });
   });
 
@@ -1426,6 +1431,12 @@ describe("codex_local ACP lane", () => {
 });
 
 describe("resolveCodexAcpBillingIdentity", () => {
+  it.each([["openrouter", "api_key", "openrouter"], ["custom", "api_key", "unknown"], ["local", "none", "unknown"]])("classifies managed %s/%s independently of host authentication", (kind, auth, biller) => {
+    expect(resolveCodexAcpBillingIdentity({ config: {
+      managedAiRouting: { kind, auth },
+      env: { OPENAI_API_KEY: "", PAPERCLIP_AI_PROVIDER_KEY: auth === "none" ? "" : "fixture" },
+    } })).toEqual({ provider: "openai", biller, billingType: "api" });
+  });
   const originalOpenAiKey = process.env.OPENAI_API_KEY;
   const originalOpenRouterKey = process.env.OPENROUTER_API_KEY;
 

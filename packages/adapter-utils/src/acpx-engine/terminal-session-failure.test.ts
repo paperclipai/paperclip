@@ -1,7 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { formatTerminalSessionFailure, sanitizeTerminalSessionFailure } from "./terminal-session-failure.js";
+import { classifyToolDefinitionFailure, formatTerminalSessionFailure, sanitizeTerminalSessionFailure } from "./terminal-session-failure.js";
 
 describe("terminal session failure diagnostics", () => {
+  it.each([
+    "API Error: 400 tools.17.custom.name: String should have at most 128 characters",
+    "tools[0].input_schema: invalid schema",
+    "Invalid schema for function 'read-file': unsupported type",
+  ])("rejects unchanged tool definitions: %s", (details) => {
+    const failure = { category: "service", details };
+    expect(classifyToolDefinitionFailure(failure)).toEqual({
+      errorCode: "provider_tool_definition_invalid", errorFamily: "configuration",
+    });
+    // Classification precedes arbitrary short-secret redaction.
+    expect(sanitizeTerminalSessionFailure(failure, { SECRET: "128" }).details).not.toContain("128");
+  });
+  it.each([
+    "HTTP 503 service unavailable",
+    "tool call arguments are invalid: name must be a string",
+    "prompt is too long",
+    "tools.0.arguments.name: String should have at most 128 characters",
+  ])("keeps unrelated errors on their existing recovery path: %s", (details) => {
+    expect(classifyToolDefinitionFailure({ category: "service", details })).toBeNull();
+  });
   it("keeps the provider category, message, request id and stack", () => {
     const failure = {
       category: "service",
@@ -67,12 +87,25 @@ describe("terminal session failure diagnostics", () => {
     );
   });
 
-  it("redacts unknown inherited launch values while preserving public process context", () => {
+  it("keeps opaque inherited values private while preserving public process settings", () => {
     const diagnostic = sanitizeTerminalSessionFailure({
       category: "service",
       details: "request_id=req_123 inherited-canary A /workspace",
     }, { UNEXPECTED_VARIABLE: "inherited-canary", ANOTHER_VARIABLE: "A", HOME: "/workspace" });
     expect(diagnostic.details).toBe("request_id=req_123 ***REDACTED*** ***REDACTED*** /workspace");
+  });
+
+  it("masks an inherited Bedrock token without a credential label", () => {
+    const token = "opaque-bedrock-credential";
+    const diagnostic = sanitizeTerminalSessionFailure({ category: "access", details: `upstream rejected ${token}` }, { AWS_BEARER_TOKEN_BEDROCK: token });
+    expect(diagnostic.details).toBe("upstream rejected ***REDACTED***");
+  });
+
+  it("preserves ordinary key selectors and short launch flags", () => {
+    const details = "column created_at does not exist; model gpt-6.1-sol; safely retry";
+    expect(sanitizeTerminalSessionFailure({ category: "service", details }, {
+      SORT_KEY: "created_at", FEATURE_FLAG: "1", WORKER_COUNT: "2", MODE: "safe",
+    }).details).toBe(details);
   });
 
   it("preserves known boolean settings, HTTP codes and request IDs", () => {

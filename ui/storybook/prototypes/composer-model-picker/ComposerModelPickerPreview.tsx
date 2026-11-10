@@ -156,7 +156,7 @@ export function ComposerModelPickerPreview({
       <AgentMark agent={agent} size={16} />
       <span className="max-w-20 shrink-0 truncate">{agent.name}</span>
       <span className="text-muted-foreground" aria-hidden>·</span>
-      <span className="min-w-0 truncate text-muted-foreground">{modelAvailable ? modelLabel(agent, model) : "Harness default"}</span>
+      <span className="min-w-0 truncate text-muted-foreground">{modelAvailable ? modelLabel(agent, model) : "Default"}</span>
       {effectiveEffort ? <span className="hidden shrink-0 text-muted-foreground sm:inline">{effortLabel}</span> : null}
       <ChevronDown className="size-3 shrink-0 text-muted-foreground" aria-hidden />
     </button>

@@ -193,6 +193,35 @@ describe("Paperclip Cloud self-host enrollment", () => {
     expect(paperclipCloudConnectorEnrollmentStatus({
       PAPERCLIP_CLOUD_CONNECTOR_BASE_URL: "https://my-staging.paperclip.app",
     })).toMatchObject({ environment: "staging" });
+    expect(paperclipCloudConnectorEnrollmentStatus({
+      PAPERCLIP_CLOUD_CONNECTOR_BASE_URL: "https://test.paperclip.app",
+    })).toMatchObject({ environment: "test" });
+  });
+
+  it.each(["development", "staging", "production"])("rejects %s identity at the test broker", (environment) => {
+    expect(() => paperclipCloudConnectorEnrollmentStatus({
+      PAPERCLIP_CLOUD_CONNECTOR_BASE_URL: "https://test.paperclip.app",
+      PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT: environment,
+    })).toThrow(/broker and environment do not match/);
+  });
+
+  it("persists test enrollment identity and signs requests for the test broker", async () => {
+    const origin = "https://tenant.test.paperclip.app";
+    const request = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      if (String(input).endsWith("/enrollments")) {
+        expect(body).toMatchObject({ environment: "test", origin });
+        return Response.json({ enrollmentId: "enroll-test", verificationUrl: "https://test.paperclip.app/connections/enroll?id=enroll-test", expiresAt: new Date(Date.now() + 60_000).toISOString() }, { status: 201 });
+      }
+      const claims = JSON.parse(Buffer.from(body.request.split(".")[1], "base64url").toString("utf8"));
+      expect(claims).toMatchObject({ env: "test", aud: "https://test.paperclip.app/v1/connector/enrollment-claims" });
+      return Response.json({ id: loadPaperclipCloudConnectorIdentity()!.instanceId, environment: "test", origins: [origin] });
+    });
+    const env = { PAPERCLIP_CLOUD_CONNECTOR_BASE_URL: "https://test.paperclip.app" };
+    await startPaperclipCloudConnectorEnrollment({ origin, env, request: request as typeof fetch });
+    const pending = loadPaperclipCloudConnectorIdentity()!;
+    await completePaperclipCloudConnectorEnrollment({ enrollmentId: "enroll-test", approvalCode: "approval-code", state: pending.pending!.returnState, env, request: request as typeof fetch });
+    expect(paperclipCloudConnectorConfigFromEnv(env)).toMatchObject({ environment: "test", baseUrl: "https://test.paperclip.app", instanceId: pending.instanceId });
   });
 
   it("rotates a non-active identity instead of mixing enrollment targets", async () => {

@@ -9,8 +9,10 @@ import {
   CONNECTABLE_APP_DEFINITIONS,
   appSupportsCatalogSetup,
   getAvailableConnectionMethod,
+  getAvailableConnectionMethods,
   getAppDefinitionForUrl,
   getConnectableAppDefinition,
+  getAppStoreDefinition,
   getRecommendedConnectionMethod,
   recommendedDefaultsForApp,
   resolveConnectionMethodServerUrl,
@@ -25,10 +27,12 @@ import {
   SELF_SERVE_MCP_CANDIDATES,
   SELF_SERVE_MCP_RESEARCH,
 } from "./self-serve-mcp-research.js";
-import { appDefinitionsSchema } from "./validators/app-definition.js";
+import { aiConnectionRouterAppDefinition } from "./ai-connection-router.js";
+import { appDefinitionSchema, appDefinitionsSchema } from "./validators/app-definition.js";
 
 const googleScope = (scope: string) =>
   `https://www.googleapis.com/auth/${scope}`;
+
 const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
   {
     profile: "gmail.read",
@@ -47,6 +51,15 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     riskTier: "S4",
     scopes: [googleScope("gmail.readonly"), googleScope("gmail.compose")],
     writeTools: ["create_draft"],
+  },
+  {
+    profile: "gmail.archive",
+    appSlug: "gmail",
+    serverUrl: "https://gmailmcp.googleapis.com/mcp/v1",
+    capability: "archive",
+    riskTier: "S4",
+    scopes: [googleScope("gmail.readonly"), googleScope("gmail.modify")],
+    writeTools: ["unlabel_thread"],
   },
   {
     profile: "drive.read",
@@ -211,12 +224,22 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
   profile: GoogleWorkspaceConnectorProfileId;
   appSlug: string;
   serverUrl: string;
-  capability: "read" | "write" | "draft";
+  capability: "read" | "write" | "draft" | "archive";
   riskTier: "S3" | "S4";
   scopes: readonly string[];
   writeTools: readonly string[];
 }>;
 describe("AppDefinition catalog", () => {
+  it("offers 1Password service-account setup with official instructions and a vaulted token", () => {
+    const app = getAppStoreDefinition("1password")!;
+    expect(app.name).toBe("1Password");
+    expect(app.methods).toHaveLength(1);
+    expect(app.methods[0]).toMatchObject({ key: "service-account", transport: "rest_api", auth: "api_key",
+      credentialFields: [{ key: "authorization", label: "Paste your 1Password Service Account token", type: "password", secret: true, required: true }],
+      keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " }, riskTier: "S4" });
+    expect(app.methods[0]!.guidanceMd).toContain("https://www.1password.dev/service-accounts/get-started#create-a-service-account");
+    expect(app.methods[0]!.tenantFields ?? []).toHaveLength(0);
+  });
   it("namespaces Browser Use's hosted service as browser-use-cloud", () => {
     expect(CONNECTABLE_APP_DEFINITIONS.find(app => app.slug === "browser-use-cloud"))
       .toMatchObject({ name: "Browser Use Cloud", methods: [{ key: "cloud-v4", transport: "rest_api" }] });
@@ -232,6 +255,15 @@ describe("AppDefinition catalog", () => {
 
   it("validates all Wave 1 definitions", () =>
     expect(() => appDefinitionsSchema.parse(APP_DEFINITIONS)).not.toThrow());
+  it("lists model providers as regular tagged catalog entries", () => {
+    const slugs = ["openai", "anthropic", "openrouter", "xai", "google", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"];
+    expect(APP_STORE_DEFINITIONS.filter(app => app.tags?.includes("model-provider")).map(app => app.slug).sort()).toEqual(slugs.sort());
+    for (const slug of slugs) {
+      const app = APP_STORE_DEFINITIONS.find(app => app.slug === slug)!;
+      expect(app.methods.some(method => method.purpose === "ai" && method.transport === "runtime_auth")).toBe(true);
+    }
+  });
+
   it("contains every established provider plus the reviewed self-serve catalog", () => {
     expect(APP_DEFINITIONS.map((app) => app.slug)).toEqual(
       expect.arrayContaining([
@@ -262,11 +294,12 @@ describe("AppDefinition catalog", () => {
         "google-workspace-search",
       ]),
     );
-    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(49);
+    expect(SELF_SERVE_MCP_CANDIDATES).toHaveLength(65);
     expect(BLOCKED_MCP_PROVIDERS.map((entry) => entry.slug)).toEqual([
       "g2",
       "vercel",
       "zomato",
+      "monday",
     ]);
     const definitionSlugs = new Set(APP_DEFINITIONS.map((app) => app.slug));
     const connectableSlugs = new Set(
@@ -282,14 +315,15 @@ describe("AppDefinition catalog", () => {
         (entry) => !connectableSlugs.has(entry.slug),
       ),
     ).toEqual([]);
-    for (const entry of BLOCKED_MCP_PROVIDERS)
-      expect(connectableSlugs.has(entry.slug)).toBe(false);
+    for (const entry of BLOCKED_MCP_PROVIDERS.filter(entry => entry.slug !== "vercel"))
+      expect(getAppStoreDefinition(entry.slug)).toBeNull();
   });
   it("separates GitHub tools from the review bot without changing the provider identity", () => {
     const github = getConnectableAppDefinition("github")!;
     const bot = getConnectableAppDefinition("github-code-review-bot")!;
-    expect(github.methods.map((method) => method.key)).toEqual(["managed", "mcp-key"]);
-    expect(github.methods.every((method) => method.purpose === "tool")).toBe(true);
+    expect(github.methods.map((method) => method.key)).toEqual(["managed", "mcp-key", "copilot-token"]);
+    expect(github.methods.filter((method) => method.purpose === "tool").map((method) => method.key)).toEqual(["managed", "mcp-key"]);
+    expect(github.methods.find((method) => method.key === "copilot-token")).toMatchObject({ purpose: "ai", transport: "runtime_auth" });
     expect(bot.name).toBe("GitHub Code Review Bot");
     expect(bot.methods).toHaveLength(1);
     expect(bot.methods[0]).toMatchObject({ provider: "github", purpose: "channel", transport: "chat_sdk" });
@@ -426,15 +460,15 @@ describe("AppDefinition catalog", () => {
     expect(channel("slack")?.guidanceMd).toContain("reactions");
     expect(channel("slack")?.guidanceMd).toContain("direct messages");
   });
-  it("keeps a complete, unique, dated evidence ledger for all 52 researched MCP providers", () => {
+  it("keeps a complete, unique, dated evidence ledger for all 69 researched MCP providers", () => {
     // Ledger-wide date reflects the last full re-verification (2026-08-26);
     // later provider additions carry their own research evidence, but
     // bumping the shared date would overstate freshness for the other providers.
     expect(SELF_SERVE_MCP_RESEARCH.verifiedAt).toBe("2026-08-26");
-    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(52);
+    expect(SELF_SERVE_MCP_RESEARCH.entries).toHaveLength(69);
     expect(
       new Set(SELF_SERVE_MCP_RESEARCH.entries.map((entry) => entry.slug)),
-    ).toHaveProperty("size", 52);
+    ).toHaveProperty("size", 69);
     for (const entry of SELF_SERVE_MCP_RESEARCH.entries) {
       expect(new URL(entry.docsUrl).protocol).toBe("https:");
       expect(new URL(entry.serverUrl).protocol).toBe("https:");
@@ -454,6 +488,100 @@ describe("AppDefinition catalog", () => {
     expect(app.methods[1]).toMatchObject({
       auth: "api_key", defaults: { serverUrl: "https://api.fireflies.ai/mcp" },
       credentialFields: [{ key: "authorization", secret: true, type: "password", required: true }],
+      keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
+    });
+  });
+
+  it("supports organization tokens and OAuth for the official read-only Enterpret MCP", () => {
+    const app = CONNECTABLE_APP_DEFINITIONS.find(
+      (entry) => entry.slug === "enterpret",
+    )!;
+    expect(
+      getAppDefinitionForUrl("https://wisdom-api.enterpret.com/server/mcp")
+        ?.slug,
+    ).toBe("enterpret");
+    // Both methods target the official read-only MCP, not the beta Agent MCP.
+    expect(app.methods.map((method) => method.key)).toEqual([
+      "mcp-api-key",
+      "mcp-oauth",
+    ]);
+    expect(app.redirectConstraints).toBe("https-or-loopback-http");
+    expect(APP_STORE_HIDDEN_SLUGS.has("enterpret")).toBe(false);
+    expect(app.availability?.available).not.toBe(false);
+    expect(app.ownershipAvailability?.dcr).not.toBe(false);
+    expect(getAvailableConnectionMethods(app).map((method) => method.key)).toEqual([
+      "mcp-api-key",
+      "mcp-oauth",
+    ]);
+    expect(getAvailableConnectionMethod(app)?.key).toBe("mcp-api-key");
+    expect(getAvailableConnectionMethod(app, "mcp-oauth")?.key).toBe("mcp-oauth");
+    expect(app.methods[0]).toMatchObject({
+      transport: "mcp_remote",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      grantKinds: ["organization"],
+      riskTier: "S3",
+      defaults: { serverUrl: "https://wisdom-api.enterpret.com/server/mcp" },
+      credentialFields: [
+        { key: "authorization", type: "password", required: true, secret: true },
+      ],
+      keyPlacement: {
+        location: "header",
+        name: "Authorization",
+        prefix: "Bearer ",
+      },
+    });
+    expect(app.methods[1]).toMatchObject({
+      transport: "mcp_remote",
+      auth: "oauth",
+      // Enterpret documents no customer-registered OAuth app, only RFC 7591.
+      ownershipModes: ["dcr"],
+      grantKinds: ["user"],
+      riskTier: "S3",
+      defaults: {
+        serverUrl: "https://wisdom-api.enterpret.com/server/mcp",
+        // Narrower than the "mcp:read mcp:write" the 401 challenge advertises.
+        scopesHint: ["mcp:read"],
+      },
+    });
+    // RFC 9728 -> RFC 8414 discovery resolves from the challenge, so shipping a
+    // complete endpoint pair would suppress discovery permanently.
+    expect(app.methods[1].defaults?.authorizationEndpoint).toBeUndefined();
+    expect(app.methods[1].defaults?.tokenEndpoint).toBeUndefined();
+    expect(app.methods[1].label).toBe("Sign in with Enterpret");
+    expect(app.methods[1].warnings?.some((w) => /broader OAuth scopes/i.test(w))).toBe(
+      true,
+    );
+    // The definition records the placement of a credential, never a value.
+    const serialized = JSON.stringify(app);
+    expect(serialized).not.toMatch(/eyJ[A-Za-z0-9_-]{8,}/);
+    // "Bearer " may appear only as the header prefix, never trailed by a value.
+    expect(serialized.match(/Bearer[^"]*/g)).toEqual(["Bearer "]);
+    for (const method of app.methods)
+      for (const credentialField of method.credentialFields ?? [])
+        expect(credentialField).not.toHaveProperty("defaultValue");
+  });
+
+  it("exposes Make with its reviewed browser OAuth and MCP token alternatives", () => {
+    const app = APP_STORE_DEFINITIONS.find((entry) => entry.slug === "make");
+    expect(app).toBeTruthy();
+    expect(APP_STORE_HIDDEN_SLUGS.has("make")).toBe(false);
+    expect(CONNECTABLE_APP_DEFINITIONS.some((entry) => entry.slug === "make")).toBe(true);
+    expect(getAvailableConnectionMethods(app!).map((method) => method.key)).toEqual([
+      "mcp-oauth",
+      "mcp-api-token",
+    ]);
+    expect(app!.methods[0]).toMatchObject({
+      transport: "mcp_remote",
+      auth: "oauth",
+      ownershipModes: ["dcr"],
+      defaults: { serverUrl: "https://mcp.make.com" },
+    });
+    expect(app!.methods[1]).toMatchObject({
+      transport: "mcp_remote",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      defaults: { serverUrlTemplate: "https://{zone}/mcp" },
       keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
     });
   });
@@ -582,6 +710,13 @@ describe("AppDefinition catalog", () => {
       consoleLinks: { register: "https://app.asana.com/0/my-apps" },
     });
     expect(method("linear")?.ownershipModes).toEqual(["dcr", "customer"]);
+    expect(method("sentry")).toMatchObject({
+      key: "mcp-oauth",
+      defaults: {
+        serverUrl: "https://mcp.sentry.dev/mcp",
+        discoveryUrl: "https://mcp.sentry.dev/.well-known/oauth-protected-resource/mcp",
+      },
+    });
     expect(method("zapier")).toMatchObject({
       key: "generated-url",
       auth: "none",
@@ -607,6 +742,34 @@ describe("AppDefinition catalog", () => {
       defaults: { serverUrl: "https://api.you.com/mcp?profile=free" },
     });
     expect(method("youcom", "mcp-free")?.credentialFields).toBeUndefined();
+    expect(
+      APP_DEFINITIONS.find((app) => app.slug === "telem")?.methods.map(
+        (candidate) => candidate.key,
+      ),
+    ).toEqual(["mcp-api-key"]);
+    expect(method("telem")).toMatchObject({
+      auth: "api_key",
+      defaults: { serverUrl: "https://mcp.telem.ai/mcp" },
+      keyPlacement: {
+        location: "header",
+        name: "Authorization",
+        prefix: "Bearer ",
+      },
+      consoleLinks: { keys: "https://app.telem.ai" },
+    });
+    expect(
+      method("telem")?.tenantFields?.map((field) => [
+        field.key,
+        field.required ?? false,
+        field.transport?.location,
+        field.transport?.name,
+      ]),
+    ).toEqual([
+      ["autoRouting", false, "header", "X-Telem-Auto-Routing"],
+      ["tier", false, "header", "X-Telem-Tier"],
+      ["providersInclude", false, "header", "X-Telem-Providers-Include"],
+      ["providersExclude", false, "header", "X-Telem-Providers-Exclude"],
+    ]);
   });
   it("uses discovery-first Notion MCP OAuth metadata", () => {
     const notion = APP_DEFINITIONS.find((app) => app.slug === "notion");
@@ -621,18 +784,21 @@ describe("AppDefinition catalog", () => {
       APP_DEFINITIONS.find((app) => app.slug === "linear")?.methods[0]?.defaults
         ?.scopesHint,
     ).toEqual(["read", "write"]));
-  it("requests Hugging Face MCP read, contribution and job scopes", () =>
-    expect(
-      APP_DEFINITIONS.find((app) => app.slug === "hugging-face")?.methods[0]
-        ?.defaults?.scopesHint,
-    ).toEqual(["read-mcp", "read-repos", "contribute-repos", "jobs"]));
-  it("defaults every action, reads and writes, to allowed", () => {
+  it("limits Ask-first defaults to reviewed high-risk connection methods", () => {
     for (const app of APP_DEFINITIONS)
-      for (const method of app.methods)
+      for (const method of app.methods) {
+        if (app.slug === "enterpret" || (app.slug === "gmail" && method.capabilityProfile?.key === "archive")) {
+          expect(recommendedDefaultsForApp(app, method.key)).toEqual({
+            access: "all_agents",
+            askFirstRiskLevels: ["write", "destructive"],
+          });
+          continue;
+        }
         expect(recommendedDefaultsForApp(app, method.key)).toEqual({
           access: "all_agents",
           askFirstRiskLevels: [],
         });
+      }
   });
   it("defaults explicit read/write capability groups to their write-capable method", () => {
     const drive = APP_DEFINITIONS.find((app) => app.slug === "google-drive")!;
@@ -643,6 +809,8 @@ describe("AppDefinition catalog", () => {
     expect(getAvailableConnectionMethod(gmail)?.key).toBe(
       "customer-draft-oauth",
     );
+    expect(gmail.methods.filter((method) => method.capabilityProfile?.key === "archive")
+      .map((method) => method.key)).toEqual(["paperclip-archive", "customer-archive-oauth"]);
     expect(
       getRecommendedConnectionMethod(
         drive.methods.filter((candidate) =>
@@ -708,17 +876,17 @@ describe("AppDefinition catalog", () => {
   it("withholds unverified and reserved providers from the app store without deleting their definitions", () => {
     expect([...APP_STORE_HIDDEN_SLUGS].sort()).toEqual([
       "beehiiv",
-      "bitly",
       "brex",
       "candid",
+      "clickup",
       "coda",
-      "context7",
       "egnyte",
       "embat",
       "kernel",
+      "klaviyo",
       "local-falcon",
-      "make",
       "manufact",
+      "monday",
       "oreilly",
       "planetscale",
       "razorpay",
@@ -728,7 +896,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(58);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(88);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -787,7 +955,7 @@ describe("AppDefinition catalog", () => {
         );
     }
   });
-  it("keeps every researched self-serve candidate implemented while blocked providers stay absent", () => {
+  it("keeps every researched self-serve candidate implemented while blocked providers stay out of Browse", () => {
     const definitions = new Map(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => [entry.slug, entry]),
     );
@@ -795,12 +963,16 @@ describe("AppDefinition catalog", () => {
       expect(appSupportsCatalogSetup(definitions.get(candidate.slug))).toBe(
         true,
       );
-    for (const blocked of BLOCKED_MCP_PROVIDERS)
-      expect(definitions.has(blocked.slug)).toBe(false);
+    for (const blocked of BLOCKED_MCP_PROVIDERS) {
+      // MCP client eligibility does not apply to Vercel's reviewed REST adapter.
+      if (blocked.slug === "vercel") {
+        expect(getAppStoreDefinition(blocked.slug)?.methods).toMatchObject([{ key: "rest-api-key", transport: "rest_api" }]);
+      } else expect(getAppStoreDefinition(blocked.slug)).toBeNull();
+    }
   });
   it("keeps all Google Workspace profiles aligned with their app, endpoint, scopes, ownership, risk, and write policy", () => {
     expect(GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS).toEqual(
-      GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS.map((entry) => entry.profile),
+      [...GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS.map((entry) => entry.profile), "workspace.all"],
     );
     expect(Object.keys(GOOGLE_WORKSPACE_CONNECTOR_PROFILES)).toEqual([
       ...GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS,
@@ -938,6 +1110,327 @@ describe("AppDefinition catalog", () => {
       expect(method.guidanceMd).toContain("optional advanced controls");
     }
   });
+  it("connects Braintrust US and EU with discovered OAuth or a vaulted bearer key", () => {
+    const braintrust = getConnectableAppDefinition("braintrust")!;
+    expect(getAppStoreDefinition("braintrust")).toBe(braintrust);
+    expect(braintrust).toMatchObject({
+      name: "Braintrust",
+      categories: ["developer", "data"],
+      urlPatterns: ["https://api.braintrust.dev/*", "https://api-eu.braintrust.dev/*"],
+      docsUrl: "https://www.braintrust.dev/docs/integrations/developer-tools/mcp",
+      redirectConstraints: "https-or-loopback-http",
+      branding: {
+        logoUrl: "/brands/apps/braintrust.png",
+        darkLogoUrl: "/brands/apps/braintrust-dark.png",
+      },
+    });
+    expect(braintrust.methods.map((method) => method.key)).toEqual([
+      "mcp-oauth", "mcp-api-key", "mcp-eu-oauth", "mcp-eu-api-key",
+    ]);
+    expect(getAvailableConnectionMethod(braintrust)?.key).toBe("mcp-oauth");
+    for (const method of braintrust.methods) {
+      const region = method.key.startsWith("mcp-eu-") ? "EU" : "US";
+      const host = region === "EU" ? "api-eu.braintrust.dev" : "api.braintrust.dev";
+      const serverUrl = `https://${host}/mcp`;
+      expect(getAvailableConnectionMethod(braintrust, method.key)).toBe(method);
+      expect(resolveConnectionMethodServerUrl(method, {})).toBe(serverUrl);
+      expect(getAppDefinitionForUrl(serverUrl)?.slug).toBe("braintrust");
+      expect(method).toMatchObject({
+        transport: "mcp_remote", riskTier: "S4",
+        capabilityProfile: { key: "write", label: "Read and write" },
+        defaults: { serverUrl },
+      });
+      expect(method.label).toContain(region);
+      expect(method.tenantFields).toBeUndefined();
+      expect(method.requiredResourceFilters).toBeUndefined();
+      expect(method.grantKinds).toBeUndefined();
+      expect(method.credentialSources).toBeUndefined();
+      expect(recommendedDefaultsForApp(braintrust, method.key)).toEqual({
+        access: "all_agents", askFirstRiskLevels: [],
+      });
+      expect(method.warnings?.join(" ")).toContain("permanently delete");
+      expect(method.warnings?.join(" ")).toContain("credits");
+      if (method.auth === "oauth") {
+        expect(method.ownershipModes).toEqual(["dcr"]);
+        expect(method.defaults).toEqual({
+          serverUrl,
+          discoveryUrl: `https://${host}/.well-known/oauth-protected-resource/mcp`,
+          scopesHint: ["mcp"],
+        });
+        expect(method.credentialFields).toBeUndefined();
+      } else {
+        expect(method.auth).toBe("api_key");
+        expect(method.ownershipModes).toEqual(["customer"]);
+        expect(method.defaults).toEqual({ serverUrl });
+        expect(method.keyPlacement).toEqual({
+          location: "header", name: "Authorization", prefix: "Bearer ",
+        });
+        expect(method.credentialFields).toEqual([
+          expect.objectContaining({
+            key: "authorization", type: "password", required: true, secret: true,
+            helperMd: expect.stringContaining("reads and writes"),
+          }),
+        ]);
+      }
+    }
+    expect(getAppDefinitionForUrl("https://api.braintrust.dev.example.com/mcp")).toBeNull();
+  });
+  it("connects Neon's hosted server with optional project pinning and read-only mode", () => {
+    const neon = APP_DEFINITIONS.find((app) => app.slug === "neon")!;
+    expect(neon).toMatchObject({
+      name: "Neon",
+      categories: ["data"],
+      urlPatterns: ["https://mcp.neon.tech/*"],
+      docsUrl: "https://neon.com/docs/ai/neon-mcp-server",
+      redirectConstraints: "https-or-loopback-http",
+      branding: { logoUrl: "/brands/apps/neon.png" },
+    });
+    expect(neon.branding.darkLogoUrl).toBeUndefined();
+    expect(APP_STORE_DEFINITIONS.some((app) => app.slug === "neon")).toBe(true);
+    expect(neon.methods.map((candidate) => candidate.key)).toEqual([
+      "mcp-oauth",
+      "mcp-api-key",
+    ]);
+    const [oauth, apiKey] = neon.methods;
+    expect(oauth).toMatchObject({
+      auth: "oauth",
+      ownershipModes: ["dcr"],
+      riskTier: "S4",
+      requiredResourceFilters: ["project"],
+      defaults: {
+        serverUrl: "https://mcp.neon.tech/mcp",
+        scopesHint: ["read", "write"],
+      },
+    });
+    expect(apiKey).toMatchObject({
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      riskTier: "S4",
+      defaults: { serverUrl: "https://mcp.neon.tech/mcp" },
+      keyPlacement: {
+        location: "header",
+        name: "Authorization",
+        prefix: "Bearer ",
+      },
+      consoleLinks: {
+        keys: "https://console.neon.tech/app/settings/api-keys",
+      },
+    });
+    expect(apiKey!.credentialFields).toEqual([
+      expect.objectContaining({
+        key: "authorization",
+        type: "password",
+        secret: true,
+        required: true,
+      }),
+    ]);
+    for (const method of neon.methods) {
+      // Nothing is required on the default path: both narrowing controls are
+      // optional and folded under Advanced, and the provider enforces them.
+      expect(method.tenantFields?.map((field) => field.key)).toEqual([
+        "projectId",
+        "readOnly",
+      ]);
+      expect(method.tenantFields?.every((field) => field.advanced && !field.required)).toBe(true);
+      expect(method.tenantFields?.[0]).toMatchObject({
+        type: "text",
+        validation: { pattern: "^[a-z0-9-]+$", maxLength: 64 },
+        transport: { location: "query", name: "projectId" },
+      });
+      expect(method.tenantFields?.[1]).toMatchObject({
+        type: "checkbox",
+        defaultValue: false,
+        transport: {
+          location: "query",
+          name: "readonly",
+          format: "boolean",
+          omitFalse: true,
+        },
+      });
+      expect(method.warnings?.length).toBe(2);
+    }
+  });
+  it("connects Ditto's hosted server with browser sign-in or a workspace API key", () => {
+    const ditto = APP_DEFINITIONS.find((app) => app.slug === "ditto")!;
+    expect(ditto).toMatchObject({
+      name: "Ditto",
+      categories: ["content"],
+      urlPatterns: ["https://api.dittowords.com/*"],
+      docsUrl: "https://developer.dittowords.com/guides/connect-the-mcp",
+      branding: { logoUrl: "/brands/apps/ditto.png" },
+      redirectConstraints: "https-or-loopback-http",
+    });
+    expect(APP_STORE_DEFINITIONS.some((app) => app.slug === "ditto")).toBe(true);
+    expect(ditto.methods.map((method) => method.key)).toEqual(["mcp-oauth", "mcp-api-key"]);
+    const [oauth, apiKey] = ditto.methods;
+    expect(oauth).toMatchObject({
+      transport: "mcp_remote",
+      auth: "oauth",
+      ownershipModes: ["dcr"],
+      riskTier: "S4",
+      // Ditto signs in through Auth0, which issues a refresh token only for
+      // offline_access.
+      defaults: {
+        serverUrl: "https://api.dittowords.com/v2/mcp",
+        scopesHint: ["openid", "profile", "email", "offline_access"],
+      },
+    });
+    expect(apiKey).toMatchObject({
+      transport: "mcp_remote",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      riskTier: "S4",
+      defaults: { serverUrl: "https://api.dittowords.com/v2/mcp" },
+      // Ditto API keys use the `token` scheme, not `Bearer`.
+      keyPlacement: { location: "header", name: "Authorization", prefix: "token " },
+      consoleLinks: { keys: "https://app.dittowords.com/developers" },
+    });
+    expect(apiKey!.credentialFields).toEqual([
+      expect.objectContaining({ key: "authorization", type: "password", secret: true, required: true }),
+    ]);
+    expect(apiKey!.credentialFields?.[0]?.helperMd).toContain("set delete and link actions to Ask first");
+    for (const method of ditto.methods) {
+      // The access step shows the profile description before sign-in.
+      expect(method.capabilityProfile).toMatchObject({
+        key: "write",
+        description: expect.stringContaining("cannot be undone"),
+      });
+      expect(method.tenantFields ?? []).toEqual([]);
+      expect(method.warnings).toHaveLength(2);
+    }
+  });
+  it("connects Unikraft Cloud's published HTTP APIs with an organization API token", () => {
+    const unikraft = APP_DEFINITIONS.find((app) => app.slug === "unikraft")!;
+    expect(unikraft).toMatchObject({
+      name: "Unikraft",
+      categories: ["developer"],
+      urlPatterns: ["https://console.unikraft.com/*", "https://*.unikraft.cloud/*"],
+      docsUrl: "https://unikraft.com/docs/api/platform/v1",
+      branding: { logoUrl: "/brands/apps/unikraft.svg" },
+    });
+    expect(APP_STORE_DEFINITIONS.some((app) => app.slug === "unikraft")).toBe(true);
+    expect(CONNECTABLE_APP_DEFINITIONS.some((app) => app.slug === "unikraft")).toBe(true);
+    expect(unikraft.methods.map((method) => method.key)).toEqual(["api-token"]);
+    const [method] = unikraft.methods;
+    expect(method).toMatchObject({
+      transport: "rest_api",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      riskTier: "S4",
+      defaults: { serverUrl: "https://controlplane.unikraft.cloud/v1" },
+      keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
+    });
+    expect(method!.credentialFields).toEqual([
+      expect.objectContaining({ key: "authorization", type: "password", secret: true, required: true }),
+    ]);
+    // The key form renders credential helper text, not method warnings.
+    expect(method!.credentialFields?.[0]?.helperMd).toContain("running sandbox commands and deleting resources");
+    // The default metro is optional: setup asks only for the token.
+    expect(method!.tenantFields).toEqual([
+      expect.objectContaining({ key: "metro", type: "select", advanced: true, defaultValue: "fra" }),
+    ]);
+    expect(method!.tenantFields?.[0]?.options?.map((option) => option.value)).toEqual(["dal", "fra", "sfo", "sin", "was"]);
+  });
+  it("connects Gauge's hosted server with browser sign-in or an organization API key", () => {
+    const gauge = APP_DEFINITIONS.find((app) => app.slug === "gauge")!;
+    expect(gauge).toMatchObject({
+      name: "Gauge",
+      categories: ["analytics"],
+      urlPatterns: ["https://app.withgauge.com/*"],
+      docsUrl: "https://docs.withgauge.com/help/mcp",
+      branding: { logoUrl: "/brands/apps/gauge.png" },
+      redirectConstraints: "https-or-loopback-http",
+    });
+    expect(APP_STORE_DEFINITIONS.some((app) => app.slug === "gauge")).toBe(true);
+    expect(gauge.methods.map((method) => method.key)).toEqual(["mcp-oauth", "mcp-api-key"]);
+    const [oauth, apiKey] = gauge.methods;
+    expect(oauth).toMatchObject({
+      transport: "mcp_remote",
+      auth: "oauth",
+      ownershipModes: ["dcr"],
+      riskTier: "S3",
+      // Gauge advertises identity scopes too; only the reviewed MCP scope is
+      // requested, and the organization is chosen on Gauge's consent screen.
+      defaults: { serverUrl: "https://app.withgauge.com/mcp", scopesHint: ["mcp"] },
+    });
+    expect(apiKey).toMatchObject({
+      transport: "mcp_remote",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      riskTier: "S3",
+      defaults: { serverUrl: "https://app.withgauge.com/mcp" },
+      keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " },
+    });
+    expect(apiKey!.credentialFields).toEqual([
+      expect.objectContaining({ key: "authorization", type: "password", secret: true, required: true }),
+    ]);
+    // The key form renders credential helper text, not method warnings, so the
+    // publish advice must live in the helper.
+    expect(apiKey!.credentialFields?.[0]?.helperMd).toContain("set publish actions to Ask first");
+    for (const method of gauge.methods) {
+      // One shared profile: no capability picker, but the access step shows
+      // its description (with the publish warning) before sign-in.
+      expect(method.capabilityProfile).toMatchObject({
+        key: "write",
+        description: expect.stringContaining("publish to your connected CMS"),
+      });
+      expect(method.tenantFields ?? []).toEqual([]);
+      expect(method.warnings).toEqual([
+        expect.stringContaining("one Gauge organization"),
+        expect.stringContaining("publish to your connected CMS"),
+      ]);
+    }
+  });
+  it("connects Superagent's hosted server with an organization API key only", () => {
+    const superagent = APP_DEFINITIONS.find((app) => app.slug === "superagent")!;
+    expect(superagent).toMatchObject({
+      name: "Superagent",
+      categories: ["developer"],
+      urlPatterns: ["https://www.superagent.sh/*"],
+      docsUrl: "https://www.superagent.sh/docs/mcp",
+      branding: { logoUrl: "/brands/apps/superagent.png" },
+    });
+    // The hosted server publishes no OAuth authorization-server metadata, so
+    // there is no browser sign-in method and no OAuth redirect constraint.
+    expect(superagent.redirectConstraints).toBeUndefined();
+    expect(superagent.branding.darkLogoUrl).toBeUndefined();
+    expect(APP_STORE_DEFINITIONS.some((app) => app.slug === "superagent")).toBe(true);
+    expect(superagent.methods).toHaveLength(1);
+    const [apiKey] = superagent.methods;
+    expect(apiKey).toMatchObject({
+      key: "mcp-api-key",
+      transport: "mcp_remote",
+      auth: "api_key",
+      ownershipModes: ["customer"],
+      riskTier: "S4",
+      // The bare superagent.sh domain redirects, and some clients drop POST
+      // bodies on redirect, so the www host is pinned.
+      defaults: { serverUrl: "https://www.superagent.sh/mcp" },
+      keyPlacement: {
+        location: "header",
+        name: "Authorization",
+        prefix: "Bearer ",
+      },
+      consoleLinks: {
+        keys: "https://www.superagent.sh/app/settings#api-keys",
+        docs: "https://www.superagent.sh/docs/mcp",
+      },
+    });
+    expect(apiKey!.tenantFields ?? []).toEqual([]);
+    expect(apiKey!.credentialFields).toEqual([
+      expect.objectContaining({
+        key: "authorization",
+        type: "password",
+        placeholder: "sk_live_...",
+        secret: true,
+        required: true,
+      }),
+    ]);
+    expect(apiKey!.credentialFields?.[0]?.helperMd).toContain("not scoped");
+    expect(apiKey!.warnings).toEqual([
+      expect.stringContaining("consume organization credits"),
+    ]);
+  });
   it("requires only reviewed provider or safety-boundary configuration on the default path", () => {
     const required = APP_DEFINITIONS.flatMap((app) =>
       app.methods.flatMap((method) =>
@@ -951,10 +1444,12 @@ describe("AppDefinition catalog", () => {
     ).sort();
     expect(required).toEqual([
       "clickhouse:mcp-oauth:serviceId",
+      "honcho:mcp-api-key:workspaceId",
+      "make:mcp-api-token:zone",
       "shopify:storefront-mcp:storeDomain",
       "shopify:ucp-commerce:storeDomain",
-      "supabase:mcp-api-key:projectRef",
-      "supabase:mcp-oauth:projectRef",
+      "supabase:management-api:projectRef",
+      "vercel:rest-api-key:teamId",
     ]);
   });
   it("limits Vercel Connect setup to the reviewed pilot methods", () => {
@@ -996,24 +1491,8 @@ describe("AppDefinition catalog", () => {
       )?.review.principalModes,
     ).toEqual(["app"]);
     expect(
-      APP_DEFINITIONS.find((app) => app.slug === "vercel")?.availability
-        ?.available,
+      APP_DEFINITIONS.find((app) => app.slug === "vercel")?.methods.some(method => method.credentialSources?.vercelConnect),
     ).toBe(false);
-  });
-  it("enforces method and field invariants", () => {
-    for (const app of APP_DEFINITIONS)
-      for (const method of app.methods) {
-        if (
-          method.auth === "api_key" &&
-          (method.purpose ?? "tool") !== "channel"
-        )
-          expect(method.keyPlacement).toBeTruthy();
-        if (method.auth === "oauth")
-          expect(method.ownershipModes.length).toBeGreaterThan(0);
-        for (const field of method.credentialFields ?? [])
-          if (field.required && field.type !== "checkbox")
-            expect(field.placeholder).toBeTruthy();
-      }
   });
 });
 
@@ -1029,6 +1508,31 @@ describe("Railway provider", () => {
   });
 });
 
+
+describe("Deployment connectors", () => {
+  it("offers Supabase account-level MCP and project-scoped configuration", () => {
+    const app = getAppStoreDefinition("supabase")!;
+    expect(app.methods.map(method => method.key)).toEqual(["mcp-oauth", "mcp-api-key", "management-api"]);
+    for (const method of app.methods.filter(method => method.transport === "mcp_remote")) {
+      expect(method.tenantFields?.find(field => field.key === "projectRef")).toMatchObject({ advanced: true });
+      expect(method.tenantFields?.find(field => field.key === "projectRef")?.required).not.toBe(true);
+    }
+    expect(app.methods.find(method => method.key === "management-api")).toMatchObject({
+      transport: "rest_api", auth: "api_key", defaults: { serverUrl: "https://api.supabase.com/v1" },
+      tenantFields: [expect.objectContaining({ key: "projectRef", required: true })],
+    });
+  });
+  it("offers Vercel deployment setup independently of MCP eligibility", () => {
+    const app = getAppStoreDefinition("vercel")!;
+    expect(app.availability?.available).toBe(true);
+    expect(getAvailableConnectionMethods(app)).toMatchObject([{
+      key: "rest-api-key", auth: "api_key", transport: "rest_api", riskTier: "S4",
+      defaults: { serverUrl: "https://api.vercel.com" },
+      tenantFields: [expect.objectContaining({ key: "teamId", required: true })],
+    }]);
+    expect(getAvailableConnectionMethod(app, "mcp-oauth")).toBeNull();
+  });
+});
 
 describe("tool method permission review", () => {
   const audit = JSON.parse(fs.readFileSync(new URL("../../../doc/connections/tool-method-permission-reviews.json", import.meta.url), "utf8")) as {
@@ -1063,4 +1567,31 @@ describe("tool method permission review", () => {
     expect(APP_DEFINITIONS.find((app) => app.slug === "hugging-face")!.methods[0]!.defaults!.scopesHint)
       .toEqual(["read-mcp", "read-repos", "contribute-repos", "jobs"]);
   });
+});
+
+it("validates native pool catalog entries without inventing an authentication method", () => {
+  const entry = aiConnectionRouterAppDefinition("example.pool", { name: "AI connection pool", description: "Use saved connections" });
+  expect(appDefinitionSchema.parse(entry)).toEqual(entry);
+  expect(entry.methods).toEqual([]);
+  expect(appDefinitionSchema.safeParse({ ...entry, aiConnectionRouter: undefined }).success).toBe(false);
+  expect(appDefinitionSchema.safeParse({ ...entry, methods: APP_STORE_DEFINITIONS[0]!.methods }).success).toBe(false);
+  expect(appDefinitionSchema.safeParse({ ...entry, categories: ["developer"] }).success).toBe(false);
+});
+
+it("limits explicit DCR registration preference to remote MCP OAuth methods with DCR ownership", () => {
+  const entry = structuredClone(APP_DEFINITIONS.find((app) => app.slug === "airtable")!);
+  entry.methods[0]!.oauthClientRegistration = "dcr";
+  expect(appDefinitionSchema.parse(entry).methods[0]!.oauthClientRegistration).toBe("dcr");
+
+  const customerOwned = structuredClone(entry);
+  customerOwned.methods[0]!.ownershipModes = ["customer"];
+  expect(appDefinitionSchema.safeParse(customerOwned).success).toBe(false);
+
+  const apiKey = structuredClone(entry);
+  apiKey.methods[0]!.auth = "api_key";
+  expect(appDefinitionSchema.safeParse(apiKey).success).toBe(false);
+
+  const nonMcp = structuredClone(entry);
+  nonMcp.methods[0]!.transport = "rest_api";
+  expect(appDefinitionSchema.safeParse(nonMcp).success).toBe(false);
 });

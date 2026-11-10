@@ -30,11 +30,14 @@ const issueDocument: IssueDocument = {
 
 const issue = { id: "issue-1", identifier: "PAP-522", workMode: "standard" } as Issue;
 
+// The Artifacts V1 setting hook reads QueryClientContext, which the partial react-query mock below omits.
+vi.mock("@/hooks/useArtifactsV1Enabled", () => ({ useArtifactsV1Enabled: () => ({ enabled: false, loaded: true }) }));
 vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: [] }) }));
 vi.mock("@/hooks/useIssuePlanDocument", () => ({
   useIssuePlanDocument: () => ({ data: { ...issueDocument, key: "plan" }, isLoading: false }),
 }));
 vi.mock("@/hooks/useIssueDocuments", () => ({ useIssueDocuments: () => ({ data: [issueDocument] }) }));
+vi.mock("@/hooks/useIssueWorkProducts", () => ({ useIssueWorkProducts: () => ({ data: [] }) }));
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to }: { children: React.ReactNode; to: string }) => <a href={to}>{children}</a>,
   useLocation: () => ({ hash: "" }),

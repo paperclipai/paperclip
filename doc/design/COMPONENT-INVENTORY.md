@@ -464,3 +464,21 @@ Independently addressable examples live under `Connections/In-task connections` 
 The footer also appears on `/design-guide`. All stories use offline fixtures;
 they do not create provider sessions. The viewer fixture intentionally scales a
 fixed desktop viewport, preserving the current provider embed's sizing limitation.
+
+## Personal Muse connection — 2026-10-10
+
+The shared `new-agent/ExternalAgentInviteDialog.tsx` and
+`ExternalAgentInviteContent.tsx` now support personal Muse alongside Dot. They
+reuse the agent picker, name and role form, setup instruction, and single-row
+footer. The Muse journey distinguishes pairing, detector contact, an independent
+background reply, and the existing agent lifecycle gate. Company/operator drafts
+contain only the name, role, and agent reference; pairing tickets stay transient.
+
+`MuseRunnerConnection.tsx` is the agent settings surface for connection health,
+verification, repair, disconnection, and attestation of a specific stop boundary.
+Its examples appear in the Design Guide. The [guided Muse stories](../../ui/storybook/stories/agents/external-agent-invite/muse.stories.tsx)
+use the real invitation and connection details components with offline fixtures,
+including setup milestones, recovery, disabled cleanup, and the exact stop boundary.
+The [Storybook catalog](../../maps/storybook-map/INDEX.md) registers these under
+agent hiring and lifecycle. The examples remain unreviewed for Vault/provider parity
+and do not establish provider connectivity or remote stopping.

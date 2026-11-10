@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type RefObject,
@@ -65,7 +66,8 @@ export function useBrowserViewport({
     },
     [],
   );
-  useEffect(() => {
+  // Reset the generation before viewer reads start in passive effects.
+  useLayoutEffect(() => {
     version.current++;
     stateRef.current = { preset: "fit" };
     setState(stateRef.current);

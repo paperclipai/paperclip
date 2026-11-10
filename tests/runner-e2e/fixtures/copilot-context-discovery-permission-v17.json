@@ -1,0 +1,296 @@
+{
+  "schema": "paperclip.e2e.retained-copilot-context-discovery.v1",
+  "sourceRevision": "e00fe7ba5952533f6036f7abb883d110992889f8",
+  "retainedResult": "tests/runner-e2e/results/local-2026-10-04T00-21-23-068Z/copilot-provider-death/runner-acpx-copilot/local/pending-permission-provider-death/attempt-1",
+  "outcome": "failed before provider-death dispatch; unanswered read-only discovery card; calibration only",
+  "rows": [
+    {
+      "id": 38,
+      "companyId": "61e76084-01a0-4f2b-bfb7-fd5591473107",
+      "runId": "975a7c7e-6a92-4907-afc7-aee73203f469",
+      "agentId": "3a7f1016-cbea-4767-96a7-e0e6b6120345",
+      "seq": 38,
+      "eventType": "runtime_request.created",
+      "stream": "system",
+      "level": "info",
+      "color": null,
+      "message": null,
+      "payload": {
+        "prpEvent": {
+          "runId": "975a7c7e-6a92-4907-afc7-aee73203f469",
+          "itemId": "item-975a7c7e-6a92-4907-afc7-aee73203f469",
+          "schema": "paperclip.prp.event.v1",
+          "turnId": "turn_lab_61222317c2304f13ab1e4fca31b8d578",
+          "payload": {
+            "request": {
+              "type": "permission",
+              "itemId": "item-975a7c7e-6a92-4907-afc7-aee73203f469",
+              "method": "session/request_permission",
+              "origin": {
+                "method": "session/request_permission",
+                "adapter": "acpx-runtime-sidecar",
+                "provider": "acpx"
+              },
+              "prompt": "search_api",
+              "schema": "paperclip.runtime_request.v2",
+              "status": "pending",
+              "turnId": "turn_lab_61222317c2304f13ab1e4fca31b8d578",
+              "choices": [
+                {
+                  "key": "accept",
+                  "label": "Allow once"
+                },
+                {
+                  "key": "accept_for_session",
+                  "label": "Allow for session"
+                },
+                {
+                  "key": "decline",
+                  "label": "Deny"
+                },
+                {
+                  "key": "cancel",
+                  "label": "Cancel"
+                }
+              ],
+              "details": {
+                "itemId": "item-975a7c7e-6a92-4907-afc7-aee73203f469",
+                "origin": {
+                  "method": "session/request_permission",
+                  "adapter": "acpx-runtime-sidecar",
+                  "provider": "acpx"
+                },
+                "reason": "search_api",
+                "turnId": "turn_lab_61222317c2304f13ab1e4fca31b8d578",
+                "choices": [
+                  {
+                    "key": "accept",
+                    "label": "Allow once"
+                  },
+                  {
+                    "key": "accept_for_session",
+                    "label": "Allow for session"
+                  },
+                  {
+                    "key": "decline",
+                    "label": "Deny"
+                  },
+                  {
+                    "key": "cancel",
+                    "label": "Cancel"
+                  }
+                ],
+                "threadId": "paperclip-3dc0e2121b9b0232adf0e633c60d6190ef9047753210ca9a51ef02830a4af613"
+              },
+              "requestId": "acpx-input-5dab1f28c05b3e9ae25de1ec",
+              "requestKind": "permission_approval"
+            }
+          },
+          "priority": 1,
+          "emittedAt": "2026-10-04T00:21:55.035Z",
+          "eventType": "runtime_request.created",
+          "sourceSeq": 15,
+          "sourceKind": "runner",
+          "schemaVersion": 1,
+          "sourceEventId": "51f1666e-be8e-4da4-9812-4cad3f37d9d9:975a7c7e-6a92-4907-afc7-aee73203f469:15",
+          "sourceInstanceId": "51f1666e-be8e-4da4-9812-4cad3f37d9d9",
+          "normalizedSessionId": "9aaa3f9d-8a7d-4d73-8704-b0efd500c4fc"
+        }
+      },
+      "sourceInstanceId": "51f1666e-be8e-4da4-9812-4cad3f37d9d9",
+      "sourceEventId": "51f1666e-be8e-4da4-9812-4cad3f37d9d9:975a7c7e-6a92-4907-afc7-aee73203f469:15",
+      "sourceSeq": 15,
+      "sourcePayloadSha256": "717355680d3d00818585dab3af3f5b3a8c47871a9f1586f0287d9519c79ab742",
+      "protocolSchemaVersion": 1,
+      "createdAt": "2026-10-04T00:21:55.043Z"
+    },
+    {
+      "id": 39,
+      "companyId": "61e76084-01a0-4f2b-bfb7-fd5591473107",
+      "runId": "975a7c7e-6a92-4907-afc7-aee73203f469",
+      "agentId": "3a7f1016-cbea-4767-96a7-e0e6b6120345",
+      "seq": 39,
+      "eventType": "provider.notice.recorded",
+      "stream": "system",
+      "level": "info",
+      "color": null,
+      "message": null,
+      "payload": {
+        "prpEvent": {
+          "runId": "975a7c7e-6a92-4907-afc7-aee73203f469",
+          "itemId": "item-975a7c7e-6a92-4907-afc7-aee73203f469",
+          "schema": "paperclip.prp.event.v1",
+          "turnId": "turn_lab_61222317c2304f13ab1e4fca31b8d578",
+          "payload": {
+            "scope": "turn",
+            "schema": "paperclip.provider.notice.v1",
+            "details": [
+              {
+                "name": "stage",
+                "value": "tool"
+              },
+              {
+                "name": "toolCallId",
+                "value": "call_fVtZbx73Gy42MZEv3TJroCQH"
+              },
+              {
+                "name": "status",
+                "value": "pending"
+              }
+            ],
+            "summary": "Copilot tool operation: pending.",
+            "category": "copilot_tool_evidence_v1",
+            "noticeId": "copilot-evidence-06be8b16b6645f5f69de0fb6-1",
+            "severity": "info",
+            "provenance": {
+              "method": "session/update",
+              "turnId": "turn_lab_61222317c2304f13ab1e4fca31b8d578",
+              "eventType": "tool",
+              "sessionId": "e735fdac-c742-4b28-8d36-02ee5f4cbec0"
+            },
+            "recoverable": true,
+            "userActionable": false
+          },
+          "priority": 1,
+          "emittedAt": "2026-10-04T00:21:55.035Z",
+          "eventType": "provider.notice.recorded",
+          "sourceSeq": 16,
+          "sourceKind": "runner",
+          "schemaVersion": 1,
+          "sourceEventId": "51f1666e-be8e-4da4-9812-4cad3f37d9d9:975a7c7e-6a92-4907-afc7-aee73203f469:16",
+          "sourceInstanceId": "51f1666e-be8e-4da4-9812-4cad3f37d9d9",
+          "normalizedSessionId": "9aaa3f9d-8a7d-4d73-8704-b0efd500c4fc"
+        }
+      },
+      "sourceInstanceId": "51f1666e-be8e-4da4-9812-4cad3f37d9d9",
+      "sourceEventId": "51f1666e-be8e-4da4-9812-4cad3f37d9d9:975a7c7e-6a92-4907-afc7-aee73203f469:16",
+      "sourceSeq": 16,
+      "sourcePayloadSha256": "734364491d39e51a78538fc6d55e668d8660831427d7ba8dcdf1b2f4e753c126",
+      "protocolSchemaVersion": 1,
+      "createdAt": "2026-10-04T00:21:55.047Z"
+    },
+    {
+      "id": 40,
+      "companyId": "61e76084-01a0-4f2b-bfb7-fd5591473107",
+      "runId": "975a7c7e-6a92-4907-afc7-aee73203f469",
+      "agentId": "3a7f1016-cbea-4767-96a7-e0e6b6120345",
+      "seq": 40,
+      "eventType": "tool.execution.started",
+      "stream": "system",
+      "level": "info",
+      "color": null,
+      "message": null,
+      "payload": {
+        "prpEvent": {
+          "runId": "975a7c7e-6a92-4907-afc7-aee73203f469",
+          "itemId": "item-975a7c7e-6a92-4907-afc7-aee73203f469",
+          "schema": "paperclip.prp.event.v1",
+          "turnId": "turn_lab_61222317c2304f13ab1e4fca31b8d578",
+          "payload": {
+            "name": "paperclip-search_api",
+            "output": "null",
+            "schema": "paperclip.tool.execution.v1",
+            "status": "running",
+            "target": null,
+            "exitCode": null,
+            "progress": "paperclip-search_api (pending): get task context",
+            "readOnly": true,
+            "namespace": null,
+            "operation": "search",
+            "transport": "builtin",
+            "durationMs": null,
+            "executionId": "call_fVtZbx73Gy42MZEv3TJroCQH",
+            "outputBytes": 4,
+            "inputUpdated": true,
+            "outputDigest": "sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+            "outputTruncated": false
+          },
+          "priority": 1,
+          "emittedAt": "2026-10-04T00:21:55.035Z",
+          "eventType": "tool.execution.started",
+          "sourceSeq": 17,
+          "sourceKind": "runner",
+          "schemaVersion": 1,
+          "sourceEventId": "51f1666e-be8e-4da4-9812-4cad3f37d9d9:975a7c7e-6a92-4907-afc7-aee73203f469:17",
+          "sourceInstanceId": "51f1666e-be8e-4da4-9812-4cad3f37d9d9",
+          "normalizedSessionId": "9aaa3f9d-8a7d-4d73-8704-b0efd500c4fc"
+        }
+      },
+      "sourceInstanceId": "51f1666e-be8e-4da4-9812-4cad3f37d9d9",
+      "sourceEventId": "51f1666e-be8e-4da4-9812-4cad3f37d9d9:975a7c7e-6a92-4907-afc7-aee73203f469:17",
+      "sourceSeq": 17,
+      "sourcePayloadSha256": "50614b7c76d807802cbc9a39afab04930c01129112a31c0647d1937eb752c282",
+      "protocolSchemaVersion": 1,
+      "createdAt": "2026-10-04T00:21:55.050Z"
+    },
+    {
+      "id": 42,
+      "companyId": "61e76084-01a0-4f2b-bfb7-fd5591473107",
+      "runId": "975a7c7e-6a92-4907-afc7-aee73203f469",
+      "agentId": "3a7f1016-cbea-4767-96a7-e0e6b6120345",
+      "seq": 42,
+      "eventType": "provider.notice.recorded",
+      "stream": "system",
+      "level": "info",
+      "color": null,
+      "message": null,
+      "payload": {
+        "prpEvent": {
+          "runId": "975a7c7e-6a92-4907-afc7-aee73203f469",
+          "itemId": "item-975a7c7e-6a92-4907-afc7-aee73203f469",
+          "schema": "paperclip.prp.event.v1",
+          "turnId": "turn_lab_61222317c2304f13ab1e4fca31b8d578",
+          "payload": {
+            "scope": "turn",
+            "schema": "paperclip.provider.notice.v1",
+            "details": [
+              {
+                "name": "stage",
+                "value": "permission_requested"
+              },
+              {
+                "name": "toolCallId",
+                "value": "call_fVtZbx73Gy42MZEv3TJroCQH"
+              },
+              {
+                "name": "requestId",
+                "value": "acpx-input-5dab1f28c05b3e9ae25de1ec"
+              },
+              {
+                "name": "declineOffered",
+                "value": "true"
+              }
+            ],
+            "summary": "Copilot requested permission.",
+            "category": "copilot_tool_evidence_v1",
+            "noticeId": "copilot-evidence-06be8b16b6645f5f69de0fb6-2",
+            "severity": "info",
+            "provenance": {
+              "method": "session/request_permission",
+              "turnId": "turn_lab_61222317c2304f13ab1e4fca31b8d578",
+              "eventType": "permission_requested",
+              "sessionId": "e735fdac-c742-4b28-8d36-02ee5f4cbec0"
+            },
+            "recoverable": true,
+            "userActionable": false
+          },
+          "priority": 1,
+          "emittedAt": "2026-10-04T00:21:55.035Z",
+          "eventType": "provider.notice.recorded",
+          "sourceSeq": 18,
+          "sourceKind": "runner",
+          "schemaVersion": 1,
+          "sourceEventId": "51f1666e-be8e-4da4-9812-4cad3f37d9d9:975a7c7e-6a92-4907-afc7-aee73203f469:18",
+          "sourceInstanceId": "51f1666e-be8e-4da4-9812-4cad3f37d9d9",
+          "normalizedSessionId": "9aaa3f9d-8a7d-4d73-8704-b0efd500c4fc"
+        }
+      },
+      "sourceInstanceId": "51f1666e-be8e-4da4-9812-4cad3f37d9d9",
+      "sourceEventId": "51f1666e-be8e-4da4-9812-4cad3f37d9d9:975a7c7e-6a92-4907-afc7-aee73203f469:18",
+      "sourceSeq": 18,
+      "sourcePayloadSha256": "7b6546f06f2ab8d6aeada545cca4b515ae387b98a1b05c93fefaeebf40737cad",
+      "protocolSchemaVersion": 1,
+      "createdAt": "2026-10-04T00:21:55.061Z"
+    }
+  ]
+}

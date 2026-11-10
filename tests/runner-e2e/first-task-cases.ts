@@ -1,4 +1,5 @@
 import type { RunnerTaskFixture } from "./types.js";
+import { APPROVAL_HISTORY_CASE, approvalHistoryFacts } from "./first-task-approval-history.js";
 
 export const FIRST_TASK_CASES = [
   ["interview-first-response", "Interview: first response", "interview", 1],
@@ -23,6 +24,7 @@ export const FIRST_TASK_CASES = [
     1,
   ],
   ["interview-plan-accept", "Interview, plan, and acceptance", "interview", 3],
+  ["plan-only-accept", "Approve a plan without authorizing execution", "plan", 2],
   ["task-card-accept", "Subtask accepted through a card", "task", 3],
   ["accept-while-running", "Accept a proposal while its agent is still running", "task", 3],
   ["task-reply-accept", "Subtask accepted in conversation", "task", 3],
@@ -35,12 +37,13 @@ export const FIRST_TASK_CASES = [
   ["revise-accept", "Revise scope before accepting", "task", 4],
   ["reject-no-execution", "Decline proposed work", "task", 2],
 ] as const;
-export type FirstTaskCaseId = (typeof FIRST_TASK_CASES)[number][0];
+const approvalHistoryCase = [APPROVAL_HISTORY_CASE, "Interview, plan scope, hiring, and execution approval", "interview", 7] as const;
+export type FirstTaskCaseId = (typeof FIRST_TASK_CASES)[number][0] | typeof APPROVAL_HISTORY_CASE;
 export type FirstTaskOpening = (typeof FIRST_TASK_CASES)[number][2];
 export const firstTaskMarker = (nonce: string) =>
   `GARDEN${nonce.replace(/[^a-z0-9]/gi, "")}`;
 export function firstTaskScenario(id: string, nonce: string) {
-  const entry = FIRST_TASK_CASES.find((row) => row[0] === id);
+  const entry = FIRST_TASK_CASES.find((row) => row[0] === id) ?? (id === APPROVAL_HISTORY_CASE ? approvalHistoryCase : undefined);
   if (!entry) throw new Error(`Unknown first-task case ${id}`);
   const marker = firstTaskMarker(nonce);
   const originalMarker = id === "revise-accept" ? `DRAFT${marker}` : marker;
@@ -51,25 +54,28 @@ export function firstTaskScenario(id: string, nonce: string) {
     opening: entry[2],
     marker,
     originalMarker,
-    facts,
+    facts: id === APPROVAL_HISTORY_CASE ? approvalHistoryFacts(marker) : facts,
     firstResponseOnly:
       id.endsWith("first-response") || id === "ordinary-task-control",
     prompt:
       entry[2] === "ambiguous"
         ? "Help me get my organization going."
         : entry[2] === "plan"
-          ? `Write a short plan for welcoming new members to our garden club. ${facts} Let me review the plan before any work starts.`
+          ? `Write a short plan for welcoming new members to our garden club. ${facts} ${id === "plan-only-accept"
+            ? "For this task, deliver only a plan. Do not implement it, hire agents, or create execution tasks even after I approve the plan."
+            : "Let me review the plan before any work starts."}`
           : entry[2] === "ordinary"
             ? `Write the welcome note now on this task; no interview or subtask is needed. ${task}`
             : task,
     revision: `Change the note: invite people to our Sunday meetup instead, and replace ${originalMarker} with ${marker}. Please revise your proposal; I have not accepted it yet.`,
-    acceptance: "Yes, I accept that proposal. Please do it.",
+    acceptance: id === "plan-only-accept"
+      ? "I approve the plan only. Do not start implementation, hire agents, or create execution tasks."
+      : "Yes, I accept that proposal. Please do it.",
     rejection:
       "No, do not proceed. I do not want this work done. Please acknowledge that and stop.",
   };
 }
-export const firstTaskTasks: readonly RunnerTaskFixture[] =
-  FIRST_TASK_CASES.map(([id, label, , expectedRunCount]) => ({
+const buildFirstTaskFixture = ([id, label, , expectedRunCount]: readonly [string, string, string, number]): RunnerTaskFixture => ({
     id,
     label,
     groups: ["onboarding"],
@@ -82,4 +88,11 @@ export const firstTaskTasks: readonly RunnerTaskFixture[] =
     buildPrompt: (nonce) => firstTaskScenario(id, nonce).prompt,
     buildVisibleMarker: firstTaskMarker,
     buildMatchers: () => [], // Checkpoints and state effects are graded by first-task-scoring.
-  }));
+  });
+export const firstTaskTasks: readonly RunnerTaskFixture[] = FIRST_TASK_CASES.map(buildFirstTaskFixture);
+export const onboardingApprovalHistoryTask = {
+  ...buildFirstTaskFixture(approvalHistoryCase),
+  expectedTerminalState: { issue: "done", run: "succeeded" } as const,
+  minimumExpectedRunCount: 1,
+  automaticRetryPolicy: "single_attempt" as const,
+};

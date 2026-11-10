@@ -64,6 +64,7 @@ export const executionWorkspaceCloseActionKindSchema = z.enum([
   "stop_runtime_services",
   "cleanup_command",
   "teardown_command",
+  "remove_provider_workspace",
   "git_worktree_remove",
   "git_branch_delete",
   "remove_local_directory",
@@ -97,6 +98,7 @@ export const executionWorkspaceCloseGitReadinessSchema = z.object({
   behindCount: z.number().int().nonnegative().nullable(),
   isMergedIntoBase: z.boolean().nullable(),
   createdByRuntime: z.boolean(),
+  headSha: z.string().nullable().optional(),
 }).strict();
 
 export const workspaceRuntimeServiceSchema = z.object({

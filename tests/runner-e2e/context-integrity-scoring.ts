@@ -1,11 +1,11 @@
-import type { ContextIntegrityCase } from "./context-integrity-cases.js";
+import { isAssignedSkillContext, PAPERCLIP_DOCUMENT_CASE, type ContextIntegrityCase } from "./context-integrity-cases.js";
 
 export interface ContextIntegrityCheckpoint {
   phase: "initial" | "comment-1" | "comment-2" | "comment-3" | "final";
-  issue: { id: string; status: string };
+  issue: { id: string; status: string; identifier?: string; issuePrefix?: string; appOrigin?: string };
   comments: Array<Record<string, unknown>>;
   queuedComments?: Record<string, unknown>;
-  documents: Array<{ key: string; body?: string | null }>;
+  documents: Array<{ key: string; body?: string | null; latestRevisionId?: string | null; latestRevisionNumber?: number | null }>;
   runs: Array<Record<string, unknown>>;
   assignedSkill?: { key: string; runtimeName?: string; versionId?: string | null; markdown?: string };
   skillRequestText?: string;
@@ -117,7 +117,7 @@ export function gradeContextIntegrity(input: {
     const expectedCommentIds = humanRows.slice(0, input.comments.length).map((comment) => String(comment.id ?? ""));
     check("continuation-wake-comment-ids", Boolean(continuation) && JSON.stringify(wakeCommentIds(continuation)) === JSON.stringify(expectedCommentIds), "The deferred continuation wake must carry all public comment IDs in arrival order.");
   }
-  if (input.id === "assigned-skill-explicit-invocation") {
+  if (isAssignedSkillContext(input.id)) {
     const runtimeName = String(initial?.assignedSkill?.runtimeName ?? initial?.assignedSkill?.key ?? "");
     const requestText = String(initial?.skillRequestText ?? "");
     const references = requestText.split(/\s+/).map((word) => word.replace(/[.,]$/, ""));
@@ -126,8 +126,27 @@ export function gradeContextIntegrity(input: {
     check("skill-source-marker", Boolean(initial?.assignedSkill?.markdown?.includes(input.marker)), "The assigned pinned skill source must contain the output marker.");
     check("marker-not-in-request", !requestText.includes(input.marker) && !finalComments.some((comment) => comment.includes(input.marker)), "The output marker must originate from the assigned skill, not the task request or comments.");
   }
-  const output = final ? oneOutput(final, input.marker, input.id === "assigned-skill-explicit-invocation") : undefined;
-  check("single-durable-output", Boolean(output) && final!.documents.length === 1, input.id === "assigned-skill-explicit-invocation" ? "Exactly one durable task document must contain the skill's marker." : "Exactly one durable packing report document must be saved.");
+  const output = final ? oneOutput(final, input.marker, isAssignedSkillContext(input.id)) : undefined;
+  check("single-durable-output", Boolean(output) && final!.documents.length === 1, isAssignedSkillContext(input.id) ? "Exactly one durable task document must contain the skill's marker." : "Exactly one durable packing report document must be saved.");
+  if (input.id === PAPERCLIP_DOCUMENT_CASE) {
+    check("saved-document-revision", Boolean(output?.latestRevisionId) && Number.isInteger(output?.latestRevisionNumber) && Number(output?.latestRevisionNumber) > 0,
+      "The public saved document must have a persisted revision and the requested content.");
+    const route = output && final?.issue.identifier && final.issue.issuePrefix
+      ? `/${final.issue.issuePrefix}/issues/${final.issue.identifier}#document-${output.key}` : undefined;
+    const agentComments = (final?.comments ?? []).filter(comment => comment.authorType === "agent" || Boolean(comment.authorAgentId));
+    const origin = final?.issue.appOrigin;
+    const usableLink = Boolean(route && origin && agentComments.some(comment => {
+      const links = String(comment.body ?? "").matchAll(/\[[^\]]*\]\((?:<([^>]+)>|([^\s)]+))(?:\s+["'][^"']*["'])?\)/g);
+      return [...links].some(link => {
+        try {
+          const url = new URL(link[1] ?? link[2]!, origin);
+          return url.origin === origin && `${url.pathname}${url.hash}` === route && !url.search;
+        } catch { return false; }
+      });
+    }));
+    check("saved-document-link", usableLink,
+      "An agent completion comment must link the exact saved document on this task; a local path or claimed URL does not suffice.");
+  }
   check("completed-task", final?.issue.status === "done", `Final task status: ${final?.issue.status ?? "missing"}.`);
   check("successful-runs", Boolean(final?.runs.length) && final!.runs.every((run) => run.status === "succeeded"), "All recorded context-integrity runs must succeed.");
   return checks;

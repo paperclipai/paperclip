@@ -1,5 +1,6 @@
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
-import { useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { ArtifactUploadContent, type ArtifactUploadEntry } from "@/components/artifacts/ArtifactUploadControls";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AttachmentArtifactWorkProductMetadata,
@@ -16,13 +17,18 @@ import {
 import { Download, ExternalLink, FileText } from "lucide-react";
 import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
+import { authApi } from "@/api/auth";
+import { IssueDocumentsSection } from "@/components/IssueDocumentsSection";
 import { activityApi } from "@/api/activity";
 import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { useIssueDocuments } from "@/hooks/useIssueDocuments";
+import { useIssueWorkProducts } from "@/hooks/useIssueWorkProducts";
 import {
   documentDisplayTitle,
-  selectAgentArtifactAttachments,
+  isGeneralTaskDocumentKey,
+  selectArtifactAttachments,
+  workProductHref,
 } from "@/lib/issue-artifacts";
 import { DocumentCard } from "@/components/artifacts/RichArtifactCards";
 import {
@@ -40,9 +46,33 @@ import {
 } from "@/components/IssueDocumentAnnotations";
 import { formatDateTime } from "@/lib/utils";
 import { useLocation } from "@/lib/router";
+import { useArtifactsV1Enabled } from "@/hooks/useArtifactsV1Enabled";
+import { ArtifactFileRow, ArtifactRow, ROW_ACTION_CLASS, fileRowSourceFromAttachment, fileRowSourceFromWorkProduct, subjectFromAttachment, subjectFromIssueDocument, subjectFromWorkProduct, workProductStateBadge, type ArtifactSubject } from "@/components/artifacts/v1";
+import { artifactUrl } from "@/lib/artifact-card-data";
+
+export type TaskDocumentEditorOptions = Pick<ComponentProps<typeof IssueDocumentsSection>,
+  "mentions" | "imageUploadHandler" | "externalReferences" | "feedbackVotes" | "feedbackDataSharingPreference"
+  | "feedbackTermsUrl" | "onVote" | "agentMap" | "userProfileMap">;
+
+/** Shared authoring and signed-in permissions for task and conversation hosts. */
+export function TaskGeneralDocuments({ issue, documentEditor }: { issue: Issue; documentEditor: TaskDocumentEditorOptions }) {
+  const { data: session } = useQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession() });
+  return (
+    <IssueDocumentsSection
+      issue={issue}
+      generalDocumentsOnly
+      canDeleteDocuments={Boolean(session?.user?.id)}
+      canManageDocumentLocks={Boolean(session?.user?.id)}
+      {...documentEditor}
+    />
+  );
+}
 
 interface IssuePropertiesArtifactsTabProps {
   issue: Issue;
+  /** Present only when this host owns the chat shell's document editor. */
+  documentEditor?: TaskDocumentEditorOptions;
+  uploadState?: { entries: ArtifactUploadEntry[]; retry: (id: string) => void; dismiss: (id: string) => void };
   onOpenDocument?: (document: IssueDocument) => void;
   documentDeepLink?: {
     requestId: number;
@@ -73,6 +103,33 @@ function workProductStatusBadge(
 }
 
 /**
+ * Artifacts V1 (doc/plans/2026-10-22-artifacts-mvp-v1.md): with the setting
+ * on, the two expandable rows below render a V1 row as their face — the
+ * document icon, the name over its facts — and keep their expansion, deep
+ * link and review behaviour; the face receives what the card would have.
+ */
+type ArtifactFace = (props: { onOpen: () => void; expanded?: boolean; actions?: ReactNode; statusBadge?: ReactNode }) => ReactNode;
+
+const v1Face = (subject: ArtifactSubject): ArtifactFace =>
+  function V1Face({ onOpen, expanded, actions, statusBadge }) {
+    return (
+      <ArtifactRow
+        subject={subject}
+        onClick={onOpen}
+        expanded={expanded}
+        trailing={
+          statusBadge || actions ? (
+            <>
+              {statusBadge}
+              {actions}
+            </>
+          ) : undefined
+        }
+      />
+    );
+  };
+
+/**
  * Work-product row for an eligible Markdown artifact (LOOA-1533 gap): expands
  * in place into the shipped document review surface backed by the
  * server-materialized `artifact-review-<workProductId>` issue document instead
@@ -86,6 +143,7 @@ function MarkdownWorkProductRow({
   reviewDoc,
   author,
   openRequestId,
+  face,
 }: {
   issueId: string;
   workProduct: IssueWorkProduct;
@@ -93,6 +151,7 @@ function MarkdownWorkProductRow({
   reviewDoc: IssueDocument | undefined;
   author: string;
   openRequestId?: number;
+  face?: ArtifactFace;
 }) {
   const openTextAttachment = useContext(TextAttachmentContext);
   const [expanded, setExpanded] = useState(false);
@@ -201,27 +260,12 @@ function MarkdownWorkProductRow({
     );
   }
 
-  return (
-    <div className="flex flex-col gap-2">
-      <div ref={headerRef}>
-        <DocumentCard
-          title={workProduct.title}
-          summary={workProduct.summary ?? ""}
-          author={author}
-          updatedAt={formatDateTime(workProduct.updatedAt)}
-          filename={metadata.originalFilename ?? workProduct.title}
-          revision={reviewDoc?.latestRevisionNumber}
-          body={reviewDoc?.body ?? ""}
-          onOpen={handleToggle}
-          expanded={expanded}
-          statusBadge={
-            badge ? (
-              <span className="text-xs text-muted-foreground">
-                {badge.label}
-              </span>
-            ) : undefined
-          }
-          actions={
+  const statusBadge = badge ? (
+    <span className="text-xs text-muted-foreground">
+      {badge.label}
+    </span>
+  ) : undefined;
+  const actions = (
             <>
               {reviewDoc ? (
                 <DocumentAnnotationsCountChip
@@ -240,7 +284,7 @@ function MarkdownWorkProductRow({
                   onClick={() => openTextAttachment(metadata.attachmentId, metadata.originalFilename ?? workProduct.title)}
                   aria-label={`Open in tab: ${workProduct.title}`}
                   title="Open in tab"
-                  className="shrink-0 px-1.5 py-1.5 text-muted-foreground hover:text-foreground"
+                  className={face ? ROW_ACTION_CLASS : "shrink-0 px-1.5 py-1.5 text-muted-foreground hover:text-foreground"}
                 >
                   <FileText className="h-3 w-3" />
                 </button>
@@ -251,7 +295,7 @@ function MarkdownWorkProductRow({
                 rel="noreferrer"
                 aria-label={`Open raw ${workProduct.title}`}
                 title="Open raw"
-                className="shrink-0 px-1.5 py-1.5 text-muted-foreground hover:text-foreground"
+                className={face ? ROW_ACTION_CLASS : "shrink-0 px-1.5 py-1.5 text-muted-foreground hover:text-foreground"}
               >
                 <ExternalLink className="h-3 w-3" />
               </a>
@@ -259,13 +303,32 @@ function MarkdownWorkProductRow({
                 href={metadata.downloadPath}
                 aria-label={`Download ${workProduct.title}`}
                 title="Download"
-                className="shrink-0 py-1.5 pr-2 pl-0.5 text-muted-foreground hover:text-foreground"
+                className={face ? ROW_ACTION_CLASS : "shrink-0 py-1.5 pr-2 pl-0.5 text-muted-foreground hover:text-foreground"}
               >
                 <Download className="h-3 w-3" />
               </a>
             </>
-          }
-        />
+  );
+  return (
+    <div className="flex flex-col gap-2">
+      <div ref={headerRef}>
+        {face ? (
+          face({ onOpen: handleToggle, expanded, actions, statusBadge })
+        ) : (
+          <DocumentCard
+            title={workProduct.title}
+            summary={workProduct.summary ?? ""}
+            author={author}
+            updatedAt={formatDateTime(workProduct.updatedAt)}
+            filename={metadata.originalFilename ?? workProduct.title}
+            revision={reviewDoc?.latestRevisionNumber}
+            body={reviewDoc?.body ?? ""}
+            onOpen={handleToggle}
+            expanded={expanded}
+            statusBadge={statusBadge}
+            actions={actions}
+          />
+        )}
       </div>
       {expanded ? (
         <div className="border-t border-border px-2.5 py-2">{expandedBody}</div>
@@ -280,12 +343,14 @@ function DocumentRow({
   author,
   openRequestId,
   onOpen,
+  face,
 }: {
   issueId: string;
   doc: IssueDocument;
   author: string;
   openRequestId?: number;
   onOpen?: () => void;
+  face?: ArtifactFace;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
@@ -299,8 +364,23 @@ function DocumentRow({
     if (onOpen || openRequestId === undefined || !expanded) return;
     headerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [expanded, onOpen, openRequestId]);
+  const open = onOpen ?? (() => setExpanded((open) => !open));
+  const actions = !onOpen ? (
+    <DocumentAnnotationsCountChip
+      issueId={issueId}
+      docKey={doc.key}
+      panelOpen={annotationPanelOpen}
+      onToggle={() => {
+        setExpanded(true);
+        setAnnotationPanelOpen((open) => !open);
+      }}
+    />
+  ) : undefined;
   return (
     <div ref={headerRef}>
+      {face ? (
+        face({ onOpen: open, expanded: onOpen ? undefined : expanded, actions })
+      ) : (
       <DocumentCard
         title={documentDisplayTitle(doc)}
         summary=""
@@ -309,22 +389,11 @@ function DocumentRow({
         filename={`${doc.key}.md`}
         revision={doc.latestRevisionNumber}
         body={doc.body}
-        onOpen={onOpen ?? (() => setExpanded((open) => !open))}
+        onOpen={open}
         expanded={onOpen ? undefined : expanded}
-        actions={
-          !onOpen ? (
-            <DocumentAnnotationsCountChip
-              issueId={issueId}
-              docKey={doc.key}
-              panelOpen={annotationPanelOpen}
-              onToggle={() => {
-                setExpanded(true);
-                setAnnotationPanelOpen((open) => !open);
-              }}
-            />
-          ) : undefined
-        }
+        actions={actions}
       />
+      )}
       {expanded ? (
         <div className="border-t border-border px-2.5 py-2">
           {doc.body.trim().length > 0 ? (
@@ -354,18 +423,20 @@ function DocumentRow({
 /**
  * Artifacts tab of the properties pane (PAP-491).
  *
- * A read-only "what did this task produce" view composed from three sources:
+ * Task files and output composed from three sources:
  * work products, issue documents (also readable in the Plan tab — the
- * redundancy is intentional), and agent-created attachments. Attachments
- * already promoted to attachment-backed work products are deduped out, and
- * user uploads are excluded — those stay first-class in the conversation
- * thread.
+ * redundancy is intentional), and attachments from agents and people.
+ * Attachments already promoted to work products are deduped out.
  */
 export function IssuePropertiesArtifactsTab({
   issue,
+  documentEditor,
   documentDeepLink,
   onOpenDocument,
+  uploadState,
 }: IssuePropertiesArtifactsTabProps) {
+  const { enabled: v1 } = useArtifactsV1Enabled();
+  const documentAuthoring = documentEditor !== undefined;
   const {
     data: attachments,
     isPending: attachmentsPending,
@@ -380,10 +451,7 @@ export function IssuePropertiesArtifactsTab({
     isPending: productsPending,
     isError: productsError,
     refetch: refetchProducts,
-  } = useQuery({
-    queryKey: queryKeys.issues.workProducts(issue.id),
-    queryFn: () => issuesApi.listWorkProducts(issue.id),
-  });
+  } = useIssueWorkProducts(issue.id);
   const {
     data: documents,
     isPending: documentsPending,
@@ -403,12 +471,12 @@ export function IssuePropertiesArtifactsTab({
   // Proxy review documents (`artifact-review-*`) present only through their
   // originating Work product row, never as standalone Documents rows.
   const documentRows = (documents ?? []).filter(
-    (doc) => !isArtifactReviewDocumentKey(doc.key),
+    (doc) => !isArtifactReviewDocumentKey(doc.key) && (!documentAuthoring || doc.key === "plan"),
   );
   const reviewDocsByKey = new Map(
     (documents ?? []).map((doc) => [doc.key, doc]),
   );
-  const fileRows = selectAgentArtifactAttachments(attachments, workProducts);
+  const fileRows = selectArtifactAttachments(attachments, workProducts);
   const runsById = useMemo(
     () => new Map((runs ?? []).map((run) => [run.runId, run])),
     [runs],
@@ -515,21 +583,114 @@ export function IssuePropertiesArtifactsTab({
     </p>
   ) : null;
 
+  const withUploads = (content: ReactNode, empty = false) => {
+    const artifacts = uploadState ? (
+      <ArtifactUploadContent empty={empty} entries={uploadState.entries} onRetry={uploadState.retry} onDismiss={uploadState.dismiss}>{content}</ArtifactUploadContent>
+    ) : content;
+    return documentAuthoring ? (
+      <div className="space-y-4">
+        <TaskGeneralDocuments
+          issue={issue}
+          documentEditor={{ agentMap: agentsById, ...documentEditor }}
+        />
+        {artifacts}
+      </div>
+    ) : artifacts;
+  };
+
   if (
     workProductRows.length === 0 &&
     documentRows.length === 0 &&
     fileRows.length === 0
   ) {
-    if (feedback) return feedback;
-    return (
+    if (feedback) return withUploads(feedback);
+    if (documentAuthoring && (documents ?? []).some((doc) => isGeneralTaskDocumentKey(doc.key))) {
+      return withUploads(null);
+    }
+    return withUploads(
       <div className="px-1 py-6 text-sm text-muted-foreground">
         No artifacts yet. Work products, documents, and agent-produced files
         will appear here.
-      </div>
+      </div>,
+      true,
     );
   }
 
-  return (
+  if (v1) {
+    // Artifacts V1: one flat list, newest first, no run sections; each item is a V1 row.
+    const rows = [...allRows].sort((a, b) => b.date.getTime() - a.date.getTime());
+    return withUploads(
+      <div className="@container flex flex-col gap-3 py-2">
+        {feedback}
+        <ul data-testid="artifacts-v1-list" className="flex flex-col gap-(--artifact-row-gap)">
+          {rows.map((row) => {
+            if (row.kind === "work_product") {
+              const wp = row.value;
+              const agent = row.runId ? agentsById.get(runsById.get(row.runId)?.agentId ?? "") : null;
+              const subject = subjectFromWorkProduct(wp);
+              const markdownMetadata = getMarkdownWorkProductAttachmentMetadata(wp);
+              if (markdownMetadata) {
+                const reviewKey = artifactReviewDocumentKey(wp.id);
+                return (
+                  <li key={row.id} className="min-w-0">
+                    <MarkdownWorkProductRow
+                      issueId={issue.id}
+                      workProduct={wp}
+                      author={agent?.name ?? ""}
+                      metadata={markdownMetadata}
+                      reviewDoc={reviewDocsByKey.get(reviewKey)}
+                      openRequestId={documentDeepLink?.documentKey === reviewKey ? documentDeepLink.requestId : undefined}
+                      face={v1Face(subject)}
+                    />
+                  </li>
+                );
+              }
+              // "Unhealthy" outranks the status, as the shipped cards warn.
+              const statusBadge = workProductStateBadge(wp, workProductStatusBadge(wp.status)?.label ?? null);
+              const file = fileRowSourceFromWorkProduct(wp);
+              if (file) {
+                return (
+                  <li key={row.id} className="min-w-0">
+                    <ArtifactFileRow subject={subject} source={file} statusBadge={statusBadge} updatedAtLabel={formatDateTime(wp.updatedAt)} />
+                  </li>
+                );
+              }
+              // A pull request, a preview, a service: a link that opens in a new tab, as the cards do.
+              const href = artifactUrl(workProductHref(wp));
+              return (
+                <li key={row.id} className="min-w-0">
+                  <ArtifactRow subject={subject} href={href || undefined} external trailing={statusBadge} />
+                </li>
+              );
+            }
+            if (row.kind === "document") {
+              const doc = row.value;
+              return (
+                <li key={row.id} className="min-w-0">
+                  <DocumentRow
+                    issueId={issue.id}
+                    doc={doc}
+                    author={agentsById.get(doc.updatedByAgentId ?? doc.createdByAgentId ?? "")?.name ?? ""}
+                    onOpen={onOpenDocument ? () => onOpenDocument(doc) : undefined}
+                    openRequestId={documentDeepLink?.documentKey === doc.key ? documentDeepLink.requestId : undefined}
+                    face={v1Face(subjectFromIssueDocument(doc))}
+                  />
+                </li>
+              );
+            }
+            const attachment = row.value;
+            return (
+              <li key={row.id} className="min-w-0">
+                <ArtifactFileRow subject={subjectFromAttachment(attachment)} source={fileRowSourceFromAttachment(attachment)} updatedAtLabel={formatDateTime(attachment.updatedAt)} />
+              </li>
+            );
+          })}
+        </ul>
+      </div>,
+    );
+  }
+
+  return withUploads(
     <div className="@container flex flex-col gap-3 py-2">
       {feedback}
       {groupedRows.map((group) => {

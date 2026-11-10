@@ -144,7 +144,7 @@ describe("SidebarAccountMenu", () => {
     });
     mockAuthApi.signOut.mockResolvedValue({ success: true, redirectTo: "/cloud/logout" });
     // Default to a company owner: the self-hosted Invite shortcut needs the
-    // `users:invite` grant, which owners and admins hold.
+    // `users:invite` grant, which owners, admins, and operators hold by default.
     mockGetCurrentBoardAccess.mockResolvedValue(boardAccess("owner"));
   });
 
@@ -448,7 +448,7 @@ describe("SidebarAccountMenu", () => {
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
       .toContain("rounded-xl");
     expect(document.body.querySelector('[data-slot="popover-content"]')?.className)
-      .toContain("min-h-(--profile-popover-min-height)");
+      .not.toContain("min-h-");
     expect(document.body.querySelector('a[href="/company/settings"]')?.className)
       .not.toContain("bg-muted");
     expect(document.body.textContent).not.toContain("Manage company and instance settings.");
@@ -665,9 +665,8 @@ describe("SidebarAccountMenu", () => {
       status: "ok",
       deploymentMode: "authenticated",
     });
-    // Operators and viewers lack `users:invite`; the Invites tab would only
-    // show them a permission error, so the menu must not offer it.
-    mockGetCurrentBoardAccess.mockResolvedValue(boardAccess("operator"));
+    // Viewers lack `users:invite`; the menu must not offer the shortcut.
+    mockGetCurrentBoardAccess.mockResolvedValue(boardAccess("viewer"));
 
     await act(async () => {
       root.render(
@@ -697,6 +696,7 @@ describe("SidebarAccountMenu", () => {
     ["instance admin", boardAccess("viewer", { isInstanceAdmin: true })],
     ["local board", boardAccess("viewer", { source: "local_implicit" })],
     ["company admin", boardAccess("admin")],
+    ["company operator", boardAccess("operator")],
   ])("offers the self-hosted invite shortcut to a %s", async (_label, access) => {
     const root = createRoot(container);
     const queryClient = new QueryClient({

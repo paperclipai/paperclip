@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { SecretStatus, UserSecretDefinition } from "@paperclipai/shared";
-import { AlertCircle, Pencil, Plus, Trash2, UserRound, Users } from "lucide-react";
+import { Pencil, Plus, Trash2, UserRound, Users } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -21,9 +21,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { EmptyState } from "../../components/EmptyState";
 import { secretsApi } from "../../api/secrets";
-import { ApiError } from "../../api/client";
 import { queryKeys } from "../../lib/queryKeys";
 import { cn } from "../../lib/utils";
 import { useToastActions } from "../../context/ToastContext";
@@ -32,6 +32,7 @@ import {
   secretStatusTone,
   UserSecretChip,
 } from "./user-secret-presentation";
+import { describeError } from "@/api/errors";
 
 function keyFromName(name: string): string {
   return name
@@ -77,6 +78,7 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
     queryKey: queryKeys.secrets.userDefinitions(companyId),
     queryFn: () => secretsApi.listUserSecretDefinitions(companyId),
   });
+  const definitionsView = useQueryView(definitionsQuery);
   const definitions = definitionsQuery.data ?? [];
 
   function openCreate() {
@@ -130,7 +132,7 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
       setDialogOpen(false);
     },
     onError: (err) =>
-      setError(err instanceof ApiError || err instanceof Error ? err.message : "Failed to save"),
+      setError(describeError(err).body),
   });
 
   const remove = useMutation({
@@ -144,7 +146,7 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
     onError: (err) =>
       pushToast({
         title: "Could not remove definition",
-        body: err instanceof Error ? err.message : undefined,
+        body: describeError(err).body,
         tone: "error",
       }),
   });
@@ -169,15 +171,16 @@ export function UserSecretDefinitionsTab({ companyId }: { companyId: string }) {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {definitionsQuery.isError ? (
-          <div className="flex items-center gap-2 py-4 text-sm text-destructive">
-            <AlertCircle className="h-4 w-4" /> Failed to load definitions:{" "}
-            {(definitionsQuery.error as Error).message}
-            <Button variant="ghost" size="sm" onClick={() => definitionsQuery.refetch()}>
-              Retry
-            </Button>
+        {definitionsView.kind === "error" ? (
+          <div className="py-4">
+            <QueryErrorState
+              error={definitionsQuery.error}
+              action="load definitions"
+              onRetry={definitionsView.retry}
+              retrying={definitionsView.isFetching}
+            />
           </div>
-        ) : definitions.length === 0 && !definitionsQuery.isPending ? (
+        ) : definitions.length === 0 && !definitionsQuery.isPending && definitionsView.kind !== "reconnecting" ? (
           <EmptyState
             icon={UserRound}
             message="No user secret definitions yet. Create one to require each member to supply their own credential."

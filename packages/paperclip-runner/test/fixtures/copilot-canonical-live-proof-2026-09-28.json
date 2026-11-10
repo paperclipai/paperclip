@@ -1,0 +1,79 @@
+{
+  "schema": "paperclip.copilot-canonical-live-proof/v1",
+  "providerVersion": "1.0.88",
+  "model": "gpt-5.6-luna",
+  "modelProvider": "github",
+  "qualificationStatus": "pending",
+  "sourceRevision": "92fcaf0c721a7adb3bc4dcf7a9ee6e6784b81e71",
+  "runnerdSourceRevision": "f77ae83aeb6d802c73f1c955760017ae272eba29",
+  "runnerdSha256": "sha256:986060810ba7377c6ddd64a5d89e322d0a434e1a9c80400e6d4acf5934bfc421",
+  "providerPackDigest": "sha256:172199bd72d7cf171344dd1e4b9eca240f8bbe2969c5e7df30c38c717820f890",
+  "evalRevision": "b01676fdb7a2783f7b3635a90ba9583041e86338",
+  "caseId": "get-task-context",
+  "startedAt": "2026-09-28T19:29:25.165Z",
+  "durationMs": 33383,
+  "promptRequestsSent": 1,
+  "upstreamModelRequestCount": null,
+  "semanticOperations": [
+    {
+      "operationId": "get_task_context",
+      "calls": 1,
+      "successfulResults": 1
+    }
+  ],
+  "terminalStatus": "completed",
+  "runnerExited": true,
+  "credentialLeakDetected": false,
+  "usage": {
+    "agentTurns": 1,
+    "providerRequests": 1,
+    "inputTokens": 24258,
+    "outputTokens": 441,
+    "cachedInputTokens": 11781,
+    "reasoningTokens": 0,
+    "providerReportedCostNanodollars": null,
+    "providerReportedCostProvenance": "unavailable",
+    "estimatedCostNanodollars": 3260220,
+    "pricingVersion": "provider-list-prices-2026-09-07-openrouter",
+    "ratesUsdPerMillionTokens": {
+      "input": 0.2,
+      "cachedInput": 0.02,
+      "output": 1.2
+    },
+    "costCoverage": "estimated"
+  },
+  "usageCountProvenance": "providerRequests=1 is the runner terminal receipt count; actual provider HTTP request count is unverified",
+  "costReconciliation": {
+    "dashboardCreditsUsed": 0,
+    "dashboardCreditsTotal": 1500,
+    "additionalUsageEnabled": false,
+    "cashBudgetUsd": 0,
+    "creditDelta": null,
+    "note": "Dashboard still shows zero after this small call; billing lag or rounding prevents exact credit attribution. The catalog estimate is not a GitHub USD receipt."
+  },
+  "originalArtifactSha256": "sha256:49690c56fe0cb956e7fc6c946601d345667d1f8e7f91b551a7547df93203c75f",
+  "originalRosterExitCode": 1,
+  "offlineScore": {
+    "passed": true,
+    "checksPassed": 4,
+    "checksTotal": 4,
+    "artifactSha256": "sha256:17e3148fc1526574c59cb14377e5c28bec6305cb85847e61f5cdff43d0cbb644",
+    "semanticDigest": "sha256:19da8536da1f821121e15b7dc328c0f7557b19bfc52828c1c4bb4b3e16cff037",
+    "additionalProviderCalls": 0,
+    "reason": "Post-turn provenance packaging failed; exact source tarball rebuilt, same retained runtime artifact scored offline. Original attempt and recovery metadata preserved."
+  },
+  "priorAttempt": {
+    "stage": "session.open",
+    "result": "infrastructure_failure_before_prompt",
+    "cause": "stale Rust artifact lacked explicit credential binding propagation",
+    "promptRequestsSent": 0
+  },
+  "pendingQualification": [
+    "Product E2E local and Daytona",
+    "restrictive permissions denial with no side effects",
+    "interactive questions and applicable plan decisions",
+    "warm continuation and recovery",
+    "background settlement",
+    "exact credit reconciliation"
+  ]
+}

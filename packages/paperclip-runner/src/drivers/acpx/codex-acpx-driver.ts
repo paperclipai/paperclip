@@ -1,4 +1,12 @@
+import { type CopilotToolEvidence } from "./copilot-tool-evidence.js";
+import { classifyClaudeStatusBanner } from "./claude-status-banners.js";
+import { resolveCompletionContinuation } from "../completion-continuation.js";
+import { isProviderMode } from "../../contracts/provider-mode.js";
+import { acpxProfileActivity, type AcpxActivityAdapter, type AcpxToolEvidence } from "./profile-activity.js";
+
 import { requireAcpxResponseDelivery } from "./response-delivery.js";
+import { createPiMessageProjection, piBoundaryClearsFinal, type PiProjectedMessageEvent } from "./pi-message-projection.js";
+import { createKimiMessageProjection, kimiMessageBoundaryClears, type KimiProjectedMessageEvent } from "./kimi-message-boundary.js";
 import { acpxProfileClientCapabilities, bindAcpxExtensionTurn, validateAcpxRichEvent, createAcpxProfileExtensionAdapter, type AcpxExtensionInput } from "./profile-extensions.js";
 import { createHash, randomBytes } from "node:crypto";
 
@@ -45,15 +53,18 @@ import type {
 import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import {
   canonicalProviderEventsFromAcpxRuntimeEvent,
+  claudePlanProposalEvent,
   createAcpxToolEventNormalizer,
   createGrokMessageNormalizer,
 } from "../../provider-events.js";
+import { createClaudeSubagentLineageTracker } from "../../claude-subagent-lineage.js";
 import {
   canonicalRunnerToolName,
   type RunnerToolCall,
 } from "../runner-tool-bridge.js";
 import {
   DEFAULT_CODEX_ACPX_RUNTIME_SHUTDOWN_BOUND_MS,
+  AcpxProviderProcessLostError,
   openCodexAcpxRuntime,
 } from "./codex-runtime-adapter.js";
 import { normalizeAcpxPermission } from "./acp-permission-adapter.js";
@@ -67,12 +78,14 @@ import {
   validateAcpxDriverConfig,
 } from "./driver-profile.js";
 import {
+  assertAcpxProfileReleased,
   resolveQualifiedAcpxProfile,
   type QualifiedAcpxAgent,
 } from "./qualified-profiles.js";
 import {
   ACPX_TURN_CANCELLATION_SHUTDOWN_BOUND_MS,
   AcpxRuntimeHost,
+  type AcpxPlanProposal,
   type AcpxRetainedCleanupFailure,
   type AcpxRuntimeTurn,
   type OpenAcpxRuntimeHostOptions,
@@ -82,8 +95,10 @@ import {
   type AcpxRecoveryWorkspaceLease,
 } from "./runtime-sandbox.js";
 
+import { workspaceRootsFor } from "../../tool-file-changes.js";
 import { AcpxTurnControlLedger, parseAcpxTurnControl, type AcpxTurnControlMode } from "./turn-controls.js";
-import { acpxUsageEstimateNotice, persistedAcpxTurnUsage } from "./usage-accounting.js";
+import { claudeRateLimitSnapshot, rateLimitNoticeEvent, rateLimitSnapshotChanged, type ProviderRateLimitSnapshot } from "../provider-rate-limits.js";
+import { acpxUsageEstimateNotice, persistedAcpxTurnUsage, persistedCursorUsageNotice } from "./usage-accounting.js";
 
 const MAX_BUFFERED_EVENTS = 512;
 const TERMINAL_EVENT_RESERVE = 3;
@@ -119,6 +134,7 @@ const QUARANTINED_HOST_ADMISSION_GRACE_MS =
 interface PendingAcpxRuntimeRequest {
   request: HarnessRuntimeRequest;
   responseDelivery: Promise<void>;
+  deliveredEvidence?: () => void;
   prepareResolution(resolution: HarnessRuntimeRequestResolution): () => void;
   cancel(): void;
   cleanup(): void;
@@ -140,7 +156,13 @@ export interface CodexAcpxDriverOptions {
   runtimeDirectory: string;
   model: string;
   permissionMode?: NativeAcpxPermissionMode;
+  mode?: string;
+  piThinkingLevel?: "off" | "low" | "high" | "max";
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   providerPolicy?: { readOnly: boolean };
+  runtimeContext?: OpenAcpxRuntimeHostOptions["runtimeContext"];
   systemInstructions?: string;
   environment?: NodeJS.ProcessEnv;
   managedCodexCredentialSourcePath?: string;
@@ -274,7 +296,8 @@ export class CodexAcpxDriver implements HarnessDriver {
     options: CodexAcpxDriverOptions,
     dependencies: CodexAcpxDriverDependencies = {},
   ) {
-    if (["pi", "cursor", "copilot"].includes(options.agent ?? "codex") && typeof options.providerPolicy?.readOnly !== "boolean") {
+    assertAcpxProfileReleased(options.agent ?? "codex");
+    if (["pi", "cursor", "copilot", "kimi"].includes(options.agent ?? "codex") && typeof options.providerPolicy?.readOnly !== "boolean") {
       throw new Error("ACP candidate requires an explicit provider read-only policy");
     }
     this.#options = {
@@ -314,7 +337,7 @@ export class CodexAcpxDriver implements HarnessDriver {
       },
       capabilities: {
         ...descriptor.capabilities,
-        resume: true,
+        resume: descriptor.capabilities.resume,
         runtimeRequestResolution: true,
         runtimeRequestHandoff: true,
         unsupported: descriptor.capabilities.unsupported,
@@ -452,7 +475,12 @@ export class CodexAcpxDriver implements HarnessDriver {
         clientCapabilities: acpxProfileClientCapabilities(this.#options.agent ?? "codex"),
         model: this.#options.model,
         permissionMode: this.#options.permissionMode ?? "approve-all",
+        mode: this.#options.mode,
+        piThinkingLevel: this.#options.piThinkingLevel,
+        claudeEffort: this.#options.claudeEffort,
+        grokEffort: this.#options.grokEffort, grokDisableWebSearch: this.#options.grokDisableWebSearch,
         providerPolicy: this.#options.providerPolicy,
+        runtimeContext: this.#options.runtimeContext,
         systemInstructions: this.#options.systemInstructions,
         environment: this.#options.environment,
         managedCodexCredentialSourcePath:
@@ -463,6 +491,7 @@ export class CodexAcpxDriver implements HarnessDriver {
           : {}),
         ...(input.signal === undefined ? {} : { signal: input.signal }),
         semanticTools: {
+          ...(this.#options.agent === "copilot" ? { captureSemanticReceipt: () => session?.captureSemanticReceipt() } : {}),
           tools: this.#options.dynamicTools ?? [],
           handler: (call) => {
             if (!session) {
@@ -745,6 +774,7 @@ class CodexAcpxSession implements HarnessSession {
   >;
   #sourceSequence = 0;
   #activeTurnId: string | null = null;
+  #copilotToolEvidence: CopilotToolEvidence | undefined;
   #semanticResult: PrpStructuredRunResult | null = null;
   #semanticFingerprint: string | null = null;
   #semanticCallId: string | null = null;
@@ -756,8 +786,13 @@ class CodexAcpxSession implements HarnessSession {
     turnId: string;
   } | null = null;
   #usage: Record<string, unknown> | null = null;
+  #rateLimits: ProviderRateLimitSnapshot | null = null;
+  #rateLimitNoticeSequence = 0;
   #assistantText = "";
+  /** Claude compaction banners in this session; pairs start and end notices. */
+  #compactionCount = 0;
   #assistantMessageId: string | null = null;
+  #workspaceRoots: string[] | null = null;
   #closed = false;
   #closingStarted = false;
   #eventStreamClosed = false;
@@ -850,6 +885,17 @@ class CodexAcpxSession implements HarnessSession {
     return { steering: capability.steering, queuedFollowUp: capability.queuedFollowUp === true };
   }
 
+  readonly #planProposalTurns = new Set<string>();
+
+  #recordPlanProposal(turnId: string, proposal: AcpxPlanProposal): void {
+    if (this.#activeTurnId !== turnId) return;
+    const event = claudePlanProposalEvent(proposal);
+    validateAcpxRichEvent(event);
+    if (this.#emit(event.eventType, event.payload, { turnId, itemId: event.itemId })) {
+      this.#planProposalTurns.add(turnId);
+    }
+  }
+
   async startTurn(input: {
     message: NativeUserMessage;
   }): Promise<{ turnId: string }> {
@@ -894,6 +940,16 @@ class CodexAcpxSession implements HarnessSession {
         }
       },
     });
+    const activity = acpxProfileActivity(this.#agent);
+    const toolEvidence = activity.createToolEvidence?.({
+      sessionId: this.#host.identity().backendSessionId, turnId, workingDirectory: this.#input.workingDirectory,
+      active: () => this.#activeTurnId === turnId && !this.#closingStarted,
+      emit: event => {
+        validateAcpxRichEvent(event);
+        if (!this.#emit(event.eventType, event.payload, { turnId, itemId: event.itemId })) throw new Error("ACP tool activity could not be retained");
+      },
+    });
+    this.#copilotToolEvidence = toolEvidence && "captureSemanticReceipt" in toolEvidence ? toolEvidence as CopilotToolEvidence : undefined;
     let turn: AcpxRuntimeTurn;
     const usageBefore = await readUsageStatus(this.#host);
     try {
@@ -904,8 +960,9 @@ class CodexAcpxSession implements HarnessSession {
         requestId: `${safeId(this.#input.runId, "run")}:${turnId}`,
         onExtensionRequest: extensions.onExtensionRequest,
         onExtensionNotification: extensions.onExtensionNotification,
+        onPlanProposal: (proposal) => this.#recordPlanProposal(turnId, proposal),
         onPermissionRequest: (request, context) =>
-          this.#handlePermission(turnId, request, context),
+          this.#handlePermission(turnId, request, context, toolEvidence),
         onElicitation: (request, context) =>
           this.#handleElicitation(turnId, request, context),
       });
@@ -918,7 +975,7 @@ class CodexAcpxSession implements HarnessSession {
       );
       throw error;
     }
-    const pump = this.#pumpTurn(turnId, turn, extensions.drain, usageBefore);
+    const pump = this.#pumpTurn(turnId, turn, extensions.drain, usageBefore, activity, toolEvidence);
     this.#activePump = pump;
     void pump
       .finally(() => {
@@ -1012,6 +1069,7 @@ class CodexAcpxSession implements HarnessSession {
       dispatched = true;
       deliver();
       await pending.responseDelivery;
+      pending.deliveredEvidence?.();
       this.#emit(
         "runtime_request.resolved",
         harnessRuntimeRequestOutcome(pending.request, {
@@ -1089,6 +1147,10 @@ class CodexAcpxSession implements HarnessSession {
     return { result: "handed_off", cleanup };
   }
 
+  captureSemanticReceipt() {
+    return this.#copilotToolEvidence?.captureSemanticReceipt();
+  }
+
   async dispatchTool(call: RunnerToolCall): Promise<unknown> {
     this.#assertOpen();
     if (this.#pendingTerminal) {
@@ -1103,7 +1165,16 @@ class CodexAcpxSession implements HarnessSession {
     }
     const tool = canonicalRunnerToolName(call.tool);
     if (tool === PRP_COMPLETION_TOOL_NAME || tool === PRP_BLOCK_TOOL_NAME) {
-      const validation = validatePrpStructuredRunResult(call.arguments);
+      const completionInput = await resolveCompletionContinuation(call.arguments, this.#input.runId,
+        this.#dynamicToolHandler ? () => this.#dynamicToolHandler!({
+          tool: "get_task_context", callId: `${call.callId}:continuation`,
+          providerSessionId: this.#host.identity().agentSessionId, turnId, arguments: {}, signal: call.signal,
+        }) : undefined);
+      this.#assertOpen();
+      if (this.#activeTurnId !== turnId || this.#pendingTerminal || call.signal.aborted) {
+        throw new Error("The turn ended while resolving completion");
+      }
+      const validation = validatePrpStructuredRunResult(completionInput);
       if (!validation.ok) throw new Error("Invalid semantic run result");
       const blocked = validation.result.reportedWorkDisposition === "blocked";
       if (
@@ -1158,6 +1229,7 @@ class CodexAcpxSession implements HarnessSession {
         this.#semanticFingerprint === null ||
         (claimsLaterTurn && !repeatsPendingTransfer)
       ) {
+        const commitNormalizedInput = call.captureNormalizedInput?.(validation.result);
         if (
           !this.#emit("run.result.proposed", validation.result, {
             turnId,
@@ -1169,6 +1241,7 @@ class CodexAcpxSession implements HarnessSession {
             "the event consumer must drain provider events before a semantic result can be accepted",
           );
         }
+        commitNormalizedInput?.();
         if (claimsLaterTurn) {
           // A reaffirming retry does not own the durable result until its
           // provider turn completes successfully. A failed or interrupted
@@ -1257,6 +1330,11 @@ class CodexAcpxSession implements HarnessSession {
         requestedModel: identity.requestedModel,
         effectiveModel: identity.effectiveModel,
         permissionMode: identity.permissionMode,
+        ...(identity.mode === undefined ? {} : { mode: identity.mode }),
+        ...(identity.piThinkingLevel === undefined ? {} : { piThinkingLevel: identity.piThinkingLevel }),
+        ...(identity.claudeEffort === undefined ? {} : { claudeEffort: identity.claudeEffort }),
+        ...(identity.grokEffort === undefined ? {} : { grokEffort: identity.grokEffort }),
+        ...(identity.grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch: identity.grokDisableWebSearch }),
         providerLifetimeFenceCandidates:
           identity.providerLifetimeFenceCandidates,
       },
@@ -1421,19 +1499,34 @@ class CodexAcpxSession implements HarnessSession {
       .catch(() => undefined);
   }
 
-  async #pumpTurn(turnId: string, turn: AcpxRuntimeTurn, drainExtensions: () => Promise<void>, usageBefore: unknown): Promise<void> {
+  async #pumpTurn(turnId: string, turn: AcpxRuntimeTurn, drainExtensions: () => Promise<void>, usageBefore: unknown, activity: AcpxActivityAdapter, toolEvidence?: AcpxToolEvidence): Promise<void> {
     try {
       let index = 0;
       const normalizeToolEvent =
         createAcpxToolEventNormalizer<AcpRuntimeEvent>();
-      const normalizeMessage = this.#agent === "grok"
+      const piMessages = this.#agent === "pi" ? createPiMessageProjection<AcpRuntimeEvent>() : null;
+      const kimiMessages = this.#agent === "kimi" ? createKimiMessageProjection<AcpRuntimeEvent>() : null;
+      const normalizeMessage = piMessages ? piMessages.normalize : kimiMessages ? kimiMessages.normalize : this.#agent === "grok"
         ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
+      const trackSubagents = this.#agent === "claude"
+        ? createClaudeSubagentLineageTracker<AcpRuntimeEvent>(activity.toolExecutionId ?? ((id) => id))
+        : (event: AcpRuntimeEvent) => event;
       for await (const event of turn.events) {
-        this.#mapRuntimeEvent(normalizeMessage(normalizeToolEvent(event)), turnId, ++index);
+        toolEvidence?.tool(event);
+        const projected = activity.toolExecutionId && event.type === "tool_call" && typeof event.toolCallId === "string"
+          ? { ...event, toolCallId: activity.toolExecutionId(event.toolCallId) } : event;
+        this.#mapRuntimeEvent(normalizeMessage(trackSubagents(normalizeToolEvent(projected))), turnId, ++index);
       }
       const result = await turn.result;
+      if (result.status === "completed") { piMessages?.settle(); kimiMessages?.settle(); }
       await drainExtensions();
-      const receipt = persistedAcpxTurnUsage(usageBefore, await readUsageStatus(this.#host), turn.requestId, this.#agent);
+      const usageAfter = await readUsageStatus(this.#host);
+      // Diagnostic projection failures cannot replace the provider's terminal result.
+      try {
+        const notice = activity.usageNotice?.(usageBefore, usageAfter, turn.requestId, turnId);
+        if (notice) { validateAcpxRichEvent(notice); this.#emit(notice.eventType, notice.payload, { turnId, itemId: notice.itemId }); }
+      } catch { /* Partial native diagnostics are optional, never settlement authority. */ }
+      const receipt = persistedAcpxTurnUsage(usageBefore, usageAfter, turn.requestId, this.#agent);
       if (receipt) {
         this.#mapRuntimeEvent(receipt as unknown as AcpRuntimeEvent, turnId, ++index);
         const estimate = acpxUsageEstimateNotice(receipt, `${turnId}:usage-estimate`);
@@ -1453,7 +1546,7 @@ class CodexAcpxSession implements HarnessSession {
           this.#emit(
             "item.completed",
             { kind: "agentMessage", channel: "final", text: finalText },
-            { turnId, itemId: `${turnId}:assistant-message` },
+            { turnId, itemId: this.#assistantItemId(turnId, this.#assistantMessageId) },
           );
         }
         this.#publishTerminal(
@@ -1464,6 +1557,15 @@ class CodexAcpxSession implements HarnessSession {
           }),
           "turn.completed",
           { status: "completed", stopReason: result.stopReason ?? null },
+        );
+      } else if (result.status === "cancelled" && this.#planProposalTurns.has(turnId)) {
+        // Declining Claude's native plan approval interrupts its turn. The
+        // proposal is this turn's deliverable, so it completes normally.
+        this.#publishTerminal(
+          turnId,
+          canonicalJson({ status: "completed", semanticResult: null }),
+          "turn.completed",
+          { status: "completed", stopReason: "end_turn" },
         );
       } else if (result.status === "cancelled") {
         const reaffirmedSemanticResult =
@@ -1524,7 +1626,7 @@ class CodexAcpxSession implements HarnessSession {
     } catch (error) {
       if (this.#terminalTurns.has(turnId)) return;
       if (error instanceof TerminalEventCapacityError) throw error;
-      this.#cancelPendingRuntimeRequests("provider turn failed", turnId);
+      this.#cancelPendingRuntimeRequests(error instanceof AcpxProviderProcessLostError ? error : "provider turn failed", turnId);
       if (this.#closed || this.#closingStarted) {
         const reaffirmedSemanticResult =
           this.#pendingSemanticTransfer?.turnId === turnId
@@ -1555,7 +1657,7 @@ class CodexAcpxSession implements HarnessSession {
               : { reaffirmedSemanticResult }),
           }),
           "turn.failed",
-          { status: "failed", error: { message: safeMessage(error) } },
+          { status: "failed", error: { ...(error instanceof AcpxProviderProcessLostError ? { code: error.code } : {}), message: safeMessage(error) } },
         );
       }
     }
@@ -1610,8 +1712,13 @@ class CodexAcpxSession implements HarnessSession {
     if (this.#activeTurnId === turnId) this.#activeTurnId = null;
   }
 
+  #assistantItemId(turnId: string, messageId: string | null): string {
+    if (this.#agent !== "copilot" && this.#agent !== "kimi") return `${turnId}:assistant-message`;
+    return messageId ? `${turnId}:assistant-message:${messageId}` : `${turnId}:assistant-activity`;
+  }
+
   #mapRuntimeEvent(
-    event: AcpRuntimeEvent,
+    event: PiProjectedMessageEvent<KimiProjectedMessageEvent<AcpRuntimeEvent>>,
     turnId: string,
     index: number,
   ): void {
@@ -1620,9 +1727,51 @@ class CodexAcpxSession implements HarnessSession {
       const output = boundedText(event.text, 64 * 1024);
       const isReasoning =
         event.stream === "thought" || event.tag === "agent_thought_chunk";
-      if (!isReasoning) {
-        const messageId = typeof event.messageId === "string" && event.messageId ? event.messageId : null;
-        if (messageId && this.#assistantMessageId && messageId !== this.#assistantMessageId) this.#assistantText = "";
+      const messageId = typeof event.messageId === "string" && event.messageId ? event.messageId : null;
+      const banner = this.#agent === "claude" && !isReasoning
+        ? classifyClaudeStatusBanner(output, messageId)
+        : null;
+      if (banner) {
+        // Harness lifecycle text is a status notice, never part of the answer.
+        if (banner.phase === "running") this.#compactionCount += 1;
+        const noticeId = banner.category === "context_compaction"
+          ? `${turnId}:compaction:${this.#compactionCount}`
+          : `${turnId}:status:${index}`;
+        this.#emit(
+          "provider.notice.recorded",
+          {
+            schema: "paperclip.provider.notice.v1",
+            noticeId,
+            severity: banner.severity,
+            category: banner.category,
+            scope: banner.category === "model_fallback" ? "session" : "turn",
+            recoverable: true,
+            userActionable: false,
+            summary: banner.summary,
+            ...(banner.phase || banner.details.length > 0
+              ? { details: [...(banner.phase ? [{ name: "Phase", value: banner.phase }] : []), ...banner.details] }
+              : {}),
+          },
+          { turnId, itemId: noticeId },
+        );
+        return;
+      }
+      let kimiCommentary: { text: string; itemId: string } | undefined;
+      // The pinned Copilot mapper supplies actual native identity, including
+      // empty starts. Unidentified session info/warnings remain activity only.
+      if (!isReasoning && !event.piMessageHistory && !event.assistantMessageHistory && (this.#agent !== "copilot" || messageId)) {
+        const kimiClears = this.#agent === "kimi" && kimiMessageBoundaryClears(event);
+        if (kimiClears && this.#assistantText) {
+          kimiCommentary = { text: this.#assistantText, itemId: this.#assistantItemId(turnId, this.#assistantMessageId) };
+        }
+        if (piBoundaryClearsFinal(event) || kimiClears) this.#assistantText = "";
+        if (messageId && this.#assistantMessageId && messageId !== this.#assistantMessageId) {
+          if (this.#agent === "copilot" && this.#assistantText) {
+            this.#emit("item.completed", { kind: "agentMessage", channel: "commentary", text: this.#assistantText },
+              { turnId, itemId: this.#assistantItemId(turnId, this.#assistantMessageId) });
+          }
+          this.#assistantText = "";
+        }
         if (messageId) this.#assistantMessageId = messageId;
         this.#assistantText = boundedText(
           `${this.#assistantText}${output}`,
@@ -1640,26 +1789,43 @@ class CodexAcpxSession implements HarnessSession {
           turnId,
           itemId: isReasoning
             ? `${turnId}:reasoning`
-            : `${turnId}:assistant-message`,
+            : this.#assistantItemId(turnId, messageId),
         },
       );
+      if (kimiCommentary) this.#emit("item.completed", { kind: "agentMessage", channel: "commentary", text: kimiCommentary.text },
+        { turnId, itemId: kimiCommentary.itemId });
     }
     if (event.type === "status" && event.tag === "usage_update") {
       this.#usage = boundedRecord({
         cumulative: event.breakdown,
         cost: event.cost,
       });
+      this.#observeRateLimits(event as { _meta?: unknown }, turnId);
     }
+    this.#workspaceRoots ??= workspaceRootsFor(this.#input.workingDirectory);
     for (const canonical of canonicalProviderEventsFromAcpxRuntimeEvent(
       event,
       fallbackItemId,
       turnId,
+      { workingDirectory: this.#workspaceRoots },
     )) {
       this.#emit(canonical.eventType, canonical.payload, {
         turnId,
         itemId: canonical.itemId,
       });
     }
+  }
+
+  /** Claude reports `rate_limit_event` as `usage_update._meta["_claude/rateLimit"]`. */
+  #observeRateLimits(event: { _meta?: unknown }, turnId: string): void {
+    const next = claudeRateLimitSnapshot(event._meta, this.#rateLimits, this.#now().toISOString());
+    if (!next) return;
+    if (rateLimitSnapshotChanged(this.#rateLimits, next)) {
+      const itemId = `${turnId}:rate-limits:${++this.#rateLimitNoticeSequence}`;
+      const notice = rateLimitNoticeEvent(next, itemId);
+      this.#emit(notice.eventType, notice.payload, { turnId, itemId });
+    }
+    this.#rateLimits = next;
   }
 
   async #handleExtensionInput(
@@ -1671,8 +1837,11 @@ class CodexAcpxSession implements HarnessSession {
       || this.#pendingRuntimeRequests.size >= MAX_PENDING_RUNTIME_REQUESTS) return input.cancel();
     const responseDelivery = requireAcpxResponseDelivery(context);
     const requestId = stableId("acpx-request", `${turnId}:${++this.#runtimeRequestSequence}:${typeof context.requestId}:${context.requestId}`);
+    const activity = acpxProfileActivity(this.#agent);
+    const toolCallId = activity.inputToolIdentity?.(input);
+    const itemId = toolCallId === undefined ? requestId : activity.toolExecutionId?.(toolCallId) ?? toolCallId;
     const request: HarnessRuntimeRequest = {
-      requestId, requestKind: "elicitation", method: input.method, turnId, itemId: requestId,
+      requestId, requestKind: "elicitation", method: input.method, turnId, itemId,
       status: "pending", prompt: boundedText(input.questionSet.title ?? "Provider needs input", 1_000),
       details: input.details ?? {}, input: structuredClone(input.questionSet),
       origin: { adapter: "acpx-runtime", provider: this.#agent, method: input.method },
@@ -1682,9 +1851,7 @@ class CodexAcpxSession implements HarnessSession {
         const pending = this.#pendingRuntimeRequests.get(requestId);
         if (!pending || pending.settling || !this.#pendingRuntimeRequests.delete(requestId)) return;
         pending.cleanup();
-        this.#emit("runtime_request.cancelled", harnessRuntimeRequestOutcome(request, {
-          action: "cancel", reason: "provider request aborted",
-        }), { turnId, itemId: requestId });
+        this.#emitRequestAbort(request, context.signal.reason);
         settle(input.cancel());
       };
       this.#pendingRuntimeRequests.set(requestId, {
@@ -1699,7 +1866,7 @@ class CodexAcpxSession implements HarnessSession {
       });
       context.signal.addEventListener("abort", cancel, { once: true });
       if (!this.#emit("runtime_request.created", { request: runtimeInputProtocolPayload(request) },
-        { turnId, itemId: requestId }) || context.signal.aborted) cancel();
+        { turnId, itemId }) || context.signal.aborted) cancel();
     });
   }
 
@@ -1707,6 +1874,7 @@ class CodexAcpxSession implements HarnessSession {
     turnId: string,
     request: AcpPermissionRequest,
     context: { signal: AbortSignal; responseDelivery?: Promise<void> },
+    toolEvidence?: AcpxToolEvidence,
   ): Promise<AcpPermissionDecision> {
     const { signal } = context;
     if (this.#closed || this.#activeTurnId !== turnId || signal.aborted
@@ -1714,7 +1882,10 @@ class CodexAcpxSession implements HarnessSession {
       return { outcome: "cancel" };
     }
     const responseDelivery = requireAcpxResponseDelivery(context);
-    const normalized = normalizeAcpxPermission(request, ["pi", "copilot"].includes(this.#agent) ? { allowAlwaysScope: "session" } : {});
+    const normalized = normalizeAcpxPermission(request, {
+      provider: this.#agent, workingDirectory: this.#input.workingDirectory,
+      ...(["pi", "copilot"].includes(this.#agent) ? { allowAlwaysScope: "session" } : {}),
+    });
     const requestId = stableId("acpx-permission", `${turnId}:${++this.#runtimeRequestSequence}:${normalized.toolCallId}`);
     const runtimeRequest: HarnessRuntimeRequest = {
       requestId, requestKind: "permission_approval", method: "session/request_permission",
@@ -1722,20 +1893,22 @@ class CodexAcpxSession implements HarnessSession {
       details: { choices: normalized.choices, toolCallId: normalized.toolCallId, kind: normalized.kind },
       origin: { adapter: "acpx-runtime", provider: this.#agent, method: "session/request_permission" },
     };
+    const deliveredEvidence = toolEvidence?.permission(request, requestId, normalized.choices.map(choice => choice.key));
+    let deliveredOutcome: AcpPermissionDecision["outcome"] | undefined;
     return await new Promise<AcpPermissionDecision>((settle) => {
       const cancel = () => {
         const pending = this.#pendingRuntimeRequests.get(requestId);
         if (!pending || pending.settling || !this.#pendingRuntimeRequests.delete(requestId)) return;
         pending.cleanup();
-        this.#emit("runtime_request.cancelled", harnessRuntimeRequestOutcome(runtimeRequest, {
-          action: "cancel", reason: "provider request aborted",
-        }), { turnId, itemId: requestId });
+        this.#emitRequestAbort(runtimeRequest, signal.reason);
         settle({ outcome: "cancel" });
       };
       this.#pendingRuntimeRequests.set(requestId, {
         request: runtimeRequest, responseDelivery,
+        deliveredEvidence: () => { if (deliveredOutcome) deliveredEvidence?.(deliveredOutcome); },
         prepareResolution: (resolution) => {
           const response = normalized.resolve(resolution);
+          deliveredOutcome = response.outcome;
           return () => settle(response);
         },
         cancel: () => settle({ outcome: "cancel" }),
@@ -1861,14 +2034,7 @@ class CodexAcpxSession implements HarnessSession {
         if (!pending || pending.settling) return;
         if (!this.#pendingRuntimeRequests.delete(requestId)) return;
         pending.cleanup();
-        this.#emit(
-          "runtime_request.cancelled",
-          harnessRuntimeRequestOutcome(runtimeRequest, {
-            action: "cancel",
-            reason: "provider request aborted",
-          }),
-          { turnId, itemId: requestId },
-        );
+        this.#emitRequestAbort(runtimeRequest, context.signal.reason);
         settle({ action: "cancel" });
       };
       context.signal.addEventListener("abort", cancel, { once: true });
@@ -1886,22 +2052,23 @@ class CodexAcpxSession implements HarnessSession {
     });
   }
 
-  #cancelPendingRuntimeRequests(reason: string, turnId?: string): void {
+  #emitRequestAbort(request: HarnessRuntimeRequest, reason: unknown): void {
+    const lost = reason instanceof AcpxProviderProcessLostError;
+    this.#emit(lost ? "runtime_request.expired" : "runtime_request.cancelled", {
+      ...harnessRuntimeRequestOutcome(request, {
+        ...(lost ? {} : { action: "cancel" as const }),
+        reason: lost ? "provider_process_lost" : typeof reason === "string" ? boundedText(reason, 1_000) : "provider request aborted",
+      }),
+      ...(lost ? { replayAllowed: false } : {}),
+    }, { turnId: request.turnId, itemId: request.itemId });
+  }
+
+  #cancelPendingRuntimeRequests(reason: string | AcpxProviderProcessLostError, turnId?: string): void {
     for (const [requestId, pending] of this.#pendingRuntimeRequests) {
       if (turnId && pending.request.turnId !== turnId) continue;
       if (!this.#pendingRuntimeRequests.delete(requestId)) continue;
       pending.cleanup();
-      this.#emit(
-        "runtime_request.cancelled",
-        harnessRuntimeRequestOutcome(pending.request, {
-          action: "cancel",
-          reason: boundedText(safeMessage(reason), 1_000),
-        }),
-        {
-          turnId: pending.request.turnId,
-          itemId: pending.request.itemId,
-        },
-      );
+      this.#emitRequestAbort(pending.request, reason);
       pending.cancel();
     }
   }
@@ -2083,6 +2250,11 @@ function validateRecoverySnapshot(snapshot: PersistedHarnessSession): void {
       !["approve-all", "approve-paperclip", "approve-reads", "deny-all"].includes(
         identity.permissionMode,
       )) ||
+    (identity.mode !== undefined && !isProviderMode(identity.mode)) ||
+    (identity.claudeEffort !== undefined && !["low", "medium", "high", "xhigh", "max"].includes(identity.claudeEffort)) ||
+    (identity.grokDisableWebSearch !== undefined && typeof identity.grokDisableWebSearch !== "boolean") ||
+    (identity.grokEffort !== undefined && !["minimal", "low", "medium", "high", "xhigh"].includes(identity.grokEffort)) ||
+    (identity.piThinkingLevel !== undefined && !["off", "low", "high", "max"].includes(identity.piThinkingLevel)) ||
     !validProviderLifetimeFenceCandidates(
       identity.providerLifetimeFenceCandidates,
     )

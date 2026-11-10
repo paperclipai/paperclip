@@ -31,7 +31,7 @@ const botUserId = "U-PAPERCLIP-BOT";
 type SubmitCallback = NonNullable<ChatSdkRuntimeCallbacks["onModalSubmit"]>;
 type SubmitEvent = Parameters<SubmitCallback>[0];
 
-function formFixture() {
+function formFixture(configure?: (interaction: AskUserQuestionsInteraction) => void) {
   const interaction: AskUserQuestionsInteraction = {
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "22222222-2222-4222-8222-222222222222",
@@ -105,6 +105,7 @@ function formFixture() {
       },
     },
   };
+  configure?.(interaction);
   const draft = createChatQuestionFormDraft(interaction)!;
   const payload = parseChatQuestionFormSubmitTokenPayload(
     chatQuestionFormActionRecords(draft, {
@@ -182,10 +183,10 @@ interface SlackView {
 
 function submission(view: SlackView) {
   const select = view.blocks.find(
-    (block) => block.element.type === "static_select",
+    (block) => block.element?.type === "static_select",
   )!;
   const text = view.blocks.find(
-    (block) => block.element.type === "plain_text_input",
+    (block) => block.element?.type === "plain_text_input",
   )!;
   const selected = select.element.options!.find(
     (option) => option.text.text === "Production",
@@ -239,13 +240,14 @@ describe("Slack native multi-question modal adapter-to-runtime boundary", () => 
 
   async function harness(
     options: {
+      configureForm?: (interaction: AskUserQuestionsInteraction) => void;
       onSubmit?: SubmitCallback;
       persistence?: ChatSdkStatePersistence;
       endpointId?: string;
       companyId?: string;
     } = {},
   ) {
-    const form = formFixture();
+    const form = formFixture(options.configureForm);
     const views: SlackView[] = [];
     const openTriggers: Array<string | null> = [];
     const apiMethods: string[] = [];
@@ -386,6 +388,31 @@ describe("Slack native multi-question modal adapter-to-runtime boundary", () => 
     };
   }
 
+  it("sends the full prompt, context and editable draft through the real Slack adapter", async () => {
+    const test = await harness({ configureForm(current) {
+      current.summary = "The migration checks passed; one detail remains.";
+      current.payload.questionSet!.description = "Tell us which agent failed.";
+      current.payload.questionSet!.questions[1]!.header = "Reproduction details";
+      current.payload.questions[0]!.options[0]!.description = "Complete option explanation. ".repeat(8);
+      current.payload.questionSet!.questions[0]!.options![0]!.recommended = true;
+      current.payload.questions[1]!.helpText = "Send the agent link and error text, if available. ".repeat(8);
+      current.payload.questionSet!.questions[1]!.initialText = "Editable starting answer";
+    } });
+    const view = await test.open();
+    const wire = JSON.stringify(view);
+    expect(wire).toContain(test.form.interaction.summary);
+    expect(wire).toContain(test.form.interaction.payload.questionSet!.description);
+    expect(wire).toContain(test.form.interaction.payload.questions[1]!.helpText!.trim());
+    expect(wire).toContain("Reproduction details");
+    expect(wire).toContain(test.form.interaction.payload.questions[0]!.options[0]!.description!.trim());
+    expect(wire).toContain("recommended");
+    const text = view.blocks.find(block => block.element?.type === "plain_text_input");
+    expect(text?.element).toMatchObject({ initial_value: "Editable starting answer" });
+    const response = await test.runtime.handleWebhook(signedRequest(submission(view)));
+    expect(await response.json()).toEqual({ response_action: "clear" });
+    expect(test.validations).toEqual([{ ok: true, answers: expect.any(Array) }]);
+  });
+
   it("round-trips the actual Paperclip modal, opaque metadata and Slack state into canonical answers", async () => {
     const test = await harness();
     const view = await test.open();
@@ -463,7 +490,7 @@ describe("Slack native multi-question modal adapter-to-runtime boundary", () => 
     const view = await test.open();
     const submitted = submission(view);
     const field = view.blocks.find(
-      (block) => block.element.type === "plain_text_input",
+      (block) => block.element?.type === "plain_text_input",
     )!;
     submitted.view.state.values[field.block_id]![field.element.action_id] = {
       type: "plain_text_input",
@@ -518,7 +545,7 @@ describe("Slack native multi-question modal adapter-to-runtime boundary", () => 
         };
       if (mode === "canonical_option") {
         const field = view.blocks.find(
-          (block) => block.element.type === "static_select",
+          (block) => block.element?.type === "static_select",
         )!;
         submitted.view.state.values[field.block_id]![field.element.action_id] =
           {

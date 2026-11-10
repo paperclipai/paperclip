@@ -27,7 +27,7 @@ export function AppsSidebar() {
   });
 
   if (pathname.endsWith("/apps/chat/connect")) return <ChatSetupSidebar />;
-  const chatDetail = pathname.match(/\/apps\/chat\/([^/]+)(?:\/(?:settings|access|reviews|conversations|activity))?\/?$/);
+  const chatDetail = pathname.match(/\/apps\/chat\/([^/]+)(?:\/(?:settings|access|conversations|activity)|\/reviews(?:\/[^/]+)?)?\/?$/);
   if (chatDetail) return <ChatDetailSidebar endpointId={chatDetail[1]} />;
 
   return (

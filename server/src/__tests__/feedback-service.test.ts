@@ -1,3 +1,5 @@
+import { subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -22,6 +24,8 @@ import {
   issues,
 } from "@paperclipai/db";
 import { feedbackService } from "../services/feedback.ts";
+import { getRunLogStore } from "../services/run-log-store.js";
+import { ObjectJournalBusyError } from "../services/object-byte-journal.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -800,6 +804,8 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
       sessionId,
     });
 
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.feedback, notified);
     await flushingSvc.saveIssueVote({
       issueId,
       targetType: "issue_comment",
@@ -808,7 +814,12 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
       authorUserId: "user-1",
       allowSharing: true,
     });
-    await flushingSvc.flushPendingFeedbackTraces();
+    unsubscribe();
+    expect(notified).toHaveBeenCalledTimes(1);
+    expect(await flushingSvc.hasPendingFeedbackTraces()).toBe(true);
+    // The route and worker may request a flush together after the commit.
+    await Promise.all([flushingSvc.flushPendingFeedbackTraces(), flushingSvc.flushPendingFeedbackTraces()]);
+    expect(await flushingSvc.hasPendingFeedbackTraces()).toBe(false);
 
     expect(uploadTraceBundle).toHaveBeenCalledTimes(1);
     const bundle = uploadTraceBundle.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
@@ -1047,6 +1058,39 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     });
   });
 
+  it.each([0, 1])("retries an unsent feedback export when log page %s is busy", async busyPage => {
+    const { companyId, issueId, targetCommentId, runId } = await seedIssueWithRichAgentComment();
+    await db.update(heartbeatRuns).set({ logStore: "local_file", logRef: "fixture/run.ndjson" }).where(eq(heartbeatRuns.id, runId));
+    const uploadTraceBundle = vi.fn().mockResolvedValue({ objectKey: "feedback-traces/recovered.json" });
+    const flushingSvc = feedbackService(db, { shareClient: { uploadTraceBundle } });
+    await flushingSvc.saveIssueVote({ issueId, targetType: "issue_comment", targetId: targetCommentId, vote: "up", authorUserId: "user-1", allowSharing: true });
+    const first = JSON.stringify({ stream: "stdout", chunk: "first log record" }) + "\n";
+    const second = JSON.stringify({ stream: "stdout", chunk: "second log record" }) + "\n";
+    const read = vi.spyOn(getRunLogStore(), "read");
+    if (busyPage) read.mockResolvedValueOnce({ content: first, nextOffset: Buffer.byteLength(first) });
+    read.mockRejectedValueOnce(new ObjectJournalBusyError());
+    try {
+      expect(await flushingSvc.flushPendingFeedbackTraces()).toMatchObject({ attempted: 1, sent: 0, failed: 1 });
+      expect(uploadTraceBundle).not.toHaveBeenCalled();
+      const [pending] = await flushingSvc.listFeedbackTraces({ companyId, issueId });
+      expect(pending?.status).toBe("failed");
+      expect(pending?.exportedAt).toBeNull();
+      expect(await flushingSvc.hasPendingFeedbackTraces()).toBe(true);
+      read.mockReset().mockResolvedValue({ content: first + second });
+      expect(await flushingSvc.flushPendingFeedbackTraces()).toMatchObject({ attempted: 1, sent: 1, failed: 0 });
+      expect(uploadTraceBundle).toHaveBeenCalledOnce();
+      const bundle = JSON.stringify(uploadTraceBundle.mock.calls[0]?.[0]);
+      expect(bundle).toContain("first log record");
+      expect(bundle).toContain("second log record");
+      const [sent] = await flushingSvc.listFeedbackTraces({ companyId, issueId });
+      expect(sent?.status).toBe("sent");
+      expect(sent?.attemptCount).toBe(2);
+      expect(await flushingSvc.hasPendingFeedbackTraces()).toBe(false);
+    } finally {
+      read.mockRestore();
+    }
+  });
+
   it("can flush a single shared trace immediately by trace id", async () => {
     const { companyId, issueId, commentId: firstCommentId } = await seedIssueWithAgentComment();
     const secondCommentId = randomUUID();
@@ -1150,6 +1194,30 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     expect(traces[0]?.failureReason).toContain("telemetry unavailable");
     expect(traces[0]?.exportedAt).toBeNull();
     expect(uploadTraceBundle).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves aborted and unstarted exports available for recovery after shutdown", async () => {
+    const first = await seedIssueWithAgentComment();
+    const second = await seedIssueWithAgentComment();
+    const shutdown = new AbortController();
+    const uploadTraceBundle = vi.fn().mockResolvedValue({ objectKey: "saved" })
+      .mockImplementationOnce(async (_bundle, signal: AbortSignal) => {
+        shutdown.abort(new Error("shutdown"));
+        signal.throwIfAborted();
+      });
+    const flushingSvc = feedbackService(db, { shareClient: { uploadTraceBundle } });
+    for (const item of [first, second]) {
+      await flushingSvc.saveIssueVote({ issueId: item.issueId, targetType: "issue_comment",
+        targetId: item.commentId, vote: "up", authorUserId: "user-1", allowSharing: true });
+    }
+    expect(await flushingSvc.flushPendingFeedbackTraces({ signal: shutdown.signal }))
+      .toMatchObject({ attempted: 1, sent: 0, failed: 1 });
+    const rows = await db.select().from(feedbackExports);
+    expect(rows.filter(row => row.status === "failed")).toHaveLength(1);
+    expect(rows.filter(row => row.status === "pending")).toHaveLength(1);
+    expect(await flushingSvc.hasPendingFeedbackTraces()).toBe(true);
+    expect(await flushingSvc.flushPendingFeedbackTraces()).toMatchObject({ attempted: 2, sent: 2, failed: 0 });
+    expect(await flushingSvc.hasPendingFeedbackTraces()).toBe(false);
   });
 
   it("marks pending shared traces as failed when no feedback export backend is configured", async () => {

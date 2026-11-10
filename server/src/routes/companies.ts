@@ -35,6 +35,7 @@ import {
   type CompanyImportTransferStatus,
 } from "@paperclipai/shared/company-import-transfer";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { authorizationDeniedDetails, issueReadSqlCondition } from "../services/authorization.js";
 import { PORTABLE_ZIP_UPLOAD_LIMIT_BYTES } from "../http/body-limits.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
@@ -55,6 +56,7 @@ import {
   accessService,
   agentService,
   budgetService,
+  heartbeatService,
   buildExportFidelityReport,
   collectExportFidelityCounts,
   companyArtifactsService,
@@ -278,7 +280,9 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
   const router = Router();
   const importTransferSpoolRoot =
     options?.importTransferSpoolRoot ?? resolveDefaultImportTransferSpoolRoot();
-  const svc = companyService(db);
+  const svc = companyService(db, {
+    cancelWorkForScope: (scope) => heartbeatService(db).cancelBudgetScopeWork(scope),
+  });
   const agents = agentService(db);
   const portability = companyPortabilityService(db, storage);
   const access = accessService(db);
@@ -423,6 +427,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const query = companyArtifactsQuerySchema.parse(req.query);
     res.json(await artifacts.list(companyId, query, {
       userId: query.starred && req.actor.type === "board" ? req.actor.userId : undefined,
+      readCondition: await issueReadSqlCondition(db, req.actor),
     }));
   });
 
@@ -883,6 +888,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       if (digest !== declared.sha256) {
         throw unprocessable(`Part ${partIndex} content does not match its declared sha256`);
       }
+      await companyTransferRunService.notePartUploadActivity(db, run.id);
       await writeImportTransferPart(importTransferSpoolRoot, run.id, partIndex, bytes);
       const recorded = await companyTransferRunService.completePart(db, run.id, partName);
       if (!recorded) {
@@ -1166,8 +1172,16 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const actor = getActorInfo(req);
     const result = await portability.importBundle(body, req.actor.type === "board" ? req.actor.userId : null, {
       mode: "agent_safe",
+      actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
+      actorAgentCompanyId: req.actor.type === "agent" ? req.actor.companyId : null,
       sourceCompanyId: companyId,
       pauseAutomations: body.pauseAutomations === true,
+      // An agent importing new agents is hiring, so it needs agents:create
+      // like the hire routes: the CEO role does not override a denial.
+      ...(req.actor.type === "agent" ? { assertCanCreateAgents: async () => {
+        const decision = await access.decide({ actor: req.actor, action: "agents:create", resource: { type: "company", companyId } });
+        if (!decision.allowed) throw forbidden(`${decision.explanation} Importing new agents is hiring; a board user can import them instead.`, authorizationDeniedDetails(decision));
+      } } : {}),
     });
     await logActivity(db, {
       companyId: result.company.id,

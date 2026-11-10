@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   chatEndpoints,
   chatExternalPrincipals,
@@ -13,12 +13,15 @@ type Database = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 /** Current authority shared by task admission and every later publication. */
 export async function githubChatPrincipalAccess(
   db: Database,
-  endpoint: typeof chatEndpoints.$inferSelect,
+  endpoint: Pick<typeof chatEndpoints.$inferSelect, "id" | "companyId" | "provider" | "allowUnlinkedPeople">,
   principalId: string,
 ) {
   if (endpoint.provider !== "github") return null;
   const [saved] = await db
-    .select()
+    .select({ configuration: sql<Pick<typeof chatGitHubConfigurations.$inferSelect["configuration"], "people" | "memberAccess">>`jsonb_build_object(
+      'people', ${chatGitHubConfigurations.configuration}->'people',
+      'memberAccess', ${chatGitHubConfigurations.configuration}->'memberAccess'
+    )` })
     .from(chatGitHubConfigurations)
     .where(
       and(
@@ -29,7 +32,7 @@ export async function githubChatPrincipalAccess(
     .for("share");
   if (!saved) return null; // Preserve the existing connector until explicitly upgraded.
   const [principal] = await db
-    .select()
+    .select({ externalId: chatExternalPrincipals.externalId })
     .from(chatExternalPrincipals)
     .where(
       and(
@@ -50,7 +53,7 @@ export async function githubChatPrincipalAccess(
     (p) => p.githubUserId === principal.externalId,
   );
   const [link] = await db
-    .select()
+    .select({ status: chatIdentityLinks.status, paperclipUserId: chatIdentityLinks.paperclipUserId })
     .from(chatIdentityLinks)
     .where(
       and(
@@ -62,7 +65,7 @@ export async function githubChatPrincipalAccess(
     .for("share");
   const activeMember = async (userId: string) => {
     const [membership] = await db
-      .select()
+      .select({ membershipRole: companyMemberships.membershipRole })
       .from(companyMemberships)
       .where(
         and(

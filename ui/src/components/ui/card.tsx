@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils"
 function Card({
   className,
   interactive = false,
+  elevation,
   ...props
 }: React.ComponentProps<"div"> & {
   /**
@@ -13,10 +14,13 @@ function Card({
    * it — one Card, two modes.
    */
   interactive?: boolean
+  /** Surface level in the proposed theme; omitted keeps the default card surface. */
+  elevation?: "low" | "middle" | "high"
 }) {
   return (
     <div
       data-slot="card"
+      data-elevation={elevation}
       className={cn(
         "bg-card text-card-foreground flex flex-col gap-6 rounded-lg border py-6",
         interactive &&

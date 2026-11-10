@@ -1,5 +1,11 @@
+import { useCurrentAccountGuard } from "../hooks/useAccountBoundMutation";
+import { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
+import { useCurrentWorkspaceRetry, useWorkspaceBaseRefRecovery, useWorkspaceRetry } from "./WorkspaceBaseRefRecovery";
+import { WorkspaceBaseRefRecoveryNotice } from "./WorkspaceBaseRefRecoveryNotice";
 import { DispositionRecoveryNotice, useDispositionRecoverySnapshot } from "./DispositionRecoveryNotice";
 import { AgentAvatar } from "@/components/AgentAvatar";
+import { TaskChatRunnerTurn } from "./task-chat/TaskChatRunnerTurn";
+import { useRunnerSubmission } from "@/hooks/useRunnerSubmission";
 import type { ComposerRunSettings } from "./task-chat/composer-run-settings";
 import { ComposerRunSettingsPicker } from "./task-chat/ComposerRunSettingsPicker";
 import { ComposerAddMenu, ComposerModeChip } from "./task-chat/ComposerAddMenu";
@@ -42,6 +48,7 @@ import type {
   IssueAttachment,
   IssueDocumentSummary,
   IssueBlockerAttention,
+  IssueBlockerStalledWakeContext,
   IssueRecoveryAction,
   IssueQueuedCommentQueue,
   IssueRelationIssueSummary,
@@ -71,12 +78,20 @@ import {
   loadDraftAttachments,
   saveDraftAttachments,
   loadDraftSubmission,
+  replayableRequest,
   saveDraftSubmission,
   clearDraftSubmission,
   settleDraftSubmission,
   type ComposerDraftSubmission,
+  type ComposerSendRequest,
 } from "../lib/composer-draft";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
+import { classifySendFailure, type SendOutcome } from "../lib/pending-send";
+import { useAutoResend } from "../hooks/useDurableSubmit";
+import { useDraftOwner } from "../hooks/useDraftOwner";
+import { useRequestOwnerBinding } from "../hooks/useRequestOwnerBinding";
+import { PendingSendNotice } from "./PendingSendNotice";
+import { describeError } from "../api/errors";
 import {
   buildIssueChatMessages,
   formatDurationWords,
@@ -213,7 +228,8 @@ import {
 } from "../lib/transcriptPresentation";
 import { buildAgentMentionHref } from "@paperclipai/shared";
 import { useComposerStop } from "@/hooks/useComposerStop";
-import { cn, formatDateTime, formatShortDate } from "../lib/utils";
+import { useComposerSubmitKey } from "@/hooks/useComposerSubmitKey";
+import { agentUrl, cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { liveBlueBadge } from "../lib/status-colors";
 import {
   nextWorkMode,
@@ -231,6 +247,7 @@ import {
 } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  RotateCw,
   AlertTriangle,
   ArrowRight,
   Brain,
@@ -251,6 +268,7 @@ import {
   X,
 } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
+import { StalledDependencyNotice } from "./StalledDependencyNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 import {
   IssueRecoveryActionCard,
@@ -278,7 +296,7 @@ interface IssueChatMessageContext {
   stoppingRunLabel?: string;
   stopRunVariant?: "stop" | "pause";
   runFinalizationActions?: readonly IssueChatRunFinalizationAction[];
-  onInterruptQueued?: (runId: string | null) => Promise<void>;
+  onInterruptQueued?: (runId: string | null) => Promise<IssueQueuedCommentQueue | void>;
   onCancelQueued?: (commentId: string) => void;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
   onImageClick?: (src: string) => void;
@@ -510,7 +528,6 @@ export interface IssueChatComposerHandle {
 interface IssueChatComposerProps {
   onSend: IssueChatThreadProps["onAdd"];
   confirmedSubmissionIds: ReadonlySet<string>;
-  onReviewConversation?: () => Promise<void>;
   onStop?: () => Promise<void>;
   stopPending?: boolean;
   stopScope?: "leaf" | "subtree";
@@ -538,6 +555,9 @@ interface IssueChatComposerProps {
 }
 
 interface IssueChatThreadProps {
+  executionBlocked?: boolean;
+  interruption?: import("@paperclipai/shared").TaskInterruptionPresentation | null;
+  retryPreparing?: boolean;
   /** Browser sessions are placed chronologically by the default task thread. */
   browsers?: import("@paperclipai/shared").TaskBrowser[];
   onOpenBrowser?: (browserId: string) => void;
@@ -567,6 +587,8 @@ interface IssueChatThreadProps {
   /** Company-wide set of issue ids with a live (queued/running) run. */
   liveIssueIds?: ReadonlySet<string>;
   blockerAttention?: IssueBlockerAttention | null;
+  /** Children and blockers stalled on the board (`stalledDependencies` on the issue). */
+  stalledDependencies?: IssueBlockerStalledWakeContext[];
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
   recoveryAction?: IssueRecoveryAction | null;
@@ -619,7 +641,6 @@ interface IssueChatThreadProps {
     clientRequestId?: string,
     runSettings?: ComposerRunSettings,
   ) => Promise<void>;
-  onReviewConversation?: () => Promise<void>;
   onCancelRun?: () => Promise<void>;
   stopPending?: boolean;
   stopScope?: "leaf" | "subtree";
@@ -665,7 +686,7 @@ interface IssueChatThreadProps {
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;
   hasOutputForRun?: (runId: string) => boolean;
   includeSucceededRunsWithoutOutput?: boolean;
-  onInterruptQueued?: (runId: string | null) => Promise<void>;
+  onInterruptQueued?: (runId: string | null) => Promise<IssueQueuedCommentQueue | void>;
   onCancelQueued?: (commentId: string) => void;
   /** Authoritative PRP queue. The classic thread intentionally ignores it. */
   queuedCommentQueue?: IssueQueuedCommentQueue | null;
@@ -679,6 +700,8 @@ interface IssueChatThreadProps {
     revision: string,
   ) => Promise<void>;
   onSteerQueuedComment?: (commentId: string, revision: string) => Promise<void>;
+  /** Delay before an eligible queued message is steered automatically; null keeps every message queued. */
+  queuedMessageAutoSteerDelayMs?: number | null;
   onDiscardQueuedComment?: (
     commentId: string,
     revision: string,
@@ -793,14 +816,55 @@ class IssueChatErrorBoundary extends Component<
 
 export function IssueAssigneePausedNotice({
   agent,
+  issueStatus,
   onResume,
   resuming,
 }: {
   agent: Agent | null;
+  issueStatus: string | undefined;
   onResume?: () => Promise<void> | void;
   resuming?: boolean;
 }) {
-  if (!agent || agent.status !== "paused") return null;
+  if (!agent || agent.status !== "paused" || issueStatusIsTerminalDisposition(issueStatus)) return null;
+
+  // Lifecycle setup is shown by the queued turn and its inline connection card.
+  // Resume changes operator holds; it cannot complete verification.
+  if (!agent.pauseReason && ["preparing", "verifying", "resuming"].includes(agent.lifecycleState ?? "")) return null;
+
+  // A freshly created agent is stored as paused with pauseReason "setup" until
+  // its setup finishes. That is not an operator pause, so say what is actually
+  // happening and point at the real recovery path instead of "Resume agent".
+  if (agent.pauseReason === "setup") {
+    // Only computer preparation advances on its own (matches NewAgentSetup).
+    // A "verifying" or parked draft waits for the user to finish the wizard.
+    const stillPreparing = ["preparing", "pausing"].includes(agent.lifecycleState ?? "");
+    return (
+      <div data-testid="issue-assignee-paused-notice" className="mb-3">
+        <InlineBanner
+          tone="info"
+          compact
+          title={
+            <>
+              <span className="font-medium">{agent.name}</span> is still being set up.
+            </>
+          }
+          actions={
+            stillPreparing ? undefined : (
+              <Button size="sm" variant="outline" asChild>
+                <Link to={agentUrl(agent)} data-testid="issue-assignee-finish-setup">
+                  Finish setup
+                </Link>
+              </Button>
+            )
+          }
+        >
+          {stillPreparing
+            ? "Its computer is being prepared. Runs start automatically when setup finishes."
+            : "Its setup isn't finished yet. Finish setup to let it start runs."}
+        </InlineBanner>
+      </div>
+    );
+  }
 
   const pauseDetail =
     agent.pauseReason === "budget"
@@ -809,10 +873,15 @@ export function IssueAssigneePausedNotice({
         ? "It arrived paused from an organization import — imported agents stay parked until you resume them."
         : agent.pauseReason === "system"
           ? "It was paused by the system."
-          : "It was paused manually.";
-  // Budget pauses clear on their own when the budget resets; resuming by hand
-  // would fight the hard stop, so the action is only offered for the rest.
-  const canResume = Boolean(onResume) && agent.pauseReason !== "budget";
+          : agent.pauseReason === "company_archived"
+            ? "It was paused because its company is archived."
+            : agent.pauseReason === "manual"
+              ? "It was paused manually."
+              : "";
+  // Budget pauses clear on their own when the budget resets and archive pauses
+  // clear when the company is restored; resuming by hand would fight either, so
+  // the action is only offered for the rest.
+  const canResume = Boolean(onResume) && agent.pauseReason !== "budget" && agent.pauseReason !== "company_archived";
 
   return (
     <div data-testid="issue-assignee-paused-notice" className="mb-3">
@@ -839,7 +908,7 @@ export function IssueAssigneePausedNotice({
           ) : undefined
         }
       >
-        New runs will not start until the agent is resumed. {pauseDetail}
+        New runs will not start until the agent is resumed.{pauseDetail ? ` ${pauseDetail}` : ""}
       </InlineBanner>
     </div>
   );
@@ -980,6 +1049,11 @@ type ComposerAttachmentItem = {
   inline: boolean;
   contentPath?: string;
   error?: string;
+  /**
+   * The picked file, kept after a failed upload so the chip can offer Retry.
+   * Uploads are not deduped by the server, so they never resend on their own.
+   */
+  file?: File;
 };
 
 function hasFilePayload(evt: ReactDragEvent<HTMLDivElement>) {
@@ -1163,30 +1237,7 @@ function formatInteractionActorLabel(args: {
   return "System";
 }
 
-export function resolveIssueChatHumanAuthor(args: {
-  authorName?: string | null;
-  authorUserId?: string | null;
-  currentUserId?: string | null;
-  userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
-}) {
-  const { authorName, authorUserId, currentUserId, userProfileMap } = args;
-  const profile = authorUserId
-    ? (userProfileMap?.get(authorUserId) ?? null)
-    : null;
-  const isCurrentUser = Boolean(
-    authorUserId && currentUserId && authorUserId === currentUserId,
-  );
-  const resolvedAuthorName =
-    profile?.label?.trim() ||
-    authorName?.trim() ||
-    (authorUserId === "local-board" ? "Board" : isCurrentUser ? "You" : "User");
-
-  return {
-    isCurrentUser,
-    authorName: resolvedAuthorName,
-    avatarUrl: profile?.image ?? null,
-  };
-}
+export { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
 
 function toolCountSummary(toolParts: ToolCallMessagePart[]): string | null {
   if (toolParts.length === 0) return null;
@@ -2507,6 +2558,7 @@ function IssueChatAssistantMessage({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
+          {custom.origin === "fast_response" && <div className="max-w-xs px-2 py-2 text-xs text-muted-foreground">Platform-generated acknowledgement. The agent’s substantive response follows separately.</div>}
           <DropdownMenuItem
             onClick={() => {
               void copyTextToClipboard(copyText).catch((error) => {
@@ -2659,19 +2711,18 @@ function IssueChatAssistantMessage({
               <span className="text-xs text-muted-foreground/60">
                 {chainOfThoughtLabel?.toLowerCase()}
               </span>
-              <span className="ml-auto flex items-center gap-1.5">
-                {message.createdAt ? (
-                  <span className="text-(length:--text-micro) text-muted-foreground/50">
-                    {commentDateLabel(message.createdAt)}
-                  </span>
-                ) : null}
-                <ChevronDown
-                  className={cn(
-                    "h-3.5 w-3.5 text-muted-foreground/40 transition-transform",
-                    !folded && "rotate-180",
-                  )}
-                />
-              </span>
+              <ChevronDown
+                aria-hidden="true"
+                className={cn(
+                  "h-3.5 w-3.5 shrink-0 text-muted-foreground/40 opacity-0 transition-[opacity,transform] group-hover:opacity-100 group-focus-visible:opacity-100",
+                  !folded && "rotate-180",
+                )}
+              />
+              {message.createdAt ? (
+                <span className="ml-auto text-(length:--text-micro) text-muted-foreground/50">
+                  {commentDateLabel(message.createdAt)}
+                </span>
+              ) : null}
             </button>
           ) : (
             <div className="mb-1.5 flex items-center gap-2">
@@ -3519,6 +3570,8 @@ function SystemNoticeCommentContent({
     ? custom.commentMetadata
     : null;
   const recoverySnapshot = useDispositionRecoverySnapshot(commentMetadata);
+  const branchRecovery = useWorkspaceBaseRefRecovery(commentMetadata);
+  const workspaceRetry = useWorkspaceRetry(commentMetadata);
   const runAgentId =
     typeof custom.runAgentId === "string" ? custom.runAgentId : null;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
@@ -3614,6 +3667,9 @@ function SystemNoticeCommentContent({
         });
       });
   };
+
+  if (authorType === "system" && workspaceRetry) return null;
+  if (authorType === "system" && branchRecovery) return <div id={anchorId}><WorkspaceBaseRefRecoveryNotice key={`${branchRecovery.actionId}:${branchRecovery.runId}`} {...branchRecovery.props} /></div>;
 
   if (authorType === "system" && recoverySnapshot) {
     return <div id={anchorId}><DispositionRecoveryNotice snapshot={recoverySnapshot} createdAt={toValidIsoString(message.createdAt)} defaultExpanded={presentation?.detailsDefaultOpen} /></div>;
@@ -4659,7 +4715,6 @@ const IssueChatComposer = forwardRef<
   {
     onSend,
     confirmedSubmissionIds,
-    onReviewConversation,
     onStop,
     stopPending,
     stopScope = "leaf",
@@ -4687,6 +4742,7 @@ const IssueChatComposer = forwardRef<
   forwardedRef,
 ) {
   const stopControl = useComposerStop(onStop, stopPending);
+  const submitKey = useComposerSubmitKey();
   const restoredRecovery = useMemo(() => {
     const key = sharedDraftKey && loadDraftRecoveryKey(sharedDraftKey);
     return key ? { sourceKey: sharedDraftKey!, key, persisted: true } : null;
@@ -4702,11 +4758,13 @@ const IssueChatComposer = forwardRef<
   // the stored draft. The effect below handles subsequent task-key changes.
   const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const [submitting, setSubmitting] = useState(false);
-  const [reviewError, setReviewError] = useState(false);
   const [uncertainSubmission, setUncertainSubmission] =
     useState<ComposerDraftSubmission | null>(() =>
       draftKey ? loadDraftSubmission(draftKey) : null,
     );
+  // Attempts this composer resent and saw confirmed; they settle exactly like
+  // a receipt that arrives through the thread.
+  const [resentSubmissionIds, setResentSubmissionIds] = useState<ReadonlySet<string>>(() => new Set());
   const mountedTaskKey = useRef(draftKey);
   useEffect(() => {
     mountedTaskKey.current = draftKey;
@@ -4718,12 +4776,20 @@ const IssueChatComposer = forwardRef<
   const bodyRef = useRef(body);
   bodyRef.current = body;
   const reconciledSubmissionRef = useRef<{ draftKey: string | undefined; attemptId: string } | null>(null);
+  // Only the account that made a request may replay it.
+  const draftOwner = useDraftOwner();
+  const isCurrentAccount = useCurrentAccountGuard();
   const pendingDraftRef = useRef<{
     draftKey: string;
     attemptId: string;
     submittedBody: string;
     submittedAttachmentIds: string[];
+    request: ComposerSendRequest;
+    requestOwner?: string;
   } | null>(null);
+  const markRequestUnbound = useRequestOwnerBinding({
+    draftKey, owner: draftOwner, uncertainSubmission, setUncertainSubmission, pendingDraftRef,
+  });
   function changeBody(update: string | ((current: string) => string)) {
     const value = typeof update === "function" ? update(bodyRef.current) : update;
     bodyRef.current = value;
@@ -4740,6 +4806,8 @@ const IssueChatComposer = forwardRef<
       attemptId: pending.attemptId, reviewed: false,
       nextDraftOffset: pending.submittedBody.length + (value ? 2 : 0),
       submittedAttachmentIds: pending.submittedAttachmentIds,
+      request: pending.request,
+      requestOwner: pending.requestOwner,
     });
   }
   const submittingRef = useRef(submitting);
@@ -4780,6 +4848,12 @@ const IssueChatComposer = forwardRef<
   const dragDepthRef = useRef(0);
   const effectiveSuggestedAssigneeValue =
     suggestedAssigneeValue ?? currentAssigneeValue;
+  const manualAssigneeRef = useRef(false);
+  const assigneeDraftKeyRef = useRef(draftKey);
+  const selectAssignee = (value: string) => {
+    manualAssigneeRef.current = true;
+    setReassignTarget(value);
+  };
   const [reassignTarget, setReassignTarget] = useState(
     effectiveSuggestedAssigneeValue,
   );
@@ -4849,7 +4923,10 @@ const IssueChatComposer = forwardRef<
   // A server receipt for this exact request settles a restored submission.
   // Text equality is not delivery proof: users may intentionally repeat text.
   useEffect(() => {
-    if (!uncertainSubmission || !confirmedSubmissionIds.has(uncertainSubmission.attemptId)) return;
+    if (
+      !uncertainSubmission ||
+      !(confirmedSubmissionIds.has(uncertainSubmission.attemptId) || resentSubmissionIds.has(uncertainSubmission.attemptId))
+    ) return;
     const { attemptId } = uncertainSubmission;
     const reconciled = reconciledSubmissionRef.current;
     if (reconciled && reconciled.draftKey === draftKey && reconciled.attemptId === attemptId) return;
@@ -4893,7 +4970,48 @@ const IssueChatComposer = forwardRef<
     setBody(nextDraft);
     bodyRef.current = nextDraft;
     setComposerAttachments(nextAttachments);
-  }, [confirmedSubmissionIds, draftKey, sharedDraftKey, uncertainSubmission]);
+  }, [confirmedSubmissionIds, draftKey, resentSubmissionIds, sharedDraftKey, uncertainSubmission]);
+
+  async function resendUncertainSubmission(): Promise<SendOutcome> {
+    if (!isCurrentAccount()) return "pending";
+    const submission = uncertainSubmission;
+    const request = replayableRequest(submission, draftOwner);
+    if (!submission || !request) return "rejected";
+    const taskKey = draftKey;
+    const args = [
+      request.body,
+      request.reopen,
+      request.reassignment,
+      request.attachmentIds,
+      submission.attemptId,
+    ] as const;
+    try {
+      if (request.runSettings) await onSend(...args, request.runSettings as unknown as ComposerRunSettings);
+      else await onSend(...args);
+    } catch (error) {
+      if (!isCurrentAccount()) return "pending";
+      const failure = classifySendFailure(error);
+      if (failure === "rejected") {
+        // A definitive answer: the text is already back in the editor.
+        if (taskKey) clearDraftSubmission(taskKey, submission.attemptId);
+        if (mountedTaskKey.current === taskKey) setUncertainSubmission(null);
+      }
+      return failure;
+    }
+    if (mountedTaskKey.current === taskKey) {
+      setResentSubmissionIds((current) => new Set([...current, submission.attemptId]));
+    } else if (taskKey) {
+      settleDraftSubmission(taskKey, submission.attemptId);
+    }
+    return "sent";
+  }
+
+  const resendSourceId = useId();
+  const autoResend = useAutoResend({
+    sourceId: `issue-chat-composer:${resendSourceId}`,
+    active: Boolean(replayableRequest(uncertainSubmission, draftOwner)) && !submitting,
+    resend: resendUncertainSubmission,
+  });
 
   useEffect(() => {
     if (
@@ -4936,8 +5054,12 @@ const IssueChatComposer = forwardRef<
   }, [draftKey]);
 
   useEffect(() => {
-    setReassignTarget(effectiveSuggestedAssigneeValue);
-  }, [effectiveSuggestedAssigneeValue]);
+    if (assigneeDraftKeyRef.current !== draftKey) {
+      assigneeDraftKeyRef.current = draftKey;
+      manualAssigneeRef.current = false;
+    }
+    if (!manualAssigneeRef.current) setReassignTarget(effectiveSuggestedAssigneeValue);
+  }, [draftKey, effectiveSuggestedAssigneeValue]);
 
   useEffect(() => {
     setPendingWorkMode(resolvedIssueWorkMode);
@@ -5048,6 +5170,8 @@ const IssueChatComposer = forwardRef<
     bodyRef.current = "";
     setBody("");
     let attemptId: string | null = null;
+    let request: ComposerSendRequest | null = null;
+    const requestOwner = draftOwner;
     try {
       if (workModeChanged && onWorkModeChange) {
         await onWorkModeChange(pendingWorkMode);
@@ -5059,10 +5183,20 @@ const IssueChatComposer = forwardRef<
         return;
       }
       attemptId = crypto.randomUUID();
+      if (requestOwner === undefined) markRequestUnbound(attemptId);
+      // The exact request is stored before it is sent, so a lost response or
+      // an outage can resend it with the same ID instead of losing it.
+      request = {
+        body: submittedBody,
+        ...(reopen === undefined ? {} : { reopen }),
+        ...(reassignment ? { reassignment } : {}),
+        ...(attachmentIds.length ? { attachmentIds } : {}),
+        ...(runSettings ? { runSettings: runSettings as unknown as Record<string, unknown> } : {}),
+      };
       if (draftKey) {
         saveDraft(draftKey, trimmed);
-        saveDraftSubmission(draftKey, { attemptId, reviewed: false });
-        pendingDraftRef.current = { draftKey, attemptId, submittedBody: trimmed, submittedAttachmentIds: attachmentIds };
+        saveDraftSubmission(draftKey, { attemptId, reviewed: false, request, requestOwner });
+        pendingDraftRef.current = { draftKey, attemptId, submittedBody: trimmed, submittedAttachmentIds: attachmentIds, request, requestOwner };
         changeBody(bodyRef.current);
       }
       // assistant-ui thread.append is fire-and-forget. Await the actual Board
@@ -5082,16 +5216,21 @@ const IssueChatComposer = forwardRef<
       setComposerAttachments((current) =>
         current.filter((item) => !submittedAttachmentKeys.has(item.id)),
       );
+      manualAssigneeRef.current = false;
       setReassignTarget(effectiveSuggestedAssigneeValue);
       setRunSettings(null);
     } catch (error) {
       if (mountedTaskKey.current !== draftKey) return;
       const nextDraft = bodyRef.current;
-      if (attemptId && error instanceof CommentSubmissionUnknownError) {
+      // Not delivered, or not known to be: keep it and resend with the same
+      // ID when the connection allows. The server dedupes by that ID.
+      if (attemptId && request && classifySendFailure(error) === "pending") {
         const uncertain = {
           attemptId, reviewed: false,
           nextDraftOffset: trimmed.length + (nextDraft ? 2 : 0),
           submittedAttachmentIds: attachmentIds,
+          request,
+          requestOwner,
         };
         setUncertainSubmission(uncertain);
         if (draftKey && loadDraftSubmission(draftKey)?.attemptId === attemptId)
@@ -5194,12 +5333,21 @@ const IssueChatComposer = forwardRef<
             ? {
                 ...item,
                 status: "error",
-                error: err instanceof Error ? err.message : "Upload failed",
+                error: describeError(err, { action: "upload the file" }).body,
+                file,
               }
             : item,
         ),
       );
     }
+  }
+
+  /** Retry a failed upload from its kept file; only ever on an explicit click. */
+  function retryUpload(attachment: ComposerAttachmentItem) {
+    const file = attachment.file;
+    if (!file) return;
+    setComposerAttachments((current) => current.filter((item) => item.id !== attachment.id));
+    void attachFile(file);
   }
 
   async function handleAttachFile(evt: ChangeEvent<HTMLInputElement>) {
@@ -5419,67 +5567,19 @@ const IssueChatComposer = forwardRef<
         </p>
       ) : null}
       {uncertainSubmission ? (
-        <div
-          role="alert"
-          className="mb-3 space-y-2 rounded-md border border-border bg-muted p-3 text-sm"
-        >
-          <p>
-            We couldn’t confirm whether this comment was saved. It may already
-            be in the conversation. Review it before starting another draft.
-          </p>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={async () => {
-              setReviewError(false);
-              try {
-                if (!onReviewConversation)
-                  throw new Error("Review unavailable");
-                await onReviewConversation();
-                if (mountedTaskKey.current !== draftKey) return;
-                const reviewed = { ...uncertainSubmission, reviewed: true };
-                setUncertainSubmission(reviewed);
-                if (
-                  draftKey &&
-                  loadDraftSubmission(draftKey)?.attemptId ===
-                    reviewed.attemptId
-                )
-                  saveDraftSubmission(draftKey, reviewed);
-              } catch {
-                setReviewError(true);
-              }
-            }}
-          >
-            Review conversation
-          </Button>
-          {reviewError ? (
-            <p>Couldn’t refresh the conversation. Try reviewing it again.</p>
-          ) : null}
-          {uncertainSubmission.reviewed ? (
-            <>
-              <p>
-                Discarding this draft does not remove any saved comment or
-                uploaded file.
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  if (draftKey)
-                    clearDraft(draftKey, uncertainSubmission.attemptId);
-                  bodyRef.current = "";
-                  setBody("");
-                  setComposerAttachments([]);
-                  setUncertainSubmission(null);
-                }}
-              >
-                Discard draft and start new
-              </Button>
-            </>
-          ) : null}
-        </div>
+        <PendingSendNotice
+          className="mb-3"
+          noun="comment"
+          persisted={Boolean(draftKey && loadDraftSubmission(draftKey)?.attemptId === uncertainSubmission.attemptId && replayableRequest(loadDraftSubmission(draftKey), draftOwner))}
+          resending={autoResend.resending}
+          stalled={autoResend.stalled}
+          onResendNow={replayableRequest(uncertainSubmission, draftOwner) ? autoResend.resendNow : undefined}
+          onCancel={() => {
+            // Stop resending; the text stays in the editor to edit or send again.
+            if (draftKey) clearDraftSubmission(draftKey, uncertainSubmission.attemptId);
+            setUncertainSubmission(null);
+          }}
+        />
       ) : null}
       <MarkdownEditor
         ref={editorRef}
@@ -5489,6 +5589,7 @@ const IssueChatComposer = forwardRef<
         placeholder="Reply"
         mentions={mentions}
         onSubmit={handleSubmit}
+        submitKey={submitKey}
         imageUploadHandler={
           canAcceptFiles
             ? async (file) => {
@@ -5565,6 +5666,18 @@ const IssueChatComposer = forwardRef<
                 <span className="shrink-0 text-muted-foreground">
                   {statusLabel}
                 </span>
+                {attachment.status === "error" && attachment.file ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Retry ${attachment.name}`}
+                    disabled={!!uncertainSubmission}
+                    onClick={() => retryUpload(attachment)}
+                  >
+                    <RotateCw className="h-3.5 w-3.5" aria-hidden />
+                  </Button>
+                ) : null}
                 {!attachment.inline || attachment.status !== "attached" ? (
                   <Button
                     type="button"
@@ -5623,7 +5736,7 @@ const IssueChatComposer = forwardRef<
             overrides={assigneeAdapterOverrides}
             settings={runSettings}
             onSettingsChange={setRunSettings}
-            onAssigneeChange={setReassignTarget}
+            onAssigneeChange={selectAssignee}
             triggerRef={reassignTriggerRef}
             renderAssigneeIdentity={(value) => {
               const selected = value.startsWith("agent:") ? agentMap.get(value.slice(6)) : null;
@@ -5639,7 +5752,7 @@ const IssueChatComposer = forwardRef<
             noneLabel="No responsible"
             searchPlaceholder="Search responsible..."
             emptyMessage="No responsible found."
-            onChange={setReassignTarget}
+            onChange={selectAssignee}
             className="h-8 text-xs"
             renderTriggerValue={(option) => {
               if (!option)
@@ -5769,9 +5882,12 @@ export function IssueChatThread({
   blockedBy = [],
   liveIssueIds,
   blockerAttention = null,
+  stalledDependencies,
   successfulRunHandoff = null,
   scheduledRetry = null,
   recoveryAction = null,
+  interruption,
+  retryPreparing = false,
   onResolveRecoveryAction,
   onReissueIsolatedRecoveryAction,
   reissueIsolatedRecoveryActionPending = false,
@@ -5794,7 +5910,6 @@ export function IssueChatThread({
   userProfileMap,
   onVote,
   onAdd,
-  onReviewConversation,
   onCancelRun,
   stopPending,
   stopScope,
@@ -5853,6 +5968,7 @@ export function IssueChatThread({
   externalReferences,
   linkCaseReferences = false,
 }: IssueChatThreadProps) {
+  const workspaceRetry = useCurrentWorkspaceRetry();
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
   const didInitialHashScrollDecisionRef = useRef(false);
@@ -6092,14 +6208,39 @@ export function IssueChatThread({
     return true;
   }
 
+  const {
+    pending: submissionPending,
+    takingLonger: submissionTakingLonger,
+    begin: beginSubmission,
+    reject: rejectSubmission,
+    blocked: startupBlocked,
+  } = useRunnerSubmission({
+    issueId,
+    agentId: issueAssigneeAgentId,
+    agent: agentMap?.get(issueAssigneeAgentId ?? ""),
+    blocked: Boolean(composerPause),
+    comments,
+    issueStatus,
+    runId: displayLiveRuns[0]?.id ?? null,
+    linkedRuns,
+    interruption,
+    onRefresh: onRefreshLatestComments,
+  });
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
-    (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
+    async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
       pendingSubmitScrollRef.current = true;
-      return runSettings
-        ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)
-        : onAdd(body, reopen, reassignment, attachmentIds, clientRequestId);
+      clientRequestId ??= crypto.randomUUID();
+      const attempt = beginSubmission(clientRequestId, undefined, reopen);
+      try {
+        await (runSettings
+          ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)
+          : onAdd(body, reopen, reassignment, attachmentIds, clientRequestId));
+      } catch (error) {
+        rejectSubmission(attempt, error);
+        throw error;
+      }
     },
-    [onAdd],
+    [onAdd, beginSubmission, rejectSubmission],
   );
   const runtime = usePaperclipIssueRuntime({
     messages,
@@ -6628,6 +6769,12 @@ export function IssueChatThread({
                     />
                   ))
                 )}
+                {!isRunning && !startupBlocked && issueAssigneeAgentId && (submissionPending || retryPreparing || interruption?.state === "working") ? (
+                  <TaskChatRunnerTurn items={[]} status="queued" startedAtMs={null}
+                    agent={agentMap?.get(issueAssigneeAgentId)}
+                    agentName={agentMap?.get(issueAssigneeAgentId)?.name}
+                    preparationLabel={submissionTakingLonger ? "Taking longer than usual…" : undefined} />
+                ) : null}
                 {showComposer ? (
                   <div
                     data-testid="issue-chat-thread-notices"
@@ -6640,7 +6787,7 @@ export function IssueChatThread({
                       onResume={onResumeFromBacklog}
                       resuming={resumeFromBacklogPending}
                     />
-                    {recoveryAction ? (
+                    {recoveryAction && !workspaceRetry ? (
                       <IssueRecoveryActionCard
                         action={recoveryAction}
                         agentMap={agentMap}
@@ -6710,8 +6857,10 @@ export function IssueChatThread({
                           : null
                       }
                     />
+                    <StalledDependencyNotice stalled={stalledDependencies} />
                     <IssueAssigneePausedNotice
                       agent={assignedAgent}
+                      issueStatus={issueStatus}
                       onResume={onResumeAssignee}
                       resuming={resumeAssigneePending}
                     />
@@ -6724,6 +6873,7 @@ export function IssueChatThread({
                   >
                     <IssueAssigneePausedNotice
                       agent={assignedAgent}
+                      issueStatus={issueStatus}
                       onResume={onResumeAssignee}
                       resuming={resumeAssigneePending}
                     />
@@ -6759,7 +6909,6 @@ export function IssueChatThread({
               <IssueChatComposer
                 ref={composerRef}
                 onSend={sendComposerComment}
-                onReviewConversation={onReviewConversation}
                 onImageUpload={imageUploadHandler}
                 onAttachImage={onAttachImage}
                 draftKey={draftKey}

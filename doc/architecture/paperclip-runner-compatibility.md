@@ -46,15 +46,15 @@ would hide the runtime that executed the task.
 
 ## Remote Codex version window
 
-Remote native Codex runs accept stable CLI versions **`>=0.149.0 <0.157.0`**.
-The install pin remains `0.156.0`. A sandbox image can therefore use an older
+Remote native Codex runs accept stable CLI versions **`>=0.149.0 <0.161.0`**.
+The install pin is `0.160.0`. A sandbox image can therefore use an older
 compatible Codex without failing startup or installing another copy.
 
 The minimum is fixed at **`0.149.0`** until maintainers deliberately change it.
 It is not a rolling one-month support window. The official
 [`@openai/codex` publication history](https://registry.npmjs.org/@openai/codex)
-records `0.149.0` on 2026-08-20, `0.153.4` on 2026-09-04, and `0.156.0` on
-2026-09-22. See also the [Codex changelog](https://learn.chatgpt.com/docs/changelog).
+records `0.149.0` on 2026-08-20, `0.153.4` on 2026-09-04, `0.156.0` on
+2026-09-22, and `0.160.0` on 2026-10-01. See also the [Codex changelog](https://learn.chatgpt.com/docs/changelog).
 This is an explicit compatibility window, not a claim that every Codex minor
 release follows a backward-compatible protocol.
 
@@ -65,7 +65,7 @@ release follows a backward-compatible protocol.
 - The same check applies to discovered, explicitly staged, and npm-installed
   remote Codex executables, including the final executable after linking.
 - For an incompatible image, the existing
-  `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@0.156.0` configuration
+  `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC=@openai/codex@0.160.0` configuration
   allows installation of the pinned runtime. Without that configuration,
   startup reports the supported range and the remediation.
 - Runner binary contracts, required runner capabilities, artifact digests,
@@ -85,6 +85,12 @@ app-server binaries with a local deterministic Responses API fixture. Both
 passed initialization, thread creation with a dynamic tool, a tool-call/result
 round trip, turn completion, and thread resume. This verifies the tested
 protocol path; it is not a live model, Linux sandbox, or exhaustive feature test.
+The 2026-10-02 refresh moved the install pin and the upper bound to `0.160.0`
+after verifying the integrity-checked Linux x64 `0.160.0` executable digest and
+the installed ACP package contract. Codex `0.157.0` through `0.160.0` add the
+GPT-6.1 Sol catalog entry and app-server pagination without a documented
+app-server protocol break; the Linux CI qualification workflow covers the real
+startup and session-resume probes for the new pin.
 Version-boundary and remote artifact-preparation regressions are covered by
 `codex-runtime-compatibility.test.ts` and `native-session-executor.test.ts`.
 

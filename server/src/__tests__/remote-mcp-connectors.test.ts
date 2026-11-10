@@ -50,6 +50,49 @@ describe("remote connector lifecycle", () => {
     });
     return { service, requests, add: () => { added = true; }, remove: () => { removed = true; }, restore: () => { removed = false; } };
   }
+  it("advertises the initiating OAuth callback and preserves explicitly configured origins", async () => {
+    const org = await company();
+    const app = express();
+    app.use((req, _res, next) => { req.actor = { type: "board", userId: actor.actorId, source: "local_implicit", isInstanceAdmin: true }; next(); });
+    app.use("/api", toolAccessRoutes(db, { paperclipCloudConnector: null }));
+
+    const publicBaseUrlEnv = process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL;
+    const otherPublicUrlNames = ["BETTER_AUTH_URL", "BETTER_AUTH_BASE_URL", "PAPERCLIP_PUBLIC_URL", "PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL"] as const;
+    const otherPublicUrlEnv = Object.fromEntries(otherPublicUrlNames.map((name) => [name, process.env[name]]));
+    try {
+      for (const name of otherPublicUrlNames) process.env[name] = "";
+      process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL = "https://paperclip.example.test";
+      const configured = await request(app).get(`/api/companies/${org.id}/tools/gallery`);
+      expect(configured.status).toBe(200);
+      expect(configured.body.oauthCallbackUrl).toBe("https://paperclip.example.test/api/tools/oauth/callback");
+
+      process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL = "http://127.0.0.1:3105";
+      const configuredLoopback = await request(app).get(`/api/companies/${org.id}/tools/gallery`);
+      expect(configuredLoopback.status).toBe(200);
+      expect(configuredLoopback.body.oauthCallbackUrl).toBe("http://127.0.0.1:3105/api/tools/oauth/callback");
+
+      delete process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL;
+      const inferredLoopback = await request(app)
+        .get(`/api/companies/${org.id}/tools/gallery`)
+        .set("host", "127.0.0.1:3105");
+      expect(inferredLoopback.status).toBe(200);
+      expect(inferredLoopback.body.oauthCallbackUrl).toBe("http://localhost:3105/api/tools/oauth/callback");
+
+      const unsupported = await request(app)
+        .get(`/api/companies/${org.id}/tools/gallery`)
+        .set("host", "paperclip.internal.test");
+      expect(unsupported.status).toBe(200);
+      expect(unsupported.body).not.toHaveProperty("oauthCallbackUrl");
+    } finally {
+      if (publicBaseUrlEnv === undefined) delete process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL;
+      else process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL = publicBaseUrlEnv;
+      for (const name of otherPublicUrlNames) {
+        const value = otherPublicUrlEnv[name];
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
   it.each([undefined, false])("allows all aggregator setup with stored setting %s", async (legacyValue) => {
     await db.delete(instanceSettings);
     if (legacyValue !== undefined) await db.insert(instanceSettings).values({ experimental: { enableMcpAggregators: legacyValue } });
@@ -98,7 +141,7 @@ describe("remote connector lifecycle", () => {
     expect(restored.connection.status).toBe("active");
     expect(restored.profileEntries.map((entry) => entry.catalogEntryId)).not.toContain(ids.off);
     const policies = await db.select().from(toolPolicies).where(eq(toolPolicies.companyId, org.id));
-    expect(policies.some((policy) => policy.enabled && policy.config.catalogEntryId === ids.ask)).toBe(true);
+    expect(policies.some((policy) => policy.enabled && policy.config?.catalogEntryId === ids.ask)).toBe(true);
     remote.remove();
     const afterRemoval = await remote.service.refreshCatalog(connected.connectionId, actor);
     expect(afterRemoval.catalog.find((entry) => entry.toolName === "off")?.status).not.toBe("active");

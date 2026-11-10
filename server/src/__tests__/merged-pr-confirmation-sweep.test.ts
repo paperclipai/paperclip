@@ -1,6 +1,8 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { inArray } from "drizzle-orm";
+import type { RequestConfirmationToolActionPayload } from "@paperclipai/shared";
 import {
   activityLog,
   agents,
@@ -23,6 +25,22 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+
+const toolAction: RequestConfirmationToolActionPayload = {
+  version: 1,
+  actionRequestId: "action-1",
+  invocationId: "invocation-1",
+  toolName: "merge_pull_request",
+  toolDisplayName: "Merge pull request",
+  connectionId: null,
+  applicationId: null,
+  appDisplayName: null,
+  risk: "write",
+  previewMarkdown: "Merge the pull request.",
+  argumentsSummaryJson: "{}",
+  argumentsHash: "hash-1",
+  expiresAt: "2026-01-01T00:00:00.000Z",
+};
 
 describe("merged pull-request confirmation extraction", () => {
   it("bounds shared pull-request state caches", () => {
@@ -60,11 +78,11 @@ describe("merged pull-request confirmation extraction", () => {
     })).toEqual([]);
     expect(getMergeConfirmationPullRequestReferences({
       ...base,
-      payload: { ...base.payload, target: { type: "issue_document", key: "plan" } },
+      payload: { ...base.payload, target: { type: "issue_document", key: "plan", revisionId: "revision-1" } },
     })).toEqual([]);
     expect(getMergeConfirmationPullRequestReferences({
       ...base,
-      payload: { ...base.payload, toolAction: { actionRequestId: "action-1" } },
+      payload: { ...base.payload, toolAction },
     })).toEqual([]);
   });
 
@@ -110,6 +128,7 @@ describe("merged pull-request confirmation extraction", () => {
         prompt: "Merge the linked pull request?",
         target: {
           type: "custom",
+          key: "github-pr-39",
           label: "Release to production",
           href: "https://github.com/paperclipai/paperclip/pull/39",
         },
@@ -131,16 +150,17 @@ describe("merged pull-request confirmation extraction", () => {
   });
 });
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_MERGE_SWEEP_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
-describeEmbeddedPostgres.sequential("merged pull-request confirmation sweep", () => {
+describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-merged-pr-confirmations-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-merged-pr-confirmations-");
+    db = createDb(external ?? tempDb!.connectionString, { maxConnections: 6 });
   }, 20_000);
 
   afterEach(async () => {
@@ -153,6 +173,7 @@ describeEmbeddedPostgres.sequential("merged pull-request confirmation sweep", ()
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -209,8 +230,8 @@ describeEmbeddedPostgres.sequential("merged pull-request confirmation sweep", ()
       kind: "request_confirmation",
       status: "pending",
       continuationPolicy: "wake_assignee_on_accept",
-      requestedResolverPolicy: "board_only",
-      effectiveResolverPolicy: "board_only",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
     } as const;
     await db.insert(issueThreadInteractions).values([
       {
@@ -223,8 +244,8 @@ describeEmbeddedPostgres.sequential("merged pull-request confirmation sweep", ()
         ...common,
         id: interactionIds.boardOrAgents,
         title: "Merge paperclipai/paperclip#39?",
-        requestedResolverPolicy: "board_or_agents",
-        effectiveResolverPolicy: "board_or_agents",
+        requestedResolverPolicy: "anyone",
+        effectiveResolverPolicy: "anyone",
         payload: { version: 1, prompt: "Merge the PR?" },
       },
       {
@@ -246,7 +267,7 @@ describeEmbeddedPostgres.sequential("merged pull-request confirmation sweep", ()
         payload: {
           version: 1,
           prompt: "Merge the PR?",
-          toolAction: { version: 1, actionRequestId: "action-1" },
+          toolAction,
         },
       },
       {
@@ -276,7 +297,7 @@ describeEmbeddedPostgres.sequential("merged pull-request confirmation sweep", ()
       repo: "paperclip",
       number: 39,
     }])).resolves.toEqual({
-      checked: 6,
+      checked: 3,
       candidates: 3,
       accepted: 2,
       woken: 2,

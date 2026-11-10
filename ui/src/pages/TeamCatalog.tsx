@@ -39,6 +39,8 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
+import { describeError } from "../api/errors";
 import {
   Dialog,
   DialogContent,
@@ -1014,7 +1016,7 @@ export function useInstallTeamCatalogEntry({
       setPreviewError(null);
     },
     onError: (error) => {
-      setPreviewError(error instanceof Error ? error.message : "Failed to load install preview.");
+      setPreviewError(describeError(error, { action: "load the install preview" }).body);
     },
   });
 
@@ -1032,7 +1034,7 @@ export function useInstallTeamCatalogEntry({
     },
     onError: (error) => {
       setPhase("error");
-      setApplyError(error instanceof Error ? error.message : "Install failed.");
+      setApplyError(describeError(error, { action: "install the team" }).body);
     },
   });
 
@@ -1062,20 +1064,24 @@ export function useInstallTeamCatalogEntry({
   };
 }
 
-function TeamInstallerDialog({
+export function TeamInstallerDialog({
   team,
   companyId,
   agents,
   open,
   onClose,
   onInstalled,
+  onReturnFocus,
+  defaultCollisionStrategy = "rename",
 }: {
   team: CatalogTeam;
   companyId: string;
   agents: Agent[];
   open: boolean;
   onClose: () => void;
-  onInstalled: () => void;
+  onReturnFocus?: () => void;
+  defaultCollisionStrategy?: CompanyPortabilityCollisionStrategy;
+  onInstalled: (result: CatalogTeamInstallResult) => void;
 }) {
   const steps = useMemo(() => computeSteps(team), [team]);
   const [stepIndex, setStepIndex] = useState(0);
@@ -1098,7 +1104,7 @@ function TeamInstallerDialog({
   const [allowLocalPathSources, setAllowLocalPathSources] = useState(false);
 
   // Step 4 — preview controls
-  const [collisionStrategy, setCollisionStrategy] = useState<CompanyPortabilityCollisionStrategy>("rename");
+  const [collisionStrategy, setCollisionStrategy] = useState<CompanyPortabilityCollisionStrategy>(defaultCollisionStrategy);
   const [nameOverrides, setNameOverrides] = useState<Record<string, string>>({});
   // slug -> adapterType override (the install schema accepts adapterOverrides).
   const [adapterOverrides, setAdapterOverrides] = useState<Record<string, string>>({});
@@ -1121,7 +1127,7 @@ function TeamInstallerDialog({
       setAllowExternalSources(false);
       setAllowUnpinnedOptionalSources(false);
       setAllowLocalPathSources(false);
-      setCollisionStrategy("rename");
+      setCollisionStrategy(defaultCollisionStrategy);
       setNameOverrides({});
       setAdapterOverrides({});
       setSecretValues({});
@@ -1132,7 +1138,7 @@ function TeamInstallerDialog({
       setApplyError(null);
       setInstallResult(null);
     }
-  }, [open]);
+  }, [open, defaultCollisionStrategy]);
 
   const currentStep = steps[stepIndex];
 
@@ -1195,7 +1201,7 @@ function TeamInstallerDialog({
       setPreviewError(null);
     },
     onError: (error) => {
-      setPreviewError(error instanceof Error ? error.message : "Failed to load install preview.");
+      setPreviewError(describeError(error, { action: "load the install preview" }).body);
     },
   });
 
@@ -1208,11 +1214,11 @@ function TeamInstallerDialog({
     onSuccess: (result) => {
       setInstallResult(result);
       setPhase("done");
-      onInstalled();
+      onInstalled(result);
     },
     onError: (error) => {
       setPhase("error");
-      setApplyError(error instanceof Error ? error.message : "Install failed.");
+      setApplyError(describeError(error, { action: "install the team" }).body);
     },
   });
 
@@ -1432,7 +1438,7 @@ function TeamInstallerDialog({
   if (isMobileSheet) {
     return (
       <Sheet open={open} onOpenChange={(next) => { if (!next && dismissable) onClose(); }}>
-        <SheetContent side="bottom" className="flex h-(--sz-100dvh) flex-col gap-0 p-0">
+        <SheetContent onCloseAutoFocus={onReturnFocus ? (event) => { event.preventDefault(); onReturnFocus(); } : undefined} side="bottom" className="flex h-(--sz-100dvh) flex-col gap-0 p-0">
           <SheetHeader className="border-b border-border">
             <SheetTitle>{headerTitle}</SheetTitle>
             {headerDescription && <SheetDescription>{headerDescription}</SheetDescription>}
@@ -1446,7 +1452,7 @@ function TeamInstallerDialog({
 
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next && dismissable) onClose(); }}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent onCloseAutoFocus={onReturnFocus ? (event) => { event.preventDefault(); onReturnFocus(); } : undefined} className="max-w-3xl">
         <DialogHeader>
           <DialogTitle>{headerTitle}</DialogTitle>
           {headerDescription && <DialogDescription>{headerDescription}</DialogDescription>}
@@ -1492,7 +1498,7 @@ export function StepTargetManager({
             <li key={slug} className="flex items-center gap-2 border-b border-border/60 px-3 py-2 text-sm last:border-b-0">
               <Crown className="h-3.5 w-3.5 text-amber-500" />
               <span className="font-medium">{titleCase(slug)}</span>
-              <Badge variant="ghost" className="ml-auto bg-amber-500/15 text-(length:--text-micro) text-amber-600 dark:text-amber-300">
+              <Badge variant="ghost" className="ml-auto bg-accent text-(length:--text-micro) text-accent-foreground">
                 → ?
               </Badge>
             </li>
@@ -1503,7 +1509,7 @@ export function StepTargetManager({
       {!fullCompany && (
         <div className="space-y-1.5" aria-describedby="target-manager-help">
           <SectionHeader>Target manager</SectionHeader>
-          <Command className="rounded-md border border-border">
+          {agents.length === 0 ? <p role="status" className="rounded-md border border-border p-3 text-sm text-muted-foreground">No agents are available to manage this team. Create an agent in your company, then try again.</p> : <Command className="rounded-md border border-border">
             <CommandInput placeholder="Search agents…" />
             <CommandList>
               <CommandEmpty>No agents found.</CommandEmpty>
@@ -1517,14 +1523,14 @@ export function StepTargetManager({
                     <div className="flex w-full items-center gap-2">
                       <Users2 className="h-3.5 w-3.5 text-muted-foreground" />
                       <span className="font-medium">{agent.name}</span>
-                      <span className="text-xs text-muted-foreground capitalize">{agent.role}</span>
+                      <span className="text-xs capitalize">{agent.role}</span>
                       {targetManagerAgentId === agent.id && <Check className="ml-auto h-4 w-4 text-emerald-500" />}
                     </div>
                   </CommandItem>
                 ))}
               </CommandGroup>
             </CommandList>
-          </Command>
+          </Command>}
         </div>
       )}
 
@@ -2297,6 +2303,7 @@ export function TeamCatalog() {
     queryFn: () => teamCatalogApi.catalogList(kindFilter === "all" ? {} : { kind: kindFilter }),
     enabled: Boolean(selectedCompanyId),
   });
+  const catalogView = useQueryView(catalogQuery);
 
   const teams = catalogQuery.data ?? [];
 
@@ -2392,7 +2399,7 @@ export function TeamCatalog() {
   return (
     <div className="flex h-full flex-col">
       {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
+      <div data-canonical-toolbar="teams" role="toolbar" aria-label="Teams controls" className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
         <h1 className="text-lg font-semibold">Teams</h1>
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -2487,20 +2494,20 @@ export function TeamCatalog() {
             !isDesktop && selectedTeam && "hidden",
           )}
         >
-          {catalogQuery.isLoading ? (
+          {catalogView.kind === "loading" || catalogView.kind === "reconnecting" ? (
             <div className="space-y-2 p-3">
               {Array.from({ length: 6 }).map((_, i) => (
                 <Skeleton key={i} className="h-12 w-full" />
               ))}
             </div>
-          ) : catalogQuery.isError ? (
+          ) : catalogView.kind === "error" ? (
             <div className="p-4">
-              <div role="alert" className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2.5 text-sm text-rose-700 dark:text-rose-300">
-                Failed to load team catalog.
-              </div>
-              <Button variant="outline" size="sm" className="mt-3" onClick={() => catalogQuery.refetch()}>
-                <RotateCcw className="h-3.5 w-3.5" /> Retry
-              </Button>
+              <QueryErrorState
+                error={catalogView.error}
+                action="load the team catalog"
+                onRetry={catalogView.retry}
+                retrying={catalogView.isFetching}
+              />
             </div>
           ) : teams.length === 0 ? (
             <EmptyState icon={Users2} message="No team catalog configured." />

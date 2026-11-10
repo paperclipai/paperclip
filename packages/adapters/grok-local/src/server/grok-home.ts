@@ -3,8 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 
-// The Grok credential home. `GROK_HOME` replaces `~/.grok` and holds one file,
-// `auth.json`. Unlike Codex, a Grok `auth.json` has no fixed top-level key: it
+// `GROK_HOME` replaces `~/.grok` and holds `auth.json` plus session history.
+// Unlike Codex, a Grok `auth.json` has no fixed top-level key: it
 // holds exactly one key, and that key is a composite `<issuer>::<uuid>` value.
 // This module resolves the company-scoped home path and reads its usable-auth
 // shape. It never writes to the managed home itself; {@link
@@ -13,6 +13,29 @@ import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-uti
 // directory it creates for a sandbox run.
 
 const AUTH_FILE_NAME = "auth.json";
+
+/** Inspect only the selected private home, never Grok's remote registry. */
+export async function grokHomeHasSession(home: string, sessionId: string): Promise<boolean> {
+  if (!home || !/^[a-zA-Z0-9_-]{1,128}$/.test(sessionId)) return false;
+  let remaining = 5000;
+  async function inspect(directory: string, depth: number): Promise<boolean> {
+    let entries;
+    try { entries = await fs.opendir(directory); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+    for await (const entry of entries) {
+      if (--remaining < 0) return false;
+      if (entry.isSymbolicLink()) continue;
+      if ((entry.isFile() || entry.isDirectory()) &&
+          (entry.name === sessionId || entry.name.startsWith(`${sessionId}.`))) return true;
+      if (entry.isDirectory() && depth > 0 && await inspect(path.join(directory, entry.name), depth - 1)) return true;
+    }
+    return false;
+  }
+  return inspect(path.join(home, "sessions"), 2);
+}
 
 /**
  * The allowlist of managed `GROK_HOME` entries that the grok-local adapter

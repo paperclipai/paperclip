@@ -25,16 +25,20 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://api-ssl.bitly.com/v4/mcp"
+        "serverUrl": "https://api-ssl.bitly.com/v4/mcp",
+        "scopesHint": [
+          "mcp.all"
+        ]
       },
-      "guidanceMd": "Connect Bitly in the browser. A Bitly account with either browser authorization or an API token.",
-      "riskTier": "S2",
+      "guidanceMd": "Connect Bitly in the browser. Choose only the intended workspace. Review the discovered actions and keep writes and destructive operations disabled until explicitly needed.",
+      "riskTier": "S4",
       "label": "Sign in with Bitly",
       "consoleLinks": {
-        "docs": "https://dev.bitly.com/bitly-mcp/overview/quickstart/"
+        "docs": "https://dev.bitly.com/bitly-mcp/using-the-bitly-mcp-server/configuration-details/"
       },
       "warnings": [
-        "A Bitly account with either browser authorization or an API token."
+        "The mcp.all scope covers Bitly's broad MCP catalog, including link and QR management, analytics, groups, custom domains, and Bitly Sites.",
+        "The catalog includes publishing and deletion operations, including permanent short-link deletion, site deletion, and custom-domain changes. Review the full catalog and keep write and destructive actions Off during read-only qualification."
       ]
     },
     {
@@ -44,12 +48,12 @@
       "ownershipModes": [
         "customer"
       ],
-      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "whenToUse": "Use a customer-created Bitly API token when browser sign-in is not suitable.",
       "defaults": {
         "serverUrl": "https://api-ssl.bitly.com/v4/mcp"
       },
-      "guidanceMd": "Use a customer-created Bitly key. A Bitly account with either browser authorization or an API token.",
-      "riskTier": "S2",
+      "guidanceMd": "Generate a Bitly API token under Settings → API. The token may authorize the MCP's full catalog under your Bitly account; Paperclip cannot narrow the token. Review discovered actions and keep writes and destructive operations disabled until explicitly needed.",
+      "riskTier": "S4",
       "label": "Use an API key",
       "credentialFields": [
         {
@@ -59,7 +63,7 @@
           "required": true,
           "placeholder": "Paste your Bitly API token",
           "secret": true,
-          "helperMd": "Create/manage links in authorized groups. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
+          "helperMd": "A Bitly API token from Settings → API is documented for MCP bearer auth, but no restriction scope is documented; treat it as capable of the full MCP catalog under that account. Paperclip cannot narrow the token."
         }
       ],
       "keyPlacement": {
@@ -68,11 +72,12 @@
         "prefix": "Bearer "
       },
       "consoleLinks": {
-        "keys": "https://dev.bitly.com/bitly-mcp/overview/quickstart/",
-        "docs": "https://dev.bitly.com/bitly-mcp/overview/quickstart/"
+        "keys": "https://bitly.com/settings/api",
+        "docs": "https://dev.bitly.com/bitly-mcp/using-the-bitly-mcp-server/configuration-details/"
       },
       "warnings": [
-        "A Bitly account with either browser authorization or an API token."
+        "This API token is not documented as a restricted MCP token. It may authorize Bitly's broad MCP catalog, including link creation/update/deletion, QR codes, Sites publishing/deletion, and custom-domain operations.",
+        "Review the discovered catalog and keep write and destructive actions Off during read-only qualification."
       ]
     }
   ]

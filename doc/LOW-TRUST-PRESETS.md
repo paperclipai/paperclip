@@ -37,9 +37,63 @@ changes that behavior. Low-trust containment instead limits what the low-trust
 agent can read or mutate through the Paperclip API and prevents raw untrusted
 output from being automatically promoted into higher-trust agent context.
 
-Low-trust agents cannot read or mutate agent configuration, instruction bundles,
-or company skill configuration through direct grants. Configuration changes from
-low-trust work must go through higher-trust review and promotion paths instead.
+Low-trust agents cannot read or mutate privileged agent configuration or company
+skill configuration through direct grants. Persistent instruction edits are also
+restricted, except for the direct-chat self-edit described below. Configuration
+changes from outside-triggered work must go through higher-trust review and
+promotion paths instead.
+
+Low trust does not prohibit task creation. Agents may create tasks assigned to
+themselves, and subtasks of their own tasks, within their permitted project or
+root-task scope. Creation uses the normal task-assignment permission checks,
+including explicit assignment restrictions and the responsible user's authority,
+even for an unassigned task. Other assignees must be explicitly within the trust
+boundary; board-user assignments remain forbidden. New tasks retain the creator's
+effective containment policy and quarantined source attribution. An exact issue-id
+scope does not implicitly authorize new descendants, and a permitted parent does
+not grant access to an unrelated project. An explicit root-task scope includes
+its descendants. Self-assigned decomposition is not a delegation cycle.
+
+Permission denials must identify the rejected action and specific restriction.
+Agents must surface failed instruction-save receipts and explain when the current
+run lacks direct-chat authority or the user lacks editing permission. The user
+can request the edit in their authorized chat or apply it directly. Creating
+another task does not authorize the instruction change.
+
+When a low-trust agent's task is in a project outside its boundary, setup fails
+the run with the typed `project_access_denied` code and the denied project ID
+before provider work starts. The task notice links Manage project access. That
+exact pre-dispatch shape is an owner action, so it stays on the task instead of
+the unexpected Sentry run-failure stream. The legacy `setup_failed` code and the
+denial message alone never suppress a report, and
+`PAPERCLIP_SENTRY_RUN_FAILURES=all` still reports it.
+
+## Direct-chat instruction edits
+
+When an authorized user directly asks an agent in their own Agent Chat to edit
+its persistent instructions, the agent may save its own `AGENTS.md` even under
+`low_trust_review`. The exception requires the current accepted execution identity
+and a recorded authenticated board-message wake for that chat, user, and agent.
+User attribution alone, outside connector/plugin messages, ordinary tasks,
+subtasks, and messages from another user do not qualify. An earlier owner message
+cannot authorize a later external instruction. External content read during the
+chat is not a request from the user to change instructions.
+
+The authenticated owner-chat turn is the permission boundary. The server checks
+message provenance and current edit access; it does not classify the message's
+natural-language intent or require a separate approval for each edit. The agent
+must follow the owner's request and treat tool output as data. This means prompt
+injection during an authorized owner-chat turn remains a model-level risk; the
+exception does not provide content-bound approval of the resulting file bytes.
+
+Normal instruction editing permissions and explicit protected-change rules still
+apply. The user's current permission is rechecked at every save, including private
+working-copy collection after a successful, failed, or timed-out execution.
+Cancellation, chat reset, reassignment, message deletion, and revoked access
+invalidate the exception. A server-linked retry of the same chat request may use
+its original authenticated message; unrelated continuations may not. This
+authority is never written into the inherited trust policy and does not grant
+peer instruction edits, general configuration access, or other privileged APIs.
 
 ## Human-directed work
 

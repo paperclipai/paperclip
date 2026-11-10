@@ -1,6 +1,6 @@
 import type { ServerInfoSnapshot } from "@paperclipai/shared";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
-import { ApiError } from "./client";
+import { apiErrorFromResponse, apiFetch } from "./client";
 import { ApiUnavailableError, readApiJson } from "./response";
 
 export type DevServerHealthStatus = {
@@ -36,6 +36,8 @@ export type HealthStatus = {
   authReady?: boolean;
   bootstrapStatus?: "ready" | "bootstrap_pending";
   bootstrapInviteActive?: boolean;
+  /** The unclaimed Cloud app is ready; this response did not probe SQL. */
+  warmStandby?: boolean;
   features?: {
     companyDeletionEnabled?: boolean;
   };
@@ -51,7 +53,7 @@ export type HealthStatus = {
 
 export const healthApi = {
   get: async (): Promise<HealthStatus> => {
-    const res = await fetch("/api/health", {
+    const res = await apiFetch("/api/health", {
       credentials: "include",
       headers: { Accept: "application/json" },
       cache: "no-store",
@@ -60,7 +62,7 @@ export const healthApi = {
     if (!res.ok) {
       const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
       if (recovery) return recovery;
-      throw new ApiError(payload?.error ?? `Failed to load health (${res.status})`, res.status, payload);
+      throw apiErrorFromResponse(res, payload);
     }
     // Startup recovery can still serve sign-in and deployment metadata.
     if (payload?.status !== "ok" && payload?.status !== "starting") throw new ApiUnavailableError(res.status);

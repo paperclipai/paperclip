@@ -123,6 +123,7 @@ export function ToggleField({
           canonical ToggleSwitch (status-green on-state), DESIGN.md principle 1. */}
       <ToggleSwitch
         data-testid={toggleTestId}
+        aria-label={label}
         checked={checked}
         onCheckedChange={onChange}
       />

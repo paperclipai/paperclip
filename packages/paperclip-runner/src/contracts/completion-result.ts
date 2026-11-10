@@ -1,6 +1,11 @@
 /** Provider-neutral semantic completion tools and their strict model-facing schemas. */
 export const PRP_COMPLETION_TOOL_NAME = "paperclip_finish" as const;
 export const PRP_BLOCK_TOOL_NAME = "paperclip_block" as const;
+/** Native Runner guidance; legacy adapters use their own skill/API completion paths. */
+export const PRP_COMPLETION_TOOL_DESCRIPTION =
+  "Report completed work (done), work requiring review (needs_review), or an explicit wait (yielded with response_wake for a response, monitor after set_task_monitor confirms a schedule on this task, or omit continuation to use this run's authorized published-review wait or saved repository-preparation continuation). Use the current completion contract and supporting evidence. If rejected, correct the report and retry. After acceptance, read the returned outcome; do not claim completion while gated. Explain any required approval with its supplied link and action, then write the final response and end the turn without further tool calls.";
+export const PRP_BLOCK_TOOL_DESCRIPTION =
+  "Report work that cannot continue because of a concrete blocker. Routine repository preparation is not a blocker: use paperclip_finish with yielded and omit continuation to resume through the saved workspace continuation. Identify the blocker, its owner, and the action needed to unblock it; use the current completion contract and supporting evidence. If rejected, correct the report and retry. After acceptance, read the returned outcome, explain the blocker and any required action in the final response, and end the turn without further tool calls.";
 export const PRP_SEMANTIC_TOOL_NAMES = [
   PRP_COMPLETION_TOOL_NAME,
   PRP_BLOCK_TOOL_NAME,
@@ -139,14 +144,14 @@ const artifactsSchema = {
   },
 } as const;
 
-const responseWakeContinuationSchema = {
+const waitContinuationSchema = {
   type: "object",
   description:
-    "Required when reportedWorkDisposition is yielded. Wait for the next response without scheduling work; include kind, summary, and a stable idempotencyKey.",
+    "Required when reportedWorkDisposition is yielded. Use response_wake for a response wait, or monitor only after a real monitor is persisted on the current task. Include kind, summary, and a stable idempotencyKey.",
   additionalProperties: false,
   required: ["kind", "summary", "idempotencyKey"],
   properties: {
-    kind: { type: "string", const: "response_wake" },
+    kind: { type: "string", enum: ["response_wake", "monitor", "case_handoff"] },
     summary: {
       type: "string",
       minLength: 1,
@@ -154,7 +159,9 @@ const responseWakeContinuationSchema = {
         "Internal control-plane reason to wait for the next response. Keep routine waiting and continuation bookkeeping here, not in the top-level user-facing summary. This field is not the answer to the user's request.",
     },
     idempotencyKey: { type: "string", minLength: 1 },
+    handoffId: { type: "string", minLength: 1, description: "Exact server-issued handoff ID; required for case_handoff." },
   },
+  allOf: [{ if: { properties: { kind: { const: "case_handoff" } }, required: ["kind"] }, then: { required: ["handoffId"] } }],
 } as const;
 
 const commonResultProperties = {
@@ -187,7 +194,7 @@ export const PRP_COMPLETION_RESULT_OUTPUT_SCHEMA = {
   properties: {
     ...commonResultProperties,
     reportedWorkDisposition: { enum: ["done", "needs_review", "yielded"] },
-    continuation: responseWakeContinuationSchema,
+    continuation: waitContinuationSchema,
   },
   allOf: [
     {
@@ -268,7 +275,10 @@ const providerVerificationCompatibilitySchema = {
       detail: { type: "string" },
       result: { type: "string" },
       cwd: { type: "string" },
-      artifactRef: { type: "string", minLength: 1 },
+      artifactRef: {
+        type: ["string", "null"],
+        description: "Reference to a real verification artifact. Omit or use null when no artifact exists; empty values are normalized away.",
+      },
     },
   },
 } as const;
@@ -355,15 +365,37 @@ export const PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA = {
     reportedWorkDisposition: { enum: ["done", "needs_review", "yielded", "completed"] },
     verification: providerVerificationCompatibilitySchema,
     attentionRequests: providerAttentionCompatibilitySchema,
-    continuation: responseWakeContinuationSchema,
+    // Responses-compatible gateways can require every declared property in
+    // tool calls. Give non-yielding results an explicit absence value instead
+    // of forcing callers to invent a response-wake continuation.
+    continuation: {
+      ...waitContinuationSchema,
+      type: ["object", "null"],
+      description:
+        "For yielded, omit or use null to reuse this run's authorized published-review wait, eligible saved monitor, or repository-preparation continuation; the controller reads current task state. Otherwise provide a real response_wake or monitor with summary and idempotencyKey. Use null or omit for done, completed, or needs_review.",
+    },
   },
   // Keep the provider-facing root a concrete object. Codex code-mode renders a
   // root allOf containing only an if/then constraint as `args: unknown`, hiding
   // every required field from the model. This equivalent direct conditional
   // preserves validation without obscuring the object-shaped tool signature.
   if: { properties: { reportedWorkDisposition: { const: "yielded" } }, required: ["reportedWorkDisposition"] },
-  then: { required: ["continuation"] },
-  else: { not: { required: ["continuation"] } },
+  then: { properties: { continuation: { type: ["object", "null"] } } },
+  else: { properties: { continuation: { type: "null" } } },
+} as const;
+
+export const PRP_COMPLETION_RESULT_BRIDGE_INPUT_SCHEMA = {
+  ...PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA,
+  properties: {
+    ...PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA.properties,
+    continuation: {
+      ...PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA.properties.continuation,
+      properties: {
+        ...waitContinuationSchema.properties,
+        kind: { type: "string", enum: [...waitContinuationSchema.properties.kind.enum, "same_agent"] },
+      },
+    },
+  },
 } as const;
 
 export const PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA = {

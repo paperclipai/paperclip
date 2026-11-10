@@ -3,6 +3,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { RunsSection, ActivitySection } from "./operate-sections";
 import { RoutineDetailContext, type RoutineDetailContextValue } from "./context";
 
@@ -41,6 +42,16 @@ afterEach(() => {
 });
 
 describe("routine operations", () => {
+  it("passes a settled initial 429 and a working retry to the runs list", async () => {
+    list.mockRejectedValueOnce(new ApiError("rate_limited", 429, null)).mockResolvedValueOnce([{ id: "recovered-run" }]);
+    render();
+    await vi.waitFor(() => expect(renderList.mock.lastCall?.[0].error?.status).toBe(429));
+    expect(renderList.mock.lastCall?.[0].issues).toEqual([]);
+    renderList.mock.lastCall?.[0].onRetry();
+    await vi.waitFor(() => expect(renderList.mock.lastCall?.[0].issues).toEqual([{ id: "recovered-run" }]));
+    expect(renderList.mock.lastCall?.[0].error).toBeNull();
+  });
+
   it("loads this routine's execution issues and keeps list search scoped to the same routine", async () => {
     const issues = [{ id: "execution-1", title: "Check deployment", status: "done" }];
     list.mockResolvedValue(issues);
@@ -65,6 +76,8 @@ describe("routine operations", () => {
     expect(container.textContent).toContain("Loading activity");
     expect(container.textContent).not.toContain("No activity yet");
     render(<ActivitySection error={new Error("Activity unavailable")} />);
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Activity unavailable");
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("Couldn't load routine activity");
+    expect(alert?.textContent).toContain("Activity unavailable");
   });
 });

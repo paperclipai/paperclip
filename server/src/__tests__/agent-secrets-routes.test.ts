@@ -160,7 +160,7 @@ describeEmbeddedPostgres("agent secret routes", () => {
       targetType: "agent",
       targetId: fixture.agentId,
       configPath: "access.API_ONLY_KEY",
-      projectionClass: "class_2_runtime_only",
+      projectionClass: "unclassified",
     });
     const projectBinding = await svc.createBinding({
       companyId: fixture.companyId,
@@ -184,7 +184,7 @@ describeEmbeddedPostgres("agent secret routes", () => {
     const list = await request(createApp(fixture)).get("/api/agents/me/secrets");
     expect(list.status).toBe(200);
     expect(list.body.secrets).toEqual([
-      expect.objectContaining({ key: "api_only_key", delivery: "api", projectionClass: "class_2_runtime_only" }),
+      expect.objectContaining({ key: "api_only_key", delivery: "api", projectionClass: "unclassified" }),
       expect.objectContaining({ key: "env_only_key", delivery: "env" }),
       expect.objectContaining({ key: "project_key", delivery: "env" }),
     ]);
@@ -265,6 +265,19 @@ describeEmbeddedPostgres("agent secret routes", () => {
     expect(redacted[1].text).toBe("foreign-secret-value");
     expect(await registry.redactForRun(first.companyId, first.heartbeatRunId, runs[0].text))
       .toBe(redacted[0].text);
+  });
+
+  it("drops SQL statement text from run errors on every run read", async () => {
+    const fixture = await seedAgentRun();
+    const registry = createRunSecretRedactionRegistry(db);
+    const legacy = { id: fixture.heartbeatRunId, status: "failed", errorCode: "adapter_failed",
+      error: 'Failed query: select "token" from "secrets" where "id" = $1\nparams: sk-secret', resultJson: { failureCause: "40001" } };
+    const [listed] = await registry.redactForRuns(fixture.companyId, [legacy]);
+    expect(listed).toMatchObject({ id: fixture.heartbeatRunId, error: "Database query failed (40001)", resultJson: { failureCause: "40001" } });
+    expect(await registry.redactForRun(fixture.companyId, fixture.heartbeatRunId, legacy))
+      .toMatchObject({ error: "Database query failed (40001)" });
+    const plain = { id: fixture.heartbeatRunId, error: "Adapter failed" };
+    expect((await registry.redactForRuns(fixture.companyId, [plain]))[0]).toEqual(plain);
   });
 
   it("denies low-trust, task-bridge, and skill-test callers on both routes", async () => {

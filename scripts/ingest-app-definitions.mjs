@@ -185,7 +185,7 @@ const apps = [
     key: "email-agent", label: "Email with an agent", purpose: "channel", provider: "agentmail", transport: "rest_api", auth: "api_key", ownershipModes: ["customer"],
     whenToUse: "Assign an inbox to an agent and manage email conversations in tasks.", credentialFields: [{ key: "apiKey", label: "AgentMail API key", type: "password", placeholder: "am_…", required: true, secret: true }],
     guidanceMd: "Connect an AgentMail API key, then create or select an inbox for your agent. WebSocket receiving works without a public URL.",
-    consoleLinks: { keys: "https://console.agentmail.to", docs: "https://docs.agentmail.to/inboxes" }, riskTier: "S3", requiredResourceFilters: ["inbox"]
+    consoleLinks: { keys: "https://console.agentmail.to/dashboard/api-keys", docs: "https://docs.agentmail.to/inboxes" }, riskTier: "S3", requiredResourceFilters: ["inbox"]
   }],
   [
     "zapier",
@@ -783,7 +783,7 @@ const apps = [
       {
         serverUrl: "https://mcp.sentry.dev/mcp",
         discoveryUrl:
-          "https://sentry.io/.well-known/oauth-authorization-server",
+          "https://mcp.sentry.dev/.well-known/oauth-protected-resource/mcp",
       },
       "S2",
       "Connect the Sentry organization and projects agents need for incident work.",
@@ -806,6 +806,91 @@ const apps = [
       "Connect the Vercel team and projects agents should operate.",
       { requiredResourceFilters: ["team", "project", "environment"] },
     ),
+  ],
+  // Enterpret advertises RFC 9728 -> RFC 8414 discovery from its own 401
+  // challenge (issuer https://oauth.enterpret.com, PKCE S256, registration
+  // endpoint present, token_endpoint_auth_method "none"), so `defaults` ships
+  // `serverUrl` only and the broker resolves endpoints at connect time.
+  // Both methods target the official read-only Enterpret MCP. Enterpret Agent's
+  // beta write MCP is a separate service and is outside this connector's scope.
+  // OAuth scope reporting and revocation-cache fixes await provider deployment
+  // and fresh live validation; scope names alone do not prove write capability.
+  // The provider documents no customer-registered OAuth app, so OAuth stays
+  // `dcr` only rather than `["customer", "dcr"]`.
+  [
+    "enterpret",
+    "Enterpret",
+    "Ask questions about your customer feedback and pull verbatim quotes with citations.",
+    "analytics",
+    "enterpret.com",
+    ["https://wisdom-api.enterpret.com/*"],
+    [
+      method(
+        "mcp-api-key",
+        "mcp_remote",
+        "api_key",
+        { serverUrl: "https://wisdom-api.enterpret.com/server/mcp" },
+        "S3",
+        "Generate an auth token in Enterpret under Settings, Enterpret MCP, then paste it below. One token belongs to one Enterpret organization. This is the recommended connection method.",
+        {
+          label: "Use an auth token",
+          grantKinds: ["organization"],
+          whenToUse:
+            "Recommended. Use an organization auth token from Settings → Enterpret MCP. This is the primary, store-ready connection method.",
+          credentialFields: [
+            field(
+              "authorization",
+              "Enterpret auth token",
+              "Paste the token from Settings, Enterpret MCP",
+            ),
+          ],
+          keyPlacement: {
+            location: "header",
+            name: "Authorization",
+            prefix: "Bearer ",
+          },
+          consoleLinks: {
+            docs: "https://enterpret.support.site/article/enterpret-mcp-server",
+          },
+          warnings: [
+            "Check your auth token's expiry in Enterpret Settings > Enterpret MCP and replace it before it lapses.",
+            "This connection reads customer feedback, including verbatim quotes with speaker attribution.",
+            "run_graph_query starts as Ask first. Cypher is not established as read-only even when Enterpret advertises readOnlyHint.",
+          ],
+        },
+      ),
+      method(
+        "mcp-oauth",
+        "mcp_remote",
+        "oauth",
+        {
+          serverUrl: "https://wisdom-api.enterpret.com/server/mcp",
+          scopesHint: ["mcp:read"],
+        },
+        "S3",
+        "Sign in to Enterpret in the browser to query the official read-only MCP. Each person connects with their own Enterpret account, and Enterpret attributes their queries individually.",
+        {
+          label: "Sign in with Enterpret",
+          ownershipModes: ["dcr"],
+          grantKinds: ["user"],
+          whenToUse:
+            "Use browser sign-in when each person should query feedback under their own Enterpret account.",
+          consoleLinks: {
+            docs: "https://enterpret.support.site/article/enterpret-mcp-server",
+          },
+          warnings: [
+            "The official Enterpret MCP is read-only. Enterpret previously reported broader OAuth scopes, including mcp:write and email, than Paperclip requested. Enterpret is correcting this scope reporting; it does not establish access to the separate beta Agent MCP.",
+            "After revocation, Enterpret may cache token validity for up to 24 hours. Disconnect this connection to stop Paperclip access immediately. Enterpret is reducing this delay.",
+            "You need an Enterpret account with access to your organization's feedback.",
+            "This connection reads customer feedback, including verbatim quotes with speaker attribution.",
+          ],
+        },
+      ),
+    ],
+    {
+      docsUrl: "https://enterpret.support.site/article/enterpret-mcp-server",
+      redirectConstraints: "https-or-loopback-http",
+    },
   ],
   [
     "anthropic",
@@ -929,9 +1014,11 @@ const categoryBySlug = {
   cloudflare: "developer",
   cloudinary: "content",
   coda: "productivity",
+  ditto: "content",
   egnyte: "content",
   embat: "commerce",
   fireflies: "productivity",
+  gauge: "analytics",
   "hugging-face": "ai",
   jira: "productivity",
   kernel: "developer",
@@ -945,6 +1032,7 @@ const categoryBySlug = {
   miro: "productivity",
   mixpanel: "analytics",
   netlify: "developer",
+  neon: "data",
   notion: "content",
   oreilly: "content",
   pagerduty: "developer",
@@ -957,7 +1045,9 @@ const categoryBySlug = {
   sentry: "developer",
   similarweb: "analytics",
   stripe: "commerce",
+  superagent: "developer",
   supabase: "data",
+  telem: "ai",
   "ticket-tailor": "commerce",
   ticktick: "productivity",
   todoist: "productivity",
@@ -1007,17 +1097,28 @@ const apiKeySpec = {
     prefix: "Bearer ",
     placeholder: "Paste your Cloudflare API token",
   },
+  ditto: {
+    name: "Authorization",
+    prefix: "token ",
+    placeholder: "Paste your Ditto API key",
+  },
   coda: {
     name: "Authorization",
     prefix: "Bearer ",
     placeholder: "Paste your Coda API token",
   },
+  gauge: { name: "Authorization", prefix: "Bearer ", placeholder: "Paste your Gauge API key" },
   kernel: {
     name: "X-API-Key",
     prefix: null,
     placeholder: "Paste your Kernel API key",
   },
   mem0: { name: "Authorization", prefix: "Bearer ", placeholder: "Paste your Mem0 API key" },
+  neon: {
+    name: "Authorization",
+    prefix: "Bearer ",
+    placeholder: "napi_... or neon_project_key_...",
+  },
   oreilly: {
     name: "Authorization",
     prefix: "Bearer ",
@@ -1051,6 +1152,12 @@ const apiKeySpec = {
     name: "Authorization",
     prefix: "Bearer ",
     placeholder: "sbp_...",
+  },
+  superagent: { name: "Authorization", prefix: "Bearer ", placeholder: "sk_live_..." },
+  telem: {
+    name: "Authorization",
+    prefix: "Bearer ",
+    placeholder: "tlm_...",
   },
   youcom: {
     name: "Authorization",
@@ -1124,6 +1231,76 @@ const specialMethodsFor = (entry) => {
     apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
       guidanceMd: `Open the ${entry.name} dashboard, create an API key for the account agents should use, and paste it below.`,
       consoleLinks: { keys: entry.slug === "mem0" ? "https://app.mem0.ai/dashboard/api-keys" : "https://app.honcho.dev", docs: entry.docsUrl },
+      ...(entry.slug === "honcho" ? { tenantFields: [{
+        key: "workspaceId", label: "Honcho workspace", type: "text", required: true,
+        placeholder: "Workspace ID", validation: { maxLength: 512 },
+      }] } : {}),
+    }),
+  ];
+  // Gauge's sign-in picks one organization during consent; an API key is bound
+  // to the organization that created it and carries no user identity.
+  // Ditto's sign-in runs on Auth0, which issues refresh tokens only for
+  // offline_access. Its API keys use the `token` scheme, not `Bearer`, and act
+  // as the user who created them.
+  if (entry.slug === "ditto") {
+    const warning =
+      "Ditto delete tools cannot be undone, and linking text to a library component replaces each text item's developer ID. Set those actions to Ask first before agents run unattended.";
+    const capabilityProfile = {
+      key: "write",
+      label: "Read and write",
+      description: `Read style guide rules and search product text, and create, edit and translate text, components, variants and style guides. ${warning}`,
+    };
+    return [
+      oauthMethodFor(entry, "mcp-oauth", entry.serverUrl, {
+        guidanceMd:
+          "Connect Ditto in the browser. The connection acts as the Ditto user who signs in. Write tools start enabled and remain governed by Paperclip's action policies.",
+        warnings: [entry.prerequisite, warning],
+        capabilityProfile,
+      }),
+      apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+        whenToUse: "Use a Ditto workspace API key when browser sign-in is not suitable.",
+        guidanceMd:
+          "In Ditto, open Developers → API keys, create a key for Paperclip, and paste it below.",
+        consoleLinks: { keys: "https://app.dittowords.com/developers", docs: entry.docsUrl },
+        warnings: [entry.prerequisite, warning],
+        capabilityProfile,
+      }),
+    ];
+  }
+  if (entry.slug === "gauge") {
+    const warning =
+      "Gauge content tools can publish to your connected CMS, including live. Set publish actions to Ask first before agents run unattended.";
+    // The access step renders the capability profile before sign-in, so the
+    // publish warning is visible on the default browser path too.
+    const capabilityProfile = {
+      key: "write",
+      label: "Read and write",
+      description: `Read AI visibility, SEO and traffic data, and run content workflows. ${warning}`,
+    };
+    return [
+      oauthMethodFor(entry, "mcp-oauth", entry.serverUrl, {
+        guidanceMd:
+          "Connect Gauge in the browser and choose the organization this connection may use. Write tools start enabled and remain governed by Paperclip's action policies.",
+        warnings: [entry.prerequisite, warning],
+        capabilityProfile,
+      }),
+      apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+        whenToUse: "Use a Gauge organization API key when browser sign-in is not suitable.",
+        guidanceMd:
+          "In Gauge, open Settings → Integrations → API Keys, generate a key for Paperclip, and paste it below.",
+        warnings: [entry.prerequisite, warning],
+        capabilityProfile,
+      }),
+    ];
+  }
+  // Superagent's hosted server advertises protected-resource metadata, but its
+  // authorization server publishes no OAuth metadata, so organization API keys
+  // are the only working credential.
+  if (entry.slug === "superagent") return [
+    apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+      whenToUse: "Connect with a Superagent organization API key.",
+      guidanceMd: "Open Superagent Settings → API keys, create a separate key for Paperclip, and paste it below.",
+      consoleLinks: { keys: "https://www.superagent.sh/app/settings#api-keys", docs: entry.docsUrl },
     }),
   ];
   if (entry.slug === "zep") return [oauthMethodFor(entry, "mcp-oauth", entry.serverUrl, {
@@ -1414,6 +1591,128 @@ const specialMethodsFor = (entry) => {
       }),
     ];
   }
+  if (entry.slug === "neon") {
+    // Neon's hosted server narrows itself with documented query options:
+    // `projectId` pins one project and `readonly=true` limits SQL to SELECT
+    // and schema inspection. Its repeatable `category` filter has no
+    // comma-joined form, so catalog narrowing stays with per-action policies.
+    const tenantFields = [
+      {
+        key: "projectId",
+        label: "Pin to project ID",
+        type: "text",
+        advanced: true,
+        placeholder: "Optional Neon project ID",
+        helperMd:
+          "Optional. Restrict this connection to one project. Copy the project ID from Neon Console → Project settings → General.",
+        validation: { pattern: "^[a-z0-9-]+$", maxLength: 64 },
+        transport: { location: "query", name: "projectId" },
+      },
+      {
+        key: "readOnly",
+        label: "Read-only mode",
+        type: "checkbox",
+        defaultValue: false,
+        helperMd:
+          "Enable this to limit SQL to SELECT queries and schema inspection.",
+        transport: {
+          location: "query",
+          name: "readonly",
+          format: "boolean",
+          omitFalse: true,
+        },
+      },
+    ];
+    const warning =
+      "Neon recommends its hosted server for development and testing. Review write and destructive actions before execution.";
+    return [
+      oauthMethodFor(entry, "mcp-oauth", entry.serverUrl, {
+        guidanceMd:
+          "Connect Neon in the browser. Open Advanced to pin one project or enable read-only mode. Write tools start enabled and remain governed by Paperclip's action policies.",
+        tenantFields,
+        warnings: [entry.prerequisite, warning],
+        requiredResourceFilters: ["project"],
+      }),
+      apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+        guidanceMd:
+          "Use a customer-created Neon API key. Prefer a project-scoped key for one development project; personal and organization keys reach every project they can access. Write tools start enabled and remain governed by Paperclip's action policies.",
+        consoleLinks: {
+          keys: "https://console.neon.tech/app/settings/api-keys",
+          docs: entry.docsUrl,
+        },
+        tenantFields,
+        warnings: [entry.prerequisite, warning],
+        requiredResourceFilters: ["project"],
+      }),
+    ];
+  }
+  if (entry.slug === "telem") {
+    // Telem's hosted server takes an API key only. The optional settings are
+    // per-connection request headers that the server reads; each one is left
+    // out of the request when it is empty, so an unset field keeps the
+    // server's default (auto routing off, default tier, all providers).
+    const providerList = (key, label, header, helperMd) => ({
+      key,
+      label,
+      type: "textarea",
+      advanced: true,
+      placeholder: "Optional comma-separated provider names",
+      helperMd,
+      validation: { pattern: "^[A-Za-z0-9_.-]+(,[A-Za-z0-9_.-]+)*$", maxLength: 500 },
+      transport: { location: "header", name: header, format: "csv" },
+    });
+    const tenantFields = [
+      {
+        key: "autoRouting",
+        label: "Auto routing",
+        type: "select",
+        advanced: true,
+        options: [
+          { value: "off", label: "Off" },
+          { value: "accuracy", label: "Accuracy" },
+        ],
+        helperMd:
+          "Optional. Accuracy lets Telem choose the search providers for each query. Off, or no selection, keeps auto routing off.",
+        transport: { location: "header", name: "X-Telem-Auto-Routing" },
+      },
+      {
+        key: "tier",
+        label: "Tier",
+        type: "select",
+        advanced: true,
+        options: [
+          { value: "minimalist", label: "Minimalist" },
+          { value: "default", label: "Default" },
+          { value: "extended", label: "Extended" },
+          { value: "max", label: "Max" },
+        ],
+        helperMd:
+          "Optional. Sets how much search work Telem does for each query. No selection uses the Default tier.",
+        transport: { location: "header", name: "X-Telem-Tier" },
+      },
+      providerList(
+        "providersInclude",
+        "Providers to include",
+        "X-Telem-Providers-Include",
+        "Optional. Telem searches only these providers. Leave it empty to allow all providers.",
+      ),
+      providerList(
+        "providersExclude",
+        "Providers to exclude",
+        "X-Telem-Providers-Exclude",
+        "Optional. Telem does not search these providers.",
+      ),
+    ];
+    return [
+      apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+        guidanceMd:
+          "Create an API key in the Telem console at app.telem.ai. Paste the key below. Open Advanced to set auto routing, the tier, or the providers to include or exclude.",
+        whenToUse: "Connect with a Telem API key.",
+        consoleLinks: { keys: "https://app.telem.ai", docs: entry.docsUrl },
+        tenantFields,
+      }),
+    ];
+  }
   if (entry.slug === "youcom") {
     // You.com also serves a documented keyless profile at ?profile=free with a
     // reduced read-only tool set. That is a real user choice: try web search
@@ -1493,7 +1792,10 @@ for (const entry of researchManifest.entries) {
   }
   let methods = specialMethodsFor(entry);
   if (!methods) {
-    if (entry.authMode === "customer_oauth")
+    if (entry.authMode === "public")
+      methods = [method("public-mcp", "mcp_remote", "none", { serverUrl: entry.serverUrl }, entry.riskTier,
+        "Connect the provider's public MCP server without an account credential.", { label: "Connect public tools" })];
+    else if (entry.authMode === "customer_oauth")
       methods = [customerOAuthMethodFor(entry)];
     else if (entry.authMode === "api_key") methods = [apiKeyMethodFor(entry)];
     else {
@@ -1515,7 +1817,7 @@ for (const entry of researchManifest.entries) {
     schemaVersion: 1,
     slug: entry.slug,
     name: entry.name,
-    description: ({ mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers." })[entry.slug] ?? (entry.slug === "fireflies"
+    description: ({ neon: "Manage Postgres projects and branches, run SQL, and inspect schemas in Neon.", ditto: "Search and reuse approved product copy, follow your style guide, and edit and translate text.", gauge: "Track how AI answers mention your brand, research keywords and traffic, and run content workflows.", superagent: "Review security findings, start red-team reports, and score content and packages before agents trust them.", mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers.", telem: "Search the web and read pages across many search providers with one API key." })[entry.slug] ?? (entry.slug === "fireflies"
       ? "Search meeting transcripts, read summaries and action items, and connect meeting-ready routines."
       : `Connect ${entry.name}'s provider-hosted MCP server.`),
     categories: [categoryBySlug[entry.slug] ?? "other"],
@@ -1539,10 +1841,10 @@ for (const entry of researchManifest.entries) {
   });
 }
 // Google Workspace definitions are reviewed, first-class app entries rather
-// than rows synthesized from the generic connection corpus. Keep each product
-// independent in the generated manifest while sharing only backend OAuth
-// infrastructure.
+// than rows synthesized from the generic connection corpus. Keep legacy product
+// definitions for saved connections alongside the combined Workspace entry.
 const reviewedGoogleSlugs = [
+  "google-workspace",
   "gmail",
   "google-drive",
   "google-docs",
@@ -1653,14 +1955,54 @@ const inferState = (slug, state) => {
   };
 };
 // Runtime credentials share the provider catalog, but never expose tool actions.
-for (const [slug, name, subscription, envKey] of [["anthropic", "Claude", true, "ANTHROPIC_API_KEY"], ["openai", "OpenAI", true, "OPENAI_API_KEY"], ["openrouter", "OpenRouter", false, "OPENROUTER_API_KEY"], ["xai", "Grok", true, "XAI_API_KEY"]]) {
- let app=apps.find(a=>a.slug===slug);
- if(!app){app={schemaVersion:1,slug,name,description:`Connect ${name} accounts for your agents.`,categories:["ai"],branding:brandingFor(slug),urlPatterns:[{"openai":"https://api.openai.com/*","openrouter":"https://openrouter.ai/api/*","xai":"https://api.x.ai/*"}[slug]],methods:[]};apps.push(app);}
- const methods=(subscription?["subscription","api_key"]:["api_key"]).map(authMethod=>({key:`ai-${authMethod}`,label:authMethod==="subscription"?`${name} subscription`:`${name} API key`,purpose:"ai",transport:"runtime_auth",auth:authMethod==="subscription"?"oauth":"api_key",ai:{provider:slug,method:authMethod},grantKinds:["user","organization"],ownershipModes:["customer"],whenToUse:"Authenticate an agent with this account.",guidanceMd:"Use your personal account or an explicitly shared company account.",riskTier:"S3",...(authMethod==="api_key"?{credentialFields:[field("apiKey","API key","Enter API key")],keyPlacement:{location:"env",name:envKey}}:{})}));
- // Legacy REST entries have no tool execution adapter. Only offer the supported
- // AI account flow; saved REST connections remain removable through Connections.
- app.methods = [...methods, ...app.methods.filter(method => method.transport !== "rest_api")];
+const aiCatalogEntries = [
+  { slug: "anthropic", name: "Claude", provider: "anthropic", subscription: true, envKey: "ANTHROPIC_API_KEY" },
+  { slug: "openai", name: "OpenAI", provider: "openai", subscription: true, envKey: "OPENAI_API_KEY", url: "https://api.openai.com/*" },
+  { slug: "openrouter", name: "OpenRouter", provider: "openrouter", envKey: "OPENROUTER_API_KEY", url: "https://openrouter.ai/api/*" },
+  { slug: "xai", name: "Grok", provider: "xai", subscription: true, envKey: "XAI_API_KEY", url: "https://api.x.ai/*" },
+  { slug: "google", name: "Google Gemini", provider: "google", envKey: "GEMINI_API_KEY", url: "https://generativelanguage.googleapis.com/*" },
+  { slug: "bedrock", name: "Amazon Bedrock", provider: "anthropic", envKey: "AWS_BEARER_TOKEN_BEDROCK", description: "Use Claude through Amazon Bedrock with a Bedrock API key and AWS region." },
+  { slug: "responses-api", name: "Responses API", provider: "openai", envKey: "OPENAI_API_KEY", description: "Connect any compatible harness to an OpenAI Responses-compatible provider or gateway, including Emissary." },
+  { slug: "messages-api", name: "Messages API", provider: "anthropic", envKey: "ANTHROPIC_API_KEY", description: "Connect any compatible harness to an Anthropic Messages-compatible provider or gateway." },
+  { slug: "chat-completions-api", name: "Chat Completions API", provider: "openai", envKey: "OPENAI_API_KEY", description: "Connect any compatible harness to a Chat Completions-compatible provider or gateway." },
+  { slug: "local", name: "Local endpoint", provider: "openai", envKey: "OPENAI_API_KEY", description: "Use a local model server in the agent’s execution environment." },
+];
+for (const { slug, name, provider, subscription, envKey, url, description } of aiCatalogEntries) {
+  let app = apps.find(a => a.slug === slug);
+  if (!app) {
+    app = { schemaVersion: 1, slug, name, description: description ?? `Connect ${name} accounts for your agents.`, categories: ["ai"], branding: brandingFor(slug), urlPatterns: url ? [url] : [], methods: [] };
+    apps.push(app);
+  }
+  app.tags = [...new Set([...(app.tags ?? []), "model-provider"])];
+  const methods = (subscription ? ["subscription", "api_key"] : ["api_key"]).map(authMethod => ({
+    key: `ai-${authMethod}`, label: authMethod === "subscription" ? `${name} subscription` : `${name} API key`,
+    purpose: "ai", transport: "runtime_auth", auth: authMethod === "subscription" ? "oauth" : "api_key",
+    ai: { provider, method: authMethod }, grantKinds: ["user", "organization"], ownershipModes: ["customer"],
+    whenToUse: description ?? "Authenticate an agent with this account.",
+    guidanceMd: "Use your personal account or an explicitly shared company account.", riskTier: "S3",
+    ...(authMethod === "api_key" ? { credentialFields: [field("apiKey", "API key", "Enter API key")], keyPlacement: { location: "env", name: envKey } } : {}),
+  }));
+  // Legacy REST entries have no tool execution adapter. Only offer the supported
+  // AI account flow; saved REST connections remain removable through Connections.
+  app.methods = [...methods, ...app.methods.filter(method => method.transport !== "rest_api")];
 }
+// Reviewed provider-specific source data stays separate from generated output.
+// Apply it after legacy/research inputs, then run the same branding, permission,
+// instruction-template and validation pipeline as every other definition.
+const overridesDirectory = path.join(root, "scripts/app-definition-overrides");
+if (fs.existsSync(overridesDirectory)) {
+  for (const fileName of fs.readdirSync(overridesDirectory).filter(name => name.endsWith(".json")).sort()) {
+    const override = JSON.parse(fs.readFileSync(path.join(overridesDirectory, fileName), "utf8"));
+    if (!override.slug || fileName !== `${override.slug}.json` || !Array.isArray(override.methods)) {
+      throw new Error(`${fileName}: invalid provider definition source`);
+    }
+    override.branding = brandingFor(override.slug);
+    const existingIndex = apps.findIndex(app => app.slug === override.slug);
+    if (existingIndex === -1) apps.push(override);
+    else apps[existingIndex] = { ...apps[existingIndex], ...override };
+  }
+}
+
 // Every tool method has a checked-in permission review. Discovery metadata is
 // evidence for reviewers, never a runtime instruction to request more scopes.
 const permissionReviews = JSON.parse(fs.readFileSync(
@@ -1692,6 +2034,21 @@ for (const app of apps) {
         : { key: "write", label: "Read and write", description: "Query and change the databases you authorize in PlanetScale." };
     }
   }
+}
+
+// Reviewed instruction templates are authored in each app's definition. Keep
+// that optional capability intact when regenerating its transport/auth fields.
+for (const app of apps) {
+  const definitionPath = path.join(out, `${app.slug}.json`);
+  if (!fs.existsSync(definitionPath)) continue;
+  const { agentInstructions: template } = JSON.parse(fs.readFileSync(definitionPath, "utf8"));
+  if (template === undefined) continue;
+  if (!template || typeof template.id !== "string" || !template.id.trim() || template.id.length > 160
+    || !Number.isInteger(template.version) || template.version < 1
+    || typeof template.text !== "string" || !template.text.trim() || template.text.length > 2000) {
+    throw new Error(`${app.slug}: invalid agent instruction template`);
+  }
+  app.agentInstructions = template;
 }
 
 const validateApp = (app) => {
@@ -1734,6 +2091,62 @@ const validateApp = (app) => {
         );
   }
 };
+apps.push({
+  "schemaVersion": 1,
+  "slug": "speko",
+  "name": "Speko",
+  "description": "Talk with a Paperclip agent through an experimental hosted voice connection.",
+  "categories": [
+    "communication"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/speko.svg"
+  },
+  "urlPatterns": [
+    "https://speko.ai/*",
+    "https://platform.speko.ai/*"
+  ],
+  "methods": [
+    {
+      "key": "voice-agent",
+      "label": "Talk with an agent",
+      "purpose": "channel",
+      "provider": "speko",
+      "transport": "voice",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use browser voice to start and continue work with a selected Paperclip agent.",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "Speko API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Speko API key",
+          "secret": true
+        },
+        {
+          "key": "agentId",
+          "label": "Speko agent ID",
+          "type": "text",
+          "required": true,
+          "placeholder": "agent_\u2026",
+          "secret": false
+        }
+      ],
+      "guidanceMd": "Create a dedicated Speko voice persona and choose its voice. Paperclip registers signed session tools and keeps the selected Paperclip agent responsible for task work. Public HTTPS callbacks are required. Review provider recording settings; Speko charges are separate from agent costs. Phone calling is withheld pending live qualification.",
+      "consoleLinks": {
+        "register": "https://platform.speko.ai/agents",
+        "docs": "https://docs.speko.ai/guides/tool-calling"
+      },
+      "riskTier": "S3",
+      "requiredResourceFilters": []
+    }
+  ]
+});
 const captureFiles = definitionsOnly ? [] : fs
   .readdirSync(corpus)
   .filter((fileName) => fileName.endsWith(".md") && fileName !== "INDEX.md")
