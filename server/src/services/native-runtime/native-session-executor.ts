@@ -16476,14 +16476,14 @@ async function createRunnerdBackendWithinSessionClaim(
         input.managedAiCredentialWriteback!, credentialProvider, credentialStore.read);
       if (outcome === "no_credentials") throw new Error("Native credential snapshot unavailable");
     } : undefined;
-  const credentialUpdates = createNativeCredentialUpdateOwner(event => appendNativeCredentialUpdate(input.db, {
+  const credentialUpdates = credentialProvider ? createNativeCredentialUpdateOwner(event => appendNativeCredentialUpdate(input.db, {
     companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
     normalizedSessionId: nativeSessionKey(input.execution), runnerInstanceId: effectiveRunnerInstanceId, event,
     synchronizeCredentials: synchronizeCredentials ? async () => {
       if (event.payload.provider !== credentialProvider) throw new Error("native_credential_update_provider_mismatch");
       await synchronizeCredentials();
     } : undefined,
-  }));
+  })) : null;
   const backend = createNativeSessionBackend(runnerExecution, {
     retainedSystemInstructions,
     runnerInstanceId:
@@ -16526,7 +16526,7 @@ async function createRunnerdBackendWithinSessionClaim(
         ...(input.execution.provider.kind === "codex" ? { disableCodexWebSearch: "webSearch" in input.execution.provider && input.execution.provider.webSearch === "disabled" } : {}),
         homeMode: preconfiguredHome ? "preconfigured" : "isolated",
         ...accountingTransportOptions,
-        onCredentialsUpdated: credentialUpdates.onCredentialsUpdated,
+        onCredentialsUpdated: credentialUpdates?.onCredentialsUpdated,
         provider:
           input.execution.provider.kind === "cursor_cloud" ? "cursor_cloud" : input.execution.provider.kind === "codex"
             ? "codex"
@@ -16839,7 +16839,7 @@ async function createRunnerdBackendWithinSessionClaim(
   });
   const boundManagedSessions = new WeakSet<NativeSession>();
   const wrapManagedSession = (session: NativeSession): NativeSession => {
-    credentialUpdates.bindSession(session);
+    credentialUpdates?.bindSession(session);
     if (cursorCloudRuntime && !boundManagedSessions.has(session)) {
       boundManagedSessions.add(session);
       const close = session.close.bind(session);
