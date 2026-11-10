@@ -297,7 +297,7 @@ export async function admitExplicitNativeContinuation(input: {
     )).for("update");
     if (!source || (source.nativeIssueId ?? source.issueId ?? source.contextSnapshot?.issueId) !== issueId
       || adapterExecutionControls.has(source.id)) return null;
-    const nativeFailure = source.runtimeMode === "native" && ["failed", "timed_out"].includes(source.status) && Boolean(source.finishedAt);
+    const nativeFailure = Boolean(blocker) && source.runtimeMode === "native" && ["failed", "timed_out"].includes(source.status) && Boolean(source.finishedAt);
     if (!nativeFailure && !(await isFailedNativePreparation(db, source, coordinator) || await isPreDispatchExecutionWaitVerified(db, source))) return null;
     sourceChecks.push({ cause: nativeFailure ? "native_continuation_requires_reconciliation" : "legacy_execution_requires_reconciliation", evidence: { runId: source.id } });
   }
