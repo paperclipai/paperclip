@@ -9,7 +9,7 @@ import { checks, hasLink, type Entity } from "./internal-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
 import { faultOwnedNativeProcess, NATIVE_INFRASTRUCTURE_FAULT_CODES, type NativeFaultRun } from "./runtime-native-fault.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent, type RuntimeObservation } from "./runtime-support.js";
-export const INFRASTRUCTURE_RECOVERY_ORACLE = "paperclip.chat-catalog.runtime.infrastructure-recovery.v4";
+export const INFRASTRUCTURE_RECOVERY_ORACLE = "paperclip.chat-catalog.runtime.infrastructure-recovery.v5";
 const objectRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 /**
  * The chat run read the source task's saved recovery record through a product

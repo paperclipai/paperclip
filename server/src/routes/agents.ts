@@ -12,6 +12,7 @@ import { completeSetupTokenAiConnection } from "../services/setup-token-ai-conne
 import { connectionManagementService, continuingConnectionManagement } from "../services/connection-management.js";
 import { connectionManagementGuard, connectionRequestContext, connectionRequestUserId, aiLoginUserAction } from "./connection-management-authz.js";
 import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
+import { NATIVE_CLEANUP_SETTLING_MESSAGE } from "../services/native-runtime/completed-turn-cleanup.js";
 import { agentHarnessType, isEnvironmentDriverSupportedForAdapter, normalizeClaudeRunnerOptions, type AgentConfigurationWarning, type AgentRunnerChoice } from "@paperclipai/shared";
 import { resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
 import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, pluginEnvironmentRunnerTaskDriver, pluginRunnerAiConnectionRequiredMessage, pluginRunnerAiConnectionRequiredTestResult } from "../services/plugin-runner-ai-connection.js";
@@ -6228,7 +6229,7 @@ export function agentRoutes(
         throw notFound("Failed run not found");
       }
       if (failedRun.runtimeMode === "native" && failedRun.errorCode === "native_session_cleanup_quarantined") {
-        throw conflict("The stopped native session requires cleanup and reconciliation before a new attempt.", {
+        throw conflict(NATIVE_CLEANUP_SETTLING_MESSAGE, {
           code: "native_session_cleanup_quarantined",
         });
       }

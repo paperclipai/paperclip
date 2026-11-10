@@ -4,7 +4,9 @@ import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { persistActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
 import type { OwnerProof } from "../owner-proof.js";
 import { readSaveWork } from "../remote-workspaces.js";
-import { notifyRemoteWorkspaceSnapshots } from "../remote-workspace-snapshot-retention.js";
+import { abortSnapshotAttemptUploads, notifyRemoteWorkspaceSnapshots, snapshotAttemptKeys } from "../remote-workspace-snapshot-retention.js";
+import { getStorageService } from "../../storage/index.js";
+import type { StorageService } from "../../storage/types.js";
 import type { InProgressRecord, SettleOutcome } from "./ownership-registry.js";
 
 export const ABANDONED_REMOTE_SNAPSHOT_LEDGER_REASON = "abandoned_remote_snapshot_upload";
@@ -55,11 +57,20 @@ export async function retireEndedRemoteSnapshotLedgerRow(tx: Db, input: {
   return { retired: true, snapshot: row, status };
 }
 
+export async function abortRetiredSnapshotUploads(snapshots: Snapshot[], storage?: StorageService) {
+  const attempted = snapshots.filter(snapshot => snapshotAttemptKeys(snapshot).length);
+  if (!attempted.length) return;
+  let service: StorageService;
+  try { service = storage ?? getStorageService(); } catch { return; }
+  for (const snapshot of attempted) await abortSnapshotAttemptUploads(service, snapshot.companyId, snapshotAttemptKeys(snapshot));
+}
+
 export async function settleAbandonedRemoteSnapshotLedger(db: Db, record: InProgressRecord,
-  context: { now: Date; proof: OwnerProof }): Promise<SettleOutcome> {
+  context: { now: Date; proof: OwnerProof }, options: { storage?: StorageService } = {}): Promise<SettleOutcome> {
   if (record.owner.kind !== "run" || !record.companyId) return { settled: false, reason: "owner_not_provable" };
   const companyId = record.companyId;
   let publication: ActivityPublication | undefined;
+  let retired: Snapshot | undefined;
   const outcome = await db.transaction(async (transaction): Promise<SettleOutcome> => {
     const tx = transaction as unknown as Db;
     const result = await retireEndedRemoteSnapshotLedgerRow(tx, { companyId, snapshotId: record.recordId,
@@ -75,9 +86,11 @@ export async function settleAbandonedRemoteSnapshotLedger(db: Db, record: InProg
         ...(result.snapshot.metadata?.abandonedUpload as Record<string, unknown>) },
     });
     publication = activity.publication;
+    retired = result.snapshot;
     return { settled: true, reason: context.proof.reason };
   });
   if (outcome.settled && publication) publishActivity(publication);
+  if (outcome.settled && retired) await abortRetiredSnapshotUploads([retired], options.storage);
   return outcome;
 }
 
@@ -87,7 +100,10 @@ export async function retireAbandonedSaveLedgerRows(tx: Db, input: {
   const rows = await tx.select({ id: executionWorkspaceSnapshots.id }).from(executionWorkspaceSnapshots).where(and(
     eq(executionWorkspaceSnapshots.companyId, input.companyId), eq(executionWorkspaceSnapshots.sourceOperationId, input.operationId),
     eq(executionWorkspaceSnapshots.status, "pending")));
+  const retired: Snapshot[] = [];
   for (const row of rows) {
-    await retireEndedRemoteSnapshotLedgerRow(tx, { companyId: input.companyId, snapshotId: row.id, now: input.now, proof: input.proof });
+    const result = await retireEndedRemoteSnapshotLedgerRow(tx, { companyId: input.companyId, snapshotId: row.id, now: input.now, proof: input.proof });
+    if (result.retired) retired.push(result.snapshot);
   }
+  return retired;
 }

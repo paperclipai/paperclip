@@ -135,6 +135,32 @@
         "packages/db/src/schema/heartbeat_run_events.ts",
         "server/src/services/heartbeat.ts"
       ]
+    },
+    {
+      "path": "rules/api-route-expectations.mdc",
+      "description": "Company access checks, actor permissions, activity logging for mutations, and consistent HTTP errors on API routes.",
+      "scope": [
+        "server/src/routes/**"
+      ]
+    },
+    {
+      "path": "rules/company-scope-exceptions.mdc",
+      "description": "The known instance-wide data (announcement dismissals, publication-ID registry, personal workspace preferences, sidebar company order) and the conditions that keep company boundaries intact.",
+      "scope": [
+        "packages/db/src/schema/announcement_dismissals.ts",
+        "packages/shared/src/announcements.ts",
+        "server/src/routes/announcements.ts",
+        "server/src/services/announcements.ts",
+        "server/src/services/announcement-feed.ts",
+        "packages/db/src/schema/user_workspace_preferences.ts",
+        "packages/shared/src/workspace-preferences.ts",
+        "server/src/routes/workspace-preferences.ts",
+        "server/src/services/workspace-preferences.ts",
+        "packages/db/src/schema/user_sidebar_preferences.ts",
+        "packages/shared/src/types/sidebar-preferences.ts",
+        "server/src/routes/sidebar-preferences.ts",
+        "server/src/services/sidebar-preferences.ts"
+      ]
     }
   ]
 }

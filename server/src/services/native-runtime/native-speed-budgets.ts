@@ -10,7 +10,7 @@
  * A single run is checked against the p95 budget; p50 budgets apply to
  * aggregates (chaos waves, the baseline driver). Remote environments have no
  * budget until a Daytona baseline exists. Breaches go to the run log only,
- * never to Telemetry (AGENTS.md §5.7).
+ * never to Telemetry (rules/data-paths.mdc).
  */
 
 export type SpeedBudgetAdapter = "claude" | "codex" | "opencode";

@@ -87,7 +87,7 @@ export const runtimeFailedRunCases = [runtimeDefinition("runs-adapters.inspect-f
   return { worker, task: done.task, ...failure, successfulRun, successArtifactVerified: true, failureLogAvailable };
 }, gradeFailedAttempt, {
   sourceFiles: ["chat-catalog-domains/runtime-failed-runs.ts", "chat-catalog-domains/runtime-native-failure.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/internal-run-history.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-scenarios/runs-adapters.yaml", "../../ui/src/components/TaskChatThread.tsx", "../../ui/src/components/task-chat/TaskChatMarker.tsx", "../../ui/src/components/task-chat/TaskChatThreadView.tsx", "../../ui/src/pages/AgentDetail.tsx"],
-  oracleVersion: "paperclip.chat-catalog.runtime.inspect-failed-run.v4", expectedRunCount: 3, attemptTimeoutMs: 720_000,
+  oracleVersion: "paperclip.chat-catalog.runtime.inspect-failed-run.v5", expectedRunCount: 3, attemptTimeoutMs: 720_000,
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { failed: 1, succeeded: 2 } },
   async observe(ctx, state) {
     state.retainedFailure = await ctx.input.api.get(`/api/heartbeat-runs/${(state.failedRun as { id: string }).id}`);

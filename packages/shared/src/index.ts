@@ -944,6 +944,7 @@ export type {
   ProjectBudgetSummary,
   ProjectRepository,
   ProjectRepositoryOptions,
+  ProjectEnvironmentOptions,
   ProjectGitAuthorization,
   ProjectCodebase,
   ProjectCodebaseOrigin,

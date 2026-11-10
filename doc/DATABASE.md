@@ -447,6 +447,35 @@ through it instead of reading the agent's whole run history. To measure it:
 pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-native-session-run-index.ts
 ```
 
+Chat-admission checks use `chat_actions_company_issue_kind_idx` from migration
+0458, which builds it concurrently. The check decides whether an issue holds
+external chat input that was never admitted: recovery skips such an issue and
+manual task start refuses it. The index keys `inbound_wakeup` and
+`failed_run_retry` actions by company, `payload->>'issueId'`, kind and status.
+It serves the outer input lookup and the nested retry and later-input lookups,
+which all match on the same company and payload issue ID. Without it, each check
+reads the full `chat_actions` table. The check SQL is unchanged. Local proof:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-chat-admission-index.ts
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-chat-admission-index-migration.ts
+```
+
+Native harness backup expiration finds the leases that reference one backup root
+by run, by `metadata.nativeHarnessBackup.sessionScopeSha256`, and by the
+identity's own lease ID, in one `OR` query. The partial expression index
+`environment_leases_native_backup_scope_idx` from migration 0459 keys leases by
+that scope digest. With it, every arm of the `OR` has an index, so PostgreSQL
+combines three index probes instead of reading every lease of the company and its
+metadata. The expression must stay identical to the one in
+`server/src/services/native-runtime/native-harness-backup-expiration.ts`; a
+regression test checks that the planner uses the index. The migration builds the
+index concurrently. To compare both plans on a disposable local fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-environment-lease-backup-lookup.ts
+```
+
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
 still match nothing. The query can use existing primary keys without adding a
@@ -518,8 +547,11 @@ retain the existing refresh fallback. Run transitions, activity events, and
 reconnect recovery still refresh their affected data.
 
 Task run queries stop interval polling only after a successful empty response
-and an open shared live connection for the current company and session. Initial
-reads, active work, errors, connection setup, and disconnections retain their
+and an open shared live connection for the current company and session. With
+that connection open, a successful active response (a run list or one run)
+polls only every 15 seconds. Lifecycle and progress events keep it current; the
+slow read only bounds drift in fields that have no event. Initial reads,
+unrecognized data, errors, connection setup, and disconnections retain their
 existing polling cadence. Company or session changes require a new connection.
 Views without an assigned agent retain polling. Matching run lifecycle events
 refresh the displayed task's run queries independently of route and window
@@ -531,6 +563,18 @@ request settles. Connection readiness also reconciles the displayed run
 queries after any older request. Follow-up reads belong to the current mounted
 scope and stop when it changes or unmounts. The first open and reconnect still
 reconcile missed events.
+
+Live events refresh company-wide lists and projections through a slower
+invalidation lane. These are task lists and summaries, the agent list, run
+lists, badges, the dashboard, costs and the company activity feed. The lane
+flushes at most once every 5 seconds. After 5 quiet seconds, an event refreshes
+them after the normal batch interval. An event inside the 5-second window waits
+until the window ends. Task detail, comments, runs, browsers and other
+per-entity queries keep the fast lane. A task's browser list stops interval
+polling while the live connection is open and no browser can still change
+state. Browser lifecycle activity on that task refreshes it. If a browser read
+is in flight, one shared follow-up read runs after it settles. A list that no
+view observes becomes stale, so the next view reads it.
 
 Bundled skill release checks read the current stored version ID and a SHA-256
 fingerprint of its file inventory. A per-database memo keeps at most 64 verified
@@ -1184,6 +1228,29 @@ The database mode is controlled by `DATABASE_URL`:
 | `postgres://...supabase.com...` | Hosted Supabase |
 
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
+
+## Schema change workflow
+
+When you change the data model:
+
+1. Edit `packages/db/src/schema/*.ts`.
+2. Export each new table from `packages/db/src/schema/index.ts`.
+3. Generate the migration from the repository root:
+
+   ```sh
+   pnpm db:generate
+   ```
+
+4. Validate that everything compiles:
+
+   ```sh
+   pnpm -r typecheck
+   ```
+
+`pnpm db:generate` compiles `packages/db` first, because
+`packages/db/drizzle.config.ts` reads the compiled schema from `dist/schema/*.js`.
+Then update every layer that the change affects: `packages/shared` types and
+validators, `server` routes and services, and `ui` API clients and pages.
 
 ## Migration authoring checklist
 
@@ -2039,6 +2106,26 @@ pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-comment-wake-che
 
 This disposable fixture compares the complete check result, the complete
 positional SQL rows, plans, and timings with and without nested-loop joins.
+
+The stale-continuation check for dropped user comments uses the same per-binding
+run probes. It first keeps the comments that a stale-continuation cancellation
+dropped and that no open wake carries, and only those comments reach the run
+probes.
+
+The workspace recovery worker's next deadline (`nextWorkspaceRecoveryAt`) and
+its discovery conditions find the source run, its finalizer and its leases by
+`id = canonical uuid of evidence->>'runId'`. The value is null unless the saved
+text is the canonical lowercase form, so the probe matches exactly the rows the
+former `id::text = evidence->>'runId'` comparison matched. The text comparison
+could not use a key, so each exhausted hold read every run, finalizer and lease
+of its company.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-recovery-status-checks.ts --baseline-ref=8d2bf78323
+```
+
+This fixture compares every changed discovery condition for every recovery
+action, the complete check results and the positional SQL rows before timing.
 
 ### Agent runtime synchronization journal
 
