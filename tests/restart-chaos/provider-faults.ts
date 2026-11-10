@@ -250,13 +250,15 @@ export async function readProviderFaultEvents(logPath: string, nonce?: string): 
  * A provider-fault task passes only if its fault really happened: otherwise the scenario was not
  * exercised (for example the turn ended before any interrupt), and a pass would prove nothing.
  *
- * With `--provider-fault-restart K1` the fault must also straddle the restart: the K1 started after
- * the fault applied and, for PV1, before the held message was released or discarded. The K1 kills the runner
- * with the held message, so a PV1 task then needs no release. Whether the task itself recovered
+ * With `--provider-fault-restart` the fault must also straddle the restart: the restart started after
+ * the fault applied, and the held message was neither released nor discarded before the old control plane
+ * had stopped (`restartStoppedAt`). A K2 drains gracefully between its start and its stop, so a message
+ * released in that drain reached the old process and straddled nothing. The kill takes the held message
+ * with the runner, so a PV1 task then needs no release. Whether the task itself recovered
  * is the ordinary grade (R1–R6 and its T-oracle), which this check never replaces.
  */
 export function withProviderFaultCheck(oracle: OracleResult, plan: TaskPlan, events: readonly ProviderFaultEvent[],
-  restartStartedAt: number | null = null): OracleResult {
+  restartStartedAt: number | null = null, restartStoppedAt: number | null = restartStartedAt): OracleResult {
   if (!plan.providerFault) return oracle;
   const rule = plan.providerFault;
   const applied = events.filter(event => event.event === "applied" && event.kind === rule.kind && event.message === rule.message);
@@ -268,9 +270,11 @@ export function withProviderFaultCheck(oracle: OracleResult, plan: TaskPlan, eve
   let restartDetail = "";
   if (rule.restart) {
     const appliedAt = applied[0]?.at ?? null;
-    // Released or discarded before the K1: the message was already gone, so nothing straddled the restart.
-    const releasedBeforeRestart = restartStartedAt !== null && released.some(event => event.at < restartStartedAt);
-    const discardedBeforeRestart = restartStartedAt !== null && discarded.some(event => event.at < restartStartedAt);
+    // Released or discarded before the old control plane stopped (a K2 drain included): the message was
+    // already gone, so nothing straddled the restart.
+    const stoppedAt = restartStoppedAt ?? restartStartedAt;
+    const releasedBeforeRestart = stoppedAt !== null && released.some(event => event.at < stoppedAt);
+    const discardedBeforeRestart = stoppedAt !== null && discarded.some(event => event.at < stoppedAt);
     exercised = applied.length === 1 && appliedAt !== null && restartStartedAt !== null && restartStartedAt >= appliedAt
       && !releasedBeforeRestart && !discardedBeforeRestart;
     restartDetail = restartStartedAt === null ? " restart=none"

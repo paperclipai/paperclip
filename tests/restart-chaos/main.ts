@@ -611,7 +611,8 @@ async function main(): Promise<number> {
         : { verdict: "fail" as const, checks: [{ name: "artifacts_collected", ok: false, detail: observer.record.launchError ?? "collection failed" }] };
       // A provider-fault task whose fault never happened tested nothing.
       const restart = faults.find(receipt => receipt.requestedBy === observer.plan.taskId && receipt.trigger === "provider");
-      const oracle = withProviderFaultCheck(graded, observer.plan, artifacts?.providerFaultEvents ?? [], restart?.startedAt ?? null);
+      const oracle = withProviderFaultCheck(graded, observer.plan, artifacts?.providerFaultEvents ?? [], restart?.startedAt ?? null,
+        restart?.stoppedAt ?? restart?.startedAt ?? null);
       const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, oracle, universalByIssue ? {
         runMessages: allRunMessages, recoveryActions: universalByIssue.get(observer.record.issueId ?? "")?.recoveryActions ?? [] } : undefined);
       let evidence: string | null = null;

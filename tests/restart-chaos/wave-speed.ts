@@ -248,14 +248,8 @@ export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly Base
       rows.push({ adapter, metric, start: "restart", measured, budget, breaches: breachesOf(measured, budget) });
     }
   }
-  const singleRunBreaches = runs.filter(run => run.phase !== "restart" && run.phase !== "verify").filter(run => {
-    const start = runWarmth(run);
-    const activity = firstActivityMs(run), boot = bootWithoutProvisionMs(run);
-    const activityBudget = budgetFor(environment, run.adapter, "time_to_first_activity", start);
-    const bootBudget = budgetFor(environment, run.adapter, "agent_boot", start);
-    return (activity !== null && activityBudget !== null && activity > activityBudget.p95Ms)
-      || (boot !== null && bootBudget !== null && boot > bootBudget.p95Ms);
-  }).length + samples.filter(sample => {
+  const singleRunBreaches = runs.filter(run => run.phase !== "restart" && run.phase !== "verify")
+    .filter(run => runOverBudget(environment, run)).length + samples.filter(sample => {
     const budget = budgetFor(environment, sample.adapter, "restart_recovery_control_plane", "restart");
     return !sample.interruptedByFault && sample.controlPlaneMs !== null && budget !== null && sample.controlPlaneMs > budget.p95Ms;
   }).length;
@@ -268,6 +262,16 @@ export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly Base
     storageFaultWindows: storageWindows.length, storageFaultRemovedMs: storageRemovedMs };
 }
 
+/** One cold or warm run over its own p95 budget (first activity or boot): a single-run breach. */
+function runOverBudget(environment: EnvironmentKind, run: BaselineRun): boolean {
+  const start = runWarmth(run);
+  const activity = firstActivityMs(run), boot = bootWithoutProvisionMs(run);
+  const activityBudget = budgetFor(environment, run.adapter, "time_to_first_activity", start);
+  const bootBudget = budgetFor(environment, run.adapter, "agent_boot", start);
+  return (activity !== null && activityBudget !== null && activity > activityBudget.p95Ms)
+    || (boot !== null && bootBudget !== null && boot > bootBudget.p95Ms);
+}
+
 function runDetail(environment: EnvironmentKind, run: BaselineRun): SpeedRunDetail {
   const start = runWarmth(run);
   const metrics = runMetrics(run);
@@ -277,14 +281,10 @@ function runDetail(environment: EnvironmentKind, run: BaselineRun): SpeedRunDeta
   const activity = spans.find(span => span.name === "task.time_to_first_agent_activity") ?? null;
   const turnAt = submitted ? submitted.startOffsetMs + submitted.durationMs : null;
   const activityAt = activity ? activity.startOffsetMs + activity.durationMs : null;
-  const firstActivity = firstActivityMs(run), boot = bootWithoutProvisionMs(run);
-  const activityBudget = budgetFor(environment, run.adapter, "time_to_first_activity", start);
-  const bootBudget = budgetFor(environment, run.adapter, "agent_boot", start);
-  return { runId: run.runId, adapter: run.adapter, start, firstActivityMs: firstActivity, bootMs: boot, queueMs: queue?.durationMs ?? null,
+  return { runId: run.runId, adapter: run.adapter, start, firstActivityMs: firstActivityMs(run), bootMs: bootWithoutProvisionMs(run), queueMs: queue?.durationMs ?? null,
     providerFirstActivityMs: turnAt !== null && activityAt !== null ? Math.max(0, activityAt - turnAt) : null,
     preTurnSteps: metrics.preTurnSteps,
-    breach: (firstActivity !== null && activityBudget !== null && firstActivity > activityBudget.p95Ms)
-      || (boot !== null && bootBudget !== null && boot > bootBudget.p95Ms) };
+    breach: runOverBudget(environment, run) };
 }
 
 async function runEventsWithRetry(api: ChaosApi, runId: string, attempts = 3): Promise<BaselineEvent[]> {

@@ -274,6 +274,12 @@ describe("provider faults across a restart", () => {
     expect(withProviderFaultCheck(pass, task("aa", rule), [applied, { ...applied, event: "released", at: 2_000 }], 4_000).checks.at(-1))
       .toMatchObject({ ok: false, detail: expect.stringContaining("releasedBeforeRestart") });
     expect(withProviderFaultCheck(pass, task("aa", rule), [applied], 500).verdict).toBe("fail");
+    // K2: a release inside the graceful drain (after the SIGTERM, before the old process stopped) reached
+    // the old control plane, so the message straddled nothing.
+    const k2: ProviderFaultRule = { ...rule, restart: { kind: "K2", afterAppliedMs: 3_000 } };
+    expect(withProviderFaultCheck(pass, task("aa", k2), [applied, { ...applied, event: "released", at: 10_000 }], 4_000, 20_000).checks.at(-1))
+      .toMatchObject({ ok: false, detail: expect.stringContaining("releasedBeforeRestart") });
+    expect(withProviderFaultCheck(pass, task("aa", k2), [applied, { ...applied, event: "released", at: 25_000 }], 4_000, 20_000).verdict).toBe("pass");
     // A provider that closed first took the held message with it before the K1: nothing straddled the restart.
     expect(withProviderFaultCheck(pass, task("aa", rule), [applied, { ...applied, event: "held_message_discarded", at: 3_000 }], 4_000).checks.at(-1))
       .toMatchObject({ ok: false, detail: expect.stringContaining("discardedBeforeRestart") });
