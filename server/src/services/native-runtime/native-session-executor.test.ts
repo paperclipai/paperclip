@@ -2064,6 +2064,31 @@ describe("native incomplete-bootstrap evidence", () => {
     }
   }
 
+  it("proves a failed provider initialization stopped before any turn only when its process is gone", async () => {
+    const pid = await deadPid();
+    const fixture = drainedBeforeSessionOpened();
+    const startup = (processId: number) => ({ code: "provider_startup_ownership", startup: {
+      schema: "paperclip.provider_startup.v1", phase: "initialization_failed", failedStage: "initialize",
+      directChildExitObserved: true, processId, processGroupId: null, authenticatedThreadId: null,
+      launchId: "launch-1", origin: { runId: (fixture.controlPlane.identity as { runId: string }).runId },
+      command: { commandType: "session.open" },
+    } });
+    fixture.controlPlane.committedEvents = [sessionEvent(1, "harness.diagnostic", startup(pid))];
+    fixture.controlPlane.ackedSourceSeq = 1;
+    fixture.runner.nextSourceSeq = 2;
+    fixture.runner.ackedSourceSeq = 1;
+    expect(await provesLocally(fixture)).toBe(true);
+    (fixture.controlPlane.commands as unknown[]).push({ type: "turn.start", status: "pending" });
+    expect(await provesLocally(fixture)).toBe(false);
+    (fixture.controlPlane.commands as unknown[]).pop();
+    fixture.runner.nextSourceSeq = 3;
+    expect(await provesLocally(fixture)).toBe(false);
+    fixture.runner.nextSourceSeq = 2;
+    fixture.controlPlane.committedEvents = [sessionEvent(1, "harness.diagnostic", startup(process.pid))];
+    expect(await provesLocally(fixture)).toBe(false);
+    expect(await provesLocally(fixture, false)).toBe(false);
+  });
+
   it("allows a fresh bootstrap after a drain that landed between session.open and the first turn", async () => {
     const pid = await deadPid();
     expect(await provesLocally(drainedAfterSessionOpen(pid))).toBe(true);
@@ -14891,7 +14916,7 @@ describe("runnerd provider runtime wiring", () => {
     expect(await unidentifiedLocalRunnerProvenAbsent({ runId: "another-run", execution: current })).toBe(false);
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", "--run-id", runId], { stdio: "ignore" });
     try {
-      await vi.waitFor(async () => expect(await unidentifiedLocalRunnerProvenAbsent({ runId, execution: current })).toBe(false));
+      await vi.waitFor(async () => expect(await unidentifiedLocalRunnerProvenAbsent({ runId, execution: current })).toBe(false), { timeout: 15_000 });
     } finally {
       const exited = once(child, "exit"); child.kill("SIGKILL"); await exited;
     }

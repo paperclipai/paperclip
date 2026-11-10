@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { resolvePinnedCodexCommand } from "./codex-command.js";
 import { evalProviderTransportOptions } from "../../cli/eval-provider-runtime.js";
 import { describe, expect, it } from "vitest";
+import { parse } from "smol-toml";
 
 import {
   CODEX_UPDATE_PLAN_TOOL_CONFIG,
@@ -349,6 +350,32 @@ describe("Codex security configuration", () => {
     expect(args).toContain('"/provider"="none"');
     expect(args).not.toContain('"/legacy"="read"');
     expect(args.match(/"\/legacy\/.config\/gh"="read"/g)).toHaveLength(2);
+  });
+
+  it("produces valid permissions when host Git and the broker share the gh config directory", () => {
+    const host = resolve("git-host");
+    const ghConfig = join(host, ".config", "gh");
+    const args = createIsolatedCodexAppServerArgs({
+      HOME: resolve("provider-home"), CODEX_HOME: resolve("provider-home"),
+      PAPERCLIP_GITHUB_AUTH_MODE: "host", PAPERCLIP_GITHUB_HOST_HOME: host,
+      GH_CONFIG_DIR: ghConfig, PAPERCLIP_GITHUB_BROKER_TOKEN: "test-token",
+    });
+    for (const profile of ["paperclip-runner-workspace-only", "paperclip-runner-workspace-read-only"]) {
+      const setting = args.find(arg => arg.startsWith(`permissions.${profile}.filesystem=`))!;
+      const parsed = parse(`filesystem=${setting.slice(setting.indexOf("=") + 1)}`);
+      expect(parsed.filesystem).toMatchObject({ [ghConfig]: "write" });
+    }
+    const codexHome = mkdtempSync(join(tmpdir(), "paperclip-git-permissions-"));
+    try {
+      const codex = resolvePinnedCodexCommand();
+      const nodeLauncher = codex.endsWith(".js");
+      expect(execFileSync(nodeLauncher ? process.execPath : codex, [...(nodeLauncher ? [codex] : []), ...args.slice(0, -1), "features", "list"], {
+        env: { PATH: process.env.PATH, HOME: codexHome, CODEX_HOME: codexHome },
+        encoding: "utf8", timeout: 30_000, maxBuffer: 256 * 1024,
+      })).toContain("image_generation");
+    } finally {
+      rmSync(codexHome, { recursive: true, force: true });
+    }
   });
 
   it("disables host extensions and makes collaboration instructions explicit", () => {

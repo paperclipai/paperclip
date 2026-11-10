@@ -69,6 +69,26 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       actorType: "user", actorId: "board", reason: "issue_commented" };
   }
   type Fixture = Awaited<ReturnType<typeof seed>>;
+  it.each([false, true])("checks a newer failed Retry source even when only an older run has a recovery hold (running=%s)", async running => {
+    const f = await seed();
+    const newer = randomUUID(), requestId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: newer, companyId: f.companyId, agentId: f.agentId,
+      nativeIssueId: f.issueId, runtimeMode: "native", status: "failed",
+      processPid: running ? process.pid : 999999999, contextSnapshot: { issueId: f.issueId },
+      createdAt: new Date("2026-09-11T10:01:00Z"), finishedAt: new Date("2026-09-11T10:02:00Z") });
+    await db.insert(nativeRunFinalizations).values({ runId: newer, companyId: f.companyId, issueId: f.issueId,
+      phase: "terminal_failure", attempt: 1 });
+    await db.insert(agentWakeupRequests).values({ id: requestId, companyId: f.companyId, agentId: f.agentId,
+      source: "on_demand", triggerDetail: "manual", reason: "task_retry", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: f.actorId,
+      payload: { issueId: f.issueId, taskRetry: { schema: "paperclip.task-retry.v1", generationId: requestId,
+        sourceRunId: newer, actorId: f.actorId, actorSource: "session", strategy: "evaluate" } } });
+    const blocked: string[] = [];
+    const result = await admitExplicitNativeContinuation({ ...f, db, reason: "task_retry", commentId: null,
+      taskRetryRequestId: requestId, dryRun: true, onBlocked: reason => blocked.push(reason) });
+    if (running) { expect(result).toBeNull(); expect(blocked).toContain("process_running"); }
+    else expect(result).toMatchObject({ previousRunId: newer, taskRetryRequestId: requestId });
+  });
   async function readAdmission(f: Fixture, full: boolean) {
     const reads: Array<Array<Record<string, unknown>>> = [];
     const recorded = new Proxy(db, { get(target, key) {
@@ -1158,7 +1178,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       } finally { verify.mockRestore(); }
     });
 
-  it.each(["absent", "live_runner", "saved_state", "dry_run", "foreign_host", "unbound_launch"] as const)(
+  it.each(["absent", "live_runner", ...(process.platform === "win32" ? ["quoted_live_runner"] as const : []), "saved_state", "dry_run", "foreign_host", "unbound_launch"] as const)(
     "admits a Retry after a launch whose runner identity was never recorded only when no runner exists (%s)", async kind => {
       // RC-42: the server was killed after requesting the runner launch and
       // before recording its process identity, so there is no PID to verify.
@@ -1184,8 +1204,11 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         // Only the launching host can inspect its process table.
         await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId, eventType: PROCESS_START_REQUESTED,
           ...(kind === "unbound_launch" ? {} : { payload: { hostname: kind === "foreign_host" ? `other-${os.hostname()}` : os.hostname() } }) });
-        if (kind === "live_runner") {
-          child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", "--run-id", f.sourceRunId], { stdio: "ignore" });
+        if (kind === "live_runner" || kind === "quoted_live_runner") {
+          child = kind === "quoted_live_runner"
+            ? spawn(process.execPath, ["-e", '"setInterval(() => {}, 1000)"', "--", '"--run-id"', `"${f.sourceRunId}"`],
+                { stdio: "ignore", windowsVerbatimArguments: true, argv0: `"${process.execPath}"` })
+            : spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "--", "--run-id", f.sourceRunId], { stdio: "ignore" });
           await once(child, "spawn");
         }
         if (kind === "saved_state") {

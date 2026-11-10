@@ -296,9 +296,10 @@ export async function admitExplicitNativeContinuation(input: {
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, taskRetry.sourceRunId), eq(heartbeatRuns.agentId, agentId),
     )).for("update");
     if (!source || (source.nativeIssueId ?? source.issueId ?? source.contextSnapshot?.issueId) !== issueId
-      || adapterExecutionControls.has(source.id) ||
-      !(await isFailedNativePreparation(db, source, coordinator) || await isPreDispatchExecutionWaitVerified(db, source))) return null;
-    sourceChecks.push({ cause: "legacy_execution_requires_reconciliation", evidence: { runId: source.id } });
+      || adapterExecutionControls.has(source.id)) return null;
+    const nativeFailure = source.runtimeMode === "native" && ["failed", "timed_out"].includes(source.status) && Boolean(source.finishedAt);
+    if (!nativeFailure && !(await isFailedNativePreparation(db, source, coordinator) || await isPreDispatchExecutionWaitVerified(db, source))) return null;
+    sourceChecks.push({ cause: nativeFailure ? "native_continuation_requires_reconciliation" : "legacy_execution_requires_reconciliation", evidence: { runId: source.id } });
   }
   if (!sourceChecks.length && !nativeQueuedSend) return null;
   if (blocker && blocker.recoveryActionId === null) return null;

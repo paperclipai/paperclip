@@ -98,7 +98,7 @@ import { createNativeToolTrace, type NativeToolTrace } from "./native-tool-trace
 import { createNativeProviderFailureObservation } from "./native-provider-failure.js";
 import { nativeStartupRetryExhaustedAction, nativeStartupRetryWait, planNativeStartupRetry } from "./native-startup-retry.js";
 import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js";
-import { RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
+import { RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap, runnerdStateIsFailedSessionBeforeTurn,
   runnerdStateHasNoProviderTurn, runnerdStateIsOpenedSessionBeforeTurn, runnerdStateIsUnconnectedBootstrap } from "./native-bootstrap-proof.js";
 import { createNativeDeliverableTextObservation } from "./native-deliverable-text.js";
 import { createNativeGitHubAccess, type NativeGitHubAccess } from "./native-github-access.js";
@@ -2216,7 +2216,10 @@ export async function unidentifiedLocalRunnerProvenAbsent(input: { runId: string
   for (const candidate of candidates) {
     if (!existsSync(resolve(candidate, "control-plane", "control-plane-state.json"))) continue;
     try {
-      if (record(readRunnerdControlPlaneState(candidate).identity).runId === input.runId) return false;
+      const state = readRunnerdControlPlaneState(candidate);
+      if (record(state.identity).runId === input.runId && !runnerdStateIsFailedSessionBeforeTurn(
+        state, readRunnerdBootstrapJournal(candidate), { localProcesses: true,
+          processGone: (id, group) => localProcessDefinitelyGone(id, group) })) return false;
     } catch {
       return false;
     }
@@ -2228,10 +2231,31 @@ export async function unidentifiedLocalRunnerProvenAbsent(input: { runId: string
  * slow process listing proves nothing, so it keeps the caller blocked. */
 export async function noLocalRunnerProcessForRun(runId: string): Promise<boolean> {
   const listing = await new Promise<string | null>(resolve => {
-    execFile("ps", ["-axww", "-o", "command="], { encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024 * 1024 },
+    const windows = process.platform === "win32";
+    execFile(windows ? "powershell.exe" : "ps", windows
+      ? ["-NoProfile", "-NonInteractive", "-Command",
+          "$ErrorActionPreference = 'Stop'; @(Get-CimInstance Win32_Process | Select-Object Name,CommandLine) | ConvertTo-Json -Compress"]
+      : ["-axww", "-o", "command="],
+      { encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024 * 1024, windowsHide: true },
       (error, stdout) => resolve(error ? null : stdout));
   });
-  return listing !== null && !listing.split("\n").some(line => line.includes(`--run-id ${runId}`));
+  if (listing === null) return false;
+  let commands: string[];
+  if (process.platform === "win32") {
+    try {
+      const rows: unknown = JSON.parse(listing);
+      if (!Array.isArray(rows) || !rows.length) return false;
+      commands = [];
+      for (const row of rows) {
+        if (!row || typeof row.Name !== "string") return false;
+        if (typeof row.CommandLine === "string") commands.push(row.CommandLine);
+        else if (/^(?:node|paperclip-runnerd)(?:\.exe)?$/i.test(row.Name)) return false;
+      }
+    } catch { return false; }
+  } else commands = listing.split("\n");
+  const escapedRunId = runId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const argument = new RegExp(`(?:^|\\s)"?--run-id"?(?:\\s+|=)"?${escapedRunId}(?:"|\\s|$)`);
+  return !commands.some(line => argument.test(line));
 }
 
 export function scopedRunnerdStateRoot(execution: NativeExecutionInput): string {
@@ -6388,6 +6412,8 @@ export function runnerdStateProvesIncompleteBootstrap(
     const state = readRunnerdControlPlaneState(root);
     const journal = readRunnerdBootstrapJournal(root);
     return runnerdStateIsIncompleteBootstrap(state, journal) ||
+      runnerdStateIsFailedSessionBeforeTurn(state, journal, { localProcesses: options.localProcesses,
+        processGone: (id, group) => localProcessDefinitelyGone(id, group) }) ||
       runnerdStateIsOpenedSessionBeforeTurn(state, journal, {
         localProcesses: options.localProcesses,
         processGone: (id, group) => localProcessDefinitelyGone(id, group),

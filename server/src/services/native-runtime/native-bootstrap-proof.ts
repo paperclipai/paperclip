@@ -157,6 +157,40 @@ export type OpenedSessionProofOptions = {
   processGone: (id: unknown, group: boolean) => boolean;
 };
 
+export function runnerdStateIsFailedSessionBeforeTurn(state: Record<string, unknown>,
+  runnerJournal: Record<string, unknown> | null | undefined, options: OpenedSessionProofOptions): boolean {
+  if (!options.localProcesses || !runnerJournal || !RUNNERD_CONTROL_PLANE_STATE_SCHEMAS.has(String(state.schema)) ||
+      state.warmTransition != null || state.completedWarmTransition != null || state.stagedRunAttachment != null ||
+      record(state.bootstrapHistory).adopted === true || !Array.isArray(state.commands) || !Array.isArray(state.committedEvents) ||
+      !Array.isArray(runnerJournal.outbox) || runnerJournal.outbox.length !== 0) return false;
+  const commands = state.commands.map(record);
+  if (commands.filter(c => c.type === "session.open" && c.status === "failed").length !== 1 ||
+      commands.filter(c => c.type === "run.prepare" && c.status === "completed").length !== 1 ||
+      !commands.every(c => preOpenCommandIsSafe(c.type, c.status))) return false;
+  const processed = Object.values(record(runnerJournal.processedCommands)).map(record);
+  if (!processed.every(c => preOpenCommandIsSafe(c.commandType, c.status)) ||
+      !processed.some(c => c.commandType === "session.open" && c.status === "failed")) return false;
+  const events = state.committedEvents.map(record);
+  if (state.ackedSourceSeq !== events.length || runnerJournal.ackedSourceSeq !== events.length ||
+      runnerJournal.nextSourceSeq !== events.length + 1 ||
+      !events.every((event, index) => event.sourceSeq === index + 1 && prpEventType(event) === "harness.diagnostic" &&
+        record(record(record(event.envelope).payload).payload).code === "provider_startup_ownership")) return false;
+  const startups = events.map(event => record(record(record(record(event.envelope).payload).payload).startup));
+  const failure = startups.at(-1);
+  if (!failure || failure.schema !== "paperclip.provider_startup.v1" || failure.phase !== "initialization_failed" ||
+      failure.failedStage !== "initialize" || failure.directChildExitObserved !== true || failure.authenticatedThreadId != null ||
+      record(failure.command).commandType !== "session.open" || typeof failure.processId !== "number" ||
+      typeof failure.launchId !== "string" || !failure.launchId ||
+      typeof record(state.identity).runId !== "string" ||
+      !startups.every(startup => startup.schema === failure.schema && startup.launchId === failure.launchId &&
+        record(startup.origin).runId === record(state.identity).runId && startup.authenticatedThreadId == null &&
+        record(startup.command).commandType === "session.open" &&
+        ["intent", "spawned", "initialization_failed"].includes(String(startup.phase)))) return false;
+  const ids: Array<{ id: unknown; group: boolean }> = [];
+  if (!collectRecordedProcessIds([...events, ...processed.map(command => command.result)], ids)) return false;
+  return ids.length > 0 && ids.every(({ id, group }) => options.processGone(id, group));
+}
+
 /**
  * A drain or restart can land after session.open started a fresh provider
  * session but before the controller issued any turn. That root holds an

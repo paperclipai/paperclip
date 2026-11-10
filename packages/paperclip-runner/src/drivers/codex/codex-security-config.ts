@@ -264,6 +264,9 @@ export function createIsolatedCodexAppServerArgs(
   const explicitSource = source;
   source ??= process.env;
   const gitRoots = gitFilesystemRoots(source);
+  const brokerGhConfig = source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
+    ? resolve(source.GH_CONFIG_DIR) : undefined;
+  const gitReadRoots = gitRoots.read.filter(path => path !== brokerGhConfig);
   readOnlyRoots = [...new Set([...readOnlyRoots, ...codexNetworkReadOnlyRoots(source)])];
   const networkAccess = codexNetworkAccess(source);
   const externalRunnerSandbox = usesExternalRunnerSandbox(source);
@@ -310,7 +313,7 @@ export function createIsolatedCodexAppServerArgs(
     ...(usesPreconfiguredHome(source) && source.HOME ? [`${tomlString(source.HOME)}="write"`] : []),
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
     ...generatedImageRoots.map((path) => `${tomlString(path)}="read"`),
-    ...gitRoots.read.map((path) => `${tomlString(path)}="read"`),
+    ...gitReadRoots.map((path) => `${tomlString(path)}="read"`),
     ...gitRoots.write.map((path) => `${tomlString(path)}="write"`),
     ...(instructionWorkingCopyRoot ? [`${tomlString(resolve(instructionWorkingCopyRoot))}="write"`] : []),
     ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
@@ -326,7 +329,7 @@ export function createIsolatedCodexAppServerArgs(
     ...(usesPreconfiguredHome(source) && source.HOME ? [`${tomlString(source.HOME)}="read"`] : []),
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
     ...generatedImageRoots.map((path) => `${tomlString(path)}="read"`),
-    ...[...gitRoots.read, ...gitRoots.write].map((path) => `${tomlString(path)}="read"`),
+    ...[...gitReadRoots, ...gitRoots.write].map((path) => `${tomlString(path)}="read"`),
     ...(instructionWorkingCopyRoot ? [`${tomlString(resolve(instructionWorkingCopyRoot))}="read"`] : []),
     ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
       ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
