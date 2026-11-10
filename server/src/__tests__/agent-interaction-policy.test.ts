@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, authUsers, companies, companyMemberships, createDb, issues, principalPermissionGrants,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { AGENT_INTERACTION_PERMISSION_KEYS, type AgentInteractionPermissionKey } from "@paperclipai/shared";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentInteractionDenial, assertAgentInteraction, type AgentInteractionInput } from "../services/agent-interaction-policy.js";
 import { authorizationService, authorizationDeniedDetails } from "../services/authorization.js";
@@ -135,30 +135,40 @@ describe("agent interaction authorization", () => {
     expect(cases.map(([key]) => key).sort()).toEqual([...AGENT_INTERACTION_PERMISSION_KEYS].sort());
   });
 
-  it("serializes an authorized mutation with a concurrent human permission change", async () => {
+  it.each([
+    ["edit", "canReceiveTaskEditsFromAgents"],
+    ["comment", "canReceiveCommentsFromAgents"],
+  ] as const)("serializes an authorized %s with concurrent permission and assignment changes", async (operation, permission) => {
     const f = await seed();
     let locked!: () => void;
     const ready = new Promise<void>(resolve => { locked = resolve; });
     let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
     const mutation = db.transaction(async tx => {
-      await assertAgentInteraction(tx, input(f, "edit", { issueId: f.task.id, lock: true }));
-      await tx.update(issues).set({ title: "Authorized before revocation" }).where(eq(issues.id, f.task.id));
+      await assertAgentInteraction(tx, input(f, operation, { issueId: f.task.id, lock: true }));
       locked();
       await held;
+      await tx.update(issues).set({ title: "Authorized before revocation" }).where(eq(issues.id, f.task.id));
     });
     await ready;
     try {
       await expect(db.transaction(async tx => {
         await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, f.targetAgentId)).for("update", { noWait: true });
       })).rejects.toMatchObject({ cause: { code: "55P03" } });
+      await expect(db.transaction(async tx => {
+        await tx.execute(sql`set local lock_timeout = '100ms'`);
+        await tx.update(issues).set({ assigneeAgentId: f.actorAgentId }).where(eq(issues.id, f.task.id));
+      })).rejects.toMatchObject({ cause: { code: "55P03" } });
     } finally {
       release();
       await mutation;
     }
-    await set(f.targetAgentId, "canReceiveTaskEditsFromAgents");
+    await db.update(issues).set({ assigneeAgentId: f.actorAgentId }).where(eq(issues.id, f.task.id));
+    expect((await db.select({ owner: issues.assigneeAgentId }).from(issues).where(eq(issues.id, f.task.id)))[0]?.owner).toBe(f.actorAgentId);
+    await db.update(issues).set({ assigneeAgentId: f.targetAgentId }).where(eq(issues.id, f.task.id));
+    await set(f.targetAgentId, permission);
     await expect(db.transaction(async tx => {
-      await assertAgentInteraction(tx, input(f, "edit", { issueId: f.task.id, lock: true }));
+      await assertAgentInteraction(tx, input(f, operation, { issueId: f.task.id, lock: true }));
       await tx.update(issues).set({ title: "Must not persist" }).where(eq(issues.id, f.task.id));
     })).rejects.toMatchObject({ status: 403 });
     expect((await db.select({ title: issues.title }).from(issues).where(eq(issues.id, f.task.id)))[0]?.title).toBe("Authorized before revocation");
