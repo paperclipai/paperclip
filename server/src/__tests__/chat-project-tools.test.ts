@@ -5,7 +5,7 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { agents, issues, heartbeatRuns, projects, companyMemberships, executionWorkspaces } from "@paperclipai/db";
+import { agents, companies, issues, heartbeatRuns, projects, companyMemberships, executionWorkspaces } from "@paperclipai/db";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 import { issueService } from "../services/issues.js";
 import { documentService } from "../services/documents.js";
@@ -19,6 +19,24 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
   beforeAll(async () => { process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID(); server = await startRunnerApiTestServer(); }, 60_000);
   afterAll(async () => { await server?.close(); if (originalSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET; else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalSecret; });
   const call = (fixture: Awaited<ReturnType<typeof server.fixture>>, tool: string, args: Record<string, unknown>) => fixture.authority.execute({ tool, arguments: args, callId: randomUUID() });
+
+  it("gives MCP list_projects rows the company-scoped project page href", async () => {
+    const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    const [{ issuePrefix }] = await server.db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, f.companyId));
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.responsibleUserId)!;
+    const originalApiUrl = process.env.PAPERCLIP_API_URL;
+    process.env.PAPERCLIP_API_URL = server.apiUrl;
+    try {
+      const response = await fetch(`${server.apiUrl}/api/mcp/project-tools`, { method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "list_projects", arguments: {} } }) });
+      const { result } = await response.json() as { result: { isError?: boolean; structuredContent?: { projects: Array<{ id: string; href?: string }> } } };
+      expect(result.isError).toBeUndefined();
+      expect(result.structuredContent?.projects.find(row => row.id === f.projectId)?.href).toBe(`/${issuePrefix}/projects/${f.projectId}`);
+    } finally {
+      if (originalApiUrl === undefined) delete process.env.PAPERCLIP_API_URL; else process.env.PAPERCLIP_API_URL = originalApiUrl;
+    }
+  });
 
   it("pages only visible projects and prefilters low-trust agent and run scopes", async () => {
     const f = await server.fixture({ disableWakeOnDemand: true });

@@ -26,7 +26,7 @@ import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspace-epoch-
 import { hasStopOnlyCleanup, prepareHistoricalSandboxStopVerification, prepareSandboxStopAndRetain, restoreSandboxStopAfterFailedRestart, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
 import { nativeWorkspaceFinalizationBlockSchema } from "./native-runtime/preserved-native-result-finalization.js";
 import { withNativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
-import { PERMANENT_SOURCE_RETRY_CLASSES, RETAINED_SOURCE_FALLBACK_CHECK_KEY, UNVERIFIABLE_SOURCE_CODES } from "./workspace-recovery-fallback-discovery.js";
+import { PERMANENT_SOURCE_RETRY_CLASSES, RETAINED_SOURCE_FALLBACK_CHECK_KEY, UNVERIFIABLE_SOURCE_CODES, retainedHoldFallbackEligible } from "./workspace-recovery-fallback-discovery.js";
 import { captureReadOnlyWorkspaceArchive, sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { readSystemRecovery, type SystemRecoveryState } from "./system-recovery-state.js";
@@ -115,7 +115,7 @@ async function inspectFallback(db: Db, input: Source, lock: boolean, requireStop
   const system = readSystemRecovery(action.evidence);
   if (!exportCauses.includes(action.cause) || !["active", "escalated"].includes(action.status) || action.evidence.runId !== run.id
     || action.evidence.executionReconciliation || system?.state !== "exhausted" || system.sourceRunId !== run.id
-    || !isUnverifiableSourceFailure(system.failure)) return refuse("not_unverifiable_source_hold");
+    || !retainedHoldFallbackEligible(action.evidence, system)) return refuse("not_unverifiable_source_hold");
   if (run.runtimeMode !== "native" || !terminal.includes(run.status) || !run.finishedAt
     || (run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId) !== issue.id) return refuse("source_run_not_terminal");
   // No second executor: the source run, its controller and its finalizer have stopped.
@@ -417,7 +417,7 @@ export async function recordRetainedSourceFallbackDeferral(db: Db, input: Source
 /**
  * The recovery worker's entry for an exhausted hold: settle it when a sibling
  * saved its files, or continue from the last save when its source is refused
- * permanently. Runs under the workspace ownership lock, like any physical
+ * permanently or its stop stayed unproven through every bounded re-arm. Runs under the workspace ownership lock, like any physical
  * recovery attempt. Returns whether the hold is settled.
  */
 export async function settleExhaustedRetainedHold(input: Source & { db: Db; environmentRuntime: EnvironmentRuntimeService },
@@ -425,7 +425,10 @@ export async function settleExhaustedRetainedHold(input: Source & { db: Db; envi
   const { db } = input;
   const sibling = await settleSiblingRecoveredHold(db, input);
   if (sibling === "settled") return true;
-  if (!options.fallback || !isUnverifiableSourceFailure(state.failure)) {
+  const [row] = options.fallback ? await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId),
+    eq(issueRecoveryActions.id, input.actionId))) : [];
+  if (!options.fallback || !retainedHoldFallbackEligible(row?.evidence, state)) {
     // A sibling marked recovered without a receipt that still verifies cannot
     // settle this hold. Record it so discovery does not select it again.
     if (sibling === "unverified") await recordRetainedSourceFallbackDeferral(db, input, "sibling_receipt_unverified");

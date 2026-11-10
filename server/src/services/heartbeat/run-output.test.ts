@@ -1,4 +1,5 @@
 import { NativeSessionDiagnostics } from "../native-runtime/native-session-diagnostics.js";
+import { withS3FailureDiagnostics } from "../../storage/s3-failure.js";
 import { objectLogFixture } from "./__tests__/object-log-fixture.js";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -70,6 +71,33 @@ const newRunRow = {
   lastOutputSeq: 0,
   lastOutputAt: null,
 } as Partial<Run>;
+
+describe("claiming the run log during a storage outage (storage chaos ST1)", () => {
+  const outage = () => withS3FailureDiagnostics("put_object", async () => {
+    throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
+  });
+  const output = (begin: () => Promise<never | { store: "s3_segments"; logRef: string }>, signal?: AbortSignal) =>
+    createHeartbeatRunOutput(createRunRowDb({ ...newRunRow }), { run: newRunRow as Run, runId: "run-1", issueId: null,
+      runLogStore: { begin, append: async () => 0, enqueue: async () => ({ committed: Promise.resolve(0) }), flush: async () => undefined },
+      identityRedactor: { chunk: (_stream, chunk) => chunk, redact: value => value }, secretKeys: new Set(),
+      appendRunEvent: vi.fn(), getCurrentUserRedactionOptions: async () => ({ enabled: false }), signal });
+
+  it("claims the log once the store is back instead of failing the run", async () => {
+    let calls = 0;
+    const begin = vi.fn(async () => (++calls < 2 ? outage() : { store: "s3_segments" as const, logRef: "company/agent/run" }));
+    await output(begin).begin({ ...newRunRow } as Run);
+    expect(begin).toHaveBeenCalledTimes(2);
+  }, 30_000);
+
+  it("stops waiting as soon as the run is stopped", async () => {
+    const stop = new AbortController();
+    const begin = vi.fn(async () => outage());
+    setTimeout(() => stop.abort(new Error("Stopped by a board operator")), 100);
+    const startedAt = Date.now();
+    await expect(output(begin, stop.signal).begin({ ...newRunRow } as Run)).rejects.toBeTruthy();
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
+  }, 30_000);
+});
 
 async function beginAttempt(store: ReturnType<typeof createDurableRunLogStore>, row: Partial<Run>) {
   const output = createHeartbeatRunOutput(createRunRowDb(row), {

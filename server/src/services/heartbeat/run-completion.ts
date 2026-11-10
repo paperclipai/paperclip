@@ -19,6 +19,7 @@ import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE, findEnvironmentProviderUnavailab
 import { REPOSITORY_CATALOG_UNAVAILABLE_CODE, findRepositoryCatalogUnavailableError } from "../repository-catalog-unavailable-error.js";
 import { findWorkspaceProviderFailure } from "../workspace-provider-failure.js";
 import { isRunnerRevisionMismatch, RUNNER_REVISION_MISMATCH_CODE, RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
+import { isStorageUnavailableError, STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY } from "../../storage/storage-unavailable.js";
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
 import { CONFIGURATION_INCOMPLETE_FAILURE_CODE, ConfigurationIncompleteFailure } from "./run-preparation.js";
@@ -27,6 +28,7 @@ import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace
 import { cancellationResultJson, controllerLeaseLossCancellation, readRunCancellation } from "../run-cancellation.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE, LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
 import { REVIEWED_CHAT_BINDING_NOT_READY, ReviewedChatBindingNotReadyError, reviewedChatBindingDenialResultJson } from "../reviewed-chat-binding-diagnostics.js";
+import { reportRunFailure } from "../run-failure-report.js";
 import { accountRunCost } from "../run-cost-accounting.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
@@ -45,6 +47,7 @@ import { isUnresolvedWorkspaceBaseRefError, readUnresolvedWorkspaceBaseRefDiagno
 import { runnerGoalService } from "../runner-goals.js";
 import { resolveChatRunPresentationAuthorizationReason } from "../chat-run-publications.js";
 import { hasChatRunOwnedProviderInteraction } from "../chat-interaction-arbitration.js";
+import { conversationTurnPresentsAnswer } from "../native-runtime/native-governance.js";
 import { readAcceptedTaskContinuationSummary } from "../heartbeat-run-summary.js";
 import { SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON } from "../recovery/stranded-notice.js";
 import { MAX_TURN_CONTINUATION_RETRY_REASON, isResolvedInteractionContinuationWakeContext } from "../../modules/run-dispatch/index.js";
@@ -845,8 +848,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           resultJson: persistedResultJson,
           interactionOwnsResponse: Boolean(issueId && readAcceptedTaskContinuationSummary(persistedResultJson) &&
             await hasChatRunOwnedProviderInteraction(db, { companyId: livenessRun.companyId, issueId, runId: livenessRun.id })),
-          conversationTurnFinished: isConversation(issueContext) && livenessRun.status === "succeeded"
-            && persistedResultJson?.finalizationReasonCode === "conversation_turn_finished",
+          conversationTurnFinished: Boolean(issueId) && isConversation(issueContext) && livenessRun.status === "succeeded"
+            && await measureRunPhase("response.resolve", () => conversationTurnPresentsAnswer({
+              db, companyId: livenessRun.companyId, issueId: issueId!, runId: livenessRun.id,
+              finalizationPhase: persistedResultJson?.finalizationPhase,
+              finalizationReasonCode: persistedResultJson?.finalizationReasonCode,
+            })),
           existingComment: existingRunComment,
           finalAgentMessage,
           preferFinalResponseOverExistingComment:
@@ -1139,13 +1146,14 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       : null;
     const message = interruptedExactResume
       ? describeRefusedExactResume(interruptedExactResume, thrownMessage)
-      : thrownMessage;
+      : isStorageUnavailableError(err) ? STORAGE_UNAVAILABLE_MESSAGE : thrownMessage;
     const failureErrorCode =
       workspaceValidationFailure?.code ??
       configurationIncompleteFailure?.code ??
       nonRetryablePreflightFailureCode(err) ??
       recordedResponsibleUserDenialCode ??
       nativeTerminalFailureCode ??
+      (isStorageUnavailableError(err) ? STORAGE_UNAVAILABLE_CODE : null) ??
       "adapter_failed";
     logger.error({ err: identityRedactor.redact({ message: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined }), runId }, "heartbeat execution failed");
 
@@ -1280,16 +1288,26 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ) {
         await finalizeIssueCommentPolicy(livenessRun, agent);
       }
-      await scheduleInteractionContinuationInfrastructureRetryIfEligible(
-        livenessRun,
-        agent,
-      );
+      const storageWait = livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE && nativeTerminalFailureCode === null
+        ? await scheduleBoundedRetryForRun(livenessRun, agent, STORAGE_UNAVAILABLE_RETRY).catch((retryError) => {
+          logger.warn({ err: retryError, runId: livenessRun.id }, "failed to schedule a storage wait after a storage outage");
+          return null;
+        })
+        : null;
+      if (storageWait?.outcome === "retry_exhausted") await markStorageWaitExhausted(livenessRun);
+      if (storageWait?.outcome !== "scheduled" && storageWait?.outcome !== "retry_exhausted") {
+        await scheduleInteractionContinuationInfrastructureRetryIfEligible(
+          livenessRun,
+          agent,
+        );
+      }
       await releaseIssueExecutionAndPromote(livenessRun, {
         // Native recovery owns the original heartbeat run through
         // exhaustion. Once its durable coordinator has classified a
         // terminal failure, generic issue recovery must not create a
         // replacement retryOfRunId chain for the same provider work.
-        suppressImmediateRecovery: nativeTerminalFailureCode !== null,
+        suppressImmediateRecovery: nativeTerminalFailureCode !== null || storageWait?.outcome === "scheduled"
+          || storageWait?.outcome === "retry_exhausted",
       });
       await handleIssueReviewPathDisposition(livenessRun);
 
@@ -1344,6 +1362,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     }
   }
 
+  async function markStorageWaitExhausted(run: typeof heartbeatRuns.$inferSelect) {
+    await db.update(heartbeatRuns).set({ error: STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, updatedAt: new Date() })
+      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.errorCode, STORAGE_UNAVAILABLE_CODE)))
+      .catch((error: unknown) => logger.warn({ err: error, runId: run.id }, "failed to record an exhausted storage wait"));
+  }
+
   async function failRunSetup(input: FailHeartbeatRunSetupInput) {
     const { run, runId, outerErr, signal, providerDispatchStarted, identityRedactor, readFailureReportSecrets } = input;
     // The lease watchdog stopped preparation because this host no longer owns
@@ -1356,7 +1380,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // The inner catch did not fire, so we must record the failure here.
     const providerFailure = providerFailureFromError(outerErr);
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
-    const message = redactCurrentUserText(
+    const storageUnavailable = isStorageUnavailableError(outerErr);
+    const message = storageUnavailable ? STORAGE_UNAVAILABLE_MESSAGE : redactCurrentUserText(
       identityRedactor.redact(outerErr instanceof Error
         ? outerErr.message
         : "Unknown setup failure"),
@@ -1425,6 +1450,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       && run.nativeSessionId === null && run.runnerInstanceId === null && isRunnerRevisionMismatch(outerErr);
     const setupFailureErrorCode =
       (controllerLeaseLost ? CONTROLLER_LEASE_LOST_FAILURE_CODE : null) ??
+      (storageUnavailable ? STORAGE_UNAVAILABLE_CODE : null) ??
       remoteWorkspacePreparationTimeout?.code ??
       reusableSandboxResumeFailure?.code ??
       remoteWorkspaceRestoreFailure?.code ??
@@ -1523,7 +1549,11 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         : setupFailureResultJson
           ? { resultJson: setupFailureResultJson }
           : {}),
-    }, { error: outerErr, phase: "setup", secretValues: readFailureReportSecrets() }, { setupFailure: true }).catch(() => ({ run: null, updated: false as const }));
+    }, { error: outerErr, phase: "setup", secretValues: readFailureReportSecrets(),
+      // The Sentry report waits for the bounded retry decision below.
+      ...(reviewedChatBindingNotReady ? { reviewedChatRetry: "pending" as const } : {}),
+    }, { setupFailure: true }).catch(() => ({ run: null, updated: false as const }));
+    let reviewedChatRetryScheduled = false;
     if (!setupFailureWrite.updated) {
       logger.info(
         {
@@ -1552,6 +1582,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       const livenessRun = await classifyAndPersistRunLiveness(
         failedRun,
       ).catch(() => failedRun);
+      let storageWaitScheduled = false;
       const setupFailureIssueId = readNonEmptyString(
         parseObject(livenessRun.contextSnapshot).issueId,
       );
@@ -1609,21 +1640,28 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             || livenessRun.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE
             || livenessRun.errorCode === REVIEWED_CHAT_BINDING_NOT_READY)
             && isResolvedInteractionContinuationWakeContext(livenessRun.contextSnapshot);
-          await (isTransientWorkspacePreparationCode(livenessRun.errorCode) && !interactionOwnsRetry
+          const retry = await (isTransientWorkspacePreparationCode(livenessRun.errorCode) && !interactionOwnsRetry
             ? livenessRun.errorCode === RUNNER_REVISION_MISMATCH_CODE
               ? scheduleBoundedRetryForRun(livenessRun, failedAgent, RUNNER_REVISION_MISMATCH_RETRY)
-              : scheduleBoundedRetryForRun(livenessRun, failedAgent)
+              : livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE
+                ? scheduleBoundedRetryForRun(livenessRun, failedAgent, STORAGE_UNAVAILABLE_RETRY)
+                : scheduleBoundedRetryForRun(livenessRun, failedAgent)
             : scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent)
           ).catch((retryError) => {
             logger.warn(
               { err: retryError, runId: livenessRun.id },
               "failed to schedule interaction continuation retry after setup failure",
             );
+            return null;
           });
+          reviewedChatRetryScheduled = retry?.outcome === "scheduled";
+          if (livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE && retry?.outcome === "retry_exhausted") await markStorageWaitExhausted(livenessRun);
+          storageWaitScheduled = livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE
+            && (retry?.outcome === "scheduled" || retry?.outcome === "retry_exhausted");
         }
       }
       await releaseIssueExecutionAndPromote(livenessRun, {
-        suppressImmediateRecovery:
+        suppressImmediateRecovery: storageWaitScheduled ||
           readNonEmptyString(
             parseObject(livenessRun.contextSnapshot).goalControlRequestId,
           ) !== null ||
@@ -1644,6 +1682,13 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           );
         },
       );
+    }
+    // This path owned the failed-status write, which deferred the report.
+    const reviewedChatReportRun = reviewedChatBindingNotReady && setupFailureWrite.updated
+      ? failedRun ?? setupFailureWrite.run : null;
+    if (reviewedChatReportRun) {
+      void reportRunFailure(db, reviewedChatReportRun, { error: outerErr, phase: "setup", secretValues: readFailureReportSecrets(),
+        reviewedChatRetry: reviewedChatRetryScheduled ? "scheduled" : "not_scheduled" });
     }
     // Ensure the agent is not left stuck in "running" if the setup-failure
     // path owned the terminal transition. If another path already finalized

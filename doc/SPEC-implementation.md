@@ -1520,6 +1520,20 @@ timestamps, including on repeated release. For unfinished issues it clears the
 agent assignee; only `in_progress` changes to `todo`. Existing company access,
 assignee/run ownership checks, and the `issue.released` activity event still apply.
 
+A status change releases the checkout and execution locks but does not stop the
+run that holds them. An agent request (`PATCH /issues/:issueId` or a recovery
+resolution) that sets a status other than `in_progress` (even its current value) on
+a task whose lock is held by a different queued or running run is refused with
+`409` and code `issue_status_change_live_run`;
+otherwise the run would keep going with no task bound to it, which is the effect
+of interrupting another agent's run. The denial is final and names the person's
+controls on the linked task: the run's Stop or Interrupt, or More task actions,
+then Pause subtree on the parent. The lock-holding run, board users, and paths
+that stop the run themselves (cancelling the task, reassigning it, and completing
+through `PATCH` a task whose Runner goal is paused first) are unaffected. The write
+is conditional on the lock the check saw; a run that acquires the lock in between returns `409`
+`issue_execution_lock_changed`.
+
 `POST /issues/:issueId/admin/force-release` is an operator recovery endpoint for stale harness locks. It requires board access to the issue company, clears checkout and execution run lock fields, and may clear the agent assignee when `clearAssignee=true` is passed. The route must write an `issue.admin_force_release` activity log entry containing the previous checkout and execution run IDs.
 
 ## 10.5 Projects
@@ -1769,7 +1783,10 @@ hard stop refuses new work even while evaluation lags.
 waits on another run's cleanup or accounting completeness. Only these refuse it:
 
 - spend at the limit (ledger plus observed running spend), or unpriced usage
-  under a blocking policy (the hard stop);
+  a provider reported, under a blocking policy (the hard stop). A charge that
+  accounting settled without its receipt (lost, closure evidence that never
+  arrived, or a failed capture) is recorded and shown in Costs, but it is never
+  a company gate;
 - an explicit pause of the company, project or agent;
 - an inactive company.
 
@@ -1986,12 +2003,12 @@ its display label after fifteen minutes. Elapsed time never discards a late
 receipt. It settles the debt only for a native run whose recovery has ended
 (terminal failure or an accepted result) and whose closure evidence has not
 arrived after ten minutes (the remote runner reconnect grace plus a margin): the known usage is recorded as unpriced with
-provenance saying closure evidence never arrived, an activity entry names the
-run, and the blocking unpriced-usage policy keeps counting that charge unless
-a control-plane restart caused it. A restart-derived receipt (the run replaced
-its receipt source, recovered from a restart, or lost a provider turn on
-restore) never hard-stops or pauses a company under the blocking policy,
-whatever its token count; its activity entry and provenance remain the notice. A lost
+provenance saying closure evidence never arrived, and an activity entry names
+the run. Like any charge accounting settled without its receipt, it never
+hard-stops or pauses a company under the blocking policy, whatever its token
+count; its activity entry and provenance remain the notice. A verified local
+process stop closes the receipt source for a failed, cancelled, timed-out or
+interrupted run alike, so a restart-cancelled run settles at once. A lost
 receipt that already carries a provider-reported cost settles at that cost as
 an estimate marked as a lower bound, not as unpriced. A failed native run that
 never started provider work (no usage receipt, no replaced receipt source, and a
@@ -2405,6 +2422,13 @@ See [iMessage Photon](connections/IMESSAGE-PHOTON.md) for the implementation
 contract, setup, recovery, boundaries, and qualification status.
 
 ### Native task completion
+
+A durable question or approval handoff survives a missing provider shutdown
+notification. Paperclip settles its yielded result once the provider terminal
+or exact host-owned shutdown proves stopped execution and settled tool outcomes.
+Until then it retains the saved handoff and explains the shutdown hold. Recovery
+must not repeat completed work or release an overlapping execution. See
+`doc/execution-semantics.md` for the bounded settlement and restart contract.
 
 For ordinary low-risk tasks, accept the current agent's structured `done` claim
 subject to explicit workflow constraints. Missing independent evidence or a
@@ -2962,5 +2986,7 @@ Standard agents can configure connections through the same domain APIs used by t
 The agent performs authorized setup, reuses saved accounts and drafts, and hands off only required human authentication, consent, credential entry or identity confirmation. Saved handoffs resume through existing task continuation after current authority is rechecked. Management, tool execution and approval remain separate. Private accounts, host commands and stored credentials retain their boundaries; agent-issued gateway clients preserve issuer and responsible-user restrictions at use time.
 
 Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.
+
+Ordinary tool approvals remain reviewable without an implicit one-hour deadline. Authenticated OAuth refresh preserves a pending approval for the same saved action and authorization. Sign-in repair retains an accepted decision and resumes through connection-change events after revalidation; changed consent, permissions, credentials or action targets require a new review. Current access, explicit deadlines, task closure and execution receipts remain enforced. See [Delayed tool approvals](execution-semantics.md#delayed-tool-approvals).
 
 The implementation, operation inventory, permission matrix and fixture qualification are recorded in [Agent API parity for connection configuration](plans/2026-10-13-connection-api-parity.md). Provider fixtures establish API behavior; they do not constitute live provider setup or an empirical agent-success claim.

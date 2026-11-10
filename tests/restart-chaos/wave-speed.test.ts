@@ -21,9 +21,12 @@ describe("wave speed grade", () => {
 
     const slow = gradeWaveSpeed("local", [run("a", "codex", 40_000), run("b", "codex", 40_000,
       [{ eventType: "run.performance.budget_exceeded", createdAt: "2026-11-08T00:00:00.000Z", payload: {} }])], [], 1);
-    expect(slow.rows.find(row => row.metric === "time_to_first_activity")?.breaches).toEqual(["p50", "p95"]);
+    expect(slow.rows.find(row => row.metric === "time_to_first_activity")?.breaches).toEqual([]);
     expect(slow.rows.find(row => row.metric === "ttft")).toMatchObject({ budget: null, breaches: [] });
-    expect(slow).toMatchObject({ breaches: 4, singleRunBreaches: 2, runBudgetExceeded: 1 });
+    expect(slow).toMatchObject({ breaches: 2, singleRunBreaches: 2, runBudgetExceeded: 1 });
+    const slowFive = gradeWaveSpeed("local", ["a", "b", "c", "d", "e"].map(id => run(id, "codex", 40_000)), [], 0);
+    expect(slowFive.rows.find(row => row.metric === "time_to_first_activity")?.breaches).toEqual(["p50", "p95"]);
+    expect(slowFive).toMatchObject({ breaches: 7, singleRunBreaches: 5 });
     const heldButFast = gradeWaveSpeed("local", [run("c", "codex", 4_000,
       [{ eventType: "run.performance.budget_exceeded", createdAt: "2026-11-08T00:00:00.000Z", payload: {} }])], [], 1);
     expect(heldButFast).toMatchObject({ breaches: 0, singleRunBreaches: 0, runBudgetExceeded: 1 });
@@ -45,7 +48,37 @@ describe("wave speed grade", () => {
     const recovered: BaselineRun = { runId: "r", adapter: "claude", environment: "local", phase: "cold",
       events: [{ eventType: "turn.started", createdAt: new Date(10_000 + 30_000).toISOString() }] };
     const speed = gradeWaveSpeed("local", [recovered], [{ kind: "K1", readyAt: 10_000, runIds: ["r"] }], 0);
-    expect(speed.rows.find(row => row.metric === "restart_recovery")).toMatchObject({ adapter: "claude", breaches: ["p50", "p95"] });
+    // Nothing reloaded, so the whole latency is Paperclip's share and is judged.
+    expect(speed.rows.find(row => row.metric === "restart_recovery_control_plane")).toMatchObject({ adapter: "claude", breaches: [] });
+    expect(speed).toMatchObject({ singleRunBreaches: 1, breaches: 1 });
+    expect(speed.rows.find(row => row.metric === "restart_recovery")).toMatchObject({ budget: null, breaches: [], measured: { p50: 30_000 } });
+  });
+
+  it("judges Paperclip's share of a recovery and only reports the provider's session load", () => {
+    const loadEnd = 10_000 + 1_500 + 9_000;
+    const recovered: BaselineRun = { runId: "r", adapter: "codex", environment: "local", phase: "cold", events: [
+      { eventType: "run.performance.span", createdAt: new Date(100).toISOString(), payload: { span: "heartbeat.queue", startOffsetMs: 0, durationMs: 100 } },
+      { eventType: "run.performance.span", createdAt: new Date(loadEnd).toISOString(),
+        payload: { span: "provider.session.load", startOffsetMs: 11_500, durationMs: 9_000 } },
+      { eventType: "session.resumed", createdAt: new Date(loadEnd + 300).toISOString() }] };
+    const speed = gradeWaveSpeed("local", [recovered], [{ kind: "K2", readyAt: 10_000, runIds: ["r"] }], 0);
+    expect(speed.rows.find(row => row.metric === "restart_recovery_control_plane")).toMatchObject({ measured: { p50: 1_500 }, breaches: [] });
+    expect(speed.rows.find(row => row.metric === "restart_provider_load")).toMatchObject({ measured: { p50: 9_300 }, budget: null, breaches: [] });
+    expect(speed.rows.find(row => row.metric === "restart_recovery")).toMatchObject({ measured: { p50: 10_800 }, budget: null });
+    expect(speed.breaches).toBe(0);
+  });
+
+  it("does not grade a recovery that a back-to-back fault interrupted before its next provider event", () => {
+    // f1 is ready at 10 s; f2 hits 0.4 s later and is ready at 30 s; the run resumes 1.5 s after f2.
+    const recovered: BaselineRun = { runId: "r", adapter: "claude", environment: "local", phase: "cold",
+      events: [{ eventType: "session.resumed", createdAt: new Date(31_500).toISOString() }] };
+    const faults = [{ kind: "K4", startedAt: 1_000, readyAt: 10_000, runIds: ["r"] },
+      { kind: "K6", startedAt: 10_400, readyAt: 30_000, runIds: ["r"] }];
+    const windows = outageWindows(faults.map(fault => ({ startedAt: fault.startedAt, readyAt: fault.readyAt }) as FaultReceipt));
+    const speed = gradeWaveSpeed("local", [recovered], faults, 0, [], { adjusted: 0, removedMs: 0, windows });
+    expect(speed.rows.find(row => row.metric === "restart_recovery_control_plane")).toMatchObject({ measured: { n: 1, p50: 1_500 }, breaches: [] });
+    expect(speed.recoveryInterruptedByFault).toBe(1);
+    expect(speed.recoveryWithoutProviderEvent).toBe(0);
   });
 
   it("removes a later outage from restart recovery", () => {
@@ -54,13 +87,32 @@ describe("wave speed grade", () => {
     const windows = outageWindows([{ startedAt: 12_000, readyAt: 312_000 } as FaultReceipt]);
     const speed = gradeWaveSpeed("local", [recovered], [{ kind: "K1", readyAt: 10_000, runIds: ["r"] }], 0, [],
       { adjusted: 0, removedMs: 0, windows });
-    expect(speed.rows.find(row => row.metric === "restart_recovery")).toMatchObject({ measured: { p50: 2_000 }, breaches: [] });
+    expect(speed.rows.find(row => row.metric === "restart_recovery_control_plane")).toMatchObject({ measured: { p50: 2_000 }, breaches: [] });
   });
 
   it("has no budget for remote environments or unbudgeted adapters", () => {
     expect(budgetFor("daytona", "codex", "ttft", "cold")).toBeNull();
     expect(budgetFor("local", "unknown", "ttft", "cold")).toBeNull();
     expect(breachesOf({ n: 1, p50: 99_000, p95: 99_000, max: 99_000 }, null)).toEqual([]);
+  });
+
+  it("judges aggregate p50 and p95 only from five samples and reports smaller rows as an insufficient sample", () => {
+    const budget = { p50Ms: 1_000, p95Ms: 2_000 };
+    expect(breachesOf({ n: 4, p50: 9_000, p95: 9_000, max: 9_000 }, budget)).toEqual([]);
+    expect(breachesOf({ n: 5, p50: 9_000, p95: 9_000, max: 9_000 }, budget)).toEqual(["p50", "p95"]);
+    const speed = gradeWaveSpeed("local", [], [], 0);
+    speed.rows.push({ adapter: "codex", metric: "agent_boot", start: "cold", measured: { n: 2, p50: 9_000, p95: 9_000, max: 9_000 },
+      budget, breaches: [] });
+    expect(speedMarkdown(speed)).toContain("| insufficient sample (n < 5) |");
+  });
+
+  it("fails a run's speed read instead of paging forever when a full page has no seq", async () => {
+    let reads = 0;
+    const api = { get: async () => { reads += 1; return Array.from({ length: 500 }, () => ({ eventType: "x", createdAt: new Date(0).toISOString() })); } } as unknown as ChaosApi;
+    const speed = await collectWaveSpeed(api, "local", [{ issueId: "i", adapter: "codex", samples: [{ runs: [{ id: "r", status: "succeeded",
+      createdAt: new Date(0).toISOString(), finishedAt: null }] }] as never }], []);
+    expect(speed.errors).toEqual([expect.stringMatching(/^r: .*seq/)]);
+    expect(reads).toBe(3);
   });
 
   const traced = (trace: number, spans: Array<[string, number, number]>): BaselineRun => ({
@@ -167,6 +219,6 @@ describe("wave speed grade", () => {
     const fault = { kind: "K2", startedAt: 1_000, readyAt: 2_000 } as FaultReceipt;
     expect(faultRuns([fault], [{ id: "before", createdAt: 0, finishedAt: 500 }, { id: "live", createdAt: 0, finishedAt: null },
       { id: "during", createdAt: 1_500, finishedAt: null }, { id: "after", createdAt: 2_500, finishedAt: null }]))
-      .toEqual([{ kind: "K2", readyAt: 2_000, runIds: ["live", "during"] }]);
+      .toEqual([{ kind: "K2", readyAt: 2_000, startedAt: 1_000, runIds: ["live", "during"] }]);
   });
 });

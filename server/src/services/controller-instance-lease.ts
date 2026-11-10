@@ -2,7 +2,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { controllerInstances, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import {
-  currentControllerBootId, currentControllerDeployment, currentProcessSpaceHash, onControllerStamp,
+  currentControllerBootId, currentProcessSpaceHash, onControllerStamp,
 } from "./controller-process-identity.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
@@ -54,14 +54,8 @@ type LeaseState = {
 let state: LeaseState | null = null;
 let registeredDb: Db | null = null;
 
-/** A Railway deployment with an exclusive volume proves a replaced deployment on its own; every
- * other host (Docker, Kubernetes, Fly, a stateless Railway service, a rebooted machine) needs the
- * lease to prove a replaced process. PAPERCLIP_CONTROLLER_INSTANCE_LEASE=on|off overrides this. */
 export function controllerInstanceLeaseEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const setting = env.PAPERCLIP_CONTROLLER_INSTANCE_LEASE;
-  if (setting === "off") return false;
-  if (setting === "on") return true;
-  return currentControllerDeployment(env)?.exclusiveVolume !== true;
+  return env.PAPERCLIP_CONTROLLER_INSTANCE_LEASE !== "off";
 }
 
 function exitOnLostLease(reason: "fenced" | "lease_lost") {
@@ -78,6 +72,10 @@ function holdsStampedWorkSql(bootId: string) {
         and metadata->'pendingCleanupController'->>'bootId' = ${bootId}))
     or exists (select 1 from sandbox_creation_operations where state = 'pending' and metadata->'creationController'->>'bootId' = ${bootId})
     or exists (select 1 from workspace_operations where status in ('running', 'pending') and metadata->'finalizeOwner'->>'bootId' = ${bootId})
+    or exists (select 1 from workspace_operations where status = 'running' and metadata->'commandOwner'->>'bootId' = ${bootId})
+    or exists (select 1 from workspace_operations, jsonb_each(case when jsonb_typeof(metadata#>'{saveWork,owners}') = 'object'
+        then metadata#>'{saveWork,owners}' else '{}'::jsonb end) as save_owner(invocation_id, stamp)
+      where status in ('running', 'pending') and phase = 'remote_workspace_snapshot' and save_owner.stamp->>'bootId' = ${bootId})
     or exists (select 1 from agents where lifecycle_operation->'leaseHolder'->>'bootId' = ${bootId})
     or exists (select 1 from native_run_finalizations where lease_owner is not null
       and lease_holder->>'token' = lease_owner and lease_holder->>'bootId' = ${bootId})

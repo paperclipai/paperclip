@@ -111,6 +111,8 @@ Keep the runner turn's avatar, name, status header and current-activity slot
 in place from message submission through queued admission and native startup.
 Saving the human comment does not end startup feedback. Keep the identity mounted
 until its run appears or a newer execution outcome ends admission.
+An older intent resolving cannot acknowledge a follow-up. When Send reopens a
+completed task, retain startup feedback while the previous task status catches up.
 Use the sent message's selected recipient through reassignment. Choosing the
 recipient for a later draft must not change the response already starting.
 Runtime discovery must not replace the turn with a generic spinner or a
@@ -121,6 +123,13 @@ admission. Reserve `Working` and `Thinking` for execution. A saved message that
 starts this queued turn stays in history, including when it reopens an older
 task. This placement is not a consumption receipt. Later follow-ups remain in
 the composer queue with their existing edit, order and discard controls.
+
+Queued messages render Markdown and show compact local attachment thumbnails.
+Keep paragraph boundaries and wrap thumbnails and controls within narrow rows.
+Omit inline images from the compact text preview. On
+submit, move the text and attachment previews out of the composer together.
+Retain upload receipts while saving so a rejected or uncertain send restores
+the draft without discarding files added for the next message.
 
 Stream the provider's final reply as the conversational answer. Completion-tool
 reports remain inspectable run data while work continues. Use their summary as
@@ -1028,7 +1037,13 @@ or certify backend behavior or keyboard accessibility.
 
 Agents and Connectors compose the same `ToolbarSearch`. Connectors also use canonical Standard filled tabs. `AgentsToolbar` is shared by the roster page and
 toolbar references; `ConnectorsToolbar` is shared by Browse and toolbar references. Keep search
-first, source selection next where present, and view/actions last. The agent roster uses a harness filter icon without a status selector.
+first, source selection next where present, and view/actions last. The agent roster filter icon opens model, status, harness and connection selectors.
+Each selector includes an All option. Selected filters intersect with name, role
+and title search. Clear filters resets metadata selectors and keeps the search.
+Filter choices use the same metadata as the roster cells, including harness defaults,
+local credentials, connection pools, and agents that still need setup. Filters stay
+active across list and org-chart views, retain matching nodes' ancestors, and preserve
+bulk selection. The count reports matching agents, without ancestor context.
 Connector source choices use radio semantics and preserve Browse's existing
 automatic search expansion; they do not switch separate content panels.
 Legacy agent status and built-in URLs redirect to the full roster at `/agents/all`.

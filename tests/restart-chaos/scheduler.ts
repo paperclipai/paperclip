@@ -44,6 +44,7 @@ export const TRIGGER_DELAY_RANGE_MS: Record<Exclude<TriggerId, "time">, readonly
   result: [0, 3_000],
   approval: [0, 3_000],
   paused: [0, 3_000],
+  stop: [0, 2_000],
 };
 
 export function triggerFitsWorkload(trigger: TriggerId, workload: WorkloadId): boolean {
@@ -51,11 +52,12 @@ export function triggerFitsWorkload(trigger: TriggerId, workload: WorkloadId): b
   if (trigger === "tool") return workload === "B5";
   if (trigger === "approval") return workload === "G1";
   if (trigger === "paused") return workload === "H1";
+  if (trigger === "stop") return workload === "S1";
   return true;
 }
 
 /** The workload a trigger needs, for the error when none is selected. */
-const TRIGGER_WORKLOAD: Partial<Record<TriggerId, WorkloadId>> = { comment: "C1", result: "C1", tool: "B5", approval: "G1", paused: "H1" };
+const TRIGGER_WORKLOAD: Partial<Record<TriggerId, WorkloadId>> = { comment: "C1", result: "C1", tool: "B5", approval: "G1", paused: "H1", stop: "S1" };
 
 /** Faults a `result` task may fire inside a storm: a fast restart that lands on the boundary. */
 const STORM_RESULT_FAULTS: readonly FaultKind[] = ["K1", "K2"];
@@ -78,7 +80,11 @@ function stormCellFaults(options: Pick<WaveOptions, "faults" | "stormMinutes">, 
  * Pairwise-friendly sampling: cycle a seeded shuffle of the full
  * workload × adapter × fault product so small waves still spread across cells.
  */
-export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes" | "k4HoldMaxMs">): TaskPlan[] {
+function pinnedFireAfterMs(faultAfterMs: number | undefined, drawn: number): number {
+  return faultAfterMs ?? drawn;
+}
+
+export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes" | "k4HoldMaxMs" | "faultAfterMs">): TaskPlan[] {
   const rng = createRng(options.seed);
   const triggers = options.triggers?.length ? options.triggers : ["time" as const];
   for (const trigger of triggers) {
@@ -108,7 +114,7 @@ export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloa
       index,
       ...cellRest,
       ...(trigger === "time" ? {} : { trigger, triggerDelayMs: rng.int(...TRIGGER_DELAY_RANGE_MS[trigger]) }),
-      fireAfterMs: cell.fault === "K13" ? 0 : rng.int(fireMin, fireMax),
+      fireAfterMs: cell.fault === "K13" ? 0 : pinnedFireAfterMs(options.faultAfterMs, rng.int(fireMin, fireMax)),
       holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : 0,
       followUpAfterMs: definition.followUpWindowMs ? rng.int(definition.followUpWindowMs[0], definition.followUpWindowMs[1]) : null,
       nonce: rng.hex(8),

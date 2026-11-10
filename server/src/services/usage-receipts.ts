@@ -448,8 +448,11 @@ export async function persistUsageReceipt(db: Db, raw: UsageReceiptEnvelope) {
   const envelope = envelopeSchema.parse(raw);
   // Late evidence is committed as run-level debt that accounting resolves or
   // surfaces. It never fails the delivering session or an unrelated later run.
+  // The run row lock protects every mutable receipt/accounting read below.
+  // READ COMMITTED sees the current row when the lock is acquired, even if a
+  // run-log append changed it after the transaction checked the company.
   await withOperationAccountingTransaction(db, envelope.companyId,
-    tx => persistUsageReceiptInTransaction(tx, envelope));
+    tx => persistUsageReceiptInTransaction(tx, envelope), { isolationLevel: "read committed" });
 }
 
 export async function replayUsageReceipts(db: Db, directory = usageReceiptSpoolPath(), limit = 100) {

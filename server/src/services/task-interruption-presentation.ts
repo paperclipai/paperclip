@@ -1,4 +1,6 @@
+import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
 import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { unidentifiedLocalLaunchRefusals } from "./native-local-process-stop.js";
 import { agents, agentWakeupRequests, approvals, chatActions, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
   issues, issueTreeHoldMembers, issueTreeHolds, nativeRunFinalizations, projects, type Db } from "@paperclipai/db";
 import { unionAll } from "drizzle-orm/pg-core";
@@ -24,7 +26,7 @@ import { AI_CONNECTION_BUSY_RETRY_REASON, AI_CONNECTION_POOL_WAIT_RETRY_REASON, 
 // attempt. Their dispatcher re-checks the resource, so the run can stay
 // scheduled past its retry time. Retry cannot free the resource either.
 const resourceWaitRetryReasons = new Set<string>([WORKSPACE_BUSY_RETRY_REASON, AI_CONNECTION_BUSY_RETRY_REASON,
-  AI_CONNECTION_POOL_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON]);
+  AI_CONNECTION_POOL_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON]);
 
 // A due same-run resume dispatches within seconds; past this, offer Retry.
 const NATIVE_RESUME_DISPATCH_GRACE_MS = 2 * 60_000;
@@ -36,7 +38,7 @@ type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "st
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "status" | "scheduledRetryAt" | "errorCode" | "livenessState" | "resultJson"> &
   Partial<Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "error" | "companyId" | "nativeIssueId" | "runtimeMode" | "startedAt"
-    | "scheduledRetryReason" | "createdAt" | "finishedAt">> & {
+    | "scheduledRetryReason" | "createdAt" | "finishedAt" | "processPid" | "processGroupId">> & {
   /** Due time of the native coordinator's own same-run resume, if one is pending. */
   nativeResumeAt?: Date | null;
   /** When the native coordinator saved this run's terminal failure, if it did. */
@@ -63,6 +65,7 @@ type ProjectionState = {
   approval: boolean;
   /** A board-owned workspace-owner fence on this run that no automatic proof has released. */
   ownerStopRequired?: boolean;
+  unidentifiedLaunchConfirmable?: boolean;
   /** The latest wake for a task with no run yet, when admission refused it. */
   admissionWait?: { id: string; status: string; reason: string | null; agentId: string };
   retryDependencies?: RetryDependencies;
@@ -95,6 +98,14 @@ function boundedJsonString(value: SQL, limit: number) {
   return sql<string | null>`case when jsonb_typeof(${value}) = 'string' then left(${value} #>> '{}', ${limit}) else null end`;
 }
 
+/** Projected reason for a budget.blocked refusal caused by unpriced usage. */
+export const UNPRICED_USAGE_WAIT = "accounting.unpriced_usage";
+/** Admission's unpriced-usage refusal text (budgets.ts). Only this fixed
+ * phrase is matched; the stored message itself is never displayed. */
+const unpricedUsageWait = (reason: SQL, message: SQL) =>
+  sql<string | null>`case when ${reason} = 'budget.blocked' and ${message} like '%recorded usage has no reliable price%'
+    then ${UNPRICED_USAGE_WAIT} else ${reason} end`;
+
 // Persisted wait messages can contain diagnostics. Ordinary task views expose
 // only these stable categories, never arbitrary payloads or source identifiers.
 const retryWaitMessages: Record<string, string> = {
@@ -109,10 +120,15 @@ const retryWaitMessages: Record<string, string> = {
   execution_active: "Retry is waiting for the current run to finish. Your message is saved.",
   decision_pending: "Retry is waiting for a pending approval or question to be resolved. Your message is saved.",
   "budget.blocked": "Retry is waiting for the budget to allow new work. Check Costs for unrecorded or unpriced usage.",
+  // Admission records an unpriced-usage refusal as budget.blocked; the
+  // projection shows it as the accounting matter it is.
+  [UNPRICED_USAGE_WAIT]: "Retry is waiting because recorded usage has no price. Check Costs, or allow unpriced usage in the budget policy. Your message is saved.",
   finalizing_saved_result: "Paperclip is finishing the saved result before Retry can continue.",
   // Another click cannot release a copyback owner that stopped without reporting.
   // Retry starts a new recovery generation; the agent does not repeat its work.
-  saved_work_recovery_failed: "Saving the agent's files failed after automatic retries. Retry to try again; the agent will not repeat its work.",
+  saved_work_recovery_failed: "Saving the agent's files failed. Retry to try again; the agent will not repeat its work.",
+  saved_work_recovery_refused: "Paperclip refused to recover the saved files because a safety check on them cannot pass. "
+    + "Retry runs the same check again and succeeds only after Paperclip is updated. The agent's result is saved, and the agent will not repeat its work.",
   workspace_owner_stop_required: "Retry is waiting until Paperclip confirms that the previous server stopped saving files. The agent's result and your Retry are saved.",
   cleanup_quarantined: "Retry cannot continue this attempt. Send a new message after the previous execution has stopped.",
   cancelled_by_operator: "This attempt was stopped. Send a new message to continue from saved work.",
@@ -122,6 +138,9 @@ const retryWaitMessages: Record<string, string> = {
   // An edited saved message can never be replayed; only new input continues.
   retry_source_changed: "Retry cannot continue because its saved message changed. Send a new message to continue from saved work.",
 };
+
+const UNIDENTIFIED_RUNNER_STOP_MESSAGE = "Paperclip can't confirm that the previous run stopped. The server restarted after it started the agent but before it recorded the agent's process. "
+  + "If no agent is still working on this task, a board operator can confirm that it stopped, and your Retry starts right away. Your message is saved.";
 
 type RetryDependencies = { count: number; blocked: boolean; cancelled: boolean; savingFilesOnly: boolean };
 
@@ -136,6 +155,7 @@ function dependencyRetryWaitMessage(dependencies: RetryDependencies): string {
 // assigned-task liveness sweep admits it once the hold clears; no Retry needed.
 const admissionWaitMessages: Record<string, string> = {
   "budget.blocked": "Waiting for the budget to allow new work. The task starts automatically when it does.",
+  [UNPRICED_USAGE_WAIT]: "Waiting because recorded usage has no price. Check Costs, or allow unpriced usage in the budget policy.",
 };
 
 /** Recognize old persisted failures without displaying arbitrary run error text. */
@@ -242,6 +262,13 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   // dispatch runs. A resume that never ran falls through to one Retry.
   const nativeResumeAt = run.nativeResumeAt?.getTime();
   const retryAt = system?.nextAttemptAt ?? nativeResumeAt ?? run.scheduledRetryAt?.getTime();
+  if (run.runtimeMode === "native" && run.errorCode === "native_governed_wait_settlement_pending") {
+    const settling = recoveryRunning || Boolean(retryAt && now - retryAt < NATIVE_RESUME_DISPATCH_GRACE_MS);
+    return { ...base, state: settling ? "working" : "failed", canRetry: false,
+      retryWait: { reason: "governed_wait_settlement", message: settling
+        ? "Your work is saved. Paperclip is finishing shutdown."
+        : "Paperclip couldn’t confirm shutdown. Your work is saved; continuation is paused." } };
+  }
   if (retryAt && retryAt > now) return { ...base, state: "retry_scheduled",
     nextRetryAt: new Date(retryAt).toISOString(), canRetry: !preparationPending && !nativeResumeAt,
     ...(system?.nextAttemptAt && recoveryStep ? { recoveryStep } : {}) };
@@ -252,6 +279,10 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   if (retryWait?.sourceRunId === run.id && !retryWait.executionWaitReason && !retryWait.preparationStatus && dependencies?.count)
     return { ...base, intentId: retryWait.id, state: "working",
       retryWait: { reason: "dependency_blocked", message: dependencyRetryWaitMessage(dependencies) } };
+  if (retryWait?.sourceRunId === run.id && retryWait.executionWaitReason === "process_identity_missing"
+      && input.unidentifiedLaunchConfirmable)
+    return { ...base, responsibility: "user", state: "waiting_for_user", canRetry: false, userAction: "confirm_run_stopped",
+      retryWait: { reason: "process_identity_missing", message: UNIDENTIFIED_RUNNER_STOP_MESSAGE } };
   if (retryWait?.sourceRunId === run.id && retryWait.executionWaitReason) {
     const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
     // Keep the latest input receipt so message submission can settle independently.
@@ -297,6 +328,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     db.select({ issueId: requestedIssueId, id: heartbeatRuns.id, status: heartbeatRuns.status,
       createdAt: heartbeatRuns.createdAt, finishedAt: heartbeatRuns.finishedAt, agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId,
       nativeIssueId: heartbeatRuns.nativeIssueId, runtimeMode: heartbeatRuns.runtimeMode, startedAt: heartbeatRuns.startedAt,
+      processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId,
       agentAdapter: agents.adapterType,
       error: sql<string | null>`case when ${heartbeatRuns.errorCode} = 'setup_failed'
         and ${heartbeatRuns.error} = 'Project is outside this low-trust boundary.'
@@ -349,7 +381,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     // A new message must not hide an existing Retry's admission explanation.
     db.selectDistinctOn([wakeIssue, isRetryWait], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt,
       sourceRunId: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{taskRetry,sourceRunId}'`, 160),
-      executionWaitReason: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{executionWait,reason}'`, 80),
+      executionWaitReason: boundedJsonString(sql`to_jsonb(${unpricedUsageWait(sql`${agentWakeupRequests.payload}#>>'{executionWait,reason}'`,
+        sql`${agentWakeupRequests.payload}#>>'{executionWait,message}'`)})`, 80),
       preparationStatus: chatActions.status, preparationRetryAt: chatActionDeadline("failed_run_retry"),
       preparationUpdatedAt: chatActions.updatedAt })
       .from(agentWakeupRequests).leftJoin(chatActions, and(eq(chatActions.companyId, agentWakeupRequests.companyId),
@@ -377,7 +410,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     db.select({ status: companies.status, pauseReason: companies.pauseReason }).from(companies).where(eq(companies.id, companyId)),
     // Only consulted for tasks without a run: the latest wake says whether admission refused it.
     startingIssueIds.length ? db.selectDistinctOn([wakeIssue], { issueId: wakeIssue, id: agentWakeupRequests.id,
-      status: agentWakeupRequests.status, reason: agentWakeupRequests.reason, agentId: agentWakeupRequests.agentId })
+      status: agentWakeupRequests.status, reason: unpricedUsageWait(sql`${agentWakeupRequests.reason}`, sql`${agentWakeupRequests.error}`),
+      agentId: agentWakeupRequests.agentId })
       .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, startingIssueIds)))
       .orderBy(wakeIssue, desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id)) : [],
   ]);
@@ -444,7 +478,11 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const ownerStopRequired = new Set(ownerStops.map(row => `${row.issueId}:${row.runId}`));
   const byIssue = <T extends { issueId: string }>(rows: T[]) => new Map(rows.map(row => [row.issueId, row]));
   const runMap = byIssue(runs), waitMap = new Map<string, typeof waits[number]>();
-  const retryWaitMap = byIssue(waits.filter(wait => wait.sourceRunId));
+  // A Retry belongs to the run it observed. New conversation work supersedes
+  // that authority, even before dispatch retires the old receipt. Retained
+  // ordinary input is independent and must still be shown as waiting.
+  const currentWaits = waits.filter(wait => !wait.sourceRunId || wait.sourceRunId === runMap.get(wait.issueId)?.id);
+  const retryWaitMap = byIssue(currentWaits.filter(wait => wait.sourceRunId));
   const retryIssueIds = [...retryWaitMap.keys()];
   const retryDependencyMap = new Map<string, RetryDependencies>();
   if (retryIssueIds.length) {
@@ -464,7 +502,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         savingFilesOnly: ids.every(id => saving.has(id)) });
     }
   }
-  for (const wait of waits) {
+  for (const wait of currentWaits) {
     const current = waitMap.get(wait.issueId);
     if (!current || wait.requestedAt > current.requestedAt ||
         (wait.requestedAt.getTime() === current.requestedAt.getTime() && wait.id > current.id)) waitMap.set(wait.issueId, wait);
@@ -502,6 +540,12 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const projectMap = new Map(projectRows.map(project => [project.id, project]));
   const pauses = new Set(pauseRows.map(row => row.issueId)), approvalsSet = new Set(approvalRows.map(row => row.issueId));
   const admissionWaitMap = byIssue(admissionWaits);
+  const launchWaits = [...retryWaitMap].flatMap(([issueId, wait]) => {
+    const run = runMap.get(issueId);
+    return run && wait.sourceRunId === run.id && wait.executionWaitReason === "process_identity_missing" ? [{ issueId, run }] : [];
+  });
+  const launchRefusals = await unidentifiedLocalLaunchRefusals(db, launchWaits.map(entry => entry.run));
+  const confirmableLaunches = new Set(launchWaits.filter(entry => launchRefusals.get(entry.run.id) === null).map(entry => entry.issueId));
   const now = Date.now();
   for (const issue of selected) {
     const required = requirements.get(issue.id);
@@ -516,6 +560,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       agent: agentMap.get(issue.assigneeAgentId ?? ""), project: projectMap.get(issue.projectId ?? ""),
       company: companyRows[0], paused: pauses.has(issue.id), approval: approvalsSet.has(issue.id),
       ownerStopRequired: ownerStopRequired.has(`${issue.id}:${facts.run?.id}`),
+      unidentifiedLaunchConfirmable: confirmableLaunches.has(issue.id),
       admissionWait: admissionWaitMap.get(issue.id),
       retryDependencies: retryDependencyMap.get(issue.id),
     }, now);

@@ -454,6 +454,8 @@ function stripSecretRefValuesFromPluginLeaseMetadata(input: {
 }
 
 export interface EnvironmentDriverAcquireInput {
+  purpose?: "run" | "login";
+  loginCommandKey?: import("@paperclipai/plugin-sdk").PluginLoginCommandKey;
   companyId: string;
   environment: Environment;
   /** Saved environment before run-only lease retention settings. */
@@ -3322,6 +3324,30 @@ function createPluginEnvironmentDriver(
     };
   }
 
+  async function releasePluginRunLease(input: EnvironmentDriverReleaseInput, executionStopObserved = false) {
+    await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"pluginLeaseCleanupMethod":"release"}'::jsonb` }).where(and(eq(environmentLeases.id, input.lease.id), eq(environmentLeases.companyId, input.lease.companyId)));
+    const settled = await settleDispatchedEnvironmentTask(db, workerManager, input.lease, { executionStopObserved });
+    const taskStopped = settled !== false ||
+      (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true && !input.lease.metadata?.runnerTaskStartup && !input.lease.metadata?.runnerTaskStartupCleanup);
+    if (settled !== "completed") {
+      const { plugin, driverKey, driverConfig } = await resolvePluginDriverForRelease(input);
+      await workerManager.call(plugin.id, "environmentReleaseLease", {
+        driverKey,
+        companyId: input.lease.companyId,
+        environmentId: input.environment.id,
+        issueId: input.lease.issueId,
+        config: driverConfig,
+        providerLeaseId: input.lease.providerLeaseId,
+        leaseMetadata: input.lease.metadata ?? undefined,
+      });
+    }
+    return await environmentsSvc.releaseLease(input.lease.id, input.status, {
+      cleanupStatus: "success",
+      ...(taskStopped ? { remoteExecutionTermination: remoteTerminationReceipt(input.lease,
+        { providerLeaseId: input.lease.providerLeaseId, state: "stopped" }) } : {}),
+    });
+  }
+
   return {
     driver: "plugin",
 
@@ -3340,7 +3366,7 @@ function createPluginEnvironmentDriver(
         driver.warmTaskVersion === 1 && !!input.issueId && !!input.agentId && !!input.heartbeatRunId &&
         workerManager.getWorker(plugin.id)?.supportedMethods.includes("environmentResumeLease");
       const lifecyclePolicy = warm ? { mode: "warm", idleTimeoutMs: parsed.config.runnerIdleTimeoutMs ?? 300_000 } : { mode: "per_turn", idleTimeoutMs: null };
-      const fingerprint = createHash("sha256").update(JSON.stringify([parsed.config, input.agentId, input.runnerTaskProjectIds ?? []])).digest("hex");
+      const fingerprint = createHash("sha256").update(JSON.stringify([parsed.config, input.agentId, input.runnerTaskProjectIds ?? [], ...(input.purpose ? [input.purpose, input.loginCommandKey] : [])])).digest("hex");
       const candidates = warm ? await db.select().from(environmentLeases).where(and(
         eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.environmentId, input.environment.id),
         eq(environmentLeases.status, "retained"), eq(environmentLeases.issueId, input.issueId!),
@@ -3363,7 +3389,7 @@ function createPluginEnvironmentDriver(
           providerLeaseId: previous.providerLeaseId, leaseMetadata: previous.metadata ?? undefined,
         });
         if (!resumed?.providerLeaseId) {
-          await this.releaseRunLease({ environment: input.environment, lease: toEnvironmentLeaseSnapshot(previous), status: "released" });
+          await releasePluginRunLease({ environment: input.environment, lease: toEnvironmentLeaseSnapshot(previous), status: "released" }, true);
           resumed = undefined;
         }
       }
@@ -3381,6 +3407,7 @@ function createPluginEnvironmentDriver(
         config: parsed.config.driverConfig,
         runId: identity.runId,
         creationOperationId: identity.id,
+        ...(input.purpose ? { purpose: input.purpose, loginCommandKey: input.loginCommandKey } : {}),
         workspaceMode: input.executionWorkspaceMode ?? undefined,
         agentId: input.agentId ?? undefined,
         executionWorkspaceId: input.executionWorkspaceId ?? undefined,
@@ -3412,8 +3439,9 @@ function createPluginEnvironmentDriver(
           ...(warm ? {runnerTaskProjectIds:[...input.runnerTaskProjectIds ?? []]} : {}),remoteCwd:".",
           ...(input.agentId ? { agentId: input.agentId } : {}),
           providerMetadata: providerLease.metadata ?? {},
+          ...(input.purpose ? { purpose: input.purpose, loginCommandKey: input.loginCommandKey } : {}),
           environmentId: input.environment.id,
-          ...(input.adapterType === "paperclip_runner" && driver.supportsTasks === true ? { runnerTaskLease: true } : {}),
+          ...(input.purpose !== "login" && input.adapterType === "paperclip_runner" && driver.supportsTasks === true ? { runnerTaskLease: true } : {}),
           driver: input.environment.driver,
           executionWorkspaceMode: input.executionWorkspaceMode,
           pluginId: plugin.id,
@@ -3423,25 +3451,8 @@ function createPluginEnvironmentDriver(
       });
     },
 
-    async releaseRunLease(input) {
-      await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"pluginLeaseCleanupMethod":"release"}'::jsonb` }).where(and(eq(environmentLeases.id, input.lease.id), eq(environmentLeases.companyId, input.lease.companyId)));
-      const taskStopped = await settleDispatchedEnvironmentTask(db, workerManager, input.lease) ||
-        (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true && !input.lease.metadata?.runnerTaskStartup && !input.lease.metadata?.runnerTaskStartupCleanup);
-      const { plugin, driverKey, driverConfig } = await resolvePluginDriverForRelease(input);
-      await workerManager.call(plugin.id, "environmentReleaseLease", {
-        driverKey,
-        companyId: input.lease.companyId,
-        environmentId: input.environment.id,
-        issueId: input.lease.issueId,
-        config: driverConfig,
-        providerLeaseId: input.lease.providerLeaseId,
-        leaseMetadata: input.lease.metadata ?? undefined,
-      });
-      return await environmentsSvc.releaseLease(input.lease.id, input.status, {
-        cleanupStatus: "success",
-        ...(taskStopped ? { remoteExecutionTermination: remoteTerminationReceipt(input.lease,
-          { providerLeaseId: input.lease.providerLeaseId, state: "stopped" }) } : {}),
-      });
+    releaseRunLease(input) {
+      return releasePluginRunLease(input);
     },
 
     async resumeRunLease(input) {
@@ -3838,6 +3849,8 @@ export function environmentRuntimeService(
     },
 
     async acquireRunLease(input: {
+      purpose?: "run" | "login";
+      loginCommandKey?: import("@paperclipai/plugin-sdk").PluginLoginCommandKey;
       companyId: string;
       environment: Environment;
       /** Saved environment before run-only lease retention settings. */
@@ -3894,6 +3907,8 @@ export function environmentRuntimeService(
         executionWorkspaceMode: leaseContext.executionWorkspaceMode,
         executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
         runnerTaskProjectIds: input.runnerTaskProjectIds,
+        purpose: input.purpose,
+        loginCommandKey: input.loginCommandKey,
         adapterType: input.adapterType ?? null,
         resolveSnapshotIdentity: input.resolveSnapshotIdentity,
         applyCustomImageTemplate: input.applyCustomImageTemplate ?? false,

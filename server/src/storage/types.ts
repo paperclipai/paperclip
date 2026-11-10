@@ -61,6 +61,7 @@ export interface HeadObjectResult {
 
 export interface StorageProvider {
   id: StorageProviderId;
+  readonly immutableObjectNamespace?: string;
   putObject(input: PutObjectInput): Promise<void | PutObjectReceipt>;
   getObject(input: GetObjectInput): Promise<GetObjectResult>;
   headObject(input: GetObjectInput): Promise<HeadObjectResult>;
@@ -100,6 +101,7 @@ export interface PutFileResult {
 
 export interface StorageService {
   provider: StorageProviderId;
+  readonly immutableObjectNamespace?: string;
   putFile(input: PutFileInput): Promise<PutFileResult>;
   getObject(companyId: string, objectKey: string, options?: Pick<GetObjectInput, "range" | "signal">): Promise<GetObjectResult>;
   headObject(companyId: string, objectKey: string, options?: Pick<GetObjectInput, "signal">): Promise<HeadObjectResult>;

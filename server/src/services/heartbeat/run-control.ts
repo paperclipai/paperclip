@@ -72,7 +72,8 @@ import {
   waitForAdapterStop,
 } from "../adapter-execution-control.js";
 import { AdapterStopTimeoutError } from "../adapter-stop-timeout.js";
-import { budgetCancellationScopePredicate, pendingBudgetRunCancellationPredicate } from "./budget-cancellation.js";
+import { pendingBudgetRunCancellationPredicate, pendingBudgetRunIdsForScopeQuery } from "./budget-cancellation.js";
+import { notifyBudgetStopsSettled } from "../budget-resume-continuation.js";
 import { withBudgetSpan } from "../budget-tracing.js";
 import { captureException } from "../../sentry.js";
 import { randomUUID } from "node:crypto";
@@ -1817,9 +1818,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     });
     // A later policy change revokes permission to fence new work, not the Stop
     // already committed for older work. Recovery must deliver those intents.
-    const pending = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-      pendingBudgetRunCancellationPredicate(), budgetCancellationScopePredicate(scope),
-    ));
+    const pending = await pendingBudgetRunIdsForScopeQuery(db, scope);
     const runIds = [...new Set([...(newlyFenced ?? []), ...pending.map(run => run.id)])];
     if (!runIds.length) return;
     const failures: unknown[] = [];
@@ -1842,6 +1841,9 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         }
       }
     }));
+    // A resumed budget owes these runs a continuation once their Stop lands.
+    await notifyBudgetStopsSettled(db, runIds).catch(error =>
+      logger.warn({ err: error, companyId: scope.companyId }, "Budget resume continuation notification deferred"));
     // Drain the batch before rejecting; one failed provider must not prevent
     // the remaining runs from receiving their already-committed Stop.
     if (failures.length) throw new AggregateError(failures, "Budget cancellation delivery remains pending");

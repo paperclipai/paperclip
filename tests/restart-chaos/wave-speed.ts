@@ -1,7 +1,7 @@
 import { LOCAL_SPEED_BUDGETS, type SpeedBudget, type SpeedBudgetAdapter } from "../../server/src/services/native-runtime/native-speed-budgets.js";
 import type { ChaosApi } from "./api.js";
 import {
-  baselineRows, distribution, recoverySamples, runMetrics, runSpans, runWarmth,
+  baselineRows, distribution, recoverySamples, runMetrics, runSpans, runWarmth, stampProviderLoadStarts,
   type BaselineEvent, type BaselineFault, type BaselineRun, type Distribution,
 } from "./ttft-baseline-stats.js";
 import type { AdapterId, EnvironmentKind, FaultReceipt, RunSample } from "./types.js";
@@ -11,7 +11,8 @@ type Json = Record<string, unknown>;
 export interface WaveSpeedTask { issueId: string | null; adapter: AdapterId; samples: Array<{ runs?: RunSample[] }> }
 
 export interface SpeedRow {
-  adapter: string; metric: "time_to_first_activity" | "ttft" | "agent_boot" | "workspace_provision" | "restart_recovery"; start: "cold" | "warm" | "restart";
+  adapter: string; metric: "time_to_first_activity" | "ttft" | "agent_boot" | "workspace_provision" | "restart_recovery"
+    | "restart_recovery_control_plane" | "restart_provider_load"; start: "cold" | "warm" | "restart";
   measured: Distribution; budget: SpeedBudget | null; breaches: Array<"p50" | "p95">;
 }
 
@@ -21,6 +22,8 @@ export interface WaveSpeed {
   outageAdjustedSpans: number;
   outageRemovedMs: number;
   recoveryWithoutProviderEvent: number;
+  /** Recovery samples a later fault interrupted before their next provider event (not graded). */
+  recoveryInterruptedByFault: number;
   runBudgetExceeded: number;
   singleRunBreaches: number;
   breaches: number;
@@ -33,16 +36,20 @@ export function budgetFor(environment: EnvironmentKind, adapter: string, metric:
   start: SpeedRow["start"]): SpeedBudget | null {
   const key = BUDGET_ADAPTER[adapter as AdapterId];
   if (environment !== "local" || !key) return null;
-  if (metric === "ttft" || metric === "workspace_provision") return null;
+  // Reported without a budget: the full recovery and the provider's session load
+  // grow with session size and simultaneous resumes; Paperclip's share is judged.
+  if (metric === "ttft" || metric === "workspace_provision" || metric === "restart_recovery" || metric === "restart_provider_load") return null;
   const budgets = LOCAL_SPEED_BUDGETS[key] as unknown as Record<string, Record<"cold" | "warm", SpeedBudget> | SpeedBudget>;
-  if (metric === "restart_recovery") return budgets.restart_recovery as SpeedBudget;
+  if (metric === "restart_recovery_control_plane") return budgets.restart_recovery_control_plane as SpeedBudget;
   const byStart = (metric === "time_to_first_activity" ? budgets.time_to_first_activity ?? budgets.ttft : budgets[metric]) as
     Record<"cold" | "warm", SpeedBudget>;
   return byStart[start === "warm" ? "warm" : "cold"];
 }
 
+export const MIN_AGGREGATE_SAMPLES = 5;
+
 export function breachesOf(measured: Distribution, budget: SpeedBudget | null): Array<"p50" | "p95"> {
-  if (!budget) return [];
+  if (!budget || measured.n < MIN_AGGREGATE_SAMPLES) return [];
   const out: Array<"p50" | "p95"> = [];
   if (measured.p50 !== null && measured.p50 > budget.p50Ms) out.push("p50");
   if (measured.p95 !== null && measured.p95 > budget.p95Ms) out.push("p95");
@@ -50,7 +57,7 @@ export function breachesOf(measured: Distribution, budget: SpeedBudget | null): 
 }
 
 export function faultRuns(faults: readonly FaultReceipt[], runs: ReadonlyArray<{ id: string; createdAt: number; finishedAt: number | null }>): BaselineFault[] {
-  return faults.filter(fault => fault.readyAt !== null).map(fault => ({ kind: fault.kind, readyAt: fault.readyAt!,
+  return faults.filter(fault => fault.readyAt !== null).map(fault => ({ kind: fault.kind, readyAt: fault.readyAt!, startedAt: fault.startedAt,
     runIds: runs.filter(run => run.createdAt <= fault.readyAt! && (run.finishedAt === null || run.finishedAt >= fault.startedAt))
       .map(run => run.id) }));
 }
@@ -180,12 +187,24 @@ export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly Base
     }
   }
   const clock = outageFreeClock(outage.windows ?? []);
-  const samples = recoverySamples(runs, faults).map(sample => sample.latencyMs === null ? sample
-    : { ...sample, latencyMs: Math.max(0, clock(sample.readyAt + sample.latencyMs) - clock(sample.readyAt)) });
+  const outageFree = (readyAt: number, ms: number | null) => ms === null ? null : Math.max(0, clock(readyAt + ms) - clock(readyAt));
+  const samples = recoverySamples(runs, faults).map(sample => sample.latencyMs === null ? sample : {
+    ...sample, latencyMs: outageFree(sample.readyAt, sample.latencyMs),
+    controlPlaneMs: outageFree(sample.readyAt, sample.controlPlaneMs),
+    providerLoadMs: sample.providerLoadMs === null || sample.controlPlaneMs === null ? sample.providerLoadMs
+      : Math.max(0, clock(sample.readyAt + sample.controlPlaneMs + sample.providerLoadMs) - clock(sample.readyAt + sample.controlPlaneMs)),
+  });
   for (const adapter of [...new Set(samples.map(sample => sample.adapter))].sort()) {
-    const measured = distribution(samples.flatMap(sample => sample.adapter === adapter && sample.latencyMs !== null ? [sample.latencyMs] : []));
-    const budget = budgetFor(environment, adapter, "restart_recovery", "restart");
-    rows.push({ adapter, metric: "restart_recovery", start: "restart", measured, budget, breaches: breachesOf(measured, budget) });
+    for (const [metric, pick] of [["restart_recovery", (sample: typeof samples[number]) => sample.latencyMs],
+      ["restart_recovery_control_plane", (sample: typeof samples[number]) => sample.controlPlaneMs],
+      ["restart_provider_load", (sample: typeof samples[number]) => sample.providerLoadMs]] as const) {
+      const measured = distribution(samples.flatMap(sample => {
+        const value = sample.adapter === adapter ? pick(sample) : null;
+        return value === null ? [] : [value];
+      }));
+      const budget = budgetFor(environment, adapter, metric, "restart");
+      rows.push({ adapter, metric, start: "restart", measured, budget, breaches: breachesOf(measured, budget) });
+    }
   }
   const singleRunBreaches = runs.filter(run => run.phase !== "restart" && run.phase !== "verify").filter(run => {
     const start = runWarmth(run);
@@ -194,9 +213,14 @@ export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly Base
     const bootBudget = budgetFor(environment, run.adapter, "agent_boot", start);
     return (activity !== null && activityBudget !== null && activity > activityBudget.p95Ms)
       || (boot !== null && bootBudget !== null && boot > bootBudget.p95Ms);
+  }).length + samples.filter(sample => {
+    const budget = budgetFor(environment, sample.adapter, "restart_recovery_control_plane", "restart");
+    return !sample.interruptedByFault && sample.controlPlaneMs !== null && budget !== null && sample.controlPlaneMs > budget.p95Ms;
   }).length;
   const breaches = rows.reduce((total, row) => total + row.breaches.length, 0) + singleRunBreaches;
-  return { environment, rows, recoveryWithoutProviderEvent: samples.filter(sample => sample.latencyMs === null).length,
+  return { environment, rows,
+    recoveryWithoutProviderEvent: samples.filter(sample => sample.latencyMs === null && !sample.interruptedByFault).length,
+    recoveryInterruptedByFault: samples.filter(sample => sample.interruptedByFault).length,
     runBudgetExceeded, singleRunBreaches, breaches, errors, outageAdjustedSpans: outage.adjusted, outageRemovedMs: outage.removedMs };
 }
 
@@ -218,7 +242,9 @@ async function runEvents(api: ChaosApi, runId: string): Promise<BaselineEvent[]>
     const page = await api.get<Json[]>(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=500`, 15_000);
     for (const row of page) events.push({ eventType: String(row.eventType), createdAt: String(row.createdAt), payload: (row.payload ?? null) as Json | null });
     if (page.length < 500) return events;
-    afterSeq = Number(page[page.length - 1]!.seq);
+    const next = Number(page[page.length - 1]!.seq);
+    if (!Number.isFinite(next) || next <= afterSeq) throw new Error(`run events page after seq ${afterSeq} has no later seq`);
+    afterSeq = next;
   }
 }
 
@@ -248,7 +274,8 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
         }
         if (run.retryOfRunId && faultHit.has(run.retryOfRunId)) raw.phase = "restart";
         if (faultBeforeFirstActivity(raw, windows, Date.parse(run.createdAt!))) raw.phase = "restart";
-        const trimmed = withoutOutage(raw, windows);
+        // Stamp provider load starts from raw offsets before outage removal rewrites them.
+        const trimmed = withoutOutage(stampProviderLoadStarts(raw), windows);
         outage.adjusted += trimmed.adjusted; outage.removedMs += trimmed.removedMs;
         runs.push(trimmed.run);
         timing.push({ id: run.id, createdAt: Date.parse(run.createdAt!), finishedAt: run.finishedAt ? Date.parse(run.finishedAt) : null });
@@ -262,16 +289,21 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
   return gradeWaveSpeed(environment, runs, faultRuns(faults, timing), runBudgetExceeded, errors, outage);
 }
 
+function breachCell(row: SpeedRow): string {
+  if (row.breaches.length) return row.breaches.join(", ");
+  return row.budget && row.measured.n > 0 && row.measured.n < MIN_AGGREGATE_SAMPLES ? `insufficient sample (n < ${MIN_AGGREGATE_SAMPLES})` : "—";
+}
+
 export function speedMarkdown(speed: WaveSpeed): string {
   const s = (value: number | null) => value === null ? "—" : `${(value / 1000).toFixed(1)} s`;
   const lines = [`## Speed (${speed.environment})`, "",
-    `Breaches: ${speed.breaches} (aggregate p50/p95 rows plus ${speed.singleRunBreaches} runs over the p95 budget after outage removal; the server logged ${speed.runBudgetExceeded} budget_exceeded events before removal).`,
-    `Restart samples with no provider event after ready: ${speed.recoveryWithoutProviderEvent}.`,
+    `Breaches: ${speed.breaches} (aggregate p50/p95 rows with at least ${MIN_AGGREGATE_SAMPLES} samples plus ${speed.singleRunBreaches} runs or restart recoveries over the p95 budget after outage removal; the server logged ${speed.runBudgetExceeded} budget_exceeded events before removal).`,
+    `Restart samples with no provider event after ready: ${speed.recoveryWithoutProviderEvent}. Interrupted by a later fault (not graded): ${speed.recoveryInterruptedByFault}.`,
     `Outage time removed from ${speed.outageAdjustedSpans} spans: ${s(speed.outageRemovedMs)} (fault start to server ready; budgets judge the rest).`, "",
     "| Adapter | Metric | Start | n | p50 | p95 | Budget p50 / p95 | Breach |", "|---|---|---|---|---|---|---|---|"];
   for (const row of speed.rows) {
     lines.push(`| ${row.adapter} | ${row.metric} | ${row.start} | ${row.measured.n} | ${s(row.measured.p50)} | ${s(row.measured.p95)} | `
-      + `${row.budget ? `${s(row.budget.p50Ms)} / ${s(row.budget.p95Ms)}` : "no budget"} | ${row.breaches.join(", ") || "—"} |`);
+      + `${row.budget ? `${s(row.budget.p50Ms)} / ${s(row.budget.p95Ms)}` : "no budget"} | ${breachCell(row)} |`);
   }
   if (speed.errors.length) lines.push("", `Speed grade incomplete: ${speed.errors.length} run logs not read; the wave fails.`);
   return `${lines.join("\n")}\n`;

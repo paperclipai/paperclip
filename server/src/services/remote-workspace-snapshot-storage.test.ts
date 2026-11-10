@@ -12,12 +12,15 @@ import { eq } from "drizzle-orm";
 import { applyPendingMigrations, closeRegisteredClients, createDb, executionWorkspaceSnapshots } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
+
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { createStorageService } from "../storage/service.js";
 import type { StorageService } from "../storage/types.js";
+import { withS3FailureDiagnostics } from "../storage/s3-failure.js";
+import { isStorageUnavailableError } from "../storage/storage-unavailable.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
-import { beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, recoverWorkspaceSnapshotArchive, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
+import { beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, newWorkspaceSnapshotStorageTiming, recoverWorkspaceSnapshotArchive, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
 
 // Pass-through, so one test can report a changed archive between the two
 // identity reads that bracket encryption.
@@ -74,6 +77,27 @@ suite("remote workspace snapshot storage", () => {
     const [row] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, ref.id));
     expect(row?.status).toBe("uploaded"); // The owning service still controls atomic publication.
   });
+  it("records where a save and a restore spend their time", async () => {
+    const f = await fixture();
+    const saveTiming = newWorkspaceSnapshotStorageTiming();
+    const ref = await uploadWorkspaceSnapshot({ ...f.upload, timing: saveTiming });
+    const step = expect.any(Number);
+    expect(saveTiming).toMatchObject({ priorAttemptCheckMs: step, encryptMs: step, digestMs: step, putMs: step, verifyMs: step,
+      bytes: ref.byteSize });
+    const restoreTiming = newWorkspaceSnapshotStorageTiming();
+    await loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath: path.join(root, "timed.pcws"), timing: restoreTiming });
+    expect(restoreTiming).toMatchObject({ downloadMs: step, decryptMs: step, plaintextVerifyMs: step, publishMs: step,
+      bytes: ref.byteSize });
+  });
+
+  it("times the read-back of an earlier upload that a retried save reuses", async () => {
+    const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
+    const retry = newWorkspaceSnapshotStorageTiming();
+    await uploadWorkspaceSnapshot({ ...f.upload, timing: retry });
+    expect(retry).toMatchObject({ verifyMs: expect.any(Number), bytes: ref.byteSize });
+    expect(retry.putMs).toBeUndefined();
+  });
+
   it("preserves multi-chunk archive bytes through encryption, authenticated readback, and cold restore", async () => {
     const content = randomBytes(3 * 1024 * 1024 + 137), f = await fixture(content);
     const verifiedArchivePath = path.join(root, "verified-large.pcws");
@@ -431,6 +455,28 @@ suite("remote workspace snapshot storage", () => {
       await expect(fs.access(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
     } finally { temp.mockRestore(); }
   });
+  it("keeps a storage outage as the cause when the download deadline ends its wait", async () => {
+    const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
+    let requested!: () => void;
+    const firstRequest = new Promise<void>(resolve => { requested = resolve; });
+    const unavailable = { ...storage, getObject: vi.fn(async () => {
+      requested();
+      return withS3FailureDiagnostics("get_object", async () => {
+        throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
+      });
+    }) } as StorageService;
+    const scratch = path.join(root, "outage-scratch"); await fs.mkdir(scratch);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const result = loadWorkspaceSnapshotArchive({ storage: unavailable, reference: ref, targetPath: path.join(root, "outage.pcws"),
+      temporaryParent: scratch }).then(() => ({ succeeded: true }), (error: unknown) => error);
+    try {
+      await firstRequest;
+      await vi.advanceTimersByTimeAsync(300_001);
+      const outcome = await Promise.race([result, wait(2_000).then(() => ({ pending: true }))]);
+      expect(isStorageUnavailableError(outcome)).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
   it.each(["headers", "body"])("closes a stalled S3 %s request before returning a retryable download failure", async phase => {
     const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
     const ciphertext = await fs.readFile(path.join(root, "objects", ref.objectKey));

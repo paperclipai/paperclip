@@ -1,9 +1,11 @@
 import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
+import { endStorageOutageWaitOn, runInOwnStorageScope } from "../storage/storage-unavailable.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
 import type { StopInvocationOptions } from "./heartbeat/run-control.js";
 import { isContextCompactionRun } from "./context-compaction.js";
 import { isUnstartedTaskQuestionAnswer } from "./unstarted-task-question-answer.js";
+import { isVerifiedDependencyInteractionResponse } from "./queued-interaction-response.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
 import { registerIssueRecoveryWork } from "./recovery/work.js";
@@ -1872,7 +1874,7 @@ export function heartbeatService(
       onNativeExecutionLeaseAcquired?: () => Promise<void>;
     } = {},
   ) {
-    return withRunExecutionTiming(runId, () => executeRunAttempt(runId, runOptions));
+    return withRunExecutionTiming(runId, () => runInOwnStorageScope(() => executeRunAttempt(runId, runOptions)));
   }
 
   const { deferRunForProviderLimit } = createProviderLimitWait(db, {
@@ -2011,6 +2013,7 @@ export function heartbeatService(
     activeRunExecutions.add(run.id);
     const timePreparation = createHeartbeatPreparationTiming(run.id);
     const executionControl = createAdapterExecutionControl();
+    endStorageOutageWaitOn(executionControl.controller.signal);
     // This coarse scope also covers host finalization after the adapter returns.
     // Nested scopes refine the label without making any termination claim.
     executionControl.phases.enter("host_execution");
@@ -2152,7 +2155,7 @@ export function heartbeatService(
               contextSnapshot: context,
             }));
         });
-      const isFailedChatRunRetry = await authorizeFailedChatRetryExecution();
+      const isFailedChatRunRetry = await timePreparation("chat_retry_admission", () => authorizeFailedChatRetryExecution());
       // Never adopt a chat-execution attestation supplied in a wake payload.
       // Reviewed chat turns rebuild it from the current durable owner below.
       delete context[PAPERCLIP_EXTERNAL_CHAT_EXECUTION_BOUND_KEY];
@@ -2207,32 +2210,40 @@ export function heartbeatService(
       const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
       const sessionCodec = getAdapterSessionCodec(agent.adapterType);
       const issueId = readNonEmptyString(context.issueId);
-      const freshWorkspace = await readFreshWorkspaceReadiness(db, run);
-      if (issueId && canApplyTaskWorkspaceSelectionAtAdmission({ admittedInput: parseObject(run.runnerProfileJson).nativeExecutionInput, restarting: Boolean(runOptions.nativeRestartRecovery), hasLeaseOwner: Boolean(runOptions.nativeLeaseOwner) })) {
-        const changed = await executionWorkspacesSvc.applyPendingTaskWorkspaceSelection({ companyId: agent.companyId,
-          issueId, runId: run.id, actor: { type: "agent", agentId: agent.id, companyId: agent.companyId, source: "agent_key" } });
-        // A subtask an older release bound to its parent's workspace gets its own
-        // here. A process-loss retry or a continuation that keeps the current
-        // workspace still finishes the interrupted attempt there first.
-        const released = run.processLossRetryCount > 0 || (freshWorkspace && freshWorkspace.mode !== "fresh_isolated_workspace") ? false
-          : await executionWorkspacesSvc.releaseAncestorWorkspaceBindingAtAdmission({ companyId: agent.companyId, issueId, runId: run.id });
-        if (changed || released) {
-          delete context.resumeSessionParams;
-          delete context.resumeSessionDisplayId;
-          context.workspaceSelectionChanged = true;
+      const freshWorkspace = await timePreparation("workspace_selection", async () => {
+        const readiness = await readFreshWorkspaceReadiness(db, run);
+        if (issueId && canApplyTaskWorkspaceSelectionAtAdmission({ admittedInput: parseObject(run.runnerProfileJson).nativeExecutionInput, restarting: Boolean(runOptions.nativeRestartRecovery), hasLeaseOwner: Boolean(runOptions.nativeLeaseOwner) })) {
+          const changed = await executionWorkspacesSvc.applyPendingTaskWorkspaceSelection({ companyId: agent.companyId,
+            issueId, runId: run.id, actor: { type: "agent", agentId: agent.id, companyId: agent.companyId, source: "agent_key" } });
+          // A subtask an older release bound to its parent's workspace gets its own
+          // here. A process-loss retry or a continuation that keeps the current
+          // workspace still finishes the interrupted attempt there first.
+          const released = run.processLossRetryCount > 0 || (readiness && readiness.mode !== "fresh_isolated_workspace") ? false
+            : await executionWorkspacesSvc.releaseAncestorWorkspaceBindingAtAdmission({ companyId: agent.companyId, issueId, runId: run.id });
+          if (changed || released) {
+            delete context.resumeSessionParams;
+            delete context.resumeSessionDisplayId;
+            context.workspaceSelectionChanged = true;
+          }
         }
-      }
+        return readiness;
+      });
       let issueContext = issueId
         ? await timePreparation("issue_context", () => getIssueExecutionContext(agent.companyId, issueId))
         : null;
       const issueDependencyReadiness = issueId
-        ? await issuesSvc
+        ? await timePreparation("dependency_readiness", () => issuesSvc
             .listDependencyReadiness(agent.companyId, [issueId])
-            .then((rows) => rows.get(issueId) ?? null)
+            .then((rows) => rows.get(issueId) ?? null))
         : null;
+      const dependencyResponse = issueId && issueContext?.status === "blocked"
+        && context.dependencyBlockedInteraction === true
+        && await isVerifiedDependencyInteractionResponse(db, { companyId: agent.companyId,
+          issueId, agentId: agent.id, context });
       if (
         issueId &&
         issueContext &&
+        !dependencyResponse &&
         isResolvedInteractionContinuationWakeContext(context)
       ) {
         try {
@@ -2241,14 +2252,17 @@ export function heartbeatService(
           // dispatch: an operator parking the issue after claim but before this
           // checkout must not be overwritten by the continuation. A todo task
           // that has never started has nothing parked, so it may start here.
-          const startsUnstartedTask = issueContext.status === "todo" &&
-            await isUnstartedTaskQuestionAnswer(db, { companyId: agent.companyId, issueId, interactionId: context.interactionId });
-          await issuesSvc.checkout(
-            issueId,
-            agent.id,
-            [...resolvedInteractionCheckoutExpectedStatuses(), ...(startsUnstartedTask ? ["todo"] : [])],
-            run.id,
-          );
+          const issueStatus = issueContext.status;
+          await timePreparation("issue_checkout", async () => {
+            const startsUnstartedTask = issueStatus === "todo" &&
+              await isUnstartedTaskQuestionAnswer(db, { companyId: agent.companyId, issueId, interactionId: context.interactionId });
+            await issuesSvc.checkout(
+              issueId,
+              agent.id,
+              [...resolvedInteractionCheckoutExpectedStatuses(), ...(startsUnstartedTask ? ["todo"] : [])],
+              run.id,
+            );
+          });
           context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
         } catch (error) {
           if (!isCheckoutConflictError(error)) throw error;
@@ -2263,7 +2277,7 @@ export function heartbeatService(
           }
           throw error;
         }
-        issueContext = await getIssueExecutionContext(agent.companyId, issueId);
+        issueContext = await timePreparation("issue_context", () => getIssueExecutionContext(agent.companyId, issueId));
       }
       if (
         issueId &&
@@ -2280,18 +2294,18 @@ export function heartbeatService(
         })
       ) {
         try {
-          await issuesSvc.checkout(
+          await timePreparation("issue_checkout", () => issuesSvc.checkout(
             issueId,
             agent.id,
             typeof context.workspaceReconstructionActionId === "string" ? ["todo"] : ["todo", "backlog", "blocked"],
             run.id,
-          );
+          ));
           context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
         } catch (error) {
           if (!isCheckoutConflictError(error)) throw error;
           context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = false;
         }
-        issueContext = await getIssueExecutionContext(agent.companyId, issueId);
+        issueContext = await timePreparation("issue_context", () => getIssueExecutionContext(agent.companyId, issueId));
       }
       if (
         issueId &&
@@ -2332,7 +2346,7 @@ export function heartbeatService(
             )
           : null;
       const experimentalInstanceSettings =
-        await instanceSettings.getExperimental();
+        await timePreparation("instance_settings", () => instanceSettings.getExperimental());
       const isolatedWorkspacesEnabled =
         experimentalInstanceSettings.enableIsolatedWorkspaces;
       // Inert on its own: the operator default only reaches the resolver when
@@ -2343,16 +2357,18 @@ export function heartbeatService(
         experimentalInstanceSettings.enableIsolatedWorkspacesByDefault;
       const providerApiPlacement = resolveProviderApiPlacement({ run, agent });
       const externalProvider = heartbeatExternalProvider({ run, agent }) ?? providerApiPlacement?.provider;
-      const [taskWorkspaceIntentRow] = issueId && !externalProvider ? await db.select({ intent: issues.workspaceSelection }).from(issues)
-        .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId))) : [];
+      const [taskWorkspaceIntentRow] = issueId && !externalProvider ? await timePreparation("workspace_context", () => db.select({ intent: issues.workspaceSelection }).from(issues)
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)))) : [];
       const contextProjectId = readNonEmptyString(context.projectId);
-      const boundSourceWorkspace = !externalProvider && issueContext?.executionWorkspaceId
-        ? await executionWorkspacesSvc.getStoredById(agent.companyId, issueContext.executionWorkspaceId) : null;
-      const [selectedWorkspaceSource] = !externalProvider && !boundSourceWorkspace && issueContext?.projectWorkspaceId
-        ? await db.select({ projectId: projectWorkspaces.projectId }).from(projectWorkspaces)
-          .where(and(eq(projectWorkspaces.id, issueContext.projectWorkspaceId), eq(projectWorkspaces.companyId, agent.companyId))) : [];
+      const executionWorkspaceId = issueContext?.executionWorkspaceId;
+      const boundSourceWorkspace = !externalProvider && executionWorkspaceId
+        ? await timePreparation("workspace_context", () => executionWorkspacesSvc.getStoredById(agent.companyId, executionWorkspaceId)) : null;
+      const projectWorkspaceId = issueContext?.projectWorkspaceId;
+      const [selectedWorkspaceSource] = !externalProvider && !boundSourceWorkspace && projectWorkspaceId
+        ? await timePreparation("workspace_context", () => db.select({ projectId: projectWorkspaces.projectId }).from(projectWorkspaces)
+          .where(and(eq(projectWorkspaces.id, projectWorkspaceId), eq(projectWorkspaces.companyId, agent.companyId)))) : [];
       const loadProjectContext = async (projectId: string | null | undefined) => projectId
-        ? await db
+        ? await timePreparation("project_context", () => db
             .select({
               id: projects.id,
               executionWorkspacePolicy: projects.executionWorkspacePolicy,
@@ -2379,7 +2395,7 @@ export function heartbeatService(
                 eq(projects.companyId, agent.companyId),
               ),
             )
-            .then((rows) => rows[0] ?? null)
+            .then((rows) => rows[0] ?? null))
         : null;
       const taskProjectId = issueContext ? issueContext.projectId : contextProjectId;
       const taskProjectContext = await loadProjectContext(taskProjectId);
@@ -2401,14 +2417,14 @@ export function heartbeatService(
             readNonEmptyString(context.interactionStatus) === "accepted")
         : false;
       const acceptedPlanWakeRoutingDecision = issueContext
-        ? await resolveAcceptedPlanWakeRoutingDecision({
+        ? await timePreparation("plan_wake_routing", () => resolveAcceptedPlanWakeRoutingDecision({
             db,
             companyId: agent.companyId,
             agentId: agent.id,
             issueId,
             acceptedPlanContinuationWake,
             contextSnapshot: context,
-          })
+          }))
         : null;
       if (acceptedPlanWakeRoutingDecision) {
         context.forceFreshSession = true;
@@ -2428,17 +2444,17 @@ export function heartbeatService(
       } else {
         delete context.acceptedPlanWakeRouting;
       }
-      const routineEnvContext = await getRoutineEnvForExecutionIssue(
+      const routineEnvContext = await timePreparation("routine_environment", () => getRoutineEnvForExecutionIssue(
         agent.companyId,
         issueContext,
-      );
+      ));
       let responsibleUserId: string | null =
-        await resolveResponsibleUserIdForRun({
+        await timePreparation("responsible_user", () => resolveResponsibleUserIdForRun({
           run,
           contextSnapshot: context,
           issueContext,
           routineEnvContext,
-        });
+        }));
       const identityContext = await timePreparation("run_identity", () => initializeRunIdentity(db, {
         companyId: agent.companyId,
         runId: run.id,
@@ -3216,6 +3232,7 @@ export function heartbeatService(
         appendRunEvent, getCurrentUserRedactionOptions,
         assertWriterAuthority: createRunLogWriterAuthority(db, run, runOptions.nativeLeaseOwner),
         runtimeLogSecretValues: observabilitySecretValues(observability),
+        signal: executionControl.controller.signal,
       });
       const goalCheckpointSession: {
         current: {
@@ -3225,7 +3242,7 @@ export function heartbeatService(
       } = { current: null };
       try {
         const startedAt = run.startedAt ?? new Date();
-        const runningWithSession = await db
+        const runningWithSession = await timePreparation("execution_start", () => db
           .update(heartbeatRuns)
           .set({
             startedAt,
@@ -3236,12 +3253,12 @@ export function heartbeatService(
           })
           .where(eq(heartbeatRuns.id, run.id))
           .returning()
-          .then((rows) => rows[0] ?? null);
+          .then((rows) => rows[0] ?? null));
         if (runningWithSession) run = runningWithSession;
 
         // Pause Durability: flip to "running" ONLY if the agent is still invokable.
         // Atomic conditional UPDATE is the sole gate (no read-then-write); 0 rows => abort.
-        const runningAgent = await db
+        const runningAgent = await timePreparation("execution_start", () => db
           .update(agents)
           .set({ status: "running", updatedAt: new Date() })
           .where(
@@ -3252,7 +3269,7 @@ export function heartbeatService(
             ),
           )
           .returning()
-          .then((rows) => rows[0] ?? null);
+          .then((rows) => rows[0] ?? null));
 
         if (!runningAgent) {
           logger.warn(
@@ -3294,12 +3311,12 @@ export function heartbeatService(
         });
 
         const currentRun = run;
-        await appendRunEvent(currentRun, {
+        await timePreparation("execution_start", () => appendRunEvent(currentRun, {
           eventType: "lifecycle",
           stream: "system",
           level: "info",
           message: "run started",
-        });
+        }));
 
         const { currentUserRedactionOptions, appendIdentityRedactedLog, onLog, onPersistedNativeLog, onAdapterMeta, onAdapterEvent } =
           await timePreparation("run_output", () => runOutput.begin(currentRun));

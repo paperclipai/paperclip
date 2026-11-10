@@ -146,6 +146,16 @@ function scriptedOutputLines(directive, hostRouteId, workerSessionId) {
 // The registered terminals, keyed by the host route id. Each entry records the
 // bound worker session id and the close directive.
 const routes = new Map();
+const pendingHost = new Map();
+let nextHostCall = 0;
+function probeCompanyScope(message, entry) {
+  const id = `scope-${++nextHostCall}`;
+  return new Promise((resolve, reject) => {
+    pendingHost.set(id, { resolve, reject });
+    send({ jsonrpc: "2.0", id, method: "companies.get", params: { companyId: entry.companyId, stage: message.method },
+      ...(message.paperclipInvocation ? { paperclipInvocationId: message.paperclipInvocation.id } : {}) });
+  });
+}
 
 function parseDirective(raw) {
   try {
@@ -158,12 +168,24 @@ function parseDirective(raw) {
 
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 
-rl.on("line", (line) => {
+rl.on("line", async (line) => {
   if (!line.trim()) return;
   const message = JSON.parse(line);
+  if (pendingHost.has(message.id)) {
+    const pending = pendingHost.get(message.id); pendingHost.delete(message.id);
+    if (message.error) pending.reject(new Error("Host company scope denied")); else pending.resolve(message.result);
+    return;
+  }
   const method = message && typeof message.method === "string" ? message.method : null;
   const params = message.params ?? {};
 
+  if (["loginPtyInput", "loginPtyStop", "loginPtyClose"].includes(method)) {
+    const entry = method === "loginPtyClose" ? routes.get(params.hostRouteId) : [...routes.values()].find(value => value.workerSessionId === params.workerSessionId);
+    if (entry?.probeLifecycle) {
+      try { await probeCompanyScope(message, entry); }
+      catch { send({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "Host company scope denied" } }); return; }
+    }
+  }
   if (method === "initialize") {
     send({
       jsonrpc: "2.0",
@@ -188,7 +210,9 @@ rl.on("line", (line) => {
     const closeMode = directive.closeMode ?? "ack";
     routes.set(params.hostRouteId, {
       workerSessionId,
+      companyId: params.companyId, probeLifecycle: directive.probeLifecycle === true,
       closeMode,
+      rejectInput: directive.rejectInput === true,
       pendingOutput: directive.emitOnInput === true
         ? scriptedOutputLines(directive, params.hostRouteId, workerSessionId)
         : null,
@@ -253,6 +277,14 @@ rl.on("line", (line) => {
     // test proves the input reaches the worker and the output routes back.
     for (const [hostRouteId, entry] of routes.entries()) {
       if (entry.workerSessionId === params.workerSessionId) {
+        if (entry.rejectInput) {
+          send({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "input delivery unconfirmed" } });
+          return;
+        }
+        if (typeof params.inputId !== "string" || params.inputId.length === 0) {
+          send({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: "input identity missing" } });
+          return;
+        }
         if (entry.pendingOutput !== null) {
           process.stdout.write(entry.pendingOutput);
           entry.pendingOutput = null;

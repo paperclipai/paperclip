@@ -180,6 +180,7 @@ import {
 import { withRecoveryContext } from "./status-only-context.js";
 import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { rehomeStrandedLegacyWorkspaceTasks } from "./legacy-workspace-rehome.js";
 import {
   collectDispositionRepairSourceState,
   readDispositionRepairDurableWaitingState,
@@ -3470,6 +3471,11 @@ export function recoveryService(
   }
 
   async function reconcileActiveRecoveryActions(opts?: { companyId?: string }) {
+    // A blocked subtask that an older release bound to a relative's held
+    // workspace moves to its own workspace and continues (its board escalation
+    // is an active recovery action, so this company-scoped sweep reaches it).
+    const rehome = await rehomeStrandedLegacyWorkspaceTasks(db, deps.enqueueWakeup, { companyId: opts?.companyId })
+      .catch(error => { logger.warn({ err: error }, "Legacy shared-workspace rehome deferred to the next sweep"); return null; });
     const rows = await db
       .select({
         action: issueRecoveryActions,
@@ -3641,8 +3647,10 @@ export function recoveryService(
     // A child or blocker stalled on a board-owned action: tell whoever waits on it, once per stall.
     const stalls = await wakeWaitersOfStalledIssues(db, deps.enqueueWakeup as BlockerStallWakeup, { companyId: opts?.companyId });
     // A failed delivery is reported so the recovery worker retries this pass.
+    // The earliest owed wake of a moved legacy subtask is a deadline of this pass too.
+    const retryAts = [stalls.retryAt, rehome?.nextWakeRetryAt].filter((at): at is number => typeof at === "number");
     return { ...result, blockerStallWakes: stalls.woken, blockerStallWakeFailures: stalls.failed,
-      blockerStallRetryAt: stalls.retryAt };
+      blockerStallRetryAt: retryAts.length ? Math.min(...retryAts) : null };
   }
 
   async function escalateDispositionRepair(input: {
@@ -4612,7 +4620,8 @@ export function recoveryService(
         }
         if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) { result.skipped += 1; continue; }
         {
-          if (await deliverConversationComments(db, issue, deps.enqueueWakeup) === "deferred") {
+          if (await deliverConversationComments(db, issue, deps.enqueueWakeup,
+            { onDeferredDeadline: opts?.onDeferredDeadline }) === "deferred") {
             result.skipped += 1;
             continue;
           }
@@ -4721,6 +4730,16 @@ export function recoveryService(
         latestRun?.agentId === agentId &&
         latestRun.status === "cancelled" &&
         (latestRun.errorCode === "agent_paused" || isOperatorCancelledRun(latestRun, agentId))
+      ) {
+        result.skipped += 1;
+        continue;
+      }
+      if (
+        agent?.status === "paused" &&
+        agent.companyId === issue.companyId &&
+        agent.lifecycleHolds.includes("manual") &&
+        issue.status === "todo" &&
+        !latestRun
       ) {
         result.skipped += 1;
         continue;

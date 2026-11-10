@@ -22,7 +22,16 @@ export type SpeedBudgetAdapter = "claude" | "codex" | "opencode";
  * a reported metric without a budget: tool-first adapters such as Claude often
  * call tools before they write text. The budget numbers are the TTFT baseline's.
  */
-export type SpeedBudgetMetric = "time_to_first_activity" | "agent_boot" | "restart_recovery";
+/**
+ * `restart_recovery_control_plane`: control plane ready to the moment the
+ * recovered run's provider starts loading its saved session
+ * (`provider.session.load`), or to the run's next provider event when nothing
+ * reloads (a reattached runner). That is Paperclip's own share of a recovery:
+ * claim, prepare, runtime stage and runner launch. The provider's session load
+ * grows with session size and with how many sessions resume at once, so the
+ * full `restart_recovery` latency is reported without a budget.
+ */
+export type SpeedBudgetMetric = "time_to_first_activity" | "agent_boot" | "restart_recovery" | "restart_recovery_control_plane";
 export type SpeedBudgetStart = "cold" | "warm";
 
 export type SpeedBudget = { p50Ms: number; p95Ms: number };
@@ -43,22 +52,29 @@ const s = (seconds: number) => Math.round(seconds * 1000);
 export const LOCAL_SPEED_BUDGETS: Readonly<Record<SpeedBudgetAdapter, {
   time_to_first_activity: Record<SpeedBudgetStart, SpeedBudget>;
   agent_boot: Record<SpeedBudgetStart, SpeedBudget>;
+  /** Full recovery (ready → next provider event). Reported, not judged. */
   restart_recovery: SpeedBudget;
+  /** Paperclip's share of a recovery; judged. Measured 1.2–2.0 s per run with six
+   * Codex runs resuming at once (wave w-20261109T045320-s9807, local). */
+  restart_recovery_control_plane: SpeedBudget;
 }>> = {
   claude: {
     time_to_first_activity: { cold: { p50Ms: s(16.5), p95Ms: s(30) }, warm: { p50Ms: s(9.5), p95Ms: s(28.5) } },
     agent_boot: { cold: { p50Ms: s(9), p95Ms: s(20.5) }, warm: { p50Ms: s(3.5), p95Ms: s(16.5) } },
     restart_recovery: { p50Ms: s(15), p95Ms: s(22.5) },
+    restart_recovery_control_plane: { p50Ms: s(2.5), p95Ms: s(4) },
   },
   codex: {
     time_to_first_activity: { cold: { p50Ms: s(6), p95Ms: s(17) }, warm: { p50Ms: s(10), p95Ms: s(28.5) } },
     agent_boot: { cold: { p50Ms: s(2.5), p95Ms: s(7) }, warm: { p50Ms: s(5), p95Ms: s(16.5) } },
     restart_recovery: { p50Ms: s(6.5), p95Ms: s(8) },
+    restart_recovery_control_plane: { p50Ms: s(2.5), p95Ms: s(4) },
   },
   opencode: {
     time_to_first_activity: { cold: { p50Ms: s(17.5), p95Ms: s(49) }, warm: { p50Ms: s(26.5), p95Ms: s(88) } },
     agent_boot: { cold: { p50Ms: s(12), p95Ms: s(37) }, warm: { p50Ms: s(22), p95Ms: s(65.5) } },
     restart_recovery: { p50Ms: s(25.5), p95Ms: s(38.5) },
+    restart_recovery_control_plane: { p50Ms: s(2.5), p95Ms: s(4) },
   },
 };
 
@@ -77,6 +93,7 @@ export function speedBudgetFor(adapter: SpeedBudgetAdapter, metric: SpeedBudgetM
   start: SpeedBudgetStart | null): SpeedBudget {
   const budgets = LOCAL_SPEED_BUDGETS[adapter];
   if (metric === "restart_recovery") return budgets.restart_recovery;
+  if (metric === "restart_recovery_control_plane") return budgets.restart_recovery_control_plane;
   const byStart = budgets[metric];
   if (start) return byStart[start];
   return { p50Ms: Math.max(byStart.cold.p50Ms, byStart.warm.p50Ms), p95Ms: Math.max(byStart.cold.p95Ms, byStart.warm.p95Ms) };
@@ -98,6 +115,10 @@ export type SpeedBudgetBreach = {
   /** First activity only: time the input waited for its run to exist (for example a
    * comment posted while the previous turn was running). Not judged. */
   inputWaitMs?: number;
+  /** Control-plane recovery only: the full ready → next provider event latency
+   * and the provider's share of it (session load onwards). Not judged. */
+  restartTotalMs?: number;
+  providerLoadMs?: number;
 };
 
 /** A breach when one measured run exceeds its p95 budget, else null. */
@@ -109,6 +130,8 @@ export function evaluateSpeedBudget(input: {
   measuredMs: number;
   disposition?: string;
   inputWaitMs?: number;
+  restartTotalMs?: number;
+  providerLoadMs?: number;
 }): SpeedBudgetBreach | null {
   if (!input.adapter || input.environment !== "local" || !Number.isFinite(input.measuredMs) || input.measuredMs < 0) return null;
   const budget = speedBudgetFor(input.adapter, input.metric, input.start);
@@ -118,6 +141,8 @@ export function evaluateSpeedBudget(input: {
     startKind: input.start ?? "unknown", measuredMs: Math.round(input.measuredMs), budgetP50Ms: budget.p50Ms,
     budgetP95Ms: budget.p95Ms, percentile: "p95", baseline: SPEED_BUDGET_BASELINE,
     ...(input.disposition ? { disposition: input.disposition } : {}),
+    ...(input.restartTotalMs !== undefined ? { restartTotalMs: Math.round(input.restartTotalMs) } : {}),
+    ...(input.providerLoadMs !== undefined ? { providerLoadMs: Math.round(input.providerLoadMs) } : {}),
     ...(input.inputWaitMs ? { inputWaitMs: Math.round(input.inputWaitMs) } : {}),
   };
 }

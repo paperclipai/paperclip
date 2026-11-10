@@ -34,6 +34,7 @@ import { activeIssueInteractionCondition } from "./issue-question-context.js";
 
 import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+import { firstTurnDeliveredCommentIds } from "./queued-comment-delivery.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "status" | "startedAt" | "finishedAt" | "createdAt" |
@@ -121,7 +122,9 @@ export async function undeliveredLegacyUserCommentIds(
       for (const id of context.wakeCommentIds) if (typeof id === "string") valid.delete(id);
     }
   }
-  return commentIds.filter(id => valid.has(id));
+  // An accepted first turn that took a queued message consumed it too.
+  const firstTurn = await firstTurnDeliveredCommentIds(db, { companyId, issueId, agentId, commentIds: [...valid] });
+  return commentIds.filter(id => valid.has(id) && !firstTurn.has(id));
 }
 
 /** Called under the issue lock, in the transaction that creates the new turn.
@@ -409,6 +412,7 @@ export async function admitExplicitNativeContinuation(input: {
           ownerHold: sql<boolean>`${issueRecoveryActions.evidence}#>>'{workspaceOwnerRecovery,state}' = 'operator_required'
             and ${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`,
           recoveryState: sql<string | null>`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}'`,
+          retryClass: sql<string | null>`${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,retryClass}'`,
         }).from(issueRecoveryActions).where(and(
           eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
           inArray(issueRecoveryActions.status, ["active", "escalated"]),
@@ -420,7 +424,9 @@ export async function admitExplicitNativeContinuation(input: {
         // starts one new recovery generation (task-retry), so name that action
         // instead of an endless finalizing wait (RC-50b, s14).
         if (live.length && live.every(row => row.recoveryState === "exhausted"))
-          return blocked("saved_work_recovery_failed", "Saving the agent's files failed after automatic retries. Retry to try again.");
+          return live.some(row => row.retryClass === "service_required")
+            ? blocked("saved_work_recovery_refused", "Paperclip refused to recover the saved files because a safety check on them cannot pass. Retry runs the same check again.")
+            : blocked("saved_work_recovery_failed", "Saving the agent's files failed. Retry to try again.");
         return blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
       }
     }

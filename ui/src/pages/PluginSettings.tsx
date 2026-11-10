@@ -118,8 +118,9 @@ export function PluginSettings() {
     enabled: !!selectedCompanyId,
   });
 
-  // Filter slots to only show settings pages for this specific plugin
-  const pluginSlots = slots.filter((slot) => slot.pluginId === pluginId);
+  // Filter slots to only show settings pages for this specific plugin. The route
+  // segment can be the plugin's id or its key, so match either.
+  const pluginSlots = slots.filter((slot) => slot.pluginId === pluginId || slot.pluginKey === pluginId);
 
   // If the plugin has a custom settingsPage slot, prefer that over auto-generated form
   const hasCustomSettingsPage = pluginSlots.length > 0;
