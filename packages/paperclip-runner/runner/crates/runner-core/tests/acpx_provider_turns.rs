@@ -792,6 +792,46 @@ fn forced_cancellation_retirement_preserves_terminal_polling_but_rejects_live_re
     }
 }
 
+#[test]
+fn lost_cancellation_reply_keeps_the_turn_terminal_and_the_transport() {
+    // Restart-chaos PV2 interrupt_ack: the provider stops its prompt, but the
+    // sidecar's reply to turn.cancel is lost or late. The terminal must still
+    // settle the turn, and a late reply must not break the next request.
+    for mode in ["lost", "late"] {
+        let mut config = config("turns");
+        config
+            .transport
+            .args
+            .extend(["--cancel-reply".to_owned(), mode.to_owned()]);
+        let mut session = AcpxProviderSession::start(&config).unwrap();
+        session
+            .start_turn("turn-1", "Please help", &std::env::temp_dir())
+            .unwrap();
+        let started = Instant::now();
+        session
+            .interrupt_turn("turn-1", "Paperclip interruption")
+            .unwrap_or_else(|error| panic!("{mode}: {error}"));
+        assert!(started.elapsed() < Duration::from_secs(3), "{mode}");
+        assert!(session.runtime_retired(), "{mode}");
+        let mut terminal = None;
+        while terminal.is_none() {
+            let events = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+            terminal = events.into_iter().find(|event| {
+                matches!(event, AcpxProviderStateEvent::TurnTerminal { turn_id, .. } if turn_id == "turn-1")
+            });
+        }
+        assert!(session.state().active_turn_id().is_none(), "{mode}");
+        assert!(session
+            .start_turn("turn-2", "Must not reuse", &std::env::temp_dir())
+            .unwrap_err()
+            .to_string()
+            .contains("runtime was retired"));
+        session
+            .shutdown("test complete")
+            .unwrap_or_else(|error| panic!("{mode}: {error}"));
+    }
+}
+
 fn reusable_config(directory: &std::path::Path) -> AcpxProviderSessionConfig {
     let mut config = config("source-reconcile");
     config.transport.args = vec![

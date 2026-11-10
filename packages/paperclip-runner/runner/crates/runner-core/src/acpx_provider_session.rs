@@ -29,6 +29,10 @@ const MAX_ID_CHARS: usize = 240;
 const MAX_MODEL_CHARS: usize = 240;
 pub(crate) const MAX_SYSTEM_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
 const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+// A healthy sidecar confirms cancellation within about a second. The runner
+// serves controller commands one at a time, so this bound must stay well below
+// the controller's 15 s governed-wait drain and 10 s close grace.
+const ACPX_TURN_CANCEL_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -798,11 +802,23 @@ impl AcpxProviderSession {
                 "ACPX interruption named a stale or inactive turn",
             ));
         }
-        let response = match self.transport.request(
-            GeneratedAcpxSidecarCommand::TurnCancel,
+        let response = match self.transport.request_turn_cancel(
             json!({"turnId":turn_id,"reason":bounded_reason(reason)}),
+            Instant::now()
+                + ACPX_TURN_CANCEL_ACK_TIMEOUT.min(self.config.transport.request_timeout),
         ) {
-            Ok(response) => response,
+            Ok(Some(response)) => response,
+            Ok(None) => {
+                // The cancel was delivered but its reply is missing. Its turn
+                // terminal still arrives through polling, and turn.stop can
+                // reap a provider that never stops. Failing closed here would
+                // block every controller command for the whole request bound
+                // and discard that terminal. The sidecar may have retired its
+                // runtime in the lost reply, so never admit another prompt.
+                // The caller receives no confirmation: Null is not a reply.
+                self.runtime_retired = true;
+                return Ok(Value::Null);
+            }
             Err(error) => return Err(self.fail_closed(error)),
         };
         if response.get("cancelled").and_then(Value::as_bool) != Some(true) {
