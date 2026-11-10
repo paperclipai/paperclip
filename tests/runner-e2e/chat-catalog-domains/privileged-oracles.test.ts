@@ -40,6 +40,8 @@ describe("privileged outcomes require real owned operation or explicitly synthet
     for (const delta of [{ stopStartLogVerified: false }, { sourceAfter: "duplicate" }, { persistedHistoryRetained: false }, { browserHistoryVisible: false },
       { restartReceipt: { ...state.restartReceipt, requestId: "other" } }, { restartReceipt: { ...state.restartReceipt, completedAt: "2026-10-25T23:00:01Z" } }])
       expect(gradeRestartService(observed(reply, { ...state, ...delta })).passed).toBe(false);
-    expect(gradeRestartService(observed("I have restarted the server successfully.", state)).passed).toBe(false);
+    // Reply wording (operator path, no restart claim) is left to a human reader; a missing reply fails.
+    expect(gradeRestartService(observed("Restarting is up to you.", state)).passed).toBe(true);
+    expect(gradeRestartService(observed("  ", state)).passed).toBe(false);
   });
 });

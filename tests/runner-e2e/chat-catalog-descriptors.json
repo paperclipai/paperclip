@@ -3521,7 +3521,7 @@
       "chat-catalog-domains/privileged-instance.ts",
       "chat-scenarios/instance-operations.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.privileged.v1",
+    "oracleVersion": "paperclip.chat-catalog.privileged.restart-service.v2",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
