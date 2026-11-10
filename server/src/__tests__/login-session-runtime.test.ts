@@ -9,6 +9,7 @@ import type { AgentAdapterType } from "@paperclipai/shared";
 // fake returns a fixed environment and records the lease-metadata tag write.
 const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  listBoundCompanyIds: vi.fn(async () => []),
   updateLeaseMetadata: vi.fn(),
 }));
 
