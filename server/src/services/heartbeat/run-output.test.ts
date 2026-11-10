@@ -95,6 +95,26 @@ describe("claiming the run log during a storage outage (storage chaos ST1)", () 
       message: expect.stringMatching(/^File storage is unavailable\. The run log will start when it is back/) });
   }, 30_000);
 
+  it("keeps waiting when the wait notice fails or hangs", async () => {
+    for (const notice of [async () => { throw new Error("database unavailable"); }, () => new Promise<never>(() => undefined)]) {
+      let calls = 0;
+      const appendRunEvent = vi.fn(notice);
+      const begin = vi.fn(async () => (++calls < 2 ? outage() : { store: "s3_segments" as const, logRef: "company/agent/run" }));
+      await output(begin, undefined, appendRunEvent).begin({ ...newRunRow } as Run);
+      expect(begin).toHaveBeenCalledTimes(2);
+      expect(appendRunEvent).toHaveBeenCalledTimes(1);
+    }
+  }, 30_000);
+
+  it("stops a run waiting for storage even while its wait notice hangs", async () => {
+    const stop = new AbortController();
+    const appendRunEvent = vi.fn(() => new Promise<never>(() => undefined));
+    setTimeout(() => stop.abort(new Error("Stopped by a board operator")), 100);
+    const startedAt = Date.now();
+    await expect(output(vi.fn(async () => outage()), stop.signal, appendRunEvent).begin({ ...newRunRow } as Run)).rejects.toBeTruthy();
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
+  }, 30_000);
+
   it("claims the log once the store is back instead of failing the run", async () => {
     let calls = 0;
     const begin = vi.fn(async () => (++calls < 2 ? outage() : { store: "s3_segments" as const, logRef: "company/agent/run" }));
