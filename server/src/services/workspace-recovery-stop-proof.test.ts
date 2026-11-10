@@ -214,9 +214,69 @@ describe("exhausted stop-proof holds", () => {
     expect(rearmed.ownerType).toBe("system");
   }, 60_000);
 
-  it("leaves a stale finalizer owner to the abandoned-owner settlement instead of spending re-arms", async () => {
+  /**
+   * The staging shape (Nov 10): the finished coordinator of the
+   * source run still names the lease owner of a finalizer pass from a server
+   * that was replaced days ago. Its lease lapsed long ago, nothing settles an
+   * owner on a finished coordinator, and every stop check refused it, so the
+   * hold was never re-armed and its task stayed blocked.
+   */
+  it.each([
+    ["an expired finalizer lease", { leaseOwner: `native-finalizer:${randomUUID()}`, expiresAgoMs: 6 * 86_400_000 }],
+    ["an owner recorded without an expiry by an older release", { leaseOwner: `boot:${randomUUID()}`, expiresAgoMs: null }],
+  ] as const)("re-arms a hold whose finished coordinator still names %s", async (_shape, owner) => {
     const f = await exhaustedStopProofHold();
-    await db.update(nativeRunFinalizations).set({ leaseOwner: `native-finalizer:${randomUUID()}`, leaseExpiresAt: new Date(Date.now() - 60_000) })
+    await db.update(nativeRunFinalizations).set({ leaseOwner: owner.leaseOwner,
+      leaseExpiresAt: owner.expiresAgoMs === null ? null : new Date(Date.now() - owner.expiresAgoMs),
+      controllerBootId: randomUUID(), controllerPid: 2_147_000_000, controllerGeneration: 3 })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ phase: "terminal_failure", failureCode: "native_workspace_sync_out_retry_exhausted" });
+
+    // The worker discovers the hold and wakes for it now.
+    expect(await nextWorkspaceRecoveryAt(db)).toBeLessThanOrEqual(Date.now());
+    expect((await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id)).toContain(f.actionId);
+    await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, async () => undefined, true) ?? []);
+
+    const settled = await action(f.actionId);
+    expect(settled.evidence.stopProofRecovery).toMatchObject({ rearms: 1, releasedLapsedOwner: true });
+    expect(readSystemRecovery(settled.evidence)).toMatchObject({ state: "complete" });
+    expect(readWorkspaceRecovery(settled.evidence)?.status).toBe("recovered");
+    expect(String(settled.nextAction)).not.toMatch(adminText);
+    // The lapsed owner is released (the saved result then finalizes as usual).
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]?.leaseOwner)
+      .not.toBe(owner.leaseOwner);
+    const [rearmed] = await db.select().from(activityLog).where(eq(activityLog.entityId, f.issueId))
+      .then(rows => rows.filter(row => row.action === "issue.workspace_recovery_rearmed"));
+    expect(rearmed?.details).toMatchObject({ rearm: 1, releasedLapsedOwner: owner.leaseOwner });
+    // The dirty files are saved into the shared workspace; the parent task can run.
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toMatchObject({ dirty: false });
+    expect(await parentHold(f)).toEqual({ kind: "free" });
+    expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
+  }, 60_000);
+
+  it("keeps the hold while a finished coordinator's owner still holds a live lease", async () => {
+    const f = await exhaustedStopProofHold();
+    const expiresAt = Date.now() + 10 * 60_000;
+    await db.update(nativeRunFinalizations).set({ leaseOwner: `native-finalizer:${randomUUID()}`, leaseExpiresAt: new Date(expiresAt) })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+
+    expect((await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id)).not.toContain(f.actionId);
+    expect(await nextWorkspaceRecoveryAt(db)).toBeGreaterThanOrEqual(expiresAt - 1_000);
+    await recoverRetainedWorkspace(f.input);
+    const held = await action(f.actionId);
+    expect(held.evidence.stopProofRecovery).toBeUndefined();
+    expect(readSystemRecovery(held.evidence)?.state).toBe("exhausted");
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]?.leaseOwner)
+      .toMatch(/^native-finalizer:/);
+    expect(f.runtime.resumeRunLease).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it("leaves a stale owner of an unfinished coordinator to the abandoned-owner settlement instead of spending re-arms", async () => {
+    const f = await exhaustedStopProofHold();
+    // An observed (not finished) coordinator: the abandoned-owner settlement
+    // must prove its controller stopped before anything releases it.
+    await db.update(nativeRunFinalizations).set({ phase: "observed", leaseOwner: `boot:${randomUUID()}`, leaseExpiresAt: new Date(Date.now() - 60_000) })
       .where(eq(nativeRunFinalizations.runId, f.runId));
 
     expect((await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id)).not.toContain(f.actionId);

@@ -8,7 +8,7 @@ import { REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION } from "./remote-workspace-snap
 import { CAPTURE_POLICY_RECOVERY_KEY, CAPTURE_POLICY_RECOVERY_SCHEMA, createSystemRecovery, isCapturePolicyRearmable,
   readSystemRecovery, type SystemRecoveryState } from "./system-recovery-state.js";
 import type { WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
-import { sourceRunProvablyOver } from "./workspace-recovery-stop-proof.js";
+import { coordinatorOwnerColumns, releaseLapsedCoordinatorOwner, sourceRunProvablyOver } from "./workspace-recovery-stop-proof.js";
 
 /** User-facing text while the retried save runs. It names no person who must act. */
 export const CAPTURE_POLICY_REARM_MESSAGE = "Paperclip is saving the previous run's files again with its updated save rules. "
@@ -31,8 +31,7 @@ export async function rearmExhaustedCapturePolicy(db: Db, input: WorkspaceRecove
     // Lock order shared with the fallback and the stop-proof re-arm: task, coordinator, run, recovery action.
     const [issue] = await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, input.companyId),
       eq(issues.id, input.issueId))).for("update");
-    const [coordinator] = await tx.select({ leaseOwner: nativeRunFinalizations.leaseOwner })
-      .from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, input.companyId),
+    const [coordinator] = await tx.select(coordinatorOwnerColumns).from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, input.companyId),
         eq(nativeRunFinalizations.runId, input.runId))).for("update");
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
       eq(heartbeatRuns.id, input.runId))).for("update");
@@ -48,6 +47,7 @@ export async function rearmExhaustedCapturePolicy(db: Db, input: WorkspaceRecove
     // still proves the sandbox stop itself before it reads any file.
     const at = new Date(now);
     if (!sourceRunProvablyOver(run, coordinator, at)) return null;
+    await releaseLapsedCoordinatorOwner(tx, input, coordinator, at);
     const next: SystemRecoveryState = { ...createSystemRecovery(run.id), revision: system.revision + 1,
       preservationOperationIds: system.preservationOperationIds, providerCooldownAt: system.providerCooldownAt,
       nextAttemptAt: system.providerCooldownAt };

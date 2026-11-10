@@ -2815,7 +2815,16 @@ export holds and restore holds alike. Once the source run is provably over (its
 run is terminal, no local execution remains, and neither its controller lease
 nor its finalizer lease is live), the recovery worker re-arms it with a new
 bounded system generation. A live lease defers the re-arm to that lease's
-expiry; the worker is not woken earlier. The new generation repeats the strict
+expiry; the worker is not woken earlier. A lease owner still recorded on the
+run's finished coordinator (committed, terminal failure or applied) after its
+lease lapsed, or recorded without an expiry by an older release, is not live:
+nothing runs under a finished coordinator, and no later claim or settlement
+would ever release it. The re-arm releases that owner in the same transaction
+(compare-and-swap on the owner it read) and records `releasedLapsedOwner`, so
+the new attempt's stop check does not refuse it; holds saved this way by
+earlier releases settle on the worker's next pass. A stale owner of an
+unfinished coordinator still waits for the abandoned-owner settlement, which
+proves its controller stopped first. The new generation repeats the strict
 stop proof (a provider stop receipt for every allocation of the run) and the
 save, then settles the hold exactly like any completed recovery, so other tasks
 on the workspace can start. Re-arms are bounded: at most four, the first at once
