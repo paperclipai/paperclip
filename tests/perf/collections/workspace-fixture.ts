@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
 import { sql } from "../../../server/node_modules/drizzle-orm/index.js";
-import { closeRegisteredClients, createDb, executionWorkspaces, issues, projects } from "../../../packages/db/src/index.ts";
+import { closeRegisteredClients, createDb, executionWorkspaces, issues, projects } from "../../../packages/db/src/index.js";
 
 // A company shaped like a long-lived instance: thousands of execution
 // workspaces, most of them created for (now finished) tasks, and a few Mine
