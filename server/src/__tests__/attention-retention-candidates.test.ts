@@ -126,7 +126,14 @@ function oracle(db: Db, scope: AttentionRetentionScope, cursor?: Cursor, sourceI
       and status = 'blocked' and hidden_at is null and harness_kind is null order by id limit 2`);
     fixture.blocked = blocked[0].id; fixture.blocked2 = blocked[1].id;
   }, 60_000);
-  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
+  afterAll(async () => {
+    // An external test database is not reset between runs; remove this suite's fixtures.
+    if (externalUrl && db) await db.transaction(async tx => {
+      await tx.execute(sql`set local client_min_messages = warning`);
+      await tx.execute(sql`truncate companies cascade`);
+    });
+    await db?.$client.end({ timeout: 1 }); await temporary?.cleanup();
+  });
 
   async function pages(read: (cursor?: Cursor) => Promise<Array<Record<string, unknown>>>) {
     const pages: Array<Array<Record<string, unknown>>> = [];

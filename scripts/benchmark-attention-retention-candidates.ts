@@ -176,11 +176,13 @@ try {
   await capture.$client.end({ timeout: 0 });
 
   // One connection, so the plan_cache_mode setting applies to every sample.
-  timer = createDb(database.connectionString, { maxConnections: 1 }).$client;
+  // Named prepared statements, as the server uses by default: samples reuse
+  // the parsed statement and its cached plan, like a busy server.
+  timer = createDb(database.connectionString, { maxConnections: 1, prepare: true }).$client;
   timer.options.onnotice = () => {};
   const timeOnce = async (query: Query) => {
     const start = performance.now();
-    const rows = await timer!.unsafe(query.sql, query.params as never[]).values();
+    const rows = await timer!.unsafe(query.sql, query.params as never[], { prepare: true }).values();
     return { ms: performance.now() - start, rows };
   };
   const plan = async (query: Query) => {
@@ -197,6 +199,8 @@ try {
       const before: number[] = [], after: number[] = [];
       let rows = 0;
       for (let warm = 0; warm < 2; warm++) { await timeOnce(baseline); await timeOnce(treatment); }
+      const prepared = await timer.unsafe(`SELECT count(*)::int AS n FROM pg_prepared_statements WHERE statement IN ($1, $2)`, [baseline.sql, treatment.sql]);
+      assert.equal(prepared[0].n, 2, `${scenario.name}: both queries must run as prepared statements`);
       // Alternate the order in each round to expose cache bias.
       for (let sample = 0; sample < sampleCount; sample++) {
         const order = sample % 2 === 0 ? [baseline, treatment] : [treatment, baseline];
