@@ -4679,6 +4679,8 @@ export function agentRoutes(
         {
           ...(setupAgentId ? { setupAgentId } : {}),
           createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
+          createdByAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
+          interactionTexts: [JSON.stringify(req.body)],
           ...(req.actor.type === "board" && req.body.budgetMonthlyCents > 0 ? { initialBudgetPolicyUserId: getActorInfo(req).actorId } : {}),
           runnerResolved: true,
           responsibleUserId: responsibleUserForAiRequest(req),
@@ -4962,6 +4964,8 @@ export function agentRoutes(
       {
         ...(setupId ? { setupOnly: true } : {}),
         createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
+        createdByAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
+        interactionTexts: [JSON.stringify(req.body)],
         ...(req.actor.type === "board" && req.body.budgetMonthlyCents > 0 ? { initialBudgetPolicyUserId: getActorInfo(req).actorId } : {}),
         runnerResolved: true,
         responsibleUserId: responsibleUserForAiRequest(req),
@@ -5066,7 +5070,7 @@ export function agentRoutes(
           at: new Date().toISOString(),
         } }
       : req.body;
-    const agent = await svc.updatePermissions(id, permissionsPatch);
+    const agent = await svc.updatePermissions(id, permissionsPatch, { actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null });
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -5517,7 +5521,12 @@ export function agentRoutes(
     res.json(completed);
   });
 
-  router.patch("/agents/:id", validate(updateAgentSchema), async (req, res) => {
+  router.patch("/agents/:id", (req, _res, next) => {
+    if (req.body?.permissions && typeof req.body.permissions === "object" && hasOwn(req.body.permissions, "interactions")) {
+      throw unprocessable("Use /api/agents/:id/interaction-permissions to change interaction permissions");
+    }
+    next();
+  }, validate(updateAgentSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;

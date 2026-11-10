@@ -1,4 +1,5 @@
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
@@ -228,7 +229,7 @@ export function documentService(db: Db) {
       createdByRunId?: string | null;
       sourceTrust?: typeof documents.$inferInsert.sourceTrust;
       lockedDocumentStrategy?: "conflict" | "create_new_document";
-    }) => {
+    }, options: { initialTaskCreation?: boolean } = {}) => {
       const key = normalizeDocumentKey(input.key);
       const issue = await db
         .select({ id: issues.id, companyId: issues.companyId })
@@ -269,6 +270,16 @@ export function documentService(db: Db) {
             .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
             .where(and(eq(issueDocuments.issueId, issue.id), eq(issueDocuments.key, key)))
             .then((rows) => rows[0] ?? null);
+
+          await assertAgentInteraction(tx, {
+            companyId: issue.companyId, actorAgentId: input.createdByAgentId,
+            operation: options.initialTaskCreation && !existing ? "mention" : "edit", issueId: issue.id,
+            texts: [
+              ...(!existing || input.body !== existing.latestBody ? [input.body] : []),
+              ...(input.title !== undefined && input.title !== existing?.title ? [input.title ?? ""] : []),
+              input.changeSummary ?? "",
+            ], lock: true,
+          });
 
           if (existing) {
             if (existing.lockedAt) {
@@ -649,6 +660,10 @@ export function documentService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!revision) throw notFound("Document revision not found");
+        await assertAgentInteraction(tx, {
+          companyId: existing.companyId, actorAgentId: input.createdByAgentId,
+          operation: "edit", issueId: input.issueId, texts: [revision.body, revision.title ?? ""], lock: true,
+        });
         if (existing.latestRevisionId === revision.id) {
           throw conflict("Selected revision is already the latest revision", {
             currentRevisionId: existing.latestRevisionId,
@@ -728,6 +743,10 @@ export function documentService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!existing) throw notFound("Document not found");
+        await assertAgentInteraction(tx, {
+          companyId: existing.companyId, actorAgentId: input.lockedByAgentId,
+          operation: "edit", issueId: input.issueId, lock: true,
+        });
         if (existing.lockedAt) {
           return {
             changed: false as const,
@@ -765,7 +784,7 @@ export function documentService(db: Db) {
       });
     },
 
-    unlockIssueDocument: async (issueId: string, rawKey: string) => {
+    unlockIssueDocument: async (issueId: string, rawKey: string, actorAgentId?: string | null) => {
       const key = normalizeDocumentKey(rawKey);
       return db.transaction(async (tx) => {
         const existing = await tx
@@ -776,6 +795,9 @@ export function documentService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!existing) throw notFound("Document not found");
+        await assertAgentInteraction(tx, {
+          companyId: existing.companyId, actorAgentId, operation: "edit", issueId, lock: true,
+        });
         if (!existing.lockedAt) {
           return {
             changed: false as const,
@@ -813,7 +835,7 @@ export function documentService(db: Db) {
       });
     },
 
-    deleteIssueDocument: async (issueId: string, rawKey: string) => {
+    deleteIssueDocument: async (issueId: string, rawKey: string, actorAgentId?: string | null) => {
       const key = normalizeDocumentKey(rawKey);
       return db.transaction(async (tx) => {
         const existing = await tx
@@ -824,6 +846,9 @@ export function documentService(db: Db) {
           .then((rows) => rows[0] ?? null);
 
         if (!existing) return null;
+        await assertAgentInteraction(tx, {
+          companyId: existing.companyId, actorAgentId, operation: "edit", issueId, lock: true,
+        });
         if (existing.lockedAt) {
           throw conflict("Document is locked", {
             key: existing.key,
