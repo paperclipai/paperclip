@@ -1,9 +1,9 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { minioBinary, startMinio } from "./object-store.js";
+import { minioBinary, startMinio, type ObjectStore } from "./object-store.js";
 import { planStorageFaults } from "./storage-chaos.js";
 import { CredentialRotation, ROTATION_HOLD_MS, credentialFaultRules, freshCredentials, needsCredentialRotation,
   restartMinioWithCredentials, writeRotatingCredentialSource, type StoreCredentials } from "./storage-credentials.js";
@@ -78,6 +78,79 @@ describe("ST5 credential faults", () => {
     expect(applied.at(-1)).toBe("clear");
     expect(applied.filter(entry => entry === "clear")).toHaveLength(1);
   });
+});
+
+describe("ST5R rotation failures", () => {
+  it("keeps rotation and publish errors so the wave can fail", async () => {
+    const rotation = new CredentialRotation(async () => { throw new Error("minio did not restart"); },
+      { publish: async () => { throw new Error("disk full"); } }, () => undefined);
+    const proxy = rotation.wrap({ setRules: () => undefined, clear: () => undefined });
+    proxy.setRules([{ fault: { kind: "credential_rotation" } }]);
+    proxy.clear();
+    await rotation.settled();
+    expect(rotation.failures).toEqual(["rotation: Error: minio did not restart"]);
+    const publishing = new CredentialRotation(async () => undefined, { publish: async () => { throw new Error("disk full"); } }, () => undefined);
+    const wrapped = publishing.wrap({ setRules: () => undefined, clear: () => undefined });
+    wrapped.setRules([{ fault: { kind: "credential_rotation" } }]);
+    wrapped.clear();
+    await publishing.settled();
+    expect(publishing.failures).toEqual(["publish: Error: disk full"]);
+  });
+
+  async function fakeMinio(root: string, health: "ok" | "hang") {
+    const binary = path.join(root, "fake-minio.mjs");
+    await writeFile(binary, `#!/usr/bin/env node
+import { createServer } from "node:http";
+import { writeFileSync } from "node:fs";
+const [host, port] = process.argv[process.argv.indexOf("--address") + 1].split(":");
+writeFileSync(${JSON.stringify(path.join(root, "seen.json"))}, JSON.stringify({ user: process.env.MINIO_ROOT_USER, args: process.argv.slice(2) }));
+createServer((req, res) => { if (${JSON.stringify(health)} === "ok") res.end("ok"); }).listen(Number(port), host);
+process.on("SIGTERM", () => process.exit(0));
+`);
+    await chmod(binary, 0o755);
+    return binary;
+  }
+
+  async function storeOnFreePort(root: string): Promise<ObjectStore & { stopped: number }> {
+    const proxy = await startStorageFaultProxy("http://127.0.0.1:9");
+    const port = new URL(proxy.endpoint).port;
+    await proxy.close();
+    const store = { endpoint: `http://127.0.0.1:${port}`, bucket: "b", region: "us-east-1", accessKeyId: "old", secretAccessKey: "old-secret",
+      dataDir: path.join(root, "object-store"), stopped: 0, stop: async () => { store.stopped += 1; } };
+    return store;
+  }
+
+  it("restarts the store on the same address with the new root key and adopts its stop", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "restart-chaos-st5r-fake-"));
+    const store = await storeOnFreePort(root);
+    const oldStop = store.stop;
+    try {
+      await restartMinioWithCredentials(store, await fakeMinio(root, "ok"), { accessKeyId: "new", secretAccessKey: "new-secret" }, 10_000);
+      expect(store.stopped).toBe(1);
+      expect(store).toMatchObject({ accessKeyId: "new", secretAccessKey: "new-secret" });
+      expect(store.stop).not.toBe(oldStop);
+      const seen = JSON.parse(await readFile(path.join(root, "seen.json"), "utf8"));
+      expect(seen.user).toBe("new");
+      expect(seen.args.slice(0, 4)).toEqual(["server", store.dataDir, "--address", new URL(store.endpoint).host]);
+    } finally {
+      await store.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("gives up at its deadline when the restarted store accepts connections but never answers", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "restart-chaos-st5r-hang-"));
+    const store = await storeOnFreePort(root);
+    try {
+      const started = Date.now();
+      await expect(restartMinioWithCredentials(store, await fakeMinio(root, "hang"), freshCredentials(), 1_500))
+        .rejects.toThrow(/did not come back/);
+      expect(Date.now() - started).toBeLessThan(6_000);
+    } finally {
+      await store.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
 
 describe("ST5R real rotation", () => {

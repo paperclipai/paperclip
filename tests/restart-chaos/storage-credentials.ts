@@ -100,7 +100,8 @@ export async function restartMinioWithCredentials(store: ObjectStore, binary: st
   for (;;) {
     if (spawnError) throw new Error(`MinIO could not restart: ${(spawnError as Error).message}`);
     if (child.exitCode !== null) throw new Error(`MinIO exited during credential rotation (${child.exitCode}): ${stderr}`);
-    if (await fetch(`${store.endpoint}/minio/health/live`).then(response => response.ok).catch(() => false)) return;
+    const attempt = AbortSignal.timeout(Math.max(1, Math.min(2_000, deadline - Date.now())));
+    if (await fetch(`${store.endpoint}/minio/health/live`, { signal: attempt }).then(response => response.ok).catch(() => false)) return;
     if (Date.now() > deadline) throw new Error(`MinIO did not come back after credential rotation: ${stderr}`);
     await delay(200);
   }
@@ -111,6 +112,7 @@ export class CredentialRotation {
   private generation = 0;
   private unpublished: StoreCredentials | null = null;
   rotations = 0;
+  readonly failures: string[] = [];
 
   constructor(private readonly rotate: (next: StoreCredentials) => Promise<void>,
     private readonly source: Pick<RotatingCredentialSource, "publish">, private readonly record: RecordEvent,
@@ -132,6 +134,7 @@ export class CredentialRotation {
             this.rotations += 1;
             this.record("storage_credentials_rotated", { rotation: this.rotations, restartMs: Date.now() - startedAt });
           } catch (error) {
+            this.failures.push(`rotation: ${String(error)}`);
             this.record("storage_credentials_rotation_failed", { error: String(error) });
           } finally {
             if (generation === this.generation) { if (rest.length) proxy.setRules(rest); else proxy.clear(); }
@@ -147,7 +150,10 @@ export class CredentialRotation {
           this.unpublished = null;
           await this.source.publish(next)
             .then(() => this.record("storage_credentials_published", { rotation: this.rotations }))
-            .catch(error => this.record("storage_credentials_publish_failed", { error: String(error) }));
+            .catch(error => {
+              this.failures.push(`publish: ${String(error)}`);
+              this.record("storage_credentials_publish_failed", { error: String(error) });
+            });
         });
       },
     };
