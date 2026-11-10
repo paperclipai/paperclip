@@ -847,6 +847,60 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect((await db.select().from(executionWorkspaceSnapshots))[0]).toMatchObject({ id: snapshot.id, status: "uploaded" });
     expect((await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, repository.id)))[0]).toEqual(repository);
   });
+  it("resumes a later archived upload after an earlier missing attempt with a different manifest", async () => {
+    const f = await archivedPreparedFixture(), upload = storage.putFile.bind(storage);
+    const interrupted = vi.spyOn(storage, "putFile").mockImplementationOnce(async input => {
+      await upload(input); throw new Error("later archived upload reply lost");
+    });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("later archived upload reply lost");
+    interrupted.mockRestore();
+    const [pending] = await db.select().from(executionWorkspaceSnapshots);
+    expect(pending.status).toBe("pending");
+    const [existing] = pending.metadata!.uploads as Array<{ objectKey: string; manifestDigest: string; [key: string]: unknown }>;
+    const missing = { ...existing, objectKey: `${existing.objectKey}.missing`, manifestDigest: "00".repeat(32) };
+    expect(missing.manifestDigest).not.toBe(existing.manifestDigest);
+    expect(await storage.headObject(f.companyId, missing.objectKey)).toMatchObject({ exists: false });
+    expect(await storage.headObject(f.companyId, existing.objectKey)).toMatchObject({ exists: true });
+    const attempts = [missing, existing];
+    await db.update(executionWorkspaceSnapshots).set({ metadata: { ...pending.metadata, uploads: attempts } })
+      .where(eq(executionWorkspaceSnapshots.id, pending.id));
+    const capture = vi.spyOn(workspaceArchive, "captureRemoteWorkspaceDirectory");
+    const get = vi.spyOn(storage, "getObject").mockRejectedValue(new Error("resume must not download"));
+    const put = vi.spyOn(storage, "putFile");
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).resolves.toMatchObject({ applied: true });
+    expect(capture).not.toHaveBeenCalled(); expect(get).not.toHaveBeenCalled(); expect(put).not.toHaveBeenCalled();
+    const [saved] = await db.select().from(executionWorkspaceSnapshots);
+    expect(saved).toMatchObject({ id: pending.id, sourceOperationId: pending.sourceOperationId, status: "committed",
+      objectKey: existing.objectKey, manifestDigest: existing.manifestDigest, metadata: { uploads: attempts } });
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)?.snapshotId).toBe(pending.id);
+  });
+  it("refuses an old archived journal with unknown nonempty repository intent bindings before resume work", async () => {
+    const f = await archivedRepositoryFixture(), upload = storage.putFile.bind(storage);
+    const interrupted = vi.spyOn(storage, "putFile").mockImplementationOnce(async input => {
+      await upload(input); throw new Error("old archived upload reply lost");
+    });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("old archived upload reply lost");
+    interrupted.mockRestore();
+    const [operation] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.phase, "remote_workspace_migration"));
+    const metadata = { ...operation.metadata }; delete metadata.archivedRepositoryIntents;
+    await db.update(workspaceOperations).set({ metadata }).where(eq(workspaceOperations.id, operation.id));
+    await db.update(executionWorkspaceRepositories).set({ relativePath: "untracked.txt" })
+      .where(eq(executionWorkspaceRepositories.id, f.repository.id));
+    const journals = await db.select().from(workspaceOperations), snapshots = await db.select().from(executionWorkspaceSnapshots);
+    const before = await workspace(f.workspaceId), repositories = await db.select().from(executionWorkspaceRepositories);
+    const baseBytes = await fs.readFile(path.join(f.base, "base.txt"));
+    const capture = vi.spyOn(workspaceArchive, "captureRemoteWorkspaceDirectory");
+    const get = vi.spyOn(storage, "getObject"), put = vi.spyOn(storage, "putFile"), head = vi.spyOn(storage, "headObject");
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("remote_workspace_migration_source_changed");
+    expect(capture).not.toHaveBeenCalled(); expect(get).not.toHaveBeenCalled(); expect(put).not.toHaveBeenCalled(); expect(head).not.toHaveBeenCalled();
+    expect(await db.select().from(workspaceOperations)).toEqual(journals);
+    expect(await db.select().from(executionWorkspaceSnapshots)).toEqual(snapshots);
+    expect(await workspace(f.workspaceId)).toEqual(before);
+    expect(await db.select().from(executionWorkspaceRepositories)).toEqual(repositories);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toEqual(f.task);
+    expect(await fs.readFile(path.join(f.base, "base.txt"))).toEqual(baseBytes);
+    await expect(fs.access(f.cwd)).rejects.toMatchObject({ code: "ENOENT" });
+  });
   it.each(["cleanup", "branch"] as const)("preserves a no-recipe archived %s source with prepared recovery", async kind => {
     const f = await archivedPreparedFixture(kind);
     expect(await migrateRemoteWorkspace({ db, storage, ...f, apply: true })).toMatchObject({ applied: true });

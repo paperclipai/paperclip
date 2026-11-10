@@ -413,8 +413,7 @@ async function reserveMigration(input: MigrationInput, onlineSource?: OnlineWork
       if (canonical(recoverySourcesResumeIdentity(operation.metadata?.legacyRecoverySources ?? []))
         !== canonical(recoverySourcesResumeIdentity(current.legacyRecoverySources))) throw new Error("remote_workspace_migration_source_changed");
       if (canonical(operation.metadata?.onlineRecoveryHolds ?? []) !== canonical(current.onlineRecoveryHolds)) throw new Error("remote_workspace_migration_source_changed");
-      if (Object.hasOwn(operation.metadata ?? {}, "archivedRepositoryIntents")
-        && canonical(operation.metadata!.archivedRepositoryIntents) !== canonical(repositoryIntentBindings(current.archivedRepositoryIntents)))
+      if (canonical(operation.metadata?.archivedRepositoryIntents ?? []) !== canonical(repositoryIntentBindings(current.archivedRepositoryIntents)))
         throw new Error("remote_workspace_migration_source_changed");
       return { workspace, authority: null, operation, source, sourceFingerprint, issueBinding, retainedDirectory: current.retainedDirectory, archivedGitSource: current.archivedGitSource, legacyRecoverySources: current.legacyRecoverySources, finalizedRecoveryHolds: current.finalizedRecoveryHolds, onlineRecoveryHolds: current.onlineRecoveryHolds, archivedRepositoryIntents: current.archivedRepositoryIntents };
     }
@@ -528,7 +527,8 @@ async function captureMigration(input: MigrationInput, reserved: ReservedMigrati
     if (recovered) {
       if (scope.state === "pending") throw new Error("nested_workspace_scope_invalid");
       const ref = await uploadWorkspaceSnapshot({ ...input, snapshotId: snapshot.id, archivePath,
-        manifestDigest: recovered.manifestDigest, verification: "upload" });
+        manifestDigest: recovered.manifestDigest, verification: "upload",
+        ...(reserved.archivedGitSource ? { unpublishedRecapture: { sourceOperationId: operation.id } } : {}) });
       return { operation, ref, nested: scope.state === "fixed" ? validateImportedWorkspaceChildren(scope.children) : [], scratch };
     }
     const sourceRoot = retained ? await materializeTaskDirectorySnapshot({

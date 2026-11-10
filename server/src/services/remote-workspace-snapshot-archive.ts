@@ -516,6 +516,7 @@ export async function workspaceArchive(input: {
       };
       for (let index = 0; index < repositories.length; index++) {
         const relative = repositories[index]!, repo = path.join(root, relative), normalized = path.join(scratch, `repo-${index}.git`);
+        if (singlePass) await assertGitSourceFence(repo);
         const settings = await portableGitSettings(repo);
         if (!singlePass) gitSignatures.set(relative, await signature(repo, settings));
         const offline = await gitStateHash(repo, "shallow") !== null

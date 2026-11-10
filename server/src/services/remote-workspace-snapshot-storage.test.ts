@@ -77,6 +77,23 @@ suite("remote workspace snapshot storage", () => {
     const [row] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, ref.id));
     expect(row?.status).toBe("uploaded"); // The owning service still controls atomic publication.
   });
+  it.each(["uploaded", "lost-reply"])("refuses an unreadable %s snapshot key without downloading", async state => {
+    const f = await fixture(), put = storage.putFile.bind(storage);
+    if (state === "lost-reply") {
+      storage.putFile = async input => { await put(input); throw new Error("lost upload reply"); };
+      await expect(uploadWorkspaceSnapshot({ ...f.upload, verification: "upload" })).rejects.toThrow("lost upload reply");
+      storage.putFile = put;
+    } else await uploadWorkspaceSnapshot({ ...f.upload, verification: "upload" });
+    await fs.rm(f.archivePath);
+    const get = vi.spyOn(storage, "getObject").mockRejectedValue(new Error("must not download"));
+    const upload = vi.spyOn(storage, "putFile");
+    const [before] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id));
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "42".repeat(32));
+    await expect(uploadWorkspaceSnapshot({ ...f.upload, verification: "upload" })).rejects.toThrow();
+    const [after] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id));
+    expect(after).toEqual(before);
+    expect(get).not.toHaveBeenCalled(); expect(upload).not.toHaveBeenCalled();
+  });
   it("records where a save and a restore spend their time", async () => {
     const f = await fixture();
     const saveTiming = newWorkspaceSnapshotStorageTiming();

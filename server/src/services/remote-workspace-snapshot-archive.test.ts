@@ -131,8 +131,8 @@ describe("portable remote workspace archives", () => {
     expect(await sourceBytes(cwd)).toBe(before);
     await expect(capture(cwd)).resolves.toMatchObject({ manifestDigest: expect.any(String) });
   });
-  it.each(["linked", "borrowed"].flatMap(kind => ["local", "serialized"].map(mode => ({ kind, mode }))))(
-    "enforces owned Git source roots for $kind $mode capture without changing archive bytes", async ({ kind, mode }) => {
+  it.each(["linked", "borrowed"].flatMap(kind => ["local", "serialized"].flatMap(mode => [false, true].map(singlePass => ({ kind, mode, singlePass })))))(
+    "enforces owned Git source roots for $kind $mode capture (single pass: $singlePass)", async ({ kind, mode, singlePass }) => {
       const base = await source(); await git(base, "init", "-q", "-b", "main");
       await fs.writeFile(path.join(base, "work.txt"), "base work\n"); await git(base, "add", "."); await git(base, "commit", "-qm", "base");
       const cwd = path.join(root, "selected");
@@ -143,7 +143,7 @@ describe("portable remote workspace archives", () => {
       const baseline = await capture(cwd), archivePath = path.join(root, "owned.pcws");
       const prefix = remoteWorkspaceArchiveScript().split("const [kind, first, second, digest]")[0];
       const fenced = async (roots: string[]) => {
-        const input = { kind: "capture", cwd, archivePath, gitSourceRoots: roots };
+        const input = { kind: "capture", cwd, archivePath, gitSourceRoots: roots, singlePass };
         return mode === "local" ? captureRemoteWorkspaceDirectory(input)
           : JSON.parse((await execute(process.execPath, ["--eval", `${prefix}archive(${JSON.stringify(input)}).then(value=>process.stdout.write(JSON.stringify(value))).catch(error=>{process.stderr.write(error.message);process.exitCode=1;});`], { env })).stdout);
       };

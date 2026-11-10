@@ -212,7 +212,7 @@ export async function uploadWorkspaceSnapshot(input: WorkspaceSnapshotUpload): P
 
 async function uploadWorkspaceSnapshotTimed(input: WorkspaceSnapshotUpload): Promise<WorkspaceSnapshotRef> {
   if (input.verification === "upload")
-    return uploadVerifiedWorkspaceSnapshot(input, async () => {}, { acceptServerVerifiedUpload: false });
+    return uploadVerifiedWorkspaceSnapshot(input, assertWorkspaceSnapshotKeyReadable, { acceptServerVerifiedUpload: false });
   if (input.verifiedArchivePath === undefined)
     return uploadVerifiedWorkspaceSnapshot(input, ref => verifyObject(input.storage, ref, input.signal), { acceptServerVerifiedUpload: true });
   input.signal?.throwIfAborted();
