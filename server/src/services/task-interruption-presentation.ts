@@ -1,5 +1,5 @@
 import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
-import { readSetupCommandFailure } from "./workspace-setup-command-failure.js";
+import { boundSetupCommandFailure, readSetupCommandFailure } from "./workspace-setup-command-failure.js";
 import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { unidentifiedLocalLaunchRefusals } from "./native-local-process-stop.js";
 import { agents, agentWakeupRequests, approvals, chatActions, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
@@ -198,10 +198,10 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   if (providerFailure) base.providerFailure = providerFailure;
   if (["failed", "scheduled_retry"].includes(run.status) && run.errorCode === "workspace_validation_failed"
       && typeof run.error === "string" && run.error.trim()) base.workspaceFailure = { message: run.error };
-  if (["failed", "scheduled_retry"].includes(run.status) && run.errorCode === "setup_failed") {
-    const setupFailure = readSetupCommandFailure(run.resultJson, run.error);
-    if (setupFailure) base.setupFailure = setupFailure;
-  }
+  // A scheduled retry carries its setup_failed predecessor's cause; it has no error code of its own.
+  const setupFailure = run.status === "failed" && run.errorCode === "setup_failed" ? readSetupCommandFailure(run.resultJson, run.error)
+    : run.status === "scheduled_retry" ? readSetupCommandFailure(run.resultJson, null) : null;
+  if (setupFailure) base.setupFailure = setupFailure;
   const userAction = !issue.assigneeAgentId ? "assign_agent" : input.approval || run.errorCode === "native_provider_approval_required" ? "approval"
     : isAiAuthenticationBlocked(run) ? "reconnect"
       : run.errorCode === "native_provider_model_rejected" ? "choose_model"
@@ -337,7 +337,11 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       agentAdapter: agents.adapterType,
       error: sql<string | null>`case when ${heartbeatRuns.errorCode} = 'setup_failed'
         and ${heartbeatRuns.error} = 'Project is outside this low-trust boundary.'
-        or ${heartbeatRuns.errorCode} = 'workspace_validation_failed' then ${heartbeatRuns.error} else null end`,
+        or ${heartbeatRuns.errorCode} = 'workspace_validation_failed'
+        -- A setup command failure recorded before setupCommandFailure existed: only its fixed message shape.
+        or ${heartbeatRuns.errorCode} = 'setup_failed'
+          and ${heartbeatRuns.error} ~ '^(Execution workspace provision|Workspace seed|Runtime provision) command "'
+        then ${heartbeatRuns.error} else null end`,
       errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
       scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
       // Candidate only: the coordinator also pushes nextAttemptAt forward while
@@ -355,6 +359,10 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       // The run whose resultJson supplied providerFailure. A scheduled retry
       // shows its predecessor's reason, so redaction must use that run's registry.
       providerFailureRunId: sql<string>`case when ${heartbeatRuns.resultJson}->'providerFailure' is null
+        and ${heartbeatRuns.status} = 'scheduled_retry' and ${heartbeatRuns.retryOfRunId} is not null
+        then ${heartbeatRuns.retryOfRunId} else ${heartbeatRuns.id} end`,
+      // The run whose resultJson supplied setupCommandFailure (a scheduled retry shows its predecessor's).
+      setupFailureRunId: sql<string>`case when ${heartbeatRuns.resultJson}->'setupCommandFailure' is null
         and ${heartbeatRuns.status} = 'scheduled_retry' and ${heartbeatRuns.retryOfRunId} is not null
         then ${heartbeatRuns.retryOfRunId} else ${heartbeatRuns.id} end`,
       resultJson: sql<Record<string, unknown>>`jsonb_build_object('configurationIncomplete', ${heartbeatRuns.resultJson}->'configurationIncomplete',
@@ -378,7 +386,11 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
           'acknowledgementAuditId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'acknowledgementAuditId'`, 160)}),
         'providerFailure', coalesce(${heartbeatRuns.resultJson}->'providerFailure', case when ${heartbeatRuns.status} = 'scheduled_retry'
           then (select predecessor.result_json->'providerFailure' from ${heartbeatRuns} predecessor
-            where predecessor.company_id = ${heartbeatRuns.companyId} and predecessor.id = ${heartbeatRuns.retryOfRunId}) end))`,
+            where predecessor.company_id = ${heartbeatRuns.companyId} and predecessor.id = ${heartbeatRuns.retryOfRunId}) end),
+        'setupCommandFailure', coalesce(${heartbeatRuns.resultJson}->'setupCommandFailure', case when ${heartbeatRuns.status} = 'scheduled_retry'
+          then (select predecessor.result_json->'setupCommandFailure' from ${heartbeatRuns} predecessor
+            where predecessor.company_id = ${heartbeatRuns.companyId} and predecessor.id = ${heartbeatRuns.retryOfRunId}
+              and predecessor.error_code = 'setup_failed') end))`,
     }).from(requested).innerJoinLateral(latestRuns, sql`true`).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, latestRuns.id)))
       .leftJoin(agents, and(eq(agents.companyId, heartbeatRuns.companyId), eq(agents.id, heartbeatRuns.agentId)))
       .orderBy(requestedIssueId),
@@ -586,19 +598,21 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const disclosures = [...result.entries()].flatMap(([issueId, presentation]) =>
     (presentation?.providerFailure || presentation?.workspaceFailure || presentation?.setupFailure) && presentation.observedRunId
       ? [{ id: presentation.observedRunId, providerFailureRunId: runMap.get(issueId)?.providerFailureRunId ?? presentation.observedRunId,
+        setupFailureRunId: runMap.get(issueId)?.setupFailureRunId ?? presentation.observedRunId,
         providerFailure: presentation.providerFailure, workspaceFailure: presentation.workspaceFailure,
         setupFailure: presentation.setupFailure, presentation }] : []);
   if (disclosures.length) {
     try {
       const [redacted, settings] = await Promise.all([
-        createRunSecretRedactionRegistry(db).redactForRuns(companyId, disclosures.flatMap(({ id, providerFailureRunId, providerFailure, workspaceFailure, setupFailure }) => [
+        createRunSecretRedactionRegistry(db).redactForRuns(companyId, disclosures.flatMap(({ id, providerFailureRunId, setupFailureRunId, providerFailure, workspaceFailure, setupFailure }) => [
           { id: providerFailureRunId, providerFailure, workspaceFailure: undefined, setupFailure: undefined },
-          { id, providerFailure: undefined, workspaceFailure, setupFailure },
+          { id, providerFailure: undefined, workspaceFailure, setupFailure: undefined },
+          { id: setupFailureRunId, providerFailure: undefined, workspaceFailure: undefined, setupFailure },
         ])),
         instanceSettingsService(db).getGeneral(),
       ]);
-      const safe = disclosures.map((_, index) => ({ providerFailure: redacted[2 * index]?.providerFailure,
-        workspaceFailure: redacted[2 * index + 1]?.workspaceFailure, setupFailure: redacted[2 * index + 1]?.setupFailure }));
+      const safe = disclosures.map((_, index) => ({ providerFailure: redacted[3 * index]?.providerFailure,
+        workspaceFailure: redacted[3 * index + 1]?.workspaceFailure, setupFailure: redacted[3 * index + 2]?.setupFailure }));
       const safeMessage = (value: unknown) => typeof value === "string"
         ? [...redactCurrentUserText(value, { enabled: settings.censorUsernameInLogs })].slice(0, 4000).join("") : "";
       disclosures.forEach(({ presentation }, index) => {
@@ -616,10 +630,11 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         if (presentation.setupFailure) {
           const value = safe[index]?.setupFailure;
           const command = safeMessage(value?.command), message = safeMessage(value?.message);
-          if (value && command.trim() && message.trim()) {
-            const output = value.output == null ? null : safeMessage(value.output) || null;
-            presentation.setupFailure = { ...value, command, output, message };
-          } else delete presentation.setupFailure;
+          const failure = value && command.trim() && message.trim()
+            ? boundSetupCommandFailure({ ...value, command, output: value.output == null ? null : safeMessage(value.output) || null, message })
+            : null;
+          if (failure) presentation.setupFailure = failure;
+          else delete presentation.setupFailure;
         }
       });
     } catch {

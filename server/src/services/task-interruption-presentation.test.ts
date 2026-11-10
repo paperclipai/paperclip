@@ -238,6 +238,14 @@ describe("setup command failure presentation (CF1)", () => {
     expect(failure?.output).toMatch(/final line$/);
   });
 
+  it("recognizes older quoted and multiline commands", () => {
+    for (const command of ['bash "./scripts/provision-worktree.sh"', "set -e\n./setup.sh"]) {
+      expect(projectTaskInterruption(issue, { run: { ...setupRun, resultJson: null,
+        error: `Execution workspace provision command "${command}" failed with exit code 2` }, agent, paused: false, approval: false })?.setupFailure)
+        .toMatchObject({ command, exitCode: 2 });
+    }
+  });
+
   it("does not name setup for other failures or settled tasks", () => {
     expect(projectTaskInterruption(issue, { run: { ...setupRun, errorCode: "adapter_failed" }, agent, paused: false, approval: false }))
       .not.toHaveProperty("setupFailure");
@@ -430,5 +438,19 @@ describe("saved Retry held by dependencies", () => {
     expect(presentation).toMatchObject({ state: "working", canRetry: false, intentId: "retry",
       retryWait: { reason: "dependency_blocked" } });
     expect(presentation?.retryWait?.message).toContain(text);
+  });
+});
+
+describe("setup command failure evidence", () => {
+  it("removes a registered secret that crosses the output cut before shortening", async () => {
+    const { setupCommandFailureResultJson } = await import("./workspace-setup-command-failure.js");
+    const secret = "registered-private-value-0123456789";
+    const failure = Object.assign(new Error("setup failed"), { step: "workspace_provision", command: "./setup.sh", exitCode: 1,
+      // The cut keeps the last 299 characters; it lands inside the secret.
+      output: `${secret}${"y".repeat(299 - 10)}` });
+    const recorded = setupCommandFailureResultJson(failure, [secret]);
+    expect(recorded).toMatchObject({ setupCommandFailure: { step: "workspace_provision", exitCode: 1 } });
+    const text = JSON.stringify(recorded);
+    for (let index = 0; index + 8 <= secret.length; index += 1) expect(text).not.toContain(secret.slice(index, index + 8));
   });
 });

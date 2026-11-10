@@ -1521,7 +1521,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ...(connectionFailure ? { connectionFailure } : {}),
       ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}),
       // Names the configured setup command that exited non-zero, for the task page.
-      ...setupCommandFailureResultJson(outerErr),
+      ...setupCommandFailureResultJson(outerErr, readFailureReportSecrets()),
       // A lease lost during setup surfaces as the thrown abort reason, or as
       // the signal's reason when a setup step threw a different error after it.
       ...controllerLeaseLossEvidence(outerErr),

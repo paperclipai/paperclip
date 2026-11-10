@@ -19,24 +19,34 @@ const STEP_SETTINGS: Record<SetupStep, string> = {
   workspace_runtime_provision: "The runtime provision command",
 };
 // Messages written by workspace-runtime.ts before setup failures carried structured fields.
-const LEGACY_MESSAGE = /^(Execution workspace provision|Workspace seed|Runtime provision) command "([^"\n]{1,2000})" failed(?:: ([\s\S]+)| with exit code (-?\d+))$/;
+// The command is the text between the prefix and the last `" failed`, so quoted and multiline commands parse.
+const LEGACY_MESSAGE = /^(Execution workspace provision|Workspace seed|Runtime provision) command "([\s\S]{1,2000})" failed(?: with exit code (-?\d+)|: ([\s\S]+))$/;
 const LEGACY_STEPS: Record<string, SetupStep> = {
   "Execution workspace provision": "workspace_provision",
   "Workspace seed": "workspace_seed",
   "Runtime provision": "workspace_runtime_provision",
 };
 
-function bounded(value: string, max: number, keep: "head" | "tail"): string {
-  const clean = [...redactSensitiveText(value)
-    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/g, "").trim()];
+/** Whole registered secret values are removed before any truncation, so a cut can never keep a fragment. */
+function withoutSecrets(value: string, secrets: readonly string[]): string {
+  for (const secret of [...secrets].sort((left, right) => right.length - left.length)) {
+    if (secret.length >= 4) value = value.split(secret).join("[REDACTED]");
+  }
+  return value;
+}
+
+function bounded(value: string, max: number, keep: "head" | "tail", secrets: readonly string[] = []): string {
+  const clean = [...redactSensitiveText(withoutSecrets(value, secrets))
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "").trim()];
   if (clean.length <= max) return clean.join("");
   return keep === "head" ? `${clean.slice(0, max - 1).join("")}…` : `…${clean.slice(clean.length - (max - 1)).join("")}`;
 }
 
-function normalize(step: SetupStep, command: string, exitCode: number | null, output: string | null): SetupCommandFailure | null {
-  const safeCommand = bounded(command, MAX_COMMAND_CHARS, "head");
+function normalize(step: SetupStep, command: string, exitCode: number | null, output: string | null,
+  secrets: readonly string[] = [], limits = { command: MAX_COMMAND_CHARS, output: MAX_OUTPUT_CHARS }): SetupCommandFailure | null {
+  const safeCommand = bounded(command, limits.command, "head", secrets);
   if (!safeCommand) return null;
-  const safeOutput = output ? bounded(output, MAX_OUTPUT_CHARS, "tail") || null : null;
+  const safeOutput = output ? bounded(output, limits.output, "tail", secrets) || null : null;
   const status = exitCode === null ? "failed" : `failed with exit code ${exitCode}`;
   return {
     step, command: safeCommand, exitCode, output: safeOutput,
@@ -45,7 +55,7 @@ function normalize(step: SetupStep, command: string, exitCode: number | null, ou
 }
 
 /** Bounded, redacted result evidence for a run whose setup command exited non-zero. */
-export function setupCommandFailureResultJson(error: unknown): { setupCommandFailure: SetupCommandFailure } | Record<string, never> {
+export function setupCommandFailureResultJson(error: unknown, secrets: readonly string[] = []): { setupCommandFailure: SetupCommandFailure } | Record<string, never> {
   let current: unknown = error;
   for (let depth = 0; depth < 6 && current; depth += 1) {
     // WorkspaceCommandExitError (workspace-runtime.ts), read by shape so this module stays light.
@@ -53,7 +63,7 @@ export function setupCommandFailureResultJson(error: unknown): { setupCommandFai
     if (current instanceof Error && typeof value.step === "string" && SETUP_STEPS.has(value.step) && typeof value.command === "string") {
       const failure = normalize(value.step as SetupStep, value.command,
         typeof value.exitCode === "number" && Number.isInteger(value.exitCode) ? value.exitCode : null,
-        typeof value.output === "string" ? value.output : null);
+        typeof value.output === "string" ? value.output : null, secrets);
       return failure ? { setupCommandFailure: failure } : {};
     }
     current = current instanceof Error ? current.cause : undefined;
@@ -75,5 +85,13 @@ export function readSetupCommandFailure(resultJson: Record<string, unknown> | nu
   if (typeof error !== "string") return null;
   const match = LEGACY_MESSAGE.exec(error.trim());
   if (!match) return null;
-  return normalize(LEGACY_STEPS[match[1]!]!, match[2]!, match[4] === undefined ? null : Number(match[4]), match[3] ?? null);
+  // Older text was never shortened with its run's registered secrets removed, so it stays whole here.
+  // The task read removes those secrets first and then shortens it (boundSetupCommandFailure).
+  return normalize(LEGACY_STEPS[match[1]!]!, match[2]!, match[3] === undefined ? null : Number(match[3]), match[4] ?? null,
+    [], { command: Number.POSITIVE_INFINITY, output: Number.POSITIVE_INFINITY });
+}
+
+/** Shorten a projected setup failure after the run's registered secrets were removed from its whole text. */
+export function boundSetupCommandFailure(value: SetupCommandFailure): SetupCommandFailure | null {
+  return normalize(value.step, value.command, value.exitCode, value.output);
 }
