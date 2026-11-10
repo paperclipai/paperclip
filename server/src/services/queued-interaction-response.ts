@@ -17,19 +17,17 @@ export function queuedInteractionId(payload: unknown): string | null {
 }
 
 /**
- * A governed tool action resolves as approve = run: by the time its outcome
- * wake waits behind another turn, the tool already ran or was declined, and
- * the approval card shows that outcome. The wake only hands the recorded result
+ * A governed tool action resolves as approve = run: by the time a receipt for
+ * it waits behind another turn, the tool already ran or was declined, and the
+ * approval card shows that outcome. The receipt only hands the recorded result
  * to the agent. It still counts as owed input for delivery and recovery, but it
  * is not a message the person can send, steer or interrupt with, so the
- * composer queue never lists it.
+ * composer queue never lists it. The saved interaction decides this, because a
+ * recovered wake does not carry the tool action fields of the original one.
  */
-export function isToolActionOutcomeReceipt(payload: unknown): boolean {
-  if (!queuedInteractionId(payload)) return false;
-  const p = record(payload);
-  const toolAction = record(p.toolAction);
-  return typeof toolAction.actionRequestId === "string" || typeof toolAction.toolName === "string"
-    || (Array.isArray(p.toolActionRequestIds) && p.toolActionRequestIds.length > 0);
+export function isToolActionConfirmation(interaction: { kind: string; payload?: unknown }): boolean {
+  const toolAction = record(record(interaction.payload).toolAction);
+  return interaction.kind === "request_confirmation" && Object.keys(toolAction).length > 0;
 }
 
 /**
@@ -131,7 +129,7 @@ export async function readQueuedInteractionResponse(db: Db, companyId: string, i
     requiresFreshSession: record(record(payload)._paperclipWakeContext).forceFreshSession === true,
     summary: heading,
   };
-  return { comment, source };
+  return { comment, source, toolActionOutcome: isToolActionConfirmation(interaction) };
 }
 
 /** A saved answer is a live continuation, even though its card is no longer pending. */
