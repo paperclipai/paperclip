@@ -1,4 +1,5 @@
 import { AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CreateMultipartUploadCommand, UploadPartCommand, type S3Client } from "@aws-sdk/client-s3";
+import { sendThroughStorageOutage } from "./storage-unavailable.js";
 import { recordStorageBackoff, recordStoragePart, recordStorageThrottle, withStorageRequestStats } from "./request-stats.js";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
@@ -67,7 +68,7 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
   const partSize = Math.max(bufferedPartSize, Math.ceil(input.contentLength / 10_000));
   try {
     check();
-    uploadId = (await withS3FailureDiagnostics("create_multipart_upload", () => client.send(new CreateMultipartUploadCommand({ Bucket: bucket, Key: key, ContentType: input.contentType }), { abortSignal: controller.signal }))).UploadId;
+    uploadId = (await withS3FailureDiagnostics("create_multipart_upload", () => client.send(new CreateMultipartUploadCommand({ Bucket: bucket, Key: key, ContentType: input.contentType }), { abortSignal: controller.signal }), controller.signal)).UploadId;
     if (!uploadId) throw new Error("S3 did not return a multipart upload id");
     const parts: { ETag: string; PartNumber: number }[] = [];
     let partNumber = 0;
@@ -94,7 +95,7 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
         if (!body.write(chunk)) await once(body, "drain", { signal: controller.signal });
       };
       const sending = (async () => {
-        const result = await withS3FailureDiagnostics("upload_part", () => client.send(new UploadPartCommand({ Bucket: bucket, Key: key, UploadId: uploadId, PartNumber: number, Body: body, ContentLength: length }), { abortSignal: controller.signal }));
+        const result = await withS3FailureDiagnostics("upload_part", () => client.send(new UploadPartCommand({ Bucket: bucket, Key: key, UploadId: uploadId, PartNumber: number, Body: body, ContentLength: length }), { abortSignal: controller.signal }), controller.signal);
         if (remaining || !body.readableEnded || !result.ETag) throw new Error("S3 upload part is incomplete");
         parts[number - 1] = { ETag: result.ETag, PartNumber: number };
       })().catch(stop);
@@ -115,7 +116,7 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
     if (pending.length || !(await readNext()).done) throw new Error("S3 upload source exceeds its declared size");
     await Promise.all(active);
     check();
-    await withS3FailureDiagnostics("complete_multipart_upload", () => client.send(new CompleteMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId, MultipartUpload: { Parts: parts } }), { abortSignal: controller.signal }));
+    await withS3FailureDiagnostics("complete_multipart_upload", () => client.send(new CompleteMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId, MultipartUpload: { Parts: parts } }), { abortSignal: controller.signal }), controller.signal);
   } catch (error) {
     stop(error);
     await Promise.all(active);
@@ -218,7 +219,7 @@ export async function putS3MultipartFile(
     controller.signal.throwIfAborted();
     const partSize = Math.max(bufferedPartSize, Math.ceil(input.contentLength / 10_000));
     const count = Math.ceil(input.contentLength / partSize);
-    uploadId = (await withS3FailureDiagnostics("create_multipart_upload", () => client.send(new CreateMultipartUploadCommand({ Bucket: bucket, Key: key, ContentType: input.contentType }), { abortSignal: controller.signal }))).UploadId;
+    uploadId = (await sendThroughStorageOutage(() => withS3FailureDiagnostics("create_multipart_upload", () => client.send(new CreateMultipartUploadCommand({ Bucket: bucket, Key: key, ContentType: input.contentType }), { abortSignal: controller.signal }), controller.signal), controller.signal)).UploadId;
     if (!uploadId) throw new Error("S3 did not return a multipart upload id");
     const id = uploadId;
     const parts: { ETag: string; PartNumber: number }[] = new Array(count);
@@ -236,7 +237,7 @@ export async function putS3MultipartFile(
         try {
           const result = await withS3FailureDiagnostics("upload_part", () => client.send(new UploadPartCommand({
             Bucket: bucket, Key: key, UploadId: id, PartNumber: index + 1, Body: body, ContentLength: length, ContentMD5: contentMd5,
-          }), { abortSignal: controller.signal }));
+          }), { abortSignal: controller.signal }), controller.signal);
           if (!result.ETag) throw new Error("S3 upload part is incomplete");
           parts[index] = { ETag: result.ETag, PartNumber: index + 1 };
           recordStoragePart();
@@ -264,7 +265,7 @@ export async function putS3MultipartFile(
     const worker = async (slot: number) => {
       while (next < count && slot < concurrency) {
         const index = next++;
-        try { await sendPart(index); }
+        try { await sendThroughStorageOutage(() => sendPart(index), controller.signal); }
         catch (error) { if (!controller.signal.aborted) controller.abort(error); throw error; }
       }
     };
@@ -273,7 +274,7 @@ export async function putS3MultipartFile(
     const rejected = settled.find((entry): entry is PromiseRejectedResult => entry.status === "rejected");
     if (rejected) throw controller.signal.aborted && controller.signal.reason !== undefined ? controller.signal.reason : rejected.reason;
     controller.signal.throwIfAborted();
-    await withS3FailureDiagnostics("complete_multipart_upload", () => client.send(new CompleteMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: id, MultipartUpload: { Parts: parts } }), { abortSignal: controller.signal }));
+    await sendThroughStorageOutage(() => withS3FailureDiagnostics("complete_multipart_upload", () => client.send(new CompleteMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: id, MultipartUpload: { Parts: parts } }), { abortSignal: controller.signal }), controller.signal), controller.signal);
     uploadId = undefined;
     return { integrity: "server_verified_md5" };
   } catch (error) {

@@ -607,7 +607,7 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
   });
   // N-03: ONB-1 on staging waited 16 minutes on an overdue workspace_busy
   // retry. Nothing failed, yet the banner offered a Retry that cannot help.
-  it.each(["workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", "runner_revision_wait"])(
+  it.each(["workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", "runner_revision_wait", "storage_unavailable_wait"])(
     "does not present an overdue %s wait as a failed attempt", async reason => {
       const companyId = randomUUID(), agentId = randomUUID(), parentRunId = randomUUID();
       await db.insert(companies).values({ id: companyId, name: "Waiting task", issuePrefix: `W${companyId.slice(0, 7)}` });
