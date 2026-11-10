@@ -105,13 +105,15 @@ describe("Coordinator pinned pages", () => {
     expect(reads).toBeLessThanOrEqual(4 * agents.length);
     expect(items[0].to).toBe("/chats/agent-499");
   });
-  it("keeps mixed pins in stored order and prevents native link dragging", async () => {
+  it("keeps mixed pins above More in stored order and prevents native link dragging", async () => {
     fixture.agents = [{ id: "cto", companyId: "company", name: "CTO", urlKey: "cto", role: "cto", status: "idle" } as Agent];
     const saved = ["agent-chat:company:cto", "agent-chat:another-company:hidden", "/artifacts", "/dashboard"];
     localStorage.setItem("paperclip.coordinator.pinned-nav.v1:reviewer", JSON.stringify(saved));
     await renderSidebar();
-    const links = [...container.querySelectorAll<HTMLAnchorElement>(".design-sidebar-pins a")];
+    const links = [...navigation().querySelectorAll<HTMLAnchorElement>("a")].slice(3);
     expect(links.map(link => link.textContent)).toEqual(["CTO", "Artifacts", "Dashboard"]);
+    const more = navigation().querySelector('button[aria-label="More workspace pages"]')!;
+    expect(links.at(-1)!.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(JSON.parse(localStorage.getItem("paperclip.coordinator.pinned-nav.v1:reviewer")!)).toEqual(saved);
     const nativeDrag = new Event("dragstart", { bubbles: true, cancelable: true });
     act(() => links[1].dispatchEvent(nativeDrag));
@@ -140,7 +142,7 @@ describe("Coordinator pinned pages", () => {
     await flush();
   }
 
-  it.each([false, true])("restores and unpins pages in the Pinned section when collapsed is %s", async collapsed => {
+  it.each([false, true])("keeps pins above More without a separate section, restores and unpins when collapsed is %s", async collapsed => {
     fixture.collapsed = collapsed;
     await renderSidebar();
     expect(pinnedPage("/projects")).toBeNull();
@@ -150,9 +152,9 @@ describe("Coordinator pinned pages", () => {
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
     expect(pinnedPage("/projects")?.textContent).toBe("Projects");
     expect(navigation().querySelector('[aria-label="Pinned pages"]')).toBeNull();
-    if (!collapsed) expect(navigation().querySelector('[data-slot="sidebar-group-label"]')?.textContent).toBe("Pinned");
+    expect(navigation().querySelector('[data-slot="sidebar-group-label"]')).toBeNull();
     const more = navigation().querySelector('button[aria-label="More workspace pages"]')!;
-    expect(more.compareDocumentPosition(pinnedPage("/projects")!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(pinnedPage("/projects")!.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     await act(async () => root.unmount());
     root = createRoot(container);
     await renderSidebar();

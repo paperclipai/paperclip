@@ -438,6 +438,15 @@ indexes also serve the comment and delivery `on delete set null` actions. Issue
 lists share one external review-wait read per issue between the review and
 blocked-inbox attention maps.
 
+Migration 0457 builds `heartbeat_runs_company_native_session_idx` concurrently.
+It keys runs by company and `native_session_id`, partial on a non-null session.
+Native retention, recovery, resume and archive reads find a session's runs
+through it instead of reading the agent's whole run history. To measure it:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-native-session-run-index.ts
+```
+
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
 still match nothing. The query can use existing primary keys without adding a
@@ -453,6 +462,18 @@ Use a revision before these fixes for `--baseline-ref` after they merge. The
 benchmark loads that revision's chat query, uses synthetic data only, compares
 complete returned rows, and prints timings and `EXPLAIN (ANALYZE, BUFFERS)` plans.
 Local results measure query execution, not staging request latency.
+
+The inbound conversation head reads one endpoint's open delivery IDs first. These
+are received, retry and processing deliveries (from `chat_deliveries_work_idx`)
+and processed deliveries that the endpoint's issued or processing `inbound_wakeup`
+actions still own. Only those rows are fetched, filtered by thread and sorted. The
+query does not scan the endpoint's processed history or read its
+`normalized_event` values. To compare it with a pre-change revision on a busy
+endpoint fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-inbound-queue-discovery.ts --baseline-ref=<commit> --endpoint-history=20000 --only=endpoint-history --require-work-budget
+```
 
 Run history defaults to 200 rows and permits at most 1,000 rows, including
 direct service calls. The UI client requests 200 rows when its caller omits a

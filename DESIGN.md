@@ -118,9 +118,11 @@ recipient for a later draft must not change the response already starting.
 Runtime discovery must not replace the turn with a generic spinner or a
 "run started" receipt. Queued and running headers use the same spacing.
 
-A queued turn shows `Queued`, or `Waiting for maintenance` while the server holds
-admission. Reserve `Working` and `Thinking` for execution. A saved message that
-starts this queued turn stays in history, including when it reopens an older
+A queued turn shows the same `Working` header and shimmering `Thinking` activity
+as a running turn, starting at message submission. Keep specific server holds,
+such as `Waiting for maintenance` or agent setup, visible during admission.
+This is presentation only; queue and execution authority stay unchanged. A saved
+message that starts this queued turn stays in history, including when it reopens an older
 task. This placement is not a consumption receipt. Later follow-ups remain in
 the composer queue with their existing edit, order and discard controls.
 
@@ -840,6 +842,13 @@ the sandbox is on: a regular 24px title, followed by a metadata row grouping the
 status picker with its monospaced task ID, project and people. The title remains
 editable and the existing task-actions menu stays at the upper right. Typography
 and spacing use the shared tokens; toggling off restores the ordinary header.
+
+Task breadcrumbs link the immediate parent before the current task. Each task
+title displays at most 48 Unicode code points, including an ellipsis; saved
+titles, hover text and accessible names retain the full title. The parent uses
+at most 40% of the breadcrumb row, and both titles truncate when space runs out.
+Mobile omits the collection link and parent identifier to preserve both titles
+and the current task identifier. Private parents show a noninteractive label.
 
 The local task detail also offers a **Thread preview** selector. DES-1 opens a
 complete synthetic conversation matching the staging transcript layout; other

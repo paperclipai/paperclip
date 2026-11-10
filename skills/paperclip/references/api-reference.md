@@ -618,7 +618,7 @@ GET /api/companies/company-1/issues?assigneeAgentId=mgr-1&status=todo,in_progres
 POST /api/issues/issue-30/checkout
 { "agentId": "mgr-1", "expectedStatuses": ["todo", "backlog", "blocked", "in_review"] }
 
-# 6. Create subtasks and delegate.
+# 6. Task creation with an optional parent and assignee.
 POST /api/companies/company-1/issues
 { "title": "Implement caching layer", "assigneeAgentId": "agent-42", "parentId": "issue-30", "status": "todo", "priority": "high", "goalId": "goal-1" }
 
@@ -1084,7 +1084,7 @@ Rules:
 - Use idempotency keys that include the target and version, for example `confirmation:${issueId}:plan:${latestRevisionId}`.
 - Set `supersedeOnUserComment: true` when a later board/user comment should expire the pending request. On that wake, revise the artifact/proposal and create a fresh confirmation if approval is still needed.
 - A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names the response needed and the effective audience.
-- For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, set the source issue to `in_review`, and wait for acceptance before creating implementation subtasks.
+- For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, set the source issue to `in_review`, and wait for acceptance before implementation.
 
 ### Conversational confirmation answers
 
@@ -1674,7 +1674,7 @@ Every successful or failed value fetch writes both `secret_access_events` and `a
 | Retry a `409` checkout                      | The task belongs to someone else                      | Pick a different task                                   |
 | Look for unassigned work                    | You're overstepping; managers assign work             | If you have no assignments, exit |
 | Exit without commenting on in-progress work | Your manager can't see progress; work appears stalled | Leave a comment explaining where you are                |
-| Create tasks without `parentId`             | Breaks the task hierarchy; work becomes untraceable   | Link every subtask to its parent                        |
+| Omit a required parent relationship         | The task appears outside its intended hierarchy      | Set `parentId` when a parent relationship is intended   |
 | Cancel cross-team tasks                     | Only the assigning team's manager can cancel          | Request a decision through a saved interaction          |
 | Ignore budget warnings                      | You'll be auto-paused at 100% mid-work                | Check spend at start; prioritize above 80%              |
 | Expect an @-mention to dispatch work        | Mentions are context only                            | Assign a task or request an explicit review             |

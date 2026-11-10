@@ -345,6 +345,40 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     },
   );
 
+  it("reads one company's session runs through the company/session index", async () => {
+    const session = await seedSession({ finalization: { phase: "committed" } });
+    await seedCheckpoint(session);
+    await db.delete(agentTaskSessions);
+    await fs.rm(stateBase, { recursive: true, force: true });
+    // Another company's live run with the same session ID must not protect it.
+    const foreign = await seedSession({ runStatus: "running" });
+    await db.update(heartbeatRuns).set({ nativeSessionId: session.sessionId }).where(eq(heartbeatRuns.id, foreign.runId));
+    await db.delete(agentTaskSessions);
+    // Another live run of the same agent in a different session must not either.
+    await db.insert(heartbeatRuns).values({ companyId: session.companyId, agentId: session.agentId, status: "running",
+      issueId: session.issueId, nativeIssueId: session.issueId, nativeSessionId: randomUUID() });
+    const statements: Array<{ sql: string; params: unknown[] }> = [];
+    const prior = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query, params) => { statements.push({ sql: query, params: [...params] }); };
+    try {
+      expect(await service().tickCheckpoints({ dryRun: true })).toMatchObject({ checkpointCandidates: 1, failed: 0 });
+    } finally { db.$client.options.debug = prior; }
+    const lookup = statements.find(query => query.sql.includes("nativeControllerRecovery")
+      && query.sql.includes('"heartbeat_runs"."native_session_id" = '));
+    expect(lookup).toBeTruthy();
+    const plan = await db.$client.begin(async sql => {
+      await sql.unsafe("set local enable_seqscan = off");
+      return JSON.stringify(await sql.unsafe(`explain (format json) ${lookup!.sql}`, lookup!.params as never[]));
+    });
+    expect(plan).toContain("heartbeat_runs_company_native_session_idx");
+
+    // A second live run of the same session, company and agent protects it.
+    await db.insert(heartbeatRuns).values({ companyId: session.companyId, agentId: session.agentId, status: "running",
+      issueId: session.issueId, nativeIssueId: session.issueId, nativeSessionId: session.sessionId });
+    expect(await service().tickCheckpoints({ dryRun: true })).toMatchObject({ checkpointCandidates: 0, failed: 0 });
+    expect(await db.select().from(nativeRunnerCheckpoints)).toHaveLength(3);
+  });
+
   it("continues checkpoint expiration past retained sessions within bounded pages", async () => {
     for (let index = 0; index < 3; index++) {
       const session = await seedSession({ finalization: { phase: "committed" } });
