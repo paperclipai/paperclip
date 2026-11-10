@@ -4197,8 +4197,12 @@ through the ordinary control-plane observers without starting another model turn
 When a later heartbeat run reuses the provider session, it clears that prior
 run's wait marker along with its terminal, result and pending-request authority.
 Already-numbered cancellation acknowledgements and cancelled/expired runtime requests
-are retained during shutdown so recovery can replay a contiguous journal. They
-carry no permission to start work. Stream closure, stream failure or drain timeout
+are retained during shutdown with usage and the terminal. They carry no permission
+to start work. The drain discards the turn's other numbered events, so the retained
+journal can have sequence gaps after the trigger. Recovery accepts a gap only when
+the trigger is the first replayed event and every event after the gap is one of
+those retained facts of the same turn. Any run, session or source mismatch still
+fails closed. Stream closure, stream failure or drain timeout
 after complete usage leaves the saved wait unfinalized until execution is proven
 stopped; complete token counters alone cannot certify that boundary. Codex allows
 up to 30 seconds for its interruption terminal, matching the transport command
