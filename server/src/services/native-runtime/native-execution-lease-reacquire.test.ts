@@ -236,9 +236,38 @@ describeEmbeddedPostgres("native execution lease taken back after a host sleep",
     await expect(renewNativeSessionExecutionLease(run.renewal)).resolves.toBeUndefined();
   });
 
-  it("lets failure settlement write a resumable failure under its own restart claim", async () => {
+  it("lets the owner release its own lapsed lease under its own restart claim", async () => {
     const run = await seedResumedSleptRun("resumed-release");
     expect(await releaseAsOwner(run)).toHaveLength(1);
+  });
+
+  /** The executor's failure settlement: pre-result lock, observed-only held condition, resumable failure fields. */
+  async function settleFailureAsOwner(run: SleptRun) {
+    return owner.transaction(async tx => {
+      await lockNativeExecutionLeaseForReacquire(tx, { ...run, preResultOnly: true });
+      return tx.update(nativeRunFinalizations).set({
+        phase: "retryable_failure", leaseOwner: null, leaseExpiresAt: null, recoveryState: "resuming_session",
+        failureCode: "native_session_lease_lost", nextAttemptAt: new Date(),
+        recoveryHistory: sql`coalesce(${nativeRunFinalizations.recoveryHistory}, '[]'::jsonb)
+          || jsonb_build_array(${JSON.stringify({ disposition: "retryable_failure", reason: "native_session_lease_lost",
+            controllerBootId: controller.bootId, controllerGeneration: GENERATION })}::jsonb)`,
+      }).where(and(eq(nativeRunFinalizations.runId, run.runId), eq(nativeRunFinalizations.leaseOwner, run.leaseOwner),
+        eq(nativeRunFinalizations.attempt, 1), eq(nativeRunFinalizations.controllerGeneration, GENERATION),
+        eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+        nativeExecutionLeaseHeldCondition({ remote: false, controllerGeneration: GENERATION })))
+        .returning({ runId: nativeRunFinalizations.runId });
+    });
+  }
+
+  it("lets failure settlement write a resumable failure under its own restart claim", async () => {
+    const run = await seedResumedSleptRun("resumed-settle");
+    expect(await settleFailureAsOwner(run)).toHaveLength(1);
+    const saved = await row(run.runId);
+    expect(saved).toMatchObject({ phase: "retryable_failure", leaseOwner: null, recoveryState: "resuming_session",
+      failureCode: "native_session_lease_lost" });
+    expect((saved.recoveryHistory as Array<{ disposition?: string }>).at(-1)?.disposition).toBe("retryable_failure");
+    // The settled row no longer shows the claim, so a late renewal stays fenced out.
+    await expect(renewNativeSessionExecutionLease(run.renewal)).rejects.toThrow("native_session_lease_lost");
   });
 
   const restartClaimChanged: Array<[string, () => Promise<SleptRun>]> = [
@@ -265,6 +294,7 @@ describeEmbeddedPostgres("native execution lease taken back after a host sleep",
     const before = await row(run.runId);
     await expect(renewNativeSessionExecutionLease(run.renewal)).rejects.toThrow("native_session_lease_lost");
     expect(await releaseAsOwner(run)).toHaveLength(0);
+    expect(await settleFailureAsOwner(run)).toHaveLength(0);
     expect(await row(run.runId)).toEqual(before);
   });
 
