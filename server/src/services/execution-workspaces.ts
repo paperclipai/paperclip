@@ -2764,10 +2764,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       reuseEligible?: boolean;
       selectableForTask?: boolean;
       readCondition?: SQL<boolean>;
+      ids?: string[];
     },
   ) {
     const conditions = [eq(executionWorkspaces.companyId, companyId)];
     if (filters?.readCondition) conditions.push(filters.readCondition);
+    if (filters?.ids) conditions.push(inArray(executionWorkspaces.id, filters.ids));
     if (filters?.projectId) conditions.push(eq(executionWorkspaces.projectId, filters.projectId));
     if (filters?.projectWorkspaceId) {
       conditions.push(eq(executionWorkspaces.projectWorkspaceId, filters.projectWorkspaceId));
@@ -3054,6 +3056,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       reuseEligible?: boolean;
       selectableForTask?: boolean;
       readCondition?: SQL<boolean>;
+      ids?: string[];
     }, pagination?: { limit: number; cursor?: string }) => {
       const conditions = buildListConditions(companyId, filters);
       if (pagination?.cursor) conditions.push(gt(executionWorkspaces.id, pagination.cursor));
