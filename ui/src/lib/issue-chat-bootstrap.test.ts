@@ -5,6 +5,7 @@ import type { Issue, IssueRecentComments } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EARLY_CHAT_BOOTSTRAP_GLOBAL } from "./issue-detail-preload-events";
 import {
+  CHAT_BOOTSTRAP_SHARE_DEADLINE_MS,
   issueChatBootstrapEntryCountForTest,
   loadIssueChatBootstraps,
   readFromIssueChatBootstrap,
@@ -215,6 +216,32 @@ describe("startIssueChatBootstrap", () => {
 });
 
 describe("safeguards", () => {
+  it("does not request a task again by its identifier while its id's request is in flight", async () => {
+    let answer!: (value: unknown) => void;
+    chatBootstrap.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    // Recents asks by id (and knows the identifier); the list then asks by identifier.
+    const recents = loadIssueChatBootstraps(client, "company-1", [{ id: idFor(5), identifier: "ABC-5" }]);
+    await Promise.resolve();
+    await loadIssueChatBootstraps(client, "company-1", ["ABC-5"]);
+    expect(chatBootstrap).toHaveBeenCalledOnce();
+    answer({ items: [item("ABC-5", { ref: idFor(5) })] });
+    await recents;
+  });
+
+  it("stops waiting for a stalled bootstrap, so the page and its Retry read the server", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    chatBootstrap.mockImplementationOnce(() => new Promise(() => {}));
+    void loadIssueChatBootstraps(client, "company-1", ["ABC-6"]);
+    await Promise.resolve();
+    const read = vi.fn().mockResolvedValue(["server"]);
+    const first = readFromIssueChatBootstrap(client, ["unread"], "ABC-6", (bootstrap) => bootstrap.attachments, read);
+    await vi.advanceTimersByTimeAsync(CHAT_BOOTSTRAP_SHARE_DEADLINE_MS);
+    await expect(first).resolves.toEqual(["server"]);
+    // A retry does not join the stuck request again.
+    await expect(readFromIssueChatBootstrap(client, ["unread"], "ABC-6", (bootstrap) => bootstrap.attachments, read)).resolves.toEqual(["server"]);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
   it("never shares a bootstrap with a refresh of a key that already holds data", async () => {
     let answer!: (value: unknown) => void;
     chatBootstrap.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));

@@ -34,6 +34,12 @@ export type ChatBootstrapItem = IssueChatBootstrapEntry;
 export const CHAT_BOOTSTRAP_PRELOAD_LIMIT = ISSUE_CHAT_BOOTSTRAP_MAX_IDS;
 /** How long after it arrives a bootstrap answer may stand in for a page read. */
 const SHARE_WINDOW_MS = 2_000;
+/**
+ * How long a page read waits for a loading bootstrap before it reads the
+ * server itself. A stalled bootstrap must not keep the chat (or its Retry)
+ * from loading.
+ */
+export const CHAT_BOOTSTRAP_SHARE_DEADLINE_MS = 5_000;
 
 /**
  * One task's part of a bootstrap request. `userId` is the account that sent
@@ -62,22 +68,28 @@ function currentEntry(queryClient: QueryClient, ref: string, now = Date.now()) {
   return entry && entry.userId === sessionUserId(queryClient) && !isExpired(entry, now) ? entry : undefined;
 }
 
+/** Remove `entry` from every ref that still points at it. */
+function forget(entry: Entry) {
+  for (const [key, value] of entries) if (value === entry) entries.delete(key);
+}
+
 /**
- * Track one task's part of a request under the ref it was asked by. When the
- * answer arrives it is also recorded under the task's id and identifier, so a
- * list (identifiers) and Recents (ids) never load the same task twice.
- * Expired entries are dropped, so answers do not stay in memory.
+ * Track one task's part of a request under every ref it is known by: the
+ * refs the caller gave at once, and the task's id and identifier when the
+ * answer arrives. A list (identifiers) and Recents (ids) then never load the
+ * same task twice, even while a request is in flight. Expired entries are
+ * dropped, so answers do not stay in memory.
  */
-function track(queryClient: QueryClient, ref: string, userId: string | null, startedAt: number, promise: Promise<ChatBootstrapItem | undefined>) {
+function track(queryClient: QueryClient, refs: readonly string[], userId: string | null, startedAt: number, promise: Promise<ChatBootstrapItem | undefined>) {
   const now = Date.now();
   for (const [key, entry] of entries) if (isExpired(entry, now)) entries.delete(key);
   const entry: Entry = { startedAt, userId, promise };
-  entries.set(refKey(ref), entry);
+  for (const ref of refs) entries.set(refKey(ref), entry);
   void promise.then((item) => {
     entry.settledAt = Date.now();
     if (!item) {
       // A failed or empty answer must not suppress later reads or preloads.
-      if (entries.get(refKey(ref)) === entry) entries.delete(refKey(ref));
+      forget(entry);
       return;
     }
     for (const alias of [item.issue.id, item.issue.identifier]) {
@@ -86,7 +98,11 @@ function track(queryClient: QueryClient, ref: string, userId: string | null, sta
   });
 }
 
-function startChunk(queryClient: QueryClient, companyId: string, refs: string[]) {
+/** One task to request: the ref sent to the server, plus every ref it is known by. */
+type Wanted = { ref: string; refs: string[] };
+
+function startChunk(queryClient: QueryClient, companyId: string, wanted: readonly Wanted[]) {
+  const refs = wanted.map((target) => target.ref);
   const requestedAt = Date.now();
   const userId = sessionUserId(queryClient);
   // A synchronous throw (bad input) is only a missed preload as well.
@@ -100,7 +116,9 @@ function startChunk(queryClient: QueryClient, companyId: string, refs: string[])
     }
     return byRef;
   });
-  for (const ref of refs) track(queryClient, ref, userId, requestedAt, request.then((byRef) => byRef.get(refKey(ref)), () => undefined));
+  for (const target of wanted) {
+    track(queryClient, target.refs, userId, requestedAt, request.then((byRef) => byRef.get(refKey(target.ref)), () => undefined));
+  }
   return request.then(() => undefined, () => undefined);
 }
 
@@ -124,13 +142,13 @@ export async function loadIssueChatBootstraps(
 ) {
   const now = Date.now();
   // Keyed by the normalized ref; the request keeps the caller's spelling.
-  const wanted = new Map<string, string>();
+  const wanted = new Map<string, Wanted>();
   for (const target of targets) {
     const refs = typeof target === "string" ? [target] : [target.id, target.identifier].filter((ref): ref is string => !!ref);
     if (!refs.length || wanted.has(refKey(refs[0]!))) continue;
     if (refs.some((ref) => currentEntry(queryClient, ref, now))) continue;
     if (hasFreshIssueChatFirstFrame(queryClient, refs, now)) continue;
-    wanted.set(refKey(refs[0]!), refs[0]!);
+    wanted.set(refKey(refs[0]!), { ref: refs[0]!, refs });
   }
   const ordered = [...wanted.values()];
   for (let start = 0; start < ordered.length; start += ISSUE_CHAT_BOOTSTRAP_MAX_IDS) {
@@ -157,7 +175,7 @@ function adoptEarlyChatBootstrap(queryClient: QueryClient, companyId: string | n
   // A page that took this long to start reads the task itself.
   if (Date.now() - startedAt >= ISSUE_CHAT_BOOTSTRAP_FRESH_MS) return false;
   const userId = sessionUserId(queryClient);
-  track(queryClient, ref, userId, startedAt, early.promise.then((item) => {
+  track(queryClient, [ref], userId, startedAt, early.promise.then((item) => {
     // The answer belongs to the account that loaded the page.
     if (!item?.issue || sessionUserId(queryClient) !== userId) return undefined;
     // The route's task is the one the page opens; a known company must match it.
@@ -175,7 +193,7 @@ function startSingle(queryClient: QueryClient, ref: string) {
   const requestedAt = Date.now();
   const userId = sessionUserId(queryClient);
   const path = `/issues/${encodeURIComponent(ref)}/chat-bootstrap`;
-  track(queryClient, ref, userId, requestedAt, Promise.resolve().then(() => api.get<ChatBootstrapItem>(path, { cache: "no-store" })).then((item) => {
+  track(queryClient, [ref], userId, requestedAt, Promise.resolve().then(() => api.get<ChatBootstrapItem>(path, { cache: "no-store" })).then((item) => {
     if (!item?.issue || sessionUserId(queryClient) !== userId) return undefined;
     return seedIssueChatBootstrap(queryClient, item, { companyId: item.issue.companyId, requestedAt }) ? item : undefined;
   }, () => undefined));
@@ -223,7 +241,16 @@ export async function readFromIssueChatBootstrap<T>(
   const entry = currentEntry(queryClient, ref);
   // Only share an answer that is still loading or a moment old.
   if (entry && (entry.settledAt === undefined || Date.now() - entry.settledAt < SHARE_WINDOW_MS)) {
-    const item = await entry.promise;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stalled = new Promise<"stalled">((resolve) => { timer = setTimeout(() => resolve("stalled"), CHAT_BOOTSTRAP_SHARE_DEADLINE_MS); });
+    const answer = await Promise.race([entry.promise, stalled]);
+    clearTimeout(timer);
+    if (answer === "stalled") {
+      // Later reads (and Retry) go to the server instead of the stuck request.
+      forget(entry);
+      return read();
+    }
+    const item = answer;
     const value = item ? pick(item) : undefined;
     if (value !== undefined) return value;
   }
