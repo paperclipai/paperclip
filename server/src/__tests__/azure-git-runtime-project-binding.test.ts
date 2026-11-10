@@ -14,10 +14,10 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-function app() {
+function app(db: unknown = { select: () => ({ from: () => ({ where: async () => [] }) }) }) {
   const server = express();
   server.use(express.json());
-  server.use(runtimeConnectionIntentRoutes({} as never));
+  server.use(runtimeConnectionIntentRoutes(db as never));
   server.use(errorHandler);
   return server;
 }
@@ -59,6 +59,44 @@ describe("Azure Git runtime project binding", () => {
 
     expect(response.status).toBe(403);
     expect(resolveGitCredentials).not.toHaveBeenCalled();
+  });
+
+  it("authorizes a ready task repository only while its current receipt exists", async () => {
+    let active = true;
+    let query = 0;
+    const db = { select: () => ({ from: () => ({ where: async () => {
+      const kind = query++ % 3;
+      if (kind === 0) return [{ issueId: "issue" }];
+      if (kind === 1) return [{ executionWorkspaceId: "workspace" }];
+      return active ? [{ repoUrl: repositoryUrl, catalogRepositoryId: "azure-devops:contoso:repo", pinnedCommit: "a".repeat(40) }] : [];
+    } }) }) };
+    const signed = token([]);
+    const first = await request(app(db)).post("/runtime-tools/git/credentials")
+      .set("Authorization", `Bearer ${signed}`).send({ repositoryUrl });
+    expect(first.status).toBe(200);
+    expect(resolveGitCredentials).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+      companyId: "company", agentId: "agent", runId: "run", repoUrl: repositoryUrl, projectId: undefined,
+    });
+    active = false;
+    const revoked = await request(app(db)).post("/runtime-tools/git/credentials")
+      .set("Authorization", `Bearer ${signed}`).send({ repositoryUrl });
+    expect(revoked.status).toBe(403);
+    expect(resolveGitCredentials).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not return credentials if the task receipt is revoked during resolution", async () => {
+    let query = 0;
+    const db = { select: () => ({ from: () => ({ where: async () => {
+      const index = query++;
+      if (index % 3 === 0) return [{ issueId: "issue" }];
+      if (index % 3 === 1) return [{ executionWorkspaceId: "workspace" }];
+      return index < 3 ? [{ repoUrl: repositoryUrl, catalogRepositoryId: "azure-devops:contoso:repo", pinnedCommit: "a".repeat(40) }] : [];
+    } }) }) };
+    const response = await request(app(db)).post("/runtime-tools/git/credentials")
+      .set("Authorization", `Bearer ${token([])}`).send({ repositoryUrl });
+    expect(response.status).toBe(403);
+    expect(response.text).not.toContain("azure-test-token");
+    expect(resolveGitCredentials).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a URL bound to multiple projects and rejects projectId from the request body", async () => {

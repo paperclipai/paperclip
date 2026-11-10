@@ -21,7 +21,7 @@ import { resolveGitHubOperationCredentials } from "../services/github-operation-
 import { captureRunIdentity } from "../services/run-identity.js";
 import { resolveBoundProjectGitHubCredentials } from "../services/project-run-github-access.js";
 import { resolveAzureDevOpsRunGitCredentials } from "../services/azure-devops-run-git-credentials.js";
-import { projectForAzureRepository } from "../services/azure-project-repository-bindings.js";
+import { projectForAzureRuntimeRepository } from "../services/azure-project-repository-bindings.js";
 
 function bearer(req: Request) {
   const value = req.header("authorization") ?? "";
@@ -85,10 +85,13 @@ export function runtimeConnectionIntentRoutes(db: Db) {
     const body = req.body as { repositoryUrl?: unknown } | null;
     if (!body || typeof body.repositoryUrl !== "string" || body.repositoryUrl.length > 2048 || Object.keys(body).some(key => key !== "repositoryUrl"))
       throw forbidden("Git repository authorization is unavailable");
+    const binding = { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id,
+      repositoryUrl: body.repositoryUrl, bindings: claims.azure_project_repositories };
+    const projectId = await projectForAzureRuntimeRepository(db, binding);
     const result = await resolveAzureDevOpsRunGitCredentials(db, {
-      companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id, repoUrl: body.repositoryUrl,
-      projectId: projectForAzureRepository(body.repositoryUrl, claims.azure_project_repositories),
+      companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id, repoUrl: body.repositoryUrl, projectId,
     });
+    if (projectId !== await projectForAzureRuntimeRepository(db, binding)) throw forbidden("Git repository authorization is unavailable");
     res.setHeader("Cache-Control", "no-store");
     res.json({ status: "available", env: result.env });
   });

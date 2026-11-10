@@ -78,15 +78,27 @@ function azureRemote(args, env) {
   // the configured URL without running a shell or consulting credential helpers.
   const remoteOption = remaining.indexOf('--remote');
   const namedRemote = remaining.find(arg => arg.startsWith('--remote='))?.slice('--remote='.length) || (remoteOption >= 0 ? remaining[remoteOption + 1] : undefined);
-  const remote = namedRemote || remaining.find(arg => !arg.startsWith('-') && /^[A-Za-z0-9_.-]+$/.test(arg));
-  if (!remote) return ${options.hostGitHub ? "'paperclip:unresolved-git-remote'" : "null"};
+  let remote = namedRemote || remaining.find(arg => !arg.startsWith('-') && /^[A-Za-z0-9_.-]+$/.test(arg));
+  if (!remote && ['fetch', 'pull', 'push'].includes(command)) {
+    const readGit = extra => {
+      const result = spawnSync(executable, [...globalOptions, ...extra], { env, encoding: 'utf8', timeout: 5000, maxBuffer: 4096, windowsHide: true });
+      return result.status === 0 ? String(result.stdout || '').trim() : '';
+    };
+    const branch = readGit(['symbolic-ref', '--quiet', '--short', 'HEAD']);
+    const configured = key => readGit(['config', '--get', key]);
+    if (command === 'fetch' && readGit(['config', '--bool', '--get', 'fetch.all']) === 'true') return 'paperclip:unresolved-git-remote';
+    remote = (command === 'push' && branch ? configured('branch.' + branch + '.pushRemote') : '') ||
+      (command === 'push' ? configured('remote.pushDefault') : '') ||
+      (branch ? configured('branch.' + branch + '.remote') : '') || 'origin';
+  }
+  if (!remote || !/^[A-Za-z0-9_.-]+$/.test(remote) || remote === '.') return 'paperclip:unresolved-git-remote';
   const lookup = spawnSync(executable, [...globalOptions, 'remote', 'get-url', ...(command === 'push' ? ['--push', '--all'] : []), '--', remote], {
     env, encoding: 'utf8', timeout: 5000, maxBuffer: 4096, windowsHide: true,
   });
   const value = lookup.status === 0 ? String(lookup.stdout || '').trim() : '';
-  if (!value) return ${options.hostGitHub ? "'paperclip:unresolved-git-remote'" : "null"};
+  if (!value) return 'paperclip:unresolved-git-remote';
   const destinations = value.split(/\r?\n/).filter(Boolean);
-  if (destinations.length !== 1) return ${options.hostGitHub ? "'paperclip:unresolved-git-remote'" : "null"};
+  if (destinations.length !== 1) return 'paperclip:unresolved-git-remote';
   return isAzure(destinations[0]) ? destinations[0] : null;
 }
 // Project-backed GitHub operations fail closed when the broker is unavailable.
