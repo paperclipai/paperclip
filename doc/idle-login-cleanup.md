@@ -95,3 +95,20 @@ cover the surrounding login contracts.
 The fake-clock database fixture warms its connections and disables pool idle/lifetime
 expiry so time jumps test the worker rather than racing socket connection timers.
 Database suspension and reconnect behavior require separate qualification.
+
+## CI fixture settlement across the migration stack
+
+The setup-token consume fixture can finish its initial fake-clock jump while
+cleanup is still performing database work. A write during that pass can request
+another generation whose coalesced deadline lies beyond the jump. Waiting for
+zero tracked work without advancing to that registered deadline then times out,
+even though cleanup has a valid wake and can finish.
+
+The existing fixture repair from `59f8c8b3e5` is now carried at the earliest stack
+branch so every intermediate PR receives it. The helper advances to registered
+deadlines only while work remains tracked, preserving its existing five-second
+observation limit and all production behavior. All 16 login-cleanup cases passed
+on this branch against a dedicated PostgreSQL database; the prior later-branch
+verification and failed CI history remain documented in the GitHub review-check
+migration audit. No runtime change or weakened quiet assertion is included.
+Evidence: `/tmp/sleep-login-settlement-owning-tests.log` and its zero status file.

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { openEvalCostLedger, readEvalCostLedger } from "./cost-ledger.js";
+import { startEvalRemoteBridge } from "./eval-remote-gateway.js";
 import { forwardEvalRequest, startEvalGateway, type EvalGatewayReceipt, type EvalGatewayRoute } from "./eval-gateway.js";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -180,4 +181,20 @@ it.each(["persist", "observe", "finish"] as const)("records a disconnect during 
   expect(events.filter(event => event.type === "finish").at(-1)).toMatchObject({ outcome: "cancelled" });
   expect(f.ledger.snapshot()).toMatchObject({ knownUsd: "0.000070000", heldUsd: "0.000000000", unknownRequests: 0 });
   expect(transport).toHaveBeenCalledOnce();
+});
+
+it("retains terminal usage when a remote bridge client disconnects during shutdown", async () => {
+  const f = await fixture(), started = deferred<void>(), release = deferred<void>();
+  const transport = vi.fn<typeof fetch>(async () => { started.resolve(); await release.promise; return finalResponse("openai"); });
+  const gateway = await startEvalGateway({ ...f, transport }); cleanups.push(() => gateway.close());
+  const bridge = await startEvalRemoteBridge({ gateway, deadlineAt: f.deadlineAt }); cleanups.push(() => bridge.close());
+  const client = new AbortController();
+  const result = fetch(bridge.baseUrl + "/responses", { method: "POST", signal: client.signal,
+    headers: { authorization: `Bearer ${gateway.token}` }, body: JSON.stringify({ model: "fixture", input: "hello" }) }).catch(error => error);
+  await started.promise; client.abort(); await bridge.close();
+  const closing = gateway.close(); release.resolve(); await closing;
+  expect(await result).not.toBeInstanceOf(Response);
+  expect(transport).toHaveBeenCalledOnce();
+  expect(f.receipts.at(-1)).toMatchObject({ clientDisconnected: true, final: true, usageComplete: true, costUsd: "0.000070000" });
+  expect(f.ledger.snapshot()).toMatchObject({ knownUsd: "0.000070000", heldUsd: "0.000000000", unknownRequests: 0, inflight: 0 });
 });

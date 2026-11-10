@@ -273,3 +273,20 @@ it("rejects unknown protobuf fields instead of excluding forwarded data from siz
   expect(response.status).toBe(400);
   expect(upstream).not.toHaveBeenCalled();
 });
+
+it("binds native relay headers and payload parents to the assigned attempt within the same project", async () => {
+  const expectedParent = exportBraintrustAttemptParent({ projectId, spanId: "1234567890abcdef", traceId: "abcdef0123456789abcdef0123456789" });
+  const other = exportBraintrustAttemptParent({ projectId, spanId: "abcdef0123456789", traceId: "abcdef0123456789abcdef0123456789" });
+  const upstream = vi.fn<typeof fetch>(async () => Response.json({}));
+  const f = await fixture({ expectedParent, transport: upstream });
+  expect((await f.send()).status).toBe(400);
+  expect((await f.send("{}", { "x-bt-parent": other })).status).toBe(400);
+  for (const parent of [other, `project_id:${projectId}`]) {
+    const body = { resourceLogs: [{ resource: { attributes: [{ key: "braintrust.parent", value: { stringValue: parent } }] } }] };
+    expect((await f.send(JSON.stringify(body), { "x-bt-parent": expectedParent }, "/v1/logs")).status).toBe(400);
+  }
+  expect(upstream).not.toHaveBeenCalled();
+  expect((await f.send("{}", { "x-bt-parent": expectedParent })).status).toBe(200);
+  await f.relay.close();
+  expect((await f.records())[0].expectedParent).toBe(expectedParent);
+});

@@ -15,6 +15,20 @@ it("never turns missing usage or incompatible model/pricing into a free charge",
   expect(estimateProviderCost(zero, price)).toBe("0.000000000");
   expect(estimateProviderCost(zero, { ...price, model: "other" })).toBeNull();
 });
+it("prices only exact response identities declared by the versioned pricecard", () => {
+  const selected = { ...price, model: "gpt-5.4-mini", responseModels: ["gpt-5.4-mini-2026-03-17"] };
+  const receipt = normalizeProviderUsage("openai", { model: selected.responseModels[0], usage: {
+    input_tokens: 100, input_tokens_details: { cache_write_tokens: 0, cached_tokens: 40 }, output_tokens: 20,
+  } });
+  expect(estimateProviderCost(receipt, selected)).toBe("0.000360000");
+  expect(estimateProviderCost({ ...receipt, model: selected.model }, selected)).toBe("0.000360000");
+  expect(estimateProviderCost(receipt, { ...selected, provider: "anthropic" })).toBeNull();
+  expect(estimateProviderCost(receipt, { ...selected, responseModels: undefined })).toBeNull();
+  expect(estimateProviderCost(receipt, { ...selected, responseModels: selected.responseModels[0] as never })).toBeNull();
+  for (const model of [undefined, "gpt-5.4-mini-2026-03-18", "gpt-5.4-mini-2026-03-17-extra", "gpt-5.4", "GPT-5.4-mini-2026-03-17"]) {
+    expect(estimateProviderCost({ ...receipt, model }, selected)).toBeNull();
+  }
+});
 it("does not add Anthropic cumulative output counters and prices cache writes by TTL", () => {
   const stream = new ProviderUsageAccumulator("anthropic");
   stream.observe({ type: "message_start", message: { id: "message", model: "fixture", usage: { input_tokens: 10, output_tokens: 1, cache_read_input_tokens: 20, cache_creation_input_tokens: 30, cache_creation: { ephemeral_5m_input_tokens: 20, ephemeral_1h_input_tokens: 10 } } } });
@@ -110,6 +124,29 @@ it("prefers provider TTL splits and never repairs malformed or partial provider 
     expect(receipt.cacheWriteAttribution).toBeUndefined();
     expect(estimateProviderCost(receipt, policyPrice)).toBeNull();
   }
+});
+it.each([
+  { name: "exact reviewed mapping", mapped: true, expected: "0.077600000" },
+  { name: "no mapping", mapped: false, expected: null },
+  { name: "unlisted snapshot", mapped: true, responseModel: "unlisted-snapshot", expected: null },
+  { name: "wrong price provider", mapped: true, provider: "anthropic" as const, expected: null },
+  { name: "wrong price request model", mapped: true, model: "another-request", expected: null },
+  { name: "unqualified cache policy", mapped: true, request: { prompt_cache_options: { mode: "explicit", ttl: "12h" } }, expected: null },
+  { name: "missing write counter", mapped: true, details: { cache_write_tokens: undefined }, expected: null },
+  { name: "malformed TTL counters", mapped: true, details: { cache_write_tokens_details: null }, expected: null },
+])("uses a reviewed snapshot for cache attribution only with $name", test => {
+  const snapshot = "gpt-5.6-sol-reviewed-snapshot";
+  const selected: EvalModelPrice = { ...policyPrice, model: test.model ?? policyPrice.model, provider: test.provider ?? "openai",
+    ...(test.mapped ? { responseModels: [snapshot] } : {}) };
+  const stream = new ProviderUsageAccumulator("openai", { model: policyPrice.model, input: "hello",
+    prompt_cache_options: { mode: "implicit", ttl: "12h" }, ...test.request }, selected);
+  stream.observe({ type: "response.completed", response: { model: test.responseModel ?? snapshot, usage: {
+    input_tokens: 12_000, input_tokens_details: { cached_tokens: 4000, cache_write_tokens: 7000, ...test.details }, output_tokens: 100,
+  } } });
+  const receipt = stream.receipt();
+  expect(estimateProviderCost(receipt, selected)).toBe(test.expected);
+  expect(receipt.cacheWriteAttribution).toEqual(test.expected === null ? undefined
+    : { source: "request_policy", version: "openai-prompt-cache-2026-10-20", ttl: "12h" });
 });
 
 it.each([

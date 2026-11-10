@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "decision_archive_notification_outbox_delivery_idx" ON "decision_archive_notification_outbox" USING btree ("last_attempt_at" NULLS FIRST,"created_at","id") WHERE "decision_archive_notification_outbox"."status" = 'pending';

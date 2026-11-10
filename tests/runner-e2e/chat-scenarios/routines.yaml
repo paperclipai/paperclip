@@ -1,0 +1,97 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: routines
+status: planned
+scenarios:
+  - id: routines.create-daily-brief
+    capabilities:
+      - routines/definition
+      - routines/triggers
+    context: >-
+      The CEO can create routines assigned to itself. The person's timezone is America/Chicago
+      and a synthetic project exists.
+    query: >-
+      Every weekday at nine in the morning, summarize Launch for me.
+    expected_outcome: >-
+      One owned routine retains the summary request, Launch context and an unambiguous weekday
+      schedule in the person's timezone. Chat describes the saved schedule and resulting work
+      location. It does not silently interpret nine as UTC or create one routine per future
+      occurrence.
+  - id: routines.webhook-trigger
+    capabilities:
+      - routines/triggers
+    context: >-
+      The CEO owns an eligible routine and webhook triggering is supported; no trigger exists
+      yet.
+    query: >-
+      Give this routine a webhook so our test service can trigger it.
+    expected_outcome: >-
+      A scoped trigger is configured through the supported path and its credential is handled by
+      the secure setup surface. A synthetic authorized request creates the intended execution;
+      invalid authentication is rejected. Chat does not print a reusable secret or confuse
+      creating a trigger with receiving an event.
+  - id: routines.run-now
+    capabilities:
+      - routines/run-now
+    context: >-
+      The CEO owns a routine requiring a project-name input; no current duplicate invocation is
+      in progress.
+    query: >-
+      Run the launch summary now for the Launch project.
+    expected_outcome: >-
+      One manual execution records the supplied input and links to its resulting task. The
+      response distinguishes accepted invocation from completed summary and later reports the
+      actual result. Repeated delivery of the same invocation must not be mistaken for a new
+      user request.
+  - id: routines.read-history
+    capabilities:
+      - routines/history
+      - activity/routine-audit
+    context: >-
+      The routine has recent successful and failed executions.
+    query: >-
+      Did the morning summary run this week, and which runs failed?
+    expected_outcome: >-
+      The agent reads execution history for the requested time window and links the relevant
+      tasks, preserving failures and missing runs. It distinguishes a saved schedule from
+      evidence of execution and does not infer success from the most recent successful run
+      alone.
+  - id: routines.pause-owned
+    capabilities:
+      - routines/management
+    context: >-
+      The CEO owns the daily summary routine and it currently has an enabled schedule.
+    query: >-
+      Pause my daily launch summaries for now.
+    expected_outcome: >-
+      The supported routine management change disables future triggers and chat confirms the
+      persisted state. Existing execution history remains visible. An already running task is
+      described separately, so pausing a schedule does not falsely claim that in-flight work was
+      cancelled.
+  - id: routines.manage-other-owner
+    capabilities:
+      - routines/definition
+      - routines/management
+    context: >-
+      Morgan owns the routine; the CEO can read it but the agent management path permits only
+      self-assigned routines.
+    query: >-
+      Change Morgan's routine to run every hour.
+    expected_outcome: >-
+      The CEO explains the ownership boundary and routes the change to a supported authorized
+      human or owner path. It does not rewrite the routine, reassign ownership to itself or
+      create a hidden duplicate schedule as a workaround.
+  - id: routines.plugin-managed-routine
+    capabilities:
+      - routines/management
+      - plugins/contributions
+    context: >-
+      A routine is managed by a plugin and exposes limited editable controls.
+    query: >-
+      Rewrite this plugin's daily maintenance routine.
+    expected_outcome: >-
+      The agent identifies plugin ownership and uses only the supported customization path.
+      Unsupported edits remain unchanged with an explanation of where configuration belongs. It
+      does not detach or duplicate the routine and report that as editing the plugin's managed
+      definition.

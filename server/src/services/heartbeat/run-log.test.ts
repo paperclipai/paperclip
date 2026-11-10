@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import {
   appendExcerpt,
   boundHeartbeatRunEventPayloadForStorage,
+  canonicalNativeRunLogRedactionForms,
   compactRunLogChunk,
+  redactCanonicalNativeRunLogChunk,
 } from "./run-log.js";
 
 describe("heartbeat run-log excerpts", () => {
@@ -171,5 +174,86 @@ describe("heartbeat run-log chunk formatting", () => {
     expect(compacted).not.toContain("fixture-secret-token");
     expect(compacted).toContain("[omitted base64 image data: 70000 chars]");
     expect(compacted).not.toContain("[paperclip truncated");
+  });
+});
+
+describe("complete canonical native log privacy", () => {
+  it.each([false, true])("keeps structured bytes and applies complete-value secrets, images, and username masking: %s", enabled => {
+    const identity = createAgentIdentityRedactor("fixture-configured-private-canary");
+    const envelope = { type: "paperclip.prp.event", event: {
+      schema: "paperclip.prp.event.v1", schemaVersion: 1, eventType: "item.delta",
+      payload: { header: 'Authorization: Bearer fixture-bearer-canary', api_key: "fixture-api-canary",
+        text: 'quoted "fixture-configured-private-canary" by fixture-operator',
+        image: { source: { data: "A".repeat(70000), type: "base64" }, type: "image" },
+        parts: Array.from({ length: 20 }, () => "full content ".repeat(400)),
+      },
+    } };
+    const chunk = redactCanonicalNativeRunLogChunk(JSON.stringify(envelope), {
+      redactIdentity: identity.redact, currentUser: { enabled, userNames: ["fixture-operator"], homeDirs: [] },
+    });
+    const result = JSON.parse(chunk).event;
+    expect(result.schema).toBe(envelope.event.schema);
+    expect(result.payload.header).toBe("Authorization: ***REDACTED***");
+    expect(result.payload.api_key).toBe("***REDACTED***");
+    expect(result.payload.text).toContain('quoted "***REDACTED***" by ');
+    expect(result.payload.text.includes("fixture-operator")).toBe(!enabled);
+    expect(result.payload.parts).toEqual(envelope.event.payload.parts);
+    expect(result.payload.image.source.data).toBe("[omitted base64 image data: 70000 chars]");
+    for (const secret of ["fixture-configured-private-canary", "fixture-bearer-canary", "fixture-api-canary"])
+      expect(chunk).not.toContain(secret);
+    expect(chunk).not.toContain("data:image");
+    expect(chunk.length).toBeGreaterThan(64 * 1024);
+    expect(chunk).not.toContain("[paperclip truncated");
+  });
+
+  it("rejects malformed owned envelopes instead of treating them as coverage-preserving diagnostics", () => {
+    const options = { redactIdentity: <T>(value: T) => value, currentUser: { enabled: false } };
+    for (const chunk of ['{"type":"paperclip.prp.event",', '{"type":"diagnostic","event":{}}',
+      '{"type":"paperclip.prp.event","event":[]}'])
+      expect(() => redactCanonicalNativeRunLogChunk(chunk, options)).toThrow();
+  });
+});
+
+describe("run-log invitation token privacy", () => {
+  // Run logs are a plain-file diagnostic copy that every local agent (same OS
+  // user) can read, so a live join link must not sit there. The chat reply the
+  // person reads is built from database run events, not from this file.
+  const token = "pcp_invite_FixtureInviteToken-0123456789_abcdefghijklmnopqrstu";
+  const reply = `Created the invite.\n\n**Invite link:** [Join Company](http://127.0.0.1:3100/invite/${token})`;
+  const toolResult = JSON.stringify({ id: "invite-1", token, inviteUrl: `/invite/${token}`,
+    acceptPath: `/api/invites/${token}/accept` });
+  const options = { redactIdentity: <T>(value: T) => value, currentUser: { enabled: false } };
+  const envelope = (text: string) => JSON.stringify({ type: "paperclip.prp.event", event: {
+    schema: "paperclip.prp.event.v1", schemaVersion: 1, eventType: "item.completed",
+    payload: { kind: "agentMessage", channel: "final", text },
+  } });
+
+  it("redacts join-link tokens and raw invite tokens from legacy text chunks", () => {
+    for (const chunk of [reply, toolResult, `${envelope(reply)}\n`]) {
+      const compacted = compactRunLogChunk(chunk);
+      expect(compacted).not.toContain(token);
+      expect(compacted).not.toContain("FixtureInviteToken");
+    }
+    expect(compactRunLogChunk(reply)).toBe(reply.replace(token, "***REDACTED***"));
+    expect(JSON.parse(compactRunLogChunk(toolResult))).toEqual({ id: "invite-1", token: "***REDACTED***",
+      inviteUrl: "/invite/***REDACTED***", acceptPath: "/api/invites/***REDACTED***/accept" });
+  });
+
+  it("redacts invite tokens from canonical native envelopes without breaking their JSON", () => {
+    const chunk = redactCanonicalNativeRunLogChunk(envelope(reply), options);
+    expect(chunk).not.toContain(token);
+    expect(JSON.parse(chunk).event.payload).toEqual({ kind: "agentMessage", channel: "final",
+      text: reply.replace(token, "***REDACTED***") });
+  });
+
+  it("still verifies a log prefix written before invite tokens were redacted", () => {
+    const forms = [...canonicalNativeRunLogRedactionForms(envelope(reply), options)];
+    expect(forms[0]).toBe(redactCanonicalNativeRunLogChunk(envelope(reply), options));
+    expect(forms.some(form => form.includes(token))).toBe(true);
+  });
+
+  it("leaves chunks without invitation tokens unchanged", () => {
+    const chunk = "GET /api/companies/c1/invites returned 2 invites; see /invite for help";
+    expect(compactRunLogChunk(chunk)).toBe(chunk);
   });
 });

@@ -1,3 +1,14 @@
+import { notifyStrandedAgentStatus } from "../../../services/live-run-recovery-notifications.js";
+import { assertAgentInteraction } from "../../../services/agent-interaction-policy.js";
+import { notifyExecutionRunWork } from "../../../services/execution-control-notifications.js";
+import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
+import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
+import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
+import { notifyCancelledWorkspacePreservation } from "../../../services/cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "../../../services/instruction-collection-notifications.js";
+import { notifyChatInboundWakeNotices } from "../../../services/chat-inbound-wake-notice-notifications.js";
+import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
 import { and, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
@@ -11,10 +22,12 @@ import {
 } from "../../../services/issue-queued-comment-queue.js";
 import { logActivity as persistActivityLogRow, type ActivityPublication } from "../../../services/activity-log.js";
 import { decideQueuedCommentWakeLookup } from "../domain/policy.js";
+import { firstTurnClaimedCommentIds } from "../../../services/native-runtime/first-turn-queued-input.js";
 import { parseObject, readNonEmptyString } from "../domain/values.js";
 import { QueuedCommentMutationError } from "../application/queued-comment-use-cases.js";
 import type {
   LockedQueuedCommentState,
+  QueuedCommentActor,
   QueuedCommentActivityLogInput,
   QueuedCommentActivityPublication,
   QueuedCommentIssueLockWriter,
@@ -45,9 +58,19 @@ export type QueuedCommentQueuePostgresAdapterDeps = {
   syncCommentExternalObjectsSafely(commentId: string, tx: Db): Promise<void>;
 };
 
-function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePostgresAdapterDeps): QueuedCommentQueueTransaction {
+function buildTransaction(tx: Db, companyId: string, issueId: string, deps: QueuedCommentQueuePostgresAdapterDeps, wakeAgentId: string, actor: QueuedCommentActor): QueuedCommentQueueTransaction {
+  // Messages the active run took into its first turn leave the visible queue
+  // but stay on the wake until that turn is accepted, so a run that fails
+  // before then still leaves them queued. Queue edits keep them.
+  let heldByFirstTurn: string[] = [];
   return {
     async updateCommentBody({ issueId, commentId, body, updatedAt }) {
+      const [existing] = await tx.select({ body: issueComments.body }).from(issueComments).where(and(
+        eq(issueComments.id, commentId), eq(issueComments.issueId, issueId), eq(issueComments.companyId, companyId)));
+      if (!existing) return false;
+      await assertAgentInteraction(tx, { companyId, actorAgentId: actor.actorType === "agent" ? actor.actorId : null,
+        operation: "comment", issueId, texts: body === existing.body ? [] : [body], lock: true });
+      await notifyStatusCardIssueChange(tx, companyId);
       const updated = await tx
         .update(issueComments)
         .set({ body, updatedAt })
@@ -58,13 +81,15 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
     },
 
     async touchIssueUpdatedAt({ issueId, updatedAt }) {
+      await notifyStatusCardIssueChange(tx, companyId);
       await tx.update(issues).set({ updatedAt }).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
     },
 
     async updateWakeQueuedCommentIds({ wakeId, payload, ids, updatedAt }) {
+      const kept = [...heldByFirstTurn.filter((id) => !ids.includes(id)), ...ids];
       const row = await tx
         .update(agentWakeupRequests)
-        .set({ payload: withQueuedCommentIdsInWakePayload(payload, ids), updatedAt })
+        .set({ payload: withQueuedCommentIdsInWakePayload(payload, kept), updatedAt })
         .where(and(eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, companyId)))
         .returning()
         .then((rows) => rows[0]);
@@ -72,6 +97,7 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
     },
 
     async updateQueueRunCommentIds({ queueRunId, contextSnapshot, ids, updatedAt }) {
+      await notifyChatRunMilestones(tx, { companyId, issueId });
       const row = await tx
         .update(heartbeatRuns)
         .set({ contextSnapshot: withQueuedCommentIdsInRunContext(contextSnapshot, ids), updatedAt })
@@ -82,6 +108,7 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
     },
 
     async deleteComment({ issueId, commentId }) {
+      await notifyChatRunMilestones(tx, { companyId, issueId });
       const row = await tx
         .delete(issueComments)
         .where(and(eq(issueComments.id, commentId), eq(issueComments.issueId, issueId), eq(issueComments.companyId, companyId)))
@@ -91,6 +118,18 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
     },
 
     async cancelWake({ wakeId, reason, now }) {
+      if (heldByFirstTurn.length > 0) {
+        const [held] = await tx.select({ payload: agentWakeupRequests.payload }).from(agentWakeupRequests)
+          .where(and(eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, companyId)));
+        if (held) {
+          await tx.update(agentWakeupRequests)
+            .set({ payload: withQueuedCommentIdsInWakePayload(held.payload, heldByFirstTurn), updatedAt: now })
+            .where(and(eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, companyId)));
+          return;
+        }
+      }
+      await notifyStrandedAgentStatus(tx, { companyId, agentId: wakeAgentId });
+      await notifyChatInboundWakeNotices(tx, { companyId, issueId });
       await tx
         .update(agentWakeupRequests)
         .set({ status: "cancelled", finishedAt: now, error: reason, updatedAt: now })
@@ -98,6 +137,12 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
     },
 
     async cancelQueueRun({ queueRunId, reason, now }) {
+      await notifyExecutionRunWork(tx, { companyId, runId: queueRunId });
+      await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId });
+      await notifyInstructionCollection(tx, { companyId, runId: queueRunId });
+      await notifyExternalAgentSettlement(tx, { companyId, runId: queueRunId });
+      await notifyCancelledWorkspacePreservation(tx, { companyId, runId: queueRunId });
+      await notifyChatRunMilestones(tx, { companyId, issueId });
       const row = await tx
         .update(heartbeatRuns)
         .set({ status: "cancelled", finishedAt: now, error: reason, errorCode: "queued_comment_discarded", updatedAt: now })
@@ -108,6 +153,8 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
     },
 
     async clearExecutionLockAndTouchIssue({ issueId, executionRunId, updatedAt }) {
+      await notifyNativeStatusReassessment(tx, { companyId, issueId });
+      await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId });
       await tx
         .update(issues)
         .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt })
@@ -115,7 +162,10 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
     },
 
     async buildQueueSnapshot({ issue, actor, wake, state, queueRun, activeRun }): Promise<IssueQueuedCommentQueue> {
-      const commentIds = queuedCommentIdsFromWakePayload(wake?.payload ?? null);
+      const wakeCommentIds = queuedCommentIdsFromWakePayload(wake?.payload ?? null);
+      const claimed = state === "deferred" ? firstTurnClaimedCommentIds(activeRun) : new Set<string>();
+      if (wake) heldByFirstTurn = wakeCommentIds.filter((id) => claimed.has(id));
+      const commentIds = wakeCommentIds.filter((id) => !claimed.has(id));
       const rows =
         commentIds.length > 0
           ? await tx
@@ -291,7 +341,7 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
               .then((rows) => rows[0] ?? null)
           : null;
 
-        const transaction = buildTransaction(tx, companyId, deps);
+        const transaction = buildTransaction(tx, companyId, input.issue.id, deps, wakeRow.agentId, input.actor);
         const wake = toWakeRow(wakeRow);
         const queueRun = queueRunRow ? toRunRow(queueRunRow) : null;
         const activeRun = activeRunRow ? toRunRow(activeRunRow) : null;
@@ -306,6 +356,8 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
         });
 
         const locked: LockedQueuedCommentState = { wake, state, queueRun, activeRun, queue };
+        await assertAgentInteraction(tx, { companyId, actorAgentId: input.actor.actorType === "agent" ? input.actor.actorId : null,
+          operation: "comment", issueId: input.issue.id, lock: true });
         return fn(locked, transaction);
       });
     },

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getTableName } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { getTableName, type SQL } from "drizzle-orm";
 
 const mockCreateChild = vi.fn();
 
@@ -14,7 +15,7 @@ type SelectRow = Record<string, unknown>;
 function createSelectChain(rows: SelectRow[] | ((table: unknown) => SelectRow[])) {
   return {
     from(table: unknown) {
-      const selectedRows = typeof rows === "function" ? rows(table) : rows;
+      let selectedRows = typeof rows === "function" ? rows(table) : rows;
       const query = {
         innerJoin() {
           return query;
@@ -22,7 +23,14 @@ function createSelectChain(rows: SelectRow[] | ((table: unknown) => SelectRow[])
         where() {
           return query;
         },
+        orderBy() {
+          return query;
+        },
         for() {
+          return query;
+        },
+        limit(count: number) {
+          selectedRows = selectedRows.slice(0, count);
           return query;
         },
         then(callback: (rows: SelectRow[]) => unknown) {
@@ -44,12 +52,31 @@ function createFakeDb(args: {
   const toolActionRequestUpdates: Array<Record<string, unknown>> = [];
   const inserts: Array<{ table: string; values: Record<string, unknown> }> = [];
   let selectCallCount = 0;
+  let transactionDepth = 0;
 
   const db: any = {
+    execute: vi.fn(async (query: SQL) => {
+      const statement = new PgDialect().sqlToQuery(query);
+      expect(transactionDepth).toBeGreaterThan(0);
+      expect(statement.params).toContain(interactionRow.companyId);
+      expect(statement.params).toContain(interactionRow.issueId);
+      if (statement.sql.includes("origin_kind")) return [{ id: interactionRow.issueId, originKind: null, originId: null }];
+      if (statement.sql.includes("with recursive affected")) return [{ issueId: interactionRow.issueId }];
+      throw new Error(`Unexpected interaction fixture query: ${statement.sql}`);
+    }),
     select: vi.fn(() => {
       selectCallCount += 1;
       const rows = selectCallCount === 1 ? [interactionRow] : (args.parentRows ?? []);
-      return createSelectChain(table => getTableName(table as never) === "issues" ? [{ status: "in_progress" }] : rows);
+      return createSelectChain(table => {
+        if (getTableName(table as never) === "issues") return [{
+          id: interactionRow.issueId, companyId: interactionRow.companyId, status: "in_progress",
+          assigneeAgentId: interactionRow.createdByAgentId, conversationAgentId: null,
+        }];
+        if (getTableName(table as never) === "agents") return [{
+          id: interactionRow.createdByAgentId, companyId: interactionRow.companyId, permissions: {},
+        }];
+        return rows;
+      });
     }),
     update: vi.fn((table: unknown) => ({
       set(values: Record<string, unknown>) {
@@ -80,7 +107,10 @@ function createFakeDb(args: {
         inserts.push({ table: getTableName(table as never), values });
       },
     })),
-    transaction: async (callback: (tx: typeof db) => Promise<void>) => callback(db),
+    transaction: async (callback: (tx: typeof db) => Promise<void>) => {
+      transactionDepth++;
+      try { return await callback(db); } finally { transactionDepth--; }
+    },
   };
 
   return {
@@ -173,6 +203,7 @@ describe("issueThreadInteractionService", () => {
     };
 
     let selectCallCount = 0;
+  let transactionDepth = 0;
     const db: any = {
       select: vi.fn(() => {
         selectCallCount += 1;
@@ -292,7 +323,7 @@ describe("issueThreadInteractionService", () => {
     ]);
   });
 
-  it("withdraws a pending interaction with attribution and rejects repeats", async () => {
+  it("withdraws an unlinked pending interaction with attribution and rejects repeats", async () => {
     const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
     const interactionRow = {
       id: "interaction-withdraw", companyId: "company-1", issueId: "11111111-1111-4111-8111-111111111111",
@@ -308,8 +339,7 @@ describe("issueThreadInteractionService", () => {
     expect(withdrawn.status).toBe("cancelled");
     expect(withdrawn.result).toEqual({ version: 1, outcome: "withdrawn", reason: "Replanning" });
     expect(withdrawn.resolvedByAgentId).toBe("agent-1");
-    expect(state.toolActionRequestUpdates).toHaveLength(1);
-    expect(state.toolActionRequestUpdates[0]).toMatchObject({ status: "cancelled", resolvedByAgentId: "agent-1" });
+    expect(state.toolActionRequestUpdates).toHaveLength(0);
     const resolvedState = createFakeDb({ interactionRow: { ...interactionRow, status: "accepted" } });
     const resolvedSvc = issueThreadInteractionService(resolvedState.db as never);
     await expect(resolvedSvc.withdrawInteraction(
@@ -388,7 +418,9 @@ describe("issueThreadInteractionService", () => {
       },
       result: null, resolvedAt: null, createdAt: new Date("2026-07-25T10:00:00.000Z"), updatedAt: new Date("2026-07-25T10:00:00.000Z"),
     };
-    const state = createFakeDb({ interactionRow });
+    const state = createFakeDb({ interactionRow, parentRows: [{
+      id: "33333333-3333-4333-8333-333333333333", companyId: "company-1", interactionId: interactionRow.id,
+    }] });
     const svc = issueThreadInteractionService(state.db as never);
     const expired = await svc.expirePendingInteractionsForTerminalIssue(
       { id: interactionRow.issueId, companyId: "company-1", status: "cancelled" },

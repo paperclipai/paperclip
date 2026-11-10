@@ -90,6 +90,16 @@ it("keeps historical native receipts with the larger policy limits readable", as
     totalAdmittedPayloadBytes: f.expectedBytes, billedCostUsd: null });
 });
 
+it.each([8, 14, 15])("validates an experiment receipt with a %i-score policy against the supported ceiling", async maxScores => {
+  const f = await fixture(), file = `${f.input.ledgerPath}.experiment-ingestion.jsonl`;
+  const rows = (await readFile(file, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  rows[0].limits.maxScores = maxScores;
+  await writeFile(file, rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+  const usage = await collectScheduledIngestion(f.input);
+  expect(usage.status).toBe(maxScores <= 14 ? "complete" : "incomplete");
+  expect(usage.receipts.at(-1)!.status).toBe(maxScores <= 14 ? "complete" : "unavailable");
+});
+
 it("keeps version 1 transport receipts readable without inventing expanded data measurements", async () => {
   const f = await fixture(), file = f.files[0]!;
   const rows = (await readFile(file, "utf8")).trim().split("\n").map(line => JSON.parse(line));

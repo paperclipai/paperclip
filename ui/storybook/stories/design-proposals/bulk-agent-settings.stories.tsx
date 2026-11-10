@@ -46,7 +46,7 @@ export const ConnectionJourney: Story = {
     await step("Changing only the connection keeps every model", async () => {
       await userEvent.click(screen.getByRole("checkbox", { name: "Change connection" }));
       await userEvent.click(screen.getByRole("combobox", { name: "Connection" }));
-      await userEvent.click(screen.getByRole("option", { name: "OpenAI · Production" }));
+      await userEvent.click(screen.getByRole("option", { name: /^OpenAI · Production ·/ }));
       await userEvent.click(screen.getByRole("button", { name: "Update 4 agents" }));
       await expect(await canvas.findByText("Updated 4 Codex agents.")).toBeVisible();
       await expect(canvas.getByTestId("agent-row-scout")).toHaveTextContent("gpt-5.3-codex");
@@ -100,7 +100,7 @@ export const RetryJourney: Story = {
   play: async ({ canvasElement }) => {
     const screen = within(canvasElement.ownerDocument.body);
     await userEvent.click(await screen.findByRole("combobox", { name: "Connection" }));
-    await userEvent.click(screen.getByRole("option", { name: "OpenAI · Production" }));
+    await userEvent.click(screen.getByRole("option", { name: /^OpenAI · Production ·/ }));
     await userEvent.click(screen.getByRole("button", { name: "Update 4 agents" }));
     await expect(await screen.findByText("3 updated · 1 couldn’t be saved")).toBeVisible();
     await expect(within(canvasElement).getByTestId("agent-row-atlas")).toHaveTextContent("OpenAI · Production");

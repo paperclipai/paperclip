@@ -1,3 +1,4 @@
+import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
 import { and, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { dotRunnerAssignments, environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { authorizeExternalBotOperator } from "../external-bot-authority.js";
@@ -74,6 +75,7 @@ export async function inspectGrokWorkspaceObligations(db: Db, companyId: string,
         return { ...rest, externalWorkspaceInspection: inspection };
       };
       await tx.update(heartbeatRuns).set({ resultJson: retireFileObligation(run.resultJson!) }).where(eq(heartbeatRuns.id, run.id));
+      if (actions.length) await notifyAttentionRetentionWork(tx, { companyId, sourceKind: "recovery_action" });
       for (const action of actions) {
         await tx.update(issueRecoveryActions).set({ evidence: retireFileObligation(action.evidence), updatedAt: new Date(),
           nextAction: "Inspect Grok and verify its connection before sending a new task message. The old work will not be replayed.",

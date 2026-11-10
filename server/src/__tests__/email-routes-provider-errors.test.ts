@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import type { Db } from "@paperclipai/db";
+import { agents, type Db } from "@paperclipai/db";
 import { describe, expect, it, vi } from "vitest";
 import { forbidden } from "../errors.js";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -26,7 +26,13 @@ function app(setup: () => Promise<unknown>) {
     req.actor = { type: "board", source: "local_implicit", userId: "board" };
     next();
   });
-  instance.use("/api", emailRoutes({} as Db, { setup, inspect: setup } as unknown as EmailChannelService));
+  // This unit suite exercises provider error translation. The shared guard
+  // also resolves the setup's target agent before calling the stubbed service.
+  const db = { select: () => ({ from: (table: unknown) => {
+    expect(table).toBe(agents);
+    return { where: async () => [{ id: agentId, companyId }] };
+  } }) } as unknown as Db;
+  instance.use("/api", emailRoutes(db, { setup, inspect: setup } as unknown as EmailChannelService));
   instance.use(errorHandler);
   return instance;
 }

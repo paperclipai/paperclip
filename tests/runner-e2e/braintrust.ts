@@ -1,13 +1,15 @@
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
+import { isEvalRemoteOrigin } from "./eval-remote-gateway.js";
 import type { RunnerApi } from "./api.js";
 import type { FailureClass, RunnerE2EResult } from "./types.js";
 
 export const EVAL_OBSERVABILITY_SECRET_NAMES = ["BRAINTRUST_API_KEY"] as const;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export interface EvalBraintrustConfig { projectId: string; apiKey: string; endpointBaseUrl?: string }
+export interface EvalBraintrustConfig { projectId: string; apiKey: string; endpointBaseUrl?: string; remoteOrigin?: string }
 function evalOtlpEndpoint(config: EvalBraintrustConfig) {
-  if (config.endpointBaseUrl !== undefined && !/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}\/otel$/.test(config.endpointBaseUrl)) {
+  if (config.remoteOrigin !== undefined && !isEvalRemoteOrigin(config.remoteOrigin)) throw new Error("Invalid eval remote OTLP origin");
+  if (config.endpointBaseUrl !== undefined && !(config.remoteOrigin && config.endpointBaseUrl === `${config.remoteOrigin}/otel`) && !/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}\/otel$/.test(config.endpointBaseUrl)) {
     throw new Error("Eval OTLP relay must use the parent-owned loopback endpoint");
   }
   if (config.endpointBaseUrl && Number(new URL(config.endpointBaseUrl).port) > 65535) throw new Error("Invalid eval OTLP relay port");
@@ -20,6 +22,7 @@ export function evalBraintrustConfig(env: NodeJS.ProcessEnv): EvalBraintrustConf
     throw new Error("Eval Braintrust export requires an explicit project UUID and API key");
   }
   const config = { projectId, apiKey: env.BRAINTRUST_API_KEY.trim(),
+    ...(env.PAPERCLIP_E2E_REMOTE_GATEWAY_ORIGIN ? { remoteOrigin: env.PAPERCLIP_E2E_REMOTE_GATEWAY_ORIGIN } : {}),
     ...(env.PAPERCLIP_E2E_OTLP_RELAY_URL ? { endpointBaseUrl: env.PAPERCLIP_E2E_OTLP_RELAY_URL } : {}) };
   evalOtlpEndpoint(config);
   return config;

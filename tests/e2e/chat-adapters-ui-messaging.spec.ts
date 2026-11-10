@@ -218,6 +218,16 @@ test.describe("Board send delivery refresh", () => {
         page,
         request,
       }) => {
+        await page.addLocatorHandler(
+          page.getByRole("complementary", { name: "Paperclip announcements", exact: true })
+            .getByRole("button", { name: "Dismiss announcement", exact: true }),
+          async (dismiss) => {
+            const menuOpen = await page.getByRole("menu", { name: "Add to composer", exact: true }).isVisible();
+            if (menuOpen) await page.keyboard.press("Escape");
+            await dismiss.click();
+            if (menuOpen) await page.getByRole("button", { name: "Add to composer", exact: true }).click();
+          },
+        );
         const selected = await seedCompanyAndAgent(request);
         const target = await seedCompanyAndAgent(request);
         const issue = await json<{ id: string; identifier: string }>(
@@ -226,6 +236,9 @@ test.describe("Board send delivery refresh", () => {
           }),
           "create linked task in another organization",
         );
+        await page.route("**/api/workspace-preferences/me", route => fulfill(route, {
+          userId: "local-board", coordinatorWorkspaceEnabled: !classic, updatedAt: null,
+        }));
         await page.route("**/api/instance/settings/experimental", (route) =>
           fulfill(route, {
             enableChatConnectors: true,
@@ -247,6 +260,9 @@ test.describe("Board send delivery refresh", () => {
               ? `/issues/${issue.id.toUpperCase()}`
               : `/${selected.prefix}/issues/${issue.identifier}?external=chat#files`,
         );
+        if (!classic) {
+          await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
+        }
         await expect(
           page.getByRole("heading", {
             name: "Organization-bound task link",
@@ -580,6 +596,12 @@ test.describe("Board send delivery refresh", () => {
     const sends: Record<string, unknown>[] = [];
     let attachmentId = "";
     let privateComment: { id: string } | undefined;
+    // The lost send resends on its own; hold that resend until the waiting
+    // state has been checked.
+    let releaseResend!: () => void;
+    const resendReleased = new Promise<void>((resolve) => {
+      releaseResend = resolve;
+    });
     await page.route(
       `**/api/chat-endpoints/${endpointId}/conversations/${conversationId}/publications`,
       async (route) => {
@@ -598,7 +620,8 @@ test.describe("Board send delivery refresh", () => {
           );
           return route.abort("connectionreset");
         }
-        if (sends.length === 2)
+        if (sends.length === 2) {
+          await resendReleased;
           return fulfill(
             route,
             {
@@ -613,6 +636,7 @@ test.describe("Board send delivery refresh", () => {
             },
             409,
           );
+        }
         return fulfill(
           route,
           {
@@ -653,15 +677,15 @@ test.describe("Board send delivery refresh", () => {
       .getByRole("button", { name: "Send to channel", exact: true })
       .last()
       .click();
+    // A lost response waits and resends on its own with the same identity.
     await expect(
-      banner.getByText("Delivery result not confirmed", { exact: true }),
+      banner.getByText("Sending when reconnected…", { exact: true }),
     ).toBeVisible();
     await expect(
       banner.getByRole("textbox", { name: "Board update" }),
     ).toBeDisabled();
-    await banner
-      .getByRole("button", { name: "Retry safely", exact: true })
-      .click();
+    await expect.poll(() => sends.length).toBe(2);
+    releaseResend();
     await expect(
       banner.getByText("Update was not sent", { exact: true }),
     ).toBeVisible();
@@ -735,7 +759,11 @@ test.describe("Board send delivery refresh", () => {
       const statusReads: string[] = [];
       let terminal = false;
       const publicationsPath = `/api/chat-endpoints/${endpointId}/conversations/${conversationId}/publications`;
-      const storageKey = `paperclip:board-send:v1:${JSON.stringify([seed.companyId, issue.id, endpointId, conversationId])}`;
+      const session = await json<{ user: { id: string } }>(
+        await request.get("/api/auth/get-session"),
+        "read receipt owner",
+      );
+      const storageKey = `paperclip:board-send:v2:${JSON.stringify([session.user.id, seed.companyId, issue.id, endpointId, conversationId])}`;
       await page.route("**/api/instance/settings/experimental", (route) =>
         fulfill(route, { enableChatConnectors: true }),
       );
@@ -1028,6 +1056,10 @@ test.describe("Board send delivery refresh", () => {
       let canonicalAttachmentReadsAfterSend = 0;
       let canonicalCommentReadsAfterSend = 0;
       let status = "streaming";
+      let releaseResend!: () => void;
+      const resendReleased = new Promise<void>((resolve) => {
+        releaseResend = resolve;
+      });
       await page.route("**/api/instance/settings/experimental", (route) =>
         fulfill(route, { enableChatConnectors: true }),
       );
@@ -1042,7 +1074,7 @@ test.describe("Board send delivery refresh", () => {
       );
       await page.route(
         new RegExp(
-          `/api/issues/(${issue.id}|${issue.identifier})/comments(?:\\?|$)`,
+          `/api/issues/(${issue.id}|${issue.identifier})/(?:recent-comments|comments)(?:\\?|$)`,
         ),
         async (route) => {
           if (
@@ -1050,9 +1082,7 @@ test.describe("Board send delivery refresh", () => {
             route.request().url().includes(`/issues/${issue.identifier}/`)
           )
             canonicalCommentReadsAfterSend += 1;
-          await fulfill(
-            route,
-            sends
+          const comments = sends
               ? [
                   {
                     id: publicationId,
@@ -1066,8 +1096,10 @@ test.describe("Board send delivery refresh", () => {
                     updatedAt: new Date().toISOString(),
                   },
                 ]
-              : [],
-          );
+              : [];
+          await fulfill(route, route.request().url().includes("/recent-comments")
+            ? { comments, latestCommentId: comments.at(-1)?.id ?? null, hasMore: false }
+            : comments);
         },
       );
       await page.route(
@@ -1132,6 +1164,13 @@ test.describe("Board send delivery refresh", () => {
             await route.abort("failed");
             return;
           }
+          if (outcome === "response_lost" && sends === 2) {
+            // The automatic resend is still in flight when the page reloads;
+            // the browser drops it.
+            await resendReleased;
+            await route.abort("failed").catch(() => {});
+            return;
+          }
           await fulfill(
             route,
             { id: publicationId, state: "streaming", attempts: 1 },
@@ -1182,21 +1221,30 @@ test.describe("Board send delivery refresh", () => {
         ).toHaveCount(0);
       };
       if (outcome === "response_lost") {
+        // The lost send resends on its own with the same identity.
+        await expect(
+          page.getByText("Sending when reconnected…", { exact: true }),
+        ).toBeVisible();
+        await expect.poll(() => submittedPayloads.length).toBe(2);
+        expect(submittedPayloads[1]).toEqual(submittedPayloads[0]);
+        // A send restored after reload has an unknown outcome and waits for
+        // an explicit, same-identity retry.
+        await page.reload();
+        releaseResend();
         await expect(
           page.getByText("Delivery result not confirmed", { exact: true }),
         ).toBeVisible();
-        await page.reload();
         await expect(
           page.getByRole("textbox", { name: "Board update", exact: true }),
         ).toBeDisabled();
         await expectRetainedFiles();
-        expect(sends).toBe(1);
+        expect(sends).toBe(2);
         expect(reads).toBe(0);
         await page
           .getByRole("button", { name: "Retry safely", exact: true })
           .click();
-        await expect.poll(() => submittedPayloads.length).toBe(2);
-        expect(submittedPayloads[1]).toEqual(submittedPayloads[0]);
+        await expect.poll(() => submittedPayloads.length).toBe(3);
+        expect(submittedPayloads[2]).toEqual(submittedPayloads[0]);
       } else {
         await expect(
           page.getByText("Publishing to channel", { exact: true }).first(),
@@ -1258,7 +1306,10 @@ test.describe("Board send delivery refresh", () => {
           page.getByRole("textbox", { name: "Board update", exact: true }),
         ).toHaveCount(0, { timeout: 8_000 });
       }
-      expect(sends).toBe(outcome === "response_lost" ? 2 : 1);
+      // response_lost: the lost send, its automatic resend, and the explicit
+      // retry after reload, all with one identity.
+      const expectedSends = outcome === "response_lost" ? 3 : 1;
+      expect(sends).toBe(expectedSends);
       expect(canonicalCommentReadsAfterSend).toBeGreaterThan(0);
       expect(canonicalAttachmentReadsAfterSend).toBeGreaterThan(0);
       await expect(
@@ -1280,7 +1331,7 @@ test.describe("Board send delivery refresh", () => {
       await expect(
         newFiles.getByRole("checkbox", { name: "internal-only.txt" }),
       ).toBeEnabled();
-      expect(sends).toBe(outcome === "response_lost" ? 2 : 1);
+      expect(sends).toBe(expectedSends);
     });
   }
 });
@@ -1304,11 +1355,12 @@ test.describe("Failed chat task and exact run retry", () => {
     );
   });
 
-  for (const surface of ["agent run", "Inbox", "Legacy Inbox"] as const) {
+  for (const surface of ["agent run", "Inbox", "Coordinator Tasks", "Legacy Inbox"] as const) {
     for (const outcome of ["queued", "deferred", "denied"] as const) {
       test(`${surface}: selected run ${outcome} preserves exact retry authority and truthful feedback`, async ({
         page,
       }, testInfo) => {
+        const usesTaskRetry = surface === "Inbox" || surface === "Coordinator Tasks";
         const now = Date.now();
         const run = {
           id: failedRunId,
@@ -1361,6 +1413,14 @@ test.describe("Failed chat task and exact run retry", () => {
         await page.route("**/api/**", async (route) => {
           const url = new URL(route.request().url());
           const pathname = url.pathname;
+          if (pathname === "/api/workspace-preferences/me") {
+            await fulfill(route, {
+              userId: "local-board",
+              coordinatorWorkspaceEnabled: surface === "Coordinator Tasks",
+              updatedAt: null,
+            });
+            return;
+          }
           if (pathname === "/api/instance/settings/experimental") {
             await fulfill(route, {
               enableChatConnectors: true,
@@ -1405,7 +1465,7 @@ test.describe("Failed chat task and exact run retry", () => {
             });
             return;
           }
-          const retryPath = surface === "Inbox"
+          const retryPath = usesTaskRetry
             ? `/api/issues/${issue.id}/retry`
             : `/api/agents/${seed.agentId}/wakeup`;
           if (pathname === retryPath) {
@@ -1427,7 +1487,7 @@ test.describe("Failed chat task and exact run retry", () => {
               // The durable action exists, but no run has been admitted yet.
               await fulfill(
                 route,
-                surface === "Inbox"
+                usesTaskRetry
                   ? {
                       requestId: actionId,
                       accepted: true,
@@ -1487,7 +1547,7 @@ test.describe("Failed chat task and exact run retry", () => {
         await expect(retry).toHaveCount(1);
         await retry.click();
         await expect.poll(() => requests.length).toBe(1);
-        expect(requests[0]).toEqual(surface === "Inbox"
+        expect(requests[0]).toEqual(usesTaskRetry
           ? {
               companyId: null,
               body: {
@@ -1527,7 +1587,9 @@ test.describe("Failed chat task and exact run retry", () => {
               ? new RegExp(
                   `/${seed.prefix}/agents/(${seed.agentId}|maya)/runs/${failedRunId}$`,
                 )
-              : new RegExp(`${startPath}$`),
+              : surface === "Coordinator Tasks"
+                ? new RegExp(`/${seed.prefix}/issues\\?view=everything$`)
+                : new RegExp(`${startPath}$`),
           );
           await expect(retry).toBeEnabled();
           await testInfo.attach(`${surface}-retry-denied`, {

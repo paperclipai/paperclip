@@ -24,8 +24,11 @@ to an internal issue tracker.
 Inline task connection cards must use the same provider setup controller and
 fields as Apps: URL guidance, authentication options, validation, and recovery.
 Keep dialogs bounded to the form width on wide screens and scrollable on narrow
-screens. A task request locks agent access to its requester and returns to the
-card after completion; reusing an account must preserve its existing access.
+screens. New tool connections default to all agents in both hosts, subject to
+the human's connection-management authority. The human can select fewer agents.
+Task OAuth saves that audience before sign-in and applies it atomically at
+completion. AI authentication and inbox setup remain agent-scoped. Reusing an
+account must preserve its existing access.
 OAuth popups need a normal sign-in link fallback, and callback messages must be
 verified against durable server state before accepting the request.
 
@@ -763,6 +766,17 @@ a board user with connection-configuration access, commits the selected action
 IDs to an auditable profile, and leaves **Ask first** available for any action.
 The open default changes the initial policy; it does not create a route around a
 policy the operator has applied.
+
+Saving a connection's installation list grants its app profile only to newly
+added targets. Targets that remain installed keep their existing profile
+assignments. If an operator removes an app profile from an installed agent or
+company, a later installation-list save must preserve that removal. This also
+applies when the list is unchanged or another agent is removed. Removing and
+then reinstalling a target is a new installation and uses the current setup
+defaults.
+Every non-empty installation-list save also removes legacy connection-wide
+include entries from the managed app profile. Keep this cleanup when no targets
+are added, so the selected action entries remain authoritative.
 
 If a destructive provider cannot be safe with those defaults, add a narrowly
 reviewed provider policy with tests. Do not hide a dangerous tool by

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { materializePaperclipSkillCopy } from '@paperclipai/adapter-utils/server-utils';
 import { repositorySkillProjection } from '../services/skill-repository-package.js';
+import { skillPackageManifest } from '../services/skill-package-files.js';
 import { snapshotFile, skillFileBytes } from '../services/skill-snapshot.js';
 
 const md = '---\nname: main\ndescription: Work\ndisable-model-invocation: true\n---\nRead [runtime](../runtime/SKILL.md) and ../../agents/worker.md.\n';
@@ -36,6 +37,15 @@ describe('repository skill delivery', () => {
       expect((await fs.stat(path.join(canonical, '../../shared/run.sh'))).mode & 0o111).toBeTruthy();
       expect(await fs.readFile(path.join(sandbox, 'agents/openai.yaml'), 'utf8')).toContain('allow_implicit_invocation: false');
     } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
+  it('accepts scanner-limit paths after adding the portable repository prefix', () => {
+    const deep = [...Array(63).fill('d'), 'SKILL.md'].join('/');
+    const long = `${'d'.repeat(4096 - '/SKILL.md'.length)}/SKILL.md`;
+    for (const name of [deep, long]) {
+      const original = [{ path: name, kind: 'skill' as const, content: md }];
+      expect(() => skillPackageManifest(repositorySkillProjection(original, name))).not.toThrow();
+      expect(() => skillPackageManifest([{ ...original[0]!, path: `extra/${name}` }])).toThrow();
+    }
   });
   it('rejects escaped and absent entrypoints', () => {
     expect(() => repositorySkillProjection([], '../SKILL.md')).toThrow(/Invalid/);

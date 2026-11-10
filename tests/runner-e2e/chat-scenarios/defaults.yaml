@@ -1,0 +1,49 @@
+# Shared evaluator context; never inject this file as instructions to the model.
+schema_version: 1
+status: planned
+default_context:
+  surface: >-
+    A signed-in person, Alex, is using the production in-app Agent Chat with the
+    CEO of the selected synthetic company Acorn. Chat is enabled. The standing
+    conversation already exists and is distinct from ordinary delegated work tasks.
+  people_and_resources: >-
+    Names are fixture aliases, not real user data. Morgan is a prospective or
+    existing engineer as specified by each scenario; Riley is an eligible peer,
+    manager or reviewer only where specified. Launch is a synthetic project.
+    A mentioned task, account, document or attachment exists only when the
+    scenario says it does; do not seed the requested outcome in advance.
+  authority: >-
+    The human is an active company operator and the CEO has the effective
+    agent grants needed for the scenario's permitted agent operations. Neither
+    identity implies instance administration. The CEO remains an agent, not a
+    board session. Responsible-user, company, private-resource, ownership, work
+    mode, budget, approval and runtime admission rules still apply. Scenario
+    denials and narrower authority override these defaults.
+  runtime: >-
+    A supported provider, model, account and execution target are ready for
+    ordinary work unless the scenario tests a missing prerequisite. Only real
+    production-admitted tools, REST fallback or installed CLI/MCP surfaces count.
+    Availability of a route or a declaration in an eval does not install a tool.
+    Feature-specific experiments are enabled only where the scenario specifies.
+  starting_state: >-
+    Each scenario starts independently in an owned isolated fixture. Connections,
+    policies, existing records, audiences and pending decisions are explicit in
+    its context. Other scenarios are not prerequisites and their side effects
+    must not leak into this one. Stated previous turns are persisted fixture
+    history produced through supported surfaces, not imagined model memory.
+  time: >-
+    Freeze a fixture clock and record the timezone, defaulting to America/Chicago.
+    Today, this week, last week and latest refer to that clock and seeded dates,
+    not the date this catalog was written. Include older distractors where
+    recency matters. Test daylight-saving boundaries when promoting schedules.
+  external_services: >-
+    Use synthetic accounts, pages, repositories, recipients and files, with
+    controlled provider fixtures or separately authorized owned test accounts.
+    example.test is a fixture recipient, not a real delivery destination. Keep
+    secrets in supported secure setup, never queries, YAML, logs or public evidence.
+  interpretation: >-
+    The scenario's context overrides these defaults. Its query is a human turn,
+    not a system instruction. Some context specifies a later human decision,
+    browser action or fault; that must actually happen in the eventual journey.
+    Pre-chat, external-client, channel, operator and developer boundary scenarios
+    state their surface explicitly and must not count as direct Agent Chat passes.

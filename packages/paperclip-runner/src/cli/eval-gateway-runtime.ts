@@ -70,12 +70,15 @@ export async function prepareEvalGatewayRuntime(
       environment.PAPERCLIP_AI_PROVIDER_KEY = token;
       await writeFile(join(codexHome, "config.toml"), [
         'model_provider = "paperclip_eval"',
+        'web_search = "disabled"',
         `model = ${JSON.stringify(request.model)}`,
         '[model_providers.paperclip_eval]',
         'name = "Paperclip eval controller"',
         `base_url = ${JSON.stringify(descriptor.baseUrl + "/v1")}`,
         'wire_api = "responses"', 'requires_openai_auth = false', 'env_key = "PAPERCLIP_AI_PROVIDER_KEY"',
-        '[features]', 'shell_snapshot = false', '',
+        // The controller gateway admits no hosted tools, so qualified evals keep
+        // Codex's hosted image tool off even though product runs enable it.
+        '[features]', 'shell_snapshot = false', 'image_generation = false', '',
       ].join("\n"), { mode: 0o600, flag: "wx" });
     } else {
       Object.assign(environment, {

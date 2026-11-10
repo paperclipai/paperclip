@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { buildPaperclipTaskMarkdown } from "./task-markdown.js";
 
@@ -8,6 +9,103 @@ const issue = {
 };
 
 describe("heartbeat task markdown rendering", () => {
+  it.each([true, false])("keeps native task clarification in the current task on full and resumed assignments (description=%s)", (includeDescription) => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: { ...issue, description: "Write a blog post about our launch." },
+      nativeRunner: true,
+      includeDescription,
+    });
+
+    expect(markdown).toContain("Task clarification directive:");
+    expect(markdown).toContain("Inspect the available task description, plan, conversation, prior answers, and relevant references before asking");
+    expect(markdown).toContain("ask one focused question at a time in this task");
+    expect(markdown).toContain('interactionKind: "questions", payload.questions');
+    expect(markdown).toContain('resolverPolicy: "human_only", continuationPolicy: "wake_assignee"');
+    expect(markdown).toContain("stable idempotencyKey");
+    expect(markdown).toContain("do not send the user to a separate chat or create a replacement task");
+    expect(markdown).toContain("Reuse an existing relevant pending question");
+    expect(markdown).toContain("an unanswered question is not consent");
+    expect(markdown).toContain("A human-dismissed request is deferred to history");
+    expect(markdown).toContain("Do not invent material user intent or success criteria");
+  });
+
+  it("preserves execution of a clear accepted plan without imposing clarification", () => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: { ...issue, workMode: "planning" },
+      nativeRunner: true,
+      acceptedPlanContinuation: true,
+      taskPlan: { documentId: "plan", revisionId: "revision", revisionNumber: 1, body: "Write a 300-word launch post for customers using the supplied brief." },
+    });
+
+    expect(markdown).toContain("If the outcome and success criteria are clear enough to act, proceed without a setup checklist or ritual questions");
+    expect(markdown).toContain("When a missing decision materially changes the outcome");
+    expect(markdown).toContain("Implement the accepted plan on this issue");
+    expect(markdown).toContain("Write a 300-word launch post for customers using the supplied brief.");
+  });
+
+  it.each([
+    { nativeRunner: false, coordinatorWorkspace: true, conversationAgentId: null },
+    { nativeRunner: undefined, coordinatorWorkspace: false, conversationAgentId: null },
+    { nativeRunner: true, coordinatorWorkspace: false, conversationAgentId: "coordinator" },
+    { nativeRunner: true, coordinatorWorkspace: true, conversationAgentId: "coordinator" },
+  ])("does not add native task clarification to adapter or standing-chat assignments: %j", ({ conversationAgentId, ...input }) => {
+    expect(buildPaperclipTaskMarkdown({ issue: { ...issue, conversationAgentId }, ...input }))
+      .not.toContain("Task clarification directive:");
+  });
+
+  it("shows inferred task proposals only for opted-in native conversations while preserving explicit creation", () => {
+    const issue = { id: "chat", identifier: null, title: "Chat", conversationAgentId: "coordinator" };
+    const classic = buildPaperclipTaskMarkdown({ issue, nativeRunner: true });
+    expect(classic).not.toContain("Coordinator task proposals:");
+    const optedIn = buildPaperclipTaskMarkdown({ issue, nativeRunner: true, coordinatorWorkspace: true });
+    expect(optedIn).toContain('interactionKind: "suggest_tasks"');
+    expect(optedIn).toContain("acceptance creates the task atomically");
+    expect(optedIn).toContain("If the user explicitly authorized task creation, use create_task directly");
+    expect(buildPaperclipTaskMarkdown({ issue, nativeRunner: false, coordinatorWorkspace: true }))
+      .not.toContain("Coordinator task proposals:");
+  });
+  it("tells a standing chat about the Conference Room only while the experiment is enabled", () => {
+    const chat = { id: "chat", identifier: "RUN-1", title: "Chat", conversationAgentId: "ceo" };
+    const enabled = buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true, conferenceRoomEnabled: true });
+    expect(enabled).toContain("Conference Room:");
+    expect(enabled).toContain("[Open the Conference Room](/<prefix>/board-chat)");
+    expect(enabled).toContain("does not carry over this conversation's history");
+    expect(buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true })).not.toContain("board-chat");
+    expect(buildPaperclipTaskMarkdown({ issue: { ...chat, conversationAgentId: null }, nativeRunner: true, conferenceRoomEnabled: true }))
+      .not.toContain("board-chat");
+  });
+  it("tells a standing chat what a status card is, how to create and refresh one, and to reply now with its link, only while the experiment is enabled", () => {
+    const chat = { id: "chat", identifier: "RUN-1", title: "Chat", conversationAgentId: "ceo" };
+    const enabled = buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true, statusCardsEnabled: true })!;
+    expect(enabled).toContain("Status Cards:");
+    expect(enabled).toContain("A status card is a saved Paperclip feature, not a document or comment");
+    expect(enabled).toContain("POST /api/companies/{companyId}/status-cards");
+    expect(enabled).toContain("POST /api/status-cards/{id}/refresh");
+    expect(enabled).toContain("Do not sleep or poll the card. Report the outcome the response gives");
+    expect(enabled).toContain("enqueued false otherwise means no run started, so say why from card.state");
+    expect(enabled).toContain("[Launch blockers](/<prefix>/status/<cardId>)");
+    // The named pages are the board's real routes.
+    const app = readFileSync(new URL("../../../../ui/src/App.tsx", import.meta.url), "utf8");
+    expect(enabled).toContain("Status page at /<prefix>/status (");
+    expect(app).toMatch(/path="status"\s+element=\{<StatusCardsExperimentalGate>/);
+    expect(app).toMatch(/path="status\/:cardId"\s+element=\{<StatusCardsExperimentalGate>/);
+    expect(buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true })).not.toContain("Status Cards:");
+    expect(buildPaperclipTaskMarkdown({ issue: { ...chat, conversationAgentId: null }, nativeRunner: true, statusCardsEnabled: true }))
+      .not.toContain("Status Cards:");
+  });
+  it("tells a standing chat to link a case's page by its identifier, only while the Cases experiment is enabled", () => {
+    const chat = { id: "chat", identifier: "RUN-1", title: "Chat", conversationAgentId: "ceo" };
+    const enabled = buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true, casesEnabled: true })!;
+    expect(enabled).toContain("Cases:");
+    expect(enabled).toContain("/<prefix>/cases/<case identifier>");
+    expect(enabled).toContain("[RUN-C1](/<prefix>/cases/RUN-C1)");
+    // The named page is the board's real route.
+    const app = readFileSync(new URL("../../../../ui/src/App.tsx", import.meta.url), "utf8");
+    expect(app).toMatch(/path="cases\/:caseIdentifier"/);
+    expect(buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true })).not.toContain("Cases:");
+    expect(buildPaperclipTaskMarkdown({ issue: { ...chat, conversationAgentId: null }, nativeRunner: true, casesEnabled: true }))
+      .not.toContain("Cases:");
+  });
   it("returns null without a task or a nonempty wake comment", () => {
     expect(buildPaperclipTaskMarkdown({ issue: null })).toBeNull();
     expect(buildPaperclipTaskMarkdown({

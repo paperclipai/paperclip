@@ -1,3 +1,5 @@
+import { findRetainedNativeSessionCleanupCandidates } from "../services/native-runtime/retained-native-session-cleanup.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
@@ -26,7 +28,9 @@ import {
   reconcileRetainedNativeSessionCleanups,
 } from "../services/native-runtime/native-finalization-reconciler.js";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
-import { assertRetainedNativeSourceArchiveSettled } from "../services/native-runtime/native-session-executor.js";
+import { assertRetainedNativeSourceArchiveSettled, reconcileRetainedNativeSessionCleanup } from "../services/native-runtime/native-session-executor.js";
+
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_FINALIZATION_TEST_DATABASE_URL");
 
 describe("P6-16/P6-25/P6-28 native finalization recovery", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -41,8 +45,8 @@ describe("P6-16/P6-25/P6-28 native finalization recovery", () => {
   const staleRunId = "72000000-0000-4000-8000-000000000015";
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-recovery-");
-    db = createDb(temporary.connectionString);
+    if (!external) temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-recovery-");
+    db = createDb(external ?? temporary.connectionString);
     await db.insert(companies).values({ id: companyId, name: "Native recovery", issuePrefix: "NRC" });
     await db.insert(agents).values({
       id: agentId,
@@ -210,7 +214,8 @@ describe("P6-16/P6-25/P6-28 native finalization recovery", () => {
   }, 30_000);
 
   afterAll(async () => {
-    await temporary.cleanup();
+    await db?.$client.end({ timeout: 1 });
+    await temporary?.cleanup();
   });
 
   it("fails closed into bounded named recovery without consulting the live flag or falling back", async () => {
@@ -355,10 +360,10 @@ describe("retained native cleanup discovery", () => {
   ];
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase(
+    if (!external) temporary = await startEmbeddedPostgresTestDatabase(
       "paperclip-native-cleanup-sweep-",
     );
-    db = createDb(temporary.connectionString);
+    db = createDb(external ?? temporary.connectionString);
     await db
       .insert(companies)
       .values({ id: companyId, name: "Cleanup sweep", issuePrefix: "NCS" });
@@ -382,11 +387,13 @@ describe("retained native cleanup discovery", () => {
     });
   });
   afterAll(async () => {
-    await temporary.cleanup();
+    await db?.$client.end({ timeout: 1 });
+    await temporary?.cleanup();
   });
 
   async function candidate(
     options: {
+      owner?: { companyId: string; agentId: string };
       run?: Partial<typeof heartbeatRuns.$inferInsert>;
       coordinator?: Partial<typeof nativeRunFinalizations.$inferInsert>;
       schemaStatus?: string;
@@ -394,6 +401,7 @@ describe("retained native cleanup discovery", () => {
       revision?: number;
     } = {},
   ) {
+    const owner = options.owner ?? { companyId, agentId };
     const runId = randomUUID();
     const issueId = options.issueId ?? randomUUID();
     const contractId = randomUUID();
@@ -401,13 +409,13 @@ describe("retained native cleanup discovery", () => {
       .insert(issues)
       .values({
         id: issueId,
-        companyId,
+        companyId: owner.companyId,
         title: "Retained session",
-        assigneeAgentId: agentId,
+        assigneeAgentId: owner.agentId,
       });
     await db.insert(completionContracts).values({
       id: contractId,
-      companyId,
+      companyId: owner.companyId,
       issueId,
       revision: options.revision ?? 1,
       schemaVersion: "paperclip.completion-contract.v1",
@@ -422,8 +430,8 @@ describe("retained native cleanup discovery", () => {
     });
     await db.insert(heartbeatRuns).values({
       id: runId,
-      companyId,
-      agentId,
+      companyId: owner.companyId,
+      agentId: owner.agentId,
       runtimeMode: "native",
       status: "succeeded",
       nativeIssueId: issueId,
@@ -439,7 +447,7 @@ describe("retained native cleanup discovery", () => {
     const [result] = await db
       .insert(nativeRunResults)
       .values({
-        companyId,
+        companyId: owner.companyId,
         issueId,
         runId,
         completionContractId: contractId,
@@ -452,13 +460,13 @@ describe("retained native cleanup discovery", () => {
     const [assessment] = await db
       .insert(workAssessments)
       .values({
-        companyId,
+        companyId: owner.companyId,
         issueId,
         runId,
         contractId,
         resultId: result!.id,
         triggerKind: "native_result",
-        triggerActorCompanyId: companyId,
+        triggerActorCompanyId: owner.companyId,
         priorIssueStatus: "in_progress",
         priorStatusVersion: 0,
         policyVersion: "phase6-v3",
@@ -469,7 +477,7 @@ describe("retained native cleanup discovery", () => {
     const [decision] = await db
       .insert(statusDecisions)
       .values({
-        companyId,
+        companyId: owner.companyId,
         issueId,
         runId,
         assessmentId: assessment!.id,
@@ -483,7 +491,7 @@ describe("retained native cleanup discovery", () => {
       })
       .returning();
     await db.insert(nativeRunFinalizations).values({
-      companyId,
+      companyId: owner.companyId,
       issueId,
       runId,
       phase: "committed",
@@ -494,6 +502,73 @@ describe("retained native cleanup discovery", () => {
     });
     return runId;
   }
+
+  it("does not misclassify a real competing row lock as ineligible retained history", async () => {
+    const runId = await candidate();
+    await db.transaction(async tx => {
+      await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
+      await expect(reconcileRetainedNativeSessionCleanup(db, { companyId, runId }))
+        .rejects.toMatchObject({ cause: { code: "55P03" } });
+    });
+  });
+
+  it("reconstructs future lease deadlines without authorizing early legacy cleanup", async () => {
+    const leaseExpiresAt = new Date(Date.now() + 60_000);
+    const runId = await candidate({ coordinator: { leaseOwner: "other-owner", leaseExpiresAt } });
+    const scope = { companyId, runId };
+    expect(await findRetainedNativeSessionCleanupCandidates(db, { scope, limit: 100 })).toEqual([]);
+    expect(await findRetainedNativeSessionCleanupCandidates(db, { scope, limit: 100, includeLeased: true }))
+      .toEqual([expect.objectContaining({ runId, leaseOwner: "other-owner", leaseExpiresAt })]);
+    const cleanup = vi.fn();
+    await reconcileRetainedNativeSessionCleanups(db, { cleanup });
+    expect(cleanup).not.toHaveBeenCalled();
+    await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 1000) })
+      .where(eq(nativeRunFinalizations.runId, runId));
+    expect(await findRetainedNativeSessionCleanupCandidates(db, { scope, limit: 100 }))
+      .toEqual([expect.objectContaining({ runId })]);
+  });
+
+  it("scopes reconstruction to a company, run, task, or agent without leaking another tenant", async () => {
+    const other = { companyId: randomUUID(), agentId: randomUUID() };
+    await db.insert(companies).values({ id: other.companyId, name: "Other cleanup tenant", issuePrefix: "NCO" });
+    await db.insert(agents).values({ id: other.agentId, companyId: other.companyId, name: "Other cleanup", adapterType: "codex_local" });
+    try {
+      const first = await candidate();
+      const second = await candidate();
+      const foreign = await candidate({ owner: other });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, first));
+      for (const scope of [{ companyId, runId: first }, { companyId, issueId: run.nativeIssueId! }]) {
+        expect((await findRetainedNativeSessionCleanupCandidates(db, { scope, limit: 100, includeLeased: true }))
+          .map(row => row.runId)).toEqual([first]);
+      }
+      expect((await findRetainedNativeSessionCleanupCandidates(db, { scope: { companyId, agentId }, limit: 100 }))
+        .map(row => row.runId).sort()).toEqual([first, second].sort());
+      expect(await findRetainedNativeSessionCleanupCandidates(db, {
+        scope: { companyId, runId: foreign }, limit: 100,
+      })).toEqual([]);
+      expect((await findRetainedNativeSessionCleanupCandidates(db, { scope: other, limit: 100 }))
+        .map(row => row.runId)).toEqual([foreign]);
+    } finally {
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.companyId, other.companyId));
+    }
+  });
+
+  it("pages reconstruction past retained history without wrapping or admitting previously attempted cleanup", async () => {
+    const ids = [await candidate(), await candidate(), await candidate()].sort();
+    await candidate({ coordinator: { recoveryHistory: [{ kind: "native_cleanup_runner_epoch", phase: "spawned" }] } });
+    let after: string | undefined;
+    const found: string[] = [];
+    for (;;) {
+      const rows = await findRetainedNativeSessionCleanupCandidates(db, {
+        scope: { companyId }, after, limit: 1, includeLeased: true,
+      });
+      if (!rows.length) break;
+      found.push(rows[0].runId);
+      after = rows[0].runId;
+      expect(found.length).toBeLessThanOrEqual(ids.length);
+    }
+    expect(found).toEqual(ids);
+  });
 
   it("discovers exact committed results even with stale nativePhase or privately recovered errors", async () => {
     const stale = await candidate();

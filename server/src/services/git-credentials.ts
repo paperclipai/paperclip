@@ -200,6 +200,54 @@ type GitCredentialSecretsDeps = {
   resolveUserSecretValue?: SecretServiceLike["resolveUserSecretValue"];
 };
 
+export type GitHubApiCredentialSource = "company_secret" | "server_env";
+
+export type GitHubApiCredential = {
+  token: string;
+  source: GitHubApiCredentialSource;
+  /** The company-secret name the token came from; null for a server-environment token. */
+  secretName: string | null;
+};
+
+/**
+ * Resolve a GitHub API credential for company-scoped, non-run work (for example the
+ * external-object refresh sweep, which has no agent or responsible-user context).
+ *
+ * This is the background-safe subset of the git credential order: it reads a company
+ * secret by well-known name, then the server process environment (`GITHUB_TOKEN`/`GH_TOKEN`)
+ * that self-hosted operators already set for Git. It deliberately cannot resolve a managed
+ * GitHub connection, because every managed grant is scoped to one agent or one person and a
+ * background sweep has neither. Callers that have a run context must use
+ * `createGitRemoteAuthProvider`/`resolveManagedGitHubCredential` instead so the managed
+ * identity and its consent boundary are honored.
+ *
+ * The `source` matters to callers that show company data. A server-environment token is
+ * instance-wide, so it can see repositories the company cannot. A caller must treat a
+ * `server_env` token differently from a `company_secret` token and keep it away from
+ * private repositories. Without any credential a caller runs anonymous, and anonymous
+ * GitHub requests are capped at 60/hour, so a busy company is rate-limited into
+ * misleading failures.
+ */
+export async function resolveGitHubApiCredential(
+  db: Db,
+  companyId: string,
+  opts: { secretNames?: readonly string[]; env?: NodeJS.ProcessEnv; secrets?: GitCredentialSecretsDeps } = {},
+): Promise<GitHubApiCredential | null> {
+  const secrets = opts.secrets ?? secretService(db);
+  for (const secretName of opts.secretNames ?? DEFAULT_GITHUB_TOKEN_SECRET_NAMES) {
+    const secret = await Promise.resolve(secrets.getByName(companyId, secretName)).catch(() => null);
+    if (!secret) continue;
+    const token = await secrets
+      .resolveSecretValue(companyId, secret.id, "latest")
+      .then((value) => value.trim())
+      .catch(() => "");
+    if (token) return { token, source: "company_secret", secretName };
+  }
+  const env = opts.env ?? process.env;
+  const envToken = env.GITHUB_TOKEN?.trim() || env.GH_TOKEN?.trim() || "";
+  return envToken ? { token: envToken, source: "server_env", secretName: null } : null;
+}
+
 /**
  * Build the credential provider for one run. Resolution order: the managed GitHub identity
  * resolver, then a company secret by well-known name, then the server process environment
@@ -315,6 +363,7 @@ export async function resolveManagedGitHubIdentitySelection(
     agentId?: string | null;
     allowStandingDelegation?: boolean;
     excludeGrantId?: string;
+    explicitGrantId?: string;
   },
 ): Promise<{
   configured: boolean;
@@ -357,6 +406,7 @@ export async function resolveManagedGitHubIdentitySelection(
   const grants = await db.select().from(connectionGrants).where(and(
     eq(connectionGrants.companyId, companyId),
     inArray(connectionGrants.connectionId, [...eligibleConnectionIds]),
+    context.explicitGrantId ? eq(connectionGrants.id, context.explicitGrantId) : undefined,
     or(eq(connectionGrants.kind, "agent"), eq(connectionGrants.kind, "user")),
   ));
   const dedicated = context.agentId
@@ -489,6 +539,7 @@ export async function resolveManagedGitHubCredential(
     responsibleUserId?: string | null;
     agentId?: string | null;
     allowStandingDelegation?: boolean;
+    explicitGrantId?: string;
   },
 ): Promise<{ configured: boolean; identitySource?: "personal" | "dedicated"; credential?: GitCredential; error?: string }> {
   const selection = await resolveManagedGitHubIdentitySelection(db, companyId, context);
@@ -583,6 +634,7 @@ export async function resolveManagedGitHubCredential(
   } catch {
     failure = { configured: true, identitySource: selection.identitySource, error: "GitHub credentials are temporarily unavailable" };
   }
+  if (context.explicitGrantId) return failure;
   // Retry credential acquisition, never the GitHub operation. An alternate
   // authorization must still belong to this exact principal and account.
   const alternate = await resolveManagedGitHubIdentitySelection(db, companyId, {

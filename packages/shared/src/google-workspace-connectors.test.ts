@@ -5,11 +5,26 @@ import {
   googleWorkspaceGrantedScopes, googleWorkspaceToolTarget, isGoogleWorkspaceToolGranted,
   googleWorkspaceServiceGranted, isGoogleWorkspaceScopeGrant,
   googleWorkspaceSelectedScopes, googleWorkspaceEffectiveScopes, GOOGLE_WORKSPACE_DEFAULT_SELECTION,
+  googleWorkspaceDraftRequestedScopes,
 } from "./google-workspace-connectors.js";
 
 const scope = (value: string) => `https://www.googleapis.com/auth/${value}`;
 
 describe("combined Google Workspace consent", () => {
+  it("restores draft intent only for its exact identity and current service scopes", () => {
+    const binding = { companyId: "company", connectionId: "connection", actorType: "user", actorId: "owner",
+      grantKind: "user" as const, subjectId: "owner" };
+    const draft = { version: 1, ...binding, requestedScopes: [scope("gmail.readonly")] };
+    expect(googleWorkspaceDraftRequestedScopes(draft, binding)).toEqual([scope("gmail.readonly")]);
+    for (const field of ["companyId", "connectionId", "actorType", "actorId", "grantKind", "subjectId"] as const) {
+      expect(googleWorkspaceDraftRequestedScopes({ ...draft, [field]: "different" }, binding)).toBeNull();
+    }
+    for (const requestedScopes of [[], [scope("chat.messages.readonly")], [scope("contacts.readonly")], [scope("gmail.send")], "gmail.readonly"]) {
+      expect(googleWorkspaceDraftRequestedScopes({ ...draft, requestedScopes }, binding)).toBeNull();
+    }
+    expect(googleWorkspaceDraftRequestedScopes(undefined, binding)).toBeNull();
+  });
+
   it("defaults to Gmail, combined Drive, and Calendar write scopes without Chat or People", () => {
     const selected = googleWorkspaceSelectedScopes(GOOGLE_WORKSPACE_DEFAULT_SELECTION);
     expect(selected).toHaveLength(9);

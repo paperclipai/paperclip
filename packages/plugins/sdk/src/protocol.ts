@@ -289,6 +289,8 @@ export type PluginRpcErrorCode =
  */
 export interface PluginInvocationScope {
   companyId: string;
+  agentOrigin?: { agentId: string; runId?: string | null };
+  projectGit?: { projectId: string; workspaceId?: string; runId?: string; agentId?: string; operation?: "prepare" | "inspect" | "remove" };
 }
 
 /**
@@ -313,6 +315,8 @@ export interface PluginInvocationContext {
  * host-issued invocation id.
  */
 export interface WorkerHostCallContext {
+  /** Host-owned aggregate timing budget; never received from the worker. */
+  providerSpanBudget?: { remaining: number };
   invocationScope?: PluginInvocationScope | null;
   invalidInvocationScope?: boolean;
   /**
@@ -615,6 +619,12 @@ export interface PluginEnvironmentProbeResult {
   metadata?: Record<string, unknown>;
 }
 
+export interface PluginEnvironmentWorkspaceAllocationFiles {
+  providerLeaseId: string;
+  remoteCwd: string;
+  files: Array<{ relativePath: string; sha256: string }>;
+}
+
 export interface PluginEnvironmentLease {
   providerLeaseId: string | null;
   metadata?: Record<string, unknown>;
@@ -637,7 +647,13 @@ export interface PluginEnvironmentRunnerIngressEndpointParams
 }
 
 export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDriverBaseParams {
+  /** Omitted means ordinary execution. A login allocation targets a saved agent,
+   * requires requestedExpiresAt, and releases only that login, never its computer. */
+  purpose?: "run" | "login";
+  /** Host-resolved fixed command identity for a login allocation. */
+  loginCommandKey?: PluginLoginCommandKey;
   runId: string;
+  creationOperationId?: string;
   /** Explicit platform probes may request a provider-owned immutable snapshot
    * identity. Supporting providers create by that ID and return snapshotIdentity
    * in lease metadata. Older providers may omit it; the host then cannot qualify
@@ -673,6 +689,7 @@ export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDri
   runId?: string;
   providerLeaseId: string;
   leaseMetadata?: Record<string, unknown>;
+  requestedCwd?: string;
 }
 
 export interface PluginEnvironmentReleaseLeaseParams extends PluginEnvironmentDriverBaseParams {
@@ -698,11 +715,14 @@ export interface PluginEnvironmentDestroyLeaseParams extends PluginEnvironmentRe
 /** Observe this exact allocation without starting, stopping or deleting it.
  * Missing resources must be distinguished from permission/transport failures. */
 export interface PluginEnvironmentInspectLeaseParams extends PluginEnvironmentDriverBaseParams {
+  creationOperation?: { id: string; runId: string };
   providerLeaseId: string;
   leaseMetadata?: Record<string, unknown>;
 }
 
 export interface PluginEnvironmentLeaseObservation {
+  creationLease?: PluginEnvironmentLease;
+  creationCleanup?: import("./environment-creation-cleanup.js").PluginEnvironmentCreationCleanup;
   providerLeaseId: string;
   state: "active" | "stopped" | "destroyed" | "unknown";
 }
@@ -796,13 +816,21 @@ export interface PluginSyncFileMapping {
    * shows the bytes only to code that already runs in that sandbox.
    */
   mode?: number;
-  /** Glob patterns to exclude when `kind` is `"directory"`. */
+  /** Directory glob patterns; literal root-relative paths when preserving source entries. */
   exclude?: string[];
   /**
    * Symlink handling for `kind: "directory"` transfers. Falsy preserves symlinks
    * as links; `true` dereferences them to their target bytes. Mirrors tar's `-h`.
    */
   followSymlinks?: boolean;
+  /**
+   * Outbound directory transfers preserve source entry names, including `._*`
+   * and provider scratch-like names. In this mode `exclude` contains literal
+   * root-relative paths; providers omit only those paths and scratch paths
+   * created by this exact transfer. Archive member and symlink validation stay
+   * unchanged. Ignored for syncIn/files.
+   */
+  preserveSourceEntries?: boolean;
   /**
    * Advisory read-write intent for the sandbox target. `"rw"` means the author
    * expects the agent to change the bytes at the target and keep the change.
@@ -884,11 +912,13 @@ export interface PluginSyncOperation {
 export interface PluginEnvironmentSyncInParams extends PluginEnvironmentDriverBaseParams {
   lease: PluginEnvironmentLease;
   operations: PluginSyncOperation[];
+  minimumTimeoutMs?: number;
 }
 
 export interface PluginEnvironmentSyncOutParams extends PluginEnvironmentDriverBaseParams {
   lease: PluginEnvironmentLease;
   operations: PluginSyncOperation[];
+  minimumTimeoutMs?: number;
 }
 
 /** Per-operation transfer accounting returned by a sync hook, for observability. */
@@ -1062,6 +1092,8 @@ export type PluginLoginCommandKey = "claude" | "codex" | "grok";
 
 /** The open request for one live login pseudo-terminal. The worker registers the terminal by `hostRouteId`. */
 export interface PluginLoginPtyOpenParams {
+  /** Independent absolute deadline, required by providers hosting login on an existing computer. */
+  expiresAt?: string;
   /** The host-owned opaque route identifier. The worker registers the terminal by it. */
   hostRouteId: string;
   /** The environment driver key, for the worker sandbox scope. It routes the worker; it confers no command authority. */
@@ -1093,20 +1125,42 @@ export interface PluginLoginPtyOpenResult {
 
 /** The input request. It carries the worker session identifier and the raw input bytes. */
 export interface PluginLoginPtyInputParams {
+  /** Host-bound company context for provider callbacks during this lifecycle call. */
+  companyId?: string;
+  /** Stable identity of this input write. Retries retain the identity and bytes. */
+  inputId?: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
   /** The raw input bytes to write to the terminal. */
   data: string;
 }
 
+/** Read the fixed Codex result of a bound login allocation; never an arbitrary path. */
+export interface PluginLoginPtyReadCredentialParams {
+  driverKey: string;
+  companyId: string;
+  environmentId: string;
+  providerLeaseId: string;
+  loginCommandKey: "codex";
+}
+
+export interface PluginLoginPtyReadCredentialResult {
+  kind: "codex-auth-json";
+  authJson: string;
+}
+
 /** The stop request. It carries the worker session identifier. */
 export interface PluginLoginPtyStopParams {
+  /** Host-bound company context for provider callbacks during this lifecycle call. */
+  companyId?: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
 }
 
 /** The close request. The host route identifier is the authoritative key. */
 export interface PluginLoginPtyCloseParams {
+  /** Host-bound company context for provider callbacks during this lifecycle call. */
+  companyId?: string;
   /**
    * The host-owned opaque route identifier. This is the authoritative close key,
    * so the host closes the terminal even when no worker session identifier
@@ -1474,6 +1528,8 @@ export interface HostToWorkerMethods {
   ];
   /** Write delayed input to a live login pseudo-terminal, keyed by the worker session identifier. */
   loginPtyInput: [params: PluginLoginPtyInputParams, result: void];
+  /** Read the fixed credential artifact after the bound login process succeeds. */
+  loginPtyReadCredential: [params: PluginLoginPtyReadCredentialParams, result: PluginLoginPtyReadCredentialResult];
   /** Stop a live login pseudo-terminal child, keyed by the worker session identifier. */
   loginPtyStop: [params: PluginLoginPtyStopParams, result: void];
   /** Close a live login pseudo-terminal by the host route identifier and return a bound acknowledgement. */
@@ -1548,6 +1604,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentDeleteTemplate",
   "loginPtyOpen",
   "loginPtyInput",
+  "loginPtyReadCredential",
   "loginPtyStop",
   "loginPtyClose",
   "duplexChannelOpen",
@@ -1566,6 +1623,18 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
  * These represent the SDK client calls that the worker makes back to the
  * host to access platform services (state, entities, config, etc.).
  */
+export interface PluginSpanRecord {
+  name: string;
+  /** A completed remote lifecycle is linked to its observer, never made its child. */
+  relationship?: "linked";
+  attributes?: Record<string, string | number | boolean>;
+  status?: { code: number; message?: string };
+  startTimeMs?: number;
+  endTimeMs?: number;
+  /** Nested timing receipts, bounded and validated again by the host. */
+  children?: PluginSpanRecord[];
+}
+
 export interface WorkerToHostMethods {
   // Config
   "config.get": [params: { companyId?: string }, result: Record<string, unknown>];
@@ -1759,25 +1828,7 @@ export interface WorkerToHostMethods {
   // real tracer. The worker never sends the parent `traceparent`; the host
   // recovers it from the echoed invocation id. The RPC is capability-gated.
   "span.record": [
-    params: {
-      /** The bounded span name (for example `pack` or `transfer`). The host
-       * clamps it to a closed set, so a name never carries free-form data. */
-      name: string;
-      /** The span attributes. The host drops every key that is not on the closed
-       * plugin-span allowlist and re-clamps each remaining value. */
-      attributes?: Record<string, string | number | boolean>;
-      /** The optional span status. */
-      status?: { code: number; message?: string };
-      /** The optional span start time as epoch milliseconds (`Date.now()`).
-       * The worker captures it when it opens the span. The host validates the
-       * pair and records the span with its true native width. An omitted value
-       * makes the host fall back to a synchronous open-and-end. */
-      startTimeMs?: number;
-      /** The optional span end time as epoch milliseconds (`Date.now()`). The
-       * worker captures it when it ends the span. The host uses it as the span
-       * end time when the pair passes the clock-safety check. */
-      endTimeMs?: number;
-    },
+    params: PluginSpanRecord,
     result: void,
   ];
 
@@ -1795,6 +1846,10 @@ export interface WorkerToHostMethods {
   "projects.list": [
     params: { companyId: string; limit?: number; offset?: number },
     result: Project[],
+  ];
+  "projects.resolveGitCredential": [
+    params: { projectId: string; workspaceId: string; companyId: string },
+    result: string | null,
   ];
   "projects.getInstanceSecrets": [
     params: { projectId: string; companyId: string },
@@ -2153,7 +2208,7 @@ export interface WorkerToHostMethods {
     result: PluginAgentRuntimeIdentity | null,
   ];
   "agents.getRuntime": [
-    params: { agentId: string; companyId: string },
+    params: { agentId: string; companyId: string; environmentId?: string; installEnvironmentSkills?: boolean },
     result: PluginAgentRuntimeState | null,
   ];
   "agents.get": [

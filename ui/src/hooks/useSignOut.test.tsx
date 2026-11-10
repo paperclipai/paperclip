@@ -7,6 +7,8 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
 import { isAccountScopedQueryKey, useSignOut } from "./useSignOut";
+import { bindAccount } from "@/lib/account-scope";
+import { QUERY_CACHE_PREFIX, startPersistedQueryCache } from "@/lib/persisted-query-cache";
 
 const mockAuthApi = vi.hoisted(() => ({ signOut: vi.fn() }));
 const mockNavigateTopLevel = vi.hoisted(() => vi.fn());
@@ -52,6 +54,46 @@ describe("useSignOut", () => {
     });
     return root;
   }
+
+  it.each([
+    ["authenticated", "build-one"], ["authenticated", null],
+    ["cloud", "build-one"], ["cloud", null],
+  ] as const)("finishes %s sign-out and revokes saved reads on plain HTTP (build=%s)", async (deploymentMode, buildId) => {
+    localStorage.clear();
+    queryClient.setQueryData(queryKeys.health, { status: "ok", deploymentMode, cloud: deploymentMode === "cloud" ? { managed: true } : undefined });
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "alice" } });
+    queryClient.setQueryData(queryKeys.companies.list("alice"), { companies: [{ id: "company-a" }] });
+    const taskKey = [...queryKeys.issues.detail("task-a"), "core"];
+    queryClient.setQueryData(taskKey, { id: "task-a", companyId: "company-a", title: "Old account task" });
+    const stamped = startPersistedQueryCache(queryClient, { buildId: "build-one", eventTarget: null });
+    stamped.flush(); stamped.dispose();
+    expect(localStorage.getItem(`${QUERY_CACHE_PREFIX}alice:company-a`)).toContain("Old account task");
+    localStorage.setItem("paperclip:private-draft", "Keep my draft");
+    const cache = startPersistedQueryCache(queryClient, { buildId, eventTarget: null });
+    const account = bindAccount(queryClient);
+    const onSignedOut = vi.fn();
+    mockAuthApi.signOut.mockResolvedValue(undefined);
+    const root = renderHarness(onSignedOut);
+    vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
+    try {
+      await act(async () => { await captured!.mutateAsync(); });
+      expect(onSignedOut).toHaveBeenCalledOnce();
+      expect(account.isCurrentScope()).toBe(false);
+      expect(Object.keys(localStorage).filter(key => key.startsWith(QUERY_CACHE_PREFIX))).toEqual([]);
+      expect(localStorage.getItem("paperclip:private-draft")).toBe("Keep my draft");
+      if (deploymentMode === "cloud") {
+        expect(mockNavigateTopLevel).toHaveBeenCalledWith("/cloud/logout");
+        expect(mockAuthApi.signOut).not.toHaveBeenCalled();
+      } else {
+        expect(mockAuthApi.signOut).toHaveBeenCalledOnce();
+        expect(queryClient.getQueryData(taskKey)).toBeUndefined();
+        expect(queryClient.getQueryData(queryKeys.auth.session)).toBeUndefined();
+      }
+    } finally {
+      vi.unstubAllGlobals(); cache.dispose();
+      act(() => root.unmount()); localStorage.clear();
+    }
+  });
 
   it("closes caller chrome and navigates through Cloud without local sign-out", async () => {
     const onSignedOut = vi.fn();

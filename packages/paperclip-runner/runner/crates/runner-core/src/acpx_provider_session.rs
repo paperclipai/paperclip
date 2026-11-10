@@ -1,6 +1,6 @@
 use crate::generated_acpx_profiles::acpx_release_profile;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -22,9 +22,12 @@ use crate::provider_bridge::{
 use crate::question_response::validate_question_response;
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
+#[path = "acpx_provider_generation.rs"]
+mod generation;
+
 const MAX_ID_CHARS: usize = 240;
 const MAX_MODEL_CHARS: usize = 240;
-const MAX_SYSTEM_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_SYSTEM_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
 const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -74,6 +77,10 @@ pub struct AcpxProviderSessionIdentity {
     pub pi_thinking_level: Option<PiThinkingLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grok_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grok_disable_web_search: Option<bool>,
     pub provider_lifetime_fence_candidates: [u16; 3],
 }
 
@@ -85,6 +92,7 @@ pub struct AcpxProviderRuntimePolicy {
 
 #[derive(Clone, Debug)]
 pub struct AcpxProviderSessionConfig {
+    pub candidate_admission: Option<crate::acpx_candidate_admission::AcpxCandidateAdmission>,
     pub transport: AcpxSidecarTransportConfig,
     pub agent: String,
     pub model: String,
@@ -97,6 +105,8 @@ pub struct AcpxProviderSessionConfig {
     pub mode: Option<String>,
     pub pi_thinking_level: Option<PiThinkingLevel>,
     pub claude_effort: Option<String>,
+    pub grok_effort: Option<String>,
+    pub grok_disable_web_search: Option<bool>,
     pub permission_mode_pinned: bool,
     pub provider_policy: Option<AcpxProviderRuntimePolicy>,
     pub system_instructions: String,
@@ -111,6 +121,18 @@ impl AcpxProviderSessionConfig {
         let profile = acpx_release_profile(&self.agent).ok_or_else(|| {
             LocalRunnerError::invalid("ACPX agent must name a known immutable profile")
         })?;
+        if let Some(admission) = &self.candidate_admission {
+            admission.validate_binding(
+                &self.agent,
+                &self.model,
+                &self.run_id,
+                &self.normalized_session_id,
+            )?;
+        } else if profile.qualification_pending {
+            return Err(LocalRunnerError::invalid(
+                "ACPX provider qualification is pending; this build cannot launch the provider",
+            ));
+        }
         validate_text(&self.model, MAX_MODEL_CHARS, "ACPX model")?;
         if self.claude_effort.as_ref().is_some_and(|effort| {
             self.agent != "claude"
@@ -118,6 +140,22 @@ impl AcpxProviderSessionConfig {
         }) {
             return Err(LocalRunnerError::invalid(
                 "Claude effort must be a supported Claude-only value",
+            ));
+        }
+        if self.grok_disable_web_search.is_some() && self.agent != "grok" {
+            return Err(LocalRunnerError::invalid(
+                "Grok search policy requires Grok",
+            ));
+        }
+        if self.grok_effort.as_ref().is_some_and(|effort| {
+            self.agent != "grok"
+                || !matches!(
+                    effort.as_str(),
+                    "minimal" | "low" | "medium" | "high" | "xhigh"
+                )
+        }) {
+            return Err(LocalRunnerError::invalid(
+                "Grok effort must be a supported Grok-only value",
             ));
         }
         if (self.agent == "pi") != self.pi_thinking_level.is_some() {
@@ -200,6 +238,8 @@ impl AcpxProviderSessionConfig {
                 || expected_identity.mode != self.mode
                 || expected_identity.pi_thinking_level != self.pi_thinking_level
                 || expected_identity.claude_effort != self.claude_effort
+                || expected_identity.grok_effort != self.grok_effort
+                || expected_identity.grok_disable_web_search != self.grok_disable_web_search
             {
                 return Err(LocalRunnerError::invalid(
                     "ACPX expected identity conflicts with the requested session",
@@ -225,6 +265,16 @@ impl AcpxProviderSessionIdentity {
         }) {
             return Err(LocalRunnerError::invalid(
                 "ACPX identity contains invalid Claude effort",
+            ));
+        }
+        if self.grok_effort.as_ref().is_some_and(|effort| {
+            !matches!(
+                effort.as_str(),
+                "minimal" | "low" | "medium" | "high" | "xhigh"
+            )
+        }) {
+            return Err(LocalRunnerError::invalid(
+                "ACPX identity contains invalid Grok effort",
             ));
         }
         for (value, label) in [
@@ -301,8 +351,34 @@ pub struct AcpxProviderSession {
     catalog_revision: u64,
     working_directory: PathBuf,
     closed: bool,
+    failure: Option<LocalRunnerError>,
     transport_terminated: bool,
+    rejected_start_resumable: bool,
     runtime_retired: bool,
+    completed_turn_observed: bool,
+    generation_has_run_turn: bool,
+    restarted_after_turn_from: Option<u32>,
+    prepared_generation: Option<String>,
+}
+
+pub(crate) fn goal_is_dormant(projection: &Value) -> bool {
+    projection["schema"] == "paperclip.session_goal.snapshot.v1"
+        && projection["workingNow"].as_bool() == Some(false)
+        && projection
+            .pointer("/goal/workingNow")
+            .is_none_or(|working| working.as_bool() == Some(false))
+        && (projection.get("goal") == Some(&Value::Null)
+            || matches!(
+                projection.pointer("/goal/status").and_then(Value::as_str),
+                Some(
+                    "paused"
+                        | "blocked"
+                        | "limited"
+                        | "usage_limited"
+                        | "budget_limited"
+                        | "complete"
+                )
+            ))
 }
 
 impl AcpxProviderSession {
@@ -336,8 +412,14 @@ impl AcpxProviderSession {
             catalog_revision: config.catalog_revision,
             working_directory: config.working_directory.clone(),
             closed: false,
+            failure: None,
             transport_terminated: false,
+            rejected_start_resumable: false,
             runtime_retired: false,
+            completed_turn_observed: false,
+            generation_has_run_turn: false,
+            restarted_after_turn_from: None,
+            prepared_generation: None,
         })
     }
 
@@ -353,12 +435,110 @@ impl AcpxProviderSession {
         &self.identity
     }
 
+    pub(crate) fn rejected_start_checkpoint(&self) -> Option<&AcpxProviderSessionIdentity> {
+        self.rejected_start_resumable.then_some(&self.identity)
+    }
+
     pub fn turn_control_capabilities(&self) -> AcpxTurnControlCapabilities {
         self.turn_controls
     }
 
     pub fn state(&self) -> &AcpxProviderState {
         &self.state
+    }
+
+    pub(crate) fn verify_dormant_session(&mut self) -> Result<(), LocalRunnerError> {
+        if self.state.active_turn_id().is_some() || self.state.has_pending_requests() {
+            return Err(LocalRunnerError::invalid(
+                "saved dormant ACPX resumed pending work",
+            ));
+        }
+        let goal = self.goal_control(GeneratedAcpxSidecarCommand::SessionGoalGet, json!({}))?;
+        let prior_events = self.transport.buffered_events().len();
+        if !goal_is_dormant(&goal) {
+            return Err(LocalRunnerError::invalid(
+                "saved dormant ACPX resumed an active or unknown goal",
+            ));
+        }
+        let snapshot = self
+            .transport
+            .request(GeneratedAcpxSidecarCommand::SessionSnapshot, json!({}))?;
+        self.validate_dormant_snapshot(&snapshot)?;
+        // The status barrier can queue a newer goal while the snapshot is in flight.
+        // Inspect without consuming facts that ordinary polling still owns.
+        let mut checked_state = self.state.clone();
+        for event in self.transport.buffered_events().skip(prior_events) {
+            if event.event_type != GeneratedAcpxSidecarEventType::RuntimeGoal {
+                continue;
+            }
+            checked_state.accept_event(event)?;
+            if !goal_is_dormant(&event.payload) {
+                return Err(LocalRunnerError::invalid(
+                    "saved dormant ACPX received an active or unknown goal during its snapshot",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_dormant_snapshot(&self, snapshot: &Value) -> Result<(), LocalRunnerError> {
+        let identity: AcpxProviderSessionIdentity =
+            serde_json::from_value(snapshot["identity"].clone()).map_err(|_| {
+                LocalRunnerError::invalid("saved dormant ACPX snapshot identity is invalid")
+            })?;
+        if identity != self.identity
+            || snapshot["runId"].as_str() != Some(self.config.run_id.as_str())
+            || snapshot.get("turnId") != Some(&Value::Null)
+            || snapshot["pendingToolCount"].as_u64() != Some(0)
+            || snapshot["pendingInputCount"].as_u64() != Some(0)
+            || !snapshot["pendingRuntimeRequests"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+        {
+            return Err(LocalRunnerError::invalid(
+                "saved dormant ACPX snapshot has unexpected work or identity",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn observed_event_sequence(&self) -> u64 {
+        self.transport.observed_event_sequence()
+    }
+
+    pub(crate) fn settle_park_observation(&mut self) -> Result<(), LocalRunnerError> {
+        self.transport.settle_observation()
+    }
+
+    pub(crate) fn host_park_ready(&mut self, deadline: Instant) -> Result<bool, LocalRunnerError> {
+        if self.closed
+            || self.failure.is_some()
+            || self.transport_terminated
+            || self.runtime_retired
+            || !(self.completed_turn_observed || self.prepared_generation.is_some())
+            || self.state.active_turn_id().is_some()
+            || self.state.has_pending_requests()
+            || !self.park_tail_is_quiet()
+        {
+            return Ok(false);
+        }
+        let Some(goal) = self
+            .transport
+            .observe(GeneratedAcpxSidecarCommand::SessionGoalGet, deadline)?
+        else {
+            return Ok(false);
+        };
+        if !goal_is_dormant(&goal) {
+            return Ok(false);
+        }
+        let Some(snapshot) = self
+            .transport
+            .observe(GeneratedAcpxSidecarCommand::SessionSnapshot, deadline)?
+        else {
+            return Ok(false);
+        };
+        // Polling still owns every frame observed during these reads.
+        Ok(self.validate_dormant_snapshot(&snapshot).is_ok() && self.park_tail_is_quiet())
     }
 
     /// Read the same live sidecar before exposing its in-memory pending ledger.
@@ -412,12 +592,27 @@ impl AcpxProviderSession {
         self.transport.request(command, payload)
     }
 
+    pub(crate) fn buffered_event_count(&self) -> usize {
+        self.transport.buffered_events().len()
+    }
+
     pub fn start_turn(
         &mut self,
         turn_id: &str,
         message: &str,
         working_directory: &Path,
     ) -> Result<Value, LocalRunnerError> {
+        self.start_turn_timed(turn_id, message, working_directory, false)
+    }
+
+    pub fn start_turn_timed(
+        &mut self,
+        turn_id: &str,
+        message: &str,
+        working_directory: &Path,
+        performance: bool,
+    ) -> Result<Value, LocalRunnerError> {
+        self.rejected_start_resumable = false;
         self.ensure_open()?;
         if self.runtime_retired {
             return Err(LocalRunnerError::invalid(
@@ -441,6 +636,14 @@ impl AcpxProviderSession {
                 "ACPX provider session still has unsettled semantic tools",
             ));
         }
+        if let Some(admission) = &self.config.candidate_admission {
+            admission.validate_binding(
+                &self.config.agent,
+                &self.config.model,
+                &self.config.run_id,
+                &self.config.normalized_session_id,
+            )?;
+        }
         let rotate_turn_identity_ledger = self.state.settled_turn_identity_capacity_reached();
         let identity_validation = if rotate_turn_identity_ledger {
             self.state
@@ -459,12 +662,13 @@ impl AcpxProviderSession {
         // provider turn originated a late HTTP callback. Reap the old sidecar
         // and provider before releasing its call-ID tombstones, then resume
         // the same verified persistent session in a fresh process generation.
-        let provider_restarted = self.state.has_settled_turns();
-        if provider_restarted {
-            if let Err(error) = self.restart_idle_provider() {
+        let restart_now = self.generation_has_run_turn;
+        if restart_now {
+            if let Err(error) = self.restart_idle_provider(None) {
                 return Err(self.fail_closed(error));
             }
         }
+        let provider_restarted = restart_now || self.restarted_after_turn_from.is_some();
         if rotate_turn_identity_ledger {
             if let Err(error) = self
                 .state
@@ -498,12 +702,22 @@ impl AcpxProviderSession {
                 "ACPX reserved tool receipt rotation failed: {error}"
             ))));
         }
-        let response = match self.transport.request(
-            GeneratedAcpxSidecarCommand::TurnStart,
-            json!({"turnId":turn_id,"message":message}),
+        self.generation_has_run_turn = true;
+        self.restarted_after_turn_from = None;
+        self.prepared_generation = None;
+        let response = match self.transport.request_turn_start(
+            json!({"turnId":turn_id,"message":message,"performance":performance}),
         ) {
             Ok(response) => response,
-            Err(error) => return Err(self.fail_closed(error)),
+            Err(failure) => {
+                let resumable = failure.resume_required
+                    && self.state.active_turn_id().is_none()
+                    && !self.state.has_pending_requests()
+                    && self.transport.buffered_events().len() == 0;
+                let error = self.fail_closed(failure.error);
+                self.rejected_start_resumable = resumable && self.transport_terminated;
+                return Err(error);
+            }
         };
         if response.get("turnId").and_then(Value::as_str) != Some(turn_id) {
             return Err(self.fail_closed(LocalRunnerError::invalid(
@@ -520,6 +734,7 @@ impl AcpxProviderSession {
         }
         self.tool_bridge = next_tool_bridge;
         self.reserved_tool_bridge = next_reserved_tool_bridge;
+        self.completed_turn_observed = false;
         Ok(response)
     }
 
@@ -605,6 +820,17 @@ impl AcpxProviderSession {
         &mut self,
         timeout: Duration,
     ) -> Result<Option<Vec<AcpxProviderStateEvent>>, LocalRunnerError> {
+        Ok(self
+            .poll_output(timeout, false, None)?
+            .map(|(events, _)| events))
+    }
+
+    pub(crate) fn poll_output(
+        &mut self,
+        timeout: Duration,
+        disconnected: bool,
+        last_goal_revision: Option<u64>,
+    ) -> Result<Option<(Vec<AcpxProviderStateEvent>, Option<Value>)>, LocalRunnerError> {
         self.ensure_open()?;
         let event = match self.transport.poll_event(timeout) {
             Ok(event) => event,
@@ -613,6 +839,34 @@ impl AcpxProviderSession {
         let Some(mut event) = event else {
             return Ok(None);
         };
+        let mut terminal_goal = None;
+        if disconnected
+            && event.event_type == GeneratedAcpxSidecarEventType::RuntimeTurnTerminal
+            && event.payload.pointer("/error/code").and_then(Value::as_str)
+                != Some("ACPX_PROVIDER_PROCESS_LOST")
+        {
+            let snapshot = event.payload.get("goalAtTerminal").filter(|snapshot| {
+                snapshot["schema"] == "paperclip.session_goal.snapshot.v1"
+                    && snapshot["workingNow"] == false
+                    && snapshot["providerRevision"]
+                        .as_u64()
+                        .is_some_and(|revision| revision > last_goal_revision.unwrap_or(0))
+                    && snapshot["sessionGoals"]["availability"]
+                        .as_str()
+                        .is_some_and(|availability| {
+                            matches!(availability, "available" | "unsupported")
+                        })
+                    && (goal_is_dormant(snapshot)
+                        || snapshot.pointer("/goal/status").and_then(Value::as_str)
+                            == Some("active"))
+            });
+            let Some(snapshot) = snapshot else {
+                // Older sidecars need a connected goal read before settling this turn.
+                self.transport.defer_polled_event(event);
+                return Ok(None);
+            };
+            terminal_goal = Some(snapshot.clone());
+        }
         if event.event_type == GeneratedAcpxSidecarEventType::RuntimePermissionRequested {
             // Authority comes from this admitted connection's profile. A sidecar
             // claim cannot relabel another provider; old frames may omit origin.
@@ -776,10 +1030,20 @@ impl AcpxProviderSession {
                 reconciled_events.push(event);
             }
         }
+        for event in &reconciled_events {
+            if let AcpxProviderStateEvent::TurnTerminal {
+                turn_id, status, ..
+            } = event
+            {
+                self.completed_turn_observed = *status
+                    == crate::acpx_event_payload::AcpxTurnStatus::Completed
+                    && self.state.active_turn_id() == Some(turn_id.as_str());
+            }
+        }
         self.state = next_state;
         self.tool_bridge = next_bridge;
         self.reserved_tool_bridge = next_reserved_bridge;
-        Ok(Some(reconciled_events))
+        Ok(Some((reconciled_events, terminal_goal)))
     }
 
     pub fn deliver_tool_result(&mut self, result: &ToolResult) -> Result<(), LocalRunnerError> {
@@ -1047,12 +1311,16 @@ impl AcpxProviderSession {
 
     fn ensure_open(&self) -> Result<(), LocalRunnerError> {
         if self.closed {
-            return Err(LocalRunnerError::invalid("ACPX provider session is closed"));
+            return Err(self
+                .failure
+                .clone()
+                .unwrap_or_else(|| LocalRunnerError::invalid("ACPX provider session is closed")));
         }
         Ok(())
     }
 
-    fn restart_idle_provider(&mut self) -> Result<(), LocalRunnerError> {
+    fn restart_idle_provider(&mut self, deadline: Option<Instant>) -> Result<(), LocalRunnerError> {
+        self.transport.bound_requests_by(deadline);
         let suspended = self.transport.request(
             GeneratedAcpxSidecarCommand::SessionSuspend,
             json!({"reason":"ACPX turn receipt epoch rotation"}),
@@ -1067,6 +1335,7 @@ impl AcpxProviderSession {
             &restart_config.transport,
             &restart_config.agent,
         )?;
+        replacement.bound_requests_by(deadline);
         let (replacement_identity, _, turn_controls) =
             match bootstrap(&mut replacement, &restart_config) {
                 Ok(value) => value,
@@ -1085,6 +1354,7 @@ impl AcpxProviderSession {
         self.transport = replacement;
         self.turn_controls = turn_controls;
         self.transport_terminated = false;
+        self.generation_has_run_turn = false;
         Ok(())
     }
 
@@ -1132,7 +1402,12 @@ impl AcpxProviderSession {
 
     fn fail_closed(&mut self, error: LocalRunnerError) -> LocalRunnerError {
         self.closed = true;
-        with_cleanup_error(error, self.terminate_transport())
+        let error = with_cleanup_error(
+            self.failure.clone().unwrap_or(error),
+            self.terminate_transport(),
+        );
+        self.failure = Some(error.clone());
+        error
     }
 }
 
@@ -1333,14 +1608,31 @@ fn session_open_params(config: &AcpxProviderSessionConfig, sidecar_tools: &[Valu
         "tools": &sidecar_tools,
         "expectedIdentity": config.expected_identity,
     });
+    if let Some(admission) = &config.candidate_admission {
+        params["candidateAdmission"] = json!(admission);
+    }
     if let Some(effort) = &config.claude_effort {
         params["claudeEffort"] = json!(effort);
+    }
+    if let Some(effort) = &config.grok_effort {
+        params["grokEffort"] = json!(effort);
+    }
+    if let Some(disabled) = config.grok_disable_web_search {
+        params["grokDisableWebSearch"] = json!(disabled);
     }
     if let Some(level) = config.pi_thinking_level {
         params["piThinkingLevel"] = json!(level);
     }
     if let Some(mode) = config.mode.as_deref() {
         params["mode"] = json!(mode);
+    }
+    params
+}
+
+fn initialize_params(config: &AcpxProviderSessionConfig) -> Value {
+    let mut params = json!({"agent": config.agent, "model": config.model});
+    if let Some(admission) = &config.candidate_admission {
+        params["candidateAdmission"] = json!(admission);
     }
     params
 }
@@ -1359,7 +1651,7 @@ fn bootstrap(
     let sidecar_tools = sidecar_run_tool_operations(&config.tool_set);
     let initialized = transport.request(
         GeneratedAcpxSidecarCommand::Initialize,
-        json!({"agent": config.agent, "model": config.model}),
+        initialize_params(config),
     )?;
     verify_initialize_response(&initialized, transport.process_id())?;
 
@@ -1454,6 +1746,8 @@ fn verify_open_response(
         || identity.mode != config.mode
         || identity.pi_thinking_level != config.pi_thinking_level
         || identity.claude_effort != config.claude_effort
+        || identity.grok_effort != config.grok_effort
+        || identity.grok_disable_web_search != config.grok_disable_web_search
         || config
             .expected_identity
             .as_ref()
@@ -1617,12 +1911,80 @@ fn with_cleanup_error(
         Ok(()) => error,
         Err(cleanup) => LocalRunnerError::invalid(format!(
             "{error}; ACPX sidecar cleanup also failed: {cleanup}"
-        )),
+        ))
+        .with_provider_failure(error.provider_failure()),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dormant_goals_accept_known_inactive_statuses_and_reject_active_or_unknown() {
+        use super::*;
+        for (status, expected) in [
+            ("paused", true),
+            ("blocked", true),
+            ("limited", true),
+            ("usage_limited", true),
+            ("budget_limited", true),
+            ("complete", true),
+            ("active", false),
+            ("unknown", false),
+        ] {
+            let mut projection = json!({
+                "schema":"paperclip.session_goal.snapshot.v1", "workingNow":false,
+                "goal":{"status":status,"workingNow":false}
+            });
+            assert_eq!(goal_is_dormant(&projection), expected, "{status}");
+            projection["goal"]
+                .as_object_mut()
+                .unwrap()
+                .remove("workingNow");
+            assert_eq!(
+                goal_is_dormant(&projection),
+                expected,
+                "missing workingNow: {status}"
+            );
+            for working in [
+                json!(true),
+                Value::Null,
+                json!("false"),
+                json!("true"),
+                json!(0),
+                json!({}),
+                json!([]),
+            ] {
+                projection["goal"]["workingNow"] = working;
+                assert!(
+                    !goal_is_dormant(&projection),
+                    "{status} has invalid workingNow"
+                );
+            }
+            projection["goal"]["workingNow"] = json!(false);
+            projection["workingNow"] = json!(true);
+            assert!(!goal_is_dormant(&projection), "{status} session is working");
+        }
+    }
+
+    #[test]
+    fn startup_cleanup_failure_keeps_the_validated_provider_cause() {
+        use super::*;
+        let cause = json!({
+            "schema":"paperclip.provider-failure.v1", "provider":"claude", "phase":"startup",
+            "category":"authentication", "message":"Sign in to the provider.", "retryability":"requires_action"
+        });
+        let original = LocalRunnerError::invalid("ACPX sidecar command session.open was rejected (retryable=false, classification=provider_authentication)")
+            .with_provider_failure(Some(cause.clone()));
+        let error = with_cleanup_error(
+            original.clone(),
+            Err(LocalRunnerError::invalid("cleanup was not confirmed")),
+        );
+        assert_eq!(error.provider_failure(), Some(cause));
+        assert!(error.to_string().starts_with(&original.to_string()));
+        assert!(error.to_string().contains("cleanup was not confirmed"));
+        assert!(!error.to_string().contains("Sign in to the provider."));
+    }
+
     #[test]
     fn live_request_snapshot_requires_current_unique_typed_callbacks() {
         use super::*;
@@ -1771,6 +2133,7 @@ mod mode_tests {
     fn config() -> AcpxProviderSessionConfig {
         let operations = Vec::new();
         AcpxProviderSessionConfig {
+            candidate_admission: None,
             transport: AcpxSidecarTransportConfig {
                 command: std::env::current_exe().unwrap(),
                 args: Vec::new(),
@@ -1789,6 +2152,8 @@ mod mode_tests {
             mode: Some("plan".to_owned()),
             pi_thinking_level: None,
             claude_effort: None,
+            grok_effort: None,
+            grok_disable_web_search: None,
             permission_mode_pinned: true,
             provider_policy: Some(AcpxProviderRuntimePolicy { read_only: false }),
             system_instructions: String::new(),
@@ -1817,9 +2182,246 @@ mod mode_tests {
             mode: Some("plan".to_owned()),
             pi_thinking_level: None,
             claude_effort: None,
+            grok_effort: None,
+            grok_disable_web_search: None,
             provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
         }
     }
+
+    #[cfg(unix)]
+    fn snapshot_wire_session(
+        prior_events: &[crate::acpx_sidecar_transport::AcpxSidecarEvent],
+        new_events: &[crate::acpx_sidecar_transport::AcpxSidecarEvent],
+        foreign_session: bool,
+    ) -> AcpxProviderSession {
+        let mut cfg = config();
+        let identity = identity();
+        let mut snapshot_identity = identity.clone();
+        if foreign_session {
+            snapshot_identity.acpx_record_id = "foreign-record".to_owned();
+        }
+        let reply = |id, result| {
+            json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+            "id":id,"ok":true,"result":result})
+        };
+        let print = |value: Value| {
+            format!(
+                "printf '%s\\n' '{}'\n",
+                value.to_string().replace('\'', "'\"'\"'")
+            )
+        };
+        let mut script = String::new();
+        for (id, events, result) in [
+            (
+                1,
+                prior_events,
+                json!({"schema":"paperclip.session_goal.snapshot.v1","providerRevision":2,"goal":null,"workingNow":false}),
+            ),
+            (
+                2,
+                new_events,
+                json!({"identity":snapshot_identity,"runId":"run-1","turnId":null,
+                "pendingToolCount":0,"pendingInputCount":0,"pendingRuntimeRequests":[]}),
+            ),
+            (3, &[][..], json!({"closed":true})),
+        ] {
+            script.push_str("IFS= read -r request_line\n");
+            for event in events {
+                let event_type = match event.event_type {
+                    GeneratedAcpxSidecarEventType::RuntimeGoal => "runtime.goal",
+                    GeneratedAcpxSidecarEventType::RuntimeDiagnostic => "runtime.diagnostic",
+                    _ => panic!("unsupported fixture event"),
+                };
+                script.push_str(&print(
+                    json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "sequence":event.sequence,"eventType":event_type,"runId":event.run_id,
+                    "turnId":event.turn_id,"payload":event.payload}),
+                ));
+            }
+            script.push_str(&print(reply(id, result)));
+        }
+        cfg.transport.command = PathBuf::from("/bin/sh");
+        cfg.transport.args = vec!["-c".to_owned(), script];
+        let transport = AcpxSidecarTransport::start_for_agent(&cfg.transport, &cfg.agent).unwrap();
+        AcpxProviderSession {
+            transport,
+            state: AcpxProviderState::new(&cfg.run_id).unwrap(),
+            identity,
+            tool_bridge: ProviderToolBridge::default(),
+            reserved_tool_bridge: ProviderToolBridge::default(),
+            turn_controls: AcpxTurnControlCapabilities::default(),
+            catalog_revision: cfg.catalog_revision,
+            working_directory: cfg.working_directory.clone(),
+            config: cfg,
+            closed: false,
+            failure: None,
+            transport_terminated: false,
+            rejected_start_resumable: false,
+            runtime_retired: false,
+            completed_turn_observed: false,
+            generation_has_run_turn: false,
+            restarted_after_turn_from: None,
+            prepared_generation: None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn wire_goal(
+        sequence: u64,
+        revision: Option<u64>,
+        status: &str,
+    ) -> crate::acpx_sidecar_transport::AcpxSidecarEvent {
+        crate::acpx_sidecar_transport::AcpxSidecarEvent {
+            sequence,
+            event_type: GeneratedAcpxSidecarEventType::RuntimeGoal,
+            run_id: Some("run-1".to_owned()),
+            turn_id: None,
+            payload: json!({"schema":"paperclip.session_goal.snapshot.v1","providerRevision":revision,
+                "goal":{"status":status,"workingNow":false},"workingNow":false}),
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn dormant_snapshot_rejects_new_active_goals_regardless_of_revision() {
+        for (revision, status) in [
+            (Some(3), "active"),
+            (Some(2), "active"),
+            (Some(1), "active"),
+            (None, "active"),
+            (Some(3), "unknown"),
+        ] {
+            let events = vec![wire_goal(1, revision, status)];
+            let mut session = snapshot_wire_session(&[], &events, false);
+            let error = session.verify_dormant_session().unwrap_err();
+            assert!(error.to_string().contains("during its snapshot"), "{error}");
+            assert_eq!(
+                session
+                    .transport
+                    .buffered_events()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                events
+            );
+            session.shutdown("test complete").unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn dormant_snapshot_preserves_prior_and_benign_new_events_for_polling() {
+        let events = vec![
+            crate::acpx_sidecar_transport::AcpxSidecarEvent {
+                sequence: 1,
+                event_type: GeneratedAcpxSidecarEventType::RuntimeDiagnostic,
+                run_id: Some("run-1".to_owned()),
+                turn_id: None,
+                payload: json!({"code":"probe-observation","message":"Retained observation"}),
+            },
+            wire_goal(2, Some(1), "active"),
+            wire_goal(3, Some(3), "paused"),
+        ];
+        let mut session = snapshot_wire_session(&events[..2], &events[2..], false);
+        session.verify_dormant_session().unwrap();
+        assert_eq!(
+            session
+                .transport
+                .buffered_events()
+                .cloned()
+                .collect::<Vec<_>>(),
+            events
+        );
+        for expected in &events {
+            let delivered = session.poll_event(Duration::ZERO).unwrap().unwrap();
+            if expected.event_type == GeneratedAcpxSidecarEventType::RuntimeGoal {
+                assert!(
+                    matches!(&delivered[..], [AcpxProviderStateEvent::Goal(goal)] if goal == &expected.payload)
+                );
+            } else {
+                assert_eq!(delivered.len(), 1);
+            }
+        }
+        assert!(session.poll_event(Duration::ZERO).unwrap().is_none());
+        session.shutdown("test complete").unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn dormant_snapshot_requires_the_same_run_and_session() {
+        for foreign_session in [false, true] {
+            let mut event = wire_goal(1, Some(3), "paused");
+            if !foreign_session {
+                event.run_id = Some("foreign-run".to_owned());
+            }
+            let mut session = snapshot_wire_session(&[], &[event], foreign_session);
+            let error = session.verify_dormant_session().unwrap_err();
+            assert!(
+                error.to_string().contains(if foreign_session {
+                    "identity"
+                } else {
+                    "stale run"
+                }),
+                "{error}"
+            );
+            session.shutdown("test complete").unwrap();
+        }
+    }
+    #[test]
+    fn pending_profile_cannot_launch_even_with_explicit_policy() {
+        let mut config = config();
+        config.agent = "antigravity".to_owned();
+        config.pi_thinking_level = None;
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("qualification is pending"));
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn candidate_admission_is_bound_and_carried_through_both_bootstrap_requests() {
+        let mut cfg = config();
+        assert!(initialize_params(&cfg).get("candidateAdmission").is_none());
+        assert!(session_open_params(&cfg, &[])
+            .get("candidateAdmission")
+            .is_none());
+        cfg.agent = "antigravity".to_owned();
+        cfg.mode = None;
+        let admission = crate::acpx_candidate_admission::test_admission(
+            &cfg.run_id,
+            &cfg.normalized_session_id,
+        );
+        cfg.candidate_admission = Some(admission.clone());
+        cfg.validate().unwrap();
+        assert_eq!(
+            initialize_params(&cfg)["candidateAdmission"],
+            json!(admission)
+        );
+        assert_eq!(
+            session_open_params(&cfg, &[])["candidateAdmission"],
+            json!(admission)
+        );
+        for (field, value) in [
+            ("run", "different-run"),
+            ("session", "different-session"),
+            ("model", "different-model"),
+            ("agent", "codex"),
+        ] {
+            let mut invalid = cfg.clone();
+            match field {
+                "run" => invalid.run_id = value.to_owned(),
+                "session" => invalid.normalized_session_id = value.to_owned(),
+                "model" => invalid.model = value.to_owned(),
+                "agent" => invalid.agent = value.to_owned(),
+                _ => unreachable!(),
+            }
+            assert!(invalid.validate().is_err(), "{field}");
+        }
+        cfg.candidate_admission.as_mut().unwrap().expires_at = 0;
+        assert!(cfg.validate().is_err());
+    }
+
     #[test]
     fn model_is_explicit_and_provider_verified_for_every_agent() {
         let mut config = config();
@@ -1974,6 +2576,39 @@ mod mode_tests {
         cfg.agent = "codex".to_owned();
         assert!(cfg.validate().is_err());
         cfg.claude_effort = None;
+        cfg.validate().unwrap();
+    }
+    #[test]
+    fn grok_search_policy_is_grok_only_and_preserves_false_in_the_sidecar() {
+        let mut cfg = config();
+        cfg.agent = "grok".to_owned();
+        for disabled in [true, false] {
+            cfg.grok_disable_web_search = Some(disabled);
+            cfg.validate().unwrap();
+            assert_eq!(
+                session_open_params(&cfg, &[])["grokDisableWebSearch"],
+                json!(disabled)
+            );
+        }
+        cfg.agent = "codex".to_owned();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn grok_effort_is_explicit_grok_only_and_forwarded_without_clamping() {
+        let mut cfg = config();
+        cfg.agent = "grok".to_owned();
+        for effort in ["minimal", "low", "medium", "high", "xhigh"] {
+            cfg.grok_effort = Some(effort.to_owned());
+            cfg.validate().unwrap();
+            assert_eq!(session_open_params(&cfg, &[])["grokEffort"], json!(effort));
+        }
+        cfg.grok_effort = Some("ultra".to_owned());
+        assert!(cfg.validate().is_err());
+        cfg.grok_effort = Some("high".to_owned());
+        cfg.agent = "codex".to_owned();
+        assert!(cfg.validate().is_err());
+        cfg.grok_effort = None;
         cfg.validate().unwrap();
     }
 

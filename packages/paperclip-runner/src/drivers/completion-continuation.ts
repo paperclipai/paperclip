@@ -15,10 +15,10 @@ export async function resolveCompletionContinuation(
   const task = object(context.activeTask);
   const continuation = object(context.completionContinuation);
   if (object(context.run).id !== runId || task.executionRunId !== runId ||
-      !["monitor", "same_agent"].includes(String(continuation.kind)) ||
+      !["monitor", "same_agent", "response_wake"].includes(String(continuation.kind)) ||
       typeof continuation.summary !== "string" || !continuation.summary.trim() ||
       typeof continuation.idempotencyKey !== "string" || !continuation.idempotencyKey.trim()) {
-    throw new Error("Cannot yield without a continuation: no eligible saved monitor or workspace continuation exists on this task. Save a monitor for a deferred check, provide an explicit response_wake for a real response wait, or continue the unfinished work. Do not repeat completed actions.");
+    throw new Error("Cannot yield without a continuation: no eligible saved monitor or workspace continuation or authorized response wait exists on this task. Save a monitor for a deferred check, provide an explicit response_wake for a real response wait, or continue the unfinished work. Do not repeat completed actions.");
   }
   if (report.continuation != null && (continuation.kind !== "same_agent" || supplied.summary !== continuation.summary ||
       supplied.idempotencyKey !== continuation.idempotencyKey)) {

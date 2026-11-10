@@ -123,3 +123,25 @@ own policy and access review.
 
 Gaps: Disable/remove and development reload are management workflows with no default
 company agent access.
+
+## Project Git authorization
+
+Project workspace writers can use `PUT /api/projects/{id}/git-authorization` to
+consent to their own eligible personal GitHub Connector grant. This route is
+board-only; agent requests cannot establish standing consent. `GET` requires
+project read access and returns no token. SDK `projects.resolveGitCredential`
+requires `projects.git-credentials` and a matching host-issued project operation.
+Background work uses the selected project grant. Foreground preparation uses the
+active run identity and trust boundary. UI/data/tool invocations have no export
+authority. No task identity is retained for maintenance.
+Background export rechecks the consenting user's project read access and project
+trust policy. Repository access follows the selected connection, including later
+project additions; no separate project repository approval list is stored.
+Archived projects allow only host-issued workspace inspection and removal using
+existing consent; they cannot acquire credentials for provisioning.
+
+Evidence: owned embedded-database grant/route fixtures in
+`server/src/__tests__/project-git-authorization.test.ts`, worker invocation
+fixtures in `server/src/__tests__/plugin-worker-manager.test.ts`, and capability
+and scope denials in `packages/plugins/sdk/tests/host-client-factory.test.ts`.
+These are automated fixture checks, not live provider qualification.

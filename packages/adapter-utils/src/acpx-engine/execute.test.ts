@@ -36,6 +36,7 @@ import {
   referencedSourceContentSignature,
   resolveStalledToolTimeoutMs,
   rewriteGeminiAcpFlagForVersion,
+  summarizeAcpProcessTerminal,
   summarizeAcpStopActivity,
   summarizeAcpxTurnUsage,
   type AcpxEngineExecutorOptions,
@@ -2537,6 +2538,91 @@ describe("shared ACPX engine runtime behavior", () => {
     ).toBe("second");
   });
 
+  it.each(["create_runtime", "ensure_session", "configure_session", "turn"])(
+    "preserves sanitized JSON-RPC diagnostics when %s fails",
+    async (phase) => {
+      for (const shape of ["string", "details", "message"]) {
+        const root = await makeTempRoot();
+        const detail = "Invalid session configuration: model_context_window must be a number; private-setting-value";
+        const data = shape === "string" ? detail : { [shape]: detail };
+        const err = Object.assign(new Error("Internal error"), { code: -32603, data });
+        const fail = () => { throw err; };
+        const logs: string[] = [];
+        const execute = createAcpxEngineExecutor({
+          createRuntime: () => {
+            if (phase === "create_runtime") fail();
+            return {
+              ...buildRuntime(),
+              ...(phase === "ensure_session" ? { ensureSession: fail } : {}),
+              ...(phase === "configure_session" ? { setConfigOption: fail } : {}),
+              ...(phase === "turn" ? { startTurn: () => ({
+                events: (async function* () { fail(); })(),
+                result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+                cancel: async () => {},
+              }) } : {}),
+            } as never;
+          },
+        });
+        const result = await execute({
+          runId: "run-1",
+          agent: { id: "agent-1", companyId: "company-1" },
+          runtime: {},
+          config: {
+            agent: "custom",
+            agentCommand: "node ./fake-acp.js",
+            stateDir: path.join(root, "state"),
+            thinkingEffort: "high",
+            env: { PRIVATE_SETTING: "private-setting-value" },
+          },
+          context: {},
+          onLog: async (_stream: string, text: string) => { logs.push(text); },
+          onMeta: async () => {},
+        } as never);
+        expect(result.exitCode).toBe(1);
+        expect(result.errorMessage).toContain("Internal error\nInvalid session configuration: model_context_window must be a number;");
+        expect(result.errorMessage).not.toContain("private-setting-value");
+        expect(result.summary).toBe(result.errorMessage);
+        expect(result.errorMeta).toMatchObject({ phase, rpcCode: -32603 });
+        const payload = JSON.parse(logs.find((text) => text.includes('"type":"acpx.error"'))!.trim());
+        expect(payload.message).toBe(result.errorMessage);
+        expect(payload.rpcCode).toBe(-32603);
+      }
+    },
+  );
+
+  it("does not repeat JSON-RPC details already in the message and leaves plain errors unchanged", async () => {
+    const run = async (err: Error) => {
+      const root = await makeTempRoot();
+      const execute = createAcpxEngineExecutor({
+        createRuntime: () => ({
+          ...buildRuntime(),
+          ensureSession: async () => { throw err; },
+        }) as never,
+      });
+      return execute({
+        runId: "run-1",
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+        context: {},
+        onLog: async () => {},
+        onMeta: async () => {},
+      } as never);
+    };
+
+    const repeated = await run(Object.assign(
+      new Error("Internal error: Invalid session configuration"),
+      { code: -32603, data: { details: "Invalid session configuration" } },
+    ));
+    expect(repeated.errorMessage).toBe("Internal error: Invalid session configuration");
+    expect(repeated.errorMeta).toMatchObject({ rpcCode: -32603 });
+
+    const plain = await run(new Error("session/new failed"));
+    expect(plain.errorMessage).toBe("session/new failed");
+    expect(plain.summary).toBe("session/new failed");
+    expect(plain.errorMeta?.rpcCode).toBeUndefined();
+  });
+
   it("enriches acpx.error diagnostics and child stderr when ensureSession rejects", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
@@ -3946,6 +4032,39 @@ describe("summarizeAcpStopActivity", () => {
 
   it("omits the event age when no event preceded the stop", () => {
     expect(summarizeAcpStopActivity(10_000, null, [])).toEqual({});
+  });
+});
+
+describe("summarizeAcpProcessTerminal", () => {
+  it("reports nothing before the process session records terminal evidence", () => {
+    expect(summarizeAcpProcessTerminal(null)).toEqual({});
+    expect(summarizeAcpProcessTerminal(undefined)).toEqual({});
+  });
+
+  it("reports a signal-killed remote process", () => {
+    expect(summarizeAcpProcessTerminal({
+      source: "remote_event", outcome: "exit", exitCode: "unknown", signal: "SIGKILL",
+    })).toEqual({
+      acpProcessTerminalSource: "remote_event",
+      acpProcessTerminalOutcome: "exit",
+      acpProcessTerminalSignal: "SIGKILL",
+    });
+  });
+
+  it("reports an exit code and omits an unknown signal", () => {
+    expect(summarizeAcpProcessTerminal({
+      source: "remote_event", outcome: "exit", exitCode: 137, signal: "unknown",
+    })).toEqual({
+      acpProcessTerminalSource: "remote_event",
+      acpProcessTerminalOutcome: "exit",
+      acpProcessTerminalExitCode: 137,
+    });
+  });
+
+  it("reports a host proxy close with no exit details", () => {
+    expect(summarizeAcpProcessTerminal({
+      source: "proxy_close", outcome: "error", exitCode: "unknown", signal: "unknown",
+    })).toEqual({ acpProcessTerminalSource: "proxy_close", acpProcessTerminalOutcome: "error" });
   });
 });
 
@@ -8045,12 +8164,13 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     runtime: unknown,
     sandbox: Awaited<ReturnType<typeof setupRemoteSandbox>>,
     deps: Partial<AcpxEngineExecutorOptions> = {},
+    processSessionBridge: Record<string, unknown> = {},
   ) {
     vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(
       async () => handle as never,
     );
     vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementationOnce(
-      async () => ({ agentCommand: null, stop: async () => {} }) as never,
+      async () => ({ agentCommand: null, stop: async () => {}, ...processSessionBridge }) as never,
     );
     const execute = createAcpxEngineExecutor({
       createRuntime: () => runtime as never,
@@ -8263,6 +8383,36 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     // Distinct from a session-identity failure and from the deadline code.
     expect(result.errorCode).not.toBe("acpx_session_init_failed");
     expect(result.errorCode).not.toBe("acpx_handshake_timeout");
+  }, 10000);
+
+  it("reports how the agent process session ended when the process exits during the handshake", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeBridgeHandle();
+    const runtime = {
+      ensureSession: async () => {
+        throw new Error("agent process exited during initialize");
+      },
+      startTurn: () => {
+        throw new Error("startTurn must not run after a failed handshake");
+      },
+      setConfigOption: async () => {},
+      close: async () => {},
+    };
+
+    const result = await runRemote(fake.handle, runtime, sandbox, {}, {
+      readTerminalEvidence: () => ({
+        source: "remote_event", outcome: "exit", exitCode: 137, signal: "SIGKILL",
+      }),
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.resultJson).toMatchObject({
+      phase: "ensure_session",
+      acpProcessTerminalSource: "remote_event",
+      acpProcessTerminalOutcome: "exit",
+      acpProcessTerminalExitCode: 137,
+      acpProcessTerminalSignal: "SIGKILL",
+    });
   }, 10000);
 
   it("aborts an in-flight turn and fails the run when the duplex channel latches a loss mid-turn", async () => {

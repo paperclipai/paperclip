@@ -4,6 +4,23 @@ import { nativeSha256 } from "./canonical.js";
 const RECEIPT_FIELDS = new Set(["operationId", "apiOperationId", "callId", "ok", "status", "contentType"]);
 const REDACTED_FIELDS = new Set([...RECEIPT_FIELDS, "data", "apiPayloadRedacted", "apiPayloadSha256"]);
 const CASE_OPERATIONS = new Set(["create_case", "read_case", "update_case", "read_case_document", "write_case_document", "list_workflows", "read_workflow", "create_workflow", "update_workflow"]);
+const SCHEMA_DENIAL_STRINGS = ["provider", "operationId", "callId", "message", "inputSchemaGuidance"];
+const SCHEMA_DENIAL_FIELDS = new Set([...SCHEMA_DENIAL_STRINGS, "code", "paperclipExecuted"]);
+
+/** Only use after the PRP event's run and source bindings have been checked. */
+export function redactRunnerApiEvent<T extends { eventType: string; sourceKind: string; payload: unknown }>(event: T): T {
+  const payload = event.payload && typeof event.payload === "object" ? event.payload as Record<string, unknown> : {};
+  // These scalar fields are authored by the runner's validation boundary, not
+  // an API request or result. Never apply this exception inside arbitrary data.
+  if (event.sourceKind === "runner" && event.eventType === "harness.diagnostic"
+    && payload.code === "semantic_tool_denied" && payload.paperclipExecuted === false
+    && Object.keys(payload).every(key => SCHEMA_DENIAL_FIELDS.has(key))
+    && SCHEMA_DENIAL_STRINGS.every(key => typeof payload[key] === "string"
+      && payload[key].length > 0 && payload[key].length <= 512 && /^[\x20-\x7e]+$/.test(payload[key]))) {
+    return { ...redactRunnerApiPayloads(event), payload: event.payload };
+  }
+  return redactRunnerApiPayloads(event);
+}
 
 function redactedPayload(value: unknown) {
   const entry = value && typeof value === "object" ? value as Record<string, unknown> : {};

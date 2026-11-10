@@ -32,6 +32,7 @@ import {
   runHealth,
   type CellStatus,
 } from "./smoke-lab-matrix";
+import { describeError } from "@/api/errors";
 
 // Public, non-secret fixture credentials for the fake OAuth provider. Kept in
 // sync with SMOKE_LAB_DEMO_EMAIL / SMOKE_LAB_DEMO_PASSWORD in
@@ -112,7 +113,7 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
       pushToast({ title: "Smoke services started", tone: "success" });
       refresh();
     },
-    onError: (e: Error) => pushToast({ title: "Couldn't start services", body: e.message, tone: "error" }),
+    onError: (e: Error) => pushToast({ title: "Couldn't start services", body: describeError(e).body, tone: "error" }),
   });
 
   const stopMutation = useMutation({
@@ -121,7 +122,7 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
       pushToast({ title: "Smoke services stopped", tone: "info" });
       refresh();
     },
-    onError: (e: Error) => pushToast({ title: "Couldn't stop services", body: e.message, tone: "error" }),
+    onError: (e: Error) => pushToast({ title: "Couldn't stop services", body: describeError(e).body, tone: "error" }),
   });
 
   const installMutation = useMutation({
@@ -133,7 +134,7 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
       });
       refresh();
     },
-    onError: (e: Error) => pushToast({ title: "Couldn't install fixtures", body: e.message, tone: "error" }),
+    onError: (e: Error) => pushToast({ title: "Couldn't install fixtures", body: describeError(e).body, tone: "error" }),
   });
 
   const resetMutation = useMutation({
@@ -143,7 +144,7 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
       setSelectedRunId(null);
       refresh();
     },
-    onError: (e: Error) => pushToast({ title: "Couldn't reset", body: e.message, tone: "error" }),
+    onError: (e: Error) => pushToast({ title: "Couldn't reset", body: describeError(e).body, tone: "error" }),
   });
 
   const runSmokeMutation = useMutation({
@@ -157,7 +158,7 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
       setSelectedRunId(r.run.id);
       refresh();
     },
-    onError: (e: Error) => pushToast({ title: "Couldn't start a run", body: e.message, tone: "error" }),
+    onError: (e: Error) => pushToast({ title: "Couldn't start a run", body: describeError(e).body, tone: "error" }),
   });
 
   const anyMutating =

@@ -43,7 +43,7 @@ import { issueService } from "../services/issues.ts";
 
 const execFileAsync = promisify(execFile);
 
-const adapterExecute = vi.hoisted(() => vi.fn(async () => ({
+const adapterExecute = vi.hoisted(() => vi.fn(async (_input?: unknown) => ({
   exitCode: 0,
   signal: null,
   timedOut: false,
@@ -650,9 +650,9 @@ describeEmbeddedPostgres("accepted plan workspace refresh", () => {
       },
     });
 
-    let childRunWorkspace:
+    let childRunWorkspace = null as
       | { cwd: string; branchName: string; executionWorkspaceId: string }
-      | null = null;
+      | null;
     adapterExecute.mockImplementationOnce(async (input) => {
       const context = (input as { context?: Record<string, unknown> }).context ?? {};
       const workspace = context.paperclipWorkspace as Record<string, unknown> | undefined;

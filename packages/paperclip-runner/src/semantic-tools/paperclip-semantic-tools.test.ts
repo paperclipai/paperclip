@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { createCapabilityProviderNeutralBinding } from "./provider-neutral.js";
+import { createSkillAction } from "../protocol-actions/create-skill.js";
+import { getAgentInstructionHistoryAction } from "../protocol-actions/get-agent-instruction-history.js";
+import { restoreAgentInstructionsAction } from "../protocol-actions/restore-agent-instructions.js";
 
 import type { PaperclipSemanticActionBinding } from "./types.js";
 import { PaperclipSemanticDispatcher } from "./paperclip-dispatcher.js";
@@ -72,6 +76,39 @@ describe("run-scoped semantic tool authority", () => {
     expect(JSON.stringify(dispatcher.authorizationRecords())).not.toContain(
       "list_agents",
     );
+  });
+
+  it("distinguishes authored skills from source imports in the actual discovered and provider tool contracts", async () => {
+    const apiClaims = ["api:discover", "api:call"];
+    let context = runContext({ actorClaims: apiClaims, delegatedClaims: apiClaims });
+    const dispatcher = new PaperclipSemanticDispatcher({
+      contextProvider: () => context,
+      bindings: [binding("create_skill", {}), binding("search_api", {}), binding("call_api", {})],
+    });
+    const discovery = await dispatcher.discoverTools({ runId: correlation.runId, query: "create skill", namespace: "skills" });
+    expect(discovery.operations).toHaveLength(1);
+    const authored = discovery.operations[0]!;
+    expect(authored.name).toBe("create_skill");
+    const live = createCapabilityProviderNeutralBinding("live_codex").contracts.find(tool => tool.name === "create_skill")!;
+    for (const description of [authored.description, live.description, createSkillAction.scenario.descriptor.description]) {
+      expect(description).toMatch(/new(?:ly)? authored/i);
+      expect(description).toMatch(/existing skill.*import.*install/i);
+      expect(description).toMatch(/source provenance/i);
+      expect(description).toMatch(/search_api.*call_api/);
+      expect(description).toMatch(/SKILL\.md is in a local directory.*even when the company library has no match.*instead of copying/);
+      expect(description).toContain("does not assign");
+    }
+    expect(live.inputSchema).toEqual(authored.inputSchema);
+    expect(authored.inputSchema.properties).not.toHaveProperty("source");
+    expect(authored.inputSchema.required).toContain("idempotencyKey");
+    const apiTools = await dispatcher.discoverTools({ runId: correlation.runId, query: "API", namespace: "api_fallback" });
+    expect(apiTools.operations.map(tool => tool.name).sort()).toEqual(["call_api", "search_api"]);
+    context = runContext();
+    await expect(dispatcher.discoverTools({ runId: correlation.runId, query: "API", namespace: "api_fallback" }))
+      .resolves.toMatchObject({ operations: [] });
+    context = runContext({ actorCompanyId: "foreign_company" });
+    await expect(dispatcher.discoverTools({ runId: correlation.runId, query: "create skill", namespace: "skills" }))
+      .resolves.toMatchObject({ operations: [] });
   });
 
   it("rechecks ownership after projection and before invocation", async () => {
@@ -612,3 +649,15 @@ class MemoryIdempotencyStore implements PaperclipSemanticIdempotencyStore {
     this.#tokenToScope.delete(token);
   }
 }
+
+describe("instruction history contracts", () => {
+  it("say current saves record no history and only listed pre-upgrade revisions restore", () => {
+    const live = createCapabilityProviderNeutralBinding("live_codex").contracts;
+    const history = live.find(tool => tool.name === "get_agent_instruction_history")!.description;
+    const restore = live.find(tool => tool.name === "restore_agent_instructions")!.description;
+    for (const description of [history, getAgentInstructionHistoryAction.live.descriptor.description])
+      expect(description).toMatch(/Current saves keep only the current file and add no revision, so an empty list means Paperclip retains no earlier version/);
+    for (const description of [restore, restoreAgentInstructionsAction.live.descriptor.description])
+      expect(description).toContain("Only revisions returned by get_agent_instruction_history can be restored.");
+  });
+});
