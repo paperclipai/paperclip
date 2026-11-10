@@ -5,8 +5,8 @@ import { companySecrets, connectionGrants, toolConnections, type Db } from "@pap
 import { mkdtemp, writeFile, rm, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decideCodexAuthMerge, withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
-import { decideGrokAuthMerge } from "@paperclipai/adapter-grok-local/server";
+import { decideCodexAuthMerge, readSubscriptionAccountId, withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
+import { decideGrokAuthMerge, parseGrokAuthPayload, hasUsableGrokAuthValue } from "@paperclipai/adapter-grok-local/server";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { aiConnectionService } from "./ai-connections.js";
 import { secretService } from "./secrets.js";
@@ -56,6 +56,16 @@ export async function syncManagedAiCredentials(
     // Do not hold database or account locks while the provider exports its credential.
     const credential = await fetchCredential();
     if (credential === null) return "no_credentials" as const;
+    // A partial provider write must replay, not be acknowledged as unchanged.
+    let usable = false;
+    if (provider === "codex") usable = readSubscriptionAccountId(Buffer.from(credential)) !== null;
+    else {
+      try {
+        const parsed = parseGrokAuthPayload(JSON.parse(credential));
+        usable = parsed !== null && hasUsableGrokAuthValue(parsed.value);
+      } catch { /* Do not expose credential bytes through JSON parser errors. */ }
+    }
+    if (!usable) throw new Error("Managed credential snapshot invalid");
     const incoming = join(home, "incoming.json"), destination = join(home, "current.json");
     await writeFile(incoming, credential, { mode: 0o600 });
     const writeBack = () => mutate(async database => {

@@ -96,6 +96,16 @@ suite("durable plugin task credential handoff", () => {
     expect(await f.credential()).toBe(f.accountCredential("fixture-reconnected", 2022));
     expect(f.calls).toEqual([]);
   });
+  it.each((["codex", "grok"] as const).flatMap(provider => ["{partial", "{}"].map(snapshot => [provider, snapshot] as const)))(
+    "rejects unusable %s snapshots for retry: %s", async (provider, snapshot) => {
+      const f = await fixture(true, provider);
+      await expect(syncManagedAiCredentials(db, f.companyId, f.managed.credentialWriteback!, provider, async () => snapshot))
+        .rejects.toThrow("snapshot invalid");
+      expect(await f.credential()).toBe(f.accountCredential("fixture-original"));
+      expect(await syncManagedAiCredentials(db, f.companyId, f.managed.credentialWriteback!, provider,
+        async () => f.accountCredential("fixture-refreshed", 2021))).toBe("rotated");
+    },
+  );
   it.each(["codex", "grok"] as const)("rechecks %s authority after the exporter yields", async provider => {
     const f = await fixture(true, provider);
     const result = await syncManagedAiCredentials(db, f.companyId, f.managed.credentialWriteback!, provider, async () => {

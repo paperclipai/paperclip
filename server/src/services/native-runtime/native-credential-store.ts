@@ -43,7 +43,7 @@ export function createNativeCredentialStore(input: {
   runner?: Pick<CommandManagedRuntimeRunner, "execute">;
 }) {
   if (Boolean(input.remoteHome) !== Boolean(input.runner)) throw new Error("native_credential_store_target_unavailable");
-  const names = input.provider === "grok" ? ["auth.json", "auth-refresh.json"] : ["auth.json"];
+  const names = ["auth.json", "auth-refresh.json"];
   const read = async (name: string): Promise<string> => {
     if (!input.runner || !input.remoteHome) return readLocalAiCredentialFile(join(input.localHome, name));
     // Remote isolated-home preparation already requires Node. Read only on a refresh or retirement.
@@ -64,7 +64,7 @@ export function createNativeCredentialStore(input: {
       }
     },
     remove: async () => {
-      for (const name of [...names, ...(input.provider === "grok" ? ["auth-refresh.json.tmp"] : [])]) {
+      for (const name of [...names, "auth-refresh.json.tmp"]) {
         await rm(join(input.localHome, name), { force: true });
         if (input.runner && input.remoteHome) {
           const result = await input.runner.execute({ command: "rm", args: ["-f", "--", posix.join(input.remoteHome, name)], bypassSession: true, timeoutMs: 10_000 });

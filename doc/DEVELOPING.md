@@ -5231,7 +5231,9 @@ A notification is acknowledged only after writeback succeeds or its authority is
 intentionally discarded. Export and database failures replay through PRP. An
 unchanged managed-subscription turn does no credential export or database write.
 Retirement keeps a final export for legacy and recovery paths; a failed final
-export retains the provider's credential files for retry. Plugin retirement also
+export retains the provider's credential files for retry. After verified provider
+exit, ACPX Codex and Grok preserve a private `auth-refresh.json` handoff before
+scrubbing `auth.json`; Core removes it after retirement writeback. Plugin retirement also
 records rotation, unchanged credential, changed binding, undispatched task, or a
 null export. No secret bytes appear in PRP events or lease metadata. The plugin
 provider must support live account-bound exports before enabling the paired Core

@@ -35,10 +35,12 @@ it.each(["local", "ssh", "sandbox"] as const)("exports %s snapshots only on dema
   await expect(store.read()).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-it.each(["local", "ssh", "sandbox"] as const)("uses the Grok close handoff for %s when auth.json is absent", async target => {
-  const { home, store } = await fixture(target, "grok");
+it.each((["codex", "grok"] as const).flatMap(provider => (["local", "ssh", "sandbox"] as const).map(target => ({ provider, target }))))("uses the $provider close handoff for $target when auth.json is absent", async ({ target, provider }) => {
+  const { home, store } = await fixture(target, provider);
   await writeFile(join(home, "auth-refresh.json"), '{"synthetic":"refresh"}', { mode: 0o600 });
   expect(await store.read()).toBe('{"synthetic":"refresh"}');
+  await store.remove();
+  await expect(store.read()).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 it.each(["local", "ssh", "sandbox"] as const)("rejects unsafe %s files without falling back to another credential", async target => {
