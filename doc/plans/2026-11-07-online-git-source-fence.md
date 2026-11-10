@@ -146,3 +146,10 @@ exact membership. The canonical maintenance request accepts the same bounded
 32-member list; single-workspace and capture-worker limits stay unchanged.
 The journal shape is unchanged; older tools that enforce the
 eight-member bound refuse larger cohorts and must not regroup them.
+
+Completed parent captures retain scratch until atomic publication. A larger
+cohort can therefore retain up to four times the parent scratch of an
+eight-member cohort, even with the same worker limit. Select a larger cohort
+only after checking the actual parent capture footprint, its verification and
+restore scratch, and current free capacity on the target filesystem. The worker
+limit does not bound retained scratch. Keep the existing resource guards.
