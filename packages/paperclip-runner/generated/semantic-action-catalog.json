@@ -3874,7 +3874,7 @@
               "type": "string"
             },
             "notes": {
-              "description": "What to check on the next run; do not include secrets.",
+              "description": "What to check on the next run. Maximum 500 characters; do not include secrets.",
               "maxLength": 500,
               "minLength": 1,
               "type": "string"

@@ -987,6 +987,8 @@ results; finalizing accepted work neither renews the deadline nor starts a turn.
 
 Native `set_task_monitor` arguments put scheduling fields inside `monitor`:
 `{ "idempotencyKey": "check-ci", "monitor": { "nextCheckAt": "<future UTC timestamp>", "notes": "Check pending CI." } }`.
+`monitor.notes` has a maximum of 500 characters. The published field description
+and schema expose this limit. Length errors name the field and numeric maximum.
 Use `monitor: null` to clear a schedule. A runner schema rejection executes no
 Paperclip mutation. It returns bounded schema locations and repair guidance,
 without submitted values. Correct the arguments and retry; the rejection is not
