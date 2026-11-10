@@ -207,13 +207,23 @@ errors. See [`rules/api-route-expectations.mdc`](rules/api-route-expectations.md
 - Keep routes and nav aligned with available API surface
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors
-- Follow `DESIGN.md` for every UI design decision, including the token-only rule and form footers. Run `pnpm check:token-gates` before committing UI changes.
+- Follow `DESIGN.md` for every UI design decision, including the token-only rule and form footers.
 
-## 10. Pull Requests
+## 10. Fixing a Bug
+
+When you are asked to fix a bug, attempt to use test-driven development and prove the fix red-green:
+
+1. Reproduce the error yourself.
+2. Write a test that fails because of the bug.
+3. Write the fix.
+4. Run the test and confirm that it passes.
+5. Verify that the fix worked: repeat the reproduction from step 1 and confirm that the error is gone.
+
+## 11. Pull Requests
 
 Fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md), however you create the pull request. Do not write an ad-hoc body. See "PR Requirements" in `CONTRIBUTING.md` for the details and thinking-path examples.
 
-## 11. Definition of Done
+## 12. Definition of Done
 
 A change is done when all are true:
 
