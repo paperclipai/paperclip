@@ -333,7 +333,7 @@ export function InstanceExperimentalSettings() {
 
         <ExperimentalToggleCard
           title="Built-in Agents"
-          description="Show Paperclip-managed built-in agent surfaces, including built-in roster badges, the Built-in agents tab, and built-in agent setup controls."
+          description="Show Paperclip-managed built-in agent surfaces, including roster badges and setup controls."
           checked={enableBuiltInAgents}
           onCheckedChange={(checked) => toggleMutation.mutate({ enableBuiltInAgents: checked })}
           disabled={toggleMutation.isPending}
@@ -557,7 +557,7 @@ export function InstanceExperimentalSettings() {
 
         <ExperimentalToggleCard
           title="Paperclip Runner"
-          description="Allow agents to select Paperclip Runner, including authenticated runner ingress when a sandbox requires it. First-run setup offers qualified GitHub Copilot. Turning this off hides the choice without affecting existing native runs."
+          description="Allow agents to select Paperclip Runner, including authenticated runner ingress when a sandbox requires it. Turning this off hides the choice without affecting existing native runs."
           checked={enableNativeRunner}
           onCheckedChange={(checked) =>
             toggleMutation.mutate({ enableNativeRunner: checked })

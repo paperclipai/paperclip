@@ -356,7 +356,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     allowedAdapterTypes: ["claude_local", "codex_local", "gemini_local", "opencode_local", "process"],
     defaultBudgetMonthlyCents: 0,
     bundle: {
-      stockVersion: "2026-07-08",
+      stockVersion: "2026-11-07",
       instructions: {
         entryFile: "AGENTS.md",
         files: {
