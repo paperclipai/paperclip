@@ -1320,8 +1320,9 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         await writeFile(join(root, `runner/process-lineage/writer-${deadPid}.json`), JSON.stringify({ schema: "paperclip.runner.process-lineage-writer.v1" }));
         const requestedAt = new Date(Math.floor(Date.now() / 1000) * 1000 + 60_500);
         const earlier = new Date(requestedAt.getTime() - 30_000), later = new Date(requestedAt.getTime() + 30_000);
-        const stateTime = { state_after_request: later, coarse_same_second: new Date(requestedAt.getTime() - 500),
-          coarse_before_request: new Date(requestedAt.getTime() - 3_500) }[kind as string] ?? earlier;
+        const stateTimes: Partial<Record<typeof kind, Date>> = { state_after_request: later,
+          coarse_same_second: new Date(requestedAt.getTime() - 500), coarse_before_request: new Date(requestedAt.getTime() - 3_500) };
+        const stateTime = stateTimes[kind] ?? earlier;
         await utimes(join(root, "runner/runner-state.json"), earlier, stateTime);
         await utimes(join(root, `runner/process-lineage/writer-${deadPid}.json`), earlier, kind === "lineage_after_request" ? later : earlier);
         await event(PROCESS_START_REQUESTED, { hostname: host, providerAttempt: 1,
