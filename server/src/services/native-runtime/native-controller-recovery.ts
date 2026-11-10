@@ -135,10 +135,14 @@ function sameSandboxWorkspaceAllocation(recorded: string, current: string): bool
   if (!canonical(recorded) || !canonical(current)) return false;
   const parent = posix.dirname(recorded);
   if (posix.basename(parent) !== ".paperclip-workspaces" || posix.dirname(current) !== parent) return false;
-  const allocation = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-\d+-/i;
-  const workspace = allocation.exec(posix.basename(recorded))?.[1];
-  return Boolean(workspace && allocation.exec(posix.basename(current))?.[1] === workspace);
+  const workspace = WORKSPACE_ALLOCATION.exec(posix.basename(recorded))?.[1];
+  return Boolean(workspace && WORKSPACE_ALLOCATION.exec(posix.basename(current))?.[1] === workspace);
 }
+
+/** The published allocation names (remote-workspaces publishedWorkspaceDirectory):
+ * exactly `<workspaceId>`, or `<workspaceId>-<epoch>-<leaseId>`. */
+const UUID = "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}";
+const WORKSPACE_ALLOCATION = new RegExp(`^(${UUID})(?:-[1-9][0-9]*-${UUID})?$`);
 
 /** Bind a read of retained Runner lifecycle to the surviving sandbox and
  * return the directory that Runner wrote under. The ordinary admission owner

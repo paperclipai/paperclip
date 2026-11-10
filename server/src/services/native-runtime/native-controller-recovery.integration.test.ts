@@ -351,10 +351,17 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
 
     await expect(readSandbox()).resolves.toEqual({ remoteCwd: sourceCwd });
     await expect(readSandbox({ remoteCwd: sourceCwd })).resolves.toEqual({ remoteCwd: sourceCwd });
+    // A root published under the exact workspace ID is the same workspace too.
+    await expect(readSandbox({ remoteCwd: `${allocations}/${workspaceId}` })).resolves.toEqual({ remoteCwd: sourceCwd });
+    const exactRoot = `${allocations}/${workspaceId}`;
+    await db.update(environmentLeases).set({ metadata: { remoteCwd: exactRoot } }).where(eq(environmentLeases.id, sourceLeaseId));
+    await expect(readSandbox()).resolves.toEqual({ remoteCwd: exactRoot });
+    await db.update(environmentLeases).set({ metadata: { remoteCwd: sourceCwd } }).where(eq(environmentLeases.id, sourceLeaseId));
     // Strict checks stay strict: another workspace's allocation, another
-    // parent, a non-canonical path, or another sandbox never bind.
+    // parent, a non-canonical path or name, or another sandbox never bind.
     for (const remoteCwd of [`${allocations}/${randomUUID()}-6-${currentLeaseId}`, `/elsewhere/${workspaceId}-6-${currentLeaseId}`,
-      `${allocations}/../.paperclip-workspaces/${workspaceId}-6-${currentLeaseId}`, "/unrelated"]) {
+      `${allocations}/../.paperclip-workspaces/${workspaceId}-6-${currentLeaseId}`, `${allocations}/${workspaceId}-0-${currentLeaseId}`,
+      `${allocations}/${workspaceId}-6-${currentLeaseId}-extra`, "/unrelated"]) {
       await expect(readSandbox({ remoteCwd })).rejects.toThrow("retained_sandbox_binding");
     }
     await expect(readSandbox({ sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: randomUUID() } }))

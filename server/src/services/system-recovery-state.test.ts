@@ -71,12 +71,10 @@ describe("durable system recovery budget", () => {
     const text = exhaustedSystemRecoveryAction(refused);
     expect(text).toContain("Paperclip refused to recover the saved files");
     expect(text).toContain("Paperclip cannot prove which runs used the sandbox that holds the saved files (allocation_ownership_ambiguous)");
-    expect(text).toContain("Paperclip continues the task from the last saved version of the files instead. Retry runs the check again.");
-    // Recovery never waits on a person or a release.
-    expect(text).not.toMatch(/succeeds only after|Paperclip is updated/);
-    const unsafe = failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!,
-      new SystemRecoveryFailure("archive_unsafe", "service_required"), { now: 0 });
-    expect(exhaustedSystemRecoveryAction(unsafe)).not.toMatch(/last saved version|succeeds only after/);
+    expect(text).toContain("Retry runs the check again. The agent's result is saved");
+    // Recovery never waits on a person or a release, and never promises a
+    // fallback the hold may not get.
+    expect(text).not.toMatch(/succeeds only after|Paperclip is updated|last saved version/);
     expect(text).not.toMatch(/after automatic retries|stopped after|Retry to try again/);
 
     const once = failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!,
