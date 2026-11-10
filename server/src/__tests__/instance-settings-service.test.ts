@@ -26,7 +26,7 @@ describe("instance settings service", () => {
     }
     expect(applyExperimentalSettingsPatch({}, { enableAgentChat: false }).enableAgentChat).toBe(true);
     const config: ManagedInstanceConfig = {
-      v: 1, mode: "cloud", catalogVersion: "test", plugins: { autoInstall: [] }, environments: [],
+      v: 1, mode: "cloud", catalogVersion: "test", plugins: { autoInstall: [] }, environments: [], pluginEnvironments: [],
       features: { enableAgentChat: false },
     };
     const result = applyManagedExperimentalOverlay(normalizeExperimentalSettings({ enableAgentChat: false }), config);
@@ -54,7 +54,7 @@ describe("instance settings service", () => {
     { stored: { remoteWorkspaceStorageEnabled: true }, managed: false, expected: false },
   ])("respects Cloud enrollment defaults and managed choices: $expected", ({ stored, managed, expected }) => {
     const config: ManagedInstanceConfig = {
-      v: 1, mode: "cloud", catalogVersion: "test", plugins: { autoInstall: [] }, environments: [],
+      v: 1, mode: "cloud", catalogVersion: "test", plugins: { autoInstall: [] }, environments: [], pluginEnvironments: [],
       features: managed === undefined ? {} : { remoteWorkspaceStorageEnabled: managed },
     };
     const normalized = normalizeExperimentalSettings(stored);

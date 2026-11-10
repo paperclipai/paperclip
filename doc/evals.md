@@ -12,6 +12,18 @@ Subset runs do not qualify the full plan or the historical 355-row snapshot.
 Catalog and projection tests are not live qualification; retain the fresh
 TestOps launch and GitHub run when reporting acceptance.
 
+The sibling **Reliability — staging soak** TestOps plan uses the same lane for
+the seven staging-soak reliability cases. Six run once on native OpenCode with
+DeepSeek 1017 through OpenRouter: on Daytona for `three-turn-revise`,
+`long-silent-command` and `queued-across-restart`, and locally for the others.
+`queue-steer` needs steering, which OpenCode does not support, so it runs on
+native Codex on Daytona.
+A launch selects cases from exactly one plan, so plan 2 keeps its 20-case
+denominator. The plan is launched from TestOps before a release, or bootstrapped
+with `testops_plan=reliability`. It has no schedule and does not run per PR.
+Selection fails closed until TestOps-assigned identities are committed; see the
+[registration steps](../tests/runner-e2e/EVERYDAY-WORKFLOWS.md#testops-reliability-plan).
+
 The explicit deployment-targeted [saved agent instructions journey](../tests/runner-e2e/product-journeys/AGENT-SETTINGS.md) checks an owned agent’s ordinary UI save, persisted instruction bytes, one current-run output, and restoration. The task request omits its instruction-only reference. It reuses the existing Product E2E target and report path; local controls do not establish a staging pass.
 
 The explicit-only [verified API artifact transfer](../tests/runner-e2e/README.md#verified-api-artifact-transfer)
@@ -378,7 +390,10 @@ Use the selectors documented in the [runner E2E README](../tests/runner-e2e/READ
 for a suite, profile, case, group, or environment. Daytona needs the immutable
 image digest and `DAYTONA_API_KEY`; follow the README and fixture security guide.
 `--all` excludes manual suites such as `everyday-workflows`. Select that suite
-explicitly; use a narrow selector while developing a fixture.
+explicitly; use a narrow selector while developing a fixture. Its staging-soak
+reliability cases need `--group reliability` as well; see
+[Everyday workflows](../tests/runner-e2e/EVERYDAY-WORKFLOWS.md#staging-soak-reliability-group)
+for the command, the TestOps Reliability plan and the before-release cadence.
 
 For Runner Evals, the narrowest useful local validation is the report program's
 help/validation path and the deterministic Runner checks documented in
@@ -615,7 +630,9 @@ verified worker process loss, and multi-turn answers grounded in actual task
 records. See the [workflow and qualification limits](../tests/runner-e2e/README.md#remaining-native-agent-chat-qualification).
 The 26 native `first-task` cells inspect the production wizard's saved native
 default on qualified targets, without an API runner switch. The 26 Legacy cells
-select Legacy explicitly in Advanced. Live results and semantic answer reviews must accompany
+use an API-configured inactive setup record and resume it in the wizard, as
+described in the [first-task setup contract](../tests/runner-e2e/README.md#first-task-onboarding).
+Live results and semantic answer reviews must accompany
 any qualification claim; catalog presence alone is not a pass.
 
 The explicit-only [native question/resume qualification](../tests/runner-e2e/README.md#task-continuation)

@@ -78,16 +78,16 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
  */
 export function resolveTaskStatusPresentation(input: TaskStatusPresentationInput): TaskStatusPresentation {
   const { status, displayStatus, externalConversationState, blockerAttention } = input;
-  const visibleStatus = status === "in_review" && externalConversationState === "waiting"
+  // A saved/optimistic transition must win over the previous read projection.
+  const projectedStatus = status === "in_progress" ? (displayStatus ?? status) : status;
+  const visibleStatus = projectedStatus === "in_review" && externalConversationState === "waiting"
     ? "idle"
-    : status === "in_progress" && displayStatus === "monitoring"
-      ? "monitoring"
-      : status;
-  const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
+    : projectedStatus;
+  const isCoveredBlocked = projectedStatus === "blocked" && blockerAttention?.state === "covered";
   return {
     glyphStatus: isCoveredBlocked ? "in_queue" : visibleStatus,
     label: taskStatusLabel(visibleStatus),
-    ariaLabel: status === "blocked" ? blockedAttentionLabel(blockerAttention) : taskStatusLabel(visibleStatus),
+    ariaLabel: projectedStatus === "blocked" ? blockedAttentionLabel(blockerAttention) : taskStatusLabel(visibleStatus),
   };
 }
 

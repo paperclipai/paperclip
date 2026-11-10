@@ -16,6 +16,7 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { buildNativeExecutionInput } from "../services/native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
 import { registerNativeRunnerCheckpoint } from "../services/native-runtime/native-runner-checkpoint.js";
+import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "../services/native-runtime/native-runner-recovery-contract.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "./helpers/native-restart.js";
 
 describeEmbeddedPostgres("heartbeat native remote preparation failure retention", () => {
@@ -169,6 +170,8 @@ describeEmbeddedPostgres("heartbeat native remote preparation failure retention"
           executionWorkspaceId: workspaceId, heartbeatRunId: f.runId, providerLeaseId,
           status: "active", leasePolicy: "ephemeral" }),
         requestedCwd: remoteCwd,
+        // The reattach resume tells the provider the reconnect grace (RC-54).
+        runnerReconnectGraceMs: REMOTE_RUNNER_RECONNECT_GRACE_MS,
       });
       expect(acquireAllocation).not.toHaveBeenCalled();
       expect(resumed).toHaveBeenCalledOnce();
@@ -224,7 +227,9 @@ describeEmbeddedPostgres("heartbeat native remote preparation failure retention"
       await heartbeat.drainActiveRunExecutions();
       expect(readyAllocation).toHaveBeenCalledOnce();
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
-      expect(run).toMatchObject({ status: "failed", error: "native_remote_recovery_lease_mismatch" });
+      // The run records which check failed: the provider no longer resumes the lease.
+      expect(run).toMatchObject({ status: "failed",
+        error: "native_remote_recovery_lease_mismatch: stage=environment_resume field=lease" });
       const retryKey = `task-retry:restart-interrupted-turn:${f.runId}`;
       await vi.waitFor(async () => {
         const retries = await db.select().from(agentWakeupRequests).where(and(

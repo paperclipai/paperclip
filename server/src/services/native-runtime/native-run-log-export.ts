@@ -143,7 +143,10 @@ function restoreCompactedEvent(chunk: string, source: unknown): unknown {
     const encoded = JSON.stringify(value), end = leading.length + omitted;
     if (end >= encoded.length || !encoded.startsWith(leading) || !tail.startsWith(encoded.slice(end))) continue;
     const restored = head + encoded.slice(leading.length, end) + tail;
-    if (compactRunLogChunk(restored) !== chunk) continue;
+    // Records written before invite tokens were redacted still hold the token;
+    // prove them with the compactor of that release.
+    if (![true, false].some(redactInvitations =>
+      compactRunLogChunk(restored, undefined, { redactInvitations }) === chunk)) continue;
     try {
       const envelope = JSON.parse(restored);
       if (envelope.type === "paperclip.prp.event" && matchesPublishedEvent(source, envelope.event))
@@ -309,7 +312,7 @@ export async function nativeRunLogPrefixCursor(input: {
   while (offset < bytes) {
     input.signal?.throwIfAborted();
     const page = await input.store.read(input.handle, {
-      offset, limitBytes: Math.min(256_000, bytes - offset), signal: input.signal,
+      offset, limitBytes: Math.min(256_000, bytes - offset), signal: input.signal, priority: "background",
     });
     const content = Buffer.from(page.content);
     if (!content.length || offset + content.length > bytes) throw unproven();

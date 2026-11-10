@@ -1,14 +1,40 @@
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index 45b3aaf..a87f8e7 100644
+index 97cbf7b..851e65a 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
-@@ -1306,6 +1306,9 @@ importers:
-       lucide-react:
-         specifier: ^1.48.0
-         version: 1.48.0(react@19.2.8)
-+      mdast-util-from-markdown:
-+        specifier: ^2.0.3
-+        version: 2.0.3
-       mermaid:
-         specifier: ^12.1.0
-         version: 12.1.0
+@@ -43,7 +43,7 @@ patchedDependencies:
+     hash: 6st5fzvttegjv64llnfegwwpca
+     path: patches/acpx@0.12.0.patch
+   acpx@0.13.1:
+-    hash: ujlgpkxl4mvt34bejc3uxyvthq
++    hash: 25xv27loodfejozcsygclyiyau
+     path: patches/acpx@0.13.1.patch
+   embedded-postgres@18.1.0-beta.16:
+     hash: 55uhvnotpqyiy37rn3pqpukhei
+@@ -523,7 +523,7 @@ importers:
+         version: 0.160.0
+       acpx:
+         specifier: 0.13.1
+-        version: 0.13.1(patch_hash=ujlgpkxl4mvt34bejc3uxyvthq)
++        version: 0.13.1(patch_hash=25xv27loodfejozcsygclyiyau)
+       ajv:
+         specifier: ^8.20.0
+         version: 8.20.0
+@@ -1021,7 +1021,7 @@ importers:
+         version: 8.18.0
+       acpx:
+         specifier: 0.13.1
+-        version: 0.13.1(patch_hash=ujlgpkxl4mvt34bejc3uxyvthq)
++        version: 0.13.1(patch_hash=25xv27loodfejozcsygclyiyau)
+       ai:
+         specifier: 7.0.130
+         version: 7.0.130(zod@4.6.7)
+@@ -13916,7 +13916,7 @@ snapshots:
+       - bare-buffer
+       - react-native-b4a
+ 
+-  acpx@0.13.1(patch_hash=ujlgpkxl4mvt34bejc3uxyvthq):
++  acpx@0.13.1(patch_hash=25xv27loodfejozcsygclyiyau):
+     dependencies:
+       '@agentclientprotocol/sdk': 1.4.0(zod@4.6.7)
+       commander: 15.0.0

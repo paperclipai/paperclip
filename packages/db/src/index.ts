@@ -1,6 +1,8 @@
 export {
   createDb,
   withDedicatedDbConnection,
+  createOwnedDatabaseListener,
+  type OwnedDatabaseListener,
   livenessDb,
   closeLivenessDb,
   checkpointDb,

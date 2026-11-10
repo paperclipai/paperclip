@@ -39,6 +39,8 @@ import {
   inspectRetainedRunInstructions,
   inspectStagedRunAttachmentHeader,
   type DurablePrpCheckpoint,
+  type DurablePrpControlPlaneStore,
+  type RunnerProcessHandle,
   durableRecoveryInternals,
   SemanticToolNotDispatchedError,
   inspectWarmRunTransition,
@@ -47,6 +49,16 @@ import {
   type RunnerProcessLaunchSpec,
 } from "./durable-prp-control-plane.js";
 import type { DurableRecoveryIdentity } from "./prp-transport-types.js";
+
+type WritableCoreStore = DurablePrpControlPlaneStore & {
+  save(): void;
+  commit(candidate: DurablePrpControlPlaneStore["state"]): void;
+};
+
+function restartRunner(handle: RunnerProcessHandle, ticket: string): void {
+  if (!handle.restart) throw new Error("Runner handle does not support restart");
+  handle.restart(ticket);
+}
 
 const identity: DurableRecoveryIdentity = {
   runnerInstanceId: "runner-test-1",
@@ -229,7 +241,7 @@ it("recovers only the matching run's admitted instructions from a valid checkpoi
     expect(inspectRetainedRunInstructions(core.store.state, { ...targetExpected, runtimeContextDigest: digest })).toBeNull();
     expect(inspectRetainedRunInstructions(core.store.state, expected)).toBe(template.provider.instructions);
     const corrupted = structuredClone(core.store.state);
-    corrupted.stagedRunAttachment!.templateDigest = `sha256:${"f".repeat(64)}`;
+    corrupted.stagedRunAttachment = { ...corrupted.stagedRunAttachment!, templateDigest: `sha256:${"f".repeat(64)}` };
     expect(inspectRetainedRunInstructions(corrupted, targetExpected)).toBeNull();
   } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
 });
@@ -545,7 +557,7 @@ it("excludes streamed output from checkpoints even when the live window is full"
   anchor.eventType = "turn.started";
   (anchor.envelope.payload as Record<string, unknown>).eventType = "turn.started";
   core.store.state.ackedSourceSeq = 4096;
-  core.store.save();
+  (core.store as WritableCoreStore).save();
   const snapshots: DurablePrpCheckpoint[] = [];
   core.setCheckpointPersistence(async saved => { snapshots.push(saved); });
   try {
@@ -918,7 +930,7 @@ it.each([false, true])("dispatches a fresh semantic input once when recovery ove
     if (JSON.parse(saved.records.get("cursor")!).ackedSourceSeq > 0) { writeHeld = true; await writeBarrier; }
   });
   const pending: Promise<void>[] = [];
-  let client: Awaited<ReturnType<typeof authenticate>>;
+  let client: AuthenticatedClient | null = null;
   try {
     await core.start();
     client = (await authenticate(core, core.issueBootstrapTicket()))!;
@@ -1149,7 +1161,7 @@ it.each(["event", "progress", "lifecycle", "lifecycle_priority_one", "usage", "c
         expect(() => core.queueCommand("session.snapshot")).toThrow("indeterminate");
       }
       if (mode === "authority_conflict") {
-        core.store.commit(structuredClone(core.store.state));
+        (core.store as WritableCoreStore).commit(structuredClone(core.store.state));
         core.queueCommand("session.snapshot", {}, "command_after_authority");
         expect(JSON.parse(readFileSync(core.store.path, "utf8")).ackedSourceSeq).toBe(0);
         expect(core.store.state.ackedSourceSeq).toBe(0);
@@ -1328,6 +1340,212 @@ it.each(["success", "integrity_failure"] as const)("ignores a replaced connectio
     replacement.socket.destroy();
   } finally {
     release();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("fails closed with the schema issue when the runner keeps redelivering an invalid event (restart chaos t01)", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-event-schema-stall-"));
+  const commits = vi.fn(async () => undefined);
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commits, onProtocolIntegrityError });
+  const envelope = semanticInputEvent(1);
+  const event = envelope.payload as Record<string, unknown>;
+  event.sourceEventId = "invalid-write-target-1";
+  event.eventType = "auth.credentials.updated";
+  event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+    bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+  delete event.schemaVersion;
+  event.priority = 7;
+  const now = vi.spyOn(Date, "now");
+  let clock = 1_000_000;
+  now.mockImplementation(() => clock);
+  try {
+    await core.start();
+    let lease: string | null = null;
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      const client: AuthenticatedClient = (await authenticate(core, lease ?? core.issueBootstrapTicket()))!;
+      lease = client.leaseToken ?? lease;
+      sendSecure(client, envelope);
+      await vi.waitFor(() => expect(client.socket.destroyed || client.socket.readyState === "closed"
+        || onProtocolIntegrityError.mock.calls.length > 0).toBe(true));
+      clock += 3_000;
+      client.socket.destroy();
+    }
+    expect(commits).not.toHaveBeenCalled();
+    expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
+    const failure = onProtocolIntegrityError.mock.calls[0]![0] as { reason: string; detail: string };
+    expect(failure.reason).toBe("runner_event_commit_stalled");
+    expect(failure.detail).toMatch(/^event_schema_invalid:\/\S* at source seq 1$/);
+  } finally {
+    now.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("fails closed at once when the journal cannot record a runner event", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-event-journal-failure-"));
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: vi.fn(async () => undefined), onProtocolIntegrityError });
+  const envelope = semanticInputEvent(1);
+  const event = envelope.payload as Record<string, unknown>;
+  event.sourceEventId = "journal-failure-1";
+  event.eventType = "auth.credentials.updated";
+  event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+    bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+  try {
+    await core.start();
+    const client: AuthenticatedClient = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const journal = core.store as unknown as { commit: (...args: unknown[]) => void; commitEvent: (...args: unknown[]) => Promise<boolean> };
+    const diskFull = Object.assign(new Error("no space on /private/disk"), { code: "ENOSPC" });
+    vi.spyOn(journal, "commit").mockImplementation(() => { throw diskFull; });
+    vi.spyOn(journal, "commitEvent").mockRejectedValue(diskFull);
+    sendSecure(client, envelope);
+    await vi.waitFor(() => expect(onProtocolIntegrityError).toHaveBeenCalledOnce());
+    const failure = onProtocolIntegrityError.mock.calls[0]![0] as Error & { reason: string; detail: string };
+    expect(failure).toMatchObject({ reason: "runner_event_commit_stalled", detail: "journal_write_failed:ENOSPC at source seq 1" });
+    expect(failure.message).not.toContain("/private/disk");
+    client.socket.destroy();
+  } finally {
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("fails closed when checkpoint storage keeps failing before a reconnect authenticates", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-checkpoint-stall-"));
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: vi.fn(async () => undefined), onProtocolIntegrityError });
+  let checkpointUp = true;
+  core.setCheckpointPersistence(async () => {
+    if (!checkpointUp) throw Object.assign(new Error("connect to private-db-host refused"), { code: "ECONNREFUSED" });
+  });
+  const now = vi.spyOn(Date, "now");
+  let clock = 1_000_000;
+  now.mockImplementation(() => clock);
+  try {
+    await core.start();
+    const tickets = Array.from({ length: 20 }, () => core.issueBootstrapTicket(60_000));
+    await core.flushCheckpoint();
+    checkpointUp = false;
+    for (const ticket of tickets) {
+      const client = await authenticate(core, ticket);
+      client?.socket.destroy();
+      clock += 3_000;
+      if (onProtocolIntegrityError.mock.calls.length > 0) break;
+    }
+    expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
+    const failure = onProtocolIntegrityError.mock.calls[0]![0] as Error & { reason: string; detail: string };
+    expect(failure.reason).toBe("runner_event_commit_stalled");
+    expect(failure.detail).toMatch(/^checkpoint_flush_failed:ECONNREFUSED at source seq 1$/);
+    expect(failure.message).not.toContain("private-db-host");
+  } finally {
+    now.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  { label: "an out-of-order event", seq: 5, failCommit: false, stepMs: 3_000, failsClosed: true,
+    detail: "event_sequence_mismatch at source seq 5" },
+  { label: "20 failures inside 45 s", seq: 1, failCommit: true, stepMs: 1_000, failsClosed: false, detail: null },
+])("bounds commit-stall reconnects for $label", async ({ seq, failCommit, stepMs, failsClosed, detail }) => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-event-stall-bound-"));
+  const commits = vi.fn(async () => {
+    if (failCommit) throw Object.assign(new Error("transient"), { code: "ECONNRESET" });
+  });
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commits, onProtocolIntegrityError });
+  const envelope = semanticInputEvent(seq);
+  const event = envelope.payload as Record<string, unknown>;
+  event.sourceEventId = `stall-bound-${seq}`;
+  event.eventType = "auth.credentials.updated";
+  event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+    bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+  const now = vi.spyOn(Date, "now");
+  let clock = 1_000_000;
+  now.mockImplementation(() => clock);
+  try {
+    await core.start();
+    let lease: string | null = null;
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      const client: AuthenticatedClient = (await authenticate(core, lease ?? core.issueBootstrapTicket()))!;
+      lease = client.leaseToken ?? lease;
+      sendSecure(client, envelope);
+      if (failCommit) await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(attempt));
+      await new Promise<void>(resolveTurn => setTimeout(resolveTurn, 20));
+      clock += stepMs;
+      client.socket.destroy();
+    }
+    if (failsClosed) {
+      expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
+      expect(onProtocolIntegrityError.mock.calls[0]![0]).toMatchObject({ reason: "runner_event_commit_stalled", detail });
+    } else {
+      expect(onProtocolIntegrityError).not.toHaveBeenCalled();
+    }
+  } finally {
+    now.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  { label: "a direct error code", failure: Object.assign(new Error("private-host-fixture"), { code: "ECONNRESET" }), code: "ECONNRESET" },
+  { label: "a wrapped database error", failure: new Error("private SQL and parameters", { cause: Object.assign(new Error("private-host-fixture"), { code: "40001" }) }), code: "40001" },
+  { label: "a wrapped transport error", failure: new Error("private query", { cause: new Error("private SQL", { cause: Object.assign(new Error("private-host-fixture"), { code: "ECONNRESET" }) }) }), code: "ECONNRESET" },
+  { label: "a cyclic cause", failure: (() => { const error = new Error("private query"); error.cause = error; return error; })(), code: "Error" },
+  { label: "an unsafe nested code", failure: new Error("private query", { cause: Object.assign(new Error("private-host-fixture"), { code: "private SQL with spaces" }) }), code: "Error" },
+  { label: "an outer code before a nested code", failure: Object.assign(new Error("private query", { cause: Object.assign(new Error("private-host-fixture"), { code: "40001" }) }), { code: "OUTER_FAILURE" }), code: "OUTER_FAILURE" },
+  { label: "a cause beyond the depth limit", failure: new Error("private query", { cause: new Error("private query", { cause: new Error("private query", { cause: new Error("private query", { cause: Object.assign(new Error("private-host-fixture"), { code: "40001" }) }) }) }) }), code: "Error" },
+])("fails closed with $label when runner events keep failing to commit without progress", async ({ failure: callbackFailure, code }) => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-event-delivery-stall-"));
+  const commits = vi.fn(async () => {
+    throw callbackFailure;
+  });
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commits, onProtocolIntegrityError });
+  const envelope = semanticInputEvent(1);
+  const event = envelope.payload as Record<string, unknown>;
+  event.sourceEventId = "stalled-delivery-1";
+  event.eventType = "auth.credentials.updated";
+  event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+    bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+  const now = vi.spyOn(Date, "now");
+  let clock = 1_000_000;
+  now.mockImplementation(() => clock);
+  try {
+    await core.start();
+    let lease: string | null = null;
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      const client: AuthenticatedClient = (await authenticate(core, lease ?? core.issueBootstrapTicket()))!;
+      lease = client.leaseToken ?? lease;
+      sendSecure(client, envelope);
+      await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(attempt));
+      await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+      if (attempt < 20) expect(onProtocolIntegrityError).not.toHaveBeenCalled();
+      clock += 3_000;
+      client.socket.destroy();
+    }
+    expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
+    const failure = onProtocolIntegrityError.mock.calls[0]![0] as Error;
+    expect(failure).toMatchObject({ reason: "runner_event_commit_stalled", detail: `${code} at source seq 1` });
+    expect(core.store.state.ackedSourceSeq).toBe(0);
+    expect(core.store.state.committedEvents).toHaveLength(0);
+    expect(failure.message).toContain("runner_event_commit_stalled");
+    expect(failure.message).not.toContain("private-host-fixture");
+    expect(failure.message).not.toContain("private query");
+    expect(failure.message).not.toContain("private SQL");
+  } finally {
+    now.mockRestore();
     await core.stop();
     rmSync(root, { recursive: true, force: true });
   }
@@ -1817,7 +2035,7 @@ it("pins the ACPX launch profile in runner startup arguments and restarts", () =
     },
   });
 
-  handle.restart("replacement-ticket");
+  restartRunner(handle, "replacement-ticket");
   expect(launches).toHaveLength(2);
   for (const launch of launches) {
     expect(launch.args).toContain("--acpx-launch-authority-digest");
@@ -1869,7 +2087,7 @@ it("pins the OpenCode launch profile in runner startup arguments and restarts", 
     },
   });
 
-  handle.restart("replacement-ticket");
+  restartRunner(handle, "replacement-ticket");
   expect(launches).toHaveLength(2);
   for (const launch of launches) {
     expect(launch.args).toEqual(
@@ -2057,7 +2275,7 @@ it("preserves only bounded GitHub credential projection at the runner spawn boun
 it("passes structured inputs to an external owner and preserves its replacement veto", () => {
   const process = { child: { exitCode: null, signalCode: null, kill: () => true },
     completion: Promise.resolve({ code: 0, signal: null, stdout: "", stderr: "" }), restart: null };
-  const launcher = vi.fn(() => process);
+  const launcher = vi.fn((_spec: RunnerProcessLaunchSpec) => process);
   const options = { connection: { mode: "external" as const }, stateDirectory: "/unused", identity,
     ticket: "synthetic-ticket", maxOutboxBytes: 262144, p0ReserveBytes: 65536,
     runnerVersion: expectedRunnerVersion, runnerDigest: expectedRunnerDigest,
@@ -2065,7 +2283,7 @@ it("passes structured inputs to an external owner and preserves its replacement 
   expect(() => spawnRunner(options)).toThrow("requires a process owner");
   expect(spawnRunner({ ...options, processLauncher: launcher })).toBe(process);
   expect(launcher).toHaveBeenCalledWith(expect.objectContaining({ nativeRunner: expect.objectContaining(options) }));
-  expect(launcher.mock.calls[0][0].args).not.toContain("--connect-url");
+  expect(launcher.mock.calls[0]![0].args).not.toContain("--connect-url");
 });
 
 it("preserves the controller-selected ACPX provider package root", () => {
@@ -2147,7 +2365,7 @@ it.each([
             completion: Promise.resolve({ code: 0, signal: null, stdout: "", stderr: "" }) };
         },
       });
-      handle.restart("replacement-ticket");
+      restartRunner(handle, "replacement-ticket");
       for (const launch of launches.splice(0)) {
         expect(launch.environment[key]).toBe(explicit ? "explicit-fixture-credential" : undefined);
         const receipt = launch.environment[ACPX_CREDENTIAL_BINDING_ENV];
@@ -5119,6 +5337,44 @@ describe("DurablePrpControlPlane", () => {
       }
     },
   );
+
+  it("delivers a fresh suspension after a rejected one on the same connection", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-rejected-suspend-"));
+    const controlPlane = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+    });
+    try {
+      await controlPlane.start();
+      const rejected = controlPlane.queueCommand("runner.suspend", {}, "command-suspend-rejected");
+      const client = await authenticate(controlPlane, controlPlane.issueBootstrapTicket());
+      const retry = controlPlane.queueCommand("runner.suspend", {}, "command-suspend-retry", true);
+      expect(controlPlane.store.state.commandDeliveryCounts[retry.commandId]).toBeUndefined();
+      sendSecure(client!, {
+        protocol: "paperclip.runner", version: 1, kind: "command_result",
+        payload: {
+          commandId: rejected.commandId, commandType: rejected.type, controllerSeq: rejected.controllerSeq,
+          status: "failed",
+          result: { code: "command_execution_failed", message: "ACPX session is not at a safe suspension point" },
+        },
+      });
+      await expect(receiveSecure(client!)).resolves.toMatchObject({
+        kind: "command_result_ack", payload: { commandId: "command-suspend-rejected", status: "failed" },
+      });
+      // The runner keeps serving after a rejected suspension, so the retry is
+      // delivered on the same connection instead of waiting behind the fence.
+      await expect(receiveSecure(client!)).resolves.toMatchObject({
+        kind: "command", payload: { commandId: "command-suspend-retry" },
+      });
+      expect(controlPlane.store.state.commandDeliveryCounts[retry.commandId]).toBe(1);
+      client?.socket.destroy();
+    } finally {
+      await controlPlane.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it("acknowledges terminal command results after persisting them", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-terminal-ack-"));

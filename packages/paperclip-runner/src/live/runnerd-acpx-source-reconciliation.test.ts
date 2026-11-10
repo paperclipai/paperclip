@@ -47,7 +47,7 @@ async function fixture(agent: "codex" | "claude" = "codex", nativeSource = false
     binding: { companyId: nativeIdentity.companyId, agentId: nativeIdentity.agentId, issueId: nativeIdentity.issueId, runId: identity.runId, executionWorkspaceId: "workspace" },
     task: { identifier: "TASK-1", title: "Complete fake work", description: null, prompt: "Complete fake work", workMode: "standard" },
     workspace: { cwd: root, repoUrl: null, repoRef: null, branchName: null },
-    session: { normalizedSessionId: identity.normalizedSessionId, driverKind: "acpx_runtime", protocolVersion: 1 },
+    session: { normalizedSessionId: identity.normalizedSessionId, driverKind: "acpx_runtime", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
     provider: { kind: "acpx", agent, model: "explicit-source-model", permissionPolicy: "interactive", profile: resolveQualifiedAcpxProfile(agent, "explicit-source-model") },
     completionContract: { id: "contract", sha256: sha("contract"), schemaVersion: "paperclip.completion-contract.v1",
       contract: { revision: "1", objective: "Complete fake work", criteria: [{ id: "objective", requirement: "Complete fake work" }] } }, interactionResponses: [], credentialBindings: [] };
@@ -147,7 +147,7 @@ it.skipIf(process.platform === "win32")("recovers and adopts ACPX through the re
       environment: { PAPERCLIP_WORKSPACE_CWD: f.root }, dynamicTools: [] });
     let recovered = await backend().recoverSession!(f.nativeSnapshot!, { signal: new AbortController().signal });
     expect(recovered.recovered).toBe(true);
-    const pid = source.evidence().runnerPid, startedAt = source.transport.processInfo().startedAt;
+    const pid = source.evidence().runnerPid, startedAt = source.transport.processInfo!().startedAt;
     expect(await f.count("turn.start")).toBe(1); expect(await f.count("processStart")).toBe(2);
     await recovered.session!.detachControllerForRestart!();
     const launch = vi.fn(() => { throw new Error("duplicate source launch"); });
@@ -197,7 +197,7 @@ it.skipIf(process.platform === "win32").each(["codex", "claude", "adopt", "pause
     await expect(source.transport.request("turn/start", {})).rejects.toThrow("source_attachment_pending");
     const pid = source.evidence().runnerPid;
     if (mode === "adopt") {
-      const startedAt = source.transport.processInfo().startedAt;
+      const startedAt = source.transport.processInfo!().startedAt;
       await source.detachControllerForRestart();
       const launch = vi.fn(() => { throw new Error("duplicate source launch"); });
       source = f.recover({ runnerProcessLauncher: launch, authorizeRunnerAdoption: async () => { throw new Error("old source configuration"); },

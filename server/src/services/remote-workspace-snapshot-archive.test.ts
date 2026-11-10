@@ -6,18 +6,26 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { captureRemoteWorkspaceDirectory, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
+import { workspaceArchive, readRemoteWorkspaceArchiveDirectories, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage } from "./remote-workspace-snapshot-archive.js";
 
 const archiveIo = vi.hoisted(() => ({
   afterChmod: undefined as ((target: string, mode: number) => void) | undefined,
   beforeOpen: undefined as ((target: string) => Promise<void>) | undefined,
+  afterOpen: undefined as ((target: string) => Promise<void>) | undefined,
+  afterClose: undefined as ((target: string) => void) | undefined,
   captures: [] as string[],
 }));
 vi.mock("node:fs/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return { ...actual, async open(...args: Parameters<typeof actual.open>) {
     await archiveIo.beforeOpen?.(String(args[0]));
-    return actual.open(...args);
+    const handle = await actual.open(...args), close = handle.close.bind(handle);
+    let closed = false;
+    handle.close = async () => {
+      try { await close(); } finally { if (!closed) { closed = true; archiveIo.afterClose?.(String(args[0])); } }
+    };
+    await archiveIo.afterOpen?.(String(args[0]));
+    return handle;
   }, async mkdtemp(...args: Parameters<typeof actual.mkdtemp>) {
     const directory = await actual.mkdtemp(...args);
     if (String(args[0]).includes("pc-workspace-capture-")) archiveIo.captures.push(String(directory));
@@ -27,6 +35,9 @@ vi.mock("node:fs/promises", async importOriginal => {
   } };
 });
 
+const captureRemoteWorkspaceDirectory = (input: Omit<Parameters<typeof workspaceArchive>[0], "kind">) => workspaceArchive({ ...input, kind: "capture" });
+const restoreRemoteWorkspaceArchive = (input: Omit<Parameters<typeof workspaceArchive>[0], "kind">) => workspaceArchive({ ...input, kind: "restore" });
+
 const execute = promisify(execFile);
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull,
   GIT_AUTHOR_NAME: "Snapshot", GIT_COMMITTER_NAME: "Snapshot", GIT_AUTHOR_EMAIL: "snapshot@example.test", GIT_COMMITTER_EMAIL: "snapshot@example.test" };
@@ -35,7 +46,8 @@ describe("portable remote workspace archives", () => {
   let root: string;
   beforeEach(async () => { root = await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-archive-test-")); });
   afterEach(async () => {
-    archiveIo.afterChmod = undefined; archiveIo.beforeOpen = undefined; archiveIo.captures = [];
+    archiveIo.afterChmod = undefined; archiveIo.beforeOpen = undefined; archiveIo.afterOpen = undefined;
+    archiveIo.afterClose = undefined; archiveIo.captures = [];
     await fs.rm(root, { recursive: true, force: true });
   });
   async function source() { const cwd = path.join(root, "source"); await fs.mkdir(cwd); return cwd; }
@@ -54,6 +66,192 @@ describe("portable remote workspace archives", () => {
     }
     return JSON.stringify(entries);
   }
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>(done => { resolve = done; });
+    return { promise, resolve };
+  }
+  it.each([".", "nested"])("requires a shared Git fence before reading included %s Git storage", async location => {
+    const cwd = await source(), repository = path.join(cwd, location);
+    await fs.mkdir(repository, { recursive: true });
+    await git(repository, "init", "--quiet");
+    await fs.writeFile(path.join(repository, "saved.txt"), "preserve original work\n");
+    await git(repository, "add", ".");
+    await git(repository, "commit", "-qm", "Saved work");
+    const before = await sourceBytes(cwd);
+    await expect(captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "fenced.pcws"), requireNoGit: true }))
+      .rejects.toThrow("online_source_git_requires_shared_fence");
+    expect(await sourceBytes(cwd)).toBe(before);
+    await expect(capture(cwd)).resolves.toMatchObject({ manifestDigest: expect.any(String) });
+  });
+  it.each(["linked", "borrowed"].flatMap(kind => ["local", "serialized"].map(mode => ({ kind, mode }))))(
+    "enforces owned Git source roots for $kind $mode capture without changing archive bytes", async ({ kind, mode }) => {
+      const base = await source(); await git(base, "init", "-q", "-b", "main");
+      await fs.writeFile(path.join(base, "work.txt"), "base work\n"); await git(base, "add", "."); await git(base, "commit", "-qm", "base");
+      const cwd = path.join(root, "selected");
+      if (kind === "linked") await git(base, "worktree", "add", "-qb", "selected", cwd);
+      else await git(root, "clone", "-q", "--shared", base, cwd);
+      await fs.writeFile(path.join(cwd, "work.txt"), "staged work\n"); await git(cwd, "add", ".");
+      await fs.writeFile(path.join(cwd, "work.txt"), "unstaged work\n");
+      const baseline = await capture(cwd), archivePath = path.join(root, "owned.pcws");
+      const prefix = remoteWorkspaceArchiveScript().split("const [kind, first, second, digest]")[0];
+      const fenced = async (roots: string[]) => {
+        const input = { kind: "capture", cwd, archivePath, gitSourceRoots: roots };
+        return mode === "local" ? captureRemoteWorkspaceDirectory(input)
+          : JSON.parse((await execute(process.execPath, ["--eval", `${prefix}archive(${JSON.stringify(input)}).then(value=>process.stdout.write(JSON.stringify(value))).catch(error=>{process.stderr.write(error.message);process.exitCode=1;});`], { env })).stdout);
+      };
+      await expect(fenced([await fs.realpath(cwd)])).rejects.toThrow("online_source_git_requires_shared_fence");
+      await expect(fs.access(archivePath)).rejects.toMatchObject({ code: "ENOENT" });
+      const snapshot = { archivePath, ...await fenced([await fs.realpath(root)]) };
+      expect(snapshot).toMatchObject({ manifestDigest: baseline.manifestDigest, sha256: baseline.sha256, byteSize: baseline.byteSize });
+      expect(await fs.readFile(archivePath)).toEqual(await fs.readFile(baseline.archivePath));
+      await fs.rm(base, { recursive: true }); await fs.rm(cwd, { recursive: true });
+      const target = await restore(snapshot);
+      expect(await git(target, "show", ":work.txt")).toBe("staged work");
+      expect(await fs.readFile(path.join(target, "work.txt"), "utf8")).toBe("unstaged work\n");
+      await git(target, "fsck", "--full", "--no-dangling");
+    });
+  it("requires a shared Git fence for a nested bare repository borrowing external objects", async () => {
+    const cwd = await source(), upstream = path.join(root, "upstream"), repository = path.join(cwd, "bare.git");
+    await fs.mkdir(upstream);
+    await git(upstream, "init", "--quiet");
+    await fs.writeFile(path.join(upstream, "saved.txt"), "external commit objects\n");
+    await git(upstream, "add", ".");
+    await git(upstream, "commit", "-qm", "External source");
+    await git(cwd, "clone", "--bare", "--shared", upstream, repository);
+    expect(await fs.readFile(path.join(repository, "objects", "info", "alternates"), "utf8"))
+      .toContain(path.join(upstream, ".git", "objects"));
+    const before = await sourceBytes(cwd), external = await sourceBytes(upstream);
+    for (const options of [{ requireNoGit: true }, { gitSourceRoots: [await fs.realpath(root)] }]) {
+      await expect(captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "bare.pcws"), ...options }))
+        .rejects.toThrow("online_source_git_requires_shared_fence");
+    }
+    expect(await sourceBytes(cwd)).toBe(before);
+    expect(await sourceBytes(upstream)).toBe(external);
+  });
+  it.each(["commondir", "alternates"])("requires a shared Git fence for included detached %s metadata", async marker => {
+    const cwd = await source(), directory = path.join(cwd, marker === "commondir" ? "admin" : "object-cache/info");
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(path.join(directory, marker), "/outside/source/Git-storage\n");
+    const before = await sourceBytes(cwd);
+    await expect(captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, `${marker}.pcws`), requireNoGit: true }))
+      .rejects.toThrow("online_source_git_requires_shared_fence");
+    expect(await sourceBytes(cwd)).toBe(before);
+  });
+  async function parallelSource() {
+    const cwd = await source();
+    for (const name of ["a", "b", "c", "d", "e", "f"]) {
+      await fs.mkdir(path.join(cwd, name));
+      await fs.writeFile(path.join(cwd, name, "file"), name.repeat(1024));
+    }
+    return fs.realpath(cwd);
+  }
+  it.each(["normal", "reordered"])("bounds stable reads with %s opens and preserves out-of-order bytes", async opening => {
+    const cwd = await parallelSource(), blocked = new Map<string, ReturnType<typeof deferred>>();
+    const admitFirst = deferred();
+    archiveIo.beforeOpen = async target => {
+      if (opening === "reordered" && target === path.join(cwd, "a", "file")) await admitFirst.promise;
+    };
+    let gating = true, active = 0, maximum = 0;
+    const closed: string[] = [];
+    archiveIo.afterOpen = async target => {
+      if (!target.startsWith(`${cwd}${path.sep}`)) return;
+      maximum = Math.max(maximum, ++active);
+      if (gating) { const gate = deferred(); blocked.set(target, gate); if (blocked.size === 3) admitFirst.resolve(); await gate.promise; }
+    };
+    archiveIo.afterClose = target => {
+      if (target.startsWith(`${cwd}${path.sep}`)) { active--; closed.push(target); }
+    };
+    const capturing = capture(cwd);
+    try {
+      await expect.poll(() => blocked.size).toBe(4);
+      expect(active).toBe(4);
+      blocked.get(path.join(cwd, "d", "file"))!.resolve();
+      await expect.poll(() => blocked.size).toBe(5);
+      expect(closed[0]).toBe(path.join(cwd, "d", "file"));
+      expect(maximum).toBe(4);
+    } finally {
+      gating = false;
+      admitFirst.resolve();
+      for (const gate of blocked.values()) gate.resolve();
+      await capturing;
+    }
+    const snapshot = await capturing;
+    expect(active).toBe(0); expect(maximum).toBe(4);
+    archiveIo.afterOpen = undefined; archiveIo.afterClose = undefined;
+    const helper = path.join(root, "helper.cjs"), archivePath = path.join(root, "serialized.pcws");
+    await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+    const serialized = JSON.parse((await execute(process.execPath, [helper, "capture", cwd, archivePath])).stdout);
+    expect(serialized).toMatchObject({ manifestDigest: snapshot.manifestDigest, sha256: snapshot.sha256 });
+    expect(await fs.readFile(archivePath)).toEqual(await fs.readFile(snapshot.archivePath));
+  });
+  it.each([
+    { kind: "cancel", opening: "normal" }, { kind: "replace", opening: "normal" },
+    { kind: "cancel", opening: "reordered" }, { kind: "replace", opening: "reordered" },
+  ])("drains every parallel stable read after $kind with $opening opens", async ({ kind, opening }) => {
+    const cwd = await parallelSource(), blocked = new Map<string, ReturnType<typeof deferred>>();
+    const admitFirst = deferred(), firstClosed = deferred(), first = path.join(cwd, "a", "file");
+    archiveIo.beforeOpen = async target => {
+      if (opening === "reordered" && target === first) await admitFirst.promise;
+    };
+    const controller = new AbortController(), reason = new Error("capture cancelled");
+    let gating = true, active = 0, settled = false;
+    archiveIo.afterOpen = async target => {
+      if (!target.startsWith(`${cwd}${path.sep}`)) return;
+      active++;
+      if (gating) { const gate = deferred(); blocked.set(target, gate); if (blocked.size === 3) admitFirst.resolve(); await gate.promise; }
+    };
+    archiveIo.afterClose = target => {
+      if (target.startsWith(`${cwd}${path.sep}`)) active--;
+      if (target === first) firstClosed.resolve();
+    };
+    const capturing = captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "snapshot.pcws"), signal: controller.signal })
+      .then(() => { settled = true; return null; }, error => { settled = true; return error as Error; });
+    try {
+      await expect.poll(() => blocked.size).toBe(4);
+      if (kind === "cancel") controller.abort(reason);
+      else {
+        await fs.unlink(path.join(cwd, "a", "file"));
+        await fs.writeFile(path.join(cwd, "a", "file"), "replacement");
+      }
+      blocked.get(first)!.resolve();
+      await firstClosed.promise;
+      await new Promise<void>(resolve => setImmediate(resolve));
+      for (const name of ["b", "c"]) blocked.get(path.join(cwd, name, "file"))!.resolve();
+      await expect.poll(() => active).toBe(1);
+      expect(settled).toBe(false);
+    } finally {
+      gating = false;
+      admitFirst.resolve();
+      for (const gate of blocked.values()) gate.resolve();
+      await capturing;
+    }
+    const error = await capturing;
+    if (kind === "cancel") expect(error === reason || error?.cause === reason).toBe(true);
+    else expect(error?.message).toBe("remote_workspace_archive_changed");
+    expect(active).toBe(0);
+    await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
+    for (const directory of archiveIo.captures) await expect(fs.access(directory)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("reads captured directory coverage and rejects a different manifest digest", async () => {
+    const cwd = await source();
+    await fs.mkdir(path.join(cwd, "checkout"));
+    await fs.writeFile(path.join(cwd, "checkout", "file.txt"), "saved");
+    const snapshot = await capture(cwd);
+    expect(await readRemoteWorkspaceArchiveDirectories(snapshot.archivePath, snapshot.manifestDigest))
+      .toEqual(new Set(["checkout"]));
+    await expect(readRemoteWorkspaceArchiveDirectories(snapshot.archivePath, "0".repeat(64)))
+      .rejects.toThrow("manifest_mismatch");
+  });
+
+  it("rejects oversized coverage manifests before reading their body", async () => {
+    const archivePath = path.join(root, "oversized.pcws"), header = Buffer.alloc(10);
+    header.write("PCWS1\n"); header.writeUInt32BE(64 * 1024 * 1024 + 1, 6);
+    await fs.writeFile(archivePath, header);
+    await expect(readRemoteWorkspaceArchiveDirectories(archivePath, "0".repeat(64)))
+      .rejects.toThrow("manifest_too_large");
+  });
+
   it("keeps every serialized capture validation reason in the closed diagnostic contract", () => {
     const script = remoteWorkspaceArchiveScript(), start = script.indexOf("const archive = ");
     const restore = script.indexOf("if (!input.targetDir", start);
@@ -529,6 +727,30 @@ describe("portable remote workspace archives", () => {
     const bytes = await sourceBytes(cwd);
     await expect(capture(cwd)).rejects.toThrow("remote_workspace_archive_git_operation_in_progress");
     expect(await sourceBytes(cwd)).toBe(bytes);
+    await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it.each(["staged", "committed"])("refuses to save a repository missing a %s object", async kind => {
+    const cwd = await source();
+    await git(cwd, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(cwd, "work.txt"), "committed\n"); await git(cwd, "add", ".");
+    await git(cwd, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "base");
+    if (kind === "staged") { await fs.writeFile(path.join(cwd, "work.txt"), "staged\n"); await git(cwd, "add", "work.txt"); }
+    const object = await git(cwd, "rev-parse", kind === "staged" ? ":work.txt" : "HEAD:work.txt");
+    await fs.rm(path.join(cwd, ".git", "objects", object.slice(0, 2), object.slice(2)), { force: true });
+    await expect(capture(cwd)).rejects.toThrow();
+    await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("refuses to save a repository with a corrupt packed object", async () => {
+    const cwd = await source();
+    await git(cwd, "init", "-q", "-b", "main");
+    for (const name of ["a", "b", "c"]) await fs.writeFile(path.join(cwd, `${name}.txt`), `${name} `.repeat(4096));
+    await git(cwd, "add", "."); await git(cwd, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "base");
+    await git(cwd, "repack", "-qad");
+    const packs = path.join(cwd, ".git", "objects", "pack");
+    const pack = path.join(packs, (await fs.readdir(packs)).find(name => name.endsWith(".pack"))!);
+    const bytes = await fs.readFile(pack); bytes[Math.floor(bytes.length / 2)] ^= 0xff;
+    await fs.chmod(pack, 0o600); await fs.writeFile(pack, bytes);
+    await expect(capture(cwd)).rejects.toThrow();
     await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("rejects a damaged Git entry with a closed reason instead of a raw command error", async () => {

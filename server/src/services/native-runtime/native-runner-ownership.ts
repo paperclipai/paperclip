@@ -1,7 +1,39 @@
-import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { environmentLeases, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { readSystemRecovery } from "../system-recovery-state.js";
+
+type NativeRemoteExecutionScope = {
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "runnerProfileJson">;
+  issueId: string;
+};
+
+export async function readNativeRemoteExecutionOwnershipForRuns(db: Db, inputs: readonly NativeRemoteExecutionScope[]) {
+  const key = (companyId: string, issueId: string, runId: string) => `${companyId}:${issueId}:${runId}`;
+  const leases = inputs.length ? await db.select({ id: environmentLeases.id, companyId: environmentLeases.companyId,
+    issueId: environmentLeases.issueId, runId: environmentLeases.heartbeatRunId,
+    metadata: sql<Record<string, unknown>>`jsonb_build_object('runnerTaskStartup', ${environmentLeases.metadata}->'runnerTaskStartup')`,
+  }).from(environmentLeases).where(and(
+    or(...inputs.map(input => and(eq(environmentLeases.companyId, input.run.companyId),
+      eq(environmentLeases.issueId, input.issueId), eq(environmentLeases.heartbeatRunId, input.run.id)))),
+    sql`${environmentLeases.metadata}->>'runnerTaskLease' = 'true'`,
+  )).orderBy(desc(environmentLeases.createdAt)) : [];
+  const byScope = new Map<string, typeof leases[number]>();
+  for (const lease of leases) {
+    const scope = key(lease.companyId, lease.issueId!, lease.runId!);
+    if (!byScope.has(scope)) byScope.set(scope, lease);
+  }
+  return inputs.map(input => {
+    const pluginTask = byScope.get(key(input.run.companyId, input.issueId, input.run.id));
+    return { pluginTask, remoteProcess: input.run.runnerProfileJson?.nativeWorkspaceSync != null
+      || input.run.runnerProfileJson?.remoteWorkspace != null || !!pluginTask };
+  });
+}
+
+export async function readNativeRemoteExecutionOwnership(db: Db, input: NativeRemoteExecutionScope) {
+  return (await readNativeRemoteExecutionOwnershipForRuns(db, [input]))[0]!;
+}
 
 export const nativeManualAdmissionOwnerColumns = {
   runId: nativeRunFinalizations.runId, companyId: nativeRunFinalizations.companyId,
@@ -78,4 +110,17 @@ export function nativeRunnerOwnershipNotHeldCondition() {
       or ${heartbeatRuns.errorCode} = ${NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT}
     ), false
   )`;
+}
+
+/** Opaque binding for an operator's exact observed controller authority. Never
+ * expose the token itself. expiryEpoch must come from Postgres numeric epoch
+ * text, which is timezone independent and retains timestamp microseconds. */
+export function nativeControllerAuthorityDigest(owner: Pick<typeof nativeRunFinalizations.$inferSelect,
+  "companyId" | "issueId" | "runId" | "leaseOwner" | "controllerGeneration" | "controllerBootId" |
+  "controllerHostHash" | "controllerPid" | "controllerProcessStartedAt">, expiryEpoch: string | null): string {
+  return createHash("sha256").update(JSON.stringify([
+    "paperclip.native-controller-authority.v1", owner.companyId, owner.issueId, owner.runId,
+    owner.leaseOwner, owner.controllerGeneration, owner.controllerBootId, owner.controllerHostHash,
+    owner.controllerPid, owner.controllerProcessStartedAt?.toISOString() ?? null, expiryEpoch,
+  ])).digest("hex");
 }

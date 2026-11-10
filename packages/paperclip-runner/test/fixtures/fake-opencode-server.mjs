@@ -275,6 +275,12 @@ async function callTerminalTool(promptBody, signal) {
     const rejected = await mcpRequest("tools/call", { name: "paperclip_finish", arguments: bad });
     await writeFile(join(process.env.XDG_DATA_HOME, "fake-criteria-repair.json"), JSON.stringify(rejected));
   }
+  if (String(prompt.message ?? "").includes("repair-revision")) {
+    const stale = structuredClone(result);
+    stale.completionClaim.contractRevision = "stale-revision";
+    const rejected = await mcpRequest("tools/call", { name: "paperclip_finish", arguments: stale });
+    await writeFile(join(process.env.XDG_DATA_HOME, "fake-revision-repair.json"), JSON.stringify(rejected));
+  }
   const call = () => mcpRequest("tools/call", {
     name: blocked ? "paperclip_block" : "paperclip_finish",
     arguments: result,
@@ -532,6 +538,36 @@ const server = createServer(async (request, response) => {
           }
           await writeFile(join(process.cwd(), "fake-stream-backlog-receipt.json"), JSON.stringify(receipt));
           if (backlogTool !== "completion" && receipt.acknowledged) await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
+        if (String(parsedPrompt.message ?? "").includes("oversized-schema-rejection")) {
+          const receipt = await mcpRequest("tools/call", {
+            name: "paperclip_large_call", arguments: Array(12_000).fill(0),
+          });
+          await writeFile(join(process.cwd(), "fake-large-rejection-receipt.json"), JSON.stringify(receipt));
+          await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
+        if (String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("argument-diagnostics")) {
+          const receipts = [await mcpRequest("tools/call", {
+            name: "paperclip_paperclip_call_assigned_tool", arguments: [],
+          })];
+          for (const name of [42, "benign-operation"]) {
+            receipts.push(await mcpRequest("tools/call", {
+              name: "paperclip_paperclip_call_assigned_tool",
+              arguments: { name, arguments: { token: "private-argument-canary" }, "private-key-canary": "private-value-canary" },
+            }));
+          }
+          emit({ type: "message.updated", id: "diagnostic-message-event", properties: { sessionID: session.id,
+            info: { id: "diagnostic-message", sessionID: session.id, role: "assistant" } } });
+          emit({ type: "message.part.updated", id: "diagnostic-part-event", properties: { sessionID: session.id,
+            part: { id: "diagnostic-provider-row", messageID: "diagnostic-message", sessionID: session.id,
+              type: "tool", tool: "paperclip_paperclip_call_assigned_tool",
+              callID: "unrelated-provider-call", state: { status: "completed", output: "provider-receipt" } } } });
+          await writeFile(join(process.cwd(), "fake-diagnostic-receipts.json"), JSON.stringify(receipts));
+          await callTerminalTool(promptPayload);
           emit({ type: "session.idle", properties: { sessionID: session.id } });
           return;
         }

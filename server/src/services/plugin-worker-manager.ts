@@ -590,6 +590,7 @@ export type ExecuteLogSink = (
  * carries no command string, so a caller cannot select the command.
  */
 export interface LoginPtyOpenInput {
+  expiresAt?: string;
   /** The environment driver key. It routes the worker; it confers no command authority. */
   driverKey: string;
   companyId: string;
@@ -832,6 +833,12 @@ export interface PluginWorkerManager {
   retireStartup?(contextId: string): Promise<void>;
   /** Subscribe after a worker successfully applies live company configuration. */
   onConfigApplied(listener: () => void): () => void;
+  /**
+   * Subscribe to every worker `ready`: first start, crash respawn, and a
+   * replacement handle from a restart. Unlike `getWorker(id).on("ready")`, it
+   * survives the handle being replaced. Returns the unsubscribe function.
+   */
+  onWorkerReady?(listener: (pluginId: string) => void): () => void;
   inspectIdleSleep?(hold: { ownerId: string; expiresAt: number }): Promise<{
     backgroundWork: "none" | "present" | "unknown"; pluginIds: string[];
     catalogGeneration?: string;
@@ -1558,7 +1565,9 @@ export function createPluginWorkerHandle(
   type LoginPtyPreBindRecord = LoginPtyPreBindOutputRecord | LoginPtyPreBindExitRecord;
 
   interface LoginPtyRoute {
+    companyId: string;
     hostRouteId: string;
+    closePromise: Promise<void> | null;
     state: LoginPtyRouteState;
     workerSessionId: string | null;
     listener: ((chunk: string) => void) | null;
@@ -1620,11 +1629,11 @@ export function createPluginWorkerHandle(
   // that carries the exact host route identifier. An absent, malformed,
   // mismatched, or timed-out acknowledgement returns false, so the caller fails
   // closed.
-  async function closeLoginPtyTerminal(hostRouteId: string): Promise<boolean> {
+  async function closeLoginPtyTerminal(hostRouteId: string, companyId: string): Promise<boolean> {
     try {
       const ack = await callInternal(
         "loginPtyClose",
-        { hostRouteId },
+        { hostRouteId, companyId },
         loginPtyCloseTimeoutMs,
       );
       return isRecord(ack) && readNonEmptyString(ack.hostRouteId) === hostRouteId;
@@ -1641,6 +1650,9 @@ export function createPluginWorkerHandle(
   // every other route this worker still holds settles through the worker-exit
   // path that follows.
   async function terminalizeLoginPtyRoute(route: LoginPtyRoute): Promise<void> {
+    // A notification may already have started close. Every later disposer must
+    // join that acknowledgement before its owner can release the allocation.
+    if (route.closePromise) return route.closePromise;
     if (route.terminalized) return;
     route.terminalized = true;
     route.state = "closed";
@@ -1654,20 +1666,22 @@ export function createPluginWorkerHandle(
       loginPtyRoutesByWorkerSessionId.delete(route.workerSessionId);
     }
     releaseLoginPtyRouteSlot(route);
-    // A terminalized route reports a null exit code, which the runner treats as a
-    // failure.
+    route.closePromise = (async () => {
+      const confirmed = await closeLoginPtyTerminal(route.hostRouteId, route.companyId);
+      if (!confirmed) {
+        // The worker did not acknowledge the close, so the host cannot prove the
+        // terminal is gone. Retire the worker before any reuse.
+        log.error(
+          { pluginId },
+          "login pseudo-terminal close not acknowledged; retiring worker",
+        );
+        retireWorkerProcess();
+      }
+    })();
+    // Report failure promptly, but retain the shared close barrier so the
+    // runner's following dispose waits for confirmed stop (or worker retirement).
     settleRouteWait(route, { exitCode: null });
-    const confirmed = await closeLoginPtyTerminal(route.hostRouteId);
-    if (!confirmed) {
-      // The worker did not acknowledge the close, so the host cannot prove the
-      // terminal is gone. Fail closed: retire the worker before any reuse. This
-      // also settles and clears every other route the worker still holds.
-      log.error(
-        { pluginId },
-        "login pseudo-terminal close not acknowledged; retiring worker",
-      );
-      retireWorkerProcess();
-    }
+    return route.closePromise;
   }
 
   // Resolve one login pseudo-terminal notification to its route. Return null
@@ -1914,7 +1928,9 @@ export function createPluginWorkerHandle(
       settleWait = resolve;
     });
     const route: LoginPtyRoute = {
+      companyId: input.companyId,
       hostRouteId,
+      closePromise: null,
       state: "reserved",
       workerSessionId: null,
       listener: null,
@@ -1951,6 +1967,7 @@ export function createPluginWorkerHandle(
           providerLeaseId: input.providerLeaseId,
           loginCommandKey: input.loginCommandKey,
           sessionHome: input.sessionHome,
+          ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
         },
         loginPtyOpenTimeoutMs,
       );
@@ -1995,9 +2012,9 @@ export function createPluginWorkerHandle(
         if (route.state !== "open" || !sid) return;
         void callInternal(
           "loginPtyInput",
-          { workerSessionId: sid, data },
+          { companyId: route.companyId, workerSessionId: sid, data, inputId: randomUUID() },
           loginPtyOpenTimeoutMs,
-        ).catch(() => {});
+        ).catch(() => terminalizeLoginPtyRoute(route));
       },
       wait(): Promise<{ exitCode: number | null }> {
         return waitPromise;
@@ -2007,7 +2024,7 @@ export function createPluginWorkerHandle(
         if (!sid) return;
         void callInternal(
           "loginPtyStop",
-          { workerSessionId: sid },
+          { companyId: route.companyId, workerSessionId: sid },
           loginPtyOpenTimeoutMs,
         ).catch(() => {});
       },
@@ -4044,6 +4061,7 @@ export function createPluginWorkerManager(
   };
   const startupWorkers = () => new Set([...workers.values(), ...retiredStartupWorkers]);
   const configApplied = new Set<() => void>();
+  const workerReady = new Set<(pluginId: string) => void>();
   let activeInspections = 0;
   /** Per-plugin startup locks to prevent concurrent spawn races. */
   const startupLocks = new Map<string, Promise<PluginWorkerHandle>>();
@@ -4062,6 +4080,10 @@ export function createPluginWorkerManager(
     onConfigApplied(listener) {
       configApplied.add(listener);
       return () => { configApplied.delete(listener); };
+    },
+    onWorkerReady(listener) {
+      workerReady.add(listener);
+      return () => { workerReady.delete(listener); };
     },
     async inspectIdleSleep(hold) {
       if (startupLocks.size) return { backgroundWork: "unknown", pluginIds: [] };
@@ -4113,6 +4135,12 @@ export function createPluginWorkerManager(
       idleWorkerManifests.set(handle, pluginIdleManifestGeneration(options.manifest));
       if (existing) retainStartupWorker(existing);
       workers.set(pluginId, handle);
+      handle.on("ready", (payload) => {
+        for (const listener of [...workerReady]) {
+          try { listener(payload.pluginId); }
+          catch (err) { log.warn({ err, pluginId: payload.pluginId }, "worker ready listener failed"); }
+        }
+      });
 
       // Subscribe to crash/ready events for live event forwarding
       if (managerOptions?.onWorkerEvent) {

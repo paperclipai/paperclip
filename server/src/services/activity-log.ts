@@ -164,10 +164,11 @@ export function publishActivity(publication: ActivityPublication) {
   } finally { finish(); }
 }
 
-export async function persistActivity(db: Db, input: LogActivityInput) {
+export async function persistActivity(db: Db, input: LogActivityInput, receipt?: { id: string }) {
   const redactedDetails = await redactActivityDetails(db, input.authorization ? { ...input.details, permissionDecision: input.authorization, ...(input.agentApiKeyId ? { agentApiKeyId: input.agentApiKeyId } : {}) } : input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
   const insert = (runner: Db) => runner.insert(activityLog).values({
+    ...(receipt ? { id: receipt.id } : {}),
     companyId: input.companyId,
     actorType: input.actorType,
     actorId: input.actorId,

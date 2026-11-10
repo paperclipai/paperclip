@@ -24,6 +24,12 @@ jobs:
       actions: read
       contents: write
       pull-requests: write
+    env:
+      # Every lockfile this workflow owns: the root one, then the sandbox
+      # providers' own lockfiles. Keep it equal to LOCKFILES in
+      # .github/scripts/lockfile-trust.mjs, which blocks contributor edits to
+      # the same files. A test checks that the two lists match.
+      LOCKFILES: pnpm-lock.yaml scripts/typecheck-sandbox-providers/pnpm-lock.yaml packages/plugins/sandbox-providers/daytona/pnpm-lock.yaml
 
     steps:
       - name: Checkout repository
@@ -43,9 +49,9 @@ jobs:
           # claim the shared cache key with an empty archive before full installs.
           package-manager-cache: false
 
-      # Start from the lockfile the previous run held, so resolution keeps those
+      # Start from the lockfiles the previous run held, so resolution keeps those
       # versions while their manifests are unchanged and they can age past the
-      # gate. Read it from that run's artifact, not the PR branch: anyone with
+      # gate. Read them from that run's artifact, not the PR branch: anyone with
       # write access can push to chore/refresh-lockfile.
       - name: Reuse versions from a held refresh
         env:
@@ -61,18 +67,33 @@ jobs:
             echo "The previous refresh held nothing. Resolving from master."
             exit 0
           fi
-          # Reuse the held lock only while master still has the lock it was
-          # resolved from. A lock change on master, such as a maintainer's
-          # correction, supersedes it.
-          if [ "$(sha256sum < pnpm-lock.yaml)" != "$(cat "$held/source-lock.sha256")" ]; then
-            echo "The lockfile on master changed after run $run_id held its refresh. Resolving from master."
+          # An artifact saved before the provider lockfiles has no
+          # source-locks.sha256. Resolve from master instead.
+          if [ ! -f "$held/source-locks.sha256" ]; then
+            echo "Run $run_id held its refresh in an older format. Resolving from master."
             exit 0
           fi
-          cp "$held/pnpm-lock.yaml" pnpm-lock.yaml
-          echo "Resolving from the lockfile held by run $run_id."
+          # Reuse the held locks only while master still has every lock they
+          # were resolved from. A lock change on master, such as a maintainer's
+          # correction, supersedes them.
+          if ! sha256sum --check --status "$held/source-locks.sha256"; then
+            echo "A lockfile on master changed after run $run_id held its refresh. Resolving from master."
+            exit 0
+          fi
+          for lock in $LOCKFILES; do
+            cp "$held/$lock" "$lock"
+          done
+          echo "Resolving from the lockfiles held by run $run_id."
 
       - name: Refresh pnpm lockfile
         run: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+
+      # Sandbox providers stay out of the root workspace. The shared typecheck
+      # workspace has its own pnpm-workspace.yaml, and Daytona installs alone.
+      - name: Refresh sandbox provider lockfiles
+        run: |
+          pnpm --dir scripts/typecheck-sandbox-providers install --resolution-only --ignore-scripts --no-frozen-lockfile
+          pnpm --dir packages/plugins/sandbox-providers/daytona install --ignore-workspace --resolution-only --ignore-scripts --no-frozen-lockfile
 
       # A verified Dependabot lockfile merged to master is trusted lock content.
       # Report its hash so the proof refresh can admit it.
@@ -99,7 +120,9 @@ jobs:
             echo "Lockfile is already up to date."
             exit 0
           fi
-          unexpected="$(printf '%s\n' "$changed" | awk '$2 != "pnpm-lock.yaml" && $2 != "tests/runner-e2e/report-lock.json" && $2 != "tests/runner-e2e/report-lock.patch" { print }')"
+          unexpected="$(printf '%s\n' "$changed" | awk -v allowed="$LOCKFILES tests/runner-e2e/report-lock.json tests/runner-e2e/report-lock.patch" '
+            BEGIN { n = split(allowed, files, " "); for (i = 1; i <= n; i++) ok[files[i]] = 1 }
+            !($2 in ok) { print }')"
           if [ -n "$unexpected" ]; then
             echo "Unexpected files changed during lockfile refresh:"
             echo "$changed"
@@ -114,8 +137,8 @@ jobs:
         run: |
           # A verified Dependabot lockfile that already resolves changes only
           # the reporting-lock proof. Commit that proof too.
-          if git diff --quiet -- pnpm-lock.yaml tests/runner-e2e/report-lock.json tests/runner-e2e/report-lock.patch; then
-            echo "Lockfile and reporting-lock proof unchanged, nothing to do."
+          if git diff --quiet -- $LOCKFILES tests/runner-e2e/report-lock.json tests/runner-e2e/report-lock.patch; then
+            echo "Lockfiles and reporting-lock proof unchanged, nothing to do."
             echo "pr_url=" >> "$GITHUB_OUTPUT"
             echo "head_sha=" >> "$GITHUB_OUTPUT"
             exit 0
@@ -126,8 +149,8 @@ jobs:
           git config user.email "lockfile-bot@users.noreply.github.com"
 
           git checkout -B "$BRANCH"
-          git add pnpm-lock.yaml tests/runner-e2e/report-lock.json tests/runner-e2e/report-lock.patch
-          git commit -m "chore(lockfile): refresh pnpm-lock.yaml"
+          git add $LOCKFILES tests/runner-e2e/report-lock.json tests/runner-e2e/report-lock.patch
+          git commit -m "chore(lockfile): refresh pnpm lockfiles"
           git push --force origin "$BRANCH"
 
           # Only reuse an open PR from this repository owner, not a fork with the same branch name.
@@ -164,6 +187,7 @@ jobs:
           ## What Changed
 
           - Refresh the dependency lock from the manifests on master.
+          - Refresh the sandbox provider lockfiles from their manifests on master.
           - Include the matching offline report correction and hashes.
 
           ## Verification
@@ -188,7 +212,7 @@ jobs:
           PR_BODY
             pr_url="$(gh pr create \
               --head "$BRANCH" \
-              --title "chore(lockfile): refresh pnpm-lock.yaml" \
+              --title "chore(lockfile): refresh pnpm lockfiles" \
               --body-file "$pr_body_file")"
             echo "Created new PR: $pr_url"
           else
@@ -204,10 +228,18 @@ jobs:
         id: release-age
         if: steps.upsert-pr.outputs.pr_url != ''
         run: |
-          git show "$GITHUB_SHA:pnpm-lock.yaml" > "$RUNNER_TEMP/base-pnpm-lock.yaml"
+          # Keep each base lockfile at its repository path. "Stage held
+          # lockfile" hashes them from there.
+          base="$RUNNER_TEMP/base-locks"
+          pairs=()
+          for lock in $LOCKFILES; do
+            mkdir -p "$base/$(dirname "$lock")"
+            # A lockfile that master does not have yet has no base, so all of its entries count as added.
+            git show "$GITHUB_SHA:$lock" > "$base/$lock" 2>/dev/null || : > "$base/$lock"
+            pairs+=(--base "$base/$lock" --head "$lock")
+          done
           node .github/scripts/check-lockfile-release-age.mjs \
-            --base "$RUNNER_TEMP/base-pnpm-lock.yaml" \
-            --head pnpm-lock.yaml \
+            "${pairs[@]}" \
             --min-age-days 3 \
             --report "$RUNNER_TEMP/release-age-report.md"
           cat "$RUNNER_TEMP/release-age-report.md" >> "$GITHUB_STEP_SUMMARY"
@@ -236,9 +268,14 @@ jobs:
       - name: Stage held lockfile
         if: steps.release-age.outputs.eligible == 'false'
         run: |
-          mkdir -p "$RUNNER_TEMP/held-upload"
-          cp pnpm-lock.yaml "$RUNNER_TEMP/held-upload/pnpm-lock.yaml"
-          sha256sum < "$RUNNER_TEMP/base-pnpm-lock.yaml" > "$RUNNER_TEMP/held-upload/source-lock.sha256"
+          held="$RUNNER_TEMP/held-upload"
+          for lock in $LOCKFILES; do
+            mkdir -p "$held/$(dirname "$lock")"
+            cp "$lock" "$held/$lock"
+          done
+          # Hash the master lockfiles this refresh started from, by repository
+          # path, so the next run can check them with sha256sum --check.
+          (cd "$RUNNER_TEMP/base-locks" && sha256sum $LOCKFILES) > "$held/source-locks.sha256"
 
       - name: Save held lockfile for the next refresh
         if: steps.release-age.outputs.eligible == 'false'

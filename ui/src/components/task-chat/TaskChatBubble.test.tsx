@@ -155,7 +155,10 @@ describe("TaskChatBubble attachment chips", () => {
       </ThemeProvider>,
     ));
     const toolbar = container.querySelector('[data-testid="task-chat-bubble-actions"]')!;
-    expect(toolbar.parentElement?.parentElement?.textContent).toContain("15m ago");
+    const copyWrapper = toolbar.parentElement!;
+    const timestamp = copyWrapper.nextElementSibling;
+    expect(timestamp?.textContent).toBe("15m ago");
+    expect(timestamp).toBe(copyWrapper.parentElement?.lastElementChild);
     const button = toolbar.querySelector('button[aria-label="Copy message"]') as HTMLButtonElement;
     await act(async () => button.click());
     expect(copyTextToClipboard).toHaveBeenLastCalledWith(text);
