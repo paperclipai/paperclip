@@ -1336,6 +1336,64 @@ describe("plugin worker manager setup-token pty route gate", () => {
     }
   });
 
+  it("retains the opening company for scoped host calls during input, stop, and close", async () => {
+    const stages: string[] = [];
+    const handle = makeLoginPtyHandle({ hostHandlers: { "companies.get": async (
+      params: { companyId: string; stage: string }, context?: { invocationScope?: { companyId?: string } },
+    ) => {
+      if (context?.invocationScope?.companyId !== params.companyId || params.companyId !== "company-1") throw new Error("Host company scope denied");
+      stages.push(params.stage);
+      return { id: params.companyId };
+    } } });
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(ptyOpenInput({ probeLifecycle: true }));
+      session.write("browser-code");
+      await vi.waitFor(() => expect(stages).toEqual(["loginPtyInput"]));
+      session.kill();
+      await vi.waitFor(() => expect(stages).toEqual(["loginPtyInput", "loginPtyStop"]));
+      await session.close();
+      expect(stages).toEqual(["loginPtyInput", "loginPtyStop", "loginPtyClose"]);
+    } finally { await handle.stop().catch(() => undefined); }
+  });
+
+  it("fails the login when input delivery is unconfirmed", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(ptyOpenInput({ rejectInput: true }));
+      session.write("browser-code");
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      await session.close();
+    } finally { await handle.stop().catch(() => undefined); }
+  });
+
+  it("joins an in-flight close after input failure before releasing the login", async () => {
+    let releaseClose!: () => void;
+    const heldClose = new Promise<void>(resolve => { releaseClose = resolve; });
+    let closeCalls = 0;
+    const handle = makeLoginPtyHandle({ hostHandlers: { "companies.get": async (params: { stage: string }) => {
+      if (params.stage === "loginPtyClose") { closeCalls++; await heldClose; }
+      return { id: "company-1" };
+    } } });
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(ptyOpenInput({ rejectInput: true, probeLifecycle: true }));
+      session.write("browser-code");
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      await vi.waitFor(() => expect(closeCalls).toBe(1));
+      let completed = 0;
+      const first = session.close().then(() => { completed++; });
+      const second = session.close().then(() => { completed++; });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(completed).toBe(0);
+      releaseClose();
+      await Promise.all([first, second]);
+      expect(completed).toBe(2);
+      expect(closeCalls).toBe(1);
+    } finally { releaseClose(); await handle.stop().catch(() => undefined); }
+  });
+
   it("terminalizes the route when the cumulative output passes the per-route bound", async () => {
     const handle = makeLoginPtyHandle({
       loginPtyLimits: { maxTotalChars: 10 },

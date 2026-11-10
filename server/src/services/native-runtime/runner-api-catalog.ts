@@ -34,6 +34,8 @@ const SYNONYMS: Record<string, string> = {
   blocker: "dependencies", blockers: "dependencies", files: "attachments",
 };
 
+// Function words carry no resource meaning; scoring them let any summary that
+// happens to say "for" or "the" outrank the operation a query names.
 const SEARCH_FUNCTION_WORDS = new Set(["a", "an", "the", "for", "of", "to", "in", "on", "at", "by", "with", "and", "or", "from"]);
 
 function words(text: string): string[] {

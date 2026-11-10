@@ -99,7 +99,7 @@ export async function inspectOnlineOrdinarySource(db: ReadDb, workspace: Workspa
   const root = await physicalPath(workspace.cwd);
   const instance = await physicalPath(resolvePaperclipInstanceRoot());
   const parts = path.relative(instance, root).split(path.sep);
-  const isolated = workspace.sourceIssueId && workspace.mode === "isolated_workspace"
+  const isolated = workspace.sourceIssueId && ["isolated_workspace", "shared_workspace"].includes(workspace.mode)
     && parts[1] === workspace.companyId && parts[2] === workspace.sourceIssueId
     && (parts[0] === "isolated-workspaces" && parts.length === 3
       || parts[0] === "isolated-workspace-attempts" && parts.length === 4 && /^[a-zA-Z0-9_-]+$/.test(parts[3]));
@@ -203,7 +203,7 @@ export async function onlineOrdinarySourceBlockers(db: Pick<Db, "execute">, comp
           and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}' in (${sql.join(source.workspaceIds.map(id => sql`${id}`), sql`, `)})
           and r.runner_profile_json#>>'{nativeWorkspaceSync,workspaceId}'<>${workspace.id})) and a.source_issue_id not in (${settledRecoveries}) and a.status in ('active','escalated'))
     union all select 'repository_preparation_unresolved' where exists (select 1 from execution_workspace_repositories r where r.company_id=${companyId}::uuid
-      and r.execution_workspace_id in (${workspaceIds}) and r.state<>'ready')`);
+      and r.execution_workspace_id in (${workspaceIds}) and r.execution_workspace_id<>${workspace.id}::uuid and r.state<>'ready')`);
   const services = await db.execute<{ cwd: string | null; provider: string }>(sql`
     select cwd, provider from workspace_runtime_services where company_id=${companyId}::uuid and status<>'stopped' limit 1001`);
   const reasons = rows.map(row => row.reason);
@@ -361,6 +361,7 @@ export function createNestedWorkspaceImportVerifier(input: {
     },
   };
   return {
+    assertOwner,
     prepare(options: Omit<NestedVerificationInput, "db" | "storage" | "signal">): Promise<ImportedWorkspaceChild[]> {
       if (closed || current) return Promise.reject(new Error("nested_workspace_verifier_unavailable"));
       const work = (async () => {

@@ -240,6 +240,7 @@ describe("runner API catalog", () => {
       ["queued comments for an issue", "GET /api/issues/{id}/queued-comments"],
       ["activity for an issue", "GET /api/issues/{id}/activity"],
       ["runs for an issue", "GET /api/issues/{id}/runs"],
+      ["case for task", "GET /api/issues/{issueId}/cases"],
     ]) expect(searchRunnerApi({ query }).results.map(row => row.operationId)).toContain(operation);
     expect(searchRunnerApi({ query: "for an the" }).results).toEqual([]);
   });

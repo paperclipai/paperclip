@@ -124,6 +124,40 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     expect((await taskInterruptionPresentation(db, parent))?.retryWait?.reason).not.toBe("dependency_blocked");
   });
 
+  it("does not report a superseded Retry as failure after a newer conversation succeeds", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), oldRunId = randomUUID(), newRunId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Continued conversation", issuePrefix: `C${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Agent", adapterType: "paperclip_runner" });
+    const [task] = await db.insert(issues).values({ companyId, title: "Continue setup", status: "in_review",
+      assigneeAgentId: agentId }).returning();
+    await db.insert(heartbeatRuns).values([
+      { id: oldRunId, companyId, agentId, nativeIssueId: task.id, scopeKind: "issue", runtimeMode: "native",
+        status: "failed", createdAt: new Date(Date.now() - 120_000), finishedAt: new Date(Date.now() - 110_000) },
+      { id: newRunId, companyId, agentId, nativeIssueId: task.id, scopeKind: "issue", runtimeMode: "native",
+        status: "succeeded", createdAt: new Date(Date.now() - 60_000), finishedAt: new Date(Date.now() - 30_000) },
+    ]);
+    const [retry] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", reason: "task_retry",
+      status: "deferred_issue_execution", requestedByActorType: "user", requestedAt: new Date(Date.now() - 90_000),
+      payload: { issueId: task.id, taskRetry: { sourceRunId: oldRunId } } }).returning();
+    for (const presentation of [await taskInterruptionPresentation(db, task),
+      (await taskInterruptionPresentations(db, companyId, [task])).get(task.id)]) {
+      expect(presentation).toMatchObject({ state: "resolved", canRetry: false, intentId: null, observedRunId: newRunId });
+    }
+    // Reads do not acknowledge input or retire execution authority.
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.id)))[0]?.status)
+      .toBe("deferred_issue_execution");
+    // A later provider failure still belongs to the current run.
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_provider_terminal_failed" })
+      .where(eq(heartbeatRuns.id, newRunId));
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: true, observedRunId: newRunId });
+    await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null }).where(eq(heartbeatRuns.id, newRunId));
+    // Unconsumed ordinary input is independent of the obsolete Retry.
+    const [message] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand",
+      reason: "issue_commented", status: "deferred_issue_execution", requestedByActorType: "user",
+      requestedAt: new Date(Date.now() - 20_000), payload: { issueId: task.id } }).returning();
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", intentId: message.id });
+  });
+
   // G1 wave s9802 t02: an accepted Retry held by the unpriced-usage refusal
   // read as a budget wait. It is an accounting matter; name it so.
   it("labels a Retry held by unpriced usage as accounting, not budget", async () => {
@@ -573,7 +607,7 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
   });
   // N-03: ONB-1 on staging waited 16 minutes on an overdue workspace_busy
   // retry. Nothing failed, yet the banner offered a Retry that cannot help.
-  it.each(["workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", "runner_revision_wait"])(
+  it.each(["workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", "runner_revision_wait", "storage_unavailable_wait"])(
     "does not present an overdue %s wait as a failed attempt", async reason => {
       const companyId = randomUUID(), agentId = randomUUID(), parentRunId = randomUUID();
       await db.insert(companies).values({ id: companyId, name: "Waiting task", issuePrefix: `W${companyId.slice(0, 7)}` });
