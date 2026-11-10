@@ -93,7 +93,9 @@ vi.mock("../../sentry.js", async () => {
     captureRunFailure: mockCaptureRunFailure,
   };
 });
-import { claimNativeRestartRecoveries, currentNativeControllerIdentity, NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT, NATIVE_RESTART_RECOVERY_FAILED, nextNativeProviderAttempt, type NativeControllerIdentity } from "./native-restart-recovery.js";
+import { claimNativeRestartRecoveries, currentNativeControllerIdentity, NATIVE_NO_PROGRESS_RESTART_LIMIT, NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT, NATIVE_RESTART_RECOVERY_FAILED, nextNativeProviderAttempt, type NativeControllerIdentity } from "./native-restart-recovery.js";
+import { taskInterruptionPresentation } from "../task-interruption-presentation.js";
+import { requestTaskRetry } from "../task-retry.js";
 
 // Exact v5 wire prompt from before the task-monitor upgrade (#15446).
 const historicalPrompt = {
@@ -3107,15 +3109,19 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       kind: "bootstrap_incomplete", runId: fixture.runId, providerAttempt: 3, chargesProviderAttempt: false })]);
   });
 
-  it("blocks an exited remote runner at its last attempt once the controller generation cap is reached", async () => {
-    // Repeated exits before provider work stay bounded by the generation cap.
-    const fixture = await seedExitedRemoteRunner("EXITED-GEN-CAP", {}, 3);
-    await fixture.db.update(nativeRunFinalizations).set({ controllerGeneration: NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT })
-      .where(eq(nativeRunFinalizations.runId, fixture.runId));
-    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
-      restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
-      kind: "blocked", runId: fixture.runId, reason: "execution_recovery_budget_exhausted" })]);
-  });
+  it.each([
+    { recorded: null, expected: { kind: "bootstrap_incomplete", chargesProviderAttempt: false } },
+    { recorded: NATIVE_NO_PROGRESS_RESTART_LIMIT - 2, expected: { kind: "bootstrap_incomplete", chargesProviderAttempt: false } },
+    { recorded: NATIVE_NO_PROGRESS_RESTART_LIMIT - 1, expected: { kind: "blocked", reason: "execution_recovery_budget_exhausted" } },
+  ])("bounds an exited remote runner at its last attempt past the generation cap by consecutive no-progress restarts ($recorded)",
+    async ({ recorded, expected }) => {
+      const fixture = await seedExitedRemoteRunner(`EXITED-GEN-CAP-${recorded}`, {}, 3);
+      await fixture.db.update(nativeRunFinalizations).set({ controllerGeneration: NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT })
+        .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      if (recorded !== null) await recordUnstartedClaim(fixture, recorded);
+      expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+        restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({ runId: fixture.runId, ...expected })]);
+    });
 
   it.each(["a provider event committed after the failure", "a session checkpoint saved after the failure"])(
     "keeps an exited remote runner's retry held when %s contradicts the saved failure", async (label) => {
@@ -3174,13 +3180,20 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
   it.each([
     ["claimed remote bootstrap", (label: string) => seedClaimedRemoteBootstrap(label, { attempt: 3 })],
     ["remote bootstrap retry", (label: string) => seedUnlaunchedRemoteClaim(label, { bootstrapRetry: true, attempt: 3 })],
-  ] as const)("blocks a %s at its last attempt once the controller generation cap is reached", async (label, seed) => {
-    const fixture = await seed(`GEN-CAP-${label.replace(/\W+/g, "-")}`);
-    await fixture.db.update(nativeRunFinalizations).set({ controllerGeneration: NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT })
-      .where(eq(nativeRunFinalizations.runId, fixture.runId));
-    expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
-      restartKind: "hard", runIds: [fixture.runId] })).toEqual([expect.objectContaining({
-      kind: "blocked", runId: fixture.runId, reason: "execution_recovery_budget_exhausted" })]);
+  ] as const)("bounds a %s at its last attempt past the generation cap by consecutive no-progress restarts", async (label, seed) => {
+    const uncapped = await seed(`GEN-CAP-OPEN-${label.replace(/\W+/g, "-")}`);
+    await uncapped.db.update(nativeRunFinalizations).set({ controllerGeneration: NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT })
+      .where(eq(nativeRunFinalizations.runId, uncapped.runId));
+    expect(await claimNativeRestartRecoveries({ db: uncapped.db, controller: successor,
+      restartKind: "hard", runIds: [uncapped.runId] })).toEqual([expect.objectContaining({
+      kind: "bootstrap_incomplete", runId: uncapped.runId, providerAttempt: 3, chargesProviderAttempt: false })]);
+    const capped = await seed(`GEN-CAP-${label.replace(/\W+/g, "-")}`);
+    await capped.db.update(nativeRunFinalizations).set({ controllerGeneration: NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT })
+      .where(eq(nativeRunFinalizations.runId, capped.runId));
+    await recordUnstartedClaim(capped, NATIVE_NO_PROGRESS_RESTART_LIMIT - 1);
+    expect(await claimNativeRestartRecoveries({ db: capped.db, controller: successor,
+      restartKind: "hard", runIds: [capped.runId] })).toEqual([expect.objectContaining({
+      kind: "blocked", runId: capped.runId, reason: "execution_recovery_budget_exhausted" })]);
   });
 
   it("keeps a paused agent's remote bootstrap retry waiting instead of starting it", async () => {
@@ -3636,6 +3649,138 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     expect(outcomes.at(-1)).toEqual({ kind: "blocked", attempt: undefined });
     expect(outcomes.slice(0, -1).map(outcome => outcome.attempt))
       .toEqual([2, ...Array(NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT - 2).fill(2), 3]);
+  });
+
+  async function recordUnstartedClaim(fixture: Awaited<ReturnType<typeof seedRun>>, noProgressRestarts: number) {
+    const [last] = await fixture.db.select({ seq: sql<number>`coalesce(max(${heartbeatRunEvents.seq}), 0)::int` })
+      .from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, fixture.runId));
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    await fixture.db.update(nativeRunFinalizations).set({ recoveryHistory: [...coordinator.recoveryHistory, {
+      disposition: "bootstrap_incomplete", progressWatermarkSeq: last?.seq ?? 0, progressAttempt: coordinator.attempt,
+      noProgressRestarts,
+    }] }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+  }
+
+  async function seedPastGenerationLimit(label: string) {
+    const fixture = await seedInterruptedCheckpoint(label);
+    await fixture.db.update(nativeRunFinalizations).set({ controllerGeneration: NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    await appendRunEvents(fixture, [{ eventType: "tool.execution.completed", turnId: "interrupted-turn" }]);
+    return fixture;
+  }
+
+  async function lastClaimEntry(fixture: Awaited<ReturnType<typeof seedRun>>) {
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    return (coordinator.recoveryHistory as Array<Record<string, unknown>>).at(-1)!;
+  }
+
+  const providerNeverStarted = [{ eventType: "native.process_start_requested" },
+    { eventType: "native.process_identity_recorded" }, { eventType: "session.resumed" }];
+  const providerProgressed = (round: number) => [{ eventType: "native.process_start_requested" },
+    { eventType: "turn.accepted", turnId: `past-limit-${round}` },
+    { eventType: "tool.execution.completed", turnId: `past-limit-${round}` }];
+
+  it("does not charge a restart past the generation limit whose resume never started the provider", async () => {
+    const fixture = await seedPastGenerationLimit("PAST-LIMIT-UNSTARTED");
+    expect(await resumeThenCrash(fixture)).toMatchObject({
+      disposition: { kind: "resume_dead_runner", chargesProviderAttempt: true }, attempt: 2 });
+    await appendRunEvents(fixture, providerProgressed(1));
+    expect(await resumeThenCrash(fixture)).toMatchObject({
+      disposition: { kind: "resume_dead_runner", chargesProviderAttempt: true }, attempt: 3 });
+    await appendRunEvents(fixture, providerNeverStarted);
+    expect(await resumeThenCrash(fixture)).toMatchObject({
+      disposition: { kind: "resume_dead_runner", chargesProviderAttempt: false }, attempt: 3 });
+    expect(await lastClaimEntry(fixture)).toMatchObject({ noProgressRestarts: 1 });
+  });
+
+  it("stops after consecutive restarts with no provider progress and leaves a working Retry", async () => {
+    const fixture = await seedPastGenerationLimit("PAST-LIMIT-NO-PROGRESS-LOOP");
+    expect(await resumeThenCrash(fixture)).toMatchObject({ attempt: 2 });
+    const outcomes: Array<{ kind?: string; attempt?: number }> = [];
+    for (let round = 1; round <= NATIVE_NO_PROGRESS_RESTART_LIMIT + 2; round += 1) {
+      await appendRunEvents(fixture, providerNeverStarted);
+      const { disposition, attempt } = await resumeThenCrash(fixture);
+      outcomes.push({ kind: disposition?.kind, attempt });
+      if (disposition?.kind !== "resume_dead_runner") break;
+    }
+    expect(outcomes).toEqual([
+      ...Array(NATIVE_NO_PROGRESS_RESTART_LIMIT - 1).fill({ kind: "resume_dead_runner", attempt: 2 }),
+      { kind: "resume_dead_runner", attempt: 3 },
+      { kind: "blocked", attempt: undefined },
+    ]);
+    const [blocked] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(blocked).toMatchObject({ phase: "terminal_failure", failureCode: "native_restart_recovery_blocked",
+      leaseOwner: null, nextAttemptAt: null });
+    const [issue] = await fixture.db.select().from(issues).where(eq(issues.id, fixture.issueId));
+    expect(await taskInterruptionPresentation(fixture.db, issue)).toMatchObject({
+      state: "failed", canRetry: true, observedRunId: fixture.runId });
+    const personId = randomUUID();
+    await fixture.db.insert(authUsers).values({ id: personId, name: "Retry person", email: `${personId}@fixture.invalid`,
+      emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
+    await fixture.db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: personId,
+      status: "active", membershipRole: "member" });
+    expect(await requestTaskRetry({ db: fixture.db, companyId, issueId: fixture.issueId, actorId: personId,
+      actorSource: "session", idempotencyKey: `no-progress-loop-${fixture.runId}`, observedRunId: fixture.runId }))
+      .toMatchObject({ accepted: true });
+  });
+
+  it("resets the consecutive no-progress count when a restart proves provider progress", async () => {
+    const fixture = await seedPastGenerationLimit("PAST-LIMIT-PROGRESS-RESETS");
+    const counts: unknown[] = [];
+    const attempts: Array<number | undefined> = [];
+    const round = async (events: Parameters<typeof appendRunEvents>[1]) => {
+      await appendRunEvents(fixture, events);
+      attempts.push((await resumeThenCrash(fixture)).attempt);
+      counts.push((await lastClaimEntry(fixture)).noProgressRestarts);
+    };
+    await round([]);
+    for (let index = 0; index < 3; index += 1) await round(providerNeverStarted);
+    await round(providerProgressed(1));
+    await round(providerNeverStarted);
+    expect(counts).toEqual([0, 1, 2, 3, 0, 1]);
+    expect(attempts).toEqual([2, 2, 2, 2, 3, 3]);
+  });
+
+  it("still charges a restart past the generation limit whose provider accepted a turn without progress", async () => {
+    const fixture = await seedPastGenerationLimit("PAST-LIMIT-ACCEPTED-NO-PROGRESS");
+    expect(await resumeThenCrash(fixture)).toMatchObject({ attempt: 2 });
+    await appendRunEvents(fixture, [{ eventType: "native.process_start_requested" },
+      { eventType: "turn.accepted", turnId: "accepted" }, { eventType: "item.completed", turnId: "accepted", kind: "usage" }]);
+    expect(await resumeThenCrash(fixture)).toMatchObject({
+      disposition: { kind: "resume_dead_runner", chargesProviderAttempt: true }, attempt: 3 });
+    expect(await lastClaimEntry(fixture)).toMatchObject({ noProgressRestarts: 1 });
+  });
+
+  it("still charges a restart past the generation limit when the previous claim did not record its position", async () => {
+    const fixture = await seedPastGenerationLimit("PAST-LIMIT-UNRECORDED");
+    expect(await resumeThenCrash(fixture)).toMatchObject({ attempt: 2 });
+    await fixture.db.update(nativeRunFinalizations).set({
+      recoveryHistory: sql`jsonb_set(${nativeRunFinalizations.recoveryHistory},
+        array[(jsonb_array_length(${nativeRunFinalizations.recoveryHistory}) - 1)::text],
+        (${nativeRunFinalizations.recoveryHistory} -> -1) - 'progressWatermarkSeq' - 'noProgressRestarts')`,
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    await appendRunEvents(fixture, providerNeverStarted);
+    expect(await resumeThenCrash(fixture)).toMatchObject({
+      disposition: { kind: "resume_dead_runner", chargesProviderAttempt: true }, attempt: 3 });
+  });
+
+  it("counts from zero for a claim saved before restarts recorded the count", async () => {
+    const fixture = await seedPastGenerationLimit("PAST-LIMIT-OLD-ROW");
+    expect(await resumeThenCrash(fixture)).toMatchObject({ attempt: 2 });
+    await appendRunEvents(fixture, providerNeverStarted);
+    await resumeThenCrash(fixture);
+    await fixture.db.update(nativeRunFinalizations).set({
+      recoveryHistory: sql`jsonb_set(${nativeRunFinalizations.recoveryHistory},
+        array[(jsonb_array_length(${nativeRunFinalizations.recoveryHistory}) - 1)::text],
+        (${nativeRunFinalizations.recoveryHistory} -> -1) - 'noProgressRestarts')`,
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    await appendRunEvents(fixture, providerNeverStarted);
+    expect(await resumeThenCrash(fixture)).toMatchObject({
+      disposition: { kind: "resume_dead_runner", chargesProviderAttempt: false }, attempt: 2 });
+    expect(await lastClaimEntry(fixture)).toMatchObject({ noProgressRestarts: 1 });
   });
 
   it("terminalizes the recorded failed-checkpoint incident atomically instead of resuming it on upgrade", async () => {
