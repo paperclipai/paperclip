@@ -117,6 +117,8 @@ export interface WaveOptions {
   providerFaultRestartAfterMs?: number;
   /** RR1–RR3: the gap from a replacement's health to the next stop (`--rr-gap-seconds`); absent keeps each kind's default. */
   rrGapMs?: [number, number];
+  /** RR1–RR3 (`--rr-stop-on recovering`): stop each replacement on its first `recovering` status instead of after a gap. */
+  rrStopOn?: "recovering";
 }
 
 export interface StormFault {

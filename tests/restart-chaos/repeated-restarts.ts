@@ -49,14 +49,29 @@ export function planRestartSteps(kind: RepeatedRestartKind, int: (min: number, m
 const MIN_GAP_SECONDS = 1;
 const MAX_GAP_SECONDS = 300;
 
-/** `--rr-gap-seconds <n>` or `<min>-<max>` (1–300 s): the gap from a replacement's health to the next stop. */
+/** `--rr-stop-on recovering`: stop each replacement on its first `recovering` status instead of after a gap. */
+export const RR_STOP_ON = ["recovering"] as const;
+export type RepeatedRestartStopOn = (typeof RR_STOP_ON)[number];
+
+/**
+ * `--rr-gap-seconds <n>` or `<min>-<max>` (1–300 s): the gap from a replacement's health to the next stop.
+ * `--rr-stop-on recovering`: no gap; each follow-up stop fires on the first `/api/ready` poll (every 50 ms
+ * from spawn) that reports `recovering`. On a local host `ready` follows health by about 0.3 s, so any
+ * gap from health lands after recovery.
+ */
 export function parseRepeatedRestartOptions(options: Pick<WaveOptions, "faults" | "stormMinutes">,
-  rawGapSeconds: string | undefined): Pick<WaveOptions, "rrGapMs"> {
+  rawGapSeconds: string | undefined, rawStopOn?: string): Pick<WaveOptions, "rrGapMs" | "rrStopOn"> {
   const repeated = options.faults.some(isRepeatedRestartFault);
   if (rawGapSeconds !== undefined && !repeated) throw new Error("--rr-gap-seconds sets the RR restart gap; add RR1, RR2 or RR3 to --faults");
+  if (rawStopOn !== undefined && !repeated) throw new Error("--rr-stop-on sets when RR restarts fire; add RR1, RR2 or RR3 to --faults");
   if (!repeated) return {};
   // A storm fault carries no planned restart steps, and a storm already restarts again and again.
   if (options.stormMinutes) throw new Error("Repeated restarts (RR*) are planned per task; do not combine them with --storm-minutes");
+  if (rawStopOn !== undefined) {
+    if (!(RR_STOP_ON as readonly string[]).includes(rawStopOn)) throw new Error(`--rr-stop-on must be ${RR_STOP_ON.join(" or ")}`);
+    if (rawGapSeconds !== undefined) throw new Error("--rr-stop-on replaces the RR gap; do not combine it with --rr-gap-seconds");
+    return { rrStopOn: rawStopOn as RepeatedRestartStopOn };
+  }
   if (rawGapSeconds === undefined) return {};
   const match = /^([0-9]+)(?:-([0-9]+))?$/.exec(rawGapSeconds.trim());
   if (!match) throw new Error("--rr-gap-seconds takes <seconds> or <min>-<max> seconds");
@@ -86,6 +101,8 @@ export interface RepeatedRestartEntry {
 
 export interface RepeatedRestartRecord {
   kind: RepeatedRestartKind;
+  /** `--rr-stop-on`: the follow-up stops fired on this status instead of after `planned[].gapMs`. */
+  stopOn?: RepeatedRestartStopOn;
   planned: RestartStep[];
   restarts: RepeatedRestartEntry[];
   /** `<wave>/repeated-restarts/<faultId>.json`. */
@@ -128,6 +145,11 @@ export interface RepeatedRestartHooks<P> {
   start(): Promise<P>;
   /** Resolves with the time the replacement reported healthy. */
   waitHealthy(server: P): Promise<number>;
+  /**
+   * `stopOn`: poll `/api/ready` from the replacement's spawn until it reports `recovering` (or already `ready`,
+   * when recovery was too short to see), and resolve with that status. Rejects if the server exits first.
+   */
+  waitForStopPhase?(server: P, target: RepeatedRestartStopOn): Promise<string>;
   onEntry?(entry: RepeatedRestartEntry, stage: "stopping" | "healthy"): void;
 }
 
@@ -142,19 +164,24 @@ export async function runRepeatedRestarts<P>(input: {
   server: P;
   healthyAt: number;
   hooks: RepeatedRestartHooks<P>;
+  /** `--rr-stop-on`: fire each follow-up stop on this status, polled from spawn, instead of after the gap. */
+  stopOn?: RepeatedRestartStopOn;
 }): Promise<{ server: P; healthyAt: number }> {
-  const { record, steps, hooks } = input;
+  const { record, steps, hooks, stopOn } = input;
+  if (stopOn && !hooks.waitForStopPhase) throw new Error("--rr-stop-on needs a phase watcher");
   let server = input.server;
   let healthyAt = input.healthyAt;
-  for (const step of steps) {
+  for (const [stepIndex, step] of steps.entries()) {
     const index = record.restarts.length;
-    const wait = healthyAt + step.gapMs - hooks.now();
-    if (wait > 0) await hooks.sleep(wait);
+    if (!stopOn) {
+      const wait = healthyAt + step.gapMs - hooks.now();
+      if (wait > 0) await hooks.sleep(wait);
+    }
     if (hooks.cancelled()) throw new Error(`Harness shutdown interrupted repeated restart ${index}`);
     const exited = hooks.exitStatus(server);
     if (exited) throw new Error(`Paperclip server exited on its own before repeated restart ${index} (code=${exited.code} signal=${exited.signal})`);
-    const phaseAtStop = await hooks.readPhase();
-    const entry: RepeatedRestartEntry = { index, signal: step.signal, gapMs: step.gapMs, pid: hooks.pidOf(server), phaseAtStop,
+    const phaseAtStop = stopOn ? await hooks.waitForStopPhase!(server, stopOn) : await hooks.readPhase();
+    const entry: RepeatedRestartEntry = { index, signal: step.signal, gapMs: stopOn ? null : step.gapMs, pid: hooks.pidOf(server), phaseAtStop,
       stopAt: hooks.now(), stoppedAt: null, restartedAt: null, replacementPid: null, healthyAt: null };
     record.restarts.push(entry);
     hooks.onEntry?.(entry, "stopping");
@@ -164,6 +191,9 @@ export async function runRepeatedRestarts<P>(input: {
     entry.restartedAt = hooks.now();
     server = await hooks.start();
     entry.replacementPid = hooks.pidOf(server);
+    // `stopOn`: a replacement that is stopped again is watched from spawn, before it is healthy
+    // (`recovering` shows just before health). Only the last one is waited on to health.
+    if (stopOn && stepIndex < steps.length - 1) continue;
     healthyAt = await hooks.waitHealthy(server);
     entry.healthyAt = healthyAt;
     hooks.onEntry?.(entry, "healthy");

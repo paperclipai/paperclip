@@ -35,7 +35,7 @@ import { runnerE2ETypeScriptProcessArgs } from "../runner-e2e/web-server-command
 import type { MatrixExecution } from "../runner-e2e/types.js";
 import { DEFAULT_TIME_AGE_MS, ProcessFreezer, ageWaveDatabase, databaseUrlFromConfig, runFreezeFault, type AgingShift, type TimeFaultRecord } from "./time-faults.js";
 import type { Timeline } from "./timeline.js";
-import { isRepeatedRestartFault, newRepeatedRestartRecord, recordFirstRestart, runRepeatedRestarts, type RepeatedRestartKind,
+import { isRepeatedRestartFault, newRepeatedRestartRecord, recordFirstRestart, runRepeatedRestarts, type RepeatedRestartKind, type RepeatedRestartStopOn,
   type RepeatedRestartRecord, type RestartStep } from "./repeated-restarts.js";
 import type { FaultKind, FaultReceipt, TriggerId } from "./types.js";
 
@@ -138,6 +138,8 @@ export class ChaosSupervisor {
   crashPointHoldMs = 0;
   /** TM2/TM3: how far each aging fault shifts the wave's database back. */
   timeAgeMs = DEFAULT_TIME_AGE_MS;
+  /** RR1–RR3 (`--rr-stop-on`): stop each replacement on this `/api/ready` status instead of after its gap. */
+  rrStopOn: RepeatedRestartStopOn | null = null;
   /** Every aging shift so far, in order; the grader's API reads times through them (time-faults.ts). */
   readonly agingShifts: AgingShift[] = [];
   private readonly createdAt = Date.now();
@@ -542,9 +544,10 @@ export class ChaosSupervisor {
   /** RR1–RR3: the planned steps and the first kill (as K1), recorded before that kill. */
   private repeatedRestartRecord(kind: RepeatedRestartKind, receipt: FaultReceipt, planned: readonly RestartStep[] | undefined,
     firstPid: number | null): RepeatedRestartRecord {
-    return newRepeatedRestartRecord({ kind, planned, firstPid, startedAt: receipt.startedAt,
+    const record = newRepeatedRestartRecord({ kind, planned, firstPid, startedAt: receipt.startedAt,
       evidencePath: path.join(path.dirname(this.paths.serverLogPath), "repeated-restarts", `${receipt.faultId}.json`),
       int: (min, max) => min + Math.floor(Math.random() * (max - min + 1)) });
+    return this.rrStopOn ? { ...record, stopOn: this.rrStopOn } : record;
   }
 
   /**
@@ -555,7 +558,8 @@ export class ChaosSupervisor {
     const first = this.child;
     recordFirstRestart(record, receipt, first?.pid ?? null);
     if (!first || receipt.healthyAt === null) throw new Error(`${record.kind} has no healthy replacement after its first kill`);
-    const result = await runRepeatedRestarts({ record, steps: record.planned, server: first, healthyAt: receipt.healthyAt, hooks: {
+    const result = await runRepeatedRestarts({ record, steps: record.planned, server: first, healthyAt: receipt.healthyAt,
+      ...(record.stopOn ? { stopOn: record.stopOn } : {}), hooks: {
       now: () => Date.now(),
       sleep: ms => delay(ms),
       cancelled: () => this.shuttingDown,
@@ -570,6 +574,8 @@ export class ChaosSupervisor {
       },
       start: () => this.spawnServer(),
       waitHealthy: server => this.waitForHealth(server, receipt.phases),
+      // The K6 phase poll (50 ms): fires on `recovering`, or on `ready` when recovery was too short to see.
+      waitForStopPhase: (server, target) => this.waitForCrashLoopPhase(server, target, receipt.phases),
       onEntry: (entry, stage) => {
         if (stage === "stopping") {
           this.timeline.add("repeated_restart_stop", { faultId: receipt.faultId, index: entry.index, signal: entry.signal, gapMs: entry.gapMs,

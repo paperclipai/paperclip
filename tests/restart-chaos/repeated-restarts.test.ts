@@ -27,6 +27,17 @@ describe("repeated restart options", () => {
     expect(() => parseCommand(["--faults", "RR1", "--rr-gap-seconds", "5s", "--workloads", "A1"])).toThrow(/<seconds> or <min>-<max>/);
   });
 
+  it("takes --rr-stop-on recovering instead of a gap, only with an RR fault", () => {
+    const parsed = parseCommand(["--faults", "RR1,RR3", "--rr-stop-on", "recovering", "--workloads", "A1", "--seed", "1"]);
+    expect(parsed.mode === "wave" && parsed.options.rrStopOn).toBe("recovering");
+    expect(parsed.mode === "wave" && parsed.options.rrGapMs).toBeUndefined();
+    expect(() => parseCommand(["--faults", "K1", "--rr-stop-on", "recovering", "--workloads", "A1"])).toThrow(/add RR1, RR2 or RR3/);
+    expect(() => parseCommand(["--faults", "RR1", "--rr-stop-on", "ready", "--workloads", "A1"])).toThrow(/must be recovering/);
+    expect(() => parseCommand(["--faults", "RR1", "--rr-stop-on", "recovering", "--rr-gap-seconds", "1", "--workloads", "A1"]))
+      .toThrow(/do not combine it with --rr-gap-seconds/);
+    expect(() => parseCommand(["--replay", "w-20261110T000000-s1/t01", "--rr-stop-on", "recovering"])).toThrow(/--rr-stop-on/);
+  });
+
   it("refuses a storm, whose faults carry no planned restarts", () => {
     expect(() => parseCommand(["--faults", "RR1", "--storm-minutes", "10"])).toThrow(/storm/);
   });
@@ -214,6 +225,52 @@ describe("runRepeatedRestarts", () => {
     await expect(runRepeatedRestarts({ record: record("RR3", steps), steps, server: { pid: 100 }, healthyAt: fake.now(), hooks: fake.hooks }))
       .rejects.toThrow(/shutdown/);
     expect(fake.log).toEqual(["sleep 1000", "stop 100 SIGKILL"]);
+  });
+});
+
+describe("runRepeatedRestarts with --rr-stop-on recovering", () => {
+  it("stops each replacement on its first recovering status, with no gap, and waits for health only on the last", async () => {
+    const steps: RestartStep[] = [{ signal: "SIGKILL", gapMs: 12_000 }, { signal: "SIGKILL", gapMs: 25_000 }];
+    const fake = fakeHooks();
+    const watched: number[] = [];
+    let healthChecks = 0;
+    const hooks = { ...fake.hooks,
+      waitForStopPhase: async (server: { pid: number }, target: "recovering") => { watched.push(server.pid); await fake.hooks.sleep(150); return target; },
+      waitHealthy: async () => { healthChecks += 1; return fake.hooks.waitHealthy(); } };
+    const rr = record("RR3", steps);
+    const result = await runRepeatedRestarts({ record: rr, steps, server: { pid: 100 }, healthyAt: fake.now(), hooks, stopOn: "recovering" });
+    expect(watched).toEqual([100, 200]);
+    expect(fake.log).toEqual(["sleep 150", "stop 100 SIGKILL", "start 200", "sleep 150", "stop 200 SIGKILL", "start 201"]);
+    expect(healthChecks).toBe(1);
+    expect(rr.restarts.map(entry => [entry.phaseAtStop, entry.gapMs, entry.replacementPid])).toEqual([["recovering", null, 200], ["recovering", null, 201]]);
+    expect(rr.restarts[0]!.healthyAt).toBeNull();
+    expect(rr.restarts[1]!.healthyAt).toBe(result.healthyAt);
+  });
+
+  it("records `ready` when recovery was too short to see", async () => {
+    const steps: RestartStep[] = [{ signal: "SIGTERM", gapMs: 5_000 }];
+    const fake = fakeHooks();
+    const rr = record("RR2", steps);
+    await runRepeatedRestarts({ record: rr, steps, server: { pid: 100 }, healthyAt: fake.now(), stopOn: "recovering",
+      hooks: { ...fake.hooks, waitForStopPhase: async () => "ready" } });
+    expect(rr.restarts[0]!.phaseAtStop).toBe("ready");
+    expect(fake.log).toEqual(["stop 100 SIGTERM", "start 200"]);
+  });
+
+  it("fails when the replacement exits before it reports a status", async () => {
+    const steps: RestartStep[] = [{ signal: "SIGKILL", gapMs: 1_000 }];
+    const fake = fakeHooks();
+    await expect(runRepeatedRestarts({ record: record("RR1", steps), steps, server: { pid: 100 }, healthyAt: fake.now(), stopOn: "recovering",
+      hooks: { ...fake.hooks, waitForStopPhase: async () => { throw new Error("Paperclip server exited during the crash loop"); } } }))
+      .rejects.toThrow(/exited/);
+    expect(fake.log).toEqual([]);
+  });
+
+  it("refuses to run without a phase watcher", async () => {
+    const steps: RestartStep[] = [{ signal: "SIGKILL", gapMs: 1_000 }];
+    const fake = fakeHooks();
+    await expect(runRepeatedRestarts({ record: record("RR1", steps), steps, server: { pid: 100 }, healthyAt: fake.now(), stopOn: "recovering",
+      hooks: fake.hooks })).rejects.toThrow(/phase watcher/);
   });
 });
 

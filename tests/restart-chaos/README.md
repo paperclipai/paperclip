@@ -820,6 +820,14 @@ of existing seeds do not change. `--rr-gap-seconds <n>` or `<min>-<max>` (1–30
 gap: for example `--rr-gap-seconds 5` for a stop that always lands in recovery, or `30-60` for a slow
 deploy loop. RR faults do not combine with `--storm-minutes`, whose faults carry no planned steps.
 
+`--rr-stop-on recovering` replaces the gap: each follow-up stop fires on the first `/api/ready` poll
+(every 50 ms, from the replacement's spawn) that reports `recovering`, the K6 phase poll. Use it to
+land the stops inside recovery. In the first live waves `/api/ready` reported `recovering` only
+15–80 ms before `/api/health` answered, and `ready` 0.25–0.5 s after it, so every gap from health
+(even 1 s) landed after recovery. A replacement that goes straight to `ready` is stopped there and
+records `ready`. The receipt records `stopOn`, and each follow-up entry has `gapMs: null`; only the last
+replacement is waited on to health, so the earlier entries have no `healthyAt`.
+
 **Evidence.** Each stop and replacement (the first kill included) is recorded with its signal, planned
 gap, stopped PID, the `/api/ready` status just before the stop (`recovering` means it landed inside
 recovery), and the stopped, restarted and healthy times:
