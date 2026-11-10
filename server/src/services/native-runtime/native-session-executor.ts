@@ -3537,30 +3537,58 @@ export async function provenStoppedOwnNativeSession(
   const events = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
     .from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
       inArray(heartbeatRunEvents.eventType, [...SESSION_OPEN_EVENT_TYPES, "harness.diagnostic"])));
+  // Every recorded provider process identity, from the durable projection,
+  // the saved checkpoint and the run's own raw runner journal. Codex session
+  // opens carry the PID only in the raw journal; ACPX reports its sidecar in
+  // a diagnostic. Extra identities can only add a stop requirement.
   const providerPids: unknown[] = [];
-  // ACPX reports its sidecar separately. A sidecar without its own process
-  // group shares the runner's group, which the stop record proves empty, so
-  // the agent it started is gone with it.
-  const sidecars = events.flatMap(event => {
-    const payload = record(record(record(event.payload).prpEvent).payload);
-    return event.eventType === "harness.diagnostic" && payload.code === "acpx_process" ? [record(payload.details)] : [];
-  });
-  const sidecarsShareRunnerGroup = sidecars.length > 0 && sidecars.every(details => details.processGroupId == null);
+  const pidKeys = ["processId", "processGroupId", "providerPid", "codexPid", "sidecarPid", "agentPid", "agentProcessId", "previousProcessId"];
+  const collect = (...owners: unknown[]) => {
+    for (const owner of owners) for (const key of pidKeys) {
+      const value = record(owner)[key];
+      if (value != null) providerPids.push(value);
+    }
+  };
+  const collectSessionOpen = (payload: Record<string, unknown>) =>
+    collect(payload, payload.runtimeIdentity, payload.providerDescriptor, payload.providerIdentity, payload.started);
+  let sessionOpens = 0;
   for (const event of events) {
     const payload = record(record(record(event.payload).prpEvent).payload);
     if (event.eventType === "harness.diagnostic") {
       if (payload.providerMethod === "acpx/process") providerPids.push(payload.pid);
-      if (payload.code === "acpx_process") providerPids.push(record(payload.details).pid);
+      if (payload.code === "acpx_process") {
+        const details = record(payload.details);
+        // A sidecar in its own group may leave its agent behind, which no record names.
+        if (details.processGroupId != null) return null;
+        providerPids.push(details.pid);
+      }
       continue;
     }
-    // Otherwise a session open without a provider process identity cannot be proven gone.
-    if (payload.processId != null || !sidecarsShareRunnerGroup) providerPids.push(payload.processId);
-    if (event.eventType === "session.reconciled") providerPids.push(payload.previousProcessId);
+    sessionOpens += 1;
+    collectSessionOpen(payload);
   }
-  const checkpointProcess = record(record(record(run.runnerProfileJson).sessionCheckpoint).process);
-  for (const key of ["processId", "processGroupId", "providerPid", "codexPid", "sidecarPid", "agentPid", "agentProcessId"]) {
-    if (checkpointProcess[key] != null) providerPids.push(checkpointProcess[key]);
+  const checkpoint = record(record(run.runnerProfileJson).sessionCheckpoint);
+  collect(checkpoint.process);
+  try {
+    const execution = parseNativeExecutionInput(record(run.runnerProfileJson).nativeExecutionInput);
+    const root = scopedRunnerdStateRoot(execution);
+    if (existsSync(root)) {
+      const snapshot = cleanupStateSnapshot(root, runnerProviderStateFilename(execution));
+      if (record(snapshot.control.identity).runId === run.id) {
+        collect(snapshot.provider, record(snapshot.provider).identity, record(snapshot.provider).startupAttempt);
+        for (const entry of Array.isArray(snapshot.control.committedEvents) ? snapshot.control.committedEvents : []) {
+          const event = record(record(record(entry).envelope).payload);
+          if (!(SESSION_OPEN_EVENT_TYPES as readonly string[]).includes(String(event.eventType))) continue;
+          sessionOpens += 1;
+          collectSessionOpen(record(event.payload));
+        }
+      }
+    }
+  } catch {
+    return null;
   }
+  // A provider that opened a session but left no process identity cannot be proven gone.
+  if (sessionOpens > 0 && providerPids.length === 0) return null;
   if (!providerPids.every(cleanupProcessAbsent)) return null;
   return { processPid: stopped.processPid, processGroupId: stopped.processGroupId, providerPids: providerPids as number[] };
 }
@@ -3585,7 +3613,9 @@ const CLEANUP_GATE_OWNER_SCAN_LIMIT = 10;
  */
 export async function retireStoppedSessionCleanupGates(
   db: Db,
-  input: { companyId: string; issueId: string; run?: CleanupGateOwner },
+  input: { companyId: string; issueId: string; run?: CleanupGateOwner;
+    /** Read-only: true when some finished owner of the task is proven stopped. Retires nothing. */
+    preview?: boolean },
 ): Promise<boolean> {
   const blocked = () => nativeSessionCleanupBlock({ companyId: input.companyId, issueId: input.issueId }) === "operator_required";
   if (!blocked()) return true;
@@ -3600,6 +3630,7 @@ export async function retireStoppedSessionCleanupGates(
     if (!owner.runnerInstanceId || owner.companyId !== input.companyId) continue;
     const stopped = await provenStoppedOwnNativeSession(db, owner);
     if (!stopped) continue;
+    if (input.preview) return true;
     let retired = false;
     try {
       retired = completeTerminatedLocalNativeSessionCleanup({

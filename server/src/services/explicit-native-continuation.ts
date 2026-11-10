@@ -554,7 +554,8 @@ export async function admitExplicitNativeContinuation(input: {
       // Once the task's gate is retired from its stopped owner, nothing holds
       // the old session any more.
       if (!stopped && retainedCleanup === "operator_required" && await nativeGatedRunNeverLaunched(db, run)
-          && await retireStoppedSessionCleanupGates(db, { companyId, issueId })) {
+          // A preview stays read-only; the committing call retires the gate.
+          && await retireStoppedSessionCleanupGates(db, { companyId, issueId, preview: input.dryRun === true })) {
         stopped = { evidence: { schema: "paperclip.unlaunched_gated_source.v1", runId: run.id },
           retire: () => nativeSessionCleanupBlock({ companyId, issueId }) !== "operator_required" };
       }
