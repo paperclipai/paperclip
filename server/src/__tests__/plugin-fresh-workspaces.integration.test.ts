@@ -48,6 +48,7 @@ describe.skipIf(!support.supported)("provider-owned fresh retry reservations", (
     const ambiguous = f.calls.at(-1);
     const workspace = await preparePluginWorkspace(db, f.workers, f.input);
     expect(workspace!.id).not.toBe(f.previous.id);
+    expect(workspace!.derivedFromExecutionWorkspaceId).toBe(f.previous.id);
     expect(f.calls.at(-1).executionWorkspaceId).toBe(ambiguous.executionWorkspaceId);
     expect(f.calls.at(-1).operationId).toBe(ambiguous.operationId);
     expect(f.calls.at(-1).operation).toMatchObject({ fresh: f.fresh, branchMode: "create", branchName: null, existing: null });

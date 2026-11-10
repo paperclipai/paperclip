@@ -426,6 +426,7 @@ export async function preparePluginWorkspace(
           repoUrl: source.repoUrl,
           baseRef: input.baseRef ?? source.repoRef,
           status: "idle",
+          derivedFromExecutionWorkspaceId: input.fresh?.previousWorkspaceId ?? null,
           metadata: {
             workspaceProviderOwner: pluginId,
             workspaceProviderSource: sourceInput,
@@ -517,6 +518,7 @@ export async function preparePluginWorkspace(
         status: "active",
         lastUsedAt: new Date(),
         updatedAt: new Date(),
+        ...(input.fresh?.previousWorkspaceId ? { derivedFromExecutionWorkspaceId: input.fresh.previousWorkspaceId } : {}),
         metadata: {
           ...workspace.metadata,
           workspaceProvider: result.binding,
@@ -591,6 +593,7 @@ async function reconcilePluginWorkspaceReservation(
         providerRef: result.binding.workspaceRef,
         branchName: result.branchName,
         updatedAt: new Date(),
+        ...(operation.fresh?.previousWorkspaceId ? { derivedFromExecutionWorkspaceId: operation.fresh.previousWorkspaceId } : {}),
         metadata: {
           ...workspace.metadata,
           workspaceProvider: result.binding,
@@ -719,6 +722,7 @@ async function finishPendingRestoration(
         providerRef: result.binding.workspaceRef,
         branchName: result.branchName,
         updatedAt: new Date(),
+        ...(operation.fresh?.previousWorkspaceId ? { derivedFromExecutionWorkspaceId: operation.fresh.previousWorkspaceId } : {}),
         metadata: {
           ...workspace.metadata,
           lifecycleGeneration: generation + 1,
