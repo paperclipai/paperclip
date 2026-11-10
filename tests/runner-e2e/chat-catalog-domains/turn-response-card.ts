@@ -23,13 +23,20 @@ const record = (value: unknown): Row | undefined => value && typeof value === "o
 const strings = (...values: unknown[]) => values.filter((value): value is string => typeof value === "string" && !!value.trim());
 
 // Every field a card can show a person: prompts, headers, help, labels, descriptions and placeholders,
-// in both the canonical questionSet and the legacy questions. Ids, schema names and keys are not shown.
+// from the question form the page shows. Ids, schema names and keys are not shown.
 const DISPLAYED = new Set(["title", "description", "prompt", "header", "helpText", "label", "placeholder", "submitLabel", "detailsMarkdown"]);
 function displayedText(value: unknown, key?: string): string[] {
   if (typeof value === "string") return key && DISPLAYED.has(key) ? [value] : [];
   if (Array.isArray(value)) return value.flatMap(item => displayedText(item));
   const row = record(value);
   return row ? Object.entries(row).flatMap(([name, item]) => displayedText(item, name)) : [];
+}
+
+/** The page shows the canonical questionSet when present and the legacy questions otherwise; never both. */
+function shownQuestionForm(payload: Row | undefined): Row | undefined {
+  if (!payload) return payload;
+  const { questions, questionSet, ...rest } = payload;
+  return questionSet !== undefined ? { ...rest, questionSet } : { ...rest, questions };
 }
 
 /** True when the product decided that a card owns this run's conversation response. */
@@ -59,7 +66,7 @@ export function turnResponseCards(input: { companyId: string; leadId: string; ru
       const answerable = parsed.data.questions.filter(question => !!question.prompt.trim()
         && (question.options.length >= 2 || question.options.some(option => option.freeText)));
       if (!answerable.length) continue;
-      cards.push({ id: row.id, kind: "ask_user_questions", runId: row.sourceRunId, text: strings(row.title, row.summary, ...displayedText(payload)).join("\n") });
+      cards.push({ id: row.id, kind: "ask_user_questions", runId: row.sourceRunId, text: strings(row.title, row.summary, ...displayedText(shownQuestionForm(payload))).join("\n") });
     } else if (row.kind === "request_confirmation") {
       if (!payload || payload.toolAction || payload.secretProposal || payload.connectionAuthorization || typeof payload.prompt !== "string" || !payload.prompt.trim()) continue;
       cards.push({ id: row.id, kind: "request_confirmation", runId: row.sourceRunId,

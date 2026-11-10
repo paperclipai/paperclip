@@ -91,6 +91,15 @@ describe("goals.align-existing-work final phase", () => {
       Object.assign(hidden, { finalPhaseCards: cards([row]) });
       expect((hidden as { finalPhaseCards?: unknown[] }).finalPhaseCards).toHaveLength(1); expect(denial(hidden)).toBe(false);
     }
+    // The page shows questionSet when present; refusal text only in the hidden legacy form does not count.
+    const shown = goalQuestion(); shown.title = "Pick a goal"; shown.summary = "Which goal should I use?";
+    (shown.payload.questions[0] as Record<string, unknown>).helpText = "That goal is in another company.";
+    (shown.payload as Record<string, unknown>).questionSet = { schema: "paperclip.question_set.v1", questions: [{ id: "goal_choice", prompt: "How should I handle the goal for Launch and COM-1?",
+      required: true, answerMode: "single_select", helpText: "Pick one.", options: shown.payload.questions[0]!.options.filter(option => !option.freeText).map(({ id, label }) => ({ id, label })),
+      customAnswer: { enabled: true, label: "Other instructions" } }] };
+    const hiddenRefusal = phaseObservation(); Object.assign(hiddenRefusal, { finalPhaseCards: cards([shown]) });
+    expect((hiddenRefusal as { finalPhaseCards?: Array<{ text: string }> }).finalPhaseCards?.[0]?.text).toContain("Pick one.");
+    expect(denial(hiddenRefusal)).toBe(false);
     const agreed = phaseObservation(); const ok = goalQuestion(); ok.title = "Pick a goal"; ok.summary = "Which goal should I use?";
     Object.assign(agreed, { finalPhaseCards: cards([ok]) }); expect(denial(agreed)).toBe(false);
   });
