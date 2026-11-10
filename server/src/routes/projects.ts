@@ -763,8 +763,9 @@ export function projectRoutes(db: Db) {
         res.status(404).json({ error: "Project workspace not found" });
         return;
       }
-      const input = req.body.repoUrl ? { ...req.body, metadata: { ...currentWorkspace.metadata, ...req.body.metadata } } : req.body;
-      const workspace = await svc.updateWorkspace(id, workspaceId, await authorizeWorkspaceRepository(req, existing.companyId, input));
+      const mergeRepositoryMetadata = typeof req.body.repoUrl === "string" &&
+        (isGitHubProjectRemote(req.body.repoUrl) || isAzureDevOpsRemote(req.body.repoUrl));
+      const workspace = await svc.updateWorkspace(id, workspaceId, await authorizeWorkspaceRepository(req, existing.companyId, req.body), { mergeRepositoryMetadata });
       if (!workspace) {
         res.status(422).json({ error: "Invalid project workspace payload" });
         return;

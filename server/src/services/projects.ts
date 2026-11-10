@@ -1229,6 +1229,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       projectId: string,
       workspaceId: string,
       data: UpdateWorkspaceInput,
+      updateOptions?: { mergeRepositoryMetadata?: boolean },
     ): Promise<ProjectWorkspace | null> => db.transaction(async tx => {
       const db = tx as unknown as Db;
       if (!await lockProjectRootMutation(tx, projectId)) return null;
@@ -1286,15 +1287,21 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       if (data.remoteWorkspaceRef !== undefined) patch.remoteWorkspaceRef = nextRemoteWorkspaceRef;
       if (data.sharedWorkspaceKey !== undefined) patch.sharedWorkspaceKey = readNonEmptyString(data.sharedWorkspaceKey);
       if (data.metadata !== undefined || data.runtimeConfig !== undefined) {
+        const { githubRepositoryId: _githubId, githubRepositoryUrl: _githubUrl, githubRepositoryPrivate: _githubPrivate,
+          repositoryProvider: _provider, repositoryId: _id, repositoryUrl: _url, repositoryPrivate: _private,
+          ...retainedMetadata } = (existing.metadata as Record<string, unknown> | null) ?? {};
+        const metadata = updateOptions?.mergeRepositoryMetadata
+          ? { ...retainedMetadata, ...(data.metadata ?? {}) }
+          : data.metadata;
         patch.metadata =
           data.runtimeConfig !== undefined
             ? mergeProjectWorkspaceRuntimeConfig(
                 data.metadata !== undefined
-                  ? (data.metadata as Record<string, unknown> | null | undefined)
+                  ? (metadata as Record<string, unknown> | null | undefined)
                   : ((existing.metadata as Record<string, unknown> | null | undefined) ?? null),
                 data.runtimeConfig ?? null,
               )
-            : data.metadata;
+            : metadata;
       }
 
       if (["repoUrl", "repoRef", "defaultRef", "sourceType", "remoteProvider", "remoteWorkspaceRef"].some(key =>
