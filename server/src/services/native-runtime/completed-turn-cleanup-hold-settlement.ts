@@ -11,6 +11,7 @@ import { OWNER_GONE_ATTESTATION_KEY } from "../recovery/owner-gone-attestation.j
 import { holdOwnsBlockedStatus } from "../recovery-hold-blocked-status.js";
 import { notifyRoutineExecutionStatus } from "../routine-execution-status-notifications.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
+import { DECLINED_TASK_RETRY_REASONS } from "../task-retry.js";
 import { completedWorkspaceRecoveryCondition } from "../workspace-recovery-receipt.js";
 import { NATIVE_SESSION_CLEANUP_QUARANTINED } from "./completed-turn-cleanup.js";
 
@@ -163,6 +164,10 @@ export async function settleCompletedTurnCleanupHolds(db: Db, record: InProgress
   return { settled: true, reason: context.proof.reason };
 }
 
+/** Saved-input waits that never start by themselves: a Retry declined for its
+ * requester (`DECLINED_TASK_RETRY_REASONS`) and a Retry whose saved message changed. */
+const UNSTARTABLE_SAVED_INPUT_REASONS = [...DECLINED_TASK_RETRY_REASONS, "retry_source_changed"];
+
 type BlockedStatusDecision = "released" | "dependency_wait" | "not_owned";
 
 /** Recorded with the continuation. Admission of a reconciled continuation
@@ -201,10 +206,14 @@ async function decideBlockedStatus(tx: Db, input: { companyId: string; now: Date
     : readiness?.get(issue.id)?.isDependencyReady === true ? "released" : "dependency_wait";
   // Saved user input continues the task itself through normal admission (the
   // registered resumer). Recording a second continuation would start another
-  // turn after it, so the input owns the continuation.
+  // turn after it, so the input owns the continuation. A Retry that dispatch
+  // declined for its requester, or whose saved message changed, can never
+  // start by itself, so it does not own the continuation.
   const [waitingInput] = decision === "released" ? await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
     .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
-      eq(agentWakeupRequests.requestedByActorType, "user"), sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`))
+      eq(agentWakeupRequests.requestedByActorType, "user"), sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
+      sql`coalesce(${agentWakeupRequests.payload}->'executionWait'->>'reason', '') not in
+        (${sql.join(UNSTARTABLE_SAVED_INPUT_REASONS.map(reason => sql`${reason}`), sql`, `)})`))
     .limit(1) : [];
   const continuationHoldId = decision === "released" && !waitingInput ? owner!.id : null;
   // Register the work before the writes it describes.

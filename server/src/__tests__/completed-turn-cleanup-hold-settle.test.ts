@@ -240,6 +240,17 @@ suite("completed-turn cleanup holds on the shared ownership path", () => {
     expect(await pass()).toMatchObject({ inProgress: 0 });
   }, 60_000);
 
+  it("still records the continuation when the only saved input is a Retry dispatch declined", async () => {
+    const f = await quarantinedRun();
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "former-member", payload: { issueId: f.issueId,
+        executionWait: { reason: "retry_authority_denied", message: "The user who requested Retry can no longer change this task." } } });
+    expect(await pass()).toMatchObject({ inProgress: 1, settled: 1 });
+    expect(await issue(f.issueId)).toMatchObject({ status: "todo" });
+    expect((await hold(f.quarantineHoldId)).evidence.continuationDelivery).toBe("pending");
+    expect(await deliverContinuations()).toEqual([{ agentId, issueId: f.issueId, previousRunId: f.runId }]);
+  }, 60_000);
+
   // Upgrade: rows exactly as the previous release left that task. Both holds are
   // already restored, so there is no blocker and no recovery action, but the
   // task is still Blocked with no Retry. The next pass after deploy continues it.
