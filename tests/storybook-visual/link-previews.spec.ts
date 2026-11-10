@@ -28,6 +28,9 @@ for (const theme of ["light", "dark"]) {
       const second = page.getByTestId("second-mention").getByRole("link");
       const card = page.getByRole("tooltip");
       await expect(first).toHaveAttribute("data-link-state", "unknown");
+      const mutedColor = await page.getByText("Hover or focus a link for context. Repeated links share what we learn.")
+        .evaluate(element => getComputedStyle(element).color);
+      await expect(first).toHaveCSS("color", mutedColor);
       await first.hover({ position: { x: 5, y: 8 } });
       await expect(card).toBeVisible();
       if (["loading", "unavailable", "failed-read"].includes(state)) {
@@ -37,6 +40,7 @@ for (const theme of ["light", "dark"]) {
       } else {
         await expect(first).toHaveAttribute("data-link-state", state === "narrow" ? "merged" : state);
         await expect(second).toHaveAttribute("data-link-state", state === "narrow" ? "merged" : state);
+        if (["draft", "closed"].includes(state)) await expect(first).toHaveCSS("color", mutedColor);
       }
       // Fixture fetches are handled inside the browser and do not become network requests.
       expect(remote).toEqual([]);

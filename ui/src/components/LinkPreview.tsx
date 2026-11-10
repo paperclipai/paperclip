@@ -5,6 +5,7 @@ import { GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Tr
 import type { LinkPreview as Preview, LinkPreviewResult, LinkPreviewState, LinkPreviewTarget } from "@paperclipai/shared";
 import { useLinkPreviewContext, type LinkPreviewContextValue } from "@/context/LinkPreviewContext";
 import { timeAgo } from "@/lib/timeAgo";
+import { retryTransientOnly } from "@/lib/query-client";
 
 export const linkPreviewStateLabel: Record<LinkPreviewState, string> = {
   unknown: "Status unknown", open: "Open", merged: "Merged", conflicts: "Merge conflicts", draft: "Draft", closed: "Closed",
@@ -57,7 +58,7 @@ function ConnectedLinkPreview({ context, target, children }: {
     enabled: open,
     staleTime: query => query.state.data?.maxAgeMs ?? 60_000,
     gcTime: 5 * 60_000,
-    retry: false, refetchOnMount: false, refetchOnWindowFocus: false, refetchOnReconnect: false,
+    retry: retryTransientOnly(0), refetchOnMount: false, refetchOnWindowFocus: false, refetchOnReconnect: false,
   });
   return <PreviewCard.Root open={open} onOpenChange={setOpen}>
     <PreviewCard.Trigger ref={triggerRef} delay={350} closeDelay={150}

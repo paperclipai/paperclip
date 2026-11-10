@@ -35,6 +35,7 @@ describe("GitHub link preview boundary", () => {
   it.each([
     [{ state: "open" }, "open"], [{ state: "open", mergeable: false }, "conflicts"],
     [{ state: "open", mergeable: null }, "open"], [{ state: "open", draft: true }, "draft"],
+    [{ state: "open", draft: true, mergeable: false }, "draft"],
     [{ state: "closed", merged: true }, "merged"], [{ state: "closed" }, "closed"],
   ])("normalizes state %j as %s without fetching checks or reviews", async (fields, expected) => {
     const fetcher = vi.fn(async () => Response.json({ title: "A change", updated_at: "2026-11-10T12:00:00Z", user: { login: "alice" }, ...fields }));
@@ -53,6 +54,6 @@ describe("GitHub link preview boundary", () => {
     const provider = createGitHubLinkPreviewProvider(db, { fetch: fetcher, credentialProvider: () => ({ token: "instance", source: "server_env", secretName: null }) });
     expect((await provider.resolve(target, scope, new AbortController().signal)).preview).toBeNull();
     expect(fetcher).toHaveBeenCalledTimes(1);
-    expect(fetcher.mock.calls[0]?.[0]).toBe("https://api.github.com/repos/acme/web");
+    expect(fetcher).toHaveBeenCalledWith("https://api.github.com/repos/acme/web", expect.any(Object));
   });
 });
