@@ -361,6 +361,7 @@ export function createNestedWorkspaceImportVerifier(input: {
     },
   };
   return {
+    assertOwner,
     prepare(options: Omit<NestedVerificationInput, "db" | "storage" | "signal">): Promise<ImportedWorkspaceChild[]> {
       if (closed || current) return Promise.reject(new Error("nested_workspace_verifier_unavailable"));
       const work = (async () => {
