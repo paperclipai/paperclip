@@ -9464,6 +9464,9 @@ export function createToolGatewayService(
       if (!existing) throw new ToolGatewayHttpError(404, "MCP gateway token not found", "gateway_token_not_found");
       if (!existing.pendingReveal) throw new ToolGatewayHttpError(409, "This token's value was already shown once. Issue a new token to get a new value.", "gateway_token_already_revealed");
       if (existing.revokedAt) throw new ToolGatewayHttpError(409, "This token was revoked before its value was revealed.", "gateway_token_revoked");
+      if (existing.expiresAt && existing.expiresAt.getTime() <= Date.now()) {
+        throw new ToolGatewayHttpError(409, "This token expired before its value was revealed. Create a new token instead.", "gateway_token_expired");
+      }
       if (existing.responsibleUserId && existing.responsibleUserId !== input.userId) {
         throw new ToolGatewayHttpError(403, "Only the person this agent-created token acts for can reveal its value.", "gateway_token_reveal_requires_responsible_person");
       }

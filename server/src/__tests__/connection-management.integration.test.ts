@@ -1599,6 +1599,16 @@ describe("connection management with production default agents", () => {
     expect(await fetch(`${server.apiUrl}/api/tool-gateway/gateway-tokens/${unrevealed.data.id}/reveal`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ companyId: f.companyId }) }))
       .toMatchObject({ status: 409 });
 
+    // A token that expired before reveal never gets a value.
+    const expiring = await call("gateway-client-create-3", "POST /api/tool-gateway/gateways/{gatewayId}/tokens", { gatewayId: gateway.body.id }, { ...body, name: "Expired before reveal" });
+    expect(expiring).toMatchObject({ status: 201 });
+    await server.db.update(toolMcpGatewayTokens).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(toolMcpGatewayTokens.id, expiring.data.id as string));
+    const expiredReveal = await fetch(`${server.apiUrl}/api/tool-gateway/gateway-tokens/${expiring.data.id}/reveal`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ companyId: f.companyId }) });
+    expect(expiredReveal.status).toBe(409);
+    expect(await expiredReveal.json()).toMatchObject({ reasonCode: "gateway_token_expired" });
+    const [stillPending] = await server.db.select().from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.id, expiring.data.id as string));
+    expect(stillPending).toMatchObject({ pendingReveal: true });
+
     // Person callers keep receiving the value from create.
     const personal = await fetch(`${server.apiUrl}/api/tool-gateway/gateways/${gateway.body.id}/tokens`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify(body) });
     expect(personal.status).toBe(201);

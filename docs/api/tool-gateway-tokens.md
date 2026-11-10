@@ -48,6 +48,7 @@ Person-only. Paperclip generates the value at this moment, stores its hash, and 
 | `403` | `gateway_token_reveal_requires_responsible_person` | The token acts for another person. Only that person can reveal it. |
 | `409` | `gateway_token_already_revealed` | The value was already shown once. Create a new token to get a new value. |
 | `409` | `gateway_token_revoked` | The token was revoked before its value was revealed. |
+| `409` | `gateway_token_expired` | The token expired before its value was revealed. Create a new token. |
 
 Each reveal writes a `tool_gateway.token_revealed` activity entry.
 

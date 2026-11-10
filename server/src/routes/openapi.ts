@@ -12969,7 +12969,7 @@ registerCurrentRoute({
   path: "/api/tool-gateway/gateway-tokens/{tokenId}/reveal",
   tags: ["tool-gateway"],
   summary: "Reveal an agent-created MCP gateway token value",
-  description: "Person-only. Generates the value of an agent-created client token that is pending reveal and returns it once. Only the token's responsible person can reveal it; a second reveal returns 409. Agent callers receive 403 gateway_token_requires_person.",
+  description: "Person-only. Generates the value of an agent-created client token that is pending reveal and returns it once. Only the token's responsible person can reveal it; a second reveal, or a reveal after the token expired or was revoked, returns 409. Agent callers receive 403 gateway_token_requires_person.",
   body: toolGatewayCompanyQuerySchema.required({ companyId: true }),
   responses: {
     200: r.ok(),
