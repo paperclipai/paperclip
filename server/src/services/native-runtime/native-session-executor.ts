@@ -693,6 +693,7 @@ type WarmNativeSession = {
   environmentId: string | null;
   busy: boolean;
   released?: boolean;
+  controllerDetachedForRestart?: boolean;
   finishRelease?: () => Promise<void>;
   closeOnReleaseReason?: string;
   idleTimer: ReturnType<typeof setTimeout> | null;
@@ -703,6 +704,7 @@ async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, 
   preserveInstructionsForRunId?: string;
   discardUnsettledSession?: boolean;
 }) {
+  if (entry.controllerDetachedForRestart) return detachReleasedWarmNativeSession(entry);
   // Revoke before awaiting process retirement/checkpoint IO.
   const stopping = entry.githubAccess?.stop();
   try {
@@ -726,6 +728,13 @@ async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, 
     if (entry.instructionCopy?.runId !== options?.preserveInstructionsForRunId) await entry.instructionCopy?.collectStopped();
   }
   finally { await stopping; }
+}
+
+async function detachReleasedWarmNativeSession(entry: WarmNativeSession) {
+  entry.controllerDetachedForRestart = true;
+  if (!entry.session.detachControllerForRestart) throw new Error("native_session_released_detach_unavailable");
+  await entry.session.detachControllerForRestart();
+  await entry.githubAccess?.stop();
 }
 
 const warmNativeSessions = new Map<string, WarmNativeSession>();
@@ -895,7 +904,7 @@ export async function closeWarmNativeSessionsForEnvironment(input: {
   return closeIdleWarmNativeSessions(input);
 }
 
-/** Suspend idle owners and persist their remote backup before a controller
+/** Detach released owners and checkpoint unreleased owners before a controller
  * exits. Active turns keep their separate authenticated restart handoff. */
 export async function closeIdleWarmNativeSessionsForRestart(): Promise<{
   closed: number; busy: number; failed: number;
@@ -903,6 +912,7 @@ export async function closeIdleWarmNativeSessionsForRestart(): Promise<{
   return closeIdleWarmNativeSessions({
     reason: "controller restart",
     closeBusyOnRelease: true,
+    detachReleased: true,
   });
 }
 
@@ -916,6 +926,7 @@ async function closeIdleWarmNativeSessions(input: {
   environmentId?: string;
   reason: string;
   closeBusyOnRelease?: boolean;
+  detachReleased?: boolean;
   canRetire?: () => boolean;
 }): Promise<{ closed: number; busy: number; failed: number }> {
   let closed = 0;
@@ -937,13 +948,14 @@ async function closeIdleWarmNativeSessions(input: {
     }
     // The host owns retention after release; a quiet local handle needs no retirement for sleep.
     if (input.canRetire && entry.released && !entry.closeOnReleaseReason) continue;
+    const detach = input.detachReleased === true && entry.released === true && !entry.closeOnReleaseReason;
     if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
     // Keep a fenced owner until both retirement and stopped collection succeed.
     // Failure must not make a live directory eligible for a replacement owner.
     entry.busy = true;
-    entry.closeOnReleaseReason = input.reason;
+    if (!detach) entry.closeOnReleaseReason = input.reason;
     const closing = Promise.resolve().then(() =>
-      closeWarmNativeSession(entry, input.reason),
+      detach ? detachReleasedWarmNativeSession(entry) : closeWarmNativeSession(entry, input.reason),
     );
     closingWarmNativeSessions.set(sessionId, closing);
     try {
@@ -951,6 +963,7 @@ async function closeIdleWarmNativeSessions(input: {
       forgetWarmNativeSession(sessionId, entry);
       closed += 1;
     } catch {
+      if (detach) entry.closeOnReleaseReason = "released Runner local detach is unconfirmed";
       failed += 1;
     } finally {
       entry.busy = false;
@@ -8014,11 +8027,7 @@ function armWarmNativeSessionIdleTimer(
     current.busy = true;
     const released = current.released === true;
     if (!released) current.closeOnReleaseReason = "warm native session idle timeout";
-    const closing = (released ? (async () => {
-      if (!current.session.detachControllerForRestart) throw new Error("native_session_released_detach_unavailable");
-      await current.session.detachControllerForRestart();
-      await current.githubAccess?.stop();
-    })() : closeWarmNativeSession(current, current.closeOnReleaseReason!))
+    const closing = (released ? detachReleasedWarmNativeSession(current) : closeWarmNativeSession(current, current.closeOnReleaseReason!))
       .then(() => { forgetWarmNativeSession(sessionId, current); })
       .catch(() => {
         if (released) current.closeOnReleaseReason = "released Runner local detach is unconfirmed";
@@ -9892,10 +9901,8 @@ async function executePaperclipNativeSessionAttempt(
         const resumeFrom = await resolvePluginTaskResume(input.db, { companyId: input.execution.binding.companyId,
           leaseId: target.leaseId, priorIdentity: proof.source, inspectCheckpoint: true });
         if (resumeFrom !== proof.taskId) throw new Error("native_session_released_owner_scope_mismatch");
-        if (!cachedReleasedOwner.session.detachControllerForRestart) throw new Error("native_session_released_detach_unavailable");
         try {
-          await cachedReleasedOwner.session.detachControllerForRestart();
-          await cachedReleasedOwner.githubAccess?.stop();
+          await detachReleasedWarmNativeSession(cachedReleasedOwner);
         } catch (error) {
           cachedReleasedOwner.closeOnReleaseReason = "released Runner local detach is unconfirmed";
           throw error;
