@@ -1,8 +1,6 @@
-/** Browser UUIDs also work on plain-HTTP LAN and tailnet previews. */
-export function createUuid(): string {
+/** RFC 4122 v4 UUID from getRandomValues, which plain-HTTP (insecure) contexts still provide. */
+export function fallbackUuid(): string {
   const webCrypto = globalThis.crypto;
-  if (typeof webCrypto?.randomUUID === "function") return webCrypto.randomUUID();
-
   const bytes = new Uint8Array(16);
   if (typeof webCrypto?.getRandomValues === "function") webCrypto.getRandomValues(bytes);
   else for (let index = 0; index < bytes.length; index++) bytes[index] = Math.floor(Math.random() * 256);
@@ -10,4 +8,23 @@ export function createUuid(): string {
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, "0"));
   return [hex.slice(0, 4).join(""), hex.slice(4, 6).join(""), hex.slice(6, 8).join(""), hex.slice(8, 10).join(""), hex.slice(10).join("")].join("-");
+}
+
+/** Browser UUIDs also work on plain-HTTP LAN and tailnet previews. */
+export function createUuid(): string {
+  const webCrypto = globalThis.crypto;
+  if (typeof webCrypto?.randomUUID === "function") return webCrypto.randomUUID();
+  return fallbackUuid();
+}
+
+/**
+ * crypto.randomUUID exists only in a secure context, so on http://<LAN address> it is undefined and
+ * every bare `crypto.randomUUID()` call throws. Several of those sit in send paths whose catch blocks
+ * swallow the TypeError, so Enter and the send button silently do nothing. Defining it once at startup
+ * covers every existing and future call site instead of chasing them one at a time.
+ */
+export function installRandomUuidPolyfill(): void {
+  const webCrypto = globalThis.crypto;
+  if (!webCrypto || typeof webCrypto.randomUUID === "function") return;
+  Object.defineProperty(webCrypto, "randomUUID", { value: fallbackUuid, configurable: true, writable: true });
 }
