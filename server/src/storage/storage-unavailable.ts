@@ -78,8 +78,16 @@ export function isStorageUnavailableError(error: unknown): boolean {
 
 export const STORAGE_OUTAGE_WAIT = { budgetMs: 5 * 60_000, firstDelayMs: 2_000, maxDelayMs: 30_000 } as const;
 
-type OutageWaitScope = { stop?: AbortSignal };
+export type StorageOutageWaitObserver = {
+  waiting(wait: { purpose: string; waitedMs: number }): void;
+  ended(wait: { purpose: string; waitedMs: number; recovered: boolean }): void;
+};
+
+const DEFAULT_WAIT_PURPOSE = "continuing";
+
+type OutageWaitScope = { stop?: AbortSignal; observer?: StorageOutageWaitObserver };
 const outageWaitScope = new AsyncLocalStorage<OutageWaitScope>();
+const outageWaitPurpose = new AsyncLocalStorage<string>();
 type OutageWaitOperation = { firstFailureAt: number | null };
 const outageWaitOperation = new AsyncLocalStorage<OutageWaitOperation | null>();
 
@@ -97,23 +105,45 @@ export function runSharedStorageWork<T>(work: () => Promise<T>): Promise<T> {
 
 export function endStorageOutageWaitOn(stop: AbortSignal): void {
   const current = outageWaitScope.getStore();
-  if (current) outageWaitScope.enterWith({ stop: current.stop ? AbortSignal.any([current.stop, stop]) : stop });
+  if (current) outageWaitScope.enterWith({ ...current, stop: current.stop ? AbortSignal.any([current.stop, stop]) : stop });
 }
 
-/** One wait between attempts while the store is unavailable. */
-export type StorageOutageWait = { waitMs: number; waitedMs: number };
+export function reportStorageOutageWaitsTo(observer: StorageOutageWaitObserver): void {
+  const current = outageWaitScope.getStore();
+  if (current) outageWaitScope.enterWith({ ...current, observer });
+}
+
+export function storageOutageWaitFor<T>(purpose: string, work: () => Promise<T>): Promise<T> {
+  return outageWaitPurpose.run(purpose, work);
+}
+
+function notify(report: () => void) {
+  try { report(); } catch { return; }
+}
 
 export function retryThroughStorageOutage<T>(send: () => Promise<T>, signal?: AbortSignal,
-  policy: { budgetMs: number; firstDelayMs: number; maxDelayMs: number } = STORAGE_OUTAGE_WAIT,
-  onWait?: (wait: StorageOutageWait) => Promise<void> | void): Promise<T> {
+  policy: { budgetMs: number; firstDelayMs: number; maxDelayMs: number } = STORAGE_OUTAGE_WAIT): Promise<T> {
   const operation = outageWaitOperation.getStore();
-  return operation ? retryWithin(operation, send, signal, policy, onWait)
-    : outageWaitOperation.run({ firstFailureAt: null }, () => retryWithin(outageWaitOperation.getStore()!, send, signal, policy, onWait));
+  if (operation) return retryWithin(operation, send, signal, policy);
+  const owned: OutageWaitOperation = { firstFailureAt: null };
+  return outageWaitOperation.run(owned, async () => {
+    let recovered = false;
+    try {
+      const result = await retryWithin(owned, send, signal, policy);
+      recovered = true;
+      return result;
+    } finally {
+      const observer = outageWaitScope.getStore()?.observer;
+      if (observer && owned.firstFailureAt !== null) {
+        const ended = { purpose: outageWaitPurpose.getStore() ?? DEFAULT_WAIT_PURPOSE, waitedMs: Date.now() - owned.firstFailureAt, recovered };
+        notify(() => observer.ended(ended));
+      }
+    }
+  });
 }
 
 async function retryWithin<T>(operation: OutageWaitOperation, send: () => Promise<T>, signal: AbortSignal | undefined,
-  policy: { budgetMs: number; firstDelayMs: number; maxDelayMs: number },
-  onWait?: (wait: StorageOutageWait) => Promise<void> | void): Promise<T> {
+  policy: { budgetMs: number; firstDelayMs: number; maxDelayMs: number }): Promise<T> {
   const scopeStop = outageWaitScope.getStore()?.stop;
   const stop = signal && scopeStop ? AbortSignal.any([signal, scopeStop]) : signal ?? scopeStop;
   for (let wait = policy.firstDelayMs; ; wait = Math.min(wait * 2, policy.maxDelayMs)) {
@@ -125,7 +155,11 @@ async function retryWithin<T>(operation: OutageWaitOperation, send: () => Promis
       operation.firstFailureAt ??= now;
       if (stop?.aborted || now - operation.firstFailureAt + wait > policy.budgetMs) throw error;
       recordStorageBackoff(wait);
-      void Promise.resolve().then(() => onWait?.({ waitMs: wait, waitedMs: now - operation.firstFailureAt! })).catch(() => undefined);
+      const observer = outageWaitScope.getStore()?.observer;
+      if (observer) {
+        const waiting = { purpose: outageWaitPurpose.getStore() ?? DEFAULT_WAIT_PURPOSE, waitedMs: now - operation.firstFailureAt };
+        notify(() => observer.waiting(waiting));
+      }
       await delay(wait, undefined, { signal: stop }).catch((interrupted: unknown) => {
         throw signal?.aborted && signal.reason instanceof DOMException && signal.reason.name === "TimeoutError" ? error : interrupted;
       });
