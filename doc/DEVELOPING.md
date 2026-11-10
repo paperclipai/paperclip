@@ -648,6 +648,10 @@ behavior for review cards. Its dismissal save and decisions are simulated;
 server persistence and permission boundaries have separate regression tests.
 The demo uses real thread/form components with fixture response callbacks.
 The Agent Chat stories share the same component fixture.
+The **Send instead of confirming** and **Reopen skipped confirmation** stories
+exercise sending a separate message while a completion review is open, then
+opening that unchanged request from the feed. These use the production thread
+with simulated message saves and decision callbacks.
 
 Use **Composer → New task** to review task creation through the production
 `TaskChatComposer`. The editor, file menu, work modes, assignee/model picker,
@@ -1064,8 +1068,10 @@ npx paperclipai allowed-hostname dotta-macbook-pro
 ## Agent status recovery
 
 Lifecycle verification stops automatic attempts after missing authentication,
-an unavailable model or command, an invalid working directory, or unexpected
-probe output. A generic failed test gets up to three failures before automatic
+an unavailable model or command, an invalid working directory, unexpected
+probe output, or an owned AI account selection refusal. Account selection guidance
+names missing defaults, unavailable accounts, incompatible bindings, missing
+responsible users, or credential sharing requirements without provider error text. A generic failed test gets up to three failures before automatic
 checks stop. The saved `verificationFailures` count only advances when the host
 verification test fails; claims deferred before the test do not spend that budget.
 An explicit retry or execution configuration change resets that count.
@@ -1134,12 +1140,19 @@ Prepare a new or updated agent worktree with one command:
 node scripts/agent-preflight.mjs
 ```
 
-It does what `pnpm install --frozen-lockfile`, the Runner's `ensure:eval-build-deps`,
-`build:rust`, `build` and `build:runner-binaries` did, and skips work whose inputs
-are unchanged:
+It does what `pnpm install --frozen-lockfile`, the plugin SDK's `ensure-build-deps`,
+the Runner's `ensure:eval-build-deps`, `build:rust`, `build` and
+`build:runner-binaries` did, and skips work whose inputs are unchanged:
 
 - **install** is skipped when the lockfile, every `package.json`, `patches/`, Node
   and pnpm match this worktree's last install.
+- **plugin SDK build** runs `scripts/ensure-plugin-build-deps.mjs`, which builds
+  `@paperclipai/plugin-sdk` and its `@paperclipai/shared` dependency and skips
+  them when their content fingerprints match the last build. Like the Runner and
+  the eval kernel, the SDK is imported through its built `dist` (plugin workers
+  load it under plain Node), so the server and the restart-chaos harness cannot
+  start without it. Both compile in about two seconds, so they do not use the
+  shared cache.
 - **Runner build** is skipped when the Runner's build stamp is current. When another
   worktree built the same inputs (the build-input digest described under
   "Reused Runner build in the server build", plus the compiler), the Runner and eval
@@ -1277,6 +1290,26 @@ family, including the separate deadline and settlement regressions, with:
 ```sh
 pnpm --filter @paperclipai/paperclip-runner exec vitest run runnerd-codex-transport
 ```
+
+#### PR Vitest retry
+
+PR CI retries a failing Vitest case once, so a single contention flake does not
+force a re-run of the whole workflow. `scripts/ci/vitest-retry.mjs` owns the gate.
+The default is one retry when `GITHUB_ACTIONS=true` and `GITHUB_WORKFLOW=PR`.
+Reusable workflows inherit the caller's name, so `pr-trusted.yml` gets the retry
+through `pr.yml`. Release, release verify, cloud readiness, master and local runs
+keep zero retries. `PAPERCLIP_VITEST_RETRY` overrides the default in any context.
+For example, set the `CI_VITEST_RETRY` repository variable to `0` to turn the retry
+off, or set `PAPERCLIP_VITEST_RETRY=1` locally to reproduce the CI behavior.
+
+`scripts/run-vitest-stable.mjs` passes `--retry` to every `vitest run`. This
+covers the general, workspace, chat, native Runner and serialized lanes and the
+selected-file path. The Runner package config sets `retry` itself, because its
+lane runs Vitest directly. A test that passes only on a retry is still a flake.
+`scripts/ci/retry-reporter.mjs` adds a `Flaky test passed on retry` warning
+annotation for each such test, and a row to the step summary with the file, test,
+retry count and job. Fix a test that this reporter reports. Do not treat the
+retry as the fix. Playwright retries stay at zero.
 
 #### Embedded Postgres template cache
 
@@ -2078,12 +2111,14 @@ sandbox entry (no `driver`, or `driver: "sandbox"`) and any number of
   "driver": "plugin",
   "pluginKey": "example.remote-host-plugin",
   "driverKey": "tasks",
-  "driverConfig": {}
+  "driverConfig": {},
+  "instanceDefault": true
 }
 ```
 
-Names and `pluginKey`–`driverKey` pairs must be unique, and `driverConfig` must
-not contain secret-like keys. Any other key refuses startup. `plugins.autoInstall`
+Names and `pluginKey`–`driverKey` pairs must be unique, `driverConfig` must not
+contain secret-like keys, and `instanceDefault` is allowed on at most one plugin
+entry and never on the sandbox entry. Any other key refuses startup. `plugins.autoInstall`
 holds catalog keys, not manifest ids, so boot also refuses to start unless an
 auto-installed bundled or distribution catalog entry installs the entry's
 `pluginKey`.
@@ -2092,14 +2127,27 @@ Boot validates the driver config through the plugin, marks the row
 `managedPluginEnvironment: "<pluginKey>:<driverKey>"`, and adopts an existing
 unmarked row for the same plugin and driver. While the plugin is down, the row is
 archived; it comes back when the worker is ready. Removing an entry never archives
-its row. Plugin entries do not change the instance default.
+its row.
 
-Under `enableManagedSandboxOnly`, boot fills the instance default with the
-managed sandbox only when the default is unset, names the local environment, or
-names a deleted one. The fill locks the default row and rechecks it, so a
+Boot fills the instance default only when it is unset, names the local
+environment, or names a deleted one. A plugin entry with `instanceDefault` fills
+first, right after its ensure; then, under `enableManagedSandboxOnly`, the
+managed sandbox fills. So a new instance gets the plugin environment, and an
+existing instance keeps the default it already has. If the plugin is down at a
+new instance's first boot, the managed sandbox fills the default instead, and the
+plugin environment does not replace it later. Recovery after boot never fills.
+Like an admin's default write, the plugin fill declines while an active agent
+that follows the default has not been prepared by that plugin; the managed
+sandbox then fills as usual. The fill locks the default row and rechecks it, so a
 concurrent boot or admin write is never overwritten. A filled default is an
 ordinary set value: nothing reverts it when the mode is later turned off, and an
 admin can change it in instance settings.
+
+`server/src/services/managed-config-capabilities.json` lists the managed-config
+capabilities a release supports, for the control plane to read at a release
+commit. It must equal `MANAGED_CONFIG_CAPABILITIES` in `managed-config.ts`
+(`managed-config-capabilities.test.ts` checks this), and the parser accepts plugin
+entries only while that list includes `pluginEnvironments`.
 
 
 ### Experimental native remote workspace storage
@@ -2140,6 +2188,23 @@ S3 multipart uploads stream up to four parts concurrently. One producer reads
 the source in order, and bounded stream buffers preserve backpressure. Failed
 uploads cancel and settle their active requests before multipart cleanup.
 Snapshot publication still requires full object hash and size verification.
+Local snapshot hashing, encryption, and decryption use bounded 1 MiB filesystem
+stream buffers to reduce event-loop handoffs under background load. Each stream
+retains its existing integrity and cancellation checks; archive contents and
+saved snapshot formats are unchanged. Reproduce the scheduling effect with:
+
+```sh
+node --expose-gc scripts/benchmark-workspace-archive-io.mjs
+```
+
+This bounded benchmark alternates three baseline/treatment pairs over the same
+32 MiB archive with 5 ms of competing main-thread work per turn. It runs real
+hashing and encryption file passes, compares plaintext and ciphertext digests,
+and reports callback counts and diagnostic peak memory growth. Larger buffers
+trade additional bounded stream memory for fewer scheduling handoffs. The result
+is synthetic; it does not identify the competing workload or establish hosted
+finalization latency, and excludes sandbox, database, and object-storage time.
+
 Preparation creates a saved baseline, and native finalization saves the stopped
 writer's files before releasing its persistence obligation. Replacing a
 webserver reconnects to the recorded allocation without copying files back to
@@ -2154,6 +2219,18 @@ or `cleanup`) and its timeout in milliseconds. Command output is excluded from
 that diagnostic. A timeout does not prove the remote process stopped or that a
 save failed before publication. Reconcile the existing workspace and operation
 receipts before recovery; the transport does not automatically repeat the command.
+The internal helper commands suppress Node runtime warnings so their fixed
+failure labels stay separate from warning text. Actual command errors still
+fail the operation. This does not change an agent process's environment.
+
+Loading an encrypted saved snapshot cancels its storage request after five
+minutes without incoming bytes, including a wait for response headers. Incoming
+bytes renew that idle deadline, so a large download can take longer while it
+makes progress. The failure is `remote_workspace_snapshot_download_stalled`;
+private download scratch is removed before returning and the saved snapshot is
+unchanged. Preparation offers its existing bounded retry only after rechecking
+the same clean saved version and workspace owner. Caller cancellation still
+cancels the request and does not become a download timeout.
 Export cleanup keeps this typed timeout diagnostic in the operation's
 `metadata.exportCleanup.lastError`. Other cleanup errors retain a generic message.
 The saved snapshot stays acknowledged and the cleanup obligation stays pending
@@ -2297,8 +2374,7 @@ for storage, import, retention, and lifecycle regression checks. These checks do
 not qualify a deployed Runner/provider or a zero-outage webserver deploy. Keep
 the existing persistent volume until the other instance data paths and deploy
 handoff are separately qualified. See the
-[implementation contract](SPEC-implementation.md#experimental-native-remote-workspace-authority-2026-10-30)
-and [snapshot storage contract](DATABASE.md#experimental-remote-workspace-snapshots).
+[snapshot storage contract](DATABASE.md#experimental-remote-workspace-snapshots).
 
 ## Agent Artifact Uploads
 
@@ -2529,7 +2605,7 @@ The default `worktree init` still seeds eagerly. A lean worktree (created withou
 
 - `pnpm paperclipai worktree ensure-seeded` performs the deferred seed **exactly once**. It is lock-guarded and idempotent: only a complete `verified` manifest short-circuits it, so it is safe to call repeatedly and from concurrent processes. Managed workspaces derive the source from the control-plane-provided base project workspace when it carries its own `.paperclip/config.json`, and otherwise from the control plane's own registered instance config; either way the workspace's manifest never selects it. Manual worktrees must pass `--from-config`.
 - `paperclipai run` calls `ensureWorktreeSeeded` automatically before doctor/boot. Managed runs transparently seed a lean worktree from their registered base workspace; an unmanaged lean worktree must first run `worktree ensure-seeded --from-config <source-config>`.
-- Managed Paperclip git worktrees default to the repository's `scripts/provision-worktree.sh` when the strategy omits `provisionCommand`. When a registered source config exists, setup creates the isolated config and pending manifest. Runtime startup also runs `scripts/provision-worktree-runtime.sh` automatically when no explicit runtime provision command is configured and the manifest is not verified. Explicitly configured provision commands still take precedence.
+- Managed git worktrees run a repository's `scripts/provision-worktree.sh` when the strategy omits `provisionCommand` and that file exists. The Paperclip repository deliberately does not ship a file at that path, so agent turns in Paperclip worktrees do not wait on dependency installs or instance setup. Its setup script is `scripts/setup-paperclip-worktree.sh`: run it by hand, or set it as the project's `provisionCommand` to opt in. When a registered source config exists, it creates the isolated config and pending manifest, then installs dependencies. Runtime startup still runs `scripts/provision-worktree-runtime.sh` automatically when no explicit runtime provision command is configured and the manifest is not verified; that script runs `scripts/setup-paperclip-worktree.sh` first when the worktree has no config. Explicitly configured provision commands still take precedence.
 - An environment-configured server may have no local seed config. If neither the base checkout nor the default control-plane instance has one, a fresh worktree prepares its dependencies without creating a development instance. This also applies when `PAPERCLIP_CONFIG` names the default `$PAPERCLIP_HOME/instances/$PAPERCLIP_INSTANCE_ID/config.json` path, as the Docker image does. Setup creates no config, environment file, or seed manifest and does not claim runtime or seed readiness. A later request for a seeded development runtime still needs a canonical registered source config. Once that source exists, provisioning the checkout again creates the development instance normally.
 - A missing custom `PAPERCLIP_CONFIG`, rejected symlink, or non-regular source file still fails setup. An existing worktree with a config, environment file, or seed state also fails if its source disappears; setup never downgrades that instance to a plain checkout. Repair the source before retrying.
 - The built-in deferred seed is recorded as its own terminal `workspace_seed` operation. A zero exit code is not enough for success: the operation succeeds only when `.paperclip/seed-manifest.json` contains complete verified evidence; failed, missing, or malformed manifests produce a failed operation with the seed phase in metadata.
@@ -3111,7 +3187,8 @@ and model.
 
 OpenCode requires an explicit `provider/model` before testing or finishing setup.
 An inactive setup draft can be saved before choosing a model. Automatic native
-selection uses `allow` permissions and a `per_turn` lifecycle. Native `ask` and
+selection uses `allow` permissions and leaves the lifecycle unset (see "Runner
+lifecycle default" below). Native `ask` and
 `deny` policies remain available in agent configuration. Legacy custom commands,
 extra arguments, model variants, and inherited permission rules require the
 Legacy runner; incompatible settings return remediation instead of being ignored.
@@ -3120,6 +3197,10 @@ Saved OpenCode agents keep their runner and runtime policies.
 Plugin environment drivers can declare `requiresAgent: true` when their leases
 need an agent-owned resource. The host selects that plugin's lifecycle work only for
 agents on that environment. See [Required plugin work](./AGENT-LIFECYCLE.md#required-plugin-work).
+Moving a ready agent to an environment that needs a new plugin automatically
+pauses execution, waits for stop completion, starts the required resources, and
+verifies the saved configuration before allowing work. Existing pause holds
+still apply; the user does not need to pause or resume the agent for this move.
 Setup saves the draft and environment, runs its
 existing lifecycle preparation, and waits in `verifying` with the `setup` hold.
 The worker becomes idle there until the user finishes hiring. Connection tests
@@ -3387,6 +3468,13 @@ and `packages/adapter-utils/src/sandbox-callback-bridge.test.ts` for these contr
 
 ### Native runner restart recovery
 
+An explicit Retry can continue a recovered setup failure that began as a
+scheduled retry. Its settlement proof accepts the host-authored promotion event
+only when its deadline, reason and attempt match the run and its saved retry
+context. The exact failure and durable measurement must still follow. Provider
+dispatch evidence, an active controller, unsafe files or changed user authority
+keep the Retry held. This adds no automatic replay or recovery loop.
+
 For remote controller disk-loss work, use the existing control-plane snapshot
 transaction and `native-controller-recovery.ts`; do not add a second snapshot
 writer. The private versioned metadata is limited to 4 KiB. Its importer handles
@@ -3517,10 +3605,54 @@ that classification finishes.
 
 A resumed sandbox lease can contain a workspace whose provider never started. A new attempt may create its exact session directory only when durable control-plane evidence proves zero connections, zero events, and untouched bootstrap commands, and no backup or remote session directory exists. Directory creation is atomic; partial state or uncertain ownership remains blocked.
 
+### Runner lifecycle default
+
+New native Codex, Claude and OpenCode agents store no `lifecycleMode`. For Codex
+and OpenCode on a local target, the controller resolves that to `warm` with the default 5-minute idle
+window (`resolveHeartbeatNativeLifecyclePolicy`), so a follow-up turn on the same
+task reuses the live runner and provider session instead of launching and
+loading them again. Claude (ACPX) relaunches its provider process on every
+follow-up turn by design, so warm does not shorten its follow-up and it resolves
+to `per_turn`, as do remote targets, other harnesses and managed providers
+without warm support. An explicit `per_turn` or `warm` choice
+("Turn by turn" or "Warm session" in the agent's Runner lifecycle field) always
+wins, and a session keeps the policy it was admitted with. The measurements are
+in [`plans/2026-11-07-warm-follow-up-ttft.md`](plans/2026-11-07-warm-follow-up-ttft.md).
+
+A warm local runner outlives its turn, so it carries a 7-minute reconnect grace
+(`localRunnerProcessReconnectGraceMs`, the same grace remote runners use). If its
+controller dies without suspending it, runnerd proves after the grace that no
+controller re-authenticated, stops its provider, keeps its durable state for a
+cold resume, and exits. A graceful controller shutdown suspends idle warm
+sessions first. A per-turn local runner keeps its connection-lease bound.
+
 Only successful turns retain a live warm provider session. A structured failed
 or cancelled result must retire that session and collect its managed files before
 heartbeat stops the reusable sandbox. A later retry can resume the same sandbox
 without inheriting the stopped provider transport.
+
+A rejected warm-session close retains its owner, even when no managed instruction
+copy exists. Idle expiry, failed-turn release, and restart must not report that
+owner as quiet or launch a replacement over it. The next retirement attempt uses
+the same owner and must finish provider closure and stopped-file collection.
+The existing explicit-reset exception still requires its typed retirement proof.
+
+`heartbeatService(...).prepareIdleWarmNativeSessionsForSleep({ canRetire })`
+delegates to the native owner's retirement path for idle owners. Its caller owns
+the admission hold and supplies a synchronous
+current-authority check. The check runs before each retirement and after its
+awaited effects. A started cleanup settles if the hold expires, but no further
+owner retires under that expired hold. Busy turns remain active and do not inherit
+a close-on-release request from an abandoned sleep attempt. Counts describe the
+attempt; the caller must still validate its hold and final local-work proof.
+Diagnostic-only inspection must never invoke this resource preparation.
+
+The privileged `task-drain?idleSleepSafety=1` preflight invokes this operation only
+for the exact current, unexpired idle owner with no active admitted work. It tracks
+the actual cleanup promise, rejects concurrent work or a changed hold, and then
+takes a fresh durable/local safety snapshot. Busy or failed retirement keeps the
+instance awake. Plain drain reads and `idleSleepDiagnostics=1` remain passive with
+respect to native retirement.
 
 An idle warm owner proves only the exact prior run in the same company, session,
 workspace and environment. Mutable configuration compatibility is checked
@@ -3965,6 +4097,13 @@ Environment overrides:
   negative, empty, or non-numeric value falls back to the default.
   `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_ENABLED=false` turns expiry off, and
   `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_DRY_RUN=true` only reports candidates.
+  A resumed session restores its failover backup from durable storage before the
+  provider starts. Each read has a five-minute idle limit instead of a short total
+  limit: a large or slow backup keeps restoring while bytes flow. A read that makes
+  no progress for five minutes fails with `native_harness_storage_download_stalled`
+  and publishes no partial backup. The whole restore, including local decrypt,
+  digest and extraction, has a 30-minute outer limit
+  (`native_harness_storage_restore_deadline_exceeded`). Stop ends the restore.
 - `PAPERCLIP_NATIVE_RUNNER_EVIDENCE_RETENTION_DAYS=<days>` sets how long native
   session continuity-break archives and quarantined session state are kept (see
   `doc/recoverable-disk-cleanup.md`). The default is `7` and the minimum is `1`. A
@@ -4475,6 +4614,16 @@ retryable restoration failure. It never substitutes the default branch.
 Reopening failures reject the consuming request with HTTP 409 before saving a
 comment or changing its task. The response preserves the restoration message, so
 the composer keeps an editable draft and permits retry after access is restored.
+It also carries `diagnostic: { step, kind }`, and the server log records the same
+pair. Both are closed values: `step` names the failed stage (for example
+`source_materialize`, `restore_point` or `saved_commit`), and `kind` names the
+failure class (`remote_unavailable`, `auth_rejected`, `commit_unavailable`,
+`timeout`, `verification`, `filesystem`, `git_command` or `unknown`). They never
+contain paths, repository URLs or Git output.
+Nested checkout failures retain their original restore step. The checkout
+wrapper keeps process error codes and timeout flags privately for classification;
+it does not attach the raw command error as a cause or add those flags to the
+public error object.
 
 Both enable switches default off. Rollback disables further expiration while
 leaving saved recipes and restoration support intact. Recovery archives, runner
@@ -4553,8 +4702,9 @@ whether or not anything is left to compact.
 
 A compacted worktree is in the same state as a freshly created one, so when the
 task resumes, whatever produced those files the first time produces them again:
-reuse runs the workspace provision command (or `scripts/provision-worktree.sh`),
-which reinstalls dependencies when `node_modules` is missing. Repositories without
+reuse runs the workspace provision command (or a repository's
+`scripts/provision-worktree.sh`), which can reinstall dependencies when
+`node_modules` is missing. Repositories without
 a provision command rely on the agent's own install step, as they do for a new
 worktree.
 
@@ -4982,6 +5132,39 @@ database without loading home `.env` files or repairing worktree config. See
 secret handling, initialization order and migration interfaces.
 
 
+### Dedicated native recovery test database
+
+The native idle continuation fixture reads `PAPERCLIP_RECOVERY_TEST_DATABASE_URL`
+and passes it through `nativeRestartFixture({ dedicatedDatabaseUrl })`. The URL
+must name a dedicated PostgreSQL database ending in `_test`, without database-name
+or connection-option overrides. This explicit option applies pending migrations
+and closes registered clients at cleanup; it does not create or drop that
+database. Its provisioning owner remains responsible for disposal. The environment
+variable alone does not opt other `startRecoveryPostgres()` callers into shared
+storage: they retain their existing fresh-database allocation and cleanup.
+
+The native idle-sleep continuation integration uses a controlled local provider
+with the real heartbeat queue, authorized comment wake, native session
+checkpoint, files, retained secret encryption and fresh resolution, and owned
+idle preflight. Credential resolution through the secret owner does not prove
+production backend credential injection. It uses an explicit two-connection
+main pool, alongside the production auxiliary pools, and verifies the driver's
+actual setting. It does not
+exercise the remote Runner harness backup transport or a live provider.
+
+The workspace runtime lifecycle test uses the actual local runtime owner and an
+ephemeral HTTP child. Normal run release must remove the original PID, listener,
+and service registry entry before the same owner starts another useful service
+from the retained workspace files. This is physical local resource retirement
+and next-use coverage; it does not establish global tenant quiet.
+
+The plugin idle manager lifecycle test uses a real SDK worker process and a
+controlled host state handler that persists worker requests to a temporary file.
+It checks the actual manifest generation, refusal of work under the owned hold,
+and a second useful write after release. This boundary does not exercise the
+production plugin database loader or plugin jobs. Unsupported manifests, active
+manual resources, and missing completion receipts remain sleep blockers.
+
 ### Read resilience during deploys
 
 Read surfaces use `useQueryView` and `QueryErrorState`. Transient refetch failures keep loaded data visible. An initial outage keeps a quiet placeholder until recovery. Authorization, missing resources and validation failures still show readable errors. Exhausted first reads on a reachable server offer Retry, including task filters and hierarchy reads. Health probes and the socket own app-wide recovery; a successful component load may be an older in-flight response or a local no-op. Sensitive manual reads use `useResilientFetch`; browser viewer URLs and pairing previews remain in component memory and never enter a shared cache.
@@ -5024,3 +5207,33 @@ failure remains retryable even when the clone directory already exists. Later
 workspace saves retain repository coverage only for directories present in the
 captured archive. Deleted checkouts lose coverage and can be acquired again.
 A failed batch upload marks the affected repository rows as needing repair.
+
+### Native Runner credential refreshes
+
+Core handles PRP `auth.credentials.updated` notifications for managed Codex and
+Grok subscriptions across local, SSH, sandbox, and supported plugin Runner tasks.
+After validating the company, agent, run, session, and Runner binding, it exports
+the selected account and writes newer credentials directly to the tenant secret.
+Grant, secret, version-selector, session-epoch, and provider freshness checks are
+shared across execution targets. Explicit reconnects and revoked grants win over
+old refreshes. Providers that do not emit this event keep their existing flow;
+operator-owned homes do not acquire tenant writeback authority.
+
+The transport's credential handler rebinds with each warm invocation, including
+its current target exporter. Idle refreshes and recovered controller handles do
+not depend on a completed invocation's temporary home. Detached handles cannot
+process new updates. Native/ACPX Codex and Grok use bounded, descriptor-based file
+reads; SSH and sandbox readers use the Node runtime already required by remote
+isolated-home preparation. Plugin tasks use their account-bound export operation.
+
+A notification is acknowledged only after writeback succeeds or its authority is
+intentionally discarded. Export and database failures replay through PRP. An
+unchanged managed-subscription turn does no credential export or database write.
+Retirement keeps a final export for legacy and recovery paths; a failed final
+export retains the provider's credential files for retry. After verified provider
+exit, ACPX Codex and Grok preserve a private `auth-refresh.json` handoff before
+scrubbing `auth.json`; Core removes it after retirement writeback. Plugin retirement also
+records rotation, unchanged credential, changed binding, undispatched task, or a
+null export. No secret bytes appear in PRP events or lease metadata. The plugin
+provider must support live account-bound exports before enabling the paired Core
+handler.

@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { setupCommandFailureResultJson } from "../services/workspace-setup-command-failure.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -148,7 +149,7 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres workspace-runtime tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
-const provisionWorktreeScriptPath = new URL("../../../scripts/provision-worktree.sh", import.meta.url);
+const provisionWorktreeScriptPath = new URL("../../../scripts/setup-paperclip-worktree.sh", import.meta.url);
 
 async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd });
@@ -980,6 +981,37 @@ describe("realizeExecutionWorkspace", () => {
       expect(workspace.created).toBe(true);
       expect(workspace.baseRefSha).toBe(await readGit(repoRoot, ["rev-parse", "release"]));
       await expect(fs.stat(path.join(workspace.cwd, ".git"))).resolves.toBeTruthy();
+    } finally {
+      await fs.rm(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("names a failed project provision command with its exit status and output (CF1)", async () => {
+    const repoRoot = await createTempRepo();
+    const config = buildExecutionWorkspaceAdapterConfig({
+      agentConfig: {},
+      projectPolicy: parseProjectExecutionWorkspacePolicy({
+        enabled: true,
+        defaultMode: "isolated_workspace",
+        workspaceStrategy: { type: "git_worktree", baseRef: "main", provisionCommand: "bash ./scripts/missing-provisioner.sh" },
+      }),
+      issueSettings: null,
+      mode: "isolated_workspace",
+      legacyUseProjectWorkspace: null,
+    });
+    try {
+      const failure = await realizeExecutionWorkspace({
+        base: { baseCwd: repoRoot, source: "project_primary", projectId: "project-1", workspaceId: "workspace-1", repoUrl: null, repoRef: "HEAD" },
+        config,
+        issue: { id: "issue-1", identifier: "TEST-1", title: "Broken setup" },
+        agent: { id: "agent-1", name: "Test agent", companyId: "company-1" },
+      }).then(() => null, (error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(setupCommandFailureResultJson(failure)).toEqual({ setupCommandFailure: {
+        step: "workspace_provision", command: "bash ./scripts/missing-provisioner.sh", exitCode: 127,
+        output: expect.stringContaining("No such file or directory"),
+        message: expect.stringMatching(/^The project's workspace provision command "bash \.\/scripts\/missing-provisioner\.sh" failed with exit code 127: .*No such file or directory/),
+      } });
     } finally {
       await fs.rm(repoRoot, { recursive: true, force: true });
     }
@@ -2045,7 +2077,7 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
 
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.copyFile(
-      fileURLToPath(new URL("../../../scripts/provision-worktree.sh", import.meta.url)),
+      fileURLToPath(new URL("../../../scripts/setup-paperclip-worktree.sh", import.meta.url)),
       path.join(repoRoot, "scripts", "provision-worktree.sh"),
     );
     await runGit(repoRoot, ["add", "scripts/provision-worktree.sh"]);

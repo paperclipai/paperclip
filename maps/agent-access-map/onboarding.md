@@ -250,8 +250,11 @@ Scoped source review: 2026-10-13, the first-task asset correction against
 send file-producing work through the child's own execution and existing
 dependency/block controls. Native `register_deliverable` retains its current-task
 binding; this adds no cross-task file-registration authority or permission.
-Document-only work may use the existing child-document API inline, and plan-only
-approval does not authorize implementation. The existing asset tests check
+Document-only work may use the existing child-document API inline. Acceptance
+of an execution proposal authorizes its selected tasks and proposed team within
+existing hiring, budget, and connection controls. An explicitly plan-only
+approval does not authorize implementation; requested separate approvals remain
+in force. The existing asset tests check
 wording only. The literal baseline live attempt failed child-file delivery and
 completion reporting; revised live authorization and execution remain `not-run`.
 

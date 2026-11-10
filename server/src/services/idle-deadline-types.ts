@@ -33,6 +33,7 @@ export type IdleDeadlineOwners = Partial<Record<"statusCards" | "externalObjects
 
 export type IdleIssueWait =
   | { kind: "scheduled_retry"; issueId: string; runId: string }
+  | { kind: "current_review_retry"; issueId: string; runId: string; reviewerAgentId: string; stageId: string }
   | { kind: "provider_quota"; issueId: string; sourceRunId: string; targetAgentId: string; reviewer: boolean };
 export type IdleDeadlineCoverage =
   | { kind: "status_cards" | "external_objects" | "skill_sources" | "watchdogs" }

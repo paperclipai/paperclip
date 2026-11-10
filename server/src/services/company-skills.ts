@@ -5981,7 +5981,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
   }
 
   async function materializeVersionSnapshot(companyId: string, skill: CompanySkill, version: StoredSkillVersion): Promise<string> {
-    return executionContent.withVersion({ companyId, skillId: skill.id, versionId: version.id }, async directory => directory);
+    return executionContent.withReadableVersion({ companyId, skillId: skill.id, versionId: version.id }, async directory => directory);
   }
 
   function resolveRuntimeSkillMaterializedPath(companyId: string, skill: Pick<CompanySkill, "key" | "slug">) {
@@ -7403,7 +7403,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       .filter((skill): skill is CompanySkill => Boolean(skill));
     async function assertUnused(skill: CompanySkill, database: DbOrTransaction = db) {
       const usedByAgents = await usage(companyId, skill.key, database);
-      const pins = await protectedVersions(database as Db, companyId);
+      const pins = await protectedVersions(database as Db, companyId, { createdAt: skill.createdAt });
       const versions = await database.select({ id: companySkillVersions.id }).from(companySkillVersions).where(and(
         eq(companySkillVersions.companyId, companyId), eq(companySkillVersions.companySkillId, skill.id)));
       if (pins.versions === null || versions.some(version => pins.versions!.has(version.id))) {

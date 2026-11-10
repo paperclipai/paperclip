@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, caseAccessSources, caseEvents, caseHandoffs, caseIssueLinks, cases, chatConversations, companies, heartbeatRuns, issues, projects } from "@paperclipai/db";
@@ -9,7 +10,7 @@ import { withExternalAdmissionGuard, type ExternalAdmissionTransaction } from ".
 import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
-import { authorizationService, type AuthorizationActor } from "./authorization.js";
+import { authorizationDeniedDetails, authorizationService, type AuthorizationActor } from "./authorization.js";
 import { assertActorCanReadCase, assertCaseTrustedForExecution, canActorReceiveCase, retainCaseAccessSource } from "./case-access.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -90,7 +91,7 @@ async function authorizeTask(tx: Db, actor: AuthorizationActor, companyId: strin
   const assignment = await authorizationService(tx).decide({ actor, action: "tasks:assign", resource, scope: {
     issueId: issue?.id ?? null, projectId, parentIssueId, assigneeAgentId: toAgentId, assigneeUserId: null,
   } });
-  if (!assignment.allowed) throw forbidden(assignment.explanation);
+  if (!assignment.allowed) throw forbidden(assignment.explanation, authorizationDeniedDetails(assignment));
   if (options.validateRecipient !== false) {
     try {
       await assertAssignableAgent(tx, companyId, toAgentId, { kind: "work" });
@@ -113,7 +114,7 @@ async function authorizeTerminalTask(tx: Db, actor: AuthorizationActor, issue: I
     throw forbidden("Agents may complete only their own case work");
   }
   const mutation = await access.decide({ actor, action: "issue:mutate", resource });
-  if (!mutation.allowed) throw forbidden(mutation.explanation);
+  if (!mutation.allowed) throw forbidden(mutation.explanation, authorizationDeniedDetails(mutation));
 }
 
 async function authorizeHandoffControl(tx: Db, actor: AuthorizationActor, row: CaseHandoffRow, issue: IssueRow, validateRecipient = true) {
@@ -405,7 +406,7 @@ export function caseHandoffService(db: Db) {
               type: "issue", companyId, issueId: issue.id, projectId: issue.projectId, parentIssueId: issue.parentId,
               assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId, status: issue.status,
             } });
-            if (!mutation.allowed) throw forbidden(mutation.explanation);
+            if (!mutation.allowed) throw forbidden(mutation.explanation, authorizationDeniedDetails(mutation));
           }
         }
         // Lock task before case, matching task mutation admission and dispatch.
@@ -446,6 +447,9 @@ export function caseHandoffService(db: Db) {
         await authorizeTask(tx, actor, companyId, issue, issue?.projectId ?? projectId, input.toAgentId, {
           invalidRecipientAsUnprocessable: true, ...(issue ? {} : { parentIssueId: parent?.id ?? null }),
         });
+        await assertAgentInteraction(tx, { companyId, actorAgentId: actor.type === "agent" ? actor.agentId : null,
+          operation: "assign", issueId: issue?.id, parentIssueId: parent?.id, targetAgentId: input.toAgentId,
+          texts: [JSON.stringify(input)], lock: true });
         if (caseRow && (await tx.select({ id: caseHandoffs.id }).from(caseHandoffs).where(and(eq(caseHandoffs.caseId, caseRow.id), inArray(caseHandoffs.state, PENDING))).limit(1)).length) throw conflict("A handoff is already pending for this case");
         if (issue && (await tx.select({ id: cases.id }).from(cases).where(and(eq(cases.workIssueId, issue.id), caseRow ? sql`${cases.id} <> ${caseRow.id}` : sql`true`)).limit(1)).length) throw conflict("Task is already the primary task of another case");
         const id = randomUUID();
@@ -489,7 +493,7 @@ export function caseHandoffService(db: Db) {
             const saved = await documentService(tx).upsertIssueDocument({ issueId: issue.id, ...initial, format: "markdown",
               baseRevisionId: null, createdByAgentId: actor.type === "agent" ? actor.agentId : null,
               createdByUserId: actor.type === "board" ? actor.userId ?? null : null, createdByRunId: source?.id ?? null,
-              sourceTrust, lockedDocumentStrategy: "conflict" });
+              sourceTrust, lockedDocumentStrategy: "conflict" }, { initialTaskCreation: !targetId });
             publications.push((await persistActivity(tx, { companyId, ...who, agentId: actor.type === "agent" ? actor.agentId : null,
               runId: source?.id ?? null, issueId: issue.id, action: "issue.document_created", entityType: "issue", entityId: issue.id,
               details: { key: saved.document.key, documentId: saved.document.id, title: saved.document.title,

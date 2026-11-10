@@ -76,6 +76,7 @@ retrieval instructions. Reads and excerpts are bounded; the handoff has a
 reset boundaries, deleted messages, source quarantine, and secret redaction
 apply before model submission. Successful recovery does not fetch or replay the
 handoff.
+
 Legacy adapters advertise `supportsToolRefreshOnResume` for their selected
 harness: Claude and Codex CLI/ACP, Grok CLI, Gemini/Kimi CLI/ACP, and
 Cursor/OpenCode/Pi CLI. CLI adapters using environment tool delivery start each
@@ -191,6 +192,18 @@ It validates the exact model, session identity, tool catalog, structured input,
 and terminal settlement at the process boundary. Copilot and Pi remain gated.
 Verified distributions are build-owned; no provider accepts an arbitrary executable.
 See [the rich ACP capability report](../../doc/architecture/runner-rich-acp-capabilities.md).
+
+On stdin EOF, SIGTERM, SIGINT, or an internal shutdown request, the sidecar emits
+`sidecar_shutdown_requested` once through `runtime.diagnostic` and stderr before
+cleanup removes pending calls. The JSON message gives the shutdown reason,
+pending tool/input/permission counts, completion-normalization count, and at most
+16 oldest tool calls with elapsed milliseconds and SHA-256 call IDs. Hash a
+`runtime.tool_called` call ID to correlate it with this snapshot. Arguments,
+results, operation names, and raw call IDs are excluded. This diagnostic records
+the local trigger; stdin EOF alone does not identify why the controller stopped.
+A broken output pipe can prevent event delivery; consult retained stderr too.
+It does not change retries, cancellation, or tool authorization. No saved session
+shape changes; sessions from the previous release retain their existing behavior.
 
 If the controller sends assigned MCP tools in the PRP catalog, the sidecar uses
 its authenticated tool bridge.
@@ -403,7 +416,9 @@ and both must succeed before artifact metadata and source-bound hashes are
 recorded. Run Docker and native qualification on hosted CI rather than a local
 developer machine.
 
-Pi cold provider admission has an absolute 60-second budget. Warm run attachment
+Pi and Claude cold provider admission have an absolute 60-second budget, and
+the runner's ACPX sidecar and the sidecar's provider session handshake bound their `session.open` at 60 seconds too. A cold
+Claude `session.open` timed out at the earlier 30-second bound on a loaded host. Warm run attachment
 checkpoints the old ACPX sidecar and starts a new one, so it uses that same budget
 while retaining the existing Runner authority. Live adoption and ordinary
 commands retain their 30-second bounds. Closing the transport cancels admission;
@@ -1013,7 +1028,11 @@ rewrite user configuration in this mode. Providers can still refresh credentials
 and update their own metadata. Runner still supplies the requested
 model, task instructions, and its internal task/completion tools. Claude session
 loads and resumes receive the same native session options as session creation,
-including allowed tools and the selected settings sources. Local permission
+including allowed tools and the selected settings sources. Runner does not write
+a configured Claude effort into the user settings. A new Claude process can
+report the settings default when it loads or resumes the session, so ACPX sends
+the selected effort again on that connection. Runner admits no prompt until
+Claude acknowledges that effort. Local permission
 rules and hooks apply. Native Codex tools can read and modify the execution home
 (read-only for planning); credentials in that home are not isolated from tools.
 Native Codex separately denies Runner-owned protocol state; ACPX Claude retains

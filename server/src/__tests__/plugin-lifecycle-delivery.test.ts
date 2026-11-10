@@ -3,8 +3,11 @@ import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { eq } from "drizzle-orm";
-import { agents, companies, createDb, companySecrets, projects, pluginCompanySettings, pluginConfig, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
+import { eq, sql } from "drizzle-orm";
+import * as databaseModule from "@paperclipai/db";
+import * as idleWorkModule from "../services/idle-local-work.js";
+import { idleWorkSnapshot, isIdleTaskDrainActive, registerTaskDrainExpiryWork, startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
+import { agents, companies, applyPendingMigrations, createDb, companySecrets, projects, pluginCompanySettings, pluginConfig, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { logger } from "../middleware/logger.js";
@@ -17,7 +20,14 @@ import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordin
 import type { PluginLifecycleManager } from "../services/plugin-lifecycle.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalUrl = process.env.PAPERCLIP_PLUGIN_LIFECYCLE_TEST_DATABASE_URL;
+const expectedDatabase = process.env.PAPERCLIP_PLUGIN_LIFECYCLE_EXPECTED_DATABASE;
+if (externalUrl || expectedDatabase) {
+  if (!externalUrl || !expectedDatabase || !/^sleep2_[a-z0-9_]+_test$/.test(expectedDatabase)) throw new Error("Explicit lifecycle test database required");
+  const target = new URL(externalUrl);
+  if (!["postgres:", "postgresql:"].includes(target.protocol) || target.hostname !== "127.0.0.1" || target.port !== "55448" || target.pathname !== `/${expectedDatabase}` || target.search) throw new Error("Unexpected lifecycle test database");
+}
+const support = externalUrl ? { supported: true as const } : await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 if (!support.supported) console.warn(`Skipping lifecycle delivery database tests: ${support.reason}`);
 
@@ -26,11 +36,26 @@ describePostgres("durable plugin lifecycle delivery", () => {
   let db: Db;
   let companyId: string;
   let pluginId: string;
-  beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("paperclip-plugin-delivery-"); db = createDb(database.connectionString); }, 90_000);
-  afterAll(async () => { await database?.cleanup(); });
-  afterEach(() => { vi.restoreAllMocks(); });
+  let listenerOwners: Array<{ listen: Db["$client"]["listen"]; close: ReturnType<typeof vi.fn> }>;
+  const deliveries = new Set<ReturnType<typeof registerPluginLifecycleDelivery>>();
+  beforeAll(async () => {
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else database = await startEmbeddedPostgresTestDatabase("paperclip-plugin-delivery-");
+    db = createDb(externalUrl ?? database.connectionString, { maxConnections: 4 });
+  }, 90_000);
+  afterAll(async () => { try { await db?.$client.end({ timeout: 1 }); } finally { await database?.cleanup(); } });
+  afterEach(async () => {
+    try { await Promise.all([...deliveries].map(worker => worker.dispose())); }
+    finally { deliveries.clear(); stopTaskDrain(); vi.restoreAllMocks(); }
+  });
   beforeEach(async () => {
+    listenerOwners = [];
     vi.spyOn(db.$client, "listen").mockResolvedValue({ unlisten: vi.fn(), state: {} } as never);
+    vi.spyOn(databaseModule, "createOwnedDatabaseListener").mockImplementation(() => {
+      const owner = { listen: db.$client.listen, close: vi.fn().mockResolvedValue(undefined) };
+      listenerOwners.push(owner);
+      return owner;
+    });
     await db.delete(plugins);
     companyId = randomUUID(); pluginId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Delivery fixture", issuePrefix: `L${companyId.slice(0, 6)}` });
@@ -48,13 +73,14 @@ describePostgres("durable plugin lifecycle delivery", () => {
   function delivery() {
     let task!: Parameters<ReturnType<typeof createDeliveryWorkCoordinator>["register"]>[1];
     const wake = vi.fn();
-    const coordinator = { register: vi.fn((_queue, input) => { task = input; return { wake, ready: Promise.resolve() }; }) };
+    const coordinator = { register: vi.fn((_queue, input) => { task = input; return { wake, ready: Promise.resolve(), stop: vi.fn().mockResolvedValue(undefined) }; }) };
     const call = vi.fn(async (_pluginId, _method, input) => ({ eventId: input.id, status: "acknowledged" }));
     const running = vi.fn(() => true);
     const lifecycle = new EventEmitter();
     const configApplied = new Set<() => void>();
     const onConfigApplied = (listener: () => void) => { configApplied.add(listener); return () => { configApplied.delete(listener); }; };
     const worker = registerPluginLifecycleDelivery(coordinator as never, db, { call, isRunning: running, onConfigApplied } as unknown as PluginWorkerManager, lifecycle as unknown as PluginLifecycleManager);
+    deliveries.add(worker);
     return { call, running, wake, lifecycle, worker, applied: () => { for (const listener of configApplied) listener(); }, run: () => task.run(new AbortController().signal), pending: () => task.hasPending(), nextRunAt: () => task.nextRunAt?.(), settled: () => task.onSettled?.() };
   }
   async function withManagedPlugin(enabledCompanies: string[], run: () => Promise<void>) {
@@ -91,7 +117,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
       expect(delivered(managedId)).toEqual([resourceId]);
       expect(delivered(ungrantedId)).toEqual([]);
       expect(delivered(pluginId)).toEqual([resourceId]);
-      d.worker.dispose();
+      await d.worker.dispose();
     });
   });
   it("listens for a managed plugin with no config row until its last enabled company disables it", async () => {
@@ -107,8 +133,8 @@ describePostgres("durable plugin lifecycle delivery", () => {
       expect(db.$client.listen).toHaveBeenCalledWith("paperclip_plugin_lifecycle", expect.any(Function), expect.any(Function));
       await db.insert(pluginCompanySettings).values({ pluginId: managedId, companyId, enabled: false });
       d.applied();
-      await vi.waitFor(() => expect(subscription.unlisten).toHaveBeenCalledTimes(1));
-      d.worker.dispose();
+      await vi.waitFor(() => expect(listenerOwners[0]!.close).toHaveBeenCalledTimes(1));
+      await d.worker.dispose();
     });
   });
   it("does not listen for a managed plugin that the document enables for no company", async () => {
@@ -124,7 +150,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
       const d = delivery();
       await d.worker.ready;
       expect(db.$client.listen).not.toHaveBeenCalled();
-      d.worker.dispose();
+      await d.worker.dispose();
     } finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
   });
   it("delivers project events to a storage provider only for projects attached to it", async () => {
@@ -145,7 +171,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
       expect(d.call).toHaveBeenCalledTimes(2);
       expect(d.call.mock.calls[1][2]).toMatchObject({ resourceId: core.id, action: "update" });
     } finally {
-      d.worker.dispose();
+      await d.worker.dispose();
     }
   });
 
@@ -157,7 +183,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
       await d.run();
       expect(d.call.mock.calls[0][2]).toMatchObject({ resourceId: removed, action: "delete" });
     } finally {
-      d.worker.dispose();
+      await d.worker.dispose();
     }
   });
 
@@ -184,7 +210,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
       const [stored] = await db.select().from(companySecrets).where(eq(companySecrets.ownerProjectId, project.id));
       expect(stored.latestVersion).toBe(1);
       expect(JSON.stringify(await pluginLifecycleInbox(db, pluginId).list(companyId))).not.toContain("fixture-private-grants");
-    } finally { d.worker.dispose(); vi.unstubAllEnvs(); }
+    } finally { await d.worker.dispose(); vi.unstubAllEnvs(); }
   });
   it("rejects credential patches from plugins without project instance secret scope", async () => {
     await event(); const d = delivery();
@@ -193,7 +219,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
       return { eventId: input.id, status: "acknowledged", instanceSecrets: { mount_grants: "private" } };
     });
     try { await d.run(); expect(await pluginLifecycleInbox(db, pluginId).list(companyId)).toHaveLength(1); }
-    finally { d.worker.dispose(); }
+    finally { await d.worker.dispose(); }
   });
   it.each([false, true])("does not wait for queued plugin callbacks during startup (runtime subscriber: %s)", async runtime => {
     if (runtime) await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["project", "agent_runtime"], capabilities: ["events.subscribe"] } as never }).where(eq(plugins.id, pluginId));
@@ -209,7 +235,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
       await vi.waitFor(() => expect(call).toHaveBeenCalled(), { timeout: 5000 });
       await vi.waitFor(() => expect(ready).toBe(true));
       expect(await pluginLifecycleInbox(db, pluginId).list(companyId)).toHaveLength(1);
-    } finally { release(); worker.dispose(); await coordinator.stop(); }
+    } finally { release(); await worker.dispose(); await coordinator.stop(); }
   });
   describe("agent runtime events", () => {
     const runtimeManifest = (capabilities: string[]) => ({ resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe", ...capabilities] }) as never;
@@ -235,7 +261,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
         expect(delivered(d)).toEqual(new Set([owned]));
         expect(await pluginLifecycleInbox(db, pluginId).list(companyId, 100, undefined, ["agent_runtime"])).toEqual([]);
       } finally {
-        d.worker.dispose();
+        await d.worker.dispose();
       }
     });
 
@@ -251,7 +277,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
         await drain(d);
         expect(delivered(d)).toEqual(new Set([id]));
       } finally {
-        d.worker.dispose();
+        await d.worker.dispose();
       }
     });
 
@@ -264,7 +290,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
         await drain(d);
         expect(d.call.mock.calls.at(-1)?.[2]).toMatchObject({ resourceId: id, action: "delete" });
       } finally {
-        d.worker.dispose();
+        await d.worker.dispose();
       }
     });
 
@@ -276,7 +302,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
         await drain(d);
         expect(delivered(d)).toEqual(new Set([id]));
       } finally {
-        d.worker.dispose();
+        await d.worker.dispose();
       }
     });
   });
@@ -284,13 +310,13 @@ describePostgres("durable plugin lifecycle delivery", () => {
   it("drains creation before transitions, recovers acknowledgments across dispatcher replacement, and ignores agent events", async () => {
     const id = await event(); await event(id, "update"); await event(id, "delete");
     await db.transaction(tx => recordResourceCreationEvent(tx as unknown as Db, companyId, "agent", randomUUID()));
-    const first = delivery(); await first.run(); first.worker.dispose();
+    const first = delivery(); await first.run(); await first.worker.dispose();
     expect(first.call.mock.calls.map(c => c[2].action)).toEqual(["create"]);
     const restarted = delivery(); await restarted.run(); await restarted.run(); await restarted.run();
     expect(restarted.call.mock.calls.map(c => c[2].action)).toEqual(["update", "delete"]);
     expect(await restarted.pending()).toBe(false);
     expect((await pluginLifecycleInbox(db, pluginId).list(companyId)).map(e => e.resourceType)).toEqual(["agent"]);
-    restarted.worker.dispose();
+    await restarted.worker.dispose();
   });
   it("replays failures and invalid acknowledgments without blocking independent resources", async () => {
     let now = Date.now(); vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -304,7 +330,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
     now += 30_000; await d.run(); await d.run();
     expect(d.call.mock.calls.map(c => c[2].action)).toEqual(["create", "create", "create", "create", "delete"]);
     expect(await pluginLifecycleInbox(db, pluginId).list(companyId)).toEqual([]);
-    d.worker.dispose();
+    await d.worker.dispose();
   });
   it("healthy acknowledgments and new events do not bypass a failed event's retry deadline", async () => {
     let now = Date.now(); vi.spyOn(Date, "now").mockImplementation(() => now);
@@ -325,7 +351,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
     await d.run();
     expect(d.call.mock.calls.filter(c => c[2].resourceId === failed)).toHaveLength(2);
     expect(d.nextRunAt()).toBe(now + 30_000);
-    d.worker.dispose();
+    await d.worker.dispose();
   });
   it("defers without a retry deadline, retries unfinished work, and wakes on plugin startup", async () => {
     await event(); const d = delivery();
@@ -335,7 +361,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
     d.call.mockImplementationOnce(async (_p, _m, e) => ({ eventId: e.id, status: "retry" }));
     await d.run(); expect(await d.pending()).toBe(true);
     d.running.mockReturnValue(false); await d.run(); expect(await d.pending()).toBe(true);
-    expect(d.call).toHaveBeenCalledTimes(2); d.worker.dispose();
+    expect(d.call).toHaveBeenCalledTimes(2); await d.worker.dispose();
     d.lifecycle.emit("plugin.worker_started"); expect(d.wake).toHaveBeenCalledTimes(1);
   });
   it("requires ready, configured, company-enabled plugins and rechecks disabling within a batch", async () => {
@@ -353,7 +379,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
     await d.run(); expect(d.call).toHaveBeenCalledTimes(1);
     await db.update(plugins).set({ status: "ready" }).where(eq(plugins.id, pluginId));
     await db.delete(pluginConfig).where(eq(pluginConfig.pluginId, pluginId));
-    await d.run(); expect(d.call).toHaveBeenCalledTimes(1); d.worker.dispose();
+    await d.run(); expect(d.call).toHaveBeenCalledTimes(1); await d.worker.dispose();
   });
   it("notifies only after the outer transaction settles and wakes deferred work for config changes", async () => {
     const wake = vi.fn(); const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.pluginLifecycle, wake);
@@ -388,7 +414,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
     d.lifecycle.emit("plugin.enabled"); expect(await d.pending()).toBe(true);
     await d.run(); expect(await d.pending()).toBe(false);
     d.worker.wake(); expect(await d.pending()).toBe(true);
-    d.worker.dispose();
+    await d.worker.dispose();
   });
   it("wakes deferred events after live configuration finishes applying", async () => {
     await event(); const d = delivery();
@@ -400,7 +426,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
     configured = true; d.applied();
     expect(await d.pending()).toBe(true); expect(d.wake).toHaveBeenCalledTimes(1);
     await d.run(); expect(await pluginLifecycleInbox(db, pluginId).list(companyId)).toEqual([]);
-    d.worker.dispose(); d.wake.mockClear(); d.applied(); expect(d.wake).not.toHaveBeenCalled();
+    await d.worker.dispose(); d.wake.mockClear(); d.applied(); expect(d.wake).not.toHaveBeenCalled();
   });
   it("retains a failed scan across a retry skipped during idle drain", async () => {
     await event(); const d = delivery();
@@ -412,15 +438,17 @@ describePostgres("durable plugin lifecycle delivery", () => {
     select.mockRestore(); await d.run(); await d.run();
     expect(await d.pending()).toBe(false);
     expect(await pluginLifecycleInbox(db, pluginId).list(companyId)).toEqual([]);
-    d.worker.dispose();
+    await d.worker.dispose();
   });
   it("saves config and settings without borrowing another pool connection", async () => {
-    const single = createDb(database.connectionString, { maxConnections: 1 });
-    const registry = pluginRegistryService(single);
-    await registry.upsertConfig(pluginId, companyId, { companyId, configJson: { first: true } });
-    await registry.patchConfig(pluginId, companyId, { companyId, configJson: { second: true } });
-    await registry.upsertCompanySettings(pluginId, companyId, { enabled: true, settingsJson: {} });
-    expect((await registry.getConfig(pluginId, companyId))?.configJson).toEqual({ first: true, second: true });
+    const single = createDb(externalUrl ?? database.connectionString, { maxConnections: 1 });
+    try {
+      const registry = pluginRegistryService(single);
+      await registry.upsertConfig(pluginId, companyId, { companyId, configJson: { first: true } });
+      await registry.patchConfig(pluginId, companyId, { companyId, configJson: { second: true } });
+      await registry.upsertCompanySettings(pluginId, companyId, { enabled: true, settingsJson: {} });
+      expect((await registry.getConfig(pluginId, companyId))?.configJson).toEqual({ first: true, second: true });
+    } finally { await single.$client.end({ timeout: 1 }); }
   }, 5000);
   it("retries listener setup through durable delivery after an enable-time failure", async () => {
     const d = delivery();
@@ -434,7 +462,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
     await d.run();
     expect(listen).toHaveBeenCalledTimes(2);
     expect(await d.pending()).toBe(false);
-    d.worker.dispose();
+    await d.worker.dispose();
   });
   it("unregisters the listener on the last disable or unload and can subscribe again", async () => {
     await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never }).where(eq(plugins.id, pluginId));
@@ -450,10 +478,10 @@ describePostgres("durable plugin lifecycle delivery", () => {
     await db.update(plugins).set({ status: "disabled" }).where(eq(plugins.id, pluginId));
     d.lifecycle.emit("plugin.status_changed");
     await d.run();
-    expect(first.unlisten).not.toHaveBeenCalled();
+    expect(listenerOwners[0]!.close).not.toHaveBeenCalled();
     await db.update(plugins).set({ status: "disabled" }).where(eq(plugins.id, otherPluginId));
     d.lifecycle.emit("plugin.disabled");
-    await vi.waitFor(() => expect(first.unlisten).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(listenerOwners[0]!.close).toHaveBeenCalledTimes(1));
     await db.update(plugins).set({ status: "ready" }).where(eq(plugins.id, pluginId));
     d.lifecycle.emit("plugin.enabled");
     await d.run();
@@ -461,19 +489,282 @@ describePostgres("durable plugin lifecycle delivery", () => {
     const registry = pluginRegistryService(db);
     await registry.upsertCompanySettings(pluginId, companyId, { enabled: false, settingsJson: {} });
     d.applied();
-    await vi.waitFor(() => expect(second.unlisten).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(listenerOwners[1]!.close).toHaveBeenCalledTimes(1));
     await registry.upsertCompanySettings(pluginId, companyId, { enabled: true, settingsJson: {} });
     d.applied(); await d.run();
     expect(listen).toHaveBeenCalledTimes(3);
     await db.delete(plugins).where(eq(plugins.id, pluginId));
     d.lifecycle.emit("plugin.unloaded");
-    await vi.waitFor(() => expect(third.unlisten).toHaveBeenCalledTimes(1));
-    expect(first.unlisten).toHaveBeenCalledTimes(1);
-    expect(second.unlisten).toHaveBeenCalledTimes(1);
-    d.worker.dispose();
+    await vi.waitFor(() => expect(listenerOwners[2]!.close).toHaveBeenCalledTimes(1));
+    expect(listenerOwners[0]!.close).toHaveBeenCalledTimes(1);
+    expect(listenerOwners[1]!.close).toHaveBeenCalledTimes(1);
+    await d.worker.dispose();
     expect(d.lifecycle.listenerCount("plugin.status_changed")).toBe(0);
     expect(d.lifecycle.listenerCount("plugin.disabled")).toBe(0);
     expect(d.lifecycle.listenerCount("plugin.unloaded")).toBe(0);
+  });
+  it("retires disabled-feature retry history without discarding the original backoff on re-enable", async () => {
+    const register = idleWorkModule.registerIdleLocalWorkProbe;
+    let inspect: (() => string) | undefined;
+    vi.spyOn(idleWorkModule, "registerIdleLocalWorkProbe").mockImplementation(probe => {
+      inspect = () => probe({}); return register(probe);
+    });
+    let now = Date.now(); vi.spyOn(Date, "now").mockImplementation(() => now);
+    await event();
+    const d = delivery(); await d.worker.ready;
+    d.call.mockImplementationOnce(async () => { throw new Error("provider retry fixture"); });
+    await d.run();
+    const originalDeadline = now + 30_000;
+    expect(await d.pending()).toBe(true);
+    expect(d.nextRunAt()).toBe(originalDeadline);
+    expect(d.call).toHaveBeenCalledTimes(1);
+    const registry = pluginRegistryService(db);
+    now += 1_000;
+    await registry.upsertCompanySettings(pluginId, companyId, { enabled: false, settingsJson: {} });
+    d.applied(); await d.run();
+    expect(await d.pending()).toBe(false);
+    expect(d.nextRunAt()).toBeNull();
+    startTaskDrain({ purpose: "idle", ttlMs: 30_000 });
+    expect(await d.worker.prepareForIdleSleep({ canRetire: () => true })).toBe("none");
+    expect(inspect?.()).toBe("none");
+    stopTaskDrain();
+    now += 1_000;
+    await registry.upsertCompanySettings(pluginId, companyId, { enabled: true, settingsJson: {} });
+    d.applied(); await d.run();
+    expect(await d.pending()).toBe(true);
+    expect(d.nextRunAt()).toBe(originalDeadline);
+    expect(d.call).toHaveBeenCalledTimes(1);
+    expect(inspect?.()).toBe("present");
+    startTaskDrain({ purpose: "idle", ttlMs: 30_000 });
+    expect(await d.worker.prepareForIdleSleep({ canRetire: () => true })).toBe("present");
+    stopTaskDrain();
+    now = originalDeadline - 1; await d.run();
+    expect(d.call).toHaveBeenCalledTimes(1);
+    expect(d.nextRunAt()).toBe(originalDeadline);
+    now = originalDeadline; await d.run(); await d.run();
+    expect(d.call).toHaveBeenCalledTimes(2);
+    expect(await pluginLifecycleInbox(db, pluginId).list(companyId)).toEqual([]);
+    expect(await d.pending()).toBe(false);
+    expect(d.nextRunAt()).toBeNull();
+  });
+  it("requires a current owned idle drain even when the caller supplies a true predicate", async () => {
+    await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never }).where(eq(plugins.id, pluginId));
+    const d = delivery(); await d.worker.ready; await d.run(); await d.run();
+    expect(await d.worker.prepareForIdleSleep({ canRetire: () => true })).toBe("unknown");
+    expect(listenerOwners[0]!.close).not.toHaveBeenCalled();
+  });
+  it("retains an uncertain listener close and refuses retirement after authority changes", async () => {
+    await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never }).where(eq(plugins.id, pluginId));
+    const d = delivery(); await d.worker.ready; await d.run(); await d.run();
+    startTaskDrain({ purpose: "idle", ttlMs: 30_000 });
+    const close = listenerOwners[0]!.close;
+    close.mockRejectedValueOnce(new Error("listener close uncertain"));
+    expect(await d.worker.prepareForIdleSleep({ canRetire: () => true })).toBe("unknown");
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(await d.worker.prepareForIdleSleep({ canRetire: () => false })).toBe("unknown");
+    expect(close).toHaveBeenCalledTimes(1);
+    close.mockRejectedValueOnce(new Error("listener close still uncertain"));
+    expect(await d.worker.prepareForIdleSleep({ canRetire: () => true })).toBe("unknown");
+    expect(close).toHaveBeenCalledTimes(2);
+    expect(await d.worker.prepareForIdleSleep({ canRetire: () => true })).toBe("none");
+    expect(close).toHaveBeenCalledTimes(3);
+  });
+  it("recovers a post-close journal inspection failure without creating another listener", async () => {
+    const register = idleWorkModule.registerIdleLocalWorkProbe;
+    let inspect: (() => string) | undefined;
+    vi.spyOn(idleWorkModule, "registerIdleLocalWorkProbe").mockImplementation(probe => {
+      inspect = () => probe({});
+      return register(probe);
+    });
+    await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never }).where(eq(plugins.id, pluginId));
+    const d = delivery(); await d.worker.ready; await d.run(); await d.run();
+    startTaskDrain({ purpose: "idle", ttlMs: 30_000 });
+    listenerOwners[0]!.close.mockImplementationOnce(async () => {
+      vi.spyOn(db, "select").mockImplementationOnce(() => { throw new Error("post-close journal unavailable"); });
+    });
+    expect(await d.worker.prepareForIdleSleep({ canRetire: () => true })).toBe("unknown");
+    expect(inspect?.()).toBe("unknown");
+    expect(listenerOwners[0]!.close).toHaveBeenCalledTimes(1);
+    vi.mocked(db.select).mockRestore();
+    expect(await d.worker.prepareForIdleSleep({ canRetire: () => true })).toBe("none");
+    expect(inspect?.()).toBe("none");
+    expect(listenerOwners).toHaveLength(1);
+    expect(listenerOwners[0]!.close).toHaveBeenCalledTimes(1);
+  });
+  it("recovers an absent-feature inspection failure without manufacturing a listener", async () => {
+    const register = idleWorkModule.registerIdleLocalWorkProbe;
+    let inspect: (() => string) | undefined;
+    vi.spyOn(idleWorkModule, "registerIdleLocalWorkProbe").mockImplementation(probe => {
+      inspect = () => probe({});
+      return register(probe);
+    });
+    const d = delivery(); await d.worker.ready; await d.run();
+    startTaskDrain({ purpose: "idle", ttlMs: 30_000 });
+    const select = vi.spyOn(db, "select").mockImplementationOnce(() => { throw new Error("journal unavailable"); });
+    expect(await d.worker.prepareForIdleSleep({ canRetire: () => true })).toBe("unknown");
+    expect(inspect?.()).toBe("unknown");
+    select.mockRestore();
+    expect(await d.worker.prepareForIdleSleep({ canRetire: () => true })).toBe("none");
+    expect(inspect?.()).toBe("none");
+    expect(listenerOwners).toHaveLength(0);
+  });
+  it("retries failed normal disposal without losing its owned listener", async () => {
+    await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never }).where(eq(plugins.id, pluginId));
+    const d = delivery(); await d.worker.ready;
+    listenerOwners[0]!.close.mockRejectedValueOnce(new Error("owned disposal failed"));
+    await expect(d.worker.dispose()).rejects.toThrow("owned disposal failed");
+    expect(listenerOwners[0]!.close).toHaveBeenCalledTimes(1);
+    await d.worker.dispose();
+    expect(listenerOwners[0]!.close).toHaveBeenCalledTimes(2);
+  });
+  it("invalidates a retirement when configuration arrives during its owned close", async () => {
+    await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never }).where(eq(plugins.id, pluginId));
+    const d = delivery(); await d.worker.ready; await d.run(); await d.run();
+    startTaskDrain({ purpose: "idle", ttlMs: 30_000 });
+    let release!: () => void, entered!: () => void;
+    const began = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    listenerOwners[0]!.close.mockImplementationOnce(async () => { entered(); await gate; });
+    const preparation = d.worker.prepareForIdleSleep({ canRetire: () => true });
+    try { await began; d.applied(); }
+    finally { release(); }
+    expect(await preparation).toBe("unknown");
+    expect(await d.pending()).toBe(true);
+    expect(listenerOwners).toHaveLength(1);
+  });
+  it("refuses an owned retirement while a real lifecycle callback remains active", async () => {
+    await event(); const d = delivery(); await d.worker.ready;
+    let release!: () => void, entered!: () => void;
+    const began = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    d.call.mockImplementationOnce(async (_p, _m, value) => { entered(); await gate; return { eventId: value.id, status: "acknowledged" }; });
+    const run = d.run();
+    try {
+      await began;
+      startTaskDrain({ purpose: "idle", ttlMs: 30_000 });
+      expect(await d.worker.prepareForIdleSleep({ canRetire: () => true })).toBe("present");
+      expect(listenerOwners.every(owner => owner.close.mock.calls.length === 0)).toBe(true);
+    } finally { release(); await run; }
+  });
+  it("keeps journal arrivals during an owned close as actual pending work", async () => {
+    await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never }).where(eq(plugins.id, pluginId));
+    const d = delivery(); await d.worker.ready; await d.run(); await d.run();
+    startTaskDrain({ purpose: "idle", ttlMs: 30_000 });
+    let release!: () => void, entered!: () => void;
+    const began = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    listenerOwners[0]!.close.mockImplementationOnce(async () => { entered(); await gate; });
+    const preparation = d.worker.prepareForIdleSleep({ canRetire: () => true });
+    try { await began; await db.insert(agents).values({ companyId, name: "Arrived during retirement", adapterType: "process" }); }
+    finally { release(); }
+    expect(await preparation).toBe("present");
+    expect(await pluginLifecycleInbox(db, pluginId).list(companyId, 1, undefined, ["agent_runtime"])).not.toHaveLength(0);
+  });
+  it("finishes exact already-started cleanup but rejects an invalidated retirement permit", async () => {
+    await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never }).where(eq(plugins.id, pluginId));
+    const d = delivery(); await d.worker.ready; await d.run(); await d.run();
+    startTaskDrain({ purpose: "idle", ttlMs: 30_000 });
+    let release!: () => void, entered!: () => void, permitted = true;
+    const began = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    listenerOwners[0]!.close.mockImplementationOnce(async () => { entered(); await gate; });
+    const preparation = d.worker.prepareForIdleSleep({ canRetire: () => permitted });
+    try { await began; permitted = false; }
+    finally { release(); }
+    expect(await preparation).toBe("unknown");
+    expect(listenerOwners[0]!.close).toHaveBeenCalledTimes(1);
+  });
+  it("joins an in-progress listener creation on idempotent normal disposal", async () => {
+    await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never }).where(eq(plugins.id, pluginId));
+    let release!: () => void, entered!: () => void;
+    const began = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(db.$client.listen).mockImplementationOnce(async () => { entered(); await gate; return { state: {}, unlisten: vi.fn() } as never; });
+    const d = delivery();
+    await began;
+    const disposal = d.worker.dispose();
+    release();
+    await disposal;
+    await d.worker.dispose();
+    expect(listenerOwners[0]!.close).toHaveBeenCalledTimes(1);
+    expect(d.lifecycle.listenerCount("plugin.enabled")).toBe(0);
+  });
+  it("reopens a physically retired listener at normal TTL expiry and delivers newly found journal debt without a manual wake", async () => {
+    vi.mocked(databaseModule.createOwnedDatabaseListener).mockRestore();
+    const createListener = databaseModule.createOwnedDatabaseListener;
+    let created = 0, arrivalId: string | undefined;
+    const foreignCompany = randomUUID();
+    await db.insert(companies).values({ id: foreignCompany, name: "Foreign expiry runtime", issuePrefix: `X${foreignCompany.slice(0, 6)}` });
+    vi.spyOn(databaseModule, "createOwnedDatabaseListener").mockImplementation(owner => {
+      const listener = createListener(owner), ordinal = ++created;
+      return { listen: listener.listen, close: async () => {
+        await listener.close();
+        if (ordinal === 1 && !arrivalId) {
+          await db.transaction(async tx => {
+            const [arrival] = await tx.insert(agents).values({ companyId, name: "Arrived after physical close", adapterType: "process" }).returning();
+            arrivalId = arrival!.id;
+            await tx.insert(agents).values({ companyId: foreignCompany, name: "Foreign after physical close", adapterType: "process" });
+          });
+        }
+      } };
+    });
+    await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never }).where(eq(plugins.id, pluginId));
+    const calls = vi.fn(async (_plugin, _method, value) => ({ eventId: value.id, status: "acknowledged" }));
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !isIdleTaskDrainActive(), canReconcile: () => true, onError: error => errors.push(error) });
+    const expiry = registerTaskDrainExpiryWork(coordinator, () => {});
+    const worker = registerPluginLifecycleDelivery(coordinator, db, { call: calls, isRunning: () => true, onConfigApplied: () => () => {} } as never, new EventEmitter() as never);
+    try {
+      await expiry.ready; await worker.ready;
+      await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+      const identity = () => db.execute(sql`SELECT pid, backend_start::text AS started, client_port FROM pg_stat_activity WHERE datname = current_database() AND query = 'listen "paperclip_plugin_lifecycle"'`);
+      const [before] = await identity(); expect(before).toBeDefined();
+      startTaskDrain({ purpose: "idle", ttlMs: 1_000 });
+      await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0));
+      expect(await worker.prepareForIdleSleep({ canRetire: () => true })).toBe("present");
+      expect(await db.execute(sql`SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid = ${before!.pid}::integer AND backend_start = ${before!.started}::timestamptz AND client_port = ${before!.client_port}::integer`)).toHaveLength(0);
+      expect(created).toBe(1);
+      await vi.waitFor(() => expect(calls.mock.calls.some(([, , value]) => value.resourceId === arrivalId && value.companyId === companyId)).toBe(true), { timeout: 5_000 });
+      expect(created).toBe(2);
+      expect(calls.mock.calls.some(([, , value]) => value.companyId === foreignCompany)).toBe(false);
+      const [resumed] = await identity(); expect(resumed).toBeDefined(); expect(resumed!.pid).not.toBe(before!.pid);
+      await vi.waitFor(async () => expect(await db.execute(sql`SELECT 1 FROM plugin_lifecycle_acknowledgments ack JOIN resource_lifecycle_events event ON event.id = ack.event_id WHERE ack.plugin_id = ${pluginId}::uuid AND event.resource_id = ${arrivalId}::uuid AND event.company_id = ${companyId}::uuid`)).not.toHaveLength(0), { timeout: 5_000 });
+      expect(errors).toEqual([]);
+    } finally {
+      try { await worker.dispose(); } finally { try { await expiry.stop(); } finally { await coordinator.stop(); } }
+    }
+  });
+  it("physically closes only its owned LISTEN and recreates it for useful same-company work", async () => {
+    vi.mocked(databaseModule.createOwnedDatabaseListener).mockRestore();
+    vi.mocked(db.$client.listen).mockRestore();
+    await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never }).where(eq(plugins.id, pluginId));
+    const foreign = await db.$client.listen("fixture_other_lifecycle", () => {});
+    const d = delivery();
+    try {
+      await d.worker.ready; await d.run(); await d.run();
+      const identity = async (channel: string) => db.execute(sql`SELECT pid, backend_start::text AS started, client_port FROM pg_stat_activity WHERE datname = current_database() AND query = ${'listen "' + channel + '"'}`);
+      const [owned] = await identity("paperclip_plugin_lifecycle");
+      const [other] = await identity("fixture_other_lifecycle");
+      expect(owned).toBeDefined(); expect(other).toBeDefined(); expect(owned!.pid).not.toBe(other!.pid);
+      startTaskDrain({ purpose: "idle", ttlMs: 30_000 });
+      expect(await d.worker.prepareForIdleSleep({ canRetire: () => true })).toBe("none");
+      expect(await db.execute(sql`SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND pid = ${owned!.pid}::integer AND backend_start = ${owned!.started}::timestamptz AND client_port = ${owned!.client_port}::integer`)).toHaveLength(0);
+      expect((await identity("fixture_other_lifecycle"))[0]?.pid).toBe(other!.pid);
+      expect(await d.worker.prepareForIdleSleep({ canRetire: () => true })).toBe("none");
+      stopTaskDrain();
+      await d.run(); await d.run();
+      const [resumed] = await identity("paperclip_plugin_lifecycle");
+      expect(resumed).toBeDefined(); expect(resumed!.pid).not.toBe(owned!.pid);
+      const [agent] = await db.insert(agents).values({ companyId, name: "Useful resumed runtime", adapterType: "process" }).returning();
+      const foreignCompany = randomUUID();
+      await db.insert(companies).values({ id: foreignCompany, name: "Foreign runtime", issuePrefix: `F${foreignCompany.slice(0, 6)}` });
+      await db.insert(agents).values({ companyId: foreignCompany, name: "Excluded runtime", adapterType: "process" });
+      await d.run(); await d.run();
+      expect(d.call.mock.calls.some(([, , value]) => value.resourceId === agent!.id && value.companyId === companyId)).toBe(true);
+      expect(d.call.mock.calls.some(([, , value]) => value.companyId === foreignCompany)).toBe(false);
+      const acknowledged = await db.execute(sql`SELECT 1 FROM plugin_lifecycle_acknowledgments ack JOIN resource_lifecycle_events event ON event.id = ack.event_id WHERE ack.plugin_id = ${pluginId}::uuid AND event.company_id = ${companyId}::uuid AND event.resource_id = ${agent!.id}::uuid`);
+      expect(acknowledged.length).toBeGreaterThan(0);
+    } finally { await d.worker.dispose(); await foreign.unlisten(); }
   });
   it("records failed delivery scope and stage without provider secrets", async () => {
     await event(); const d = delivery();
@@ -484,7 +775,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
       expect(warn).toHaveBeenCalledWith(expect.objectContaining({ pluginId, companyId, eventId: expect.any(String), stage: "callback", rpcCode: -32001 }), expect.any(String));
       expect(JSON.stringify(warn.mock.calls)).not.toContain("provider-secret-fixture");
       expect(await d.pending()).toBe(true);
-    } finally { warn.mockRestore(); d.worker.dispose(); }
+    } finally { warn.mockRestore(); await d.worker.dispose(); }
   });
   it("rollbacks never expose queue rows even when settlement wakes the dispatcher", async () => {
     const d = delivery();
@@ -494,6 +785,6 @@ describePostgres("durable plugin lifecycle delivery", () => {
     })).rejects.toThrow("rollback");
     await d.run(); expect(d.call).not.toHaveBeenCalled(); expect(await d.pending()).toBe(false);
     expect(await db.select().from(resourceLifecycleEvents).where(eq(resourceLifecycleEvents.companyId, companyId))).toEqual([]);
-    d.worker.dispose();
+    await d.worker.dispose();
   });
 });

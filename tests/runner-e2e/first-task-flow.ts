@@ -812,7 +812,8 @@ export async function runFirstTaskFlow(input: {
           allRuns, snapshot, settle, capture: input.capture });
       } else if (scenario.id === "reject-no-execution")
         await turn(scenario.rejection, "rejected");
-      else if (["task-card-accept", "accept-while-running"].includes(scenario.id)) {
+      else if (["task-card-accept", "accept-while-running"].includes(scenario.id) ||
+        (scenario.id === "interview-plan-accept" && execution.suite.id !== "confirmation-replies")) {
         const pending = (
           await api.get<Row[]>(`/api/issues/${issue.id}/interactions`)
         ).find(
@@ -870,7 +871,7 @@ export async function runFirstTaskFlow(input: {
         await turn(
           scenario.acceptance,
           "accepted",
-          scenario.id !== "interview-plan-accept",
+          scenario.id !== "plan-only-accept",
         );
     }
     if (execution.suite.id === "confirmation-replies" && scenario.id !== "task-card-accept") {

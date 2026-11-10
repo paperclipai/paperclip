@@ -538,6 +538,75 @@ describe("producer-owned native usage", () => {
     expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId))).toHaveLength(0);
   });
 
+  // A replacement Runner fails the turn it lost on restore before the
+  // continuation turn runs. Remote delivery must keep that marker, or the
+  // receipt stays incomplete until the closure bound.
+  it("closes a replacement source's receipt past a turn lost on restore, as a lower bound", async () => {
+    const input = { ...await seed(), provider: { kind: "opencode" as const, model: "test-model" } };
+    const lost = event(input, 26, "turn.failed", "turn-lost");
+    lost.payload = { status: "failed", error: { code: "provider_turn_lost_on_restore", recoverable: true } };
+    const started = event(input, 29, "turn.started", "turn-next");
+    const report = event(input, 30, "usage.reported", "turn-next");
+    const done = event(input, 31, "turn.completed", "turn-next");
+    let delivery = await createNativeUsageDelivery(db, input);
+    for (const value of [lost, started, report, done]) await delivery.capture(value);
+    const read = async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId)))[0];
+    expect((await read()).usageJson).toMatchObject({ accountingReceiptReady: true, outputTokens: 10,
+      pricingProvenance: { evidence: expect.stringContaining("lower bound") } });
+    // The saved receipts replay into a reopened receiver without conflict.
+    delivery = await createNativeUsageDelivery(db, input);
+    for (const value of [lost, started, report, done]) await delivery.capture(value);
+    expect((await read()).usageJson).toMatchObject({ accountingReceiptReady: true });
+  });
+
+  describe("a turn restored mid-turn on a remote Runner", () => {
+    const restoredSeed = async () => ({ ...await seed(), provider: { kind: "opencode" as const, model: "test-model" } });
+    const partial = (input: Awaited<ReturnType<typeof restoredSeed>>, sequence: number) => {
+      const value = event(input, sequence, "usage.reported");
+      (value.payload as Record<string, unknown>).runDeltaAvailable = false;
+      return value;
+    };
+    const read = async (runId: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0];
+
+    // The local Runner rule from #20517: K1 stopped the provider before the
+    // turn's final report; the restored Runner reported the turn completed.
+    it("closes the turn as a lower bound, also after the controller restarts between restore and terminal", async () => {
+      const input = await restoredSeed();
+      const history = [event(input, 1, "turn.started"), partial(input, 2), event(input, 3, "session.resumed", undefined as never)];
+      const done = event(input, 4, "turn.completed");
+      let delivery = await createNativeUsageDelivery(db, input);
+      for (const value of history) await delivery.capture(value);
+      // A replacement controller rebuilds the receiver from the saved journal.
+      delivery = await createNativeUsageDelivery(db, input);
+      await delivery.capture(done);
+      expect((await read(input.runId)).usageJson).toMatchObject({ accountingReceiptReady: true,
+        pricingProvenance: { evidence: expect.stringContaining("lower bound") } });
+      // Replaying every event into another receiver is idempotent.
+      delivery = await createNativeUsageDelivery(db, input);
+      for (const value of [...history, done]) await delivery.capture(value);
+      expect((await read(input.runId)).usageJson).toMatchObject({ accountingReceiptReady: true });
+    });
+
+    it("keeps the turn's own final report when it arrives after the restore", async () => {
+      const input = await restoredSeed();
+      const delivery = await createNativeUsageDelivery(db, input);
+      for (const value of [event(input, 1, "turn.started"), partial(input, 2), event(input, 3, "session.resumed", undefined as never),
+        event(input, 4, "usage.reported"), event(input, 5, "turn.completed")]) await delivery.capture(value);
+      const usage = (await read(input.runId)).usageJson;
+      expect(usage).toMatchObject({ accountingReceiptReady: true, outputTokens: 10 });
+      expect(JSON.stringify(usage?.pricingProvenance ?? {})).not.toContain("lower bound");
+    });
+
+    it("keeps a turn started after the restore pending, and journals nothing for a restore with no open turn", async () => {
+      const input = await restoredSeed();
+      const delivery = await createNativeUsageDelivery(db, input);
+      for (const value of [event(input, 1, "session.resumed", undefined as never), event(input, 2, "turn.started"), partial(input, 3),
+        event(input, 4, "turn.completed")]) await delivery.capture(value);
+      expect((await read(input.runId)).usageJson).toMatchObject({ accountingReceiptReady: false });
+      expect(await db.select().from(runUsageReceipts).where(eq(runUsageReceipts.runId, input.runId))).toHaveLength(3);
+    });
+  });
+
   it("replays partial and final usage once after a lost commit response and restores turn aggregation", async () => {
     const input = { ...await seed(), provider: { kind: "opencode" as const, model: "test-model" } };
     let loseResponse = false;

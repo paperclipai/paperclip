@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
-import { nativeProviderRecoveryEvidence, nativeSessionFailureSourceCode, verifyRemoteRunnerReattachment } from "./native-session-executor.js";
+import { nativeProviderRecoveryEvidence, nativeSessionFailureSourceCode, restoreRemoteSuspendedRunnerCheckpoint,
+  verifyRemoteRunnerReattachment } from "./native-session-executor.js";
 import { readRemoteRunnerRecoveryError } from "./remote-runner-recovery-diagnostics.js";
 import { nativeToolContractFingerprintForTarget, rebindNativeSessionCheckpoint } from "./native-session-resume.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -150,10 +151,12 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     const sourceClaim = { runId: fixture.scope.runId, remote: { providerLeaseId, remoteCwd } };
     const failure = await verifyRemoteRunnerReattachment({ claim: sourceClaim, target: target as never, identity,
       runId: fixture.scope.runId, normalizedSessionId: fixture.scope.normalizedSessionId }).catch(error => error);
-    expect(readRemoteRunnerRecoveryError(failure)).toEqual({ stage: "process_verification", reason: "process_not_running" });
+    expect(readRemoteRunnerRecoveryError(failure)).toEqual({ stage: "process_verification", reason: "process_not_running",
+      runnerLifecycle: "ready", runnerSettled: true });
     expect(nativeSessionFailureSourceCode(failure)).toBe("native_session_interrupted");
     await expect(verifyRemoteRunnerReattachment({ claim: { ...sourceClaim, runId }, target: target as never,
-      identity, runId, normalizedSessionId: fixture.scope.normalizedSessionId })).rejects.toThrow("native_remote_recovery_lease_mismatch");
+      identity, runId, normalizedSessionId: fixture.scope.normalizedSessionId }))
+      .rejects.toThrow(new Error("native_remote_recovery_lease_mismatch: stage=runner_verification field=identity_run_id"));
     const recovery = await nativeProviderRecoveryEvidence({ db, runId, executionTargetKind: target.kind, sourceFailureCode: nativeSessionFailureSourceCode(failure) });
     expect(recovery).toMatchObject({ providerSessionEstablished: true, providerEventsExist: false, checkpointExists: true });
     expect(recovery.recoveryMode).toBe("ambiguous_state");
@@ -315,7 +318,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId] })).toEqual([]);
     await db.update(nativeRunFinalizations).set({ phase: "committed", leaseOwner: null, leaseExpiresAt: null })
       .where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
-    await expect(readSandbox()).resolves.toBeUndefined();
+    await expect(readSandbox()).resolves.toEqual({ remoteCwd: "/workspace" });
     await expect(inspect({ readControlState: () => ({ identity, commands: [{ status: "pending" }],
       committedEvents: [{ eventType: "run.terminal", envelope: identity }] }) })).rejects.toThrow(denied);
     const recovered = await inspect();
@@ -325,6 +328,112 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     const claims = await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now: deadline });
     expect(claims).toHaveLength(1);
     expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "duplicate", runIds: [runId], now: deadline })).toEqual([]);
+  });
+
+  // The Nov 10 staging shape: a preparation-only run's epoch was abandoned, so
+  // the warm follow-up restored the last save into a new allocation of the same
+  // sandbox. The committed source's Runner state stays in its own directory.
+  it("binds a retained Runner read to the source's directory after the workspace moved within the same sandbox", async () => {
+    const fixture = await seed(), environmentId = randomUUID(), workspaceId = randomUUID();
+    const sourceLeaseId = randomUUID(), currentLeaseId = randomUUID(), providerLeaseId = randomUUID();
+    const allocations = "/home/daytona/paperclip-workspace/.paperclip-workspaces";
+    const sourceCwd = `${allocations}/${workspaceId}-1-${randomUUID()}`;
+    const movedCwd = `${allocations}/${workspaceId}-6-${currentLeaseId}`;
+    await db.insert(environments).values({ id: environmentId, name: `Moved ${environmentId}`, driver: "sandbox" });
+    // Saved by the source run (status expired after its reusable handoff).
+    await db.insert(environmentLeases).values({ id: sourceLeaseId, companyId, environmentId, issueId: fixture.scope.issueId,
+      heartbeatRunId: fixture.scope.runId, provider: "daytona", providerLeaseId, status: "expired",
+      leasePolicy: "reuse_by_environment", metadata: { remoteCwd: sourceCwd } });
+    const target = { kind: "remote", transport: "sandbox", environmentId, leaseId: currentLeaseId, providerKey: "daytona",
+      remoteCwd: movedCwd, sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId } } as const;
+    const readSandbox = (override: Record<string, unknown> = {}) => assertNativeRetainedSandboxBinding(db,
+      { ...fixture.scope, target: { ...target, ...override } as never });
+
+    await expect(readSandbox()).resolves.toEqual({ remoteCwd: sourceCwd });
+    await expect(readSandbox({ remoteCwd: sourceCwd })).resolves.toEqual({ remoteCwd: sourceCwd });
+    // A root published under the exact workspace ID is the same workspace too.
+    await expect(readSandbox({ remoteCwd: `${allocations}/${workspaceId}` })).resolves.toEqual({ remoteCwd: sourceCwd });
+    const exactRoot = `${allocations}/${workspaceId}`;
+    await db.update(environmentLeases).set({ metadata: { remoteCwd: exactRoot } }).where(eq(environmentLeases.id, sourceLeaseId));
+    await expect(readSandbox()).resolves.toEqual({ remoteCwd: exactRoot });
+    await db.update(environmentLeases).set({ metadata: { remoteCwd: sourceCwd } }).where(eq(environmentLeases.id, sourceLeaseId));
+    // Strict checks stay strict: another workspace's allocation, another
+    // parent, a non-canonical path or name, or another sandbox never bind.
+    for (const remoteCwd of [`${allocations}/${randomUUID()}-6-${currentLeaseId}`, `/elsewhere/${workspaceId}-6-${currentLeaseId}`,
+      `${allocations}/../.paperclip-workspaces/${workspaceId}-6-${currentLeaseId}`, `${allocations}/${workspaceId}-0-${currentLeaseId}`,
+      `${allocations}/${workspaceId}-6-${currentLeaseId}-extra`, "/unrelated"]) {
+      await expect(readSandbox({ remoteCwd })).rejects.toThrow("retained_sandbox_binding");
+    }
+    await expect(readSandbox({ sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: randomUUID() } }))
+      .rejects.toThrow("retained_sandbox_binding");
+  });
+
+  // The same move, driven through the changed read with sandbox confinement:
+  // the Runner command may touch only paths inside the sandbox's workspace base.
+  it.each(["suspended", "ready"] as const)("reads a moved source's %s Runner state from its own directory through a confined sandbox", async lifecycle => {
+    const fixture = await seed(), environmentId = randomUUID(), workspaceId = randomUUID(), runId = randomUUID();
+    const providerLeaseId = randomUUID(), base = join(root, `sandbox-${runId}`, "paperclip-workspace");
+    const sourceCwd = join(base, ".paperclip-workspaces", `${workspaceId}-1-${randomUUID()}`);
+    const movedCwd = join(base, ".paperclip-workspaces", `${workspaceId}-6-${randomUUID()}`);
+    await mkdir(movedCwd, { recursive: true });
+    await db.insert(environments).values({ id: environmentId, name: `Confined ${environmentId}`, driver: "sandbox" });
+    await db.insert(environmentLeases).values({ companyId, environmentId, issueId: fixture.scope.issueId,
+      heartbeatRunId: fixture.scope.runId, provider: "daytona", providerLeaseId, status: "expired",
+      leasePolicy: "reuse_by_environment", metadata: { remoteCwd: sourceCwd } });
+    const identity = { runId: fixture.scope.runId, normalizedSessionId: fixture.scope.normalizedSessionId,
+      runnerInstanceId: fixture.native.runnerInstanceId, environmentLeaseId: fixture.native.environmentLeaseId,
+      turnId: fixture.native.turnId, itemId: fixture.native.itemId };
+    const runnerDirectory = (cwd: string) => join(cwd, ".paperclip-runtime", "paperclip-runner", "sessions",
+      createHash("sha256").update(fixture.scope.normalizedSessionId).digest("hex"), "runner");
+    await mkdir(runnerDirectory(sourceCwd), { recursive: true });
+    await writeFile(join(runnerDirectory(sourceCwd), "runner-state.json"), JSON.stringify({ schema: "paperclip.runner.durable.state.v1",
+      ...identity, lifecycle, outbox: [], pendingTerminalDelivery: null, pendingProviderCleanup: null, warmTransition: null }));
+    const commands: string[] = [];
+    const execute = (request: { command: string; args?: string[] }) => {
+      const script = (request.args ?? []).join(" ");
+      commands.push(script);
+      // Provider confinement: nothing outside the sandbox's workspace base.
+      const paths = script.match(/'(\/[^']*)'/g)?.map(path => path.slice(1, -1)) ?? [];
+      if (paths.some(path => !path.startsWith(`${base}/`))) {
+        return Promise.resolve({ stdout: "", stderr: "outside sandbox", exitCode: 126, timedOut: false });
+      }
+      return new Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }>(resolve => {
+        execFile(request.command, request.args ?? [], { cwd: movedCwd }, (error, stdout, stderr) => resolve({ stdout, stderr,
+          exitCode: error ? typeof error.code === "number" ? error.code : 1 : 0, timedOut: false }));
+      });
+    };
+    const execution = parseNativeExecutionInput({
+      schema: "paperclip.native-execution-input.v1", provider: { kind: "codex", model: null },
+      binding: { companyId, agentId, issueId: fixture.scope.issueId, runId, executionWorkspaceId: workspaceId },
+      task: { identifier: "NCD-1", title: "Continue retained work", description: null,
+        prompt: "Continue the saved work.", workMode: "standard" },
+      workspace: { cwd: movedCwd, repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: fixture.scope.normalizedSessionId, driverKind: "codex_app_server",
+        protocolVersion: 1, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } },
+      completionContract: { id: randomUUID(), sha256: "fixture", schemaVersion: "paperclip.completion-contract.v1",
+        contract: { revision: "1", objective: "Continue the saved work", criteria: [{ id: "objective", requirement: "Save the result" }] } },
+      credentialBindings: [], interactionResponses: [],
+    });
+    // The controller already restored the committed source's durable checkpoint.
+    const controller = join(root, `controller-${runId}`);
+    await mkdir(join(controller, "control-plane"), { recursive: true });
+    await writeFile(join(controller, "control-plane", "control-plane-state.json"),
+      JSON.stringify({ schema: "paperclip.runner.durable.control-plane-state.v2", identity }));
+    const target = { kind: "remote", transport: "sandbox", environmentId, leaseId: randomUUID(), providerKey: "daytona",
+      remoteCwd: movedCwd, sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId }, runner: { execute } } as const;
+    const restore = () => restoreRemoteSuspendedRunnerCheckpoint({ db, execution, runnerExecutionTarget: target as never }, controller);
+
+    if (lifecycle === "suspended") {
+      await restore();
+      expect(commands.some(script => script.includes(runnerDirectory(sourceCwd)))).toBe(true);
+      expect(commands.some(script => script.includes(movedCwd))).toBe(false);
+      expect(JSON.parse(await readFile(join(controller, "plugin-runner-state.json"), "utf8")))
+        .toMatchObject({ lifecycle: "suspended", ...identity });
+    } else {
+      // A Runner left in the abandoned allocation is never adopted live.
+      await expect(restore()).rejects.toThrow("native_controller_recovery_missing_evidence:runner_not_settled");
+      await expect(readFile(join(controller, "plugin-runner-state.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    }
   });
 
   it.each(["live-owner", "expired-owner", "provider-attempt", "stopped", "operator-stop"])("does not publish an admission wait after authority changes: %s", async scenario => {

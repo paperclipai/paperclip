@@ -1,4 +1,5 @@
 import type { ProviderFailure } from "./provider-failure.generated.js";
+import type { DurableRecoveryIdentity } from "./durable-recovery.js";
 import type { NativeRunRuntimeGrant } from "./runtime-context.js";
 import type {
   NativeRunIdentity,
@@ -22,6 +23,7 @@ import type {
   PersistedHarnessProviderIdentity,
   PersistedHarnessSession,
   PersistedHarnessTurnTerminal,
+  CancelledTurnSettlement,
 } from "./harness-driver.js";
 
 export interface NativeSessionBackendDescriptor {
@@ -69,7 +71,7 @@ export interface PersistedNativeSession {
   terminalTurns?: PersistedHarnessTurnTerminal[];
   /** Control-plane disposition bound to the exact committed tool event. It is
    * independent of the interaction's later answer and proves no provider terminal. */
-  governedWait?: { sourceEvent: PrpEvent; result: PrpStructuredRunResult };
+  governedWait?: { sourceEvent: PrpEvent; result: PrpStructuredRunResult; settlement?: CancelledTurnSettlement };
 
   /** At-most-once marker for resultless disposition repair or restart continuation. */
   dispositionOnlyRecoveryConsumed?: boolean;
@@ -103,6 +105,8 @@ export function nativeRestartInterruptedTurnId(snapshot: Pick<PersistedNativeSes
 >): string | null {
   // Runnerd records this cause for Codex app-server and ACPX sessions after
   // proving the old provider lifetime ended and restoring the conversation.
+  // A lost continuation re-arms the driver's marker before it is checkpointed,
+  // so a consumed marker here still means the allowance is used.
   if (!RESTART_CONTINUATION_DRIVER_KINDS.has(snapshot.driverKind ?? "") || snapshot.activeTurnId != null ||
       snapshot.semanticResult != null || snapshot.dispositionOnlyRecoveryConsumed ||
       snapshot.goal != null || snapshot.pendingRuntimeRequests?.length) return null;
@@ -113,6 +117,20 @@ export function nativeRestartInterruptedTurnId(snapshot: Pick<PersistedNativeSes
     return fingerprint?.terminalState === "failed" && fingerprint.result === null &&
       isNativeRestartInterruption(fingerprint.error) ? terminal.turnId : null;
   } catch { return null; }
+}
+
+export function nativeRestartContinuationInFlight(snapshot: Pick<PersistedNativeSession,
+  "activeTurnId" | "terminalTurns"
+>): boolean {
+  const activeTurnId = snapshot.activeTurnId;
+  if (typeof activeTurnId !== "string" || !activeTurnId) return false;
+  const last = Array.isArray(snapshot.terminalTurns) ? snapshot.terminalTurns.at(-1) : null;
+  if (!last || typeof last.fingerprint !== "string" || !last.turnId || last.turnId === activeTurnId) return false;
+  try {
+    const fingerprint = JSON.parse(last.fingerprint);
+    return fingerprint?.terminalState === "failed" && fingerprint.result === null &&
+      isNativeRestartInterruption(fingerprint.error);
+  } catch { return false; }
 }
 
 /**
@@ -171,12 +189,16 @@ export class NativeSessionProtocolIntegrityError extends Error {
   constructor(
     readonly reason:
       | "semantic_input_digest_mismatch"
-      | "source_event_replay_conflict",
+      | "source_event_replay_conflict"
+      | "runner_event_commit_stalled",
+    readonly detail?: string,
   ) {
     super(
       reason === "semantic_input_digest_mismatch"
         ? "native_event_replay_conflict: authenticated runner semantic input failed integrity validation; automatic recovery is stopped."
-        : "native_event_replay_conflict: authenticated runner event conflicts with committed history; automatic recovery is stopped.",
+        : reason === "runner_event_commit_stalled"
+          ? `native_event_replay_conflict: runner_event_commit_stalled: runner events kept failing to commit without progress (last cause: ${detail ?? "unknown"}); automatic recovery is stopped.`
+          : "native_event_replay_conflict: authenticated runner event conflicts with committed history; automatic recovery is stopped.",
     );
     this.name = "NativeSessionProtocolIntegrityError";
   }
@@ -189,7 +211,7 @@ export class NativeSessionCleanupQuarantinedError extends Error {
 
   constructor() {
     super(
-      "native_session_cleanup_quarantined: prior session cleanup requires operator recovery; verify its retained process ownership and checkpoint before a controlled restart. Clearing a task session does not resolve this quarantine.",
+      "native_session_cleanup_quarantined: the previous session is still shutting down; Paperclip finishes the cleanup automatically and the saved work is kept.",
     );
     this.name = "NativeSessionCleanupQuarantinedError";
   }
@@ -198,7 +220,11 @@ export class NativeSessionCleanupQuarantinedError extends Error {
 export interface NativeSession {
   identity(): NativeRunIdentity;
   capabilities(): Promise<NativeSessionCapabilities>;
-  attachRun?(input: { identity: NativeRunIdentity; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void>;
+  /** completionContract is the attaching run's own contract; a retained session must not keep the prior run's. */
+  attachRun?(input: { identity: NativeRunIdentity; currentRunGrant?: NativeRunRuntimeGrant; completionContract?: { revision: string; criterionIds: readonly string[] } }): Promise<void>;
+  beginRunAttachment?(input: { identity: NativeRunIdentity }): boolean;
+  /** Return the confirmed released source, or false when active use was not released. */
+  release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority without suspending provider execution. */
   detachControllerForRestart?(): Promise<void>;
   events(input?: { afterCursor?: string | null }): AsyncIterable<PrpEvent>;
@@ -219,6 +245,12 @@ export interface NativeSession {
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode?: "default" | "plan";
+    /**
+     * This restart continuation borrowed the driver's one-shot disposition
+     * marker. If it completes without a result the driver returns the marker,
+     * and orchestration may send one disposition request in the same attempt.
+     */
+    borrowedDispositionMarker?: true;
   }>;
   steer?(input: {
     mode?: "steer" | "follow_up";
@@ -235,6 +267,7 @@ export interface NativeSession {
     reason: string;
     signal: AbortSignal;
   }): NativeSessionCancellation;
+  settleCancelledTurn?(input: { turnId: string; reason: string }): Promise<CancelledTurnSettlement | null>;
   resolveRuntimeRequest?(input: {
     commandId?: string;
     requestId: string;
@@ -299,6 +332,25 @@ export class NativeProviderStateIncompatibleError extends Error {
   constructor(reason: string) {
     super(`native_session_recovery_failed: ${reason}`);
     this.name = "NativeProviderStateIncompatibleError";
+  }
+}
+
+/** The saved provider session still owns a side-effecting call without a
+ * recorded result. A replacement session could repeat or lose that action, so
+ * the run stops for an operator and the saved state stays intact. */
+export class NativeProviderSideEffectPendingError extends Error {
+  readonly code = "native_provider_side_effect_pending";
+  constructor(reason: string) {
+    super(`native_session_recovery_failed: ${reason}`);
+    this.name = "NativeProviderSideEffectPendingError";
+  }
+}
+
+export class NativeGovernedWaitSettlementPendingError extends Error {
+  readonly code = "native_governed_wait_settlement_pending";
+  constructor(options?: ErrorOptions) {
+    super("The waiting state is saved; confirming shutdown of the previous execution is still pending.", options);
+    this.name = "NativeGovernedWaitSettlementPendingError";
   }
 }
 

@@ -428,6 +428,7 @@ describe("parseManagedConfigEnv plugin environment entries", () => {
     pluginKey: PLUGIN_KEY,
     driverKey: "tasks",
     driverConfig: {},
+    instanceDefault: true,
     ...overrides,
   });
   const sandbox = { name: "Managed Sandbox", provider: "daytona", config: { target: "us" } };
@@ -456,6 +457,7 @@ describe("parseManagedConfigEnv plugin environment entries", () => {
       pluginKey: PLUGIN_KEY,
       driverKey: "tasks",
       driverConfig: {},
+      instanceDefault: true,
     }]);
     expect(Object.isFrozen(config?.pluginEnvironments)).toBe(true);
     expect(Object.isFrozen(config?.pluginEnvironments[0])).toBe(true);
@@ -464,7 +466,7 @@ describe("parseManagedConfigEnv plugin environment entries", () => {
   it("parses a plugin entry alone, with optional fields omitted", () => {
     const config = parseManagedConfigEnv(docWith([{ name: "Remote", driver: "plugin", pluginKey: PLUGIN_KEY, driverKey: "tasks" }]));
     expect(config?.environments).toEqual([]);
-    expect(config?.pluginEnvironments[0]).toMatchObject({ driverConfig: {} });
+    expect(config?.pluginEnvironments[0]).toMatchObject({ driverConfig: {}, instanceDefault: false });
     expect(config?.pluginEnvironments[0]?.description).toBeUndefined();
   });
 
@@ -478,8 +480,25 @@ describe("parseManagedConfigEnv plugin environment entries", () => {
   });
 
   it("refuses a duplicate pluginKey and driverKey pair", () => {
-    expect(() => parseManagedConfigEnv(docWith([remoteHost(), remoteHost({ name: "Second" })])))
+    expect(() => parseManagedConfigEnv(docWith([remoteHost(), remoteHost({ name: "Second", instanceDefault: false })])))
       .toThrow(/duplicates another plugin entry's pluginKey and driverKey/);
+  });
+
+  it("refuses instanceDefault on two entries", () => {
+    expect(() => parseManagedConfigEnv(docWith([remoteHost(), remoteHost({ name: "Second", driverKey: "other" })])))
+      .toThrow(/at most one entry may become the instance default/);
+  });
+
+  it("refuses instanceDefault on the sandbox entry, even false", () => {
+    expect(() => parseManagedConfigEnv(docWith([{ ...sandbox, instanceDefault: true }])))
+      .toThrow(/"environments\[0\].instanceDefault" is not allowed on the sandbox entry/);
+    expect(() => parseManagedConfigEnv(docWith([{ ...sandbox, instanceDefault: false }])))
+      .toThrow(/not allowed on the sandbox entry/);
+  });
+
+  it("refuses a non-boolean instanceDefault", () => {
+    expect(() => parseManagedConfigEnv(docWith([remoteHost({ instanceDefault: "yes" })])))
+      .toThrow(/"environments\[0\].instanceDefault" must be a boolean/);
   });
 
   it("refuses secret-like driverConfig keys at any depth", () => {
@@ -495,9 +514,6 @@ describe("parseManagedConfigEnv plugin environment entries", () => {
     expect(() => parseManagedConfigEnv(docWith([remoteHost({ envVars: {} })]))).toThrow(/unknown key "envVars"/);
     expect(() => parseManagedConfigEnv(docWith([remoteHost({ provider: "daytona" })]))).toThrow(/unknown key "provider"/);
     expect(() => parseManagedConfigEnv(docWith([{ ...sandbox, pluginKey: PLUGIN_KEY }]))).toThrow(/unknown key "pluginKey"/);
-    // Not supported by this build on either entry.
-    expect(() => parseManagedConfigEnv(docWith([remoteHost({ instanceDefault: true })]))).toThrow(/unknown key "instanceDefault"/);
-    expect(() => parseManagedConfigEnv(docWith([{ ...sandbox, instanceDefault: false }]))).toThrow(/unknown key "instanceDefault"/);
   });
 
   it("refuses an unknown driver and malformed plugin fields", () => {

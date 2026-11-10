@@ -28,6 +28,7 @@ const mockProjectService = vi.hoisted(() => ({
 
 const mockEnvironmentRuntimeService = vi.hoisted(() => ({
   destroyReusableSandboxLeasesForEnvironment: vi.fn(async () => ({ destroyed: 0, failed: 0, skippedLiveRun: 0 })),
+  releaseRestoreSourcesForEnvironmentDelete: vi.fn(async () => 0),
 }));
 const mockCloseWarmNativeSessionsForEnvironment = vi.hoisted(() =>
   vi.fn(async () => ({ closed: 0, busy: 0, failed: 0 })),
@@ -1774,6 +1775,7 @@ describe("environment routes", () => {
     ).toHaveBeenCalledExactlyOnceWith({
       environmentId: "env-1",
       failureReason: "environment_deleted",
+      consentedBy: "admin-1",
     });
     expect(
       mockCloseWarmNativeSessionsForEnvironment,
@@ -1827,6 +1829,60 @@ describe("environment routes", () => {
       deleteBlockedReasons: ["pending_sandbox_cleanup"],
       destroyedReusableSandboxLeaseCount: 1,
     });
+    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+  });
+
+  it("runs the environment's pending sandbox cleanup now and deletes with explicit consent", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius
+      .mockResolvedValueOnce(createDeleteBlastRadius({ pendingCleanupLeaseCount: 1 }))
+      .mockResolvedValueOnce(createDeleteBlastRadius());
+    mockEnvironmentService.removeIfDeletable.mockResolvedValue(environment);
+    mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
+    const retryPendingEnvironmentCleanup = vi.fn(async () => ({ swept: 1, destroyed: 1, capped: 0 }));
+    const app = createApp(localBoardActor("admin-1"), { retryPendingEnvironmentCleanup });
+
+    const res = await request(app).delete("/api/environments/env-1?destroyReusableSandboxLeases=true");
+
+    expect(res.status).toBe(200);
+    expect(retryPendingEnvironmentCleanup).toHaveBeenCalledExactlyOnceWith({ environmentId: "env-1", actorId: "admin-1" });
+    // Consent releases restore-source protection before the cleanup retry, or a
+    // protected source would refuse every attempt and keep the delete blocked.
+    expect(mockEnvironmentRuntimeService.releaseRestoreSourcesForEnvironmentDelete)
+      .toHaveBeenCalledWith({ environmentId: "env-1", consentedBy: "admin-1" });
+    expect(mockEnvironmentRuntimeService.releaseRestoreSourcesForEnvironmentDelete.mock.invocationCallOrder[0])
+      .toBeLessThan(retryPendingEnvironmentCleanup.mock.invocationCallOrder[0]!);
+    expect(mockEnvironmentService.removeIfDeletable).toHaveBeenCalledWith("env-1");
+  });
+
+  it("keeps rejecting when the consented pending cleanup attempt does not finish", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({ pendingCleanupLeaseCount: 1 }));
+    const retryPendingEnvironmentCleanup = vi.fn(async () => ({ swept: 1, destroyed: 0, capped: 0 }));
+    const app = createApp(localBoardActor("admin-1"), { retryPendingEnvironmentCleanup });
+
+    const res = await request(app).delete("/api/environments/env-1?destroyReusableSandboxLeases=true");
+
+    expect(res.status).toBe(409);
+    expect(res.body.details).toEqual({ deleteBlockedReasons: ["pending_sandbox_cleanup"] });
+    expect(retryPendingEnvironmentCleanup).toHaveBeenCalledOnce();
+    expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+  });
+
+  it("does not run pending sandbox cleanup without consent or past another blocker", async () => {
+    const environment = createEnvironment();
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    const retryPendingEnvironmentCleanup = vi.fn(async () => ({ swept: 0, destroyed: 0, capped: 0 }));
+    const app = createApp(localBoardActor("admin-1"), { retryPendingEnvironmentCleanup });
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({ pendingCleanupLeaseCount: 1 }));
+    expect((await request(app).delete("/api/environments/env-1")).status).toBe(409);
+    mockEnvironmentService.getDeleteBlastRadius.mockResolvedValue(createDeleteBlastRadius({
+      pendingCleanupLeaseCount: 1, isInstanceDefault: true,
+    }));
+    expect((await request(app).delete("/api/environments/env-1?destroyReusableSandboxLeases=true")).status).toBe(409);
+    expect(retryPendingEnvironmentCleanup).not.toHaveBeenCalled();
     expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
   });
 

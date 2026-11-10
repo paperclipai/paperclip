@@ -59,7 +59,7 @@ import {
   assertAgentsReadyForEnvironmentChange,
 } from "../services/plugin-environment-driver.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
-import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertBoardOrgAccess, getActorInfo } from "./authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "../services/environment-custom-image-runtime.js";
@@ -360,6 +360,10 @@ export function environmentRoutes(
   options: {
     pluginWorkerManager?: PluginWorkerManager;
     recoverMissingPluginWorker?: ReadyPluginWorkerRecovery;
+    /** Runs one teardown attempt now for each pending cleanup of this
+     * environment, without the retry cooldown. Absent, a delete waits for the
+     * scheduled cleanup sweep. */
+    retryPendingEnvironmentCleanup?: (input: { environmentId: string; actorId: string }) => Promise<unknown>;
   } = {},
 ) {
   const router = Router();
@@ -396,9 +400,7 @@ export function environmentRoutes(
   }
 
   function assertCustomImageCompanyAccess(req: Request, companyId: string) {
-    if (req.actor.type !== "board") {
-      throw forbidden("Board access required");
-    }
+    assertBoard(req);
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
     const allowedCompanies = req.actor.companyIds ?? [];
     if (!allowedCompanies.includes(companyId)) {
@@ -630,6 +632,9 @@ export function environmentRoutes(
       return "Cannot delete this environment while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.";
     }
     if (impact.reusableSandboxLeaseCount > 0) {
+      if (impact.reusableSandboxLeaseHolders.some(holder => holder.leasePolicy === "retain_on_failure")) {
+        return "Cannot delete this environment while it keeps a failed run's workspace copy (a stopped sandbox kept for file recovery). Deleting the environment with consent destroys that sandbox and the files only it holds.";
+      }
       return "Cannot delete this environment while it has a reusable sandbox lease. Remove the associated execution workspace or issue so Paperclip can destroy the sandbox, then retry.";
     }
     return null;
@@ -765,7 +770,8 @@ export function environmentRoutes(
       workerManager: options.pluginWorkerManager,
       recoverMissingWorker: options.recoverMissingPluginWorker,
     });
-    res.json(getEnvironmentCapabilities(
+    const loginDrivers = await listReadyPluginEnvironmentDrivers({ db, workerManager: options.pluginWorkerManager, kind: "environment_driver" });
+    const capabilities = getEnvironmentCapabilities(
       AGENT_ADAPTER_TYPES,
       {
         sandboxProviders: Object.fromEntries(pluginDrivers.map((driver) => [
@@ -804,7 +810,10 @@ export function environmentRoutes(
           },
         ])),
       },
-    ));
+    );
+    res.json({ ...capabilities, loginPtyDrivers: Object.fromEntries(loginDrivers.map(driver => [
+      `${driver.pluginKey}:${driver.driverKey}`, { supportsLoginPty: driver.supportsLoginPty === true, supportsCodexLogin: driver.supportsCodexLogin === true },
+    ])) });
   });
 
   router.get("/environments/:environmentId/custom-image-template", async (req, res) => {
@@ -1332,6 +1341,36 @@ export function environmentRoutes(
     // sandboxes belonged to the environment the operator consented to
     // destroy; the rejection reports the count so nothing is silent.
     let destroyedReusableSandboxLeaseCount = 0;
+    // The same consent covers a pending sandbox cleanup: it is the environment's
+    // own sandbox, already queued for teardown. Run one attempt now instead of
+    // waiting out the retry cooldown. An attempt in flight elsewhere is not taken
+    // over, and a failed attempt keeps the lease, so the re-check still rejects.
+    // Consent covers the environment's restore-source sandboxes too: release
+    // their restore protection first, so neither the pending-cleanup retry nor
+    // the teardown below refuses them (including ones an earlier attempt left
+    // claimed for cleanup).
+    if (
+      req.query.destroyReusableSandboxLeases === "true"
+      && impact.deleteBlockedReasons.every((reason) =>
+        reason === "pending_sandbox_cleanup" || reason === "reusable_sandbox_lease")
+    ) {
+      await environmentRuntime.releaseRestoreSourcesForEnvironmentDelete({ environmentId: existing.id,
+        consentedBy: actor.actorId });
+    }
+    if (
+      req.query.destroyReusableSandboxLeases === "true"
+      && impact.pendingCleanupLeaseCount > 0
+      && options.retryPendingEnvironmentCleanup
+      && impact.deleteBlockedReasons.every((reason) =>
+        reason === "pending_sandbox_cleanup" || reason === "reusable_sandbox_lease")
+    ) {
+      await options.retryPendingEnvironmentCleanup({ environmentId: existing.id, actorId: actor.actorId });
+      impact = await svc.getDeleteBlastRadius(existing.id);
+      if (!impact) {
+        res.status(404).json({ error: "Environment not found" });
+        return;
+      }
+    }
     if (
       req.query.destroyReusableSandboxLeases === "true"
       && impact.reusableSandboxLeaseCount > 0
@@ -1353,6 +1392,7 @@ export function environmentRoutes(
         await environmentRuntime.destroyReusableSandboxLeasesForEnvironment({
           environmentId: existing.id,
           failureReason: "environment_deleted",
+          consentedBy: actor.actorId,
         });
       destroyedReusableSandboxLeaseCount = destroyResult.destroyed;
       impact = await svc.getDeleteBlastRadius(existing.id);

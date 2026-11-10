@@ -1,3 +1,4 @@
+import { mcpCompanyDeletion } from "./public-mcp/company-deletion.js";
 import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
 import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
@@ -75,6 +76,7 @@ export async function deleteCompany(db: Db, id: string) {
         const [existing] = await tx.select({ id: companies.id }).from(companies)
           .where(eq(companies.id, id)).for("no key update");
         if (!existing) return null;
+        await mcpCompanyDeletion.deleteCompanyData(tx, id);
         await notifyExternalObjectRefresh(tx, id);
         await notifyIssueRecovery(tx, { companyId: id });
         await notifyChatCompanyConfiguration(tx, id);

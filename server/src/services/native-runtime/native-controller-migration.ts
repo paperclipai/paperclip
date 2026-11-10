@@ -3,9 +3,10 @@ import { lstat, open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
-import { captureLegacyDurablePrpCheckpoint, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
+import { captureLegacyDurablePrpCheckpoint, inspectDurablePrpCheckpointHeader, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
-import { findNativeSessionResumeRun } from "./native-session-resume.js";
+import { findNativeSessionResumeRun, isNativeSessionId } from "./native-session-resume.js";
 import { nativeControllerMigrationDescriptor } from "./native-session-executor.js";
 import { hasNativeRunnerCheckpoint, loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { importNativeControllerRecovery, readNativeControllerRecovery } from "./native-controller-recovery.js";
@@ -17,8 +18,10 @@ import type { StorageService } from "../../storage/types.js";
 import { durableNativeHarnessStorage } from "./native-harness-backup-storage.js";
 import { archiveFailedLegacyNativeController, hasArchivedLegacyNativeController } from "./native-controller-archive.js";
 import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
+import { archiveSettledFailedNativeController } from "./native-controller-archive-source.js";
+import { nativeControllerSourceDigest } from "./native-controller-source-digest.js";
 
-type Selected = { id: string; companyId: string; agentId: string; issueId: string; sessionId: string; createdAt: Date };
+type Selected = { id: string; companyId: string; agentId: string; issueId: string; sessionId: string; createdAt: Date; lastRunId: string };
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -74,22 +77,28 @@ async function hasConfirmedOlderController(db: Db, selected: Selected,
   } catch { return false; }
 }
 
-async function* retainedSources(db: Db, signal?: AbortSignal) {
+async function* retainedSources(db: Db, signal?: AbortSignal, concurrency = 1) {
   let after: string | undefined;
   for (;;) {
     signal?.throwIfAborted();
     const rows = await db.execute<Selected>(sql`select s.id, s.company_id as "companyId", s.agent_id as "agentId",
-      r.native_issue_id as "issueId", r.native_session_id as "sessionId", r.created_at as "createdAt"
+      r.native_issue_id as "issueId", r.native_session_id as "sessionId", r.created_at as "createdAt", r.id as "lastRunId"
       from agent_task_sessions s join heartbeat_runs r on r.id = s.last_run_id
         and r.company_id = s.company_id and r.agent_id = s.agent_id
       where s.adapter_type = 'paperclip_runner' and r.native_issue_id is not null and r.native_session_id is not null
         ${after ? sql`and s.id > ${after}::uuid` : sql``} order by s.id limit 100`);
-    for (const selected of rows) {
+    for (let offset = 0; offset < rows.length; offset += concurrency) {
       signal?.throwIfAborted();
-      const source = await findNativeSessionResumeRun(db, { companyId: selected.companyId, agentId: selected.agentId,
-        issueId: selected.issueId, normalizedSessionId: selected.sessionId,
-        beforeCreatedAt: new Date(selected.createdAt), includeProgressBarrier: true });
-      if (source) yield { selected, source };
+      const batch = await Promise.allSettled(rows.slice(offset, offset + concurrency).map(async selected => ({
+        selected, source: await findNativeSessionResumeRun(db, { companyId: selected.companyId, agentId: selected.agentId,
+          issueId: selected.issueId, normalizedSessionId: selected.sessionId,
+          beforeCreatedAt: new Date(selected.createdAt), includeProgressBarrier: true }),
+      })));
+      for (const result of batch) {
+        signal?.throwIfAborted();
+        if (result.status === "rejected") throw result.reason;
+        if (result.value.source) yield { selected: result.value.selected, source: result.value.source };
+      }
     }
     if (rows.length < 100) return;
     after = rows.at(-1)!.id;
@@ -110,6 +119,9 @@ async function readPrivateSource(file: string, maxBytes: number): Promise<string
 
 async function localPaths(source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>) {
   const execution = parseNativeExecutionInput(source.runnerProfileJson.nativeExecutionInput);
+  if (execution.binding.companyId !== source.companyId || execution.binding.agentId !== source.agentId
+    || execution.binding.issueId !== source.nativeIssueId || execution.binding.runId !== source.id
+    || execution.session.normalizedSessionId !== source.nativeSessionId) throw new Error("native_controller_migration_artifact_binding");
   const descriptor = nativeControllerMigrationDescriptor(execution, source.runnerProfileJson.nativeToolContractFingerprint);
   const root = await lstat(descriptor.root).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return undefined; throw error;
@@ -123,6 +135,21 @@ async function localPaths(source: NonNullable<Awaited<ReturnType<typeof findNati
   return { ...descriptor, execution, controlFile: join(control, "control-plane-state.json") };
 }
 
+export async function readLegacyNativeControllerArchiveSource(source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>) {
+  const paths = await localPaths(source);
+  const controller = await readPrivateSource(paths.controlFile, 256 * 1024 * 1024);
+  const supervisor = paths.execution.session.lifecyclePolicy.mode === "warm"
+    ? await readPrivateSource(paths.supervisorPath, 4 * 1024 * 1024) : undefined;
+  return { paths, controller, supervisor };
+}
+
+export async function readLegacyNativeControllerArchiveDigests(source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>) {
+  const paths = await localPaths(source);
+  return { controllerDigest: await nativeControllerSourceDigest(paths.controlFile, 256 * 1024 * 1024),
+    supervisorDigest: paths.execution.session.lifecyclePolicy.mode === "warm"
+      ? await nativeControllerSourceDigest(paths.supervisorPath, 4 * 1024 * 1024) : undefined };
+}
+
 function preservedFailedCheckpoint(source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>,
   sessionId: string, checkpoint: Awaited<ReturnType<typeof loadNativeRunnerCheckpoint>>) {
   return source.status === "failed" && source.runnerProfileJson.sessionCheckpoint == null
@@ -130,21 +157,119 @@ function preservedFailedCheckpoint(source: NonNullable<Awaited<ReturnType<typeof
     && checkpoint.recoveryEvidence.normalizedSessionId === sessionId;
 }
 
+async function preservedDatabaseOnlyFailedCheckpoint(selected: Selected,
+  source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>,
+  checkpoint: Awaited<ReturnType<typeof loadNativeRunnerCheckpoint>>) {
+  const snapshot = record(source.runnerProfileJson.sessionCheckpoint), identity = record(snapshot.identity);
+  if (source.status !== "failed" || source.runtimeMode !== "native" || !checkpoint
+    || source.companyId !== selected.companyId || source.agentId !== selected.agentId
+    || source.nativeIssueId !== selected.issueId || source.nativeSessionId !== selected.sessionId
+    || identity.companyId !== selected.companyId || identity.agentId !== selected.agentId
+    || identity.issueId !== selected.issueId || identity.runId !== source.id || identity.sessionId !== selected.sessionId
+    || typeof snapshot.sessionId !== "string" || !snapshot.sessionId.trim()
+    || checkpoint.runId !== source.id || checkpoint.recoveryEvidence.runnerInstanceId !== source.runnerInstanceId
+    || checkpoint.recoveryEvidence.normalizedSessionId !== selected.sessionId) return false;
+  const header = inspectDurablePrpCheckpointHeader(checkpoint.records.get("header") ?? "");
+  if (header?.runId !== source.id || header.runnerInstanceId !== source.runnerInstanceId
+    || header.normalizedSessionId !== selected.sessionId) return false;
+  const paths = await localPaths(source);
+  for (const file of [paths.controlFile, paths.supervisorPath]) {
+    const present = await lstat(file).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined; throw error;
+    });
+    if (present) return false;
+  }
+  return true;
+}
+
+async function preservedWarmMarker(db: Db, selected: Selected,
+  source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>, markerIdentity: Record<string, unknown>) {
+  if (!isNativeSessionId(markerIdentity.runId) || markerIdentity.runId === source.id) return false;
+  const [prior] = await db.execute<{ id: string }>(sql`
+    select r.id from heartbeat_runs r join heartbeat_runs current on current.id=${source.id}::uuid and current.company_id=r.company_id
+    join native_run_finalizations f on f.run_id=r.id and f.company_id=r.company_id and f.issue_id=r.native_issue_id
+    join native_run_results result on result.id=f.result_id and result.run_id=r.id and result.company_id=r.company_id
+      and result.issue_id=r.native_issue_id and result.completion_contract_id=r.completion_contract_id and result.schema_status='accepted'
+    where r.id=${markerIdentity.runId}::uuid and r.company_id=${selected.companyId}::uuid and r.agent_id=${selected.agentId}::uuid
+      and r.native_issue_id=${selected.issueId}::uuid and r.native_session_id=${selected.sessionId}::uuid
+      and r.runner_instance_id=${source.runnerInstanceId} and r.runtime_mode='native' and r.status='succeeded'
+      and r.created_at<current.created_at and r.finished_at is not null and r.finished_at<=coalesce(current.started_at,current.created_at)
+      and f.phase='committed' and f.lease_owner is null and f.recovery_state is null and f.failure_code is null`);
+  if (!prior) return false;
+  const checkpoint = await loadNativeRunnerCheckpoint(db, { companyId: selected.companyId, issueId: selected.issueId, runId: prior.id }).catch(() => null);
+  const header = checkpoint && inspectDurablePrpCheckpointHeader(checkpoint.records.get("header") ?? "");
+  return Boolean(header && nativeSha256(header) === nativeSha256(markerIdentity));
+}
+
+async function preservedActiveCheckpoint(db: Db, selected: Selected,
+  source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>, paths: Awaited<ReturnType<typeof localPaths>>) {
+  if (source.status !== "running" || source.runtimeMode !== "native") return false;
+  let marker: Record<string, unknown>, bytes: string | undefined;
+  try {
+    bytes = await readPrivateSource(paths.controlFile, 4096);
+    marker = record(JSON.parse(bytes ?? "null"));
+  } catch { return false; }
+  if (marker.schema !== "paperclip.runner.external-control-plane-state.v1"
+    || Object.keys(marker).sort().join(",") !== "identity,schema") return false;
+  const binding = { companyId: selected.companyId, issueId: selected.issueId, runId: source.id };
+  const checkpoint = await loadNativeRunnerCheckpoint(db, binding).catch(() => null);
+  const header = checkpoint && inspectDurablePrpCheckpointHeader(checkpoint.records.get("header") ?? "");
+  if (!header || header.runId !== source.id || header.runnerInstanceId !== source.runnerInstanceId
+    || header.normalizedSessionId !== selected.sessionId) return false;
+  const exact = nativeSha256(header) === nativeSha256(marker.identity), markerIdentity = record(marker.identity);
+  if (!exact && (paths.execution.session.lifecyclePolicy.mode !== "warm"
+    || ["runnerInstanceId", "normalizedSessionId", "environmentLeaseId"].some(field => markerIdentity[field] !== header[field as keyof typeof header])
+    || !await preservedWarmMarker(db, selected, source, markerIdentity))) return false;
+  const [current] = await db.execute<{ workspace: unknown; remoteWorkspace: unknown; hasRemoteWorkspace: boolean; pluginLeaseId: string | null; liveOwner: boolean }>(sql`
+    select r.runner_profile_json->'nativeWorkspaceSync' as workspace,
+      r.runner_profile_json->'remoteWorkspace' as "remoteWorkspace",
+      r.runner_profile_json ? 'remoteWorkspace' as "hasRemoteWorkspace", p.id as "pluginLeaseId",
+      (r.native_phase='observed' and r.process_pid is not null and r.process_started_at is not null
+       and i.execution_run_id=r.id and i.assignee_agent_id=r.agent_id
+       and f.controller_boot_id is not null and f.controller_boot_id<>'' and f.controller_generation>0
+       and f.lease_owner is not null and f.lease_owner<>'' and f.lease_expires_at>clock_timestamp()
+       and f.phase='observed' and f.result_id is null and f.failure_code is null) is true as "liveOwner"
+    from heartbeat_runs r left join native_run_finalizations f on f.run_id=r.id and f.company_id=r.company_id and f.issue_id=r.native_issue_id
+    left join issues i on i.id=r.native_issue_id and i.company_id=r.company_id
+    left join lateral (select l.id from environment_leases l where l.company_id=r.company_id and l.heartbeat_run_id=r.id
+      and l.issue_id=r.native_issue_id and l.status='active' and l.released_at is null and l.cleanup_status is null
+      and (l.expires_at is null or l.expires_at>clock_timestamp()) and l.metadata->>'agentId'=r.agent_id::text
+      and l.metadata->>'runnerTaskLease'='true' and l.metadata->>'runnerTaskDispatched'='true'
+      and coalesce(l.metadata->>'runnerTaskExecutionStopped','false')!='true'
+      and coalesce(l.metadata->>'runnerTaskRetiring','false')!='true' order by l.created_at desc limit 1) p on true
+    where r.id=${source.id}::uuid and r.company_id=${selected.companyId}::uuid and r.agent_id=${selected.agentId}::uuid
+      and r.native_issue_id=${selected.issueId}::uuid and r.native_session_id=${selected.sessionId}::uuid
+      and r.runner_instance_id=${source.runnerInstanceId} and r.runtime_mode='native' and r.status='running'`);
+  if (!current) return false;
+  const remote = remoteWorkspaceRunReferenceSchema.safeParse(current.remoteWorkspace);
+  const workspaceId = current.hasRemoteWorkspace
+    ? remote.success && !current.pluginLeaseId ? remote.data.workspaceId : null
+    : current.pluginLeaseId ?? readNativeWorkspaceSyncReference(current.workspace)?.workspaceId;
+  return workspaceId === header.environmentLeaseId
+    && (current.pluginLeaseId !== null || paths.execution.binding.executionWorkspaceId === workspaceId)
+    && (current.liveOwner || exact && hasMatchingControllerRecovery(selected, source, checkpoint))
+    && bytes === await readPrivateSource(paths.controlFile, 4096);
+}
+
 export async function hasLocalNativeControllerObligations(db: Db, storage?: StorageService | null): Promise<boolean> {
   const roots = await readdir(nativeHarnessStateBase()).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return [] as string[]; throw error;
   });
   if (!roots.length) return false;
-  for await (const { selected, source } of retainedSources(db)) {
+  for await (const { selected, source } of retainedSources(db, undefined, 8)) {
     const binding = { companyId: selected.companyId, issueId: selected.issueId, runId: source.id };
-    if (readNativeControllerRecovery(source.runnerProfileJson.nativeControllerRecovery, source.runnerProfileJson.sessionCheckpoint)
+    if (source.status !== "running"
+      && readNativeControllerRecovery(source.runnerProfileJson.nativeControllerRecovery, source.runnerProfileJson.sessionCheckpoint)
       && await hasNativeRunnerCheckpoint(db, binding)) continue;
     if (source.status === "failed" && source.runnerProfileJson.sessionCheckpoint == null
       && preservedFailedCheckpoint(source, selected.sessionId, await loadNativeRunnerCheckpoint(db, binding))) continue;
     const paths = await localPaths(source);
+    if (await preservedActiveCheckpoint(db, selected, source, paths)) continue;
     const present = await lstat(paths.controlFile).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return undefined; throw error;
     });
+    if (!present && source.status === "failed" && source.runnerProfileJson.sessionCheckpoint != null
+      && await preservedDatabaseOnlyFailedCheckpoint(selected, source, await loadNativeRunnerCheckpoint(db, binding))) continue;
     if (present && source.status === "failed") {
       const archiveStorage = storage === undefined ? durableNativeHarnessStorage() : storage;
       const controller = await readPrivateSource(paths.controlFile, 256 * 1024 * 1024);
@@ -214,6 +339,7 @@ export async function migrateNativeControllers(db: Db, input: { writersStopped: 
     const binding = { companyId: selected.companyId, issueId: selected.issueId, runId: source.id };
     const checkpoint = await loadNativeRunnerCheckpoint(db, binding);
     if (preservedFailedCheckpoint(source, selected.sessionId, checkpoint)) { counts.preservedFailed++; continue; }
+    if (await preservedDatabaseOnlyFailedCheckpoint(selected, source, checkpoint)) { counts.preservedFailed++; continue; }
     if (hasMatchingControllerRecovery(selected, source, checkpoint)) { counts.unchanged++; continue; }
     const { paths, legacyControllerState, legacyRunnerArtifact, supervisor } = await readMigrationMaterial(db, selected, source, checkpoint);
     if (!checkpoint && legacyControllerState === undefined) { counts.sourceAlreadyAbsent++; continue; }
@@ -264,6 +390,7 @@ function onlineControllerSourceDeferral(error: unknown): string | null {
     native_controller_migration_unsafe_source: "unsafe_source",
     native_controller_migration_artifact_binding: "artifact_binding",
     native_controller_migration_artifact_unavailable: "artifact_unavailable",
+    native_controller_archive_source_unsettled: "archive_source_unsettled",
   };
   if (reasons[error.message]) return reasons[error.message];
   if (error.message.startsWith("runner_remote_provider_artifact_incompatible:")) return "artifact_incompatible";
@@ -272,13 +399,13 @@ function onlineControllerSourceDeferral(error: unknown): string | null {
   return null;
 }
 
-export async function prestageNativeControllers(db: Db, input: { signal: AbortSignal }) {
-  const counts = { inspected: 0, imported: 0, unchanged: 0, sourceAlreadyAbsent: 0, deferred: {} as Record<string, number> };
+export async function prestageNativeControllers(db: Db, input: { signal: AbortSignal; storage?: StorageService }) {
+  const counts = { inspected: 0, imported: 0, unchanged: 0, archivedFailed: 0, sourceAlreadyAbsent: 0, deferred: {} as Record<string, number> };
   const defer = (reason: string) => { counts.deferred[reason] = (counts.deferred[reason] ?? 0) + 1; };
   for await (const { selected, source } of retainedSources(db, input.signal)) {
     counts.inspected++;
     input.signal.throwIfAborted();
-    const outcome = await db.transaction(async tx => {
+    let outcome = await db.transaction(async tx => {
       await tx.execute(sql`set local lock_timeout = '1s'`);
       const [task] = await tx.select().from(issues).where(and(eq(issues.companyId, selected.companyId),
         eq(issues.id, selected.issueId))).for("update");
@@ -290,7 +417,7 @@ export async function prestageNativeControllers(db: Db, input: { signal: AbortSi
       const [current] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, source.id),
         eq(heartbeatRuns.companyId, selected.companyId), eq(heartbeatRuns.agentId, selected.agentId),
         eq(heartbeatRuns.nativeIssueId, selected.issueId), eq(heartbeatRuns.nativeSessionId, selected.sessionId))).for("update");
-      if (current?.status !== "succeeded" || !current.finishedAt) return "source_not_successful";
+      if (!current || !["succeeded", "failed"].includes(current.status) || !current.finishedAt) return "source_not_successful";
       const [active] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, selected.companyId), inArray(heartbeatRuns.status, ["queued", "running"]),
         or(eq(heartbeatRuns.nativeIssueId, selected.issueId), eq(heartbeatRuns.issueId, selected.issueId),
@@ -331,7 +458,18 @@ export async function prestageNativeControllers(db: Db, input: { signal: AbortSi
       if (error?.code === "55P03" || error?.cause?.code === "55P03") return "source_busy";
       throw error;
     });
-    if (outcome === "imported" || outcome === "unchanged") counts[outcome]++;
+    if (source.status === "failed" && ["owner_not_released", "artifact_unproven", "checkpoint_binding", "source_unproven", "artifact_binding"].includes(outcome)) {
+      const storage = input.storage ?? durableNativeHarnessStorage();
+      if (storage) outcome = await archiveSettledFailedNativeController(db, { selected, source, storage, signal: input.signal }).catch(error => {
+        input.signal.throwIfAborted();
+        const reason = onlineControllerSourceDeferral(error);
+        if (reason) return reason;
+        if (error?.code === "55P03" || error?.cause?.code === "55P03") return "source_busy";
+        throw error;
+      });
+    }
+    if (outcome === "archived_failed") counts.archivedFailed++;
+    else if (outcome === "imported" || outcome === "unchanged") counts[outcome]++;
     else if (outcome === "source_already_absent") counts.sourceAlreadyAbsent++;
     else defer(outcome);
   }

@@ -1,4 +1,6 @@
 import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
+import { closeProcessRunAdmission } from "./services/heartbeat/run-admission.js";
+import { registerOwnershipReconciliationWork } from "./services/native-runtime/native-finalization-reconciler.js";
 import { bindIdleDeadlineOwner } from "./services/idle-deadline-owner.js";
 import { readIdleRetrySchedule } from "./services/heartbeat/idle-retry-schedule.js";
 import { readIdleQuotaSchedule } from "./services/heartbeat/idle-quota-schedule.js";
@@ -77,15 +79,20 @@ import { chatCompletionDeliveryService } from "./services/chat-completion-delive
 // instrumentationReady before opening DB connections or constructing the
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
+import { controllerInstanceLeaseEnabled, registerControllerInstanceDb, registerControllerInstanceLeaseWork,
+  stopControllerInstanceLease } from "./services/controller-instance-lease.js";
 import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { setSentryRunLinkResolver } from "./sentry-links.js";
 import { createSentryRunLinkResolver } from "./services/sentry-run-links.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
-import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
+import { verifyStoppedNativeSessionForAutomaticReplacement } from "./services/native-runtime/native-session-executor.js";
+import { registerNativeCleanupReleaseWake } from "./services/native-runtime/native-cleanup-release-wake.js";
+import { logNativeCleanupQuarantines } from "./services/native-runtime/native-cleanup-quarantine-log.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
 import { deliverExecutionStatuses } from "./services/execution-status-delivery.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./services/execution-recovery-resolution.js";
 import { deliverPendingPauseResumes } from "./services/issue-tree-resume.js";
+import { deliverBudgetResumeContinuations, type BudgetResumeDelivery } from "./services/budget-resume-continuation.js";
 import { invalidateNativeReplacementDiscovery, reconcileSafeNativeReplacements } from "./services/native-runtime/native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "./services/execution-control-reconciliation.js";
 import { acknowledgeNativeStartupCleanup } from "./services/native-runtime/native-startup-cleanup.js";
@@ -188,6 +195,7 @@ import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl, resolveLocalR
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
+import { abortInFlightMultipartUploads } from "./storage/s3-multipart.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
@@ -196,11 +204,14 @@ import { conflict } from "./errors.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import {
+  afterStalledShutdownStep,
   closeHttpListenerForShutdown,
   coordinateHeartbeatSchedulerShutdown,
+  createPreDrainShutdownBudget,
   drainRunExecutionFinalizersForShutdown,
   finalizeServerShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
+  runBoundedShutdownStep,
 } from "./shutdown.js";
 import { initializeCloudRuntimeIdentity } from "./services/cloud-runtime-identity.js";
 import { initializeAdapterSettings } from "./services/adapter-settings.js";
@@ -940,8 +951,11 @@ async function startServerWithDatabaseTeardown(
     logger.warn({ scope: cloudQualification.scope, blockerCodes: cloudQualification.blockers.map((blocker) => blocker.code) }, "Cloud configuration and package qualification has blockers");
   }
   const idleDeadlineOwners: IdleDeadlineOwners = {};
+  // createApp fills the chat Retry callback; the continuation worker reads it.
+  const budgetResumeDelivery: BudgetResumeDelivery = {};
   const app = await createApp(db as any, {
     idleDeadlineOwners,
+    budgetResumeDelivery,
     prepareIdleDatabaseBackup: idleDatabaseBackupEnabled
       ? async () => (await runServerDatabaseBackup("idle")) !== null
       : undefined,
@@ -1091,6 +1105,13 @@ async function startServerWithDatabaseTeardown(
   } catch (err) {
     logger.error({ err }, "startup reconciliation of managed runtime control operations failed");
   }
+
+  // Records this boot owns are stamped with its boot id; the lease lets a server on
+  // another host or container prove this boot gone after it is replaced.
+  registerControllerInstanceDb(db as any);
+  const controllerInstanceLeaseWork = controllerInstanceLeaseEnabled()
+    ? registerControllerInstanceLeaseWork(db as any, deliveryWork) : null;
+  if (controllerInstanceLeaseWork) server.on("close", () => { void controllerInstanceLeaseWork.stop(); });
 
   // These jobs need not delay readiness, but their writes must finish before
   // an idle report can authorize sleep. Count the whole detached promise.
@@ -1351,12 +1372,22 @@ async function startServerWithDatabaseTeardown(
   if (skillVersionRetentionWorker) trackHeartbeatSchedulerWork(skillVersionRetentionWorker.ready);
   const workspaceRecoveryWork = registerWorkspaceRecoveryWork(db, deliveryWork, workspaceRecoveryRuntime,
     accountingHeartbeat.resumeRemoteStopComments, () => !heartbeatSchedulerStopped);
+  // Each native cleanup quarantine is logged with its cause when created. The
+  // subscription lives with the process: closes that fail during shutdown,
+  // after HTTP closes, still need their cause logged.
+  logNativeCleanupQuarantines(logger);
   const localLoginCleanup = localAiLoginService(db);
   const localLoginCleanupWork = registerExecutionControlWork(deliveryWork, [
     { queue: DELIVERY_QUEUES.localLoginCleanup, run: localLoginCleanup.reapExpired, next: localLoginCleanup.nextCleanupAt },
   ], () => !heartbeatSchedulerStopped);
   const unsubscribeLocalLoginCleanup = localLoginCleanup.subscribeCleanupReady(localLoginCleanupWork.wake);
   server.on("close", unsubscribeLocalLoginCleanup);
+  // A retained native session close holds task input in process memory. When
+  // it is released, wake deferred execution so held Retries re-evaluate.
+  const unsubscribeNativeCleanupSettled = registerNativeCleanupReleaseWake(db, (error, companyId) => {
+    logger.warn({ err: error, companyId }, "native cleanup release could not wake deferred execution");
+  });
+  server.on("close", unsubscribeNativeCleanupSettled);
   registerExecutionControlWork(deliveryWork, [
     { queue: DELIVERY_QUEUES.executionFinalization, run: () => reconcileAbandonedExecutionControl(db, new Date(), {
       startupCleanup: async scope => {
@@ -1367,17 +1398,23 @@ async function startServerWithDatabaseTeardown(
     { queue: DELIVERY_QUEUES.executionStatus, run: () => deliverExecutionStatuses(db), next: executionSchedule.status },
     { queue: DELIVERY_QUEUES.executionDisposition, run: () => settleUnrecoverableExecutions(db), next: executionSchedule.disposition },
     ...(heartbeat ? [
-      { queue: DELIVERY_QUEUES.executionReplacement, run: () => reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }), next: executionSchedule.replacement, onSettled: () => invalidateNativeReplacementDiscovery(db), settleEmptyWhilePaused: true },
+      { queue: DELIVERY_QUEUES.executionReplacement, run: () => reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForAutomaticReplacement(db, run) }), next: executionSchedule.replacement, onSettled: () => invalidateNativeReplacementDiscovery(db), settleEmptyWhilePaused: true },
       { queue: DELIVERY_QUEUES.executionContinuation, run: async () => {
         await deliverReconciledExecutions(db, heartbeat.wakeup);
         await deliverPendingPauseResumes(db, heartbeat.wakeup);
+        await deliverBudgetResumeContinuations(db, { ...budgetResumeDelivery,
+          resumeTaskRetry: (companyId, requestId) => heartbeat.resumeTaskRetry(companyId, requestId) });
       }, next: executionSchedule.continuation },
     ] : []),
   ], () => !heartbeatSchedulerStopped);
 
   const budgetEnforcementWorker = registerBudgetEnforcementWork(db, deliveryWork, {
     cancelWorkForScope: accountingHeartbeat.cancelBudgetScopeWork,
+    deliverResumeContinuations: () => deliverBudgetResumeContinuations(db, { ...budgetResumeDelivery,
+      resumeTaskRetry: (companyId, requestId) => accountingHeartbeat.resumeTaskRetry(companyId, requestId) }),
   });
+  // Its stop also removes the run-status listener that wakes resume delivery.
+  server.on("close", () => { void budgetEnforcementWorker.stop(); });
   const accountingWorker = registerCostAccountingWork(db, deliveryWork, accountingHeartbeat.reconcileCostAccounting);
   server.on("close", accountingWorker.stop);
   skillSourceSync.start(deliveryWork);
@@ -1717,6 +1754,12 @@ async function startServerWithDatabaseTeardown(
 
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerResidualRecoveryWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
+    // Report-only ownership reconciliation (durable ownership plan, Phase 1).
+    // Its first pass runs in the background so it never delays readiness.
+    if (config.heartbeatSchedulerEnabled) void registerOwnershipReconciliationWork(db as any, deliveryWork,
+      () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped,
+      { enabled: async () => !(await heartbeat.resolveSchedulingSuppression()).suppressed }).ready
+      .catch(err => logger.warn({ err }, "ownership reconciliation report pass failed"));
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerActiveRunSilenceWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
     if (config.heartbeatSchedulerEnabled) {
@@ -1800,7 +1843,7 @@ async function startServerWithDatabaseTeardown(
         () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
       unsubscribeNativeResponsePresentation = worker.stop;
       server.on("close", worker.stop);
-      await worker.ready;
+      trackHeartbeatSchedulerWork(worker.ready);
     }
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerNativePendingEffectWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
@@ -2003,44 +2046,71 @@ async function startServerWithDatabaseTeardown(
     );
   }
   
+  const abortStuckMultipartUploads = async (signal: "SIGINT" | "SIGTERM", graceMs = 0) => {
+    const abortedUploads = await abortInFlightMultipartUploads(new Error("server_shutdown"), { graceMs });
+    if (abortedUploads) logger.info({ signal, abortedUploads }, "aborted in-flight multipart uploads before exit");
+  };
+
   const performShutdown = async (
     signal: "SIGINT" | "SIGTERM",
     exitProcess: boolean,
   ) => {
+    const shutdownStartedAt = Date.now();
+    logger.info({ signal }, "shutdown signal received; starting ordered shutdown");
     setStartupRecoveryPhase("draining");
     for (const client of liveEventsWebSocketServer.clients) client.close(1012, "Server restarting");
     liveEventsWebSocketServer.close();
     // Finish admitted HTTP requests while their services, workers and database
     // are still available. Railway must switch routing before signaling A.
-    await closeHttpListenerForShutdown({ server, signal, timeoutMs: 30_000, log: logger,
+    await closeHttpListenerForShutdown({ server, signal, timeoutMs: 30_000, log: logger, closeRunAdmission: closeProcessRunAdmission,
       drainRequests: abort => drainHttpRequestWork(app, abort) });
-    await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
+    const preDrain = createPreDrainShutdownBudget({ signal, log: logger });
+    await preDrain.run("systemd_notify", () =>
+      systemdNotify(["--stopping", `--status=Stopping after ${signal}`]));
     heartbeatSchedulerStopped = true;
     skillVersionRetentionWorker?.unsubscribe();
-    await taskDrainExpiryWork.stop();
+    await preDrain.run("task_drain_expiry_stop", () => taskDrainExpiryWork.stop());
     nativeRunnerEvidenceRetentionWorker?.unsubscribe();
-    await skillSourceSync.stop();
+    await preDrain.run("skill_source_sync_stop", () => skillSourceSync.stop());
     unsubscribeChatCompletions();
     unsubscribeNativeResponsePresentation?.();
     unsubscribeNativeWorkspaceFinalization?.();
     unsubscribeRetainedNativeSessionCleanup?.();
     // B can accept Stop/answers while A still owns an execution. Preserve the
     // owner command workers and their transport until the handoff below ends.
-    await deliveryWork.stop(deploymentHints ? new Set([
+    const deliveryWorkStop = await preDrain.run("delivery_work_stop", () => deliveryWork.stop(deploymentHints ? new Set([
       DELIVERY_QUEUES.nativeCancellation, DELIVERY_QUEUES.nativeRuntimeResponses, DELIVERY_QUEUES.question,
       DELIVERY_QUEUES.deploymentNotifications, DELIVERY_QUEUES.liveInvalidations,
-    ]) : undefined);
-    await runEvidenceMigrationWork?.stop();
-    await providerTraceRetentionWork.stop();
-    await skillVersionRetentionWorker?.dispose();
-    await workspaceRecoveryWork.stop();
+    ]) : undefined));
+    await afterStalledShutdownStep(deliveryWorkStop, () => abortStuckMultipartUploads(signal));
+    await preDrain.run("run_evidence_migration_stop", async () => {
+      await runEvidenceMigrationWork?.stop();
+    });
+    await preDrain.run("provider_trace_retention_stop", () => providerTraceRetentionWork.stop());
+    await preDrain.run("skill_version_retention_dispose", async () => {
+      await skillVersionRetentionWorker?.dispose();
+    });
+    const workspaceRecoveryStop = workspaceRecoveryWork.stop();
+    await afterStalledShutdownStep(await preDrain.run("workspace_recovery_stop", () => workspaceRecoveryStop),
+      () => abortStuckMultipartUploads(signal));
     unregisterTerminalWorkspaceProbe?.();
     unsubscribeNativeWorkspaceSyncRetention?.();
 
+    const prepareHotRestart = prepareHotRestartShutdown;
     const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
       signal,
-      prepareHotRestartShutdown,
-      waitForHeartbeatSchedulerIdle,
+      prepareHotRestartShutdown: prepareHotRestart
+        ? async (preparationSignal) => {
+          const preparation = await preDrain.run("hot_restart_prepare", () =>
+            prepareHotRestart(preparationSignal));
+          if (preparation.outcome === "completed") return preparation.value;
+          if (preparation.outcome === "failed") throw preparation.error;
+          throw new Error("hot-restart shutdown preparation timed out");
+        }
+        : null,
+      waitForHeartbeatSchedulerIdle: async () => {
+        await preDrain.run("scheduler_idle", waitForHeartbeatSchedulerIdle);
+      },
     });
     const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
     const selectiveDrainRunIds = heartbeatShutdown.hotRestart?.drainRunIds ?? null;
@@ -2056,26 +2126,44 @@ async function startServerWithDatabaseTeardown(
       );
     }
 
-    const telemetryClient = getTelemetryClient();
-    if (telemetryClient) {
-      telemetryClient.stop();
-      await telemetryClient.flush();
-    }
-
     if (!skipHeartbeatDrain && drainHeartbeatRunsForShutdown) {
+      const drainStartedAt = Date.now();
+      logger.info(
+        { signal, sinceSignalMs: drainStartedAt - shutdownStartedAt },
+        "starting graceful heartbeat run drain",
+      );
       try {
         const drain = await drainHeartbeatRunsForShutdown(signal, selectiveDrainRunIds);
-        logger.info({ signal, drain }, "graceful heartbeat run drain complete");
+        logger.info(
+          { signal, drain, durationMs: Date.now() - drainStartedAt },
+          "graceful heartbeat run drain complete",
+        );
       } catch (err) {
         logger.error({ err, signal }, "graceful heartbeat run drain failed");
       }
     }
+
+    await abortStuckMultipartUploads(signal, 5_000);
 
     if (!skipHeartbeatDrain) {
       await drainRunExecutionFinalizersForShutdown({
         signal,
         drain: drainHeartbeatExecutionFinalizers,
         timeoutMs: 30_000,
+        log: logger,
+      });
+    }
+
+    await workspaceRecoveryStop;
+
+    const telemetryClient = getTelemetryClient();
+    if (telemetryClient) {
+      telemetryClient.stop();
+      await runBoundedShutdownStep({
+        step: "telemetry_flush",
+        signal,
+        timeoutMs: 5_000,
+        run: () => telemetryClient.flush(),
         log: logger,
       });
     }
@@ -2110,7 +2198,9 @@ async function startServerWithDatabaseTeardown(
     // Keep the finalizer's defensive listener close for partial teardown paths.
     await finalizeServerShutdown({
       signal,
-      shutdownAppServices: appShutdown,
+      shutdownAppServices: async () => {
+        try { await appShutdown?.(); } finally { await stopControllerInstanceLease(); }
+      },
       closeHttpListener: () =>
         closeHttpListenerForShutdown({ server, signal, log: logger }),
       drainPendingRunFailureReports: waitForPendingRunFailureReports,

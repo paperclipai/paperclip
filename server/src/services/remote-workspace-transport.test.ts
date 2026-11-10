@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -16,10 +16,12 @@ import {
   prepareRemoteRepository,
   prepareRemoteWorkspaceDirectory,
   remoteWorkspaceFailureCause,
+  removeRemoteRecoveryAttachment,
   restoreRemoteWorkspaceDirectory,
   type RemoteWorkspaceTarget,
 } from "./remote-workspace-transport.js";
 import { classifyNativeWorkspaceFailure } from "./native-runtime/native-workspace-failure.js";
+import { createRunPreparationTiming, drainRunPreparationPhases, measureRunPhase } from "./execution-preparation-timing.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { readWorkspaceInventory, readonlyWorkspaceInventoryScript } from "./remote-workspace-readonly-inventory.js";
 
@@ -57,6 +59,73 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     if (state === "missing" || state === "present") await expect(probe).resolves.toBe(state === "present");
     else await expect(probe).rejects.toThrow("remote_workspace_operation_failed");
     if (state !== "missing") expect(await fs.readFile(path.join(directory, "user.txt"), "utf8")).toBe("preserved user edit\n");
+  });
+
+  it.each(["missing", "present", "foreign", "directory_symlink"])(
+    "removes a retired recovery attachment only with its exact provenance: %s", async state => {
+    const operationId = randomUUID(), parent = path.join(workspace, ".paperclip-recovered");
+    const directory = path.join(parent, operationId), provenance = JSON.stringify({ operationId, sourceRunId: randomUUID() });
+    const sibling = path.join(parent, randomUUID());
+    if (state !== "missing") {
+      // A read-only directory, as a restored dependency cache can be, must still go.
+      await fs.mkdir(path.join(directory, "files", "locked"), { recursive: true });
+      await fs.writeFile(path.join(directory, "files", "locked", "cache.bin"), "cached\n");
+      await fs.chmod(path.join(directory, "files", "locked"), 0o555);
+      await fs.writeFile(path.join(directory, "provenance.json"), state === "foreign" ? "foreign proof" : provenance);
+      await fs.mkdir(sibling);
+    }
+    let outside = "";
+    if (state === "directory_symlink") {
+      outside = path.join(scratch, "outside-attachment");
+      await fs.rename(directory, outside); await fs.symlink(outside, directory);
+    }
+    const removal = removeRemoteRecoveryAttachment({ target: target().remote, remoteCwd: workspace, operationId, provenance });
+    if (state === "missing" || state === "present") await expect(removal).resolves.toBe(state === "present");
+    else await expect(removal).rejects.toThrow("remote_workspace_operation_failed");
+    if (state === "present") {
+      expect(await fs.lstat(directory).catch(() => null)).toBeNull();
+      expect((await fs.lstat(sibling)).isDirectory()).toBe(true);
+    }
+    if (state === "foreign") expect(await fs.readFile(path.join(directory, "files", "locked", "cache.bin"), "utf8")).toBe("cached\n");
+    if (state === "directory_symlink") expect(await fs.readFile(path.join(outside, "files", "locked", "cache.bin"), "utf8")).toBe("cached\n");
+    for (const kept of [directory, outside].filter(Boolean)) await fs.chmod(path.join(kept, "files", "locked"), 0o755).catch(() => undefined);
+  });
+
+  it("finishes a removal that was interrupted after its proof was deleted", async () => {
+    const operationId = randomUUID(), parent = path.join(workspace, ".paperclip-recovered");
+    const provenance = JSON.stringify({ operationId, sourceRunId: randomUUID() });
+    // An earlier removal renamed the verified attachment, then stopped after
+    // deleting its proof and part of its files.
+    const retiring = path.join(parent, `.retiring-${operationId}`);
+    await fs.mkdir(path.join(retiring, "files", "locked"), { recursive: true });
+    await fs.writeFile(path.join(retiring, "files", "locked", "left.txt"), "left behind\n");
+    await fs.chmod(path.join(retiring, "files", "locked"), 0o555);
+    const probe = { target: target().remote, remoteCwd: workspace, operationId, provenance };
+    await expect(hasRemoteRecoveryAttachment(probe)).resolves.toBe(false);
+    await expect(removeRemoteRecoveryAttachment(probe)).resolves.toBe(true);
+    expect(await fs.readdir(workspace)).toEqual([]);
+    await expect(removeRemoteRecoveryAttachment(probe)).resolves.toBe(false);
+  });
+
+  it("finishes an interrupted removal before removing a present attachment", async () => {
+    const operationId = randomUUID(), parent = path.join(workspace, ".paperclip-recovered");
+    const provenance = JSON.stringify({ operationId, sourceRunId: randomUUID() });
+    await fs.mkdir(path.join(parent, `.retiring-${operationId}`, "files"), { recursive: true });
+    await fs.mkdir(path.join(parent, operationId), { recursive: true });
+    await fs.writeFile(path.join(parent, operationId, "provenance.json"), provenance);
+    await expect(removeRemoteRecoveryAttachment({ target: target().remote, remoteCwd: workspace, operationId, provenance }))
+      .resolves.toBe(true);
+    expect(await fs.readdir(workspace)).toEqual([]);
+  });
+
+  it("removes the empty recovery folder with its last attachment", async () => {
+    const operationId = randomUUID(), parent = path.join(workspace, ".paperclip-recovered");
+    const provenance = JSON.stringify({ operationId, sourceRunId: randomUUID() });
+    await fs.mkdir(path.join(parent, operationId), { recursive: true });
+    await fs.writeFile(path.join(parent, operationId, "provenance.json"), provenance);
+    await expect(removeRemoteRecoveryAttachment({ target: target().remote, remoteCwd: workspace, operationId, provenance }))
+      .resolves.toBe(true);
+    expect(await fs.readdir(workspace)).toEqual([]);
   });
 
   async function git(cwd: string, ...args: string[]) {
@@ -162,6 +231,49 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     expect(await fs.lstat(root).catch(() => null)).toBeNull();
   });
 
+  it("verifies a multi-chunk downloaded archive and restores every byte", async () => {
+    const content = randomBytes(3 * 1024 * 1024 + 137);
+    await fs.writeFile(path.join(workspace, "large.bin"), content);
+    const captured = await captureRemoteWorkspaceArchive({ target: target().remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const targetDir = path.join(scratch, "large-restored");
+      await restoreRemoteWorkspaceArchive({ archivePath: captured.archivePath, targetDir, expectedManifestDigest: captured.manifestDigest });
+      expect((await fs.readFile(path.join(targetDir, "large.bin"))).equals(content)).toBe(true);
+    } finally { await captured.cleanup(); }
+  });
+
+  it("times the restore's sandbox upload and extraction as separate run-log steps", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "saved synthetic files\n");
+    const { remote, execute } = target();
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const pause = () => new Promise(resolve => setTimeout(resolve, 60));
+      const syncIn = remote.runner!.syncIn!;
+      remote.runner!.syncIn = async (...args) => { await pause(); return syncIn(...args); };
+      const original = execute.getMockImplementation()!;
+      execute.mockImplementation(async input => {
+        if (input.args?.[0] === "-e" && input.args[1]?.includes("workspace-restored.json")) await pause();
+        return original(input);
+      });
+      // Production wraps the restore in sandbox_restore; with an OTLP endpoint
+      // that traced step owns the scope, and the run log must still get both.
+      vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9");
+      const runId = randomUUID();
+      await createRunPreparationTiming(runId)("workspace", () => measureRunPhase("workspace.snapshot.sandbox_restore",
+        () => restoreRemoteWorkspaceDirectory({ target: remote,
+          remoteCwd: path.join(scratch, "restored"), archivePath: captured.archivePath,
+          manifestDigest: captured.manifestDigest, restorationIdentity: "c".repeat(64) })));
+      vi.unstubAllEnvs();
+      expect(drainRunPreparationPhases(runId).map(phase => [phase.name, phase.outcome])).toEqual([
+        ["workspace.snapshot.sandbox_upload", "ok"],
+        ["workspace.snapshot.sandbox_extract", "ok"],
+        ["workspace.snapshot.sandbox_restore", "ok"],
+        ["heartbeat.prepare.workspace", "ok"],
+      ]);
+      expect(await fs.readFile(path.join(scratch, "restored", "saved.txt"), "utf8")).toBe("saved synthetic files\n");
+    } finally { await captured.cleanup(); }
+  });
+
   it("adopts an atomic restored folder after a lost reply without overwriting later edits", async () => {
     await fs.writeFile(path.join(workspace, "saved.txt"), "saved synthetic files\n");
     const { remote, execute } = target();
@@ -236,6 +348,314 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       await fs.writeFile(path.join(root, "saved.txt"), "later user edits");
       await restoreRemoteWorkspaceDirectory(input);
       expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("later user edits");
+    } finally { await captured.cleanup(); }
+  });
+
+  it.each(["once", "interrupted", "published_interrupted"] as const)("replaces a retired root that the sandbox's overlay cannot rename (%s)", async scenario => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "newer saved work\n");
+    const lower = path.join(scratch, "lower-layer.json"), preload = path.join(scratch, "overlay-lower-layer.cjs");
+    const postPublish = path.join(scratch, "interrupt-published");
+    if (scenario === "published_interrupted") await fs.writeFile(postPublish, "once");
+    await fs.writeFile(preload, `const fs=require('node:fs'),lower=new Set(JSON.parse(fs.readFileSync(${JSON.stringify(lower)},'utf8')));
+const rename=fs.promises.rename;fs.promises.rename=async(from,to)=>{const s=await fs.promises.lstat(from).catch(()=>null);
+if(s?.isDirectory()&&lower.has(String(s.ino)))throw Object.assign(new Error('EXDEV: cross-device link not permitted, rename'),{code:'EXDEV',errno:-18,syscall:'rename'});
+const result=await rename.call(fs.promises,from,to);
+if(String(to)===${JSON.stringify(path.join(scratch, "retired", ".paperclip-runtime", "workspace-restored.json"))}&&fs.existsSync(${JSON.stringify(postPublish)})){
+fs.unlinkSync(${JSON.stringify(postPublish)});throw Error('published_interrupted');}return result};`);
+    const { remote, execute } = target();
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const root = path.join(scratch, "retired"), runtime = path.join(root, ".paperclip-runtime");
+      const session = path.join(runtime, "paperclip-runner", "sessions", "parent", "runner");
+      await fs.mkdir(session, { recursive: true });
+      await fs.writeFile(path.join(session, "runner-state.json"), "{\"lifecycle\":\"suspended\"}");
+      await fs.writeFile(path.join(runtime, "workspace-ready.json"), JSON.stringify({ preparationIdentity: "f".repeat(64) }));
+      await fs.mkdir(path.join(runtime, "workspace-snapshots", "old-export"), { recursive: true });
+      await fs.writeFile(path.join(root, "stale.md"), "old\n");
+      await fs.mkdir(path.join(root, "locked", "inner"), { recursive: true });
+      await fs.writeFile(path.join(root, "locked", "inner", "file.txt"), "old\n");
+      await fs.chmod(path.join(root, "locked", "inner"), 0o555); await fs.chmod(path.join(root, "locked"), 0o555);
+      const directories: string[] = [];
+      const walk = async (directory: string): Promise<void> => {
+        directories.push(String((await fs.lstat(directory)).ino));
+        for (const entry of await fs.readdir(directory, { withFileTypes: true })) if (entry.isDirectory()) await walk(path.join(directory, entry.name));
+      };
+      await walk(root);
+      await fs.writeFile(lower, JSON.stringify(directories));
+      const input = { target: remote, remoteCwd: root, archivePath: captured.archivePath, manifestDigest: captured.manifestDigest,
+        restorationIdentity: "9".repeat(64), restorationEpoch: 1, replaceRetiredRoot: true };
+      const run = execute.getMockImplementation()!; let interrupt = scenario === "interrupted";
+      execute.mockImplementation(async command => {
+        if (!command.args?.[1]?.includes("remote_workspace_restore_failed")) return run(command);
+        const args = interrupt ? command.args.map((arg, index) => index === 1
+          ? arg.replace("await fs.rename(path.join(staged,'.paperclip-runtime','workspace-restored.json')", "throw Error('interrupted');await fs.rename(path.join(staged,'.paperclip-runtime','workspace-restored.json')") : arg) : command.args;
+        interrupt = false;
+        return run({ ...command, args: ["--require", preload, ...args] });
+      });
+      if (scenario === "interrupted") {
+        await expect(restoreRemoteWorkspaceDirectory(input)).rejects.toThrow(/stage=replace_in_place reason=interrupted$/);
+        expect(JSON.parse(await fs.readFile(path.join(runtime, "workspace-ready.json"), "utf8"))).toEqual({ preparationIdentity: "f".repeat(64) });
+        expect(await fs.lstat(path.join(runtime, "workspace-restored.json")).catch(() => null)).toBeNull();
+      }
+      if (scenario === "published_interrupted") {
+        await expect(restoreRemoteWorkspaceDirectory(input)).rejects.toThrow(/reason=published_interrupted$/);
+        const pending = JSON.parse(await fs.readFile(path.join(runtime, "workspace-restored.json"), "utf8"));
+        expect(pending.identity).toBeUndefined(); expect(pending.pendingIdentity).toBe(input.restorationIdentity);
+        await fs.writeFile(path.join(root, "later.txt"), "preserved after publication");
+      }
+      await restoreRemoteWorkspaceDirectory(input);
+      if (scenario === "published_interrupted") expect(await fs.readFile(path.join(root, "later.txt"), "utf8")).toBe("preserved after publication");
+      expect((await fs.stat(root)).mode & 0o777).toBe(0o700);
+      expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("newer saved work\n");
+      expect(await fs.lstat(path.join(root, "stale.md")).catch(() => null)).toBeNull();
+      expect(await fs.lstat(path.join(root, "locked")).catch(() => null)).toBeNull();
+      expect(await fs.readFile(path.join(session, "runner-state.json"), "utf8")).toBe("{\"lifecycle\":\"suspended\"}");
+      expect(await fs.readdir(runtime)).toEqual(expect.arrayContaining(["paperclip-runner", "workspace-restored.json"]));
+      expect(await fs.lstat(path.join(runtime, "workspace-ready.json")).catch(() => null)).toBeNull();
+      expect(await fs.lstat(path.join(runtime, "workspace-snapshots")).catch(() => null)).toBeNull();
+      await fs.chmod(root, 0o750);
+      await restoreRemoteWorkspaceDirectory(input);
+      expect((await fs.stat(root)).mode & 0o777).toBe(0o750);
+      expect((await fs.readdir(scratch)).filter(name => name.startsWith("retired"))).toEqual(["retired"]);
+    } finally {
+      await captured.cleanup();
+      await exec("chmod", ["-R", "u+w", scratch]).catch(() => undefined);
+    }
+  });
+
+  it.each(["same", "different"] as const)("reconciles interrupted in-place cleanup for a %s authorized identity", async identityMode => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "verified saved work");
+    const { remote, execute } = target(), captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const root = path.join(scratch, "pending-root"), runtime = path.join(root, ".paperclip-runtime");
+      const flag = path.join(scratch, "cleanup-interrupt"), preload = path.join(scratch, "cleanup-interrupt.cjs");
+      await fs.mkdir(runtime, { recursive: true });
+      await fs.writeFile(path.join(runtime, "workspace-ready.json"), JSON.stringify({ preparationIdentity: "f".repeat(64) }));
+      await fs.writeFile(path.join(root, "stale.txt"), "old retired work"); await fs.writeFile(flag, "once");
+      await fs.writeFile(preload, `const fs=require('node:fs'),rename=fs.promises.rename,rm=fs.promises.rm;
+fs.promises.rename=async(from,to)=>{if(String(from)===${JSON.stringify(root)})throw Object.assign(Error('EXDEV'),{code:'EXDEV'});return rename.call(fs.promises,from,to)};
+fs.promises.rm=async(file,options)=>{const result=await rm.call(fs.promises,file,options);
+if(String(file)===${JSON.stringify(path.join(runtime, "workspace-ready.json"))}&&fs.existsSync(${JSON.stringify(flag)})){
+fs.unlinkSync(${JSON.stringify(flag)});throw Error('cleanup_interrupted');}return result};`);
+      const actual = execute.getMockImplementation()!;
+      execute.mockImplementation(command => actual(command.args?.[1]?.includes("remote_workspace_restore_failed")
+        ? { ...command, args: ["--require", preload, ...command.args] } : command));
+      const input = { target: remote, remoteCwd: root, archivePath: captured.archivePath, manifestDigest: captured.manifestDigest,
+        restorationIdentity: "5".repeat(64), restorationEpoch: 1, replaceRetiredRoot: true };
+      await expect(restoreRemoteWorkspaceDirectory(input)).rejects.toThrow(/reason=cleanup_interrupted$/);
+      await expect(fs.access(path.join(runtime, "workspace-ready.json"))).rejects.toMatchObject({ code: "ENOENT" });
+      const interrupted = JSON.parse(await fs.readFile(path.join(runtime, "workspace-restored.json"), "utf8"));
+      expect(interrupted.identity).toBeUndefined();
+      expect(interrupted).toMatchObject({ schema: "paperclip.workspace-restore-pending.v1", root,
+        pendingIdentity: input.restorationIdentity, manifestDigest: captured.manifestDigest, inPlaceMode: 0o700 });
+      if (identityMode === "same") {
+        await fs.writeFile(path.join(runtime, "workspace-restored.json"), JSON.stringify({ ...interrupted, root: root + "-foreign" }));
+        await expect(restoreRemoteWorkspaceDirectory(input)).rejects.toThrow(/reason=unsafe_restore_fence$/);
+        expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("verified saved work");
+        await fs.writeFile(path.join(runtime, "workspace-restored.json"), JSON.stringify(interrupted));
+      }
+      const next = identityMode === "same" ? input : { ...input, restorationIdentity: "4".repeat(64), restorationEpoch: 2 };
+      if (identityMode === "different") {
+        await expect(restoreRemoteWorkspaceDirectory({ ...next, replaceRetiredRoot: false })).rejects.toThrow(/reason=workspace_owner_changed$/);
+        expect(JSON.parse(await fs.readFile(path.join(runtime, "workspace-restored.json"), "utf8"))).toEqual(interrupted);
+      }
+      await restoreRemoteWorkspaceDirectory(next);
+      expect(JSON.parse(await fs.readFile(path.join(runtime, "workspace-restored.json"), "utf8")))
+        .toEqual({ schema: "paperclip.workspace-restored.v1", root, restorationEpoch: next.restorationEpoch, identity: next.restorationIdentity, manifestDigest: captured.manifestDigest });
+      expect((await fs.stat(root)).mode & 0o777).toBe(0o700);
+      expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("verified saved work");
+      await fs.writeFile(path.join(root, "saved.txt"), "new governed work"); await restoreRemoteWorkspaceDirectory(next);
+      expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("new governed work");
+    } finally { await captured.cleanup(); }
+  });
+
+  it.each(["reply_lost", "new_identity", "process_died"] as const)("keeps an overlapping retired restore exclusive after %s", async scenario => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "canonical saved work");
+    const { remote, execute } = target();
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    const root = path.join(scratch, "overlap"), entered = path.join(scratch, "entered"), released = path.join(scratch, "released");
+    const contended = path.join(scratch, "contended"), preload = path.join(scratch, "overlap.cjs");
+    await fs.mkdir(path.join(root, ".paperclip-runtime"), { recursive: true });
+    await fs.writeFile(path.join(root, ".paperclip-runtime", "workspace-ready.json"), JSON.stringify({ preparationIdentity: "f".repeat(64) }));
+    await fs.writeFile(path.join(root, "stale.txt"), "retired work");
+    await fs.writeFile(preload, `const fs=require('node:fs');
+const rename=fs.promises.rename,rm=fs.promises.rm;
+fs.promises.rename=async(from,to)=>{if(String(from)===${JSON.stringify(root)})throw Object.assign(Error('EXDEV'),{code:'EXDEV'});return rename.call(fs.promises,from,to)};
+fs.promises.rm=async(file,options)=>{if(String(file)===${JSON.stringify(path.join(root, "stale.txt"))}&&!fs.existsSync(${JSON.stringify(entered)})){
+fs.writeFileSync(${JSON.stringify(entered)},String(process.pid));while(!fs.existsSync(${JSON.stringify(released)}))await new Promise(r=>setTimeout(r,10));}return rm.call(fs.promises,file,options)};
+const {DatabaseSync}=require('node:sqlite'),exec=DatabaseSync.prototype.exec;
+DatabaseSync.prototype.exec=function(sql){try{return exec.call(this,sql)}catch(e){if((e.errcode&255)===5)fs.writeFileSync(${JSON.stringify(contended)},'busy');throw e}};`);
+    const input = { target: remote, remoteCwd: root, archivePath: captured.archivePath, manifestDigest: captured.manifestDigest,
+      restorationIdentity: "8".repeat(64), restorationEpoch: 1, replaceRetiredRoot: true };
+    const actual = execute.getMockImplementation()!;
+    let first = true, firstResult: ReturnType<typeof actual> | undefined, firstPid: number | undefined;
+    let ownerReleased = false, publishedWhileActive = false, observing = true;
+    execute.mockImplementation(async command => {
+      if (!command.args?.[1]?.includes("remote_workspace_restore_failed")) return actual(command);
+      const operation = actual({ ...command, args: ["--require", preload, ...command.args] });
+      if (!first) return operation;
+      first = false; firstResult = operation; void operation.catch(() => undefined);
+      await vi.waitFor(async () => { firstPid = Number(await fs.readFile(entered, "utf8")); expect(firstPid).toBeGreaterThan(0); }, { timeout: 5000 });
+      return { stdout: "", stderr: "", exitCode: 1, timedOut: true, commandExitConfirmed: false, signal: null,
+        pid: firstPid!, startedAt: new Date().toISOString() };
+    });
+    let retry: Promise<unknown> | undefined;
+    try {
+      await expect(restoreRemoteWorkspaceDirectory(input)).rejects.toThrow("remote_workspace_operation_timed_out: restore");
+      if (scenario === "reply_lost") {
+        const unrelated = path.join(scratch, "unrelated-root");
+        await restoreRemoteWorkspaceDirectory({ ...input, remoteCwd: unrelated, restorationIdentity: "2".repeat(64), replaceRetiredRoot: false });
+        expect(await fs.readFile(path.join(unrelated, "saved.txt"), "utf8")).toBe("canonical saved work");
+      }
+      const retryInput = scenario === "new_identity" ? { ...input, restorationIdentity: "7".repeat(64), restorationEpoch: 2 } : input;
+      retry = restoreRemoteWorkspaceDirectory(retryInput).then(async result => {
+        publishedWhileActive = !ownerReleased;
+        await fs.writeFile(path.join(root, "saved.txt"), "new provider work after admitted retry");
+        return result;
+      });
+      void retry.catch(() => undefined);
+      const contention = (async () => {
+        for (let attempt = 0; attempt < 500 && observing; attempt++) {
+          if (await fs.stat(contended).catch(() => null)) return;
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        if (observing) throw Error("no restore outcome or contention observed");
+      })();
+      try { await Promise.race([retry, contention]); }
+      finally { observing = false; await contention; }
+      ownerReleased = true;
+      if (scenario === "process_died") process.kill(firstPid!, "SIGKILL");
+      else await fs.writeFile(released, "release");
+      await firstResult; await retry;
+      expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("new provider work after admitted retry");
+      expect(publishedWhileActive).toBe(false);
+      const lockPath = path.join(scratch, ".paperclip-runtime", "workspace-restore-locks", createHash("sha256").update(root).digest("hex") + ".sqlite");
+      const inode = (await fs.stat(lockPath)).ino;
+      await restoreRemoteWorkspaceDirectory(retryInput);
+      expect((await fs.stat(lockPath)).ino).toBe(inode);
+      expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("new provider work after admitted retry");
+    } finally {
+      observing = false; await fs.writeFile(released, "release");
+      await firstResult?.catch(() => undefined); await retry?.catch(() => undefined); await captured.cleanup();
+    }
+  });
+
+  it.each(["completed", "killed"] as const)("fences a delayed old command after the newer epoch is %s", async outcome => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "canonical snapshot bytes");
+    const { remote, execute } = target(), captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    const root = path.join(scratch, "epoch-root"), runtime = path.join(root, ".paperclip-runtime");
+    const preload = path.join(scratch, "epoch-overlay.cjs"), kill = path.join(scratch, "kill-newer-once");
+    await fs.mkdir(runtime, { recursive: true }); await fs.writeFile(path.join(root, "stale.txt"), "retired bytes");
+    await fs.writeFile(path.join(runtime, "workspace-ready.json"), JSON.stringify({ preparationIdentity: "f".repeat(64) }));
+    if (outcome === "killed") await fs.writeFile(kill, "once");
+    await fs.writeFile(preload, `const fs=require('node:fs'),rename=fs.promises.rename,chmod=fs.promises.chmod;
+fs.promises.rename=async(from,to)=>{if(String(from)===${JSON.stringify(root)})throw Object.assign(Error('EXDEV'),{code:'EXDEV'});return rename.call(fs.promises,from,to)};
+fs.promises.chmod=async(file,mode)=>{if(String(file)===${JSON.stringify(root)}&&fs.existsSync(${JSON.stringify(kill)})){
+fs.unlinkSync(${JSON.stringify(kill)});process.kill(process.pid,'SIGKILL');}return chmod.call(fs.promises,file,mode)};`);
+    const actual = execute.getMockImplementation()!;
+    let release!: () => void, delayed: ReturnType<typeof actual> | undefined, queued = false;
+    execute.mockImplementation(command => {
+      if (!command.args?.[1]?.includes("remote_workspace_restore_failed")) return actual(command);
+      const request = { ...command, args: ["--require", preload, ...command.args] };
+      if (queued) return actual(request);
+      queued = true;
+      delayed = new Promise<void>(resolve => { release = resolve; }).then(() => actual(request));
+      return Promise.resolve({ stdout: "", stderr: "", exitCode: 1, timedOut: true, commandExitConfirmed: false,
+        signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+    });
+    const old = { target: remote, remoteCwd: root, archivePath: captured.archivePath, manifestDigest: captured.manifestDigest,
+      restorationIdentity: "e".repeat(64), restorationEpoch: 1, replaceRetiredRoot: true };
+    const current = { ...old, restorationIdentity: "a".repeat(64), restorationEpoch: 2 };
+    try {
+      await expect(restoreRemoteWorkspaceDirectory(old)).rejects.toThrow("remote_workspace_operation_timed_out: restore");
+      if (outcome === "killed") await expect(restoreRemoteWorkspaceDirectory(current)).rejects.toThrow("signal=SIGKILL");
+      else { await restoreRemoteWorkspaceDirectory(current); await fs.writeFile(path.join(root, "saved.txt"), "new provider edits"); }
+      release(); const late = await delayed!;
+      expect(late.exitCode).not.toBe(0);
+      const fence = path.join(scratch, ".paperclip-runtime", "workspace-restore-locks", createHash("sha256").update(root).digest("hex") + ".fence.json");
+      expect(JSON.parse(await fs.readFile(fence, "utf8"))).toMatchObject({ root, epoch: 2, identity: current.restorationIdentity });
+      if (outcome === "killed") {
+        expect(await fs.readFile(path.join(root, "stale.txt"), "utf8")).toBe("retired bytes");
+        await restoreRemoteWorkspaceDirectory(current); await fs.writeFile(path.join(root, "saved.txt"), "new provider edits");
+      }
+      expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("new provider edits");
+      if (outcome === "completed") {
+        await fs.unlink(fence);
+        const receiptPath = path.join(runtime, "workspace-restored.json"), receipt = JSON.parse(await fs.readFile(receiptPath, "utf8"));
+        await fs.writeFile(receiptPath, JSON.stringify({ ...receipt, restorationEpoch: undefined }));
+        await expect(restoreRemoteWorkspaceDirectory({ ...current, restorationEpoch: undefined, replaceRetiredRoot: false }))
+          .rejects.toThrow(/reason=unsafe_restore_fence$/);
+        await fs.writeFile(receiptPath, JSON.stringify(receipt));
+      }
+      await expect(restoreRemoteWorkspaceDirectory({ ...current, restorationIdentity: "f".repeat(64) })).rejects.toThrow(/reason=workspace_owner_changed$/);
+      await expect(restoreRemoteWorkspaceDirectory({ ...current, restorationEpoch: undefined, replaceRetiredRoot: false })).rejects.toThrow(/reason=restore_fence_required$/);
+      await restoreRemoteWorkspaceDirectory(current);
+      expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("new provider edits");
+    } finally { release?.(); await delayed?.catch(() => undefined); await captured.cleanup(); }
+  });
+
+  it.each(["fence", "receipt"] as const)("refuses malformed restore %s JSON with a closed diagnosis", async record => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained saved work");
+    const { remote } = target(), captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const root = path.join(scratch, "corrupt-record-root");
+      const input = { target: remote, remoteCwd: root, archivePath: captured.archivePath, manifestDigest: captured.manifestDigest,
+        restorationIdentity: "4".repeat(64), restorationEpoch: 1 };
+      await restoreRemoteWorkspaceDirectory(input);
+      const file = record === "receipt" ? path.join(root, ".paperclip-runtime", "workspace-restored.json")
+        : path.join(scratch, ".paperclip-runtime", "workspace-restore-locks", createHash("sha256").update(root).digest("hex") + ".fence.json");
+      await fs.writeFile(file, "{");
+      await expect(restoreRemoteWorkspaceDirectory(input)).rejects.toThrow(/reason=unsafe_restore_fence$/);
+      expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("retained saved work");
+      expect(await fs.readFile(file, "utf8")).toBe("{");
+    } finally { await captured.cleanup(); }
+  });
+
+  it("does not poison the authority fence after malformed restore input", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "valid saved work");
+    const { remote } = target(), captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const root = path.join(scratch, "invalid-input-root"); await fs.mkdir(path.join(root, ".paperclip-runtime"), { recursive: true });
+      await fs.writeFile(path.join(root, ".paperclip-runtime", "workspace-ready.json"), JSON.stringify({ preparationIdentity: "f".repeat(64) }));
+      await fs.writeFile(path.join(root, "sentinel.txt"), "untouched before valid restore");
+      const input = { target: remote, remoteCwd: root, archivePath: captured.archivePath, manifestDigest: captured.manifestDigest,
+        restorationIdentity: "3".repeat(64), restorationEpoch: 1, replaceRetiredRoot: true };
+      await expect(restoreRemoteWorkspaceDirectory({ ...input, manifestDigest: "invalid" })).rejects.toThrow();
+      expect(await fs.readFile(path.join(root, "sentinel.txt"), "utf8")).toBe("untouched before valid restore");
+      await expect(restoreRemoteWorkspaceDirectory(input)).resolves.toBeDefined();
+      expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("valid saved work");
+    } finally { await captured.cleanup(); }
+  });
+
+  it.each(["directory_symlink", "directory_shared", "parent_shared", "database_symlink", "database_hardlink", "database_oversized"] as const)(
+    "rejects an unsafe restore lock without changing workspace files: %s", async scenario => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "canonical safe work");
+    const { remote } = target(), captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const root = path.join(scratch, "unsafe-lock"), directory = path.join(scratch, ".paperclip-runtime", "workspace-restore-locks");
+      await fs.mkdir(path.join(root, ".paperclip-runtime"), { recursive: true });
+      await fs.writeFile(path.join(root, ".paperclip-runtime", "workspace-ready.json"), JSON.stringify({ preparationIdentity: "f".repeat(64) }));
+      await fs.writeFile(path.join(root, "sentinel.txt"), "must remain");
+      const outside = path.join(scratch, "outside-lock");
+      await fs.mkdir(path.dirname(directory), { recursive: true, mode: 0o700 });
+      if (scenario === "directory_symlink") { await fs.mkdir(outside); await fs.symlink(outside, directory); }
+      else if (scenario === "parent_shared") await fs.chmod(path.dirname(directory), 0o777);
+      else {
+        await fs.mkdir(directory, { mode: scenario === "directory_shared" ? 0o755 : 0o700 });
+        if (scenario !== "directory_shared") {
+          await fs.writeFile(outside, "unrelated bytes");
+          const database = path.join(directory, createHash("sha256").update(root).digest("hex") + ".sqlite");
+          if (scenario === "database_symlink") await fs.symlink(outside, database);
+          else if (scenario === "database_hardlink") await fs.link(outside, database);
+          else await fs.writeFile(database, Buffer.alloc(65537));
+        }
+      }
+      await expect(restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: root, archivePath: captured.archivePath,
+        manifestDigest: captured.manifestDigest, restorationIdentity: "6".repeat(64), restorationEpoch: 1, replaceRetiredRoot: true }))
+        .rejects.toThrow(scenario === "directory_symlink" ? /reason=unsafe_root$/ : /reason=unsafe_restore_lock$/);
+      expect(await fs.readFile(path.join(root, "sentinel.txt"), "utf8")).toBe("must remain");
+      await expect(fs.access(path.join(root, "saved.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+      if (scenario === "database_symlink" || scenario === "database_hardlink") expect(await fs.readFile(outside, "utf8")).toBe("unrelated bytes");
     } finally { await captured.cleanup(); }
   });
 
@@ -437,20 +857,49 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     expect(await fs.readdir(outside)).toEqual(["workspace.pcws"]);
   });
 
-  it.each(["split", "one-shot"] as const)("retains a closed capture validation failure with %s output", async outputMode => {
-    const privateName = "SYNTHETIC_PRIVATE_FILENAME", outside = path.join(scratch, privateName);
-    await fs.writeFile(outside, "outside source bytes\n");
+  it.skipIf(process.platform === "win32").each(["split", "one-shot"] as const)("retains a closed capture validation failure with %s output", async outputMode => {
+    const privateName = "SYNTHETIC_PRIVATE_FILENAME";
     await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
-    await fs.symlink(`../${privateName}`, path.join(workspace, "link"));
+    await exec("mkfifo", [path.join(workspace, privateName)]);
     const { remote, execute } = target({}, outputMode), operationId = randomUUID();
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId }))
-      .rejects.toThrow(/^remote_workspace_archive_unsafe_symlink$/);
+      .rejects.toThrow(/^remote_workspace_archive_unsupported_entry$/);
     expect(execute).toHaveBeenCalledTimes(2);
-    expect(await fs.readFile(outside, "utf8")).toBe("outside source bytes\n");
     expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained source bytes\n");
-    expect(await fs.readlink(path.join(workspace, "link"))).toBe(`../${privateName}`);
+    expect((await fs.lstat(path.join(workspace, privateName))).isFIFO()).toBe(true);
     const directory = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId);
     expect(await fs.readdir(directory)).toEqual(["archive.cjs"]);
+  });
+
+  /**
+   * The staging shape through the sandbox command path: a `node_modules/.bin` link
+   * inside the workspace, a Chromium profile link by absolute path into /tmp,
+   * and a `..` link out of the workspace. The save completes; only the
+   * confined link is restored.
+   */
+  it.each(["split", "one-shot"] as const)("saves a workspace with outside links through the sandbox helper with %s output", async outputMode => {
+    const outside = path.join(scratch, "sandbox-tmp"); await fs.mkdir(outside);
+    await fs.writeFile(path.join(outside, "SingletonSocket"), "SYNTHETIC_SANDBOX_ONLY\n");
+    await fs.writeFile(path.join(workspace, "saved.txt"), "review evidence\n");
+    await fs.mkdir(path.join(workspace, "node_modules", "tool"), { recursive: true });
+    await fs.mkdir(path.join(workspace, "node_modules", ".bin"));
+    await fs.writeFile(path.join(workspace, "node_modules", "tool", "cli.js"), "cli\n");
+    await fs.symlink("../tool/cli.js", path.join(workspace, "node_modules", ".bin", "tool"));
+    await fs.mkdir(path.join(workspace, ".review-chrome"));
+    await fs.symlink(path.join(outside, "SingletonSocket"), path.join(workspace, ".review-chrome", "SingletonSocket"));
+    await fs.symlink("../sandbox-tmp/SingletonSocket", path.join(workspace, "escape"));
+    const { remote } = target({}, outputMode);
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const restoredRoot = path.join(scratch, "restored");
+      await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: restoredRoot, archivePath: captured.archivePath,
+        manifestDigest: captured.manifestDigest, restorationIdentity: "d".repeat(64) });
+      expect(await fs.readFile(path.join(restoredRoot, "saved.txt"), "utf8")).toBe("review evidence\n");
+      expect(await fs.readlink(path.join(restoredRoot, "node_modules", ".bin", "tool"))).toBe("../tool/cli.js");
+      expect(await fs.readdir(path.join(restoredRoot, ".review-chrome"))).toEqual([]);
+      await expect(fs.lstat(path.join(restoredRoot, "escape"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await fs.readFile(captured.archivePath)).includes(Buffer.from("SYNTHETIC_SANDBOX_ONLY"))).toBe(false);
+    } finally { await captured.cleanup(); }
   });
 
   it.each(["split", "one-shot"] as const)("retains a closed filesystem failure for a missing canonical archive with %s output", async outputMode => {

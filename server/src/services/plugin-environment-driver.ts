@@ -56,18 +56,24 @@ export async function pluginForAgentEnvironment(db: Db, environment: AgentEnviro
   return plugin && pluginServesAgentEnvironment(plugin, environment) ? plugin : null;
 }
 
-/** Throws when a saved environment would give active agents a plugin that has not prepared them. */
-export async function assertAgentsReadyForEnvironmentChange(db: Db, before: AgentEnvironmentRef | null | undefined,
+/** Whether a saved environment change would give active agents a plugin that has not prepared them. */
+export async function agentsNeedSetupForEnvironmentChange(db: Db, before: AgentEnvironmentRef | null | undefined,
   after: AgentEnvironmentRef | null | undefined, users: { environmentId?: string; inheritsDefault: boolean }) {
   const plugin = after ? await pluginForAgentEnvironment(db, after) : null;
-  if (!plugin || (before && (await pluginForAgentEnvironment(db, before))?.id === plugin.id)) return;
+  if (!plugin || (before && (await pluginForAgentEnvironment(db, before))?.id === plugin.id)) return false;
   const usesEnvironment = or(users.environmentId ? eq(agents.defaultEnvironmentId, users.environmentId) : undefined,
     users.inheritsDefault ? isNull(agents.defaultEnvironmentId) : undefined);
-  if (!usesEnvironment) return;
+  if (!usesEnvironment) return false;
   const [waiting] = await db.select({ id: agents.id }).from(agents).where(and(usesEnvironment,
     inArray(agents.lifecycleState, ["ready", "verifying"]),
     sql`not coalesce(${agents.lifecycleRequiredPluginIds}, '[]'::jsonb) @> ${JSON.stringify([plugin.id])}::jsonb`)).limit(1);
-  if (waiting) {
+  return Boolean(waiting);
+}
+
+/** Throws when a saved environment would give active agents a plugin that has not prepared them. */
+export async function assertAgentsReadyForEnvironmentChange(db: Db, before: AgentEnvironmentRef | null | undefined,
+  after: AgentEnvironmentRef | null | undefined, users: { environmentId?: string; inheritsDefault: boolean }) {
+  if (await agentsNeedSetupForEnvironmentChange(db, before, after, users)) {
     throw conflict("Agents that use this environment need setup first. Pause those agents, save this change, and then resume them.",
       { code: "environment_requires_agent_setup" });
   }
@@ -127,6 +133,19 @@ export interface ReadyPluginWorkerRecovery {
   timeoutMs?: number;
 }
 
+/** Shared admission/presentation check for allocation, recovery, cleanup and PTY transport. */
+export function pluginSupportsLoginPty(
+  driver: Pick<PluginEnvironmentDriverDeclaration, "supportsLoginPty" | "creationOperationVersion">,
+  methods: readonly string[],
+  requireCredentialRead = false,
+): boolean {
+  return driver.supportsLoginPty === true && driver.creationOperationVersion === 1 && [
+    "environmentAcquireLease", "environmentInspectLease", "environmentReleaseLease",
+    "loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose",
+    ...(requireCredentialRead ? ["loginPtyReadCredential"] : []),
+  ].every(method => methods.includes(method));
+}
+
 export interface ReadyPluginEnvironmentDriver {
   pluginId: string;
   pluginKey: string;
@@ -144,6 +163,7 @@ export interface ReadyPluginEnvironmentDriver {
    * matches the acquisition guard, which also verifies the same methods live.
    */
   reusableLeaseMethodsVerified: boolean;
+  supportsCodexLogin?: boolean;
   supportsInteractiveSetup?: PluginEnvironmentDriverDeclaration["supportsInteractiveSetup"];
   interactiveSetupConnectionTypes?: PluginEnvironmentDriverDeclaration["interactiveSetupConnectionTypes"];
   supportsTemplateCapture?: PluginEnvironmentDriverDeclaration["supportsTemplateCapture"];
@@ -317,6 +337,7 @@ export async function resolvePluginSandboxProviderDriverById(input: {
 }
 
 export async function listReadyPluginEnvironmentDrivers(input: {
+  kind?: "sandbox_provider" | "environment_driver";
   db: Db;
   workerManager?: PluginWorkerManager;
   recoverMissingWorker?: ReadyPluginWorkerRecovery;
@@ -368,7 +389,7 @@ export async function listReadyPluginEnvironmentDrivers(input: {
     );
     rows.push(
       ...(plugin.manifestJson.environmentDrivers ?? [])
-        .filter((driver) => driver.kind === "sandbox_provider")
+        .filter((driver) => driver.kind === (input.kind ?? "sandbox_provider"))
         .map((driver) => ({
           pluginId: plugin.id,
           pluginKey: plugin.pluginKey,
@@ -385,7 +406,8 @@ export async function listReadyPluginEnvironmentDrivers(input: {
           templateRefKind: driver.templateRefKind,
           templateConfigBinding: driver.templateConfigBinding,
           supportsTemplateDelete: driver.supportsTemplateDelete,
-          supportsLoginPty: driver.supportsLoginPty,
+          supportsLoginPty: driver.kind === "environment_driver" ? pluginSupportsLoginPty(driver, [...workerMethods]) : driver.supportsLoginPty,
+          supportsCodexLogin: pluginSupportsLoginPty(driver, [...workerMethods], true),
         })),
     );
   }

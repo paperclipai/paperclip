@@ -306,7 +306,13 @@ function CompactTarget({
   if (!target || !label) return null;
   const href = target.type === "issue_attachment"
     ? `/api/attachments/${encodeURIComponent(target.attachmentId)}/content`
-    : target.href ? normalizeRequestConfirmationTargetHref(target.href) : null;
+    : target.href ? normalizeRequestConfirmationTargetHref(target.href)
+      // A document on this chat opens in its document panel, like a reply's
+      // `#document-<key>` link, so the person can read what they are asked to review.
+      // Plan reviews keep their header chip; their plan preview opens the plan.
+      : target.type === "issue_document" && target.key !== "plan" && (target.issueId ?? interaction.issueId) === interaction.issueId
+        ? `#document-${encodeURIComponent(target.key)}`
+        : null;
   if (href) {
     return (
       <a
@@ -560,12 +566,12 @@ function ReceiptDisclosure({
               <strong>{interaction.payload.toolAction.toolDisplayName}</strong>{" "}
               · {interaction.payload.toolAction.risk} risk
             </p>
-            <p className="mt-1">
+            {interaction.payload.toolAction.expiresAt ? <p className="mt-1">
               Expires{" "}
               {new Date(
                 interaction.payload.toolAction.expiresAt,
               ).toLocaleString()}
-            </p>
+            </p> : null}
             <div className="mt-2">
               <MarkdownBody externalReferences={externalReferences}>
                 {interaction.payload.toolAction.previewMarkdown}
@@ -921,12 +927,12 @@ function ConfirmationCard({
             >
               {interaction.payload.toolAction.risk} risk
             </span>
-            <span className="ml-auto text-xs text-muted-foreground">
+            {interaction.payload.toolAction.expiresAt ? <span className="ml-auto text-xs text-muted-foreground">
               Expires{" "}
               {new Date(
                 interaction.payload.toolAction.expiresAt,
               ).toLocaleString()}
-            </span>
+            </span> : null}
           </div>
           <MarkdownBody externalReferences={externalReferences}>
             {interaction.payload.toolAction.previewMarkdown}

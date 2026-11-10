@@ -72,7 +72,8 @@ import {
   waitForAdapterStop,
 } from "../adapter-execution-control.js";
 import { AdapterStopTimeoutError } from "../adapter-stop-timeout.js";
-import { budgetCancellationScopePredicate, pendingBudgetRunCancellationPredicate } from "./budget-cancellation.js";
+import { pendingBudgetRunCancellationPredicate, pendingBudgetRunIdsForScopeQuery } from "./budget-cancellation.js";
+import { notifyBudgetStopsSettled } from "../budget-resume-continuation.js";
 import { withBudgetSpan } from "../budget-tracing.js";
 import { captureException } from "../../sentry.js";
 import { randomUUID } from "node:crypto";
@@ -177,7 +178,12 @@ async function withBudgetStopDelivery<T>(db: Db, work: () => Promise<T>): Promis
   }
 }
 
+/** `preservePauseDeferred`: the stop comes from a pause, which keeps the
+ * messages it deferred for delivery once the pause lifts. */
+export type StopInvocationOptions = { preservePauseDeferred?: boolean };
+
 /** Cancellation shares executor ownership and delegates lifecycle and admission effects. */
+
 export interface HeartbeatRunControlDependencies extends Pick<ReturnType<typeof createHeartbeatRunState>,
   "getRun" | "getAgent" | "getRunCleanupState" | "getRunExecutionWait">,
   Pick<ReturnType<typeof createHeartbeatLifecycle>,
@@ -1699,6 +1705,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
   async function cancelPendingWakeupsForAgentsInternal(
     agentIds: string[],
     reason: string,
+    options: StopInvocationOptions = {},
   ) {
     const uniqueAgentIds = [...new Set(agentIds)].filter(
       (agentId) => agentId.length > 0,
@@ -1713,6 +1720,10 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           inArray(agentWakeupRequests.agentId, uniqueAgentIds),
           inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
           isNull(agentWakeupRequests.runId),
+          // A pause is temporary: a message it deferred waits for the pause to
+          // lift (work-intent outbox), so the pause's own stop keeps it.
+          options.preservePauseDeferred ? sql`not (${agentWakeupRequests.status} = 'deferred_issue_execution'
+            and coalesce(${agentWakeupRequests.payload}->'executionWait'->>'trigger', '') = 'pause_lifted')` : undefined,
         ));
       if (!wakeups.length) return 0;
       for (const companyId of new Set(wakeups.map(row => row.companyId))) {
@@ -1733,6 +1744,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
   async function cancelInvocationsForAgentsInternal(
     agentIds: string[],
     reason: string,
+    options: StopInvocationOptions = {},
   ) {
     const uniqueAgentIds = [...new Set(agentIds)].filter(
       (agentId) => agentId.length > 0,
@@ -1744,6 +1756,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     const wakeupsCancelled = await cancelPendingWakeupsForAgentsInternal(
       uniqueAgentIds,
       reason,
+      options,
     );
     return {
       agentIds: uniqueAgentIds,
@@ -1805,9 +1818,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     });
     // A later policy change revokes permission to fence new work, not the Stop
     // already committed for older work. Recovery must deliver those intents.
-    const pending = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-      pendingBudgetRunCancellationPredicate(), budgetCancellationScopePredicate(scope),
-    ));
+    const pending = await pendingBudgetRunIdsForScopeQuery(db, scope);
     const runIds = [...new Set([...(newlyFenced ?? []), ...pending.map(run => run.id)])];
     if (!runIds.length) return;
     const failures: unknown[] = [];
@@ -1830,6 +1841,9 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         }
       }
     }));
+    // A resumed budget owes these runs a continuation once their Stop lands.
+    await notifyBudgetStopsSettled(db, runIds).catch(error =>
+      logger.warn({ err: error, companyId: scope.companyId }, "Budget resume continuation notification deferred"));
     // Drain the batch before rejecting; one failed provider must not prevent
     // the remaining runs from receiving their already-committed Stop.
     if (failures.length) throw new AggregateError(failures, "Budget cancellation delivery remains pending");

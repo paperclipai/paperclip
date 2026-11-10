@@ -54,12 +54,16 @@ export async function recheckRunBudgetReservationInTransaction(
   }
   if (stopRecovery) return null;
   const { block, policies, observations } = await budgetServiceInTransaction(tx, publications)
-    .evaluateAdmission(run.companyId, run.agentId, { projectId: reservation.projectId });
+    .evaluateAdmission(run.companyId, run.agentId, { projectId: reservation.projectId, runId: run.id,
+      admittedRecovery: Boolean(recoveryLeaseOwner) });
   if (block) return block.reason;
   const [agent] = await tx.select({ status: agents.status, lifecycleState: agents.lifecycleState }).from(agents)
     .where(and(eq(agents.companyId, run.companyId), eq(agents.id, run.agentId)));
   if (!agent || agent.lifecycleState !== "ready" || ["paused", "terminated", "pending_approval"].includes(agent.status))
     return "Agent is paused or its lifecycle is not ready for new work";
+  // An owned recovery reuses the hold reserveRunBudget already admitted;
+  // other runs' holds filling the budget must not refuse it.
+  if (recoveryLeaseOwner) return null;
   for (const [index, policy] of policies.entries()) {
     const observed = observations[index];
     // This operation's hold is already included in exposure. Do not propose it
@@ -74,7 +78,15 @@ export async function recheckRunBudgetReservationInTransaction(
 
 /** Reserve before dispatch, under the same company lock as charges and policy
  * changes. Estimates constrain admission; they cannot cap a provider's bill.
- * A reservation survives timeouts and restarts until accounting proves closure. */
+ * A reservation survives timeouts and restarts until accounting proves closure.
+ *
+ * READ COMMITTED: every mutable read follows the shared admission fences, the
+ * agent share lock and the run-row lock, so it sees each commit that preceded
+ * those locks. Run-log appends and output progress update the run row while a
+ * run prepares; a repeatable-read snapshot taken before the run lock went stale
+ * on each such commit and could exhaust every retry. Exposure is one statement
+ * (hold-to-ledger atomic), and the per-run unique index plus the run lock
+ * fence a duplicate reservation. */
 export async function reserveRunBudget(db: Db, companyId: string, runId: string, projectId: string | null, ledgerScope: Record<string, unknown> = {}, recoveryLeaseOwner?: string) {
   const result = await withBudgetSpan("budget.admission.reserve", () => withOperationAccountingTransaction(db, companyId, async (tx, publications) => {
     await lockBudgetAdmissionControls(tx, companyId, projectId);
@@ -102,7 +114,7 @@ export async function reserveRunBudget(db: Db, companyId: string, runId: string,
         // Recovery has already made this run queued/running, so its own pending
         // accounting is excluded. Current overruns, other unfinished runs and
         // scope pauses still apply before any more paid work starts.
-        const block = await budgetServiceInTransaction(tx, publications).getInvocationBlock(companyId, run.agentId, { projectId });
+        const block = await budgetServiceInTransaction(tx, publications).getInvocationBlock(companyId, run.agentId, { projectId, runId, admittedRecovery: true });
         if (block) return { admissionBlockReason: block.reason };
         const [agent] = await tx.select({ status: agents.status, lifecycleState: agents.lifecycleState }).from(agents)
           .where(and(eq(agents.companyId, companyId), eq(agents.id, run.agentId)));
@@ -113,7 +125,7 @@ export async function reserveRunBudget(db: Db, companyId: string, runId: string,
       throw conflict("Provider dispatch has already reserved this run");
     }
     if (stopRecovery) throw conflict("Native Stop recovery requires the original held reservation");
-    const { block, policies, observations } = await budgetServiceInTransaction(tx, publications).evaluateAdmission(companyId, run.agentId, { projectId });
+    const { block, policies, observations } = await budgetServiceInTransaction(tx, publications).evaluateAdmission(companyId, run.agentId, { projectId, runId });
     if (block) return { admissionBlockReason: block.reason };
     // A budget release can start asynchronous resume hooks. Capacity alone
     // does not authorize dispatch before that lifecycle operation is ready.
@@ -138,7 +150,7 @@ export async function reserveRunBudget(db: Db, companyId: string, runId: string,
     }).where(eq(heartbeatRuns.id, runId));
     await queueBudgetEvaluation(tx, { companyId, agentId: run.agentId, projectId });
     return { ...reservation, reused: false };
-  }));
+  }, { isolationLevel: "read committed" }));
   // Commit required block/resume transitions even when dispatch is denied.
   // Throwing inside the transaction would discard those durable obligations.
   if ("admissionBlockReason" in result) throw conflict(result.admissionBlockReason ?? "Budget admission blocked");

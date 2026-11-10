@@ -18,8 +18,10 @@ import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.j
 import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/native-workspace-finalization-state.js";
 import {
   createSavedWorkspaceLoader, prepareRemoteWorkspace, readRemoteWorkspaceAuthority,
-  provisionRemoteWorkspace, reserveRemoteWorkspace, saveRemoteWorkspace,
+  isRemoteWorkspaceSaveInvocationLive, provisionRemoteWorkspace, reserveRemoteWorkspace, saveRemoteWorkspace,
 } from "./remote-workspaces.js";
+import { currentControllerBootId } from "./controller-process-identity.js";
+import { createOwnershipReportState, runOwnershipReconciliationPass } from "./recovery/ownership-invariant-report.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { migrateRemoteWorkspace } from "./remote-workspace-migration.js";
 
@@ -182,6 +184,66 @@ describe.skipIf(!support.supported)("remote workspace save parent lock order", (
       await db.execute(sql`drop function save_order_gate()`);
       await saveDb.$client.end(); await peerDb.$client.end();
     }
+  }, 30_000);
+
+  it("lets a retry prepare the workspace again after its first writer was killed during preparation", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID(), retryId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Killed preparation", issuePrefix: `K${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType: "paperclip_runner" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Prepare twice", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, status: "running", executionStage: "preparing",
+      contextSnapshot: { issueId } });
+    const [environment] = await db.insert(environments).values({ name: runId, driver: "sandbox" }).returning();
+    const storage = { ...createStorageService(createLocalDiskStorageProvider(path.join(root, runId, "objects"))), provider: "s3" as const };
+    const allocate = async (heartbeatRunId: string, directory: string, killSave = false) => {
+      const [lease] = await db.insert(environmentLeases).values({ companyId, issueId, heartbeatRunId, environmentId: environment.id,
+        provider: "daytona", providerLeaseId: randomUUID(), status: "active" }).returning();
+      const remoteCwd = path.join(root, runId, directory);
+      await mkdir(remoteCwd, { recursive: true });
+      const transfer: NonNullable<NonNullable<AdapterSandboxExecutionTarget["runner"]>["syncIn"]> = async operations => {
+        for (const operation of operations) for (const file of operation.files) {
+          await mkdir(path.dirname(file.targetPath), { recursive: true });
+          await cp(file.sourcePath, file.targetPath, { recursive: file.kind === "directory" });
+        }
+        return { operations: operations.map(operation => ({ operationId: operation.operationId,
+          filesTransferred: operation.files.length, bytesTransferred: 0 })) };
+      };
+      const target: AdapterSandboxExecutionTarget = { kind: "remote", transport: "sandbox", leaseId: lease.id, remoteCwd, timeoutMs: 30_000,
+        runner: { syncIn: transfer, syncOut: killSave ? async () => { throw new Error("controller killed"); } : transfer,
+          execute: async input => {
+          const result = await exec(input.command, input.args ?? [], { cwd: input.cwd ?? remoteCwd,
+            env: { ...process.env, ...input.env }, timeout: input.timeoutMs, maxBuffer: 8 * 1024 * 1024 });
+          return { exitCode: 0, stdout: result.stdout, stderr: result.stderr, signal: null, timedOut: false,
+            pid: process.pid, startedAt: new Date().toISOString() };
+        } } };
+      return { lease: lease as EnvironmentLease, target, remoteCwd };
+    };
+    const first = await allocate(runId, "first", true);
+    const reserved = await reserveRemoteWorkspace({ db, storage, companyId, issueId, runId, agentId, environmentId: environment.id,
+      projectId: null, projectWorkspaceId: null, existingWorkspaceId: null, source: { kind: "empty" } });
+    await expect(prepareRemoteWorkspace({ db, storage, workspace: reserved, runId, lease: first.lease, target: first.target }))
+      .rejects.toThrow();
+    const workspaceAuthority = async () => readRemoteWorkspaceAuthority((await db.select().from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, reserved.id)))[0]!.metadata)!;
+    expect(await workspaceAuthority()).toMatchObject({ epoch: 1, dirty: true, writerRunId: runId, snapshotId: null });
+
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "process_lost", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRuns).values({ id: retryId, companyId, agentId, issueId, status: "running", executionStage: "preparing",
+      contextSnapshot: { issueId, retryOfRunId: runId } });
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    expect(await workspaceAuthority()).toMatchObject({ epoch: 2, dirty: false, writerRunId: null, location: null, snapshotId: null });
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, first.lease.id)))[0]!.status).not.toBe("active");
+
+    const second = await allocate(retryId, "second");
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, reserved.id));
+    const retried = await reserveRemoteWorkspace({ db, storage, companyId, issueId, runId: retryId, agentId,
+      environmentId: environment.id, projectId: null, projectWorkspaceId: null, existingWorkspaceId: workspace.id, source: { kind: "empty" } });
+    const reprepared = await prepareRemoteWorkspace({ db, storage, workspace: retried, runId: retryId,
+      lease: second.lease, target: second.target });
+    expect(await workspaceAuthority()).toMatchObject({ epoch: 3, dirty: true, writerRunId: retryId, snapshotId: expect.any(String) });
+    expect(path.relative(first.remoteCwd, reprepared.remoteRoot).startsWith("..")).toBe(true);
   }, 30_000);
 
   it("releases database locks while a provisioning command is in flight", async () => {
@@ -485,6 +547,64 @@ describe.skipIf(!support.supported)("remote workspace save parent lock order", (
     expect((await f.storage.headObject(f.companyId, uploaded[0].objectKey!)).exists).toBe(true);
     expect(snapshots.filter(snapshot => snapshot.status === "committed")).toHaveLength(1);
     expect(await readFile(path.join(authority.location!.remoteCwd, "saved.txt"), "utf8")).toBe("one preserved result\n");
+  }, 30_000);
+
+  it("stamps each save invocation with the process that runs it and clears the stamp when it settles", async () => {
+    const f = await preparedFailure();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const paused: AdapterSandboxExecutionTarget = { ...f.target, runner: { ...f.target.runner!,
+      execute: async input => { entered(); await gate; return f.target.runner!.execute(input); } } };
+    const saving = saveRemoteWorkspace({ db, storage: f.storage, workspace: f.workspace, runId: f.runId, lease: f.lease,
+      target: paused, assertOwned: async () => undefined });
+    const snapshotOperation = async () => (await db.select().from(workspaceOperations).where(and(
+      eq(workspaceOperations.heartbeatRunId, f.runId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
+      sql`${workspaceOperations.metadata}->>'boundary' = 'final'`)))[0]!;
+    let work: { activeIds: string[]; owners: Record<string, { bootId: string; pid: number }> };
+    try {
+      await started;
+      work = (await snapshotOperation()).metadata!.saveWork as typeof work;
+      expect(work.activeIds).toHaveLength(1);
+      expect(work.owners[work.activeIds[0]!]).toMatchObject({ bootId: currentControllerBootId(), pid: process.pid });
+      expect(isRemoteWorkspaceSaveInvocationLive(work.activeIds[0]!)).toBe(true);
+    } finally {
+      release();
+      await saving;
+    }
+    expect((await snapshotOperation()).metadata).toMatchObject({ saveWork: { activeIds: [], owners: {} } });
+    expect(isRemoteWorkspaceSaveInvocationLive(work.activeIds[0]!)).toBe(false);
+  }, 30_000);
+
+  it("lets the reconciler settle a save whose settlement write failed once its run has ended", async () => {
+    const f = await preparedFailure();
+    let failNextTransaction = false;
+    const flaky = new Proxy(db, { get(target, property, receiver) {
+      if (property === "transaction") return (...args: Parameters<typeof db.transaction>) => {
+        if (failNextTransaction) { failNextTransaction = false; return Promise.reject(new Error("connection terminated")); }
+        return target.transaction(...args);
+      };
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    } }) as typeof db;
+    const refused: AdapterSandboxExecutionTarget = { ...f.target, runner: { ...f.target.runner!,
+      execute: async () => { failNextTransaction = true; throw new Error("Daytona sandbox lease SYNTHETIC-private-id is no longer active."); } } };
+    await expect(saveRemoteWorkspace({ db: flaky, storage: f.storage, workspace: f.workspace, runId: f.runId, lease: f.lease,
+      target: refused, assertOwned: async () => undefined })).rejects.toThrow("no longer active");
+    const snapshotOperation = async () => (await db.select().from(workspaceOperations).where(and(
+      eq(workspaceOperations.heartbeatRunId, f.runId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
+      sql`${workspaceOperations.metadata}->>'boundary' = 'final'`)))[0]!;
+    const pending = await snapshotOperation();
+    const work = pending.metadata!.saveWork as { activeIds: string[]; owners: Record<string, { bootId: string; pid: number }> };
+    expect(pending.status).toBe("running");
+    expect(work.owners[work.activeIds[0]!]).toMatchObject({ bootId: currentControllerBootId(), pid: process.pid });
+    expect(isRemoteWorkspaceSaveInvocationLive(work.activeIds[0]!)).toBe(false);
+
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState() });
+    expect(await snapshotOperation()).toMatchObject({ status: "failed",
+      metadata: { saveWork: { activeIds: [], owners: {} }, abandonedSave: { reason: "abandoned_remote_snapshot_save" } } });
   }, 30_000);
 
   it("ends a failed save operation with its redacted cause and reopens it for the retry", async () => {

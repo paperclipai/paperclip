@@ -1,6 +1,5 @@
 import type { Issue, IssueStatus, IssueSummary } from "@paperclipai/shared";
 
-export const RECENT_TASKS_LIMIT = 5;
 export const RECENT_TASKS_UPDATED_EVENT = "paperclip:recent-tasks-updated";
 const STORAGE_PREFIX = "paperclip.recentTasks.v2:";
 const LEGACY_STORAGE_PREFIX = "paperclip.recentTasks:";
@@ -83,8 +82,7 @@ function normalizeRecentTasks(entries: RecentTaskEntry[]) {
       if (seen.has(entry.id)) return false;
       seen.add(entry.id);
       return true;
-    })
-    .slice(0, RECENT_TASKS_LIMIT);
+    });
 }
 
 function publishRecentTasks(storageKey: string, entries: RecentTaskEntry[]) {
@@ -96,15 +94,15 @@ function publishRecentTasks(storageKey: string, entries: RecentTaskEntry[]) {
 
 export function writeRecentTasks(storageKey: string, entries: RecentTaskEntry[]) {
   if (typeof window === "undefined") return;
-  const bounded = normalizeRecentTasks(entries);
+  const normalized = normalizeRecentTasks(entries);
   try {
-    const serialized = JSON.stringify(bounded);
+    const serialized = JSON.stringify(normalized);
     if (window.localStorage.getItem(storageKey) === serialized) return;
     window.localStorage.setItem(storageKey, serialized);
   } catch {
     // The in-tab event still keeps mounted navigation current for this session.
   }
-  publishRecentTasks(storageKey, bounded);
+  publishRecentTasks(storageKey, normalized);
 }
 
 type TaskSnapshot = Omit<IssueSummary, "externalConversationState"> & Pick<Issue, "externalConversationState">;

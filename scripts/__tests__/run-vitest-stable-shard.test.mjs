@@ -324,9 +324,12 @@ const ingressRetrySuitePath = "server/src/services/native-runtime/native-ingress
 const usageDeliverySuitePath = "server/src/services/native-runtime/native-usage-delivery.integration.test.ts";
 const warmCheckpointOwnershipSuitePath = "server/src/services/native-runtime/native-warm-checkpoint-ownership.integration.test.ts";
 const pluginWarmOwnerSuitePath = "server/src/services/native-runtime/plugin-runner-task-warm.integration.test.ts";
+const pluginReleaseResumeSuitePath = "server/src/services/native-runtime/plugin-runner-release-resume.integration.test.ts";
+const pluginEvictionSuitePath = "server/src/services/native-runtime/plugin-runner-eviction.integration.test.ts";
 const dotRunnerSuitePath = "server/src/__tests__/dot-runner.test.ts";
 const restartRecoverySuitePath =
   "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts";
+const cutTurnStartRetrySuitePath = "server/src/services/native-runtime/native-cut-turn-start-retry.integration.test.ts";
 const restartWaitSuites = ["lease-renewal", "preparation", "checkpoint-cost", "diskless"]
   .map(name => `server/src/services/native-runtime/native-runner-restart-${name}.integration.test.ts`);
 
@@ -370,10 +373,13 @@ test("12 PR without-chat shards plus the dedicated chat and native-runner lanes 
   assert.ok(!files.includes(ingressRetrySuitePath));
   assert.ok(!files.includes(dotRunnerSuitePath));
   assert.ok(!files.includes(restartRecoverySuitePath));
+  assert.ok(!files.includes(cutTurnStartRetrySuitePath));
   assert.ok(!files.includes(usageDeliverySuitePath));
   assert.ok(!files.includes(warmCheckpointOwnershipSuitePath));
   assert.ok(!files.includes(pluginWarmOwnerSuitePath));
-  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, ingressRetrySuitePath, dotRunnerSuitePath, restartRecoverySuitePath, ...restartWaitSuites, usageDeliverySuitePath, warmCheckpointOwnershipSuitePath, pluginWarmOwnerSuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
+  assert.ok(!files.includes(pluginReleaseResumeSuitePath));
+  assert.ok(!files.includes(pluginEvictionSuitePath));
+  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, ingressRetrySuitePath, dotRunnerSuitePath, restartRecoverySuitePath, ...restartWaitSuites, cutTurnStartRetrySuitePath, usageDeliverySuitePath, warmCheckpointOwnershipSuitePath, pluginWarmOwnerSuitePath, pluginReleaseResumeSuitePath, pluginEvictionSuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
   assert.equal(new Set(files).size, files.length);
   const defaultRun = dryRunJson([], prEnv);
   assert.ok(defaultRun.generalServerSuiteCount === full.generalServerSuiteCount);
@@ -395,6 +401,8 @@ for (const [caller, envOverrides] of [["Release", { GITHUB_WORKFLOW: "Release" }
     assert.ok(files.includes(restartRecoverySuitePath));
     assert.ok(files.includes(warmCheckpointOwnershipSuitePath));
     assert.ok(files.includes(pluginWarmOwnerSuitePath));
+    assert.ok(files.includes(pluginReleaseResumeSuitePath));
+    assert.ok(files.includes(pluginEvictionSuitePath));
     assert.deepEqual([...files, chatSuitePath].sort(), full.selectedGeneralServerSuites.sort());
     assert.equal(new Set(files).size, files.length);
   });
@@ -426,9 +434,12 @@ test("the native-runner lane runs exactly the cargo-dependent suites", () => {
     dotRunnerSuitePath,
     restartRecoverySuitePath,
     ...restartWaitSuites,
+    cutTurnStartRetrySuitePath,
     usageDeliverySuitePath,
     warmCheckpointOwnershipSuitePath,
     pluginWarmOwnerSuitePath,
+    pluginReleaseResumeSuitePath,
+    pluginEvictionSuitePath,
   ]);
 });
 
