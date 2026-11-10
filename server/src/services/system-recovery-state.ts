@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { ENVIRONMENT_LEASE_POLICIES, WORKSPACE_SOURCE_VERIFICATION_REASONS,
   type WorkspaceSourceVerificationFailure } from "@paperclipai/shared";
+import { REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION } from "./remote-workspace-snapshot-archive.js";
 
 export const SYSTEM_RECOVERY_POLICY_VERSION = 1;
 export const SYSTEM_RECOVERY_MAX_RETRIES = 5;
@@ -69,6 +70,9 @@ export const systemRecoverySchema = z.object({
   }).nullable(),
   preservationOperationIds: z.array(z.string().uuid()),
   freshAttemptRunId: z.string().uuid().nullable(),
+  /** The workspace capture policy this generation saves with. Absent on
+   * generations written before the field existed; those used version 1. */
+  capturePolicyVersion: z.number().int().positive().optional(),
 });
 export type SystemRecoveryState = z.infer<typeof systemRecoverySchema>;
 
@@ -85,6 +89,7 @@ export function createSystemRecovery(sourceRunId: string, intentId: string | nul
     phase: "verify_execution", state: "scheduled", attemptId: null, attempts: 0, retriesUsed: 0,
     firstFailureAt: null, nextAttemptAt: null, deadlineAt: null, providerCooldownAt: null, failure: null,
     preservationOperationIds: [], freshAttemptRunId: null,
+    capturePolicyVersion: REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION,
   };
 }
 
@@ -125,6 +130,23 @@ export function failSystemRecovery(
       ...(cause.success ? { cause: cause.data } : {}),
       evidenceFingerprint: options.evidenceFingerprint ?? createHash("sha256").update(`${state.sourceRunId}:${failure.code}`).digest("hex") },
   };
+}
+
+/**
+ * A save that failed while preserving files under an older workspace capture
+ * policy. The current policy may accept what the older one refused (for
+ * example a workspace with a symlink out of it), so recovery retries it once
+ * under the current policy (workspace-recovery-capture-policy). The new
+ * generation carries the current version, so the retry is bounded per policy.
+ */
+export const CAPTURE_POLICY_RECOVERY_KEY = "capturePolicyRecovery";
+export const CAPTURE_POLICY_RECOVERY_SCHEMA = "paperclip.capture-policy-recovery.v1";
+export const CAPTURE_POLICY_REARM_CODES = ["export_interrupted", "archive_unsafe"] as const;
+
+export function isCapturePolicyRearmable(state: Pick<SystemRecoveryState, "state" | "phase" | "failure" | "capturePolicyVersion"> | null | undefined) {
+  return state?.state === "exhausted" && state.phase === "preserve_files"
+    && (CAPTURE_POLICY_REARM_CODES as readonly string[]).includes(state.failure?.code ?? "")
+    && (state.capturePolicyVersion ?? 1) < REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION;
 }
 
 /**

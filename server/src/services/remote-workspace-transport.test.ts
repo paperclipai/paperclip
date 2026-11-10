@@ -857,20 +857,49 @@ fs.unlinkSync(${JSON.stringify(kill)});process.kill(process.pid,'SIGKILL');}retu
     expect(await fs.readdir(outside)).toEqual(["workspace.pcws"]);
   });
 
-  it.each(["split", "one-shot"] as const)("retains a closed capture validation failure with %s output", async outputMode => {
-    const privateName = "SYNTHETIC_PRIVATE_FILENAME", outside = path.join(scratch, privateName);
-    await fs.writeFile(outside, "outside source bytes\n");
+  it.skipIf(process.platform === "win32").each(["split", "one-shot"] as const)("retains a closed capture validation failure with %s output", async outputMode => {
+    const privateName = "SYNTHETIC_PRIVATE_FILENAME";
     await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
-    await fs.symlink(`../${privateName}`, path.join(workspace, "link"));
+    await exec("mkfifo", [path.join(workspace, privateName)]);
     const { remote, execute } = target({}, outputMode), operationId = randomUUID();
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId }))
-      .rejects.toThrow(/^remote_workspace_archive_unsafe_symlink$/);
+      .rejects.toThrow(/^remote_workspace_archive_unsupported_entry$/);
     expect(execute).toHaveBeenCalledTimes(2);
-    expect(await fs.readFile(outside, "utf8")).toBe("outside source bytes\n");
     expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained source bytes\n");
-    expect(await fs.readlink(path.join(workspace, "link"))).toBe(`../${privateName}`);
+    expect((await fs.lstat(path.join(workspace, privateName))).isFIFO()).toBe(true);
     const directory = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId);
     expect(await fs.readdir(directory)).toEqual(["archive.cjs"]);
+  });
+
+  /**
+   * PAP-3808 through the sandbox command path: a `node_modules/.bin` link
+   * inside the workspace, a Chromium profile link by absolute path into /tmp,
+   * and a `..` link out of the workspace. The save completes; only the
+   * confined link is restored.
+   */
+  it.each(["split", "one-shot"] as const)("saves a workspace with outside links through the sandbox helper with %s output", async outputMode => {
+    const outside = path.join(scratch, "sandbox-tmp"); await fs.mkdir(outside);
+    await fs.writeFile(path.join(outside, "SingletonSocket"), "SYNTHETIC_SANDBOX_ONLY\n");
+    await fs.writeFile(path.join(workspace, "saved.txt"), "review evidence\n");
+    await fs.mkdir(path.join(workspace, "node_modules", "tool"), { recursive: true });
+    await fs.mkdir(path.join(workspace, "node_modules", ".bin"));
+    await fs.writeFile(path.join(workspace, "node_modules", "tool", "cli.js"), "cli\n");
+    await fs.symlink("../tool/cli.js", path.join(workspace, "node_modules", ".bin", "tool"));
+    await fs.mkdir(path.join(workspace, ".review-chrome"));
+    await fs.symlink(path.join(outside, "SingletonSocket"), path.join(workspace, ".review-chrome", "SingletonSocket"));
+    await fs.symlink("../sandbox-tmp/SingletonSocket", path.join(workspace, "escape"));
+    const { remote } = target({}, outputMode);
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const restoredRoot = path.join(scratch, "restored");
+      await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: restoredRoot, archivePath: captured.archivePath,
+        manifestDigest: captured.manifestDigest, restorationIdentity: "d".repeat(64) });
+      expect(await fs.readFile(path.join(restoredRoot, "saved.txt"), "utf8")).toBe("review evidence\n");
+      expect(await fs.readlink(path.join(restoredRoot, "node_modules", ".bin", "tool"))).toBe("../tool/cli.js");
+      expect(await fs.readdir(path.join(restoredRoot, ".review-chrome"))).toEqual([]);
+      await expect(fs.lstat(path.join(restoredRoot, "escape"))).rejects.toMatchObject({ code: "ENOENT" });
+      expect((await fs.readFile(captured.archivePath)).includes(Buffer.from("SYNTHETIC_SANDBOX_ONLY"))).toBe(false);
+    } finally { await captured.cleanup(); }
   });
 
   it.each(["split", "one-shot"] as const)("retains a closed filesystem failure for a missing canonical archive with %s output", async outputMode => {
