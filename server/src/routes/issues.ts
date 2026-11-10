@@ -17236,9 +17236,6 @@ export function issueRoutes(
       const checkoutRunId = requireAgentRunId(req, res);
       if (req.actor.type === "agent" && !checkoutRunId) return;
 
-      // Unassigned diagnostic smokes must not take assignment, execution, or
-      // workspace locks. The refusal is recorded on the run before any of those
-      // mutations. Task-bound smokes and ordinary unscoped runs are unchanged.
       if (req.actor.type === "agent" && checkoutRunId && req.actor.agentId) {
         const smokeWarning = await findDiagnosticSmokeCheckoutBlock(db, {
           companyId: issue.companyId,
