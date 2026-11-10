@@ -94,7 +94,7 @@ describe("production native procedure instruction measurement", () => {
       const session = recovery?.session ?? await backend.openSession({ identity, workingDirectory: WORKSPACE });
       try {
         checkpoint ??= await session.snapshot();
-        const envelope = buildNativeModelEnvelope(current, phase === "continuation" ? { resumedSession: true } : undefined);
+        const envelope = phase === "continuation" ? buildNativeModelEnvelope(current, { resumedSession: true }) : buildNativeModelEnvelope(current);
         if ("requestedSkills" in envelope && backend.preparedTaskConstraints) envelope.constraints = [...backend.preparedTaskConstraints];
         await session.startTurn({ message: { role: "user", text: JSON.stringify(envelope) } });
         const setup = captured.calls.find(call => call.method === (phase === "start" ? "thread/start" : "thread/resume"))!.params;

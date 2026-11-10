@@ -2,14 +2,41 @@ import { markIdleIngressTracked } from "../services/idle-local-work.js";
 import type { Application, Request, RequestHandler } from "express";
 import { beginIdleTrackedWork, isIdleTaskDrainActive } from "../services/task-admission.js";
 
-type RequestWork = { application: Application; pending: number; ended: boolean; closed: boolean; asyncRoute: boolean; routeSequence: number; active: boolean; finish: () => void };
+type RequestWork = { application: Application; pending: number; ended: boolean; closed: boolean; responseFinished: boolean; asyncRoute: boolean; routeSequence: number; active: boolean; finish: () => void };
 const requests = new WeakMap<Request, RequestWork>();
 const trackedApplications = new WeakSet<Application>();
+const httpWork = new WeakMap<Application, { requests: Set<RequestWork>; waiters: Set<() => void> }>();
+function applicationHttpWork(app: Application) {
+  let state = httpWork.get(app);
+  if (!state) { state = { requests: new Set(), waiters: new Set() }; httpWork.set(app, state); }
+  return state;
+}
 function settle(work: RequestWork) {
   if (work.active && (work.ended || (work.closed && work.asyncRoute)) && work.pending === 0) {
     work.active = false;
     work.finish();
   }
+  if (!work.active && (work.responseFinished || work.closed)) {
+    const state = applicationHttpWork(work.application);
+    state.requests.delete(work);
+    if (state.requests.size === 0) for (const resolve of [...state.waiters]) resolve();
+  }
+}
+
+/** Wait for admitted HTTP handlers and response streams, including mutations
+ * still committing after client disconnect. Upgraded sockets have their own
+ * owner lifecycle and must not hold HTTP teardown open. */
+export async function drainHttpRequestWork(app: Application, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  const state = applicationHttpWork(app);
+  if (state.requests.size === 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => { state.waiters.delete(done); signal.removeEventListener("abort", aborted); };
+    const done = () => { cleanup(); resolve(); };
+    const aborted = () => { cleanup(); reject(signal.reason); };
+    state.waiters.add(done);
+    signal.addEventListener("abort", aborted, { once: true });
+  });
 }
 
 export function completeIdleReadOnlyResponse(req: Request, application: Application): void {
@@ -35,7 +62,7 @@ function isControlRequest(req: Request) {
 export const idleAdmissionMiddleware: RequestHandler = (req, res, next) => {
   // This exact route is synchronous and has no auth, SQL, or accepted work.
   // Probing it must not prevent an otherwise quiescent instance from draining.
-  if (req.path.replace(/\/$/, "") === "/api/liveness" && ["GET", "HEAD"].includes(req.method)) {
+  if (["/api/liveness", "/api/ready"].includes(req.path.replace(/\/$/, "")) && ["GET", "HEAD"].includes(req.method)) {
     next();
     return;
   }
@@ -48,9 +75,11 @@ export const idleAdmissionMiddleware: RequestHandler = (req, res, next) => {
     next();
     return;
   }
-  const work: RequestWork = { application: req.app, pending: 0, ended: false, closed: false, asyncRoute: false, routeSequence: 0, active: true, finish: beginIdleTrackedWork() };
+  const work: RequestWork = { application: req.app, pending: 0, ended: false, closed: false, responseFinished: false, asyncRoute: false, routeSequence: 0, active: true, finish: beginIdleTrackedWork() };
   requests.set(req, work);
+  applicationHttpWork(req.app).requests.add(work);
   res.once("close", () => { work.closed = true; settle(work); });
+  res.once("finish", () => { work.responseFinished = true; settle(work); });
   // close/aborted are NOT completion: an async handler can still be committing
   // a mutation after its client leaves. Wait for the application's end and all
   // returned handler promises. Callback-only handlers abandoned without end
@@ -82,7 +111,7 @@ export function trackIdleRequestHandlers(app: Application): void {
       const invoke = (req: Request, args: unknown[]) => {
         const work = requests.get(req);
         if (!work) return original(...args);
-        if (!work.active) { work.active = true; work.finish = beginIdleTrackedWork(); }
+        if (!work.active) { work.active = true; work.finish = beginIdleTrackedWork(); applicationHttpWork(work.application).requests.add(work); }
         work.pending++;
         const routeSequence = route ? ++work.routeSequence : undefined;
         if (route) work.asyncRoute = false;

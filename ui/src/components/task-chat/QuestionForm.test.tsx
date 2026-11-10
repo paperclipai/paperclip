@@ -6,8 +6,8 @@ import type { PaperclipQuestionResponse, PaperclipQuestionSet } from "@paperclip
 import { QuestionForm } from "./QuestionForm";
 
 vi.mock("./TaskChatRichInput", () => ({
-  TaskChatRichInput: ({ value, onChange }: { value: string; onChange(value: string): void }) =>
-    <textarea aria-label="Answer" value={value} onChange={event => onChange(event.target.value)} />,
+  TaskChatRichInput: ({ value, onChange, onSubmit }: { value: string; onChange(value: string): void; onSubmit(): void }) =>
+    <textarea aria-label="Answer" value={value} onChange={event => onChange(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && event.metaKey) onSubmit(); }} />,
 }));
 vi.mock("@/components/MarkdownBody", () => ({ MarkdownBody: ({ children }: { children: string }) => <div>{children}</div> }));
 
@@ -49,7 +49,9 @@ describe("QuestionForm initial text", () => {
   it("retains an explicitly cleared draft and required validation across reload", async () => {
     await render(); await edit(""); await remount();
     expect(input().value).toBe("");
-    expect(Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Submit answers")!.disabled).toBe(true);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Submit answers")!.click());
+    expect(container.textContent).toContain("This question is required.");
     expect(submit).not.toHaveBeenCalled();
   });
   it("isolates pending requests with the same field ids and restores each edited draft when switching back", async () => {
@@ -86,7 +88,34 @@ describe("QuestionForm initial text", () => {
     await act(async () => root.unmount()); localStorage.clear(); root = createRoot(container);
     await render({ ...questionSet, questions: [{ ...questionSet.questions[0]!, initialText: "bad", textValidation: { minLength: 5 } }] });
     expect(input().value).toBe("bad");
-    expect(Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Submit answers")!.disabled).toBe(true);
+    expect(container.textContent).not.toContain("Enter at least 5 characters.");
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Submit answers")!.click());
+    expect(container.textContent).toContain("Enter at least 5 characters.");
     expect(submit).not.toHaveBeenCalled();
+  });
+
+  it("only validates a short answer after Next or keyboard submit, and clears it when corrected", async () => {
+    await render({ schema: "paperclip.question_set.v1", questions: [
+      { id: "audience", prompt: "Who is it for?", required: true, answerMode: "text", textValidation: { minLength: 2 } },
+      { id: "outcome", prompt: "What outcome?", required: true, answerMode: "text", textValidation: { minLength: 2 } },
+    ] });
+    await edit("m");
+    expect(container.textContent).not.toContain("Enter at least 2 characters.");
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Next")!.click());
+    expect(container.textContent).toContain("Enter at least 2 characters.");
+    expect(container.textContent).toContain("Who is it for?");
+    await edit("millennials");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Next")!.click());
+    await edit("x");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    await act(async () => input().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true })));
+    expect(container.textContent).toContain("Enter at least 2 characters.");
+    expect(submit).not.toHaveBeenCalled();
+    await edit("10 concepts");
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Submit answers")!.click());
+    expect(submit).toHaveBeenCalledExactlyOnceWith({ schema: "paperclip.question_response.v1", answers: {
+      audience: { text: "millennials" }, outcome: { text: "10 concepts" },
+    } });
   });
 });

@@ -360,6 +360,12 @@ export const InstallSuccess: Story = {
         team={baseTeam}
         result={{
           team: baseTeam,
+          resourceLinks: [
+            { kind: "agent", id: "a1", name: "CEO", href: "/STORY/agents/a1" },
+            { kind: "agent", id: "a2", name: "CTO", href: "/STORY/agents/a2" },
+            { kind: "agent", id: "a3", name: "CMO (from Core Exec Team)", href: "/STORY/agents/a3" },
+            { kind: "project", id: "p1", name: "Launch", href: "/STORY/projects/p1" },
+          ],
           portabilityImport: {
             company: { id: "company-storybook", name: "Paperclip", action: "unchanged" },
             agents: [

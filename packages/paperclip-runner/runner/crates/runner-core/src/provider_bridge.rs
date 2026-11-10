@@ -40,7 +40,8 @@ const REPLAY_FILTER_WORDS: usize = 32_768;
 const ACTIVE_TURN_RECEIPT_LIMIT_MESSAGE: &str =
     "durable provider tool receipt limit reached for the active turn";
 const COMPLETION_INPUT_SCHEMA_HINT: &str = "Invalid paperclip_finish arguments. Required fields: reportedWorkDisposition, summary, completionClaim, evidence, and verification. When reportedWorkDisposition is yielded, continuation must include kind=response_wake or monitor, summary, and idempotencyKey.";
-const QUESTION_INPUT_SCHEMA_HINT: &str = "Invalid request_human_input arguments. Required fields: idempotencyKey, interactionKind, title, prompt, and continuationPolicy. For questions, use payload.version=1 and a complete payload.questionSet matching the authorized schema. Preserve the supplied question and option IDs.";
+const HUMAN_INPUT_SCHEMA_HINT: &str = "Invalid request_human_input arguments. Put version and supersedeOnUserComment at payload.version and payload.supersedeOnUserComment, never at the root. For questions, use payload.version=1 and a complete payload.questionSet. Preserve question and option IDs. Correct the arguments and retry.";
+const APPROVAL_INPUT_SCHEMA_HINT: &str = "Invalid request_human_input arguments. Put version and supersedeOnUserComment at payload.version and payload.supersedeOnUserComment, never at the root. Keep approval requests in their confirmation or checkbox interactionKind; do not replace them with questions. Correct the arguments and retry.";
 const BLOCK_INPUT_SCHEMA_HINT: &str = "Invalid paperclip_block arguments. Required fields: reportedWorkDisposition=blocked, summary, completionClaim, evidence, verification, and blocker. blocker must include reasonCode, owner, unblockAction, and scope.";
 const MONITOR_INPUT_SCHEMA_HINT: &str = "Invalid set_task_monitor arguments. Supply idempotencyKey and monitor: {nextCheckAt: <future UTC timestamp>, notes: <next check>}. Put all scheduling fields inside monitor, or use monitor: null to clear. Omit taskId for the current task. Correct the arguments and retry.";
 const API_INPUT_SCHEMA_HINT: &str = "Invalid call_api arguments. For responseText, use GET with offsetBytes >= 0 and responseText.limitBytes from 4 through 24576 bytes (default 24576). Follow nextOffsetBytes; null means complete. Correct the arguments and retry.";
@@ -242,11 +243,16 @@ impl ProviderBridgeError {
         }
     }
 
-    fn input_schema_validation(operation_id: &str) -> Self {
+    fn input_schema_validation(operation_id: &str, input: &Value) -> Self {
         let safe_provider_message = match operation_id {
             "paperclip_finish" => Some(COMPLETION_INPUT_SCHEMA_HINT),
             "paperclip_block" => Some(BLOCK_INPUT_SCHEMA_HINT),
-            "request_human_input" => Some(QUESTION_INPUT_SCHEMA_HINT),
+            "request_human_input" => {
+                Some(match input.get("interactionKind").and_then(Value::as_str) {
+                    Some("confirmation" | "checkbox") => APPROVAL_INPUT_SCHEMA_HINT,
+                    _ => HUMAN_INPUT_SCHEMA_HINT,
+                })
+            }
             "set_task_monitor" => Some(MONITOR_INPUT_SCHEMA_HINT),
             "call_api" => Some(API_INPUT_SCHEMA_HINT),
             _ => Some(TOOL_INPUT_SCHEMA_HINT),
@@ -667,8 +673,10 @@ impl ProviderToolBridge {
             ))
         })?;
         if !validator.is_valid(&input) {
-            return Err(ProviderBridgeError::input_schema_validation(&operation_id)
-                .with_schema_locations(&validator, &input));
+            return Err(
+                ProviderBridgeError::input_schema_validation(&operation_id, &input)
+                    .with_schema_locations(&validator, &input),
+            );
         }
         if matches!(
             operation_id.as_str(),
@@ -678,7 +686,10 @@ impl ProviderToolBridge {
             .and_then(Value::as_str)
             .is_some_and(|summary| summary.chars().count() > MAX_COMPLETION_SUMMARY_CHARS)
         {
-            return Err(ProviderBridgeError::input_schema_validation(&operation_id));
+            return Err(ProviderBridgeError::input_schema_validation(
+                &operation_id,
+                &input,
+            ));
         }
         bounded_json(&input, MAX_TOOL_VALUE_BYTES, "provider tool input")?;
         let call = PendingToolCall {
@@ -1626,7 +1637,7 @@ mod tests {
             "c": {"type": "string"}, "d": {"type": "string"},
         }});
         let validator = jsonschema::validator_for(&schema).unwrap();
-        let error = ProviderBridgeError::input_schema_validation("paperclip_finish")
+        let error = ProviderBridgeError::input_schema_validation("paperclip_finish", &json!({}))
             .with_schema_locations(&validator, &json!({"a": 1, "b": 2, "c": 3, "d": 4}));
         assert_eq!(
             error
@@ -1636,7 +1647,7 @@ mod tests {
                 .count(),
             3
         );
-        let other = ProviderBridgeError::input_schema_validation("some_other_tool")
+        let other = ProviderBridgeError::input_schema_validation("some_other_tool", &json!({}))
             .with_schema_locations(&validator, &json!({"a": 1}));
         let message = other.safe_provider_message().unwrap();
         assert!(message.starts_with(TOOL_INPUT_SCHEMA_HINT));
@@ -1662,8 +1673,9 @@ mod tests {
             json!({"idempotencyKey": "check-ci", "nextCheckAt": "PRIVATE_TIMESTAMP", "notes": "PRIVATE_VALUE"}),
             json!({"idempotencyKey": "check-ci", "monitor": {"nextCheckAt": "PRIVATE_TIMESTAMP", "notes": "PRIVATE_VALUE".repeat(100), "PRIVATE_FIELD": "PRIVATE_VALUE"}}),
         ] {
-            let error = ProviderBridgeError::input_schema_validation("set_task_monitor")
-                .with_schema_locations(&validator, &input);
+            let error =
+                ProviderBridgeError::input_schema_validation("set_task_monitor", &json!({}))
+                    .with_schema_locations(&validator, &input);
             let message = error.safe_provider_message().unwrap();
             assert!(message.contains("Put all scheduling fields inside monitor"));
             assert!(message.contains("/required") || message.contains("/properties/monitor/"));

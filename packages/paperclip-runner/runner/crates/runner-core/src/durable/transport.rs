@@ -28,6 +28,7 @@ const SECURE_FRAME_SCHEMA: &str = "paperclip.runner.secure-frame.v1";
 const AUTH_TIMEOUT: Duration = Duration::from_secs(2);
 const WELCOME_TIMEOUT: Duration = CONNECT_TOTAL_TIMEOUT;
 const RUNTIME_READ_TIMEOUT: Duration = Duration::from_millis(250);
+const QUEUED_CONTROL_READ_TIMEOUT: Duration = Duration::from_millis(1);
 const CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONNECT_TOTAL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CA_BUNDLE_BYTES: u64 = 4 * 1024 * 1024;
@@ -1014,6 +1015,7 @@ impl AuthenticatedTransport {
                     "protocolMin": PROTOCOL_MIN_VERSION,
                     "protocolMax": PROTOCOL_VERSION,
                     "warmTransitionVersion": 1,
+                    "recoveryCursorVersion": 1,
                     "runnerInstanceId": state.runner_instance_id,
                     "environmentLeaseId": state.environment_lease_id,
                     "runId": state.run_id,
@@ -1162,6 +1164,19 @@ impl AuthenticatedTransport {
         self.receive_json_until(None)
     }
 
+    pub(crate) fn receive_queued_json(&mut self) -> Result<Option<Value>, DurableRunnerError> {
+        self.set_runtime_read_timeout(QUEUED_CONTROL_READ_TIMEOUT)?;
+        let message = self.receive_json_until(None);
+        self.set_runtime_read_timeout(RUNTIME_READ_TIMEOUT)?;
+        message
+    }
+
+    fn set_runtime_read_timeout(&mut self, timeout: Duration) -> Result<(), DurableRunnerError> {
+        self.socket
+            .set_read_timeout(Some(timeout))
+            .map_err(|error| DurableRunnerError::invalid(error.to_string()))
+    }
+
     fn receive_json_until(
         &mut self,
         deadline: Option<Instant>,
@@ -1200,6 +1215,10 @@ struct AuthChallenge {
     warm_transition_version: Option<u64>,
     #[serde(default)]
     warm_transition_id: Option<String>,
+    #[serde(default)]
+    recovery_cursor_version: Option<u64>,
+    #[serde(default)]
+    recovery_acked_source_seq: Option<u64>,
 }
 
 fn validate_challenge(
@@ -1275,6 +1294,15 @@ fn validate_challenge(
             "warm transition capability or receipt was not authenticated",
         ));
     }
+    if (challenge.recovery_cursor_version.is_some()
+        || challenge.recovery_acked_source_seq.is_some())
+        && (challenge.recovery_cursor_version != Some(1)
+            || challenge.recovery_acked_source_seq != Some(state.acked_source_seq))
+    {
+        return Err(DurableRunnerError::invalid(
+            "recovery cursor does not match the runner's durable acknowledgement",
+        ));
+    }
     match expected_lease {
         Some(lease)
             if challenge.credential_lease_id.as_deref() == Some(lease.lease_id.as_str())
@@ -1318,6 +1346,12 @@ fn challenge_signing_bytes(challenge: &AuthChallenge) -> Vec<u8> {
     }
     if let Some(id) = &challenge.warm_transition_id {
         body["warmTransitionId"] = json!(id);
+    }
+    if let Some(version) = challenge.recovery_cursor_version {
+        body["recoveryCursorVersion"] = json!(version);
+    }
+    if let Some(cursor) = challenge.recovery_acked_source_seq {
+        body["recoveryAckedSourceSeq"] = json!(cursor);
     }
     canonical_json(&body).into_bytes()
 }
@@ -1727,6 +1761,10 @@ fn hex_nibble(byte: u8) -> Result<u8, DurableRunnerError> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    include!("tests/hosted_retention.rs");
+    include!("tests/ack_release_poll.rs");
+
     use std::net::{IpAddr, Ipv4Addr, TcpListener};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1753,12 +1791,14 @@ mod tests {
             runner_digest: "sha256:test".to_owned(),
             acpx_launch_profile: None,
             opencode_launch_profile: None,
+            cursor_cloud_launch_profile: None,
             max_outbox_bytes: 64 * 1024,
             p0_reserve_bytes: 4096,
             max_frame_bytes: 64 * 1024,
             reconnect_delay: Duration::from_millis(1),
             reconnect_grace: None,
             max_runtime: Duration::from_secs(1),
+            turn_scoped: false,
         }
     }
 
@@ -1806,6 +1846,8 @@ mod tests {
             server_proof: String::new(),
             warm_transition_version: None,
             warm_transition_id: None,
+            recovery_cursor_version: Some(1),
+            recovery_acked_source_seq: payload["resume"]["ackedSourceSeq"].as_u64(),
         };
         let signing = challenge_signing_bytes(&challenge);
         challenge.server_proof = hex_encode(&hmac_domain(
@@ -1838,6 +1880,8 @@ mod tests {
                     "credentialLeaseId": &challenge.credential_lease_id,
                     "revocationEpoch": challenge.revocation_epoch,
                     "serverProof": &challenge.server_proof,
+                    "recoveryCursorVersion": challenge.recovery_cursor_version,
+                    "recoveryAckedSourceSeq": challenge.recovery_acked_source_seq,
                 },
             }),
             config.max_frame_bytes,
@@ -2505,6 +2549,8 @@ mod tests {
                 server_proof: String::new(),
                 warm_transition_version: None,
                 warm_transition_id: None,
+                recovery_cursor_version: None,
+                recovery_acked_source_seq: None,
             };
             let signing = challenge_signing_bytes(&challenge);
             challenge.server_proof = hex_encode(&hmac_domain(
@@ -2621,6 +2667,8 @@ mod tests {
         struct EventExecutor {
             session_open_calls: Arc<AtomicUsize>,
             shutdown_calls: Arc<AtomicUsize>,
+            #[cfg(unix)]
+            activity_context_path: std::path::PathBuf,
         }
 
         impl super::super::CommandExecutor for EventExecutor {
@@ -2629,6 +2677,14 @@ mod tests {
                 command: &Command,
             ) -> Result<super::super::CommandExecution, DurableRunnerError> {
                 if command.command_type == "session.open" {
+                    #[cfg(unix)]
+                    {
+                        let endpoint: Value = serde_json::from_slice(
+                            &std::fs::read(&self.activity_context_path).unwrap(),
+                        )
+                        .unwrap();
+                        assert!(!endpoint["context"].as_str().unwrap().is_empty(), "welcome commands must see active activity context before starting provider work");
+                    }
                     let calls = self.session_open_calls.fetch_add(1, Ordering::SeqCst) + 1;
                     return Ok(super::super::CommandExecution {
                         result: json!({"status": "completed", "calls": calls}),
@@ -2801,6 +2857,8 @@ mod tests {
             EventExecutor {
                 session_open_calls: session_open_calls.clone(),
                 shutdown_calls: shutdown_calls.clone(),
+                #[cfg(unix)]
+                activity_context_path: crate::runtime_notifications::context_path(&directory),
             },
         )
         .unwrap();

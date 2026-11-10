@@ -303,7 +303,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
 
     const userRun = await heartbeat.wakeup(agentId, {
       source: "on_demand",
-      triggerDetail: "user",
+      triggerDetail: "manual",
       payload: { issueId },
       contextSnapshot: { issueId, skipIssueComment: true },
       requestedByActorType: "user",

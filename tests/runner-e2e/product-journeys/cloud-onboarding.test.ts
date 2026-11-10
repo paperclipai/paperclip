@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { cloudOnboarding, type CloudOnboardingInput } from "./cloud-onboarding.js";
 import { onboardingFirstTask } from "./onboarding-first-task.js";
 import { retainOnboardingArtifact } from "./artifact-evidence.js";
+import { JourneyError } from "./types.js";
+import type { OnboardingPreAcceptanceEvidence } from "./onboarding-pre-acceptance.js";
 
 vi.mock("@playwright/test", () => ({ expect: (locator: { isVisible(): Promise<boolean> }) => ({
   toBeVisible: async () => { expect(await locator.isVisible()).toBe(true); },
@@ -118,6 +120,20 @@ function fixture(entry: Entry, options: { intentFailure?: boolean; qualification
 }
 
 describe("Cloud onboarding visible controls", () => {
+  it("retains pre-acceptance evidence while preserving the failed error and withholding completion markers", async () => {
+    const f = fixture("portfolio");
+    const receipt: OnboardingPreAcceptanceEvidence = { version: 1, checkpoint: "awaiting-proposal", violations: ["attachment_present"],
+      taskCount: 1, attachmentCount: 1, documentCount: 0, nonPlanningDocumentCount: 0,
+      firstTaskMatchesCanonicalParent: true, firstTaskStatus: "in_review", canonicalParentStatus: "in_review" };
+    vi.mocked(onboardingFirstTask).mockImplementationOnce(async input => {
+      input.onPreAcceptanceFailure?.(receipt);
+      throw new JourneyError("failed", "onboarding_work_before_acceptance");
+    });
+    await expect(cloudOnboarding(f.input)).rejects.toMatchObject({ outcome: "failed", code: "onboarding_work_before_acceptance" });
+    expect(JSON.parse(JSON.stringify(f.input.evidence)).onboardingPreAcceptance).toEqual(receipt);
+    expect(f.input.evidence.checks.map(check => check.id)).toEqual(["fresh-workspace", "ui-connection-and-native-agent"]);
+    expect(f.events).not.toContain("native:verified");
+  });
   it.each(["first-run", "portfolio", "create-form"] as const)("creates from %s with intent before dispatch and qualification before paid Connect", async entry => {
     const f = fixture(entry);
     const result = await cloudOnboarding(f.input);

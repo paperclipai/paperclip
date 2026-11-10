@@ -113,3 +113,13 @@ it.each([true, false])("preserves refreshed Codex credentials across repeated an
     expect(JSON.parse(await readFile(join(prepared, "auth.json"), "utf8")).tokens.refresh_token).toBe("refreshed-fixture-token");
   }
 });
+
+it("keeps OpenCode export opt-in and credentials out of ordinary task environment projections", () => {
+  const launch = buildProviderObservabilityLaunch({ ...input, kind: "opencode" });
+  expect(launch.environment).toMatchObject({ PAPERCLIP_OBSERVABILITY_OPENCODE: "1", OTEL_LOG_USER_PROMPTS: "1", OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: input.tracesEndpoint });
+  expect(observabilitySecretValues(launch)).toContain(input.headers.authorization);
+  expect(JSON.stringify(buildInvocationEnvForLogs({ ...launch.environment }))).not.toContain("a%2Cb");
+  const disabled = buildProviderObservabilityLaunch({ ...input, kind: "opencode", enabled: false });
+  expect(disabled.environment).toMatchObject({ PAPERCLIP_OBSERVABILITY_OPENCODE: "0" });
+  expect(disabled.environment).not.toHaveProperty("OTEL_EXPORTER_OTLP_TRACES_HEADERS");
+});

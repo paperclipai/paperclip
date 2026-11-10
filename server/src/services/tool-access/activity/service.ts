@@ -1,3 +1,5 @@
+import { connectionManagementService } from "../../connection-management.js";
+import type { ConnectionManagementContext } from "../../connection-management.js";
 import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, connectionTokenIssuances, authUsers, heartbeatRuns, issues, toolActionRequests, toolConnections, toolCallEvents, toolInvocations } from "@paperclipai/db";
@@ -92,10 +94,11 @@ listConnectionActivity: async (
       connectionId: string,
       companyId?: string,
       limit = 20,
+      managementContext?: ConnectionManagementContext,
     ): Promise<ToolConnectionActivityResponse> => {
       const connection = await getConnectionRow(connectionId, companyId);
       const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
-      const rows = await db
+      let rows = await db
         .select()
         .from(toolCallEvents)
         .where(
@@ -106,6 +109,22 @@ listConnectionActivity: async (
         )
         .orderBy(desc(toolCallEvents.createdAt))
         .limit(safeLimit);
+      if (managementContext?.actor.type === "agent") {
+        const management = connectionManagementService(db);
+        const taskVisibility = new Map<string | null, boolean>();
+        const visible: typeof rows = [];
+        for (const row of rows) {
+          let allowed = taskVisibility.get(row.issueId);
+          if (allowed === undefined) {
+            allowed = (await management.capability(managementContext.actor, "connections:audit", {
+              ...managementContext.resource, connectionId: connection.id, issueId: row.issueId,
+            }, { mutation: false, readContext: managementContext })).allowed;
+            taskVisibility.set(row.issueId, allowed);
+          }
+          if (allowed) visible.push(row);
+        }
+        rows = visible;
+      }
       const events = rows.map(toToolCallEvent);
 
       const issueIds = [

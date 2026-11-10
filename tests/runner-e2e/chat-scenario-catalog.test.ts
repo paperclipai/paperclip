@@ -37,7 +37,7 @@ it("validates the complete planned chat catalog against its schema and feature m
   }
   expect(ids.size).toBe(244);
   expect([...covered].sort()).toEqual([...mapped].sort());
-  expect(mapped.size).toBe(191);
+  expect(mapped.size).toBe(192);
   const defaults = parseDocument(readFileSync(new URL("defaults.yaml", catalog), "utf8"), { uniqueKeys: true });
   expect(defaults.errors).toEqual([]);
   expect(defaults.toJS()).toMatchObject({ schema_version: 1, status: "planned" });

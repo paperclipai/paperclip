@@ -1876,6 +1876,9 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           expect(deniedRun).toMatchObject({
             status: "failed",
             error: "reviewed_chat_execution_binding_not_authorized",
+            resultJson: expect.objectContaining({
+              reviewedChatBinding: { denialReason: "question_response_missing" },
+            }),
             contextSnapshot: expect.objectContaining({
               interactionId: answered.id,
               sourceRunId,

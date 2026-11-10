@@ -1,3 +1,5 @@
+import { TranscriptSequence } from "../../lib/transcript-sequence";
+import { useTranscriptLiveStream } from "../../context/LiveUpdatesProvider";
 import { usePageVisibility } from "../../lib/page-visibility";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { readTranscriptRequest } from "./read-transcript-request";
@@ -8,8 +10,6 @@ import { instanceSettingsApi } from "../../api/instanceSettings";
 import { heartbeatsApi } from "../../api/heartbeats";
 import { buildTranscript, getUIAdapter, onAdapterChange, type RunLogChunk, type TranscriptEntry } from "../../adapters";
 import { queryKeys } from "../../lib/queryKeys";
-import { buildSameOriginWebSocketUrl } from "../../lib/websocket-url";
-import { tryCreateWebSocket } from "../../lib/websocket";
 import {
   mergeRunLogChunks,
   parsePersistedLogContent,
@@ -17,17 +17,8 @@ import {
   type ChunkRetentionBudget,
 } from "../../lib/run-log-chunks";
 
-// TODO(perf): this whole hook polls the log/runs endpoints on an interval. The
-// durable fix is server push (SSE/websocket) for transcript deltas so idle tabs
-// do no periodic work at all; the constants below only reduce the churn of the
-// current polling approach.
-const SOCKET_CONNECTING = 0;
-const SOCKET_OPEN = 1;
 const LOG_POLL_INTERVAL_MS = 2000;
 const LOG_READ_LIMIT_BYTES = 256_000;
-// When realtime websocket updates are enabled, the frequent log poll is
-// redundant with the live stream; keep only a slow safety-net poll to cover
-// gaps and reconnects instead of polling every couple of seconds.
 const REALTIME_FALLBACK_POLL_INTERVAL_MS = 30_000;
 const EMPTY_RUN_LOG_CHUNKS: RunLogChunk[] = [];
 // Retained transcript payload budget for full task views. A byte budget (rather
@@ -54,6 +45,7 @@ export interface RunTranscriptSource {
   hasStoredOutput?: boolean;
   logBytes?: number | null;
   lastOutputBytes?: number | null;
+  logRef?: string | null;
 }
 
 interface UseLiveRunTranscriptsOptions {
@@ -69,6 +61,7 @@ interface UseLiveRunTranscriptsOptions {
   logPollIntervalMs?: number;
   logReadLimitBytes?: number;
   enableRealtimeUpdates?: boolean;
+  enabled?: boolean;
 }
 
 function readString(value: unknown): string | null {
@@ -104,6 +97,7 @@ export function useLiveRunTranscripts({
   logPollIntervalMs = LOG_POLL_INTERVAL_MS,
   logReadLimitBytes = LOG_READ_LIMIT_BYTES,
   enableRealtimeUpdates = true,
+  enabled = true,
 }: UseLiveRunTranscriptsOptions) {
   // Ticker consumers opt into the silent chunk-count cap; full task views use a
   // byte budget that collapses (not discards) the oldest output when exceeded.
@@ -119,9 +113,9 @@ export function useLiveRunTranscripts({
     () =>
       runs
         .map((run) => {
-          const logBytes = typeof run.logBytes === "number" ? run.logBytes : "";
-          const lastOutputBytes = typeof run.lastOutputBytes === "number" ? run.lastOutputBytes : "";
-          return `${run.id}:${run.status}:${run.adapterType}:${run.hasStoredOutput === true ? "1" : "0"}:${logBytes}:${lastOutputBytes}`;
+          const logBytes = isTerminalStatus(run.status) && typeof run.logBytes === "number" ? run.logBytes : "";
+          const lastOutputBytes = isTerminalStatus(run.status) && typeof run.lastOutputBytes === "number" ? run.lastOutputBytes : "";
+          return `${run.id}:${run.status}:${run.adapterType}:${run.hasStoredOutput === true ? "1" : "0"}:${logBytes}:${lastOutputBytes}:${run.logRef ?? ""}`;
         })
         .sort((a, b) => a.localeCompare(b))
         .join(","),
@@ -144,6 +138,45 @@ export function useLiveRunTranscripts({
   const pendingLogRowsByRunRef = useRef(new Map<string, string>());
   const logOffsetByRunRef = useRef(new Map<string, number>());
   const logReadLimitByRunRef = useRef(new Map<string, number>());
+  const logIdentityRef = useRef(new Map<string, string>());
+  const retiredLogIdentitiesRef = useRef(new Map<string, Set<string>>());
+  const sequencesRef = useRef(new Map<string, TranscriptSequence>());
+  const sequence = (id: string) => {
+    let value = sequencesRef.current.get(id);
+    if (!value) { value = new TranscriptSequence(); sequencesRef.current.set(id, value); }
+    return value;
+  };
+  const gapPendingRef = useRef(new Set<string>());
+  const refreshByRunRef = useRef(new Map<string, (force?: boolean) => void>());
+  const requestCatchUp = (runId: string) => {
+    if (gapPendingRef.current.has(runId)) return;
+    gapPendingRef.current.add(runId);
+    refreshByRunRef.current.get(runId)?.();
+  };
+  const bindLog = (runId: string, store: unknown, ref: unknown): "same" | "changed" | "stale" => {
+    if (typeof ref !== "string" || !ref) return "same";
+    const identity = `${typeof store === "string" ? store : ""}:${ref}`;
+    const prior = logIdentityRef.current.get(runId);
+    if (prior === identity) return "same";
+    if (retiredLogIdentitiesRef.current.get(runId)?.has(identity)) return "stale";
+    logIdentityRef.current.set(runId, identity);
+    if (!prior) return "same";
+    const retired = retiredLogIdentitiesRef.current.get(runId) ?? new Set<string>();
+    retired.add(prior);
+    if (retired.size > 8) retired.delete(retired.values().next().value!);
+    retiredLogIdentitiesRef.current.set(runId, retired);
+    logOffsetByRunRef.current.set(runId, 0); logReadLimitByRunRef.current.delete(runId);
+    pendingLogRowsByRunRef.current.delete(runId); pendingLogRowsByRunRef.current.delete(`${runId}:records`);
+    trimmedSeqFloorByRunRef.current.delete(runId); sequencesRef.current.delete(runId);
+    for (const key of seenChunkKeysRef.current) if (key.includes(`:${runId}:`)) seenChunkKeysRef.current.delete(key);
+    setChunksByRun(previous => new Map(previous).set(runId, []));
+    setTruncatedRunIds(previous => {
+      if (!previous.has(runId)) return previous;
+      const next = new Set(previous); next.delete(runId); return next;
+    });
+    return "changed";
+  };
+
   const [truncatedRunIds, setTruncatedRunIds] = useState<ReadonlySet<string>>(new Set());
   const missingTerminalLogRunIdsRef = useRef(new Set<string>());
   // PAP-462 B3: buffered runs that dropped out of the `runs` list, mapped to the
@@ -152,10 +185,6 @@ export function useLiveRunTranscripts({
   // the effect again once the nearest deadline elapses so a run that stays gone
   // is eventually cleaned up even if the `runs` list never changes again.
   const absenceDeadlineByRunRef = useRef(new Map<string, number>());
-  // Backoff state for the live event socket. Held outside the socket effect
-  // because that effect restarts on run-metadata changes; per-effect state
-  // would reset a progressed delay back to its base mid-outage.
-  const reconnectStateRef = useRef<{ companyId: string; attempt: number } | null>(null);
   const prevKnownRunIdsRef = useRef(new Set<string>());
   const [pruneTick, setPruneTick] = useState(0);
   const transcriptCacheRef = useRef(new Map<string, {
@@ -165,6 +194,18 @@ export function useLiveRunTranscripts({
     parserTick: number;
     transcript: TranscriptEntry[];
   }>());
+  const previousCompanyRef = useRef(companyId);
+  useEffect(() => {
+    if (previousCompanyRef.current === companyId) return;
+    previousCompanyRef.current = companyId;
+    setChunksByRun(new Map()); setHydratedRunIds(new Set()); setErrorsByRun(new Map());
+    seenChunkKeysRef.current.clear(); trimmedSeqFloorByRunRef.current.clear();
+    pendingLogRowsByRunRef.current.clear(); logOffsetByRunRef.current.clear(); logReadLimitByRunRef.current.clear();
+    logIdentityRef.current.clear(); retiredLogIdentitiesRef.current.clear(); sequencesRef.current.clear();
+    gapPendingRef.current.clear(); missingTerminalLogRunIdsRef.current.clear();
+    absenceDeadlineByRunRef.current.clear(); prevKnownRunIdsRef.current.clear(); transcriptCacheRef.current.clear();
+  }, [companyId]);
+
   // Tick counter to force transcript recomputation when dynamic parser loads
   const [parserTick, setParserTick] = useState(0);
   useEffect(() => {
@@ -294,6 +335,11 @@ export function useLiveRunTranscripts({
       }
     }
 
+    for (const map of [logIdentityRef.current, retiredLogIdentitiesRef.current, sequencesRef.current]) {
+      for (const id of map.keys()) if (!retainedRunIds.has(id)) map.delete(id);
+    }
+    for (const id of gapPendingRef.current) if (!retainedRunIds.has(id)) gapPendingRef.current.delete(id);
+
     // Re-run once the nearest grace window elapses so a run that stays gone is
     // pruned even if `normalizedRuns` never changes again.
     if (soonestExpiryMs !== Number.POSITIVE_INFINITY) {
@@ -305,193 +351,21 @@ export function useLiveRunTranscripts({
     }
   }, [normalizedRuns, pruneTick]);
 
-  useEffect(() => {
-    if (!visible) return;
-    const readableRuns = normalizedRuns.filter(canReadPersistedLog);
-    if (readableRuns.length === 0) return;
-
-    let cancelled = false;
-    const controller = new AbortController();
-    const inFlightRunIds = new Set<string>();
-
-    const readRunLog = async (run: RunTranscriptSource) => {
-      if (missingTerminalLogRunIdsRef.current.has(run.id) || inFlightRunIds.has(run.id)) {
-        return;
-      }
-      inFlightRunIds.add(run.id);
-      let alignStartToRecord = !logOffsetByRunRef.current.has(run.id);
-      let offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
-      let rewinding = false;
-      const previousReadLimit = logReadLimitByRunRef.current.get(run.id);
-      if (previousReadLimit !== undefined && logReadLimitBytes > previousReadLimit) {
-        // Expanding a compact tail must reread the earlier range. Retain the
-        // visible chunks; merging by sequence deduplicates the overlapping tail.
-        const expandedOffset = resolveInitialLogOffset(run, logReadLimitBytes);
-        if (expandedOffset < offset) {
-          alignStartToRecord = true;
-          offset = expandedOffset;
-          rewinding = true;
-        }
-      }
-      try {
-        const result = await readTranscriptRequest(
-          (signal) => heartbeatsApi.log(run.id, offset, logReadLimitBytes, {
-            signal,
-            ...(alignStartToRecord && offset > 0 ? { alignStartToRecord: true } : {}),
-          }),
-          controller.signal,
-        );
-        if (cancelled) return;
-
-        // Commit the expanded window only after success so retries still align
-        // its first record and failed reads leave the previous parser intact.
-        if (previousReadLimit === undefined || rewinding) {
-          setTruncatedRunIds((previous) => {
-            if (previous.has(run.id) === (offset > 0)) return previous;
-            const next = new Set(previous);
-            if (offset > 0) next.add(run.id);
-            else next.delete(run.id);
-            return next;
-          });
-        }
-        logReadLimitByRunRef.current.set(run.id, logReadLimitBytes);
-        if (rewinding) {
-          pendingLogRowsByRunRef.current.delete(run.id);
-          pendingLogRowsByRunRef.current.delete(`${run.id}:records`);
-        }
-        setErrorsByRun((previous) => {
-          if (!previous.has(run.id)) return previous;
-          const next = new Map(previous);
-          next.delete(run.id);
-          return next;
-        });
-        appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));
-
-        if (result.nextOffset !== undefined) {
-          logOffsetByRunRef.current.set(run.id, result.nextOffset);
-          return;
-        }
-        if (result.content.length > 0) {
-          logOffsetByRunRef.current.set(run.id, offset + result.content.length);
-        }
-      } catch (error) {
-        if (cancelled) return;
-        if (error instanceof ApiError && error.status === 404) {
-          setErrorsByRun((previous) => {
-            if (!previous.has(run.id)) return previous;
-            const next = new Map(previous);
-            next.delete(run.id);
-            return next;
-          });
-          // A newly started run may not have created its log yet.
-          if (isTerminalStatus(run.status)) missingTerminalLogRunIdsRef.current.add(run.id);
-        } else {
-          setErrorsByRun((previous) => {
-            if (previous.has(run.id)) return previous;
-            const next = new Map(previous);
-            next.set(run.id, error instanceof Error ? error : new Error("Run history could not be loaded"));
-            return next;
-          });
-        }
-      } finally {
-        inFlightRunIds.delete(run.id);
-        if (!cancelled) {
-          setHydratedRunIds((prev) => {
-            if (prev.has(run.id)) return prev;
-            const next = new Set(prev);
-            next.add(run.id);
-            return next;
-          });
-        }
-      }
-    };
-
-    const readAll = async () => {
-      await Promise.all(readableRuns.map((run) => readRunLog(run)));
-    };
-
-    void readAll();
-    const activeRuns = readableRuns.filter((run) => run.status === "running");
-    // The realtime websocket is the primary live source when enabled, so the
-    // recurring poll only needs to run as a slow fallback rather than doubling
-    // the live update work every couple of seconds.
-    const effectivePollMs = enableRealtimeUpdates
-      ? Math.max(logPollIntervalMs, REALTIME_FALLBACK_POLL_INTERVAL_MS)
-      : logPollIntervalMs;
-    const interval = activeRuns.length > 0 && effectivePollMs > 0
-      ? window.setInterval(() => {
-          void Promise.all(activeRuns.map((run) => readRunLog(run)));
-        }, effectivePollMs)
-      : null;
-
-    return () => {
-      cancelled = true;
-      controller.abort();
-      if (interval !== null) window.clearInterval(interval);
-    };
-  }, [visible, enableRealtimeUpdates, logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey, retryGeneration]);
-
-  useEffect(() => {
-    if (!visible || !enableRealtimeUpdates) return;
-    if (!companyId || activeRunIds.size === 0) return;
-
-    let closed = false;
-    let reconnectTimer: number | null = null;
-    let socket: WebSocket | null = null;
-
-    // The attempt counter lives in a ref keyed to the company: this effect
-    // restarts whenever run metadata changes, and a per-effect counter would
-    // reset the backoff to its base delay mid-outage on every such restart.
-    if (reconnectStateRef.current?.companyId !== companyId) {
-      reconnectStateRef.current = { companyId, attempt: 0 };
-    }
-    const reconnectState = reconnectStateRef.current;
-
-    // Exponential backoff (1.5s → 15s cap), mirroring LiveUpdatesProvider.
-    // A flat retry hammers a backend that is still cold-starting — every
-    // failed handshake immediately queues the next one, so a stack that
-    // takes a minute to come up sees a steady stream of doomed connections.
-    const scheduleReconnect = () => {
-      if (closed) return;
-      reconnectState.attempt += 1;
-      const delayMs = Math.min(15_000, 1_500 * 2 ** Math.min(reconnectState.attempt - 1, 4));
-      reconnectTimer = window.setTimeout(connect, delayMs);
-    };
-
-    const connect = () => {
-      if (closed) return;
-      const url = buildSameOriginWebSocketUrl(
-        `/api/companies/${encodeURIComponent(companyId)}/events/ws`,
-      );
-      socket = tryCreateWebSocket(url);
-      if (!socket) {
-        scheduleReconnect();
-        return;
-      }
-
-      socket.onopen = () => {
-        if (closed) return;
-        reconnectState.attempt = 0;
-      };
-
-      socket.onmessage = (message) => {
-        const raw = typeof message.data === "string" ? message.data : "";
-        if (!raw) return;
-
-        let event: LiveEvent;
-        try {
-          event = JSON.parse(raw) as LiveEvent;
-        } catch {
-          return;
-        }
-
+  const stream = useTranscriptLiveStream([...activeRunIds], { companyId, enabled: enabled && enableRealtimeUpdates }, event => {
         if (event.companyId !== companyId) return;
         const payload = event.payload ?? {};
         const runId = readString(payload["runId"]);
-        if (!runId || !activeRunIds.has(runId)) return;
+        if (!runId) return;
         if (!runById.has(runId)) return;
 
         if (event.type === "heartbeat.run.log") {
+          const binding = bindLog(runId, payload.logStore, payload.logRef);
+          if (binding === "stale") return;
+          const seq = readChunkSeq(payload.seq);
+          if (payload.truncated === true) sequence(runId).requireHistory(seq);
+          const gap = sequence(runId).observe(seq);
+          if (binding === "changed" || payload.truncated === true || gap) requestCatchUp(runId);
+          if (payload.truncated === true) return;
           const chunk = readString(payload["chunk"]);
           if (!chunk) return;
           const ts = readString(payload["ts"]) ?? event.createdAt;
@@ -526,6 +400,7 @@ export function useLiveRunTranscripts({
 
         if (event.type === "heartbeat.run.status") {
           const status = readString(payload["status"]) ?? "updated";
+          if (isTerminalStatus(status)) refreshByRunRef.current.get(runId)?.(true);
           appendChunks(runId, [{
             ts: event.createdAt,
             stream: isTerminalStatus(status) && status !== "succeeded" ? "stderr" : "system",
@@ -533,39 +408,154 @@ export function useLiveRunTranscripts({
             dedupeKey: `socket:status:${runId}:${status}:${readString(payload["finishedAt"]) ?? ""}`,
           }]);
         }
-      };
+  });
 
-      socket.onerror = () => {
-        socket?.close();
-      };
+  useEffect(() => {
+    if (!visible || !enabled) return;
+    const readableRuns = normalizedRuns.filter(canReadPersistedLog);
+    if (readableRuns.length === 0) return;
 
-      socket.onclose = () => {
-        scheduleReconnect();
-      };
-    };
+    let cancelled = false;
+    const controller = new AbortController();
+    const inFlightRunIds = new Set<string>();
+    const retryTimers = new Map<string, number>();
+    const pendingRefresh = new Set<string>();
 
-    connect();
-
-    return () => {
-      closed = true;
-      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
-      if (socket) {
-        socket.onmessage = null;
-        socket.onerror = null;
-        socket.onclose = null;
-        if (socket.readyState === SOCKET_CONNECTING) {
-          // Defer the close until the handshake completes so the browser
-          // does not emit a noisy "closed before the connection is established"
-          // warning during rapid run teardown.
-          socket.onopen = () => {
-            socket?.close(1000, "live_run_transcripts_unmount");
-          };
-        } else if (socket.readyState === SOCKET_OPEN) {
-          socket.close(1000, "live_run_transcripts_unmount");
+    const readRunLog = async (run: RunTranscriptSource) => {
+      if (cancelled || missingTerminalLogRunIdsRef.current.has(run.id) || inFlightRunIds.has(run.id)) {
+        return;
+      }
+      pendingRefresh.delete(run.id);
+      window.clearTimeout(retryTimers.get(run.id));
+      retryTimers.delete(run.id);
+      inFlightRunIds.add(run.id);
+      let failed = false;
+      let alignStartToRecord = !logOffsetByRunRef.current.has(run.id);
+      let offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
+      let rewinding = false;
+      const previousReadLimit = logReadLimitByRunRef.current.get(run.id);
+      if (previousReadLimit !== undefined && logReadLimitBytes > previousReadLimit) {
+        const expandedOffset = resolveInitialLogOffset(run, logReadLimitBytes);
+        if (expandedOffset < offset) {
+          alignStartToRecord = true;
+          offset = expandedOffset;
+          rewinding = true;
+        }
+      }
+      let recordInitialWindow = previousReadLimit === undefined || rewinding;
+      try {
+        for (;;) {
+          const result = await readTranscriptRequest(
+            (signal) => heartbeatsApi.log(run.id, offset, logReadLimitBytes, {
+              signal,
+              ...(alignStartToRecord && offset > 0 ? { alignStartToRecord: true } : {}),
+            }), controller.signal,
+          );
+          if (cancelled) return;
+          const binding = bindLog(run.id, result.store, result.logRef);
+          if (binding === "stale") { failed = true; return; }
+          if (binding === "changed" && offset !== 0) { offset = 0; continue; }
+          if (recordInitialWindow || binding === "changed") {
+            const windowIsTruncated = offset > 0;
+            setTruncatedRunIds(previous => {
+              if (previous.has(run.id) === windowIsTruncated) return previous;
+              const next = new Set(previous);
+              if (windowIsTruncated) next.add(run.id);
+              else next.delete(run.id);
+              return next;
+            });
+            recordInitialWindow = false;
+          }
+          logReadLimitByRunRef.current.set(run.id, logReadLimitBytes);
+          if (rewinding) {
+            pendingLogRowsByRunRef.current.delete(run.id);
+            pendingLogRowsByRunRef.current.delete(`${run.id}:records`);
+            rewinding = false;
+          }
+          alignStartToRecord = false;
+          setErrorsByRun(previous => {
+            if (!previous.has(run.id)) return previous;
+            const next = new Map(previous); next.delete(run.id); return next;
+          });
+          const rows = parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current);
+          appendChunks(run.id, rows);
+          for (const row of rows) sequence(run.id).confirm(row.seq);
+          const next = result.nextOffset ?? offset + new TextEncoder().encode(result.content).byteLength;
+          logOffsetByRunRef.current.set(run.id, next);
+          if (result.nextOffset === undefined || result.content.length === 0 || next <= offset) break;
+          offset = next;
+        }
+        failed = sequence(run.id).needsCatchup;
+        if (!failed) gapPendingRef.current.delete(run.id);
+      } catch (error) {
+        if (cancelled) return;
+        failed = true;
+        if (error instanceof ApiError && error.status === 404) {
+          setErrorsByRun((previous) => {
+            if (!previous.has(run.id)) return previous;
+            const next = new Map(previous);
+            next.delete(run.id);
+            return next;
+          });
+          // A newly started run may not have created its log yet.
+          if (isTerminalStatus(run.status)) { missingTerminalLogRunIdsRef.current.add(run.id); failed = false; }
+        } else {
+          setErrorsByRun((previous) => {
+            if (previous.has(run.id)) return previous;
+            const next = new Map(previous);
+            next.set(run.id, error instanceof Error ? error : new Error("Run history could not be loaded"));
+            return next;
+          });
+        }
+      } finally {
+        inFlightRunIds.delete(run.id);
+        if (!cancelled) {
+          if (pendingRefresh.has(run.id)) {
+            missingTerminalLogRunIdsRef.current.delete(run.id);
+            void readRunLog(run);
+          } else if (failed && stream.healthy) {
+            const timer = window.setTimeout(() => { retryTimers.delete(run.id); void readRunLog(run); }, LOG_POLL_INTERVAL_MS);
+            retryTimers.set(run.id, timer);
+          }
+          setHydratedRunIds((prev) => {
+            if (prev.has(run.id)) return prev;
+            const next = new Set(prev);
+            next.add(run.id);
+            return next;
+          });
         }
       }
     };
-  }, [visible, activeRunIds, companyId, enableRealtimeUpdates, runById]);
+
+    for (const run of readableRuns) {
+      refreshByRunRef.current.set(run.id, (force = false) => {
+        if (force) { pendingRefresh.add(run.id); missingTerminalLogRunIdsRef.current.delete(run.id); }
+        void readRunLog(run);
+      });
+      void readRunLog(run);
+    }
+    const activeRuns = readableRuns.filter((run) => run.status === "running");
+    // The realtime websocket is the primary live source when enabled, so the
+    // recurring poll only needs to run as a slow fallback rather than doubling
+    // the live update work every couple of seconds.
+    const effectivePollMs = enableRealtimeUpdates
+      ? Math.max(logPollIntervalMs, REALTIME_FALLBACK_POLL_INTERVAL_MS)
+      : logPollIntervalMs;
+    const interval = !stream.healthy && activeRuns.length > 0 && effectivePollMs > 0
+      ? window.setInterval(() => {
+          void Promise.all(activeRuns.map((run) => readRunLog(run)));
+        }, effectivePollMs)
+      : null;
+
+    return () => {
+      cancelled = true;
+      refreshByRunRef.current.clear();
+      controller.abort();
+      for (const timer of retryTimers.values()) window.clearTimeout(timer);
+      if (interval !== null) window.clearInterval(interval);
+    };
+  }, [visible, enableRealtimeUpdates, logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey, retryGeneration, enabled, companyId, stream.healthy, stream.epoch]);
+
 
   const transcriptByRun = useMemo(() => {
     const next = new Map<string, TranscriptEntry[]>();

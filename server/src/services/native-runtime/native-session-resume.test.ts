@@ -62,6 +62,8 @@ import { buildNativeExecutionInput } from "./native-execution-input.js";
 import {
   buildNativeExecutionWithCheckpoint,
   findNativeSessionResumeRun,
+  NATIVE_PROVIDER_SIDE_EFFECT_PENDING,
+  NATIVE_PROVIDER_STATE_INCOMPATIBLE,
   NATIVE_TOOL_CONTRACT_FINGERPRINT,
   isUnusedLegacyNativeRetryReplacement,
   nativeToolContractFingerprintForTarget,
@@ -275,6 +277,36 @@ describe("capability-gated connection tool refresh", () => {
     expect(result.normalizedSessionId).not.toBe(normalizedSessionId);
     expect(result.execution.task.prompt).toContain("complete handoff");
     expect(buildExecution).toHaveBeenLastCalledWith({ normalizedSessionId: result.normalizedSessionId, resumedSession: false });
+  });
+});
+
+describe("a source stopped with a pending side-effecting call", () => {
+  it("does not rebind the saved session that still refuses attachment", () => {
+    const current = execution(currentRunId);
+    const source = { ...previousRun(), errorCode: NATIVE_PROVIDER_SIDE_EFFECT_PENDING };
+    expect(rebindNativeSessionCheckpoint({ previousRun: source, currentExecution: current })).toBeNull();
+  });
+});
+
+describe("a source whose saved provider session the runner proved incompatible", () => {
+  it("continues the task in a fresh provider session with the same workspace", () => {
+    const current = execution(currentRunId);
+    expect(rebindNativeSessionCheckpoint({ previousRun: { ...previousRun(), errorCode: "native_session_interrupted" },
+      currentExecution: current })).not.toBeNull();
+    const source = { ...previousRun(), errorCode: NATIVE_PROVIDER_STATE_INCOMPATIBLE };
+    expect(rebindNativeSessionCheckpoint({ previousRun: source, currentExecution: current })).toBeNull();
+    const buildExecution = vi.fn(({ normalizedSessionId: sessionId, resumedSession }) => {
+      const built = execution(currentRunId);
+      built.session.normalizedSessionId = sessionId;
+      built.task.prompt = resumedSession ? "wake delta" : "original goal and complete handoff";
+      return built;
+    });
+    const result = buildNativeExecutionWithCheckpoint({ previousRun: source, normalizedSessionId, buildExecution });
+    expect(result.checkpoint).toBeNull();
+    expect(result.normalizedSessionId).not.toBe(normalizedSessionId);
+    expect(result.execution.task.prompt).toContain("complete handoff");
+    expect(result.execution.binding.executionWorkspaceId).toBe(current.binding.executionWorkspaceId);
+    expect(result.execution.workspace).toEqual(current.workspace);
   });
 });
 
@@ -1219,6 +1251,41 @@ const recoveryFakeCodex = resolve(
             currentExecution: execution(currentRunId),
           }),
         ).toBeNull();
+        // A run whose saved provider session the runner proved unrestorable
+        // stays the barrier, and its checkpoint is not resumed.
+        const unrestorableId = randomUUID();
+        const sourceCheckpoint = source.runnerProfileJson.sessionCheckpoint;
+        await db.insert(heartbeatRuns).values({
+          ...unused,
+          id: unrestorableId,
+          createdAt: at(8),
+          errorCode: NATIVE_PROVIDER_STATE_INCOMPATIBLE,
+          runnerProfileJson: {
+            ...source.runnerProfileJson,
+            nativeExecutionInput: execution(unrestorableId),
+            sessionCheckpoint: {
+              ...sourceCheckpoint,
+              identity: { ...sourceCheckpoint.identity, runId: unrestorableId },
+            },
+          },
+        });
+        const unrestorable = await findNativeSessionResumeRun(db, selection);
+        expect(unrestorable).toMatchObject({
+          id: unrestorableId,
+          errorCode: NATIVE_PROVIDER_STATE_INCOMPATIBLE,
+        });
+        expect(
+          rebindNativeSessionCheckpoint({
+            previousRun: { ...unrestorable!, errorCode: null },
+            currentExecution: execution(currentRunId),
+          }),
+        ).not.toBeNull();
+        expect(
+          rebindNativeSessionCheckpoint({
+            previousRun: unrestorable!,
+            currentExecution: execution(currentRunId),
+          }),
+        ).toBeNull();
 
         const fresh = buildNativeExecutionWithCheckpoint({
           previousRun: null,
@@ -1774,6 +1841,13 @@ describe("rebindNativeSessionCheckpoint", () => {
         "sha256:f12fe3b1bf5d63b7954d8ab16f57764874806ab49acff7c6582c4de007f4ed4d",
     },
     {
+      contract: "regressed conditional run-scoped readers",
+      // Deployed v17 threads were opened without read_current_wake_comments
+      // and read_chat_attachment on ordinary turns; resume cannot add them.
+      retainedFingerprint:
+        "sha256:dc495475fb6a4bd034c6dbb2bbe0cf52e7ffc1635838889dc5f7d7251273f119",
+    },
+    {
       contract: "task-bound human-input description",
       // Deployed v9 still advertises the generic mock-task question description.
       retainedFingerprint:
@@ -1876,6 +1950,17 @@ describe("rebindNativeSessionCheckpoint", () => {
         executionTargetKind: "remote",
       }),
     ).not.toBeNull();
+    // Deployed v17 remote threads were opened without the run-scoped readers.
+    expect(
+      rebindNativeSessionCheckpoint({
+        previousRun: previousRun({
+          nativeToolContractFingerprint:
+            "sha256:96dde421aab01f847468d1a8f12863d32dfdb3038a9aca61e1e6bdc81022d5a1",
+        }),
+        currentExecution: execution(currentRunId),
+        executionTargetKind: "remote",
+      }),
+    ).toBeNull();
   });
 
 
@@ -1935,6 +2020,8 @@ describe("rebindNativeSessionCheckpoint", () => {
     const profile = prior.runnerProfileJson as Record<string, unknown>;
     const checkpoint = profile.sessionCheckpoint as Record<string, unknown>;
     checkpoint.governedWait = { sourceEvent: { runId: previousRunId, turnId: "old-turn" }, result: { reportedWorkDisposition: "yielded" } };
+    checkpoint.dispositionOnlyRecoveryConsumed = true;
+    checkpoint.dispositionOnlyRecoveryTurnId = "old-restart-continuation";
     const before = structuredClone(prior);
     const rebound = rebindNativeSessionCheckpoint({
       previousRun: prior,
@@ -1952,6 +2039,8 @@ describe("rebindNativeSessionCheckpoint", () => {
       activeTurnId: null,
       terminalTurns: [],
       pendingRuntimeRequests: [],
+      dispositionOnlyRecoveryConsumed: false,
+      dispositionOnlyRecoveryTurnId: null,
       providerRecoveryPolicy: "allow_replacement_after_resume_failure",
       identity: {
         runId: currentRunId,

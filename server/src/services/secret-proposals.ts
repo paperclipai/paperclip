@@ -1,3 +1,5 @@
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { withAgentAppearance } from "@paperclipai/shared";
 import { and, count, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
@@ -144,6 +146,7 @@ export function createSecretProposalsService(db: Db) {
         });
         return { denial, value: null };
       }
+      await notifyDeliveryWork(txDb, DELIVERY_QUEUES.secretProposalExpiry, input.companyId);
       return { denial: null, value: await create(txDb) };
     });
     if (result.denial) throw unprocessable(result.denial.message);
@@ -288,6 +291,7 @@ export function createSecretProposalsService(db: Db) {
       : outcome === "rejected"
         ? "rejected"
         : "withdrawn";
+    if (current.status !== status) await notifyChatRunMilestones(txDb, current);
     await txDb
       .update(issueThreadInteractions)
       .set({
@@ -442,6 +446,13 @@ export function createSecretProposalsService(db: Db) {
     return createWithinQuota(
       { companyId: context.companyId, agentId: run.agentId, runId: run.id, issueId: originIssueId },
       async (txDb) => {
+        if (resolvedSecretId) {
+          // Hold the secret against a concurrent delete: the delete marks it
+          // deleted first, then settles the proposals that reference it.
+          const live = await txDb.select({ status: companySecrets.status }).from(companySecrets)
+            .where(eq(companySecrets.id, resolvedSecretId)).for("share").then((rows) => rows[0] ?? null);
+          if (!live || live.status === "deleted") throw notFound("Secret not found");
+        }
         if (input.secretProposalId) {
           const dependency = await txDb.select().from(companySecretProposals).where(and(
             eq(companySecretProposals.id, input.secretProposalId),
@@ -619,6 +630,7 @@ export function createSecretProposalsService(db: Db) {
     appliedBindingConfigPath?: string | null;
   }) {
     const now = new Date();
+    await notifyDeliveryWork(txDb, DELIVERY_QUEUES.secretProposalExpiry, proposal.companyId);
     const updated = await txDb.update(companySecretProposals).set({
       status: "approved",
       resolvedByUserId: input.resolvedByUserId,
@@ -794,6 +806,7 @@ export function createSecretProposalsService(db: Db) {
     const now = new Date();
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.secretProposalExpiry, companyId);
       const updated = await tx.update(companySecretProposals).set({
         status,
         resolvedByUserId: input.resolvedByUserId ?? null,
@@ -868,10 +881,12 @@ export function createSecretProposalsService(db: Db) {
     limit = DEFAULT_EXPIRY_SWEEP_LIMIT,
     expireProposal: (companyId: string, proposalId: string) => Promise<unknown> =
       (companyId, proposalId) => transition(companyId, proposalId, "expired", { reason: "Pending proposal expired" }),
+    companyId?: string,
   ) {
     const expired = await db.select({ id: companySecretProposals.id, companyId: companySecretProposals.companyId })
       .from(companySecretProposals)
-      .where(and(eq(companySecretProposals.status, "pending"), lte(companySecretProposals.expiresAt, now)))
+      .where(and(eq(companySecretProposals.status, "pending"), lte(companySecretProposals.expiresAt, now),
+        companyId === undefined ? undefined : eq(companySecretProposals.companyId, companyId)))
       .orderBy(companySecretProposals.expiresAt)
       .limit(limit);
     let expiredCount = 0;
@@ -887,5 +902,55 @@ export function createSecretProposalsService(db: Db) {
     return expiredCount;
   }
 
-  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired };
+  async function sweepExpiredForCompany(companyId: string) {
+    return sweepExpired(new Date(), DEFAULT_EXPIRY_SWEEP_LIMIT, undefined, companyId);
+  }
+
+  async function expiryDeadlines(companyId?: string) {
+    const rows = await db.select({ companyId: companySecretProposals.companyId,
+      at: sql<string | Date>`min(${companySecretProposals.expiresAt})` })
+      .from(companySecretProposals)
+      .where(and(eq(companySecretProposals.status, "pending"),
+        companyId === undefined ? undefined : eq(companySecretProposals.companyId, companyId)))
+      .groupBy(companySecretProposals.companyId);
+    return rows.map(row => ({ companyId: row.companyId, dueAt: new Date(row.at).getTime() }));
+  }
+
+  async function nextExpiryAt(): Promise<number | null> {
+    const [row] = await db.select({ at: sql<string | Date | null>`min(${companySecretProposals.expiresAt})` })
+      .from(companySecretProposals).where(eq(companySecretProposals.status, "pending"));
+    return row?.at == null ? null : new Date(row.at).getTime();
+  }
+
+  /**
+   * Deleting a secret also deletes the binding proposals that reference it.
+   * Settle pending ones first, so their review cards close as rejected with
+   * the reason instead of pointing at a proposal that no longer exists. Call
+   * it after the secret is marked deleted: createBinding holds the secret row
+   * and refuses a deleted one, so no new pending proposal can follow.
+   */
+  async function rejectPendingBindingsForSecret(companyId: string, secretId: string, input: { resolvedByUserId?: string | null; reason: string }) {
+    const pending = await db.select().from(companySecretProposals).where(and(
+      eq(companySecretProposals.companyId, companyId),
+      eq(companySecretProposals.secretId, secretId),
+      eq(companySecretProposals.kind, "binding"),
+      eq(companySecretProposals.status, "pending"),
+    ));
+    const rejected: Proposal[] = [];
+    for (const row of pending) {
+      try {
+        await transition(companyId, row.id, "rejected", {
+          resolvedByUserId: input.resolvedByUserId ?? null,
+          reason: input.reason,
+        });
+        rejected.push(row);
+      } catch (error) {
+        // Resolved concurrently; the secret deletion still removes the row.
+        if (!(error instanceof HttpError) || error.status !== 409) throw error;
+      }
+    }
+    return rejected;
+  }
+
+  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, rejectPendingBindingsForSecret, sweepExpired, sweepExpiredForCompany, expiryDeadlines, nextExpiryAt };
 }

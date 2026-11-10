@@ -59,6 +59,9 @@ export function columnData(issue: Issue, owner: string) {
     parent: treeTasks.find(candidate => candidate.id === issue.parentId),
     creator: rowIssue.createdByAgentId ? agent.name : "Scott",
     assignee: rowIssue.assigneeAgentId ? agent.name : rowIssue.assigneeUserId ? "Design" : null,
+    assigneeAgent: rowIssue.assigneeAgentId ? agent : null,
+    // Static Storybook fixture served at the same asset path as an uploaded photo.
+    assigneeUserAvatarUrl: rowIssue.assigneeUserId && issue.id === healthTask.id ? "/api/assets/33333333-3333-4333-8333-333333333333/content" : null,
   };
 }
 
@@ -79,5 +82,5 @@ export function sortValue(issue: Issue, column: TaskListColumnId) {
 
 export const reviewTaskItems: TaskListItem[] = treeTasks.map(issue => {
   const data = columnData(issue, ownerFor(issue));
-  return { issue: data.issue, createdBy: data.creator, assignee: data.assignee, unread: issue === connectorParent || issue === healthTask };
+  return { issue: data.issue, createdBy: data.creator, assignee: data.assignee, assigneeAgent: data.assigneeAgent, assigneeUserAvatarUrl: data.assigneeUserAvatarUrl, unread: issue === connectorParent || issue === healthTask };
 });

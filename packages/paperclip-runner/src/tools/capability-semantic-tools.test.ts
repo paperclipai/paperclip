@@ -93,6 +93,11 @@ async function runtimeFor(options: {
   };
 }
 
+function pendingLeaseExpiry(snapshot: CapabilitySemanticToolRuntimeSnapshot | null): number | undefined {
+  const extension = snapshot?.extensions[0];
+  return extension?.status === "pending" ? extension.leaseExpiresAtMs : undefined;
+}
+
 describe("Capability semantic tool catalog", () => {
   it("defines a unique versioned provider-neutral catalog and every optional group", () => {
     const operationIds = CAPABILITY_SEMANTIC_TOOL_CATALOG.map((tool) => tool.operationId);
@@ -441,7 +446,7 @@ describe("Capability exposure and authorization", () => {
   });
 
   it("retries the completion merge after a concurrent lease heartbeat", async () => {
-    let durableSnapshot: CapabilitySemanticToolRuntimeSnapshot | null = null;
+    let durableSnapshot = null as CapabilitySemanticToolRuntimeSnapshot | null;
     let injectedHeartbeats = 0;
     let completionAttempts = 0;
     const durableStore: CapabilitySemanticToolRuntimeStore = {
@@ -494,7 +499,7 @@ describe("Capability exposure and authorization", () => {
   it("bounds completion contention and retries the fulfilled execution without rerunning it", async () => {
     vi.useFakeTimers({ now: 0 });
     try {
-      let durableSnapshot: CapabilitySemanticToolRuntimeSnapshot | null = null;
+      let durableSnapshot = null as CapabilitySemanticToolRuntimeSnapshot | null;
       let rejectCompletion = true;
       let completionAttempts = 0;
       const durableStore: CapabilitySemanticToolRuntimeStore = {
@@ -574,7 +579,7 @@ describe("Capability exposure and authorization", () => {
     vi.useFakeTimers({ now: 0 });
     try {
       let now = 0;
-      let durableSnapshot: CapabilitySemanticToolRuntimeSnapshot | null = null;
+      let durableSnapshot = null as CapabilitySemanticToolRuntimeSnapshot | null;
       let rejectCompletion = true;
       const durableStore: CapabilitySemanticToolRuntimeStore = {
         load: () => durableSnapshot === null ? null : structuredClone(durableSnapshot),
@@ -704,7 +709,7 @@ describe("Capability exposure and authorization", () => {
   it("retains a failed lease until cleanup contention clears", async () => {
     vi.useFakeTimers({ now: 0 });
     try {
-      let durableSnapshot: CapabilitySemanticToolRuntimeSnapshot | null = null;
+      let durableSnapshot = null as CapabilitySemanticToolRuntimeSnapshot | null;
       let failExecutionAllocation = true;
       let cleanupAttempts = 0;
       const durableStore: CapabilitySemanticToolRuntimeStore = {
@@ -764,7 +769,7 @@ describe("Capability exposure and authorization", () => {
   });
 
   it("allocates read result ids from the latest shared durable sequence", async () => {
-    let durableSnapshot: CapabilitySemanticToolRuntimeSnapshot | null = null;
+    let durableSnapshot = null as CapabilitySemanticToolRuntimeSnapshot | null;
     const durableStore: CapabilitySemanticToolRuntimeStore = {
       load: () => durableSnapshot === null ? null : structuredClone(durableSnapshot),
       save: (_runId, snapshot) => {
@@ -800,7 +805,7 @@ describe("Capability exposure and authorization", () => {
   });
 
   it("retries extension acquisition after an unrelated snapshot update", async () => {
-    let durableSnapshot: CapabilitySemanticToolRuntimeSnapshot | null = null;
+    let durableSnapshot = null as CapabilitySemanticToolRuntimeSnapshot | null;
     let injectedContention = false;
     const durableStore: CapabilitySemanticToolRuntimeStore = {
       load: () => durableSnapshot === null ? null : structuredClone(durableSnapshot),
@@ -903,7 +908,7 @@ describe("Capability exposure and authorization", () => {
   });
 
   it("does not revive a serialized pending extension when the durable store is empty", async () => {
-    let durableSnapshot: CapabilitySemanticToolRuntimeSnapshot | null = null;
+    let durableSnapshot = null as CapabilitySemanticToolRuntimeSnapshot | null;
     const durableStore: CapabilitySemanticToolRuntimeStore = {
       load: () => durableSnapshot === null ? null : structuredClone(durableSnapshot),
       save: (_runId, snapshot) => {
@@ -928,7 +933,7 @@ describe("Capability exposure and authorization", () => {
     const inFlight = first.runtime.invoke(invocation);
     const serializedWhilePending = first.adapter.serialize();
     await expect(inFlight).resolves.toMatchObject({ ok: true });
-    durableSnapshot = null;
+    durableSnapshot = null as CapabilitySemanticToolRuntimeSnapshot | null;
 
     const restoredAdapter = CapabilityMockControlPlaneAdapter.restore(
       serializedWhilePending,
@@ -952,7 +957,7 @@ describe("Capability exposure and authorization", () => {
   });
 
   it("does not revive serialized completed extensions when the durable store is empty", async () => {
-    let durableSnapshot: CapabilitySemanticToolRuntimeSnapshot | null = null;
+    let durableSnapshot = null as CapabilitySemanticToolRuntimeSnapshot | null;
     const durableStore: CapabilitySemanticToolRuntimeStore = {
       load: () => durableSnapshot === null ? null : structuredClone(durableSnapshot),
       save: (_runId, snapshot) => {
@@ -974,7 +979,7 @@ describe("Capability exposure and authorization", () => {
       idempotencyKey: "stale-completed",
     })).resolves.toMatchObject({ ok: true });
     const serializedWithCompleted = first.adapter.serialize();
-    durableSnapshot = null;
+    durableSnapshot = null as CapabilitySemanticToolRuntimeSnapshot | null;
 
     const restoredAdapter = CapabilityMockControlPlaneAdapter.restore(
       serializedWithCompleted,
@@ -1004,7 +1009,7 @@ describe("Capability exposure and authorization", () => {
   it("renews a live extension lease before another runtime can reclaim it", async () => {
     vi.useFakeTimers({ now: 0 });
     try {
-      let durableSnapshot: CapabilitySemanticToolRuntimeSnapshot | null = null;
+      let durableSnapshot = null as CapabilitySemanticToolRuntimeSnapshot | null;
       const durableStore: CapabilitySemanticToolRuntimeStore = {
         load: () =>
           durableSnapshot === null ? null : structuredClone(durableSnapshot),
@@ -1066,7 +1071,7 @@ describe("Capability exposure and authorization", () => {
   it("retries a lease heartbeat after a transient durable-store failure", async () => {
     vi.useFakeTimers({ now: 0 });
     try {
-      let durableSnapshot: CapabilitySemanticToolRuntimeSnapshot | null = null;
+      let durableSnapshot = null as CapabilitySemanticToolRuntimeSnapshot | null;
       let failNextLoad = false;
       const durableStore: CapabilitySemanticToolRuntimeStore = {
         load: () => {
@@ -1099,9 +1104,9 @@ describe("Capability exposure and authorization", () => {
 
       failNextLoad = true;
       expect(() => vi.advanceTimersByTime(10_000)).not.toThrow();
-      expect(durableSnapshot?.extensions[0]?.leaseExpiresAtMs).toBe(30_000);
+      expect(pendingLeaseExpiry(durableSnapshot)).toBe(30_000);
       vi.advanceTimersByTime(10_000);
-      expect(durableSnapshot?.extensions[0]?.leaseExpiresAtMs).toBe(50_000);
+      expect(pendingLeaseExpiry(durableSnapshot)).toBe(50_000);
       await expect(inFlight).resolves.toMatchObject({ ok: true });
     } finally {
       vi.useRealTimers();
@@ -1111,7 +1116,7 @@ describe("Capability exposure and authorization", () => {
   it("recovers a prepared extension after repeated heartbeat failures", async () => {
     vi.useFakeTimers({ now: 0 });
     try {
-      let durableSnapshot: CapabilitySemanticToolRuntimeSnapshot | null = null;
+      let durableSnapshot = null as CapabilitySemanticToolRuntimeSnapshot | null;
       let failHeartbeatLoads = false;
       const durableStore: CapabilitySemanticToolRuntimeStore = {
         load: () => {

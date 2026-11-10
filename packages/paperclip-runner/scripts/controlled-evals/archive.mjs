@@ -164,10 +164,30 @@ export async function summarizeControlledEvidence(bundles, options) {
   for (const group of [...groups.values()].sort((a, b) => a.manifest.campaignId.localeCompare(b.manifest.campaignId))) {
     campaigns.push(await summarizeControlledCampaign(group.manifest, { filesByAttempt: group.filesByAttempt }));
   }
+  return history(campaigns);
+}
+
+function history(campaigns) {
   const sum = field => usd(campaigns.reduce((total, campaign) => total + units(campaign[field]), 0n));
   return { schema: 'paperclip.runner-eval.control-history/v1', costStatus: campaigns.some(c => c.costStatus === 'incomplete') ? 'incomplete' : 'provisional',
+    ...(campaigns.length && campaigns.every(c => c.accountingReadiness === 'model_requests')
+      ? { accountingReadiness: 'model_requests' } : {}),
+    ...(campaigns.some(c => c.operatingReconciliation === 'pending') ? { operatingReconciliation: 'pending' } : {}),
     knownUsd: sum('knownUsd'), heldUsd: sum('heldUsd'), committedUsd: sum('committedUsd'), operatingHeldUsd: sum('operatingHeldUsd'),
     incompleteAttempts: campaigns.reduce((total, c) => total + c.incompleteAttempts, 0), overBudget: campaigns.some(c => c.overBudget), campaigns };
+}
+
+export async function summarizeControlledManifest(value, bundles, options) {
+  const { manifest, manifestSha256 } = validateManifest(value, Date.now(), { admission: false });
+  const filesByAttempt = new Map(), digests = new Map();
+  for (const bundle of bundles) {
+    const decoded = decodeControlledEvidence(bundle, options), digest = sha256(canonical(bundle));
+    if (decoded.manifestSha256 !== manifestSha256 || digests.has(decoded.attemptId) && digests.get(decoded.attemptId) !== digest) {
+      throw new Error('Archive disagrees with the retained campaign manifest');
+    }
+    digests.set(decoded.attemptId, digest); filesByAttempt.set(decoded.attemptId, decoded.files);
+  }
+  return history([await summarizeControlledCampaign(manifest, { filesByAttempt })]);
 }
 
 if (await isEntrypoint(import.meta.url)) {
@@ -179,10 +199,14 @@ if (await isEntrypoint(import.meta.url)) {
   } else if (command === 'pack' && args.length === 3) {
     const bundle = await packControlledAttempt({ manifest: await readJson(args[0]), attemptId: args[1] });
     await writeFile(args[2], JSON.stringify(bundle) + '\n', { flag: 'wx', mode: 0o600 });
+  } else if (command === 'report-campaign' && args.length) {
+    const result = await summarizeControlledManifest(await readJson(args[0]), await Promise.all(args.slice(1).map(path => readAttemptControlledEvidence(path))));
+    console.log(JSON.stringify(result, null, 2));
+    process.exitCode = result.costStatus === 'incomplete' ? 2 : 0;
   } else if (['report', 'report-attempts'].includes(command) && args.length) {
     const read = command === 'report' ? readControlledEvidence : readAttemptControlledEvidence;
     const result = await summarizeControlledEvidence(await Promise.all(args.map(path => read(path))));
     process.stdout.write(JSON.stringify(result, null, 2) + '\n');
     if (result.costStatus === 'incomplete') process.exitCode = 2;
-  } else throw new Error('Usage: archive.mjs verify <manifest.json> <request.json> | pack <manifest.json> <attempt-id> <output.json> | report <evidence.json>... | report-attempts <attempt-directory>...');
+  } else throw new Error('Usage: archive.mjs verify <manifest.json> <request.json> | pack <manifest.json> <attempt-id> <output.json> | report <evidence.json>... | report-attempts <attempt-directory>... | report-campaign <manifest.json> [attempt-directory...]');
 }

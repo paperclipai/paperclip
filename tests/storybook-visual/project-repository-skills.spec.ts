@@ -49,7 +49,7 @@ test('repairs a missing branch without prompting for another connection', async 
 
 test('creating a project imports repository skills without another setup flow', async ({ page }) => {
   await page.goto(story('create-project'));
-  await page.getByRole('button', { name: 'Add Project', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Create project', exact: true }).first().click();
   const dialog = page.getByRole('dialog', { name: 'Create project', exact: true });
   await dialog.getByRole('textbox', { name: 'Project name', exact: true }).fill('Repository project');
   await dialog.getByRole('button', { name: 'Add GitHub repo', exact: true }).click();
@@ -57,9 +57,8 @@ test('creating a project imports repository skills without another setup flow', 
   await dialog.getByRole('button', { name: 'Create project', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await page.getByRole('link', { name: 'Skills', exact: true }).click();
-  await page.getByLabel('Skills', { exact: true }).getByRole('link', { name: 'Sources', exact: true }).click();
-  const source = page.getByRole('region', { name: 'acme/team-skills', exact: true });
-  await expect(source.getByText('Code review', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Installed skills', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Code review by GitHub/ })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Import skills', exact: true })).toHaveCount(0);
 });
 

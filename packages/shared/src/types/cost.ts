@@ -24,6 +24,8 @@ export interface CostEvent {
   outputTokens: number;
   costCents: number;
   costCentsExact?: string;
+  /** Original usage retained when a late authoritative receipt corrects a placeholder. */
+  reportedUsageJson?: Record<string, unknown> | null;
   occurredAt: Date;
   createdAt: Date;
 }

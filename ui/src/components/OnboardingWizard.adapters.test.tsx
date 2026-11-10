@@ -291,19 +291,16 @@ describe("OnboardingWizard adapter selection", () => {
     });
   });
 
-  it("retains an explicit Copilot draft with the native runner experiment disabled", async () => {
+  it.each([false, true])("normalizes a saved Copilot draft with the native runner experiment set to %s", async (nativeRunnerEnabled) => {
     mockAdapterRegistry.list = [{ type: "paperclip_runner" }, { type: "codex_local" }];
     window.localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify({ step: 0, adapterType: "paperclip_runner", onboardingCopilot: true, model: "gpt-5.6-luna" }));
-    const { root } = await mount(false);
-    expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({ adapterType: "paperclip_runner", onboardingCopilot: true, model: "gpt-5.6-luna" });
-    await act(async () => root.unmount());
-  });
-
-  it("restores a qualified Copilot draft without changing its explicit model", async () => {
-    mockAdapterRegistry.list = [{ type: "paperclip_runner" }];
-    window.localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify({ step: 0, adapterType: "paperclip_runner", onboardingCopilot: true, model: "gpt-5.6-luna" }));
-    const { root } = await mount(true);
-    expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({ adapterType: "paperclip_runner", onboardingCopilot: true, model: "gpt-5.6-luna" });
-    await act(async () => root.unmount());
+    const { root } = await mount(nativeRunnerEnabled);
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!);
+      expect(saved).toMatchObject({ adapterType: "codex_local", runner: "auto", model: "" });
+      expect(saved).not.toHaveProperty("onboardingCopilot");
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 });

@@ -9,7 +9,7 @@ it("bounds actual provider reads across caller timeouts, plugins, retries, and w
   const baseline = idleWorkSnapshot().active;
   const manager = createPluginWorkerManager();
   const manifest: PaperclipPluginManifestV1 = { id: "fixture.inspect", apiVersion: 1, version: "1.0.0",
-    displayName: "Inspection fixture", categories: ["automation"], capabilities: [], entrypoints: { worker: "worker.cjs" } };
+    displayName: "Inspection fixture", description: "Inspection fixture", author: "Paperclip", categories: ["automation"], capabilities: [], entrypoints: { worker: "worker.cjs" } };
   const params = { driverKey: "fixture", companyId: "fixture-company", environmentId: "fixture-environment",
     config: {}, providerLeaseId: "fixture-resource", leaseMetadata: { holdInspection: true } };
   try {
