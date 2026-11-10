@@ -553,6 +553,12 @@ export async function assertGitLongPathsSupported(cwd: string, signal?: AbortSig
   if (value !== "true\0") throw new Error("unsupported_base_git_config");
 }
 
+export async function assertGitLongPathsPreserved(source: string, replacement: string, signal?: AbortSignal) {
+  const required = await gitCacheCommand(source, ["config", "--type=bool", "--get", "core.longpaths"], signal)
+    .catch((error: { code?: number }) => { if (error.code === 1) return "false"; throw error; });
+  if (required.trim() === "true") await assertGitLongPathsSupported(replacement, signal);
+}
+
 export async function assertReproducibleLocalGitConfig(cwd: string, signal?: AbortSignal, replacementCwd?: string) {
   const localConfig = await gitCacheCommand(cwd, ["config", "--local", "--name-only", "--list"], signal);
   const keys = localConfig.split("\n").map(key => key.trim()).filter(Boolean);

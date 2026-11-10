@@ -73,11 +73,20 @@ describe("atomic managed repository publication", () => {
     }
     await expect(assertReproducibleLocalGitConfig(source)).rejects.toThrow("unsupported_local_git_config");
   });
+  it("does not require long paths when the source disables them", async () => {
+    const { source, target } = await fixture();
+    await execFile("git", ["-C", source, "config", "core.symlinks", "false"]);
+    await execFile("git", ["-C", source, "config", "core.longpaths", "false"]);
+    await materializeManagedProjectWorkspace(target, { repoUrl: source });
+    await execFile("git", ["-C", target, "config", "core.longpaths", "false"]);
+    await expect(assertRehomeGitConfig(source, target)).resolves.toBeUndefined();
+    expect((await execFile("git", ["-C", source, "config", "--local", "--get", "core.symlinks"])).stdout.trim()).toBe("false");
+  });
   it.skipIf(process.platform !== "win32").each(
     [false, true].flatMap(expired => ["missing", "false", "duplicate", "true"].map(value => ({ expired, value }))),
   )("preserves long paths in isolated rehomes (expired=$expired, base=$value)", async ({ expired, value }) => {
     const { root, source, target } = await fixture();
-    await execFile("git", ["-C", source, "config", "--unset-all", "core.symlinks"]);
+    await execFile("git", ["-C", source, "config", "core.symlinks", "false"]);
     await execFile("git", ["-C", source, "config", "core.longpaths", "true"]);
     await materializeManagedProjectWorkspace(target, { repoUrl: source });
     if (value === "missing") await execFile("git", ["-C", target, "config", "--unset-all", "core.longpaths"]);

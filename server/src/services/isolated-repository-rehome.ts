@@ -12,7 +12,7 @@ import { IsolatedRepositorySourceBusy, isolatedRemoteSourcePath, verifiedRecorde
 import { retainCurrentWorkspaceSource, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
 import { acquireGitExpirationLocks, recoverGitExpirationLocks, type GitExpirationLockLocation } from "./git-workspace-expiration-locks.js";
 import { allocatedBytes, describeGitExpirationFailure, expirationScope, gitExpirationSkipReason, withAnonymousGitFallback, type GitExpirationFailure } from "./git-workspace-expiration.js";
-import { assertGitLongPathsSupported, assertReproducibleLocalGitConfig, finishGitCacheTrash, hasCommitsMissingUpstream, managedSourcePaths, readGitCacheExpiration, readGitCacheRestoration, verifiedGitCacheSource,
+import { assertGitLongPathsSupported, assertGitLongPathsPreserved, finishGitCacheTrash, hasCommitsMissingUpstream, managedSourcePaths, readGitCacheExpiration, readGitCacheRestoration, verifiedGitCacheSource,
   GIT_CACHE_RESTORATION_KEY, type GitCacheRestoration } from "./git-workspace-restoration.js";
 import { applyRestorePoint, captureRestorePoint, currentRestorePointSnapshot, importRestorePoint, restorePointSavesIgnoredFile,
   RestorePointRestoreFailure, RestorePointSkip, type RestorePointLimits, type RestorePointSnapshot } from "./git-restore-point.js";
@@ -177,7 +177,7 @@ export async function assertRehomeGitConfig(source: string, base: string, signal
   const marker = await fs.lstat(path.join(source, ".git")).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null; throw error;
   });
-  if (marker) await assertReproducibleLocalGitConfig(source, signal, base);
+  if (marker) await assertGitLongPathsPreserved(source, base, signal);
   else if (process.platform === "win32") await assertGitLongPathsSupported(base, signal);
 }
 

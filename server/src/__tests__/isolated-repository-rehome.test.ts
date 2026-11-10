@@ -429,7 +429,7 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
 
   it("keeps an isolated workspace until its replacement preserves long paths", async () => {
     const f = await fixture();
-    if (process.platform === "win32") git(f.cwd, "config", "--unset-all", "core.symlinks");
+    git(f.cwd, "config", "core.symlinks", "false");
     git(f.cwd, "config", "core.longpaths", "true");
     git(f.sharedPath, "config", "core.longpaths", "false");
     const before = await currentRestorePointSnapshot(f.cwd);
@@ -442,7 +442,7 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
 
   it("keeps an expired isolated recipe until its replacement preserves long paths", async () => {
     const f = await fixture({ issueStatus: "done" });
-    if (process.platform === "win32") git(f.cwd, "config", "--unset-all", "core.symlinks");
+    git(f.cwd, "config", "core.symlinks", "false");
     git(f.cwd, "config", "core.longpaths", "true");
     git(f.sharedPath, "config", "core.longpaths", "false");
     const expired = await expireReconstructableGitWorkspace(db, await f.row(), { dryRun: false, expireBase: false, now: new Date(),
