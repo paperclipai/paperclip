@@ -40,6 +40,7 @@ import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurr
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
 import { TimeShiftedApi } from "./time-faults.js";
+import type { RestartStep } from "./repeated-restarts.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
 import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
@@ -358,9 +359,9 @@ async function main(): Promise<number> {
     if (storm) timeline.add("storm_started", { durationMs: storm.plan.durationMs, plannedFaults: storm.plan.faults.length });
     // Faults are serialized; each one hits every task in flight when it starts.
     const fireFault = (kind: FaultKind, holdMs: number, requestedBy: string, exposed: readonly TaskObserver[],
-      trigger?: { trigger: TriggerId; delayMs: number }, onSettled?: () => void) => {
+      trigger?: { trigger: TriggerId; delayMs: number }, onSettled?: () => void, restartSteps?: RestartStep[]) => {
       faultsQueued += 1;
-      faultWork.push(supervisor.fault(kind, holdMs, requestedBy, trigger).finally(() => { faultsQueued -= 1; onSettled?.(); }).then(receipt => {
+      faultWork.push(supervisor.fault(kind, holdMs, requestedBy, trigger, restartSteps).finally(() => { faultsQueued -= 1; onSettled?.(); }).then(receipt => {
         faults.push(receipt);
         checkWorktree(receipt.faultId);
         for (const candidate of exposed) {
@@ -526,7 +527,7 @@ async function main(): Promise<number> {
         const trigger = due.trigger && due.trigger !== "time" ? { trigger: due.trigger, delayMs: due.delayMs ?? 0 } : undefined;
         if (trigger) timeline.add("trigger_fired", { taskId: observer.plan.taskId, fault: due.kind, ...trigger });
         // Inside a storm a triggered fault is a restart too: the next storm gap runs from its settle.
-        fireFault(due.kind, due.holdMs, observer.plan.taskId, exposed, trigger, storm ? () => storm.settled(Date.now()) : undefined);
+        fireFault(due.kind, due.holdMs, observer.plan.taskId, exposed, trigger, storm ? () => storm.settled(Date.now()) : undefined, due.restartSteps);
       }
       if (storm && !faultsQueued && !supervisor.faultInProgress && supervisor.serverReady) {
         const due = storm.due(Date.now());
