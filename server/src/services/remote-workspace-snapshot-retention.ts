@@ -10,6 +10,7 @@ import { logger } from "../middleware/logger.js";
 
 export const REMOTE_WORKSPACE_SNAPSHOT_GRACE_MS = 7 * 86400_000;
 export const REMOTE_WORKSPACE_SNAPSHOT_RETRY_MS = 15 * 60_000;
+const SNAPSHOT_ABORT_CONCURRENCY = 8;
 type Snapshot = typeof executionWorkspaceSnapshots.$inferSelect;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type ReadDb = Pick<Db, "select"> | Pick<Tx, "select">;
@@ -28,18 +29,26 @@ export function snapshotAttemptKeys(row: Snapshot) {
 
 export async function abortSnapshotAttemptUploads(storage: StorageService, companyId: string, keys: Iterable<string>, signal?: AbortSignal) {
   const abort = storage.abortIncompleteUploads?.bind(storage);
-  if (!abort) return 0;
+  const pending = [...keys];
+  if (!abort || !pending.length) return 0;
+  signal?.throwIfAborted();
+  const bounded = AbortSignal.timeout(STORAGE_FAILURE_CLEANUP_MS);
+  const deadline = signal ? AbortSignal.any([signal, bounded]) : bounded;
   let aborted = 0;
-  for (const key of keys) {
-    signal?.throwIfAborted();
-    const bounded = AbortSignal.timeout(STORAGE_FAILURE_CLEANUP_MS);
-    try {
-      aborted += await abort(companyId, key, { signal: signal ? AbortSignal.any([signal, bounded]) : bounded });
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      logger.warn({ err: error, companyId, objectKey: key }, "workspace snapshot multipart upload abort failed");
+  const worker = async () => {
+    for (let key = pending.shift(); key !== undefined && !deadline.aborted; key = pending.shift()) {
+      try {
+        const count = await abort(companyId, key, { signal: deadline });
+        aborted += count;
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        logger.warn({ err: error, companyId, objectKey: key }, "workspace snapshot multipart upload abort failed");
+      }
     }
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(SNAPSHOT_ABORT_CONCURRENCY, pending.length) }, worker));
+  signal?.throwIfAborted();
+  if (pending.length) logger.warn({ companyId, remaining: pending.length }, "workspace snapshot multipart upload abort ran out of time");
   return aborted;
 }
 

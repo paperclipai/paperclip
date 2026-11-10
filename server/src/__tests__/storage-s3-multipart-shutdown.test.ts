@@ -1,4 +1,4 @@
-import { AbortMultipartUploadCommand, CreateMultipartUploadCommand, ListMultipartUploadsCommand, S3Client, UploadPartCommand } from "@aws-sdk/client-s3";
+import { AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CreateMultipartUploadCommand, ListMultipartUploadsCommand, S3Client, UploadPartCommand } from "@aws-sdk/client-s3";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -50,6 +50,47 @@ describe("multipart uploads in flight at shutdown", () => {
     expect(aborted).toEqual(["held-upload"]);
     expect(((await saving) as Error).message).toBe("server_shutdown");
     expect(await abortInFlightMultipartUploads(new Error("server_shutdown"))).toBe(0);
+  });
+
+  it("lets an upload that finishes inside the grace complete without aborting it", async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "pc-multipart-shutdown-"));
+    const file = path.join(root, "archive.pcws");
+    await fs.writeFile(file, Buffer.alloc(17 * MIB, 7));
+    const client = new S3Client({ region: "us-east-1" }), sent: string[] = [];
+    let release!: () => void, partStarted!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { partStarted = resolve; });
+    vi.spyOn(client, "send").mockImplementation(async (command: any) => {
+      sent.push(command.constructor.name);
+      if (command instanceof CreateMultipartUploadCommand) return { UploadId: "graceful-upload" };
+      if (command instanceof UploadPartCommand) { partStarted(); await released; return { ETag: `part-${command.input.PartNumber}` }; }
+      if (command instanceof CompleteMultipartUploadCommand) return {};
+      throw new Error(`unexpected ${command.constructor.name}`);
+    });
+    const saving = putS3MultipartFile(client, "bucket", "key", { objectKey: "key", contentType: "application/octet-stream",
+      contentLength: 17 * MIB, body: Readable.from([]), sourceFile: file });
+    await started;
+    const draining = abortInFlightMultipartUploads(new Error("server_shutdown"), { graceMs: 5_000 });
+    setTimeout(release, 50);
+    expect(await draining).toBe(0);
+    expect(await saving).toEqual({ integrity: "server_verified_md5" });
+    expect(sent).toContain("CompleteMultipartUploadCommand");
+    expect(sent).not.toContain("AbortMultipartUploadCommand");
+  });
+
+  it("aborts an upload still held after the grace and counts it once", async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "pc-multipart-shutdown-"));
+    const file = path.join(root, "archive.pcws");
+    await fs.writeFile(file, Buffer.alloc(17 * MIB, 7));
+    const { client, aborted, started } = heldPartClient();
+    const saving = putS3MultipartFile(client, "bucket", "key", { objectKey: "key", contentType: "application/octet-stream",
+      contentLength: 17 * MIB, body: Readable.from([]), sourceFile: file }).catch(error => error);
+    await started;
+    const begun = Date.now();
+    expect(await abortInFlightMultipartUploads(new Error("server_shutdown"), { graceMs: 100 })).toBe(1);
+    expect(Date.now() - begun).toBeGreaterThanOrEqual(90);
+    expect(aborted).toEqual(["held-upload"]);
+    expect(((await saving) as Error).message).toBe("server_shutdown");
   });
 
   it("aborts a streamed upload whose part the store is holding", async () => {
