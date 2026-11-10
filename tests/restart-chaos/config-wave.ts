@@ -195,9 +195,10 @@ async function repairReference(api: ChaosApi, lab: ChaosLab, task: ConfigTaskPla
     case "ai_default": {
       const created = await api.post<{ connectionId: string; grantId: string }>(`/api/companies/${lab.companyId}/ai-connections`, {
         provider: "openrouter", method: "api_key", name: `Chaos OpenRouter ${task.nonce}`, ownership: "personal",
-        apiKey: process.env.OPENROUTER_API_KEY, agentIds: [], allAgents: false }, 60_000);
+        // The account must be installed for the agent; without it selection refuses "not permitted for this agent".
+        apiKey: process.env.OPENROUTER_API_KEY, agentIds: [resources.agentId], allAgents: false }, 60_000);
       resources.connectionId = created.connectionId;
-      return "connected a personal OpenRouter account (it becomes the default)";
+      return "connected a personal OpenRouter account for the agent (it becomes the default)";
     }
   }
 }
@@ -234,7 +235,9 @@ async function snapshot(api: ChaosApi, issueId: string, agentId: string, errors:
       cards: (Array.isArray(interactions) ? interactions : []).map(card => ({ id: String(card.id), kind: String(card.kind), status: String(card.status),
         serviceSlug: card.payload?.serviceSlug ?? null, agentSetup: card.payload?.agentSetup === true })),
       agent: agent ? { lifecycleState: agent.lifecycleState ?? null, lifecycleError: agent.lifecycleError ?? null,
-        retryRequired: agent.lifecycleOperation?.retryRequired === true } : null,
+        // The agent response redacts lifecycleOperation; parked setup also says so in its message.
+        retryRequired: agent.lifecycleOperation?.retryRequired === true
+          || /automatic verification is paused|choose retry now/i.test(String(agent.lifecycleError ?? "")) } : null,
       notices: (Array.isArray(comments) ? comments : []).filter(comment => !comment.authorAgentId).map(comment => String(comment.body ?? "")).slice(-5),
     };
   } catch {
@@ -369,6 +372,7 @@ async function runTask(input: { api: ChaosApi; lab: ChaosLab; task: ConfigTaskPl
     const current = await snapshot(api, issueId, resources.agentId, errors);
     if (current.reachable) {
       record.finalStatus = current.issueStatus;
+      record.afterRepair = current;
       if (current.issueStatus === "done") { record.doneAt = Date.now(); break; }
     }
     await delay(POLL_MS * 2);

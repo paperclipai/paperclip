@@ -249,6 +249,8 @@ export interface ConfigTaskRecord {
   restart: { kind: ConfigRestartKind; faultId: string | null; firedAt: number; readyAt: number | null; error: string | null } | null;
   afterRestart: ConfigSnapshot | null;
   afterRestartParked: boolean | null;
+  /** Last snapshot after the repair (evidence when the task never completes). */
+  afterRepair?: ConfigSnapshot | null;
   repair: { at: number; action: string; detail: string; error: string | null } | null;
   doneAt: number | null;
   finalStatus: string | null;
@@ -294,7 +296,7 @@ export function gradeConfigTask(record: ConfigTaskRecord, options: { parkBoundMs
     const seen = [...new Set(restingSnapshots.flatMap(taskLevelTexts))];
     const runOnly = [...new Set(restingSnapshots.flatMap(snapshot => namingTexts(runDetailTexts(snapshot), pattern)))];
     if (named.length) add("actionable_message", "pass", truncate(named[0]!));
-    else add("actionable_message", "fail", `${runOnly.length ? "message_only_in_run_detail: " + truncate(runOnly[0]!) + "; " : ""}user saw: ${seen.map(truncate).join(" | ") || "nothing"}`);
+    else add("actionable_message", "fail", `${runOnly.length ? "message_only_in_run_detail: " + truncate(runOnly[0]!) + "; " : ""}user saw: ${seen.map(text => truncate(text)).join(" | ") || "nothing"}`);
   }
 
   // 3. No retry loop over unchanged configuration.
