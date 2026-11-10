@@ -1771,11 +1771,18 @@ describeEmbeddedPostgres("device login service concurrency (embedded postgres)",
   it("reads a login computer only from the exact company/environment/provider lease", async () => {
     const { companyId, environmentId } = await seedCompanyEnvironment();
     const store = createDbAdapterAuthSessionStore(db);
-    await db.insert(environmentLeases).values({ companyId, environmentId, status: "active", providerLeaseId: "login-operation", metadata: { purpose: "login", agentId: "computer-a" } });
-    expect(await store.getLoginAgentId!("login-operation", companyId, environmentId)).toBe("computer-a");
-    expect(await store.getLoginAgentId!("login-operation", randomUUID(), environmentId)).toBeUndefined();
-    expect(await store.getLoginAgentId!("login-operation", companyId, randomUUID())).toBeUndefined();
-    expect(await store.getLoginAgentId!("another-operation", companyId, environmentId)).toBeUndefined();
+    const sessionId = randomUUID();
+    // Providers may reuse resource IDs across allocations. The session tag,
+    // rather than row order, selects the exact login's computer binding.
+    await db.insert(environmentLeases).values([
+      { companyId, environmentId, status: "released", providerLeaseId: "login-operation", metadata: { purpose: "login", agentId: "old-computer", [LOGIN_LEASE_SESSION_TAG_KEY]: randomUUID() } },
+      { companyId, environmentId, status: "active", providerLeaseId: "login-operation", metadata: { purpose: "login", agentId: "computer-a", [LOGIN_LEASE_SESSION_TAG_KEY]: sessionId } },
+    ]);
+    expect(await store.getLoginAgentId!("login-operation", companyId, environmentId, sessionId)).toBe("computer-a");
+    expect(await store.getLoginAgentId!("login-operation", randomUUID(), environmentId, sessionId)).toBeUndefined();
+    expect(await store.getLoginAgentId!("login-operation", companyId, randomUUID(), sessionId)).toBeUndefined();
+    expect(await store.getLoginAgentId!("another-operation", companyId, environmentId, sessionId)).toBeUndefined();
+    expect(await store.getLoginAgentId!("login-operation", companyId, environmentId, randomUUID())).toBeUndefined();
   });
 
   describe("public session id lookup", () => {

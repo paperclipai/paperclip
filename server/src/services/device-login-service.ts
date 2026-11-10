@@ -344,7 +344,7 @@ export interface CompareAndSetAdapterAuthSessionStatusInput
 /** The store for the login-session rows. The service inserts, transitions, and
  *  reads through it. The insert maps the active-slot conflict to a `409`. */
 export interface AdapterAuthSessionStore {
-  getLoginAgentId?(providerLeaseId: string, companyId: string, environmentId: string): Promise<string | undefined>;
+  getLoginAgentId?(providerLeaseId: string, companyId: string, environmentId: string, sessionId: string): Promise<string | undefined>;
   insert(input: InsertAdapterAuthSessionInput): Promise<void>;
   recordLeaseAcquired(input: {
     sessionId: string;
@@ -626,8 +626,8 @@ export function createDbAdapterAuthSessionStore(
       const row = rows[0];
       return row ? toRow(row) : null;
     },
-    async getLoginAgentId(providerLeaseId, companyId, environmentId) {
-      const [lease] = await db.select({ companyId: environmentLeases.companyId, metadata: environmentLeases.metadata }).from(environmentLeases).where(and(eq(environmentLeases.providerLeaseId, providerLeaseId), eq(environmentLeases.companyId, companyId), eq(environmentLeases.environmentId, environmentId))).limit(1);
+    async getLoginAgentId(providerLeaseId, companyId, environmentId, sessionId) {
+      const [lease] = await db.select({ companyId: environmentLeases.companyId, metadata: environmentLeases.metadata }).from(environmentLeases).where(and(eq(environmentLeases.providerLeaseId, providerLeaseId), eq(environmentLeases.companyId, companyId), eq(environmentLeases.environmentId, environmentId), sql`${environmentLeases.metadata}->>${LOGIN_LEASE_SESSION_TAG_KEY} = ${sessionId}`)).limit(1);
       return lease?.companyId === companyId && lease.metadata?.purpose === "login" ? (typeof lease.metadata.agentId === "string" ? lease.metadata.agentId : undefined) : undefined;
     },
     async getActiveByOwner(companyId, startedByUserId, adapterType) {
@@ -1335,7 +1335,7 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
     // The prompt map keys on the internal id, so read it by `row.id`, not the
     // public id. Only the owner principal ever reads the prompt.
     const prompt = isOwner ? promptsBySession.get(row.id) ?? null : null;
-    const agentId = isOwner && row.providerLeaseId ? await store.getLoginAgentId?.(row.providerLeaseId, row.companyId, row.environmentId) : undefined;
+    const agentId = isOwner && row.providerLeaseId ? await store.getLoginAgentId?.(row.providerLeaseId, row.companyId, row.environmentId, row.id) : undefined;
     return {
       sessionId: row.publicSessionId,
       ...(agentId ? { agentId } : {}),
