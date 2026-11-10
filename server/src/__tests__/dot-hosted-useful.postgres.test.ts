@@ -419,7 +419,8 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       await writeFile(inputFile,JSON.stringify({stackId,databaseUrl:url,home,origin,userId,companyId,generation,resource,
         cloudOrigin,cloudLoopback,callbackPublicOrigin,callbackLoopback:callbackOrigin,linuxInput}),{mode:0o600,flag:"wx"});
       const closedEnv=Object.fromEntries(Object.entries(process.env).filter(([key,value])=>value!==undefined&&
-        (key.startsWith("PAPERCLIP_")||["PATH","HOME","TMPDIR","LANG","TZ","NODE_OPTIONS","NODE_EXTRA_CA_CERTS"].includes(key)))) as Record<string,string>;
+        (key.startsWith("PAPERCLIP_")||["PATH","HOME","TMPDIR","LANG","TZ","NODE_OPTIONS","NODE_EXTRA_CA_CERTS",
+          "MCP_SLEEP_GUARD_LOG","MCP_SLEEP_GUARD_PG_PORTS","CLOUD_SUITE_ATTEST_LOG","CLOUD_SUITE_ENTRY_MANIFEST"].includes(key)))) as Record<string,string>;
       closedEnv.PAPERCLIP_DOT_CHILD_INPUT=inputFile;
       physicalApp=await forkNormalDotApp({entry:new URL("./helpers/owned-linux/normal-app-child.ts",import.meta.url),
         nodeExecutable:process.execPath,normalTsxImport:new URL("../../node_modules/tsx/dist/loader.mjs",import.meta.url),
