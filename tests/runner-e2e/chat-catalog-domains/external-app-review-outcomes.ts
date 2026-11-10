@@ -10,8 +10,10 @@ export interface ReviewedConnection { id: string; name: string }
 export function reviewReplyStaysOnRecord(reply: string, connection: ReviewedConnection | undefined, origin = "https://paperclip.invalid") {
   if (!connection?.id || !reply.trim()) return false;
   // Inline links, reference-style definitions and bare URLs all render as links in chat.
-  const targets = [...reply.matchAll(/\]\(([^)\s]+)\)/g), ...reply.matchAll(/^\s*\[[^\]]+\]:\s*<?([^\s>]+)/gm),
-    ...reply.matchAll(/(?<![(\w/<])((?:https?:\/\/[^\s)<>\]]+)|(?:\/[A-Za-z0-9_-]+\/apps\/[^\s)<>\]]+))/g)].map(match => match[1]!);
+  // Code spans and blocks render as code, not links.
+  const prose = reply.replace(/```[\s\S]*?```/g, " ").replace(/`[^`\n]*`/g, " ");
+  const targets = [...prose.matchAll(/\]\(([^)\s]+)\)/g), ...prose.matchAll(/^\s*\[[^\]]+\]:\s*<?([^\s>]+)/gm),
+    ...prose.matchAll(/(?<![(\w/<])((?:https?:\/\/[^\s)<>\]]+)|(?:\/[A-Za-z0-9_-]+\/apps\/[^\s)<>\]]+))/g)].map(match => match[1]!);
   return targets.every(target => {
     let url: URL; try { url = new URL(target, origin); } catch { return false; }
     const app = /^\/[^/]+\/apps\/([^/]+)/.exec(url.pathname);

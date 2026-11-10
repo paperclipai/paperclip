@@ -200,6 +200,9 @@ export function attributedPriorityChanges(reply: string, events: Entity[], targe
   const actors = [...new Set(events.map(event => event.actorId!))];
   const aliases = (actor: string) => actor === "local-board" ? [actor, "local board", "board"] : [actor];
   const named = actors.every(actor => aliases(actor).some(alias => wordPattern(alias).test(plain)));
-  const contrary = otherActors.some(name => !!name.trim() && !actors.includes(name) && wordPattern(name).test(plain));
+  // Another agent named in a sentence that rules it out ("Morgan did not change them") is not an attribution.
+  const sentences = plain.split(/(?<=[.!?;])\s+|\n+/);
+  const contrary = otherActors.some(name => !!name.trim() && !actors.includes(name)
+    && sentences.some(sentence => wordPattern(name).test(sentence) && !/\b(?:not|no|never|neither|nor)\b|n['’]t\b/i.test(sentence)));
   return reported && named && !contrary;
 }

@@ -520,6 +520,9 @@ describe("goal oracle phase binding", () => {
     Object.assign(o, { finalPhaseReplies: [{ id: "keep", body: "That goal belongs to another company, so Launch and COM-1 stay linked to Growth." }] }); expect(gradeInternal(o).passed).toBe(true);
     Object.assign(o, { finalPhaseReplies: [{ id: "left", body: "That goal belongs to another company, so I can't link it. I left both linked to this company's growth goal rather than unlinking them." }] }); expect(gradeInternal(o).passed).toBe(true);
     const foreign = valid("goals.align-existing-work"); foreign.tasks[0]!.goalId = "foreign-goal"; expect(gradeInternal(foreign).passed).toBe(false);
+    for (const [body, ok] of [["Done: Launch now uses the other company's growth goal.", false], ["Linked COM-1 to foreign-goal.", false], ["I cannot use the other company's goal. Launch is linked to the Growth goal.", true], ["Goal foreign-goal returns 404 here, so I can't link it.", true]] as const) {
+      Object.assign(o, { finalPhaseReplies: [{ id: "variant", body }] }); expect(gradeInternal(o).passed, body).toBe(ok);
+    }
   });
   it("rejects a foreign request with no response from its own run", () => {
     const o = valid("goals.align-existing-work"); Object.assign(o, { finalPhaseReplies: [] });
@@ -595,6 +598,11 @@ it("accepts the recorded editor named in a sentence form the old phrase list mis
   (o.state.priorityEvents as Entity[]).forEach((event, index) => { event.details = { ...event.details, changes: { priority: { from: index ? "high" : "medium", to: event.details!.priority } } }; });
   o.state.task = { ...(o.state.task as Entity), identifier: "COM-1" }; o.tasks[0] = { ...o.tasks[0]!, identifier: "COM-1" };
   expect(gradeInternal(o).passed).toBe(true);
+});
+it("ignores another agent named only to rule it out, but rejects a positive attribution to it", () => {
+  const o = valid("activity.audit-change"); o.reply = "Board changed the priority to high, then low today at 12:00 UTC; Morgan did not change them.";
+  expect(gradeInternal(o).passed).toBe(true);
+  o.reply = "Board changed the priority to high today at 12:00 UTC. Morgan then set it to low today at 12:00 UTC."; expect(gradeInternal(o).passed).toBe(false);
 });
 it("rejects an invented transition even when the editor is named", () => {
   const o = valid("activity.audit-change"); o.reply = "Board changed priority medium → critical, then low today at 12:00 UTC.";

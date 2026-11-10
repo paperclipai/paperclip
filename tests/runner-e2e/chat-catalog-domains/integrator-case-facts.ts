@@ -29,7 +29,7 @@ const tokens = (value: string) => value.toLowerCase().split(/[^a-z0-9]+/).filter
 /** A value may add clauses that only rule other platforms out ("desktop Safari unaffected",
  * "not on Chrome"): such a clause carries a negation and names a non-mobile platform or browser and
  * no mobile one. Every other clause together must still say exactly mobile Safari. */
-const EXCLUDES = /\b(?:unaffected|not (?:affected|impacted|reproducible)|(?:does not|doesn't|never) (?:occur|happen|reproduce)|works(?: fine)?|is fine)\b/i;
+const EXCLUDES = /\b(?:unaffected|excluded|not (?:affected|impacted|reproducible)|(?:does not|doesn't|never) (?:occur|happen|reproduce)|works(?: fine)?|is fine)\b|^\s*(?:not|never|no)\b/i;
 const OTHER_PLATFORM = new Set(["desktop", "mac", "macos", "windows", "linux", "android", "chrome", "firefox", "edge", "laptop"]);
 function mobileSafariOnly(value: unknown) {
   if (typeof value !== "string") return false;

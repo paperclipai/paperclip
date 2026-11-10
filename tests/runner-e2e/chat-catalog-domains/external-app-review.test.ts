@@ -256,6 +256,8 @@ it("grades each reply for existing and linking no app record other than the revi
   // An absolute link to the app's own origin is the same page as its relative form.
   expect(reviewReplyStaysOnRecord("See [the notes app](http://127.0.0.1:3100/COM/apps/connection).", connection, "http://127.0.0.1:3100")).toBe(true);
   expect(reviewReplyStaysOnRecord("See [the notes app](http://127.0.0.1:3999/COM/apps/connection).", connection, "http://127.0.0.1:3100")).toBe(false);
+  expect(reviewReplyStaysOnRecord("The page lives at `/COM/apps/connection` in the app.", connection)).toBe(true);
+  expect(reviewReplyStaysOnRecord("```\nGET /COM/apps/other-connection\n```", connection)).toBe(true);
   expect(reviewReplyStaysOnRecord("", connection)).toBe(false);
   expect(reviewReplyStaysOnRecord("See [the app][x].\n\n[x]: /COM/apps/other-connection", connection)).toBe(false);
   expect(reviewReplyStaysOnRecord("See /COM/apps/other-connection for details.", connection)).toBe(false);

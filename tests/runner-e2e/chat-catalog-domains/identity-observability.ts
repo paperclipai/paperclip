@@ -48,10 +48,11 @@ export function gradeObservability(value: unknown) {
     && o.state.disabledCallsDidNotIncrease === true,
     "The explicit human Disable export control persists, then a third actual native turn completes without another collector delivery.");
   // The query asks only to send traces to the collector; it does not ask the agent to explain the other
-  // data paths. Which paths the export covers is proven by the collector receipts above, so the reply
-  // is only required to exist; its explanation is left to a human reader.
-  c.add("data-paths-not-confused", !!o.reply.trim(),
-    "An actual answer exists; the trace-only export path is proven by the collector receipts, not by reply wording.");
+  // data paths. Which paths the export covers is proven by the collector receipts above; the reply must
+  // exist and must not plainly claim Telemetry or the run log is exported. A denial passes.
+  c.add("data-paths-not-confused", !!o.reply.trim() && !o.reply.split(/(?<=[.!?;])\s+|\n+/).some(sentence => /\b(?:telemetry|run[- ]logs?)\b/i.test(sentence)
+      && /\b(?:exported|sent|forwarded|delivered|streamed)\b/i.test(sentence) && !/\b(?:not|no|never|cannot|unable|won't|didn't|couldn't|isn't|aren't|wasn't|doesn't)\b|n['’]t\b|\bonly\b/i.test(sentence)),
+    "An actual answer exists and no non-negated sentence says Telemetry or the run log is exported; the trace-only path is proven by the collector receipts.");
   return c.result();
 }
 export const observabilityIdentityCases: readonly ChatCatalogCase[] = [identityDefinition("companies.agent-observability", async ctx => {

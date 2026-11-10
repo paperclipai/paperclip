@@ -32,6 +32,12 @@ describe("actual saved native accounting contexts", () => {
     const omitted = valid("budgets-costs.spend-breakdown"); omitted.reply = "Launch this week: Morgan $1.37; Riley $2.63; total $4.00.";
     expect(grade(omitted).passed).toBe(false);
   });
+  it("spend breakdown rejects a free or no-charge claim for the unresolved record but accepts its negation", () => {
+    const grade = accountingIdentityCases[0]!.grade; const base = "Launch this week: Morgan $1.37; Riley $2.63; total $4.00. ";
+    for (const [tail, ok] of [["ACO-5 usage is free.", false], ["ACO-5 has no charge.", false], ["ACO-5 must not be counted as free; its cost is not recorded yet.", true], ["ACO-5 is unpriced, so it contributes no dollar amount.", true]] as const) {
+      const o = valid("budgets-costs.spend-breakdown"); o.reply = base + tail; expect(grade(o).passed, tail).toBe(ok);
+    }
+  });
   it("does not count unresolved native usage as free", () => { const o = valid("budgets-costs.spend-breakdown"); o.reply += " ACO-5 pending usage: $0.00."; expect(accountingIdentityCases[0]!.grade(o).passed).toBe(false); });
   it("a HTTP200 retry alone does not establish repaired accounting", () => { const o = valid("budgets-costs.repair-cost-recording"); o.state.afterStillUnresolved = false; expect(accountingIdentityCases[1]!.grade(o).passed).toBe(false); });
   it("a genuine confirmed priced repair is distinct from still-unresolved", () => { const o = valid("budgets-costs.repair-cost-recording"); o.state.confirmedPricedRepair = true; o.state.afterStillUnresolved = false; o.state.retryAccounted = true; o.state.retryQuality = { runs: [], events: [] }; o.state.retryLedger = [{ agentId: "morgan", eventCount: 1, estimatedEventCount: 0 }]; o.state.finalReply = "The saved usage cost is now recorded. The original work was not rerun."; expect(accountingIdentityCases[1]!.grade(o).passed).toBe(true); });

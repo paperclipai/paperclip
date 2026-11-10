@@ -33,7 +33,14 @@ export async function renderRuntimeArtifact(ctx: ChatCatalogContext, html: strin
           || (field.getAttribute("aria-labelledby") ?? "").split(/\s+/).filter(Boolean).some(id => !!form.ownerDocument.getElementById(id)?.textContent?.trim())
           || !!field.closest("label")?.textContent?.trim()
           || (!!field.id && [...form.ownerDocument.querySelectorAll("label")].some(label => label.getAttribute("for") === field.id && !!label.textContent?.trim()));
-        const emailField = (field: Element) => (field.getAttribute("type") ?? "").toLowerCase() === "email" || /\bemail\b/i.test(field.getAttribute("autocomplete") ?? "");
+        // An email entry: type or autocomplete email, or a text field whose own label, name or placeholder says
+        // email. A search field (type search, or labelled only "Search") is not a signup field.
+        const accessibleName = (field: Element) => [field.getAttribute("aria-label"), field.closest("label")?.textContent,
+          ...(field.getAttribute("aria-labelledby") ?? "").split(/\s+/).filter(Boolean).map(id => form.ownerDocument.getElementById(id)?.textContent),
+          ...(field.id ? [...form.ownerDocument.querySelectorAll("label")].filter(label => label.getAttribute("for") === field.id).map(label => label.textContent) : [])].join(" ");
+        const emailField = (field: Element) => { const type = (field.getAttribute("type") ?? "text").toLowerCase();
+          return type === "email" || /\bemail\b/i.test(field.getAttribute("autocomplete") ?? "")
+            || (type === "text" && /\be-?mail\b/i.test([accessibleName(field), field.getAttribute("name"), field.getAttribute("placeholder")].join(" "))); };
         const submit = [...form.querySelectorAll("button, input[type=submit], input[type=image]")].some(control => visible(control)
           && !["button", "reset"].includes((control.getAttribute("type") ?? "submit").toLowerCase()));
         return { labelledField: fields.some(field => labelled(field) && emailField(field)), submit };

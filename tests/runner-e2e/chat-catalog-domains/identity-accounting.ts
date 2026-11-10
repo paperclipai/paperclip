@@ -199,7 +199,8 @@ export function unresolvedRecordIdentifiedNotFree(reply: string, record: Entity 
   if (!keys.length) return false;
   const names = (segment: string) => keys.some(key => new RegExp(`(?<![\\w-])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`).test(segment));
   const segments = reply.split(/\n|(?<=[.!?])\s+/).filter(segment => names(segment));
-  // Only a stated zero amount is graded; words such as "free" are left to a human reader ("ACO-5 must not
-  // be counted as free" is a correct sentence).
-  return segments.length > 0 && !segments.some(segment => /(?:\$|USD\s*)0(?:\.0+)?(?![.\d]*[1-9])/i.test(segment));
+  // A stated zero amount fails; so does a non-negated "free"/"no charge"/"zero cost" for the record
+  // ("ACO-5 must not be counted as free" is a correct sentence and passes).
+  return segments.length > 0 && !segments.some(segment => /(?:\$|USD\s*)0(?:\.0+)?(?![.\d]*[1-9])/i.test(segment)
+    || (/\bfree\b|\bno charge\b|\bzero cost\b|\bcost(?:s)? nothing\b/i.test(segment) && !/\b(?:not|never|cannot|unable|won't|didn't|couldn't|isn't|aren't|wasn't|doesn't)\b|n['’]t\b/i.test(segment)));
 }

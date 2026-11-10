@@ -48,6 +48,8 @@ it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_RENDERED_ARTIFACT_CANARY !== "1")("qua
       [body.replace('<a href="#signup">Join early access</a>', '<form><input type="email"><button type="submit">Start writing free</button></form>'), false],
       [body.replace('<a href="#signup">Join early access</a>', '<form><label>Email <input type="email"></label><button type="button">Start writing free</button></form>'), false],
       [body.replace('<a href="#signup">Join early access</a>', '<form><label>Search <input type="search"></label><button>Search</button></form>'), false],
+      [body.replace('<a href="#signup">Join early access</a>', '<form><label for="m">Email</label><input id="m" type="text"><button>Start writing free</button></form>'), true],
+      [body.replace('<a href="#signup">Join early access</a>', '<form><label>Search <input type="text"></label><button>Search</button></form>'), false],
       [body.replace('<a href="#signup">Join early access</a>', '<form><label><input type="email"></label><button>Start writing free</button></form>'), false],
       [body.replace('<a href="#signup">Join early access</a>', '<form><input type="email" aria-labelledby="missing"><button>Start writing free</button></form>'), false],
     ] as const) expect(hasSimplerWebsite(await renderRuntimeArtifact(ctx, html))).toBe(valid);
