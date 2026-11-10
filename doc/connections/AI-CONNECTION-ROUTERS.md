@@ -231,14 +231,22 @@ action before selecting Pool on a Legacy agent. New agent setup offers a held
 Pool choice and tests it before the normal hiring/approval action. Several agents can choose the same pool; changing one
 agent's selection does not change the others. Instructions, permissions and the
 execution environment belong to the agent and remain admission constraints.
-Models and accounts belong to the pool. Pool runs require a task.
-The selected execution environment must also support native Runner execution.
+Models and accounts belong to the pool. Task-bound runs use native Runner execution.
+Manual agent runs and unscoped timer heartbeats can also use Pool without a task.
+These company-scoped runs use the selected member's existing direct harness path.
+They do not create a placeholder task or acquire task completion authority.
+Manual runs keep their own run-key allocation; timer wakes use the existing
+heartbeat session policy. Retrying a run retains its allocation lineage.
+Native-only permission restrictions that cannot be preserved by that path cause
+an explicit policy error, rather than weaker permissions. Task-bound sessions
+continue to use their existing native driver and checkpoint.
+The selected execution environment must support the chosen execution path.
 Windows native agent qualification remains deferred; a successful Windows
 Runner build does not qualify agent execution. See the
 [Runner platform notes](../../packages/paperclip-runner/README.md).
 
 The host freezes the concrete driver profile, pool name/revision and selected
-member before claim. It uses the existing Codex, Claude/Grok ACPX or OpenCode
+member before claim. For task runs it uses the existing Codex, Claude/Grok ACPX or OpenCode
 driver, with one native run owner. Pool is not another model API, Rust provider,
 CLI wrapper process or nested agent loop. Existing direct/Legacy configurations
 and old run snapshots keep their original readers. The optional

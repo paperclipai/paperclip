@@ -5248,6 +5248,12 @@ execution receives its normal concrete driver input. `harness-pool-environment.t
 reads placement policy for scoped cooldown identity. Fresh environment admission
 checks that placement still matches; retained native recovery uses its admitted
 execution input. Pool management is the facade in `services/harness-pools.ts`.
+Company-scoped Pool runs use `heartbeat/company-pool-execution.ts` to project
+the unchanged agent policy into the selected member's direct adapter. This
+supports manual runs and unscoped timers without inventing a task or a native
+completion contract. The admitted dispatch records this path; persisted native
+task runs never enter it. Account grants, environment placement, cooldowns,
+budget checks, Stop and successor settlement retain their existing owners.
 It does not add another scheduler, provider transport, idle timer or state store.
 See [central harness pools](connections/AI-CONNECTION-ROUTERS.md#central-harness-pools)
 for operator setup, conversion and continuation limits.

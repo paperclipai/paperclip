@@ -1,4 +1,5 @@
 import { legacyPoolAccountEvidenceMatches } from "./legacy-pool-account-proof.js";
+import { companyPoolSourceAgent } from "./company-pool-execution.js";
 import { legacyRunHasUnsettledActions } from "../legacy-action-outcomes.js";
 import { effectiveAiConnectionInput } from "@paperclipai/shared";
 import { DEFINITIVE_NATIVE_RUNNER_FAILURE_CODES } from "../native-runtime/native-pool-failure.js";
@@ -111,10 +112,11 @@ export async function switchFailedPoolPin(db: Db, input: {
     if (run.runtimeMode !== "native" && (kind === "quota" || kind === "auth") &&
         !legacyPoolAccountEvidenceMatches(kind, selection.binding.provider, proof.providerEvidence)) return null;
   }
+  const executionAgent = run.scopeKind === "company" && agent.runtimeConfig.harnessPool ? companyPoolSourceAgent(agent) : agent;
   return aiConnectionRouterService(db).transitionQuotaPin({ companyId: run.companyId, poolId: selection.poolId,
     agentId: run.agentId, taskKey, expectedSelection: selection, userId: input.userId,
-    adapterType: agent.adapterType, attemptedMemberIds: [], failureKind: kind,
-    sourceAdapterConfig: { ...parseObject(agent.adapterConfig), ...parseObject(parseObject(task?.assigneeAdapterOverrides).adapterConfig) },
+    adapterType: executionAgent.adapterType, attemptedMemberIds: [], failureKind: kind,
+    sourceAdapterConfig: { ...parseObject(executionAgent.adapterConfig), ...parseObject(parseObject(task?.assigneeAdapterOverrides).adapterConfig) },
     allowCoolingSelection: true });
 }
 
@@ -165,10 +167,11 @@ export async function reselectUnstartedPoolSuccessor(db: Db, candidate: Run, use
     const [pin] = await tx.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, run.companyId),
       eq(aiConnectionTaskPins.poolId, selection.poolId), eq(aiConnectionTaskPins.agentId, run.agentId), eq(aiConnectionTaskPins.taskKey, taskKey)));
     if (!pin || !isDeepStrictEqual(pin.selection, context.aiRouterSelection)) return;
+    const executionAgent = run.scopeKind === "company" && agent.runtimeConfig.harnessPool ? companyPoolSourceAgent(agent) : agent;
     const next = await aiConnectionRouterService(tx as unknown as Db).transitionQuotaPin({ companyId: run.companyId,
       poolId: selection.poolId, agentId: run.agentId, taskKey, expectedSelection: pin.selection, userId,
-      adapterType: agent.adapterType, attemptedMemberIds: [], failureKind: kind,
-      sourceAdapterConfig: { ...parseObject(agent.adapterConfig), ...parseObject(parseObject(task?.assigneeAdapterOverrides).adapterConfig) } });
+      adapterType: executionAgent.adapterType, attemptedMemberIds: [], failureKind: kind,
+      sourceAdapterConfig: { ...parseObject(executionAgent.adapterConfig), ...parseObject(parseObject(task?.assigneeAdapterOverrides).adapterConfig) } });
     if (next.kind !== "selected") return;
     const updated = { ...context, aiRouterSelection: next.selection,
       aiPoolFailover: { ...failover, waitingUntil: undefined } };

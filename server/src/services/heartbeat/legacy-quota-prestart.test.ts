@@ -24,7 +24,9 @@ import { reopenNativeQuotaPoolWaits } from "../native-runtime/native-quota-wake.
 describe("legacy quota prestart retry", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>, db: Db, home: string;
   beforeAll(async () => { home = await mkdtemp(path.join(os.tmpdir(), "quota-prestart-home-")); vi.stubEnv("PAPERCLIP_HOME", home);
-    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "legacy-quota-test"); database = await startEmbeddedPostgresTestDatabase("legacy-quota-prestart-"); db = createDb(database.connectionString, { maxConnections: 8 }); }, 90_000);
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "legacy-quota-test");
+    if (process.env.PAPERCLIP_TEST_DATABASE_URL) db = createDb(process.env.PAPERCLIP_TEST_DATABASE_URL, { maxConnections: 8 });
+    else { database = await startEmbeddedPostgresTestDatabase("legacy-quota-prestart-"); db = createDb(database.connectionString, { maxConnections: 8 }); } }, 90_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
   let observedReset: string;
   beforeEach(() => {
@@ -230,6 +232,25 @@ describe("legacy quota prestart retry", () => {
     expect(successor?.sessionIdBefore).toBeNull();
     expect(successor!.scheduledRetryAt!.getTime()).toBeLessThan(Date.now() + 10_000);
   }, 30_000);
+  it("continues a taskless Pool harness through its admitted direct member", async () => {
+    const f = await fixture(true, true, "openai");
+    const { harnessPoolService } = await import("../harness-pools.js");
+    await harnessPoolService(db).convertV1(f.companyId, f.pool.id, f.pool.revision, false, f.userId);
+    const [configured] = await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex" },
+      runtimeConfig: { harnessPool: { poolId: f.pool.id } } }).where(eq(agents.id, f.agent.id)).returning();
+    Object.assign(f.agent, configured);
+    const { instanceSettingsService } = await import("../instance-settings.js");
+    await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true });
+    expect((await f.schedule()).outcome).toBe("scheduled");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id));
+    expect(successor).toMatchObject({ scopeKind: "company", issueId: null });
+    expect(successor.contextSnapshot?.aiRouterSelection).toMatchObject({ adapterType: "claude_local", memberId: f.members[1]!.id });
+    expect(successor.contextSnapshot?.aiRouterTaskKey).toBe(f.source.id);
+    const admitted = await preparePoolAdapterClaim(db, successor, f.agent, f.userId);
+    expect(admitted.adapterDispatch).toMatchObject({ adapterType: "claude_local", configuredAdapterType: "paperclip_runner", companyPoolExecution: true });
+    expect(admitted.context.aiRouterSelection).toMatchObject({ memberId: f.members[1]!.id });
+  }, 30_000);
+
   it("continues an agent heartbeat without an issue using bounded progress and the original affinity", async () => {
     const f = await fixture(true, true);
     expect((await f.schedule()).outcome).toBe("scheduled");

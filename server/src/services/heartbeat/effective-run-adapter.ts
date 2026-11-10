@@ -4,27 +4,46 @@ import { agentTaskSessions, aiConnectionPools, aiConnectionTaskPins, agents, hea
 import { and, eq, sql } from "drizzle-orm";
 import { parseObject } from "../../adapters/utils.js";
 import { applyAiConnectionRouterTaskSettings, aiConnectionRouterService, LOCAL_POOL_ADAPTERS, AiConnectionPoolExhausted } from "../ai-connection-router.js";
-import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionRouterSelection } from "@paperclipai/shared";
-import { HttpError } from "../../errors.js";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY, decodeHarnessPoolConfig, type AiConnectionRouterSelection } from "@paperclipai/shared";
+import { HttpError, unprocessable } from "../../errors.js";
 import { deriveTaskKeyWithHeartbeatFallback, shouldResetTaskSessionForWake } from "./run-state.js";
 import { reselectUnstartedPoolSuccessor } from "./pool-failover.js";
 import type { PluginWorkerManager } from "../plugin-worker-manager.js";
 import { resolveHarnessPoolExecution } from "./harness-pool-admission.js";
+import { companyPoolSourceAgent } from "./company-pool-execution.js";
+import { instanceSettingsService } from "../instance-settings.js";
+import { harnessPoolEnvironmentScope } from "./harness-pool-environment.js";
 
 export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.$inferSelect,
-  agent: typeof agents.$inferSelect, userId: string | null, workerManager?: PluginWorkerManager): Promise<{ adapterDispatch: Record<string, unknown>; context: Record<string, unknown> & { aiRouterSelection?: AiConnectionRouterSelection } }> {
+  agent: typeof agents.$inferSelect, userId: string | null, workerManager?: PluginWorkerManager, companyEnvironmentId?: string): Promise<{ adapterDispatch: Record<string, unknown>; context: Record<string, unknown> & { aiRouterSelection?: AiConnectionRouterSelection } }> {
   const existing = parseObject(parseObject(run.runnerProfileJson).adapterDispatch);
   if (typeof existing.adapterType === "string") return { adapterDispatch: existing, context: {} };
   const adapterDispatch = { adapterType: agent.adapterType, configuredAdapterType: agent.adapterType };
   if (agent.runtimeConfig.harnessPool) {
     try {
+      if (run.scopeKind === "company" && !run.issueId && !run.nativeIssueId && run.runtimeMode !== "native") {
+        if (!(await instanceSettingsService(db).getExperimental()).enableNativeRunner)
+          throw unprocessable("Pool harness requires an enabled Paperclip Runner");
+        const sourceAgent = companyPoolSourceAgent(agent);
+        const binding = parseObject(sourceAgent.runtimeConfig.aiConnection);
+        const [pool] = await db.select().from(aiConnectionPools).where(and(eq(aiConnectionPools.companyId, agent.companyId), eq(aiConnectionPools.id, String(binding.connectionId))));
+        if (!pool || pool.pluginKey !== BUILTIN_AI_FAILOVER_ROUTER_KEY || decodeHarnessPoolConfig(pool.config).kind !== "harness_pool")
+          throw unprocessable("Choose an available harness pool");
+        const environmentId = await harnessPoolEnvironmentScope(db, agent, undefined);
+        const prepared = await preparePoolAdapterClaim(db, run, sourceAgent, userId, workerManager, environmentId);
+        if (prepared.adapterDispatch.poolPreparationFailure && !prepared.context.aiRouterSelection)
+          return { adapterDispatch: { ...adapterDispatch, poolPreparationFailure: prepared.adapterDispatch.poolPreparationFailure }, context: prepared.context };
+        return { ...prepared, adapterDispatch: { ...prepared.adapterDispatch,
+          configuredAdapterType: agent.adapterType, companyPoolExecution: true } };
+      }
       const admitted = await resolveHarnessPoolExecution({ db, run, agent, userId });
       return { adapterDispatch: { ...adapterDispatch, poolId: admitted.selection.poolId, memberId: admitted.selection.memberId, harnessPoolProfile: admitted.profile },
         context: { aiRouterSelection: admitted.routerSelection, aiRouterTaskKey: admitted.taskKey, harnessPoolSelection: admitted.selection } };
     } catch (error) {
       return { adapterDispatch: { ...adapterDispatch, poolPreparationFailure: error instanceof AiConnectionPoolExhausted
         ? { kind: "exhausted", message: error.message, poolId: error.poolId, retryAt: error.retryAt }
-        : { kind: "configuration", message: error instanceof Error ? error.message : "Pool harness preparation failed" } }, context: {} };
+        : { kind: "configuration", message: error instanceof Error ? error.message : "Pool harness preparation failed",
+          ...(error instanceof HttpError ? { code: parseObject(error.details).code } : {}) } }, context: {} };
     }
   }
   const binding = parseObject(parseObject(agent.runtimeConfig).aiConnection);
@@ -50,7 +69,7 @@ export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.
   try {
     const identity = session?.sessionParamsJson?.paperclipAiCredentialIdentity;
     const selection = await aiConnectionRouterService(db, workerManager).resolve({ companyId: agent.companyId, poolId: binding.connectionId,
-      agentId: agent.id, userId, adapterType: agent.adapterType, taskKey, overrides: parseObject(parseObject(issue?.overrides).adapterConfig),
+      agentId: agent.id, userId, adapterType: agent.adapterType, taskKey, environmentId: companyEnvironmentId, overrides: parseObject(parseObject(issue?.overrides).adapterConfig),
       requireExisting: Boolean(session?.sessionDisplayId) && !shouldResetTaskSessionForWake(context),
       sourceAdapterConfig: { ...parseObject(agent.adapterConfig), ...parseObject(parseObject(issue?.overrides).adapterConfig) },
       skipUsageProbe: pool?.pluginKey === BUILTIN_AI_FAILOVER_ROUTER_KEY,
@@ -71,7 +90,7 @@ export async function preparePoolAdapterClaim(db: Db, run: typeof heartbeatRuns.
 }
 
 export function effectiveRunAgent<T extends Pick<typeof agents.$inferSelect, "adapterType" | "adapterConfig">>(
-  run: Pick<typeof heartbeatRuns.$inferSelect, "runnerProfileJson" | "contextSnapshot">,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "runnerProfileJson" | "contextSnapshot"> & Partial<Pick<typeof heartbeatRuns.$inferSelect, "scopeKind" | "issueId" | "nativeIssueId" | "runtimeMode">>,
   agent: T,
 ): T {
   const dispatch = parseObject(parseObject(run.runnerProfileJson).adapterDispatch);
@@ -82,7 +101,13 @@ export function effectiveRunAgent<T extends Pick<typeof agents.$inferSelect, "ad
   const selection = parseObject(run.contextSnapshot).aiRouterSelection as AiConnectionRouterSelection | undefined;
   if (!selection || dispatch.poolId !== selection.poolId || dispatch.memberId !== selection.memberId ||
       (selection.adapterType ?? agent.adapterType) !== selected) throw new Error("The admitted pool adapter does not match its selection.");
-  const adapterConfig = applyAiConnectionRouterTaskSettings(parseObject(agent.adapterConfig), selection, agent.adapterType);
+  let source = agent;
+  if (dispatch.companyPoolExecution === true) {
+    if (run.scopeKind !== "company" || run.issueId || run.nativeIssueId || run.runtimeMode === "native" || !("runtimeConfig" in agent))
+      throw new Error("The admitted company Pool execution scope changed before dispatch.");
+    source = companyPoolSourceAgent(agent as T & Pick<typeof agents.$inferSelect, "runtimeConfig">);
+  }
+  const adapterConfig = applyAiConnectionRouterTaskSettings(parseObject(source.adapterConfig), selection, source.adapterType);
   if (dispatch.harnessPoolProfile && !isDeepStrictEqual(dispatch.harnessPoolProfile, resolvePaperclipRunnerProviderProfile(adapterConfig)))
     throw new Error("The admitted Pool harness profile changed before dispatch.");
   return { ...agent, adapterType: selected, adapterConfig };

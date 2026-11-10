@@ -309,6 +309,7 @@ import {
 import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, type AiConnectionRouterSelection } from "@paperclipai/shared";
 import { aiConnectionRouterService, AiConnectionPoolExhausted, applyAiConnectionRouterTaskSettings, LOCAL_POOL_ADAPTERS } from "./ai-connection-router.js";
 import { effectiveRunAgent } from "./heartbeat/effective-run-adapter.js";
+import { companyPoolSourceAgent } from "./heartbeat/company-pool-execution.js";
 import {
   getExecutionBlocker,
 } from "./execution-blocker.js";
@@ -2100,6 +2101,8 @@ export function heartbeatService(
         return;
       }
       let agent = effectiveRunAgent(run, loadedAgent);
+      const poolPolicyAgent = parseObject(parseObject(run.runnerProfileJson).adapterDispatch).companyPoolExecution === true
+        ? companyPoolSourceAgent(loadedAgent) : loadedAgent;
 
       const dispatchIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
       const resumingAdmittedConversationTurn = !!runOptions.nativeLeaseOwner
@@ -2616,8 +2619,8 @@ export function heartbeatService(
           const router = aiConnectionRouterService(db, options.pluginWorkerManager);
           const selection = await router.resolve({
             companyId: agent.companyId, poolId: requestedAiBinding.connectionId, agentId: agent.id,
-            userId: responsibleUserId, adapterType: loadedAgent.adapterType, taskKey: String(context.aiRouterTaskKey),
-            sourceAdapterConfig: { ...parseObject(loadedAgent.adapterConfig), ...issueAssigneeOverrides?.adapterConfig },
+            userId: responsibleUserId, adapterType: poolPolicyAgent.adapterType, taskKey: String(context.aiRouterTaskKey),
+            sourceAdapterConfig: { ...parseObject(poolPolicyAgent.adapterConfig), ...issueAssigneeOverrides?.adapterConfig },
             overrides: issueAssigneeOverrides?.adapterConfig ?? {},
             existingGrantId: typeof savedIdentity === "string" ? savedIdentity.split(":")[0] : undefined,
             requireExisting: Boolean(taskSession?.sessionDisplayId) && !shouldResetTaskSessionForWake(context),
@@ -2628,7 +2631,7 @@ export function heartbeatService(
           }
           context.aiRouterSelection = selection;
           taskKey ??= routerTaskKey;
-          if (LOCAL_POOL_ADAPTERS.includes(loadedAgent.adapterType) ||
+          if (LOCAL_POOL_ADAPTERS.includes(poolPolicyAgent.adapterType) ||
               (agent.adapterType === "paperclip_runner" && Object.keys(savedRouterInput).length === 0)) {
             await options.afterPoolSelection?.(run.id, selection);
             await router.recheckPinnedPoolAccount({ companyId: agent.companyId, agentId: agent.id,
@@ -2636,8 +2639,8 @@ export function heartbeatService(
           }
           aiBinding = selection.binding;
           // Provider-specific fields from the configured harness must not leak into the selected member.
-          config = applyAiConnectionRouterTaskSettings(config, selection, loadedAgent.adapterType);
-          if (issueAssigneeOverrides) issueAssigneeOverrides = { ...issueAssigneeOverrides, adapterConfig: applyAiConnectionRouterTaskSettings(issueAssigneeOverrides.adapterConfig ?? {}, selection, loadedAgent.adapterType, { ...parseObject(loadedAgent.adapterConfig), ...issueAssigneeOverrides.adapterConfig }) };
+          config = applyAiConnectionRouterTaskSettings(config, selection, poolPolicyAgent.adapterType);
+          if (issueAssigneeOverrides) issueAssigneeOverrides = { ...issueAssigneeOverrides, adapterConfig: applyAiConnectionRouterTaskSettings(issueAssigneeOverrides.adapterConfig ?? {}, selection, poolPolicyAgent.adapterType, { ...parseObject(poolPolicyAgent.adapterConfig), ...issueAssigneeOverrides.adapterConfig }) };
           agent = { ...agent, adapterConfig: config };
           context.aiRouterSelection = selection;
           await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiRouterTaskKey: context.aiRouterTaskKey, aiRouterSelection: selection })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));

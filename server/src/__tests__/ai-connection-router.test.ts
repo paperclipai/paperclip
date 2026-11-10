@@ -322,11 +322,58 @@ describe("durable, authorized connection routing", () => {
     await instanceSettingsService(db).updateExperimental({ enableNativeRunner: false });
     expect((await preparePoolAdapterClaim(db, run!, agent!, "alice")).adapterDispatch.poolPreparationFailure).toMatchObject({ kind: "configuration" });
     await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true });
-    expect((await preparePoolAdapterClaim(db, { ...run!, issueId: null, scopeKind: "company" }, agent!, "alice")).adapterDispatch.poolPreparationFailure).toMatchObject({ message: "Pool harness requires a task" });
     await harnessPoolService(db).archive(companyId, pool.id, revised.revision, "alice");
     expect((await preparePoolAdapterClaim(db, run!, agent!, "alice")).adapterDispatch.poolPreparationFailure).toMatchObject({ kind: "configuration" });
     await instanceSettingsService(db).updateExperimental({ enableNativeRunner: false });
 
+  });
+  it.each(["on_demand", "timer"] as const)("runs a Pool harness without creating a task (%s)", async source => {
+    const { harnessPoolService } = await import("../services/harness-pools.js");
+    await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true });
+    const member = members[0]!;
+    const pool = await harnessPoolService(db).save(companyId, { config: { schemaVersion: 2, kind: "harness_pool", name: "Company run", enabled: true, mode: "failover",
+      members: [{ id: member.id, connection: member.binding, harness: { type: "codex" }, model: member.profile.model }] } }, "alice");
+    const [agent] = await db.insert(agents).values({ companyId, name: "Taskless pool", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex", cwd: home }, runtimeConfig: { harnessPool: { poolId: pool.id }, heartbeat: { enabled: source === "timer" } } }).returning();
+    const before = await db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, companyId));
+    const execute = vi.fn(async () => ({ exitCode: 0, signal: null, timedOut: false, summary: "Company heartbeat completed" }));
+    registerServerAdapter({ ...getServerAdapter("codex_local"), execute });
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+    try {
+      const run = await heartbeat.wakeup(agent.id, { source, reason: source === "timer" ? "heartbeat_timer" : "manual",
+        triggerDetail: "manual", requestedByActorType: "user", requestedByActorId: "alice", contextSnapshot: { responsibleUserId: "alice" } });
+      await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 20_000 }).toBe("succeeded");
+      expect(execute).toHaveBeenCalledOnce();
+      const saved = await heartbeat.getRun(run!.id);
+      expect(saved).toMatchObject({ scopeKind: "company", issueId: null });
+      expect(saved?.contextSnapshot?.aiRouterSelection).toMatchObject({ memberId: member.id, adapterType: "codex_local" });
+      expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.companyId, companyId))).toEqual(before);
+      expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0]).toMatchObject({ adapterType: "paperclip_runner", runtimeConfig: { harnessPool: { poolId: pool.id } } });
+    } finally { unregisterServerAdapter("codex_local"); await heartbeat.drainActiveRunExecutions(); }
+  }, 30_000);
+  it("retains a company run allocation and uses the backup for a new run when its account cools", async () => {
+    const { harnessPoolService } = await import("../services/harness-pools.js");
+    await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true });
+    const pool = await harnessPoolService(db).save(companyId, { config: { schemaVersion: 2, kind: "harness_pool", name: "Company backup", enabled: true, mode: "failover",
+      members: members.map((member, index) => ({ id: member.id, connection: member.binding, harness: { type: index === 0 ? "codex" as const : "claude_code" as const }, model: member.profile.model })) } }, "alice");
+    const [agent] = await db.insert(agents).values({ companyId, name: "Company backup", adapterType: "paperclip_runner", adapterConfig: { provider: "codex", cwd: home }, runtimeConfig: { harnessPool: { poolId: pool.id } } }).returning();
+    const [first] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "company", status: "queued" }).returning();
+    const admitted = await preparePoolAdapterClaim(db, first, agent, "alice");
+    const saved = { ...first, contextSnapshot: admitted.context, runnerProfileJson: { adapterDispatch: admitted.adapterDispatch } };
+    expect(admitted.context.aiRouterTaskKey).toBe(first.id);
+    expect(admitted.context.aiRouterSelection).toMatchObject({ memberId: members[0]!.id, runnerScope: { environmentId: expect.any(String) } });
+    expect((await preparePoolAdapterClaim(db, saved, agent, "alice")).adapterDispatch).toEqual(admitted.adapterDispatch);
+    const identity = await identityFor(members[0]!.binding.grantId);
+    await service().recordQuotaCooldown(companyId, members[0]!.binding.connectionId, identity, new Date(Date.now() + 3_600_000));
+    try {
+      const [second] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "company", status: "queued" }).returning();
+      const backup = await preparePoolAdapterClaim(db, second, agent, "alice");
+      expect(backup.context.aiRouterTaskKey).toBe(second.id);
+      expect(backup.context.aiRouterSelection).toMatchObject({ memberId: members[1]!.id, adapterType: "claude_local" });
+      expect(effectiveRunAgent({ ...second, contextSnapshot: backup.context, runnerProfileJson: { adapterDispatch: backup.adapterDispatch } }, agent))
+        .toMatchObject({ adapterType: "claude_local", adapterConfig: { engine: "cli", model: members[1]!.profile.model } });
+      expect((await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.taskKey, first.id))))[0]?.selection.memberId).toBe(members[0]!.id);
+    } finally { await db.delete(aiConnectionQuotaCooldowns).where(and(eq(aiConnectionQuotaCooldowns.companyId, companyId), eq(aiConnectionQuotaCooldowns.credentialIdentity, identity))); }
   });
   it("pins the effective Codex adapter for a configured Claude agent", async () => {
     const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: {
