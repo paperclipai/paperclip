@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat, symlink, realpath } from "node:fs/promises";
@@ -28,6 +29,24 @@ async function fixture() {
   return { root, source, target: path.join(root, "target") };
 }
 describe("atomic managed repository publication", () => {
+  it.skipIf(process.platform !== "win32")("retries a temporary Windows publication sharing violation", async () => {
+    const { source, target } = await fixture();
+    const rename = fs.rename.bind(fs);
+    let calls = 0;
+    let restore = () => {};
+    try {
+      await materializeManagedProjectWorkspace(target, { repoUrl: source, beforePublish: async () => {
+        const spy = vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+          calls++;
+          if (calls < 3) throw Object.assign(new Error("sharing violation"), { code: "EPERM" });
+          return rename(from, to);
+        });
+        restore = () => { spy.mockRestore(); };
+      } });
+      expect(calls).toBe(3);
+      expect(await readFile(path.join(target, "source.txt"), "utf8")).toBe("initial\n");
+    } finally { restore(); }
+  });
   it("keeps in-progress clone staging out of concurrent repository scans", async () => {
     const { root, source } = await fixture();
     const parent = path.join(root, PROJECT_REPOSITORIES_DIR);
@@ -122,7 +141,7 @@ describe("atomic managed repository publication", () => {
   });
   it.skipIf(process.platform !== "win32")("restores long tracked paths from Git objects and retains long-path support", async () => {
     const { root, source } = await fixture();
-    const relative = path.join("long-directory-name-".repeat(3), "nested-directory-name-".repeat(3), "LongProject.Components.DistributedCaching.Redis.csproj");
+    const relative = path.join("long-directory-name-".repeat(4), "nested-directory-name-".repeat(3), "LongProject.Components.DistributedCaching.Redis.csproj");
     await mkdir(path.dirname(path.join(source, relative)), { recursive: true });
     await writeFile(path.join(source, relative), "restored\n");
     await execFile("git", ["-c", "core.longpaths=true", "-C", source, "add", "."]);

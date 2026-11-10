@@ -1,6 +1,7 @@
 import { retainCurrentWorkspaceSource } from "./workspace-source-lock.js";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { PROJECT_REPOSITORIES_DIR, readGitWorkspaceSnapshot, disposeGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
@@ -233,7 +234,16 @@ export async function materializeManagedProjectWorkspace(
   }
 
   try {
-    await measureRunPhase("workspace.checkout.publish", () => fs.rename(cloneTmpDir, cwd));
+    await measureRunPhase("workspace.checkout.publish", async () => {
+      for (let attempt = 0; ; attempt++) {
+        try { await fs.rename(cloneTmpDir, cwd); return; }
+        catch (error) {
+          if (process.platform !== "win32" || attempt >= 7 ||
+            !["EPERM", "EACCES", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+          await delay(250 * (attempt + 1));
+        }
+      }
+    });
   } catch (renameError) {
     await fs
       .rm(cloneTmpDir, { recursive: true, force: true })
