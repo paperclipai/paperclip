@@ -318,6 +318,33 @@ export async function loadWithoutCoordinatedShutdownSignalHooks<T>(
   return loaded;
 }
 
+type CoordinatedShutdownSignalOwner = {
+  on(eventName: string, listener: (...args: any[]) => void): unknown;
+  removeListener(eventName: string, listener: (...args: any[]) => void): unknown;
+};
+
+export function createCoordinatedShutdown(
+  performShutdown: (signal: "SIGINT" | "SIGTERM", exitProcess: boolean) => Promise<void>,
+  signalOwner: CoordinatedShutdownSignalOwner = process,
+) {
+  let shutdownPromise: Promise<void> | undefined;
+  const listeners = COORDINATED_SHUTDOWN_SIGNALS.map((signal) => ({
+    signal,
+    listener: () => {
+      void shutdown(signal, true);
+    },
+  }));
+  const releaseSignals = () => {
+    for (const { signal, listener } of listeners) signalOwner.removeListener(signal, listener);
+  };
+  const shutdown = (signal: "SIGINT" | "SIGTERM", exitProcess: boolean): Promise<void> =>
+    shutdownPromise ??= performShutdown(signal, exitProcess).finally(() => {
+      if (!exitProcess) releaseSignals();
+    });
+  for (const { signal, listener } of listeners) signalOwner.on(signal, listener);
+  return shutdown;
+}
+
 export async function coordinateHeartbeatSchedulerShutdown<
   TPreparation extends HotRestartShutdownPreparation,
 >(input: {
