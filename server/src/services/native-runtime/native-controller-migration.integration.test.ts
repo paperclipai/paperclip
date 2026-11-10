@@ -11,6 +11,7 @@ import * as sessionResume from "./native-session-resume.js";
 import { nativeControllerMigrationDescriptor } from "./native-session-executor.js";
 import { hasLocalNativeControllerObligations, migrateNativeControllers, prestageNativeControllers } from "./native-controller-migration.js";
 import { insertMigratedNativeRunnerCheckpoint, loadNativeRunnerCheckpoint, nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
+import * as checkpointReader from "./native-runner-checkpoint.js";
 import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
 import { createNativeControllerRecovery, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
 import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
@@ -189,8 +190,11 @@ describeEmbeddedPostgres.each(["archive_online", "archive_online_owned", "archiv
     await f.db.insert(agentTaskSessions).values(Array.from({ length: 15 }, () => ({ companyId: f.companyId,
       agentId: f.agentId, adapterType: "paperclip_runner", taskKey: randomUUID(), lastRunId: f.runId })));
     const original = sessionResume.findNativeSessionResumeRun;
+    const originalCheckpoint = checkpointReader.hasNativeRunnerCheckpoint;
     let started = 0, finished = 0, inFlight = 0, peak = 0, fail = false;
+    let checkpointStarted = 0, checkpointFinished = 0, checkpointInFlight = 0, checkpointPeak = 0, checkpointFail = false;
     const reason = new Error("retained source reader failed");
+    const checkpointReason = new Error("durable checkpoint reader failed");
     const spy = vi.spyOn(sessionResume, "findNativeSessionResumeRun").mockImplementation(async (...args) => {
       const first = ++started === 1; peak = Math.max(peak, ++inFlight);
       try {
@@ -199,16 +203,33 @@ describeEmbeddedPostgres.each(["archive_online", "archive_online_owned", "archiv
         return await original(...args);
       } finally { inFlight--; finished++; }
     });
+    const checkpointSpy = vi.spyOn(checkpointReader, "hasNativeRunnerCheckpoint").mockImplementation(async (...args) => {
+      const first = ++checkpointStarted === 1;
+      checkpointPeak = Math.max(checkpointPeak, ++checkpointInFlight);
+      try {
+        await new Promise(resolve => setTimeout(resolve, first && checkpointFail ? 1 : 20));
+        if (first && checkpointFail) throw checkpointReason;
+        return await originalCheckpoint(...args);
+      } finally { checkpointInFlight--; checkpointFinished++; }
+    });
     try {
       const before = performance.now();
       expect(await hasLocalNativeControllerObligations(f.db)).toBe(false);
-      console.info(JSON.stringify({ state: "retained_source_readers", elapsedMs: performance.now() - before, peak, started, finished }));
+      console.info(JSON.stringify({ state: "retained_source_readers", elapsedMs: performance.now() - before, peak, started, finished,
+        checkpointStarted, checkpointFinished, checkpointPeak }));
       expect(started).toBe(16); expect(finished).toBe(16); expect(peak).toBeGreaterThan(1); expect(peak).toBeLessThanOrEqual(8);
+      expect(checkpointStarted).toBe(16); expect(checkpointFinished).toBe(16);
+      expect(checkpointPeak).toBeGreaterThan(1); expect(checkpointPeak).toBeLessThanOrEqual(8);
       started = finished = peak = 0; fail = true;
       await expect(hasLocalNativeControllerObligations(f.db)).rejects.toBe(reason);
       expect(started).toBe(8); expect(finished).toBe(8); expect(inFlight).toBe(0);
+      started = finished = peak = 0; fail = false;
+      checkpointStarted = checkpointFinished = checkpointPeak = 0; checkpointFail = true;
+      await expect(hasLocalNativeControllerObligations(f.db)).rejects.toBe(checkpointReason);
+      expect(checkpointStarted).toBe(8); expect(checkpointFinished).toBe(8); expect(checkpointInFlight).toBe(0);
+      expect(started).toBe(8); expect(finished).toBe(8); expect(inFlight).toBe(0);
       expect(await readFile(f.file, "utf8")).toBe(f.source);
-    } finally { spy.mockRestore(); }
+    } finally { checkpointSpy.mockRestore(); spy.mockRestore(); }
   });
   if (scenario === "active_durable") it("accepts a complete active database authority without terminal metadata and refuses stale or incomplete handoff proof", async () => {
     const f = await fixture(1, false, true), controller = await currentNativeControllerIdentity();
