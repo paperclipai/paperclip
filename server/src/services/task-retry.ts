@@ -304,13 +304,17 @@ function admitTaskRetry(input: TaskRetryRequest) {
     // An accepted result that only failed to finalize is applied again, never
     // replaced by a new provider run. The receipt coalesces into that run.
     const finalizeId = randomUUID();
-    if (latest.runtimeMode === "native" && latest.status === "succeeded" && await rearmExhaustedNativeFinalization(db, {
-      companyId: issue.companyId, issueId: issue.id, runId: latest.id, generationId: active?.id ?? finalizeId, actorId: input.actorId,
-    })) {
-      const finalizeIntent: TaskRetryIntent = { schema: "paperclip.task-retry.v1", generationId: active?.id ?? finalizeId,
+    const savedResult = latest.runtimeMode === "native" && latest.status === "succeeded"
+      ? await rearmExhaustedNativeFinalization(db, { companyId: issue.companyId, issueId: issue.id, runId: latest.id,
+        generationId: active?.id ?? finalizeId, actorId: input.actorId })
+      : { kind: "not_eligible" as const };
+    if (savedResult.kind !== "not_eligible") {
+      // A later click joins the saved-result Retry already under way (or applied).
+      const canonicalId = (savedResult.kind === "joined" ? savedResult.generationId : null) ?? active?.id ?? null;
+      const finalizeIntent: TaskRetryIntent = { schema: "paperclip.task-retry.v1", generationId: canonicalId ?? finalizeId,
         sourceRunId: latest.id, actorId: input.actorId,
         actorSource: taskRetryIntentSchema.shape.actorSource.parse(input.actorSource ?? "session"), strategy: "finalize_result",
-        ...(active ? { canonicalIntentId: active.id } : {}) };
+        ...(canonicalId ? { canonicalIntentId: canonicalId } : {}) };
       const settled = { status: "coalesced", runId: latest.id, finishedAt: new Date(), updatedAt: new Date() } as const;
       // An unadmitted Retry for this run would start a provider turn; it joins the re-finalization instead.
       if (active && !active.runId) await tx.update(agentWakeupRequests).set({ ...settled,
@@ -324,11 +328,12 @@ function admitTaskRetry(input: TaskRetryRequest) {
       await persistActivity(db, { companyId: issue.companyId, actorType: restartRecovery ? "system" : "user",
         actorId: restartRecovery ? "restart-recovery" : input.actorId,
         action: "issue.retry_requested", entityType: "issue", entityId: issue.id, runId: latest.id,
-        details: { requestId: active?.id ?? finalizeId, sourceRunId: latest.id, attachedToExistingWork: Boolean(active),
+        details: { requestId: canonicalId ?? finalizeId, sourceRunId: latest.id, attachedToExistingWork: Boolean(canonicalId),
           strategy: "finalize_result",
           ...(restartRecovery ? { initiatedBy: "restart_recovery", onBehalfOfUserId: input.actorId } : {}) } });
-      return { requestId: active?.id ?? finalizeId, accepted: true, stale: false, observedRunId: latest.id,
-        chatActionId: undefined, finalizeRunId: latest.id };
+      const finalizing = savedResult.kind === "rearmed" || savedResult.finalizing;
+      return { requestId: canonicalId ?? finalizeId, accepted: true, stale: false, observedRunId: latest.id,
+        chatActionId: undefined, ...(finalizing ? { finalizeRunId: latest.id } : {}) };
     }
     const busy = ["queued", "running", "scheduled_retry"].includes(latest.status);
     if (!busy) {

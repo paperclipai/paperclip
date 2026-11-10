@@ -141,7 +141,22 @@ describe("Retry after native finalization runs out of retries", () => {
       eq(activityLog.action, "issue.retry_requested")))).resolves.toEqual([expect.objectContaining({
         actorType: "user", actorId: userId, runId, details: expect.objectContaining({ strategy: "finalize_result" }) })]);
 
+    // A second click (another tab, another user, a new key) joins the pending
+    // saved-result Retry instead of queueing a provider Retry.
+    await expect(retry(issueId, runId, "refinalize-2")).resolves.toMatchObject({ accepted: true,
+      requestId: receipt.requestId, finalizeRunId: runId });
+    const providerRetries = () => db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "task_retry"),
+      sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+      sql`${agentWakeupRequests.status} <> 'coalesced' or ${agentWakeupRequests.payload}#>>'{taskRetry,strategy}' <> 'finalize_result'`));
+    await expect(providerRetries()).resolves.toHaveLength(0);
+
     await refinalizeSavedNativeResult(db, { companyId, runId });
+    // A stale click after the result applied also joins; nothing new runs.
+    const late = await retry(issueId, runId, "refinalize-3");
+    expect(late).toMatchObject({ accepted: true, requestId: receipt.requestId });
+    expect(late).not.toHaveProperty("finalizeRunId");
+    await expect(providerRetries()).resolves.toHaveLength(0);
     const after = await coordinator(runId);
     expect(after).toMatchObject({ phase: "committed" });
     expect(after.decisionId).toBeTruthy();

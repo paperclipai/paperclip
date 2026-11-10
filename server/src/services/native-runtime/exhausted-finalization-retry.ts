@@ -37,22 +37,34 @@ export function exhaustedNativeFinalizationCondition(): SQL<boolean> {
 /**
  * Caller holds the task lock and has proven `runId` is the task's latest run
  * by its current assignee. Reopens the coordinator for the same saved result
- * with a fresh finalization budget. Returns false when the run is not in that
- * state; the caller then keeps its ordinary Retry.
+ * with a fresh finalization budget.
+ *
+ * - `rearmed`: this call reopened the coordinator.
+ * - `joined`: an earlier saved-result Retry of this run already reopened it
+ *   (still finalizing, or applied). A later click joins it and never starts
+ *   provider work; `generationId` names that earlier Retry.
+ * - `not_eligible`: the caller keeps its ordinary Retry.
  */
 export async function rearmExhaustedNativeFinalization(tx: Db, input: {
   companyId: string; issueId: string; runId: string; generationId: string; actorId: string;
-}) {
+}): Promise<{ kind: "rearmed" } | { kind: "joined"; generationId: string | null; finalizing: boolean }
+  | { kind: "not_eligible" }> {
   const [eligible] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
     eq(heartbeatRuns.nativeIssueId, input.issueId), exhaustedNativeFinalizationCondition(),
   )).limit(1);
-  if (!eligible) return false;
   const [coordinator] = await tx.select().from(nativeRunFinalizations).where(and(
     eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, input.runId),
+    eq(nativeRunFinalizations.issueId, input.issueId),
   )).for("update");
-  if (!coordinator || coordinator.phase !== "terminal_failure"
-      || coordinator.failureCode !== EXHAUSTED_FINALIZATION_FAILURE_CODE || coordinator.leaseOwner) return false;
+  if (!coordinator?.resultId) return { kind: "not_eligible" };
+  if (!eligible || coordinator.phase !== "terminal_failure"
+      || coordinator.failureCode !== EXHAUSTED_FINALIZATION_FAILURE_CODE || coordinator.leaseOwner) {
+    const earlier = coordinator.phase === "terminal_failure" ? undefined
+      : coordinator.recoveryHistory.findLast(entry => entry.kind === EXHAUSTED_FINALIZATION_RETRY_KIND);
+    return earlier ? { kind: "joined", finalizing: coordinator.phase !== "committed",
+      generationId: typeof earlier.generationId === "string" ? earlier.generationId : null } : { kind: "not_eligible" };
+  }
   const now = new Date();
   const nextAttemptAt = new Date(now.getTime() + REFINALIZATION_FALLBACK_DELAY_MS);
   const phase = coordinator.assessmentId ? "arbitrating" : "workspace_finalizing";
@@ -83,7 +95,7 @@ export async function rearmExhaustedNativeFinalization(tx: Db, input: {
       finalizationPhase: phase, finalizationFailureCount: 0, failureCode: null, nextAttemptAt: nextAttemptAt.toISOString(),
     })}::jsonb`,
   }).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
-  return true;
+  return { kind: "rearmed" };
 }
 
 /**
