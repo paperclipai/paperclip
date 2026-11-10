@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { applyJourneyOptions } from "./journey-matrix.js";
+import { takesJourneyTriggers } from "./journeys.js";
 import { STORAGE_FAULT_KINDS, type StorageFaultKind } from "./storage-chaos.js";
 import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, isProviderFault, parseProviderDelays, parseProviderMessage, type ProviderFaultKind } from "./provider-faults.js";
 import {
@@ -107,13 +109,15 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "provider-fault-message": { type: "string" },
       "provider-fault-delays": { type: "string" },
       "db-pressure": { type: "string" },
+      matrix: { type: "boolean" },
+      "server-from": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -153,9 +157,9 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const options: WaveOptions = {
     env,
     adapters,
-    // The governance scenarios (G1, H1), the saved question (Q1) and the contention run (L1) are opt-in: H1 needs a wave of its own.
-    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "Q1" && id !== "L1"
-      && (id !== "M1" || adapters.length >= 2))),
+    // The governance scenarios (G1, H1), the journeys (Q1–Q3) and the contention run (L1) are opt-in: H1 needs a wave of its own.
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1"
+      && !takesJourneyTriggers(id) && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
     faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault)),
     ...(providerFaults.length ? { providerFaults } : {}),
@@ -213,6 +217,8 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     if (crashPoint) throw new Error("--upgrade-from does not combine with --crash-point");
     options.upgradeFrom = path.resolve(upgradeFrom);
   }
+  applyJourneyOptions(options, { matrix: values.matrix === true, serverFrom: values["server-from"], tasksGiven: values.tasks !== undefined,
+    triggersGiven: values.triggers !== undefined });
   const storage = values.storage ?? "local";
   const workspaceRepo = values["workspace-repo"];
   if (options.workloads.includes("R1") !== (workspaceRepo !== undefined)) {

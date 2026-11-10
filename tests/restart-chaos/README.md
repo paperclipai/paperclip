@@ -27,6 +27,8 @@ default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance)
 `--k4-hold-max-seconds` (raise the seeded K4 hold upper end from 300 s, up to the 600 s outage cap).
 `--fault-after-seconds <n>` fires every planned fault `n` seconds after its task launches (5–3600; with `--triggers time`), keeping
 the rest of the seeded plan, for example to restart a Daytona R1 task after its workspace preparation.
+`--matrix` crosses every selected workload with every fault kind (below), and `--server-from <dir>`
+runs every server of the wave from another prepared checkout, for example a commit before a fix.
 
 Each wave's temporary instance (embedded Postgres, workspaces, often 5–13 GB) is
 deleted when the wave ends, pass or fail, including after an interrupt. Evidence
@@ -131,6 +133,123 @@ finished brief has both markers. The Stop waits for a ready server with no fault
 run already finished when the stop window opens, the harness records a missed Stop
 (`task_stop_missed`), skips the stop-triggered fault, still posts the continue comment, and the
 oracle checks only the continue. S1 is not a default workload.
+
+## Human-in-the-loop journeys (Q1, Q2, Q3)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex,claude --workloads Q1,Q2,Q3 --faults K1,K2,K4 --triggers asked,answered --concurrency 2 --tasks 4 --seed 41
+```
+
+Each journey starts from a user entry point in
+[`maps/feature-map/questions-and-approvals.md`](../../maps/feature-map/questions-and-approvals.md).
+The harness acts as the board through the routes the board UI uses. It acts only
+when the server is ready, no fault is in progress, and every fault the task planned
+before the response has fired. Two triggers fire at the journey's own boundaries:
+
+- `asked`: 0–3 s after the observer first sees the saved request pending.
+- `answered`: 0–3 s after the board's response returned.
+
+Until the board acts, the task waits on the board, as G1 does: this is not a rest,
+not a stall, and gets no Retry. The code lives in `journeys.ts` (definitions and
+oracles of Q2 and Q3), `journey-driver.ts` (their board) and `journey-oauth-app.ts` (Q3's app).
+
+**Q1, a question** (`questions`, `continuation`) is the saved question described
+under "Provider message faults" below (`question-handoff.ts`). With restart faults
+it takes the same two triggers: `asked` arms on its first pending poll and
+`answered` on the board's answer. The board answers before an `answered` fault
+fires and after every other planned fault.
+
+**Q2, a question on a blocked task** (#20363). The agent asks one single-select
+question with its native `request_human_input` tool and ends its turn. The board
+reads the card and answers with the option named by the task's nonce (`amber` or
+`cobalt`), on the task thread
+(`POST /api/issues/:id/interactions/:interactionId/respond`). Before it answers, the board
+adds an unassigned `backlog` prerequisite. It sets the task `blocked` by it
+(`blockedByIssueIds`), and then answers. The answer must reach the agent in the
+bounded answer mode, while the task stays blocked. The agent replies with the
+answer marker, in a comment or in that turn's accepted run result (a bounded turn
+may report through either). The board waits up to 6 minutes of ready
+server for that reply. Then it marks the prerequisite `done`. The
+blockers-resolved wake lets the agent write a brief that carries
+`ANSWER-<nonce>-<choice>` and finish. The oracle checks these points:
+
+- exactly one question was saved (a restart that made the agent ask twice fails);
+- the question was still pending when the board answered;
+- with `asked`, the board answered after the restart;
+- the brief carries the answer marker and the task rests `done`;
+- the reply came while the task was `blocked`;
+- the prerequisite relation was kept through the reply;
+- the reply came before the prerequisite was finished;
+- no run of the task carries `issue_dependencies_blocked`;
+- no stale Retry notice at rest.
+
+**Q3, an app action reviewed late** (`tool-review`, #20340). The harness starts its
+own OAuth 2.1 + MCP app on loopback. The app has discovery, dynamic client
+registration, PKCE, rotating refresh tokens, one-hour access tokens and one write
+tool, `create_page`. No third-party account is used. Before launch, the board
+connects the app (`POST /api/companies/:id/tools/apps/connect`). It follows the
+app's authorize redirect back to `/api/tools/oauth/callback`. Then it finishes setup
+for one scripted `process` agent with `create_page` set to Ask first. That agent
+is adapted from `tests/e2e/connection-reviews.spec.ts`. Q3 grades the review path,
+not a model, so `--adapters` only labels the cell. A process run records usage with no price, so Q3 setup also sets the company budget policy to allow unpriced usage (the amount and hard stop still apply).
+
+The agent's call waits for review. Then the board does three things:
+
+1. It moves that review's saved timestamps and the grant's access-token expiry back
+   by 61 minutes in the wave's own database (`shiftReviewClock`); a shared connection keeps that expiry on the connection. This is the
+   `GRACE_SHIFT_MS` approach used by `invariants.ts`.
+2. It runs **Check connection** (`POST /api/tool-connections/:id/health-check`).
+   That check renews the now-expiring token through the app.
+3. It approves (`POST /api/tool-gateway/action-requests/:id/approve`).
+
+The oracle checks these points:
+
+- exactly one review was requested;
+- the review aged more than an hour;
+- the app saw a refresh between the request and the decision;
+- the approval was accepted;
+- the app saw exactly one `tools/call` with the reviewed title;
+- the request ended `executed`;
+- the agent reported the provider's one-time receipt, which only the tool result carries;
+- the task rests `done`.
+
+## Journey × fault matrix (`--matrix`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads Q1,Q2,Q3 --faults K1,K2,K4 --matrix --concurrency 2 --seed 43
+```
+
+`--matrix` plans one task per cell, with a fixed order and a seeded nonce.
+The cells are workload × adapter × one of these:
+
+- `K0`: the same journey with no fault, as a baseline;
+- each restart fault in `--faults` at each of the workload's own triggers;
+- each provider message fault in `--faults` (PV1–PV3), armed once per workload.
+
+For a journey workload, those triggers are `asked` and `answered`. The example
+plans 3 × (1 + 3 × 2) = 21 tasks. Any workload can join the matrix, with its own
+boundary triggers: G1 at `approval`, H1 at `paused`, S1 at `stop`, C1 at
+`comment` and `result`, B5 at `tool`, and the rest at `time` (`WORKLOAD_TRIGGERS`
+in `journeys.ts`). G1 and H1 get no baseline, because their oracles grade a board
+decision made after a restart. `--fault-after-seconds` pins the time-fired cells.
+The matrix sets `--tasks` itself. It does not combine with `--tasks`, `--triggers`,
+`--storm-minutes`, `--crash-point` or K14.
+
+A restart hits every task in flight. So the baselines come first, and the wave
+never runs a baseline beside a fault cell: fault cells start only after the last
+baseline rests.
+
+To prove that a journey fails before a fix, prepare a checkout of the fix's parent.
+Then run the same wave against it with `--server-from`. The harness code stays the
+same; every server start and restart runs the older build:
+
+```sh
+git worktree add --detach ../paperclip-pre20363 3cc1032f6a^ && (cd ../paperclip-pre20363 && node scripts/agent-preflight.mjs)
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local --adapters codex --workloads Q2 \
+  --faults K1 --triggers answered --concurrency 1 --tasks 1 --seed 44 --server-from ../paperclip-pre20363
+```
 
 ## Code change in a real repository (R1, `--workspace-repo`)
 
@@ -511,6 +630,8 @@ the observer, after a seeded delay:
 | `retry` | 0–2 s after an accepted Retry click, as an extra K1 after the planned fault | K8 |
 | `queued` | on the first poll whose run is still `queued` with no start | B1 |
 | `tool` | 15–60 s after `bench.sh` progress first appears (B5 only) | B6 |
+| `asked` | 0–3 s after the saved question or tool review is first seen pending (Q1–Q3) | journeys |
+| `answered` | 0–3 s after the board's answer or approval returned (Q1–Q3) | journeys |
 
 A trigger whose condition can no longer hold (comment posted at rest, run
 already started, no Retry offered) is recorded as `triggerMissed` in the
@@ -533,6 +654,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `universal.ts`, `universal-audit.ts` | U1–U4 on every task, and their audit over saved waves. |
 | `contention.ts` | L1 workload, its accounting oracle and the `--db-pressure` writers. |
 | `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, M1 delegation, G1 approval across a restart, H1 budget hard stop across a restart, with their T-oracles. |
+| `journeys.ts`, `journey-driver.ts`, `journey-oauth-app.ts`, `journey-matrix.ts` | Q2 and Q3 definitions and oracles, the board's side of each, Q3's loopback OAuth/MCP app, and the `--matrix` planner. |
 | `evidence.ts`, `ledger.ts` | Evidence bundle for each failure and the JSONL ledger plus `SUMMARY.md`. |
 | `daytona-image.ts` | Docker-free extraction of the image's runnerd and provider pack, cached per digest, and the controller/image content-ID check. |
 | `provider-faults.ts`, `provider-shim/` | PV1–PV3: the resolve hook, the Codex stdio shim, per-task rules and the `provider_fault_applied` check. |
