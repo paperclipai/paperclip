@@ -1,7 +1,8 @@
+import { createOwnedPhotonClient } from "./owned-client.js";
+import { PhotonUsefulClient } from "./useful-client.js";
 import { PhotonRecoveryTransport } from "./recovery-transport.js";
 import { createHash } from "node:crypto";
 import {
-  createGrpcClient,
   type GrpcAdvancedIMessage,
   type Message as PhotonMessage,
   type Chat as PhotonChat,
@@ -101,7 +102,28 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
   readonly name = "imessage-photon";
   readonly lockScope = "channel" as const;
   readonly botUserId: string;
-  readonly client: GrpcAdvancedIMessage;
+  private localClient?: GrpcAdvancedIMessage;
+  private usefulClient?: PhotonUsefulClient<GrpcAdvancedIMessage>;
+  onUsefulClientDebt?: () => Promise<void>;
+  async drainUsefulClient(): Promise<void> { await this.usefulClient?.drain(); }
+  private makeClient(): GrpcAdvancedIMessage {
+    return createOwnedPhotonClient({ address: this.authentication.address, token: () => this.authentication.token(), tls: true,
+      retry: false, autoIdempotency: false, timeout: 25_000,
+      channelOptions: { "grpc.max_receive_message_length": MAX_ATTACHMENT_BYTES + 1024 * 1024 } });
+  }
+  get client(): GrpcAdvancedIMessage {
+    if (this.usefulClient) throw new Error("External Photon unary calls require their useful-operation owner");
+    if (!this.localClient) throw new Error("Photon local client is closed");
+    return this.localClient;
+  }
+  async useExternalIntake(): Promise<void> {
+    this.usefulClient ??= new PhotonUsefulClient(() => this.makeClient(), this.localClient, async () => { if (!this.onUsefulClientDebt) throw new Error("Photon physical debt owner is unavailable"); await this.onUsefulClientDebt(); });
+    this.localClient = undefined;
+    await this.usefulClient.drain();
+  }
+  withClient<T>(action: (client: GrpcAdvancedIMessage) => Promise<T>): Promise<T> {
+    return this.usefulClient ? this.usefulClient.run(action) : action(this.client);
+  }
   private closed = false;
   private recovery?: PhotonRecoveryTransport;
   private readonly typing = new Map<string, ReturnType<typeof setTimeout>>();
@@ -117,19 +139,7 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
     client?: GrpcAdvancedIMessage,
   ) {
     this.botUserId = authentication.identity.phoneNumber;
-    this.client =
-      client ??
-      createGrpcClient({
-        address: authentication.address,
-        token: () => authentication.token(),
-        tls: true,
-        retry: false,
-        autoIdempotency: false,
-        timeout: 25_000,
-        channelOptions: {
-          "grpc.max_receive_message_length": MAX_ATTACHMENT_BYTES + 1024 * 1024,
-        },
-      });
+    this.localClient = client ?? this.makeClient();
   }
   async initialize(_chat: ChatInstance): Promise<void> {
     await this.authentication.token();
@@ -139,8 +149,13 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
     for (const timer of this.typing.values()) clearTimeout(timer);
     this.typing.clear();
     this.authentication.retire();
-    this.recovery?.close();
-    await this.client.close();
+    const localClient = this.localClient;
+    const closed = await Promise.allSettled([
+      ...(this.recovery ? [this.recovery.close()] : []),
+      ...(this.usefulClient ? [this.usefulClient.close()] : localClient ? [localClient.close().then(() => { if (this.localClient === localClient) this.localClient = undefined; })] : []),
+    ]);
+    const errors = closed.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+    if (errors.length) throw new AggregateError(errors, "Photon receiver and useful sender shutdown remain incomplete");
   }
   encodeThreadId(value: PhotonThread): string {
     if (value.isGroup && this.authentication.identity.allocation === "shared")
@@ -167,11 +182,11 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
   async chatInfo(id: string): Promise<PhotonChat> {
     if (this.closed) throw new Error("Photon runtime retired");
     const identity = this.decodeThreadId(id);
-    const chat = await this.client.chats
+    const chat = await this.withClient(client => client.chats
       .get(identity.chatGuid)
       .catch((error) => {
         throw photonFailure(error);
-      });
+      }));
     if (
       chat.guid !== identity.chatGuid ||
       chat.isGroup !== identity.isGroup ||
@@ -254,12 +269,12 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
             attachmentGuid: locator.attachmentGuid,
           },
           fetchData: () =>
-            downloadPhotonAttachment(
-              this.client,
+            this.withClient(client => downloadPhotonAttachment(
+              client,
               this.authentication.identity.lineId,
               locator,
               this.authentication.identity.allocation,
-            ),
+            )),
         };
       });
     const text = raw.content.text ?? "";
@@ -301,22 +316,22 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
   async fetchMessage(id: string, messageId: string) {
     const chat = await this.chatInfo(id);
     return this.normalize(
-      await this.client.messages.get(messageId).catch((error) => {
+      await this.withClient(client => client.messages.get(messageId).catch((error) => {
         throw photonFailure(error);
-      }),
+      })),
       chat,
     );
   }
   async fetchMessages(id: string, options?: FetchOptions) {
     const chat = await this.chatInfo(id);
-    const page = await this.client.messages
+    const page = await this.withClient(client => client.messages
       .listInChat(chat.guid, {
         pageSize: Math.min(options?.limit ?? 50, 100),
         pageToken: options?.cursor,
       })
       .catch((error) => {
         throw photonFailure(error);
-      });
+      }));
     return {
       messages: page.messages
         .map((message) => this.normalize(message, chat))
@@ -348,11 +363,11 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
     if (this.closed) return;
     if (this.typing.has(id)) clearTimeout(this.typing.get(id));
     await this.typingGuard?.(refresh ? id : undefined);
-    await this.client.chats
+    await this.withClient(client => client.chats
       .setTyping(this.decodeThreadId(id).chatGuid, true)
       .catch((error) => {
         throw photonFailure(error);
-      });
+      }));
     if (this.closed) return;
     // Refresh while work is running; final/prompt publication or runtime
     // retirement clears this timer. Every refresh checks endpoint ownership.
@@ -367,9 +382,9 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
     if (this.typing.has(id)) clearTimeout(this.typing.get(id));
     this.typing.delete(id);
     if (!this.closed)
-      await this.client.chats
+      await this.withClient(client => client.chats
         .setTyping(this.decodeThreadId(id).chatGuid, false)
-        .catch(() => {});
+        .catch(() => {}));
   }
   async postMessage(
     _id: string,
@@ -506,10 +521,10 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
       await options.assertCurrent();
       await save({ phase: "uploading" });
       try {
-        const uploaded = await this.client.attachments.upload({
+        const uploaded = await this.withClient(client => client.attachments.upload({
           fileName: file.filename,
           data: file.data as Buffer,
-        });
+        }));
         if (!uploaded.attachment.guid)
           throw new PhotonError(
             "delivery_unknown",
@@ -527,8 +542,9 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
       }
     }
     await options.assertCurrent();
-    if (payload.replaceMessageId) {
-      const original = await this.client.messages.get(payload.replaceMessageId);
+    const replaceMessageId = payload.replaceMessageId;
+    if (replaceMessageId) {
+      const original = await this.withClient(client => client.messages.get(replaceMessageId));
       if (
         !original.isFromMe ||
         !original.chatGuids.includes(payload.chatGuid) ||
@@ -543,25 +559,26 @@ export class PhotonChatAdapter implements Adapter<PhotonThread, PhotonMessage> {
     const clientMessageId = createHash("sha256")
       .update(`${this.state.scope.endpointId}:${publicationId}:${part}`)
       .digest("hex");
+    const attachmentGuid = record.attachmentGuid;
     try {
-      const result = record.attachmentGuid
-        ? await this.client.messages.sendAttachment(
+      const result = attachmentGuid
+        ? await this.withClient(client => client.messages.sendAttachment(
             payload.chatGuid,
-            record.attachmentGuid,
+            attachmentGuid,
             { clientMessageId, replyTo: payload.replyTo },
-          )
-        : payload.replaceMessageId
-          ? await this.client.messages.edit(
+          ))
+        : replaceMessageId
+          ? await this.withClient(client => client.messages.edit(
               payload.chatGuid,
-              payload.replaceMessageId,
+              replaceMessageId,
               payload.text!,
               { clientMessageId },
-            )
-          : await this.client.messages.sendText(
+            ))
+          : await this.withClient(client => client.messages.sendText(
               payload.chatGuid,
               payload.text!,
               { clientMessageId, replyTo: payload.replyTo },
-            );
+            ));
       if (!result.guid || !result.chatGuids.includes(payload.chatGuid))
         throw new Error("Photon returned an invalid send receipt");
       await save({ phase: "sent", messageGuid: result.guid });

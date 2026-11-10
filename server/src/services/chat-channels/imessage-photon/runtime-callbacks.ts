@@ -1,3 +1,4 @@
+import { checkpointAuthorityMayAdvance, recordPhotonCheckpointAuthority } from "./external-owner.js";
 import { createChatSdkStatePersistence } from "../sdk-state.js";
 import { notifyChatEndpointWork } from "../../chat-work-notifications.js";
 import { writePhotonCheckpoint } from "../../photon/receiver.js";
@@ -39,7 +40,12 @@ export function createPhotonRuntimeCallbacks(db: Db, options: PhotonRuntimeOptio
     onPhotonCheckpoint: (sequence) => db.transaction(async (tx) => {
       if (!(await runtimeCallbackEndpoint(tx, endpointId, context, ["verifying", "active"]))) throw new Error("Photon receiver is no longer current");
       if ((await renewDiscordGatewayOwnershipForMessageAdmission(tx, endpointId, context)).kind !== "owned") throw new Error("Photon receiver lease was replaced");
-      await writePhotonCheckpoint(new PhotonState({ companyId: companyId, endpointId: endpointId }, createChatSdkStatePersistence(tx as unknown as Db)), lineId, sequence);
+      const state = new PhotonState({ companyId, endpointId }, createChatSdkStatePersistence(tx));
+      const identity = { companyId, endpointId, connectionId, runtimeGeneration: context.generation,
+        credentialReferences: context.credentialFingerprint, subject: "checkpoint-only" };
+      const provenance = await checkpointAuthorityMayAdvance(state, identity);
+      await writePhotonCheckpoint(state, lineId, sequence);
+      if (provenance) await recordPhotonCheckpointAuthority(state, identity, sequence);
     })
   };
 }

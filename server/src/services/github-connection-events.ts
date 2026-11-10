@@ -1,3 +1,4 @@
+import { dispatchPhotonCloudEvent, readPhotonRetainedConsumer } from "./chat-channels/imessage-photon/external-runtime.js";
 import { parseSlackFormOperation } from "./chat-channels/slack/cloud-forms.js";
 import { acknowledgeSlackFormDeliveries } from "./chat-channels/slack/form-normal-ack.js";
 import { readSlackFormRetainedConsumer } from "./chat-channels/slack/cloud-consumer.js";
@@ -559,6 +560,14 @@ export function githubConnectionEventService(
         }
       }
     }
+    if (!identity && connector.instanceIdentity) {
+      try {
+        const retained = await readPhotonRetainedConsumer(db, connector.instanceIdentity());
+        identity = retained.owner;
+        hasConsumer ||= retained.owner !== null;
+        if (retained.attention.length) logger.warn({ reason: "photon_retained_owner_invalid", count: retained.attention.length }, "Photon custody requires attention");
+      } catch { logger.warn({ reason: "photon_retained_owner_unavailable" }, "Photon custody requires attention"); }
+    }
     if (!identity) {
       const [history] = await db.select({ grant: connectionGrants, connection: toolConnections }).from(connectionGrants)
         .innerJoin(toolConnections, and(eq(toolConnections.id, connectionGrants.connectionId), eq(toolConnections.companyId, connectionGrants.companyId)))
@@ -596,6 +605,11 @@ export function githubConnectionEventService(
     const acknowledge: string[] = [];
     const formCompanies = new Map<string, string>();
     for (const event of lease.events) {
+      if (event.provider === "imessage-photon") {
+        try { await dispatchPhotonCloudEvent(db, event); acknowledge.push(event.id); result.processed += 1; }
+        catch { result.failed += 1; }
+        continue;
+      }
       if (event.provider === "slack") {
         try {
           await dispatchSlackCloudEvent(db, event);

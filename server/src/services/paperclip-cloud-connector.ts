@@ -36,9 +36,9 @@ export const GMAIL_CONNECTOR_SCOPES = [
 export { GOOGLE_WORKSPACE_CONNECTOR_PROFILES };
 
 export type PaperclipCloudConnectorEnvironment = "development" | "test" | "staging" | "production";
-export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events" | "slack-forms" | "mcp-client-mirror" | "mcp-revocation-index";
+export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events" | "slack-forms" | "photon-receiver" | "mcp-client-mirror" | "mcp-revocation-index";
 export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager" | "github.bot";
-export type PaperclipCloudConnectorProvider = "google" | "github" | "asana" | "slack";
+export type PaperclipCloudConnectorProvider = "google" | "github" | "asana" | "slack" | "imessage-photon";
 
 export type PaperclipCloudConnectorConfig = {
   baseUrl: string;
@@ -76,7 +76,7 @@ export type SealedConnectorEvents = {
   leaseId: string;
   events: Array<{
     id: string;
-    provider: "github" | "slack";
+    provider: "github" | "slack" | "imessage-photon";
     event: string;
     action: string | null;
     installationId: string | null;
@@ -87,7 +87,7 @@ export type SealedConnectorEvents = {
   }>;
 };
 
-type SealedEnvelopeProfileId = PaperclipCloudConnectorProfileId | "slack.events.v1" | "slack.form-open.v1" | "slack.callbacks.v1";
+type SealedEnvelopeProfileId = PaperclipCloudConnectorProfileId | "slack.events.v1" | "slack.form-open.v1" | "slack.callbacks.v1" | "photon.events.v1";
 
 type SealedEnvelope = {
   v: 1;
@@ -121,12 +121,14 @@ type ConnectorResponse = {
   githubApps?: { version: number };
   slackEvents?: { version: number };
   slackForm?: unknown;
+  photonReceiver?: unknown;
   enrollment?: unknown;
   retirement?: unknown;
   eventWakeVersion?: unknown;
 };
 
 const ENDPOINTS: Record<PaperclipCloudConnectorOperation, string> = {
+  "photon-receiver": "/v1/connector/photon-receiver",
   "mcp-client-mirror": "/v1/connector/mcp-client-mirror",
   "mcp-revocation-index": "/v1/connector/mcp-revocation-index",
   "slack-events": "/v1/connector/slack-events",
@@ -417,6 +419,11 @@ export function createPaperclipCloudConnector(input: {
       const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });
       return response.active === true && response.slackEvents?.version === 1;
     },
+    async photonReceiverOperation(values: { subject: string; companyId: string; operation: Record<string, unknown> }): Promise<unknown> {
+      const response = await call("photon-receiver", values, { field: "operation", value: JSON.stringify(values.operation) });
+      if (!isRecord(response.photonReceiver)) throw badEnvelope();
+      return response.photonReceiver;
+    },
     async slackFormOperation(values: { subject: string; companyId: string; operation: Record<string, unknown> }) {
       const response = await call("slack-forms", values, { field: "operation", value: JSON.stringify(values.operation) });
       if (!isRecord(response.slackForm)) throw badEnvelope();
@@ -664,6 +671,16 @@ export function createPaperclipCloudConnector(input: {
             event.payload = { slackEvent: delivery };
             }
           }
+          if (event.provider === "imessage-photon") {
+            const packet = event.payload.photonEvent;
+            if (!isRecord(packet) || typeof packet.bindingId !== "string" || packet.sealed === undefined) throw badEnvelope();
+            const sealed = parseEnvelope(packet.sealed, "events", "imessage-photon", "photon.events.v1");
+            const delivery = decryptEnvelope(sealed, sealKey, config.instanceId, config.environment, "imessage-photon", "photon.events.v1", []);
+            if (!isRecord(delivery) || delivery.version !== 1 || !isRecord(delivery.binding)
+              || delivery.binding.instanceId !== config.instanceId || delivery.binding.environment !== config.environment
+              || delivery.binding.bindingId !== packet.bindingId || delivery.acceptedAt !== event.createdAt) throw badEnvelope();
+            event.payload = { photonEvent: delivery };
+          }
           events.push(event);
         } catch {
           failedEventIds.push(event.id);
@@ -716,8 +733,9 @@ function parseCloudHandoff(value: unknown): { kind: "paperclip_cloud"; session: 
   return { kind: "paperclip_cloud", session };
 }
 
-export type PaperclipCloudConnector = Omit<ReturnType<typeof createPaperclipCloudConnector>, "instanceIdentity" | "slackFormOperation"> & {
+export type PaperclipCloudConnector = Omit<ReturnType<typeof createPaperclipCloudConnector>, "instanceIdentity" | "slackFormOperation" | "photonReceiverOperation"> & {
   instanceIdentity?: () => Readonly<{ instanceId: string; environment: PaperclipCloudConnectorEnvironment }>;
+  photonReceiverOperation?: ReturnType<typeof createPaperclipCloudConnector>["photonReceiverOperation"];
   slackFormOperation?: ReturnType<typeof createPaperclipCloudConnector>["slackFormOperation"];
 };
 export type PaperclipCloudGoogleWorkspaceConnector = PaperclipCloudConnector;
@@ -867,7 +885,7 @@ function unsealEvents(
     if (parsed.v !== 1 || parsed.instanceId !== instanceId || parsed.environment !== environment
       || typeof parsed.leaseId !== "string" || !Array.isArray(parsed.events)) throw badEnvelope();
     for (const event of parsed.events) {
-      if (!isRecord(event) || typeof event.id !== "string" || !["github", "slack"].includes(event.provider)
+      if (!isRecord(event) || typeof event.id !== "string" || !["github", "slack", "imessage-photon"].includes(event.provider)
         || typeof event.event !== "string" || !isRecord(event.payload) || !Array.isArray(event.bindingIds)
         || !event.bindingIds.every((id) => typeof id === "string")) throw badEnvelope();
     }

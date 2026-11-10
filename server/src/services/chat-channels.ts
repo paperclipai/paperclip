@@ -1,3 +1,5 @@
+import { createPhotonExternalRuntimeOwner, stagePhotonExternalConfiguration } from "./chat-channels/imessage-photon/external-runtime.js";
+import { createPaperclipCloudConnector, paperclipCloudConnectorConfigFromEnv } from "./paperclip-cloud-connector.js";
 import { retrySlackFormAcknowledgement } from "./chat-channels/slack/form-retry.js";
 import { createSlackFormConnectorAccess, registerSlackFormWorkOwner, reconcilePendingSlackFormWork, stageSlackFormOwnerConfiguration } from "./chat-channels/slack/form-owner.js";
 import { createSlackFormDeliveryOwner } from "./chat-channels/slack/form-delivery.js";
@@ -830,8 +832,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     allowedStatuses: EndpointRow["status"][],
   ) {
     const record = await endpointRecord(endpointId);
+    const externalPhoton = record?.endpoint.provider === "imessage-photon" && context.discordGatewayOwned !== true
+      && await photonExternalRuntimeOwner.placement(record);
     if (
-      record && leasedChatProvider(record.endpoint.provider) &&
+      record && leasedChatProvider(record.endpoint.provider) && !externalPhoton &&
       !(await ensureDiscordGatewayRuntimeIsCurrent(endpointId, context))
     ) {
       return null;
@@ -843,7 +847,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       credentialFingerprint(record.credentialSecretRefs) ===
         context.credentialFingerprint &&
       runtime.get(endpointId) === context.endpointRuntime &&
-      (!leasedChatProvider(record.endpoint.provider) ||
+      (!leasedChatProvider(record.endpoint.provider) || externalPhoton ||
         discordGatewayRuntimeIsCurrent(endpointId, context))
       ? record
       : null;
@@ -905,6 +909,22 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const { admitDiscordRootMention, discordRootThreadPending, reconcileDiscordRootThread, promoteDiscordRootReceipt } = createDiscordRootThreads(db, { ensureDiscordGatewayRuntimeIsCurrent, withCredentialMutationLease, runtimeCallbackEndpoint, lockCurrentPrincipalAuthorization, processMessage, redactError, scheduleConversationDrain, lifecycleRuntimeFence, runtimeFor, DISCORD_ROOT_THREAD_CONFIRMATION_DELAY_MS, discordRootThreadTransportBarrier: () => options.discordRootThreadTransportBarrier?.() ?? Promise.resolve() });
   const { handleDiscordGatewayEvent } = createDiscordGatewayEvents(db, { ensureDiscordGatewayRuntimeIsCurrent, discordGatewayRuntimeIsCurrent, runtimeCallbackRecord, runtimeCallbackEndpoint, applyProviderLifecycleEffect, runtimeGeneration, discordGatewayEventBarrier: (event) => options.discordGatewayEventBarrier?.(event) ?? Promise.resolve() });
   const { handlePhotonFailure, handlePhotonEvent } = createPhotonEvents(db, { runtimeCallbackRecord, runtimeCallbackEndpoint, invalidateRuntime, ensurePrincipal, requireCurrentExternalActionAuthorization, isExternalActionAuthorizationChange, scheduleMessageProcessing, processPendingPublications, questionResponses, redactError, renewDiscordGatewayOwnershipForMessageAdmission, handleSdkMessage });
+  const photonConnectorConfig = paperclipCloudConnectorConfigFromEnv();
+  const photonConnector = photonConnectorConfig ? createPaperclipCloudConnector({ config: photonConnectorConfig }) : undefined;
+  const photonExternalRuntimeOwner = createPhotonExternalRuntimeOwner(db, {
+    broker: () => photonConnector,
+    endpointRecord, runtimeFor, context: instance => runtimeContexts.get(instance),
+    ownership: id => discordGatewayOwnerships.get(id), currentRuntime: id => runtime.get(id),
+    release: ownership => stopDiscordGatewayOwnership(ownership, { removeRuntime: false, notifyStopped: false }),
+    removeRuntime: async id => { runtimeVersions.delete(id); return runtime.removeEndpoint(id); },
+    config: async record => {
+      const config = runtimeConfig(record.endpoint, record.endpoint.botUsername ?? record.assignedAgentName, await resolveCredentials(record.endpoint));
+      if (config.provider !== "imessage-photon") throw new Error("Photon external provider changed");
+      return config;
+    },
+    admit: handlePhotonEvent,
+    notify: id => { receiverWork?.changed(id); },
+  });
   const { handleTelegramGenerationStopped, reserveTelegramPublicationDraft } = createTelegramPublicationDrafts(db, { runtimeCallbackRecord, runtimeCallbackEndpoint, runtimeFor, runtime, runtimeContexts, credentialFingerprint, authorizeRetainedChatSourcePublication });
   const { recordSlackFileUploadReceipt, stageSlackFilePublicationSuccess, processPendingSlackFileUploadReceipts, nextSlackReceiptAt } = createSlackFileReceipts(db, { endpointRecord, withCredentialMutationLease, runtimeCallbackEndpoint, nonDirectDestinationAllowed, runtimeFor, isExplicitOperatorPublication, recordExactOutboundPublicationLink });
   const { processPendingSlackSessionSyncs } = createSlackSessionStatus(db, { endpointRecord, withCredentialMutationLease, runtimeCallbackEndpoint, nonDirectDestinationAllowed, runIdFromMilestonePublication, resolveCredentials, fetchImpl, redactError, get slackSessionSyncSelectionBarrier() { return options.slackSessionSyncSelectionBarrier; } });
@@ -967,6 +987,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       }
       const context = runtimeContextForRecord(record);
       const current = runtime.get(endpoint.id);
+      const photonPlacement = record.endpoint.provider === "imessage-photon" ? await photonExternalRuntimeOwner.placement(record) : null;
       const currentDiscordOwnership = discordGatewayOwnerships.get(endpoint.id);
       const currentOwnsDiscordGateway =
         currentDiscordOwnership !== undefined &&
@@ -974,6 +995,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         currentDiscordOwnership.context.version === context.version &&
         currentDiscordOwnership.context.endpointRuntime === current &&
         currentDiscordOwnership.expiresAt.getTime() > Date.now();
+      if (current && photonPlacement && runtimeVersions.get(endpoint.id) === context.version
+        && optionsForRuntime.requireDiscordOwnership === true && !currentOwnsDiscordGateway) {
+        const exactContext = runtimeContexts.get(current);
+        if (!exactContext) throw new Error("Photon current sender context is unavailable");
+        const owned = await acquireDiscordGatewayOwnership(record.endpoint, exactContext, optionsForRuntime.waitForDiscordOwnership === true);
+        if (!owned) throw discordGatewayNotOwnedError();
+        exactContext.discordGatewayOwned = true;
+        return current;
+      }
       if (
         current &&
         runtimeVersions.get(endpoint.id) === context.version &&
@@ -1033,7 +1063,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       };
       const promise = (async () => {
         const discordOwnership =
-          leasedChatProvider(record.endpoint.provider)
+          leasedChatProvider(record.endpoint.provider) && (!photonPlacement || optionsForRuntime.requireDiscordOwnership === true)
             ? await acquireDiscordGatewayOwnership(
                 record.endpoint,
                 context,
@@ -1075,8 +1105,17 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             callbacks: {
               onMessage: (event) => handleSdkMessage(event, context),
               ...createPhotonRuntimeCallbacks(db, { endpointId: endpoint.id, connectionId: endpoint.connectionId, companyId: record.endpoint.companyId, assignedAgentId: record.endpoint.assignedAgentId, context, lineId: credentials.lineId, runtimeCallbackRecord, runtimeCallbackEndpoint, renewDiscordGatewayOwnershipForMessageAdmission }),
+              onPhotonUsefulClientDebt: () => photonExternalRuntimeOwner.senderDebt(endpoint.id),
+              onPhotonIntakePlacement: async () => {
+                const latest = await endpointRecord(endpoint.id);
+                const external = latest && await photonExternalRuntimeOwner.placement(latest);
+                return external ? { kind: "cloud", bindingId: external.binding.bindingId } : { kind: "local" };
+              },
               onPhotonEvent: (event) => handlePhotonEvent(endpoint.id, event, context),
-              onPhotonFailure: (error) => handlePhotonFailure(endpoint.id, error, context),
+              onPhotonFailure: async error => {
+                const result = await handlePhotonFailure(endpoint.id, error, context);
+                return result?.kind === "recorded" ? result : photonExternalRuntimeOwner.cleanupFailure(endpoint.id, context);
+              },
               onDiscordRootMentionAdmission:
                 record.endpoint.provider === "discord"
                   ? (event) =>
@@ -1187,7 +1226,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   const receiverSchedule = chatReceiverSchedule(db, {
+    retained: scope => photonExternalRuntimeOwner.retained(scope),
     stop: async id => {
+      await photonExternalRuntimeOwner.retire(id);
       const ownership = discordGatewayOwnerships.get(id);
       // Discovery already observed removal; only independent ownership loss needs another wake.
       if (ownership) await stopDiscordGatewayOwnership(ownership, { notifyStopped: false });
@@ -1196,6 +1237,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       const record = await endpointRecord(id);
       if (!record) return "owned";
       try {
+        if (record.endpoint.provider === "imessage-photon" && photonConnector) {
+          await photonExternalRuntimeOwner.reconcile(id);
+          if (await photonExternalRuntimeOwner.placement(record)) return "owned";
+        }
         const instance = await runtimeFor(record.endpoint, { requireDiscordOwnership: true });
         await reconcileDiscordRuntime(id, instance);
         return "owned";
@@ -3458,6 +3503,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const { configure, configureWithCredentialLease, runtimeConfig } = createChatConfiguration(db, {
     stageConfigurationEffects: async (tx, endpointId, actorUserId) => {
       await stageSlackCloudEnrollmentIntent(tx, endpointId, actorUserId);
+      await stagePhotonExternalConfiguration(tx, endpointId, actorUserId);
       const identity = slackForms.identity();
       if (identity) await stageSlackFormOwnerConfiguration(tx, endpointId, false, actorUserId ?? "", identity);
     },
@@ -3602,6 +3648,8 @@ return {
     test,
     retrySlackFormReceipt: async (endpointId: string, actionId: string, management?: ConnectionManagementContext) => {
       if (!management) throw forbidden("Connection management authority is required");
+      const retryRecord = await endpointRecord(endpointId);
+      if (retryRecord?.endpoint.provider === "imessage-photon") return photonExternalRuntimeOwner.retry(endpointId, actionId, management);
       return retrySlackFormAcknowledgement(db, { companyId: management.resource.companyId, endpointId, actionId,
         identity: slackForms.identity, management });
     },
@@ -3676,6 +3724,7 @@ return {
       voice.unregisterAgentTools();
       unregisterGitHubCloudIngress();
       unregisterSlackCloudIngress();
+      await photonExternalRuntimeOwner.close();
       unregisterSlackFormWork();
       unregisterSlackCloudEnrollment();
       unregisterCommittedResponseAuthority();

@@ -16,7 +16,7 @@ import type {
   ChatSdkStateScope,
 } from "../chat-sdk-state.js";
 
-export function createChatSdkStatePersistence(db: Db): ChatSdkStatePersistence {
+export function createChatSdkStatePersistence(db: Pick<Db, "select" | "insert" | "update" | "delete">): ChatSdkStatePersistence {
   return {
     async read(scope: ChatSdkStateScope, key: string) {
       return db

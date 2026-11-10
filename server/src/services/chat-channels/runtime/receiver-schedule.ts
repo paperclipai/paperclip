@@ -9,6 +9,7 @@ export type ReceiverDeadline = { id: string; companyId: string; connectionId: st
 export function chatReceiverSchedule(db: Db, receiver: {
   reconcile: (id: string) => Promise<"owned" | "foreign">;
   stop: (id: string) => Promise<void>;
+  retained?: (scope?: ReceiverScope) => Promise<ReceiverDeadline[]>;
 }) {
   async function load(scope?: ReceiverScope, signal?: AbortSignal): Promise<ReceiverDeadline[]> {
     const result: ReceiverDeadline[] = [];
@@ -28,7 +29,12 @@ export function chatReceiverSchedule(db: Db, receiver: {
           cursor ? gt(chatEndpoints.id, cursor) : undefined,
         )).orderBy(chatEndpoints.id).limit(100);
       result.push(...rows.map(row => ({ ...row, dueAt: 0 })));
-      if (rows.length < 100) return result;
+      if (rows.length < 100) {
+        const retained = await receiver.retained?.(scope) ?? [];
+        const merged = new Map(result.map(row => [row.id, row]));
+        for (const row of retained) merged.set(row.id, row);
+        return [...merged.values()];
+      }
       cursor = rows[rows.length - 1].id;
     }
   }

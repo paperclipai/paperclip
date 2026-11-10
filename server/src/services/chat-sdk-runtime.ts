@@ -2,7 +2,7 @@ import { isPassiveSlackAction, normalizeSlackSelectionAction, slackSelectionValu
 import { PhotonChatAdapter, parsePhotonThreadId } from "./photon/adapter.js";
 import { PhotonLineAuthentication } from "./photon/cloud.js";
 import { PhotonState } from "./photon/state.js";
-import { PhotonReceiver } from "./photon/receiver.js";
+import { PhotonReceiver, type PhotonFailureResponsibility } from "./photon/receiver.js";
 import { photonAttachmentLocator, photonAttachmentLocatorSchema, downloadPhotonAttachment, type PhotonAttachmentLocator } from "./photon/attachments.js";
 import type { LiveEvent as PhotonEvent } from "@photon-ai/advanced-imessage";
 import {
@@ -469,10 +469,14 @@ export interface DiscordGatewayCallbackEvent extends ChatSdkCallbackEvent<Discor
  * Chat SDK event escape hatches; callers must never publish them directly.
  */
 export interface ChatSdkRuntimeCallbacks {
+  /** Photon leaf validates committed external custody. Absence keeps local intake. */
+  onPhotonUsefulClientDebt?(): Promise<void>;
+  onPhotonIntakePlacement?(): Promise<{ kind: "local" } | { kind: "cloud"; bindingId: string }>;
+
   onPhotonEvent?(event: PhotonEvent): Promise<void>;
   onPhotonAssertOwned?(activeThreadId?: string): Promise<void>;
   onPhotonCheckpoint?(sequence: number): Promise<void>;
-  onPhotonFailure?(error: unknown): Promise<void>;
+  onPhotonFailure?(error: unknown): Promise<void | PhotonFailureResponsibility>;
   onMessage(event: ChatSdkMessageCallbackEvent): Promise<void> | void;
   onTelegramGenerationStopped?(
     event: ChatSdkCallbackEvent<TelegramGenerationStoppedProof>,
@@ -2295,17 +2299,24 @@ export class ChatSdkEndpointRuntime {
   async initialize(): Promise<void> {
     await this.initializeChat();
     this.assertNotRetired();
-    if (this.adapter instanceof PhotonChatAdapter && this.discordGatewayEnabled && !this.photonReceiver) {
+    if (this.adapter instanceof PhotonChatAdapter && !this.photonReceiver) {
       const options = this.runtimeOptions;
       const config = options.providerConfig as ResolvedPhotonChatConfig;
       if (!options.callbacks.onPhotonCheckpoint || !options.callbacks.onPhotonAssertOwned || !options.callbacks.onPhotonEvent || !options.callbacks.onPhotonFailure) throw new Error("Photon receiver requires durable admission callbacks");
       this.adapter.typingGuard = async (activeThreadId) => { this.assertNotRetired(); await options.callbacks.onPhotonAssertOwned!(activeThreadId); };
+      const placement = await options.callbacks.onPhotonIntakePlacement?.() ?? { kind: "local" };
+      if (placement.kind === "cloud") {
+        this.adapter.onUsefulClientDebt = options.callbacks.onPhotonUsefulClientDebt;
+        await this.adapter.useExternalIntake();
+      }
+      if (placement.kind === "local" && this.discordGatewayEnabled) {
       this.photonReceiver = new PhotonReceiver({ client: this.adapter.client, state: this.adapter.state,
         lineId: config.credentials.lineId, intakeAfter: config.intakeAfter, allocation: config.credentials.allocation,
         catchUp: (sequence) => (this.adapter as PhotonChatAdapter).recoveryStream(sequence),
         assertOwned: async () => { this.assertNotRetired(); await (this.adapter as PhotonChatAdapter).authentication.token(); await options.callbacks.onPhotonAssertOwned!(); },
         commitCheckpoint: options.callbacks.onPhotonCheckpoint, admit: options.callbacks.onPhotonEvent, failure: options.callbacks.onPhotonFailure });
       this.photonReceiver.start();
+      }
     }
     if (this.provider === "discord" && this.discordGatewayEnabled) {
       this.startDiscordGateway();

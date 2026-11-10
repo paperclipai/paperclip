@@ -97,13 +97,13 @@ export function createPhotonEvents(db: Db, options: PhotonEventsOptions) {
       error instanceof PhotonError
         ? error.message
         : "Photon connection interrupted; reconnecting";
-    await db.transaction(async (tx) => {
+    const responsibility = await db.transaction(async (tx) => {
       const endpoint = await runtimeCallbackEndpoint(tx, endpointId, context, [
         "verifying",
         "active",
         "attention",
       ]);
-      if (!endpoint) return;
+      if (!endpoint) return { kind: "obsolete" as const };
       await notifyChatReceiver(tx, endpoint);
       await tx
         .update(chatEndpoints)
@@ -123,9 +123,11 @@ export function createPhotonEvents(db: Db, options: PhotonEventsOptions) {
             healthMessage: message,
           })
           .where(eq(toolConnections.id, endpoint.connectionId));
+      return { kind: "recorded" as const };
     });
     // Retirement is queued outside the receiver callback to avoid self-joining.
     void invalidateRuntime(endpointId).catch(() => undefined);
+    return responsibility;
   }
 
   async function processPhotonResponse(
@@ -759,11 +761,11 @@ export function createPhotonEvents(db: Db, options: PhotonEventsOptions) {
     // Late events from a removed chat must still advance recovery without a
     // now-forbidden chat lookup holding every other conversation behind them.
     if (removedGroup?.metadata.photonRemoved === true && !readded) return;
-    const chat = await adapter.client.chats
+    const chat = await adapter.withClient(client => client.chats
       .get(event.chatGuid)
       .catch((error) => {
         throw photonFailure(error);
-      });
+      }));
     if (chat.guid !== event.chatGuid || chat.service !== "iMessage" || (chat.isGroup && adapter.authentication.identity.allocation === "shared")) return;
     const threadId = photonThreadId({
       lineId: adapter.authentication.identity.lineId,
