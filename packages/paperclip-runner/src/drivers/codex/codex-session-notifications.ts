@@ -205,6 +205,14 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     // items and plans never re-enter the stream as fresh work. Its terminal
     // keeps its own conflict check below, a provider that starts it again
     // still fails, and canonical provider diagnostics keep flowing.
+    // A lost turn that reports a result was not lost: never drop that outcome as history.
+    if (identity.classification === "root" && identity.turnId !== null
+      && notification.method === "paperclip/runResult"
+      && state.unconfirmedLostTurns.has(identity.turnId) && identity.turnId !== state.activeTurnId) {
+      state.failProtocol("turn_binding_mismatch",
+        "Provider reported a result for a turn the restore did not find live.");
+      return;
+    }
     if (identity.classification === "root" && identity.turnId !== null
       && identity.threadId === state.opened.threadId
       && state.isHistoryTurn(identity.turnId)
@@ -521,6 +529,15 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       return;
     }
     if (notification.method === "turn/started") {
+      // A start replayed for an earlier generation's turn (for example, one
+      // the runner recorded after the previous controller detached and then
+      // lost on restore) is history, never a start of this session's turn. A
+      // restart of a turn this generation settled still fails closed.
+      if ((state.priorGenerationTurns.has(turnId) || state.unconfirmedLostTurns.has(turnId))
+        && state.isHistoryTurn(turnId)) {
+        state.recordHistoryEvent(notification.method, turnId);
+        return;
+      }
       const autonomousGoalTurn = state.currentGoal?.status === "active"
         && state.activeTurnId === null
         && !state.turnStartPending
@@ -565,6 +582,16 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       // channel. Wait for the pending turn/start to settle first, so
       // turn.accepted always precedes the terminal event for the same turn.
       await state.turnStartSettled;
+      // The restore did not find this accepted turn live. Only the runner's restart-loss
+      // terminal confirms that; any other outcome is real and must not become history.
+      if (state.unconfirmedLostTurns.has(turnId) && turnId !== state.activeTurnId) {
+        state.unconfirmedLostTurns.delete(turnId);
+        if (!ignoreUnboundRestoredTurnLoss(state, turn, turnId)) {
+          state.failProtocol("turn_binding_mismatch",
+            "Provider reported a non-restart outcome for a turn the restore did not find live.");
+        }
+        return;
+      }
       // A terminal for a turn an earlier generation accepted is history, even
       // when it disagrees with the checkpointed terminal (for example, a
       // restored provider that reports the turn lost on restore). A terminal

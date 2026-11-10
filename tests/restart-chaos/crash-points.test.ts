@@ -41,6 +41,7 @@ describe("parseSuiteArgs", () => {
 
   it("passes harness options through and refuses unknown values", () => {
     expect(parseSuiteArgs(["--", "--keep", "--budget-cents", "500"]).passthrough).toEqual(["--budget-cents", "500", "--keep"]);
+    expect(parseSuiteArgs(["--env", "daytona", "--daytona-reuse-lease"]).passthrough).toEqual(["--daytona-reuse-lease"]);
     expect(() => parseSuiteArgs(["--adapters", "gpt"])).toThrow(/Unknown adapter/);
     expect(() => parseSuiteArgs(["--nth", "0"])).toThrow(/positive integer/);
   });

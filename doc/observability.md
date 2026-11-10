@@ -236,6 +236,12 @@ Early context preparation also records `agent_read`, `chat_completion`,
 `conversation`, `runtime_state`, `issue_context`, `run_identity`, `trust_preset`,
 and `task_context` beneath `heartbeat.prepare`. These time the existing awaited
 operations before environment selection; they do not add reads or record content.
+The work between those phases is named too: `chat_retry_admission`,
+`workspace_selection`, `dependency_readiness`, `issue_checkout`,
+`instance_settings`, `workspace_context`, `project_context`,
+`plan_wake_routing`, `routine_environment` and `responsible_user`.
+`execution_start` times the run and agent status writes and the "run started"
+event before run output starts. A repeated read or write has its own span.
 
 Execution configuration also records separate phases for mentioned skills,
 GitHub identity selection, secret resolution, managed AI runtime preparation,
@@ -297,7 +303,9 @@ The `paperclip.native-controller` tracer records
 backend construction, connector assignments, assigned MCP discovery, tool
 authority, companion selection and Runner binary resolution. It also records
 GitHub shutdown, coordinator release, instruction checkpoints and collection,
-and warm-session release. These intervals can occur between the existing native
+and warm-session release. Before the coordinator claim it also records
+attachment staging, warm controller restore, persistence of the preparation
+spans to the run log, and Runner state migration. These intervals can occur between the existing native
 preparation, execution and settlement spans. They are controller work, not model
 turn time, and carry only the existing run hash. Nested phases overlap their
 containing backend or lifecycle intervals; do not add both durations.
@@ -771,6 +779,18 @@ only for newly committed output; it does not reconstruct prior first-token timin
 queueing, preparation and execution; do not add its duration to those phases.
 No text or provider event identifiers are exported. The existing duration attribute
 is `paperclip.native.span.duration_ms`.
+
+`task.time_to_first_agent_activity` uses the same start and `anchor` as
+`task.time_to_first_token`, and ends when Core commits the first event that
+`provider.time_to_first_agent_event` counts: a text delta, a tool-call start, or
+a reasoning item, whichever comes first. That is when the user sees the agent
+respond, so the native speed budgets judge this span (metric
+`time_to_first_activity`, measured from run creation). Its `eventKind` is
+`agentMessage`, `reasoning`, `toolCall` or `dynamicToolCall`. Time to first text
+stays a reported metric without a budget: tool-first adapters (for example
+Claude) often call tools before they write any text, so first text includes
+model tool work rather than control-plane latency. Like TTFT, it is a cumulative
+child of `task.provider_session`; do not add it to the phases it overlaps.
 
 `tool.request.input_stream` measures the observed request-input window: from
 an ACP tool announcement to its last input update before the provider reports

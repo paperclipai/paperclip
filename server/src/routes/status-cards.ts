@@ -161,9 +161,10 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
     assertCompanyAccess(req, companyId);
     await assertStatusCardsEnabled();
     const query = listStatusCardsQuerySchema.parse(req.query);
+    const issuePrefix = await companyIssuePrefix(companyId);
     res.json((await service.list(companyId, query.archived, {
       issueReadCondition: await issueReadSqlCondition(db, req.actor),
-    })).map(publicCard));
+    })).map((card) => withHref(publicCard(card), issuePrefix)));
   });
 
   router.post("/companies/:companyId/status-cards", validate(createStatusCardSchema), async (req, res) => {
@@ -271,7 +272,10 @@ export function statusCardRoutes(db: Db, opts: { heartbeat?: IssueAssignmentWake
       alreadyGenerating: result.alreadyGenerating,
       enqueued: result.enqueued,
     });
-    res.status(result.enqueued && !result.alreadyGenerating ? 202 : 200).json({ ...result, card: publicCard(result.card) });
+    res.status(result.enqueued && !result.alreadyGenerating ? 202 : 200).json({
+      ...result,
+      card: withHref(publicCard(result.card), await companyIssuePrefix(card.companyId)),
+    });
   });
 
   router.get("/status-cards/:id/dry-run", async (req, res) => {

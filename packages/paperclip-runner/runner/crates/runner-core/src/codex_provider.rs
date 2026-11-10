@@ -869,6 +869,11 @@ pub struct CodexProvider {
     quarantined: bool,
     trace: Option<ProviderTraceSink>,
     last_trace_frame_id: Option<u64>,
+    held_courtesy_responses: Option<Vec<Value>>,
+    #[cfg(test)]
+    pub(crate) sent_frame_observer: Option<Box<dyn FnMut(&Value) + Send>>,
+    #[cfg(test)]
+    pub(crate) interpretation_observer: Option<Box<dyn FnMut(&[String]) + Send>>,
     opencode_launch_profile: Option<OpenCodeLaunchProfile>,
     cursor_cloud_launch_profile: Option<CursorCloudLaunchProfile>,
     provider_termination_receipt: Option<Value>,
@@ -1300,6 +1305,11 @@ impl CodexProvider {
             quarantined: false,
             trace: ProviderTraceSink::from_environment(),
             last_trace_frame_id: None,
+            held_courtesy_responses: None,
+            #[cfg(test)]
+            sent_frame_observer: None,
+            #[cfg(test)]
+            interpretation_observer: None,
             opencode_launch_profile: opencode_launch_profile.cloned(),
             cursor_cloud_launch_profile: cursor_cloud_launch_profile.cloned(),
             provider_termination_receipt: None,
@@ -1467,6 +1477,11 @@ impl CodexProvider {
         self.last_trace_frame_id.take()
     }
 
+    #[cfg(test)]
+    pub(crate) fn enable_trace_for_test(&mut self, trace_path: PathBuf) {
+        self.trace = Some(ProviderTraceSink::at_path(trace_path, 64 * 1024 * 1024));
+    }
+
     pub(crate) fn record_provider_trace_interpretation(
         &mut self,
         frame_id: u64,
@@ -1475,6 +1490,10 @@ impl CodexProvider {
         emitted_event_ids: Vec<String>,
         reason: &str,
     ) {
+        #[cfg(test)]
+        if let Some(observer) = self.interpretation_observer.as_mut() {
+            observer(&emitted_event_ids);
+        }
         if let Some(trace) = self.trace.as_mut() {
             trace.interpretation(
                 frame_id,
@@ -3831,10 +3850,36 @@ impl CodexProvider {
         {
             return Ok(());
         }
+        if let Some(held) = self.held_courtesy_responses.as_mut() {
+            held.push(value.clone());
+            return Ok(());
+        }
         self.send_frame(value)
     }
 
+    pub(crate) fn hold_courtesy_responses(&mut self) {
+        self.held_courtesy_responses.get_or_insert_with(Vec::new);
+    }
+
+    pub(crate) fn release_courtesy_responses(&mut self, keep_holding: bool) {
+        let held = if keep_holding {
+            self.held_courtesy_responses
+                .as_mut()
+                .map(std::mem::take)
+                .unwrap_or_default()
+        } else {
+            self.held_courtesy_responses.take().unwrap_or_default()
+        };
+        for value in held {
+            let _ = self.send_frame(&value);
+        }
+    }
+
     fn send_frame(&mut self, value: &Value) -> Result<(), LocalRunnerError> {
+        #[cfg(test)]
+        if let Some(observer) = self.sent_frame_observer.as_mut() {
+            observer(value);
+        }
         if let Some(trace) = self.trace.as_mut() {
             let raw = serde_json::to_vec(value).unwrap_or_default();
             if let Some(frame_id) = trace.frame("client_to_provider", &raw) {

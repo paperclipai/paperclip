@@ -1,4 +1,6 @@
+import { wakeWaitersOfStalledIssues, type BlockerStallWakeup } from "./blocker-stall-wakeups.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
+import { OWNER_UNPROVABLE_CAUSE } from "./owner-gone-attestation.js";
 import { promoteDeferredWorkIntents } from "../work-intent-outbox.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
@@ -178,6 +180,7 @@ import {
 import { withRecoveryContext } from "./status-only-context.js";
 import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { rehomeStrandedLegacyWorkspaceTasks } from "./legacy-workspace-rehome.js";
 import {
   collectDispositionRepairSourceState,
   readDispositionRepairDurableWaitingState,
@@ -244,6 +247,7 @@ type RecoveryWakeupOptions = {
     statuses: string[];
     assigneeAgentId: string;
   };
+  allowRunCoalescing?: boolean;
 };
 
 type RecoveryWakeup = (
@@ -260,6 +264,7 @@ type ResolvedDependencyWakeBackstopOptions = {
   blockerIssueId?: string | null;
   issueId?: string;
   source?: ResolvedDependencyWakeBackstopSource;
+  onDeferredDeadline?: (at: number) => void;
 };
 
 const recoveryRunFields = {
@@ -3466,6 +3471,11 @@ export function recoveryService(
   }
 
   async function reconcileActiveRecoveryActions(opts?: { companyId?: string }) {
+    // A blocked subtask that an older release bound to a relative's held
+    // workspace moves to its own workspace and continues (its board escalation
+    // is an active recovery action, so this company-scoped sweep reaches it).
+    const rehome = await rehomeStrandedLegacyWorkspaceTasks(db, deps.enqueueWakeup, { companyId: opts?.companyId })
+      .catch(error => { logger.warn({ err: error }, "Legacy shared-workspace rehome deferred to the next sweep"); return null; });
     const rows = await db
       .select({
         action: issueRecoveryActions,
@@ -3490,6 +3500,12 @@ export function recoveryService(
       issueIds: [] as string[],
     };
     for (const { action, issue } of rows) {
+      // Only the board's stop confirmation, or the resource's own release, settles this request:
+      // the reserved resource stays reserved however the task ends.
+      if (action.cause === OWNER_UNPROVABLE_CAUSE) {
+        result.skipped += 1;
+        continue;
+      }
       if (await hasUnverifiedNativeWorkspaceFinalizationOwner(db, action)) {
         result.skipped += 1;
         continue;
@@ -3628,7 +3644,13 @@ export function recoveryService(
       // longer schedules another agent-owned wake for them.
       result.skipped += 1;
     }
-    return result;
+    // A child or blocker stalled on a board-owned action: tell whoever waits on it, once per stall.
+    const stalls = await wakeWaitersOfStalledIssues(db, deps.enqueueWakeup as BlockerStallWakeup, { companyId: opts?.companyId });
+    // A failed delivery is reported so the recovery worker retries this pass.
+    // The earliest owed wake of a moved legacy subtask is a deadline of this pass too.
+    const retryAts = [stalls.retryAt, rehome?.nextWakeRetryAt].filter((at): at is number => typeof at === "number");
+    return { ...result, blockerStallWakes: stalls.woken, blockerStallWakeFailures: stalls.failed,
+      blockerStallRetryAt: retryAts.length ? Math.min(...retryAts) : null };
   }
 
   async function escalateDispositionRepair(input: {
@@ -4598,7 +4620,8 @@ export function recoveryService(
         }
         if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) { result.skipped += 1; continue; }
         {
-          if (await deliverConversationComments(db, issue, deps.enqueueWakeup) === "deferred") {
+          if (await deliverConversationComments(db, issue, deps.enqueueWakeup,
+            { onDeferredDeadline: opts?.onDeferredDeadline }) === "deferred") {
             result.skipped += 1;
             continue;
           }
@@ -4707,6 +4730,16 @@ export function recoveryService(
         latestRun?.agentId === agentId &&
         latestRun.status === "cancelled" &&
         (latestRun.errorCode === "agent_paused" || isOperatorCancelledRun(latestRun, agentId))
+      ) {
+        result.skipped += 1;
+        continue;
+      }
+      if (
+        agent?.status === "paused" &&
+        agent.companyId === issue.companyId &&
+        agent.lifecycleHolds.includes("manual") &&
+        issue.status === "todo" &&
+        !latestRun
       ) {
         result.skipped += 1;
         continue;
@@ -6069,6 +6102,16 @@ export function recoveryService(
       );
     }
 
+    // A stalled child or blocker: tell whoever waits on it, once per stall
+    // (blocker-stall-wakeups.ts). This sweep visits each blocked issue, which
+    // covers a board action already resolved as "blocked".
+    if (!opts?.runId && !opts?.blockerIssueId) {
+      const stalls = await wakeWaitersOfStalledIssues(db, deps.enqueueWakeup as BlockerStallWakeup,
+        { companyId: opts?.companyId ?? null, issueId: opts?.issueId ?? null });
+      // Counted with the dependency wakes, so the worker retries a failed one.
+      result.enqueueFailed += stalls.failed;
+      if (stalls.retryAt !== null) opts?.onDeferredDeadline?.(stalls.retryAt);
+    }
     return result;
   }
 

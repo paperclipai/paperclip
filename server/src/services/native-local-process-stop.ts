@@ -143,6 +143,101 @@ export async function recordUnidentifiedLocalRunnerStop(db: Db, run: Pick<typeof
   return true;
 }
 
+export class UnidentifiedRunnerStopRefusedError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = "UnidentifiedRunnerStopRefusedError";
+  }
+}
+
+type UnidentifiedLaunchRun = Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "runtimeMode" | "status" | "finishedAt" | "processPid" | "processGroupId">;
+type LaunchRefusal = { code: string; message: string } | "already_stopped" | null;
+
+export async function unidentifiedLocalLaunchRefusals(db: Db, runs: UnidentifiedLaunchRun[]): Promise<Map<string, LaunchRefusal>> {
+  const result = new Map<string, LaunchRefusal>();
+  const candidates: UnidentifiedLaunchRun[] = [];
+  for (const run of runs) {
+    if (run.runtimeMode !== "native" || !run.finishedAt || !FINISHED_RUN_STATUSES.has(run.status))
+      result.set(run.id, { code: "run_not_finished", message: "Only a finished run's stop can be confirmed." });
+    else if (run.processPid || run.processGroupId)
+      result.set(run.id, { code: "process_identity_recorded", message: "This run recorded its process. Paperclip verifies that process itself." });
+    else candidates.push(run);
+  }
+  if (!candidates.length) return result;
+  const ids = candidates.map(run => run.id);
+  const companyIds = [...new Set(candidates.map(run => run.companyId))];
+  const latest = await db.selectDistinctOn([heartbeatRunEvents.runId], { runId: heartbeatRunEvents.runId,
+    eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+    inArray(heartbeatRunEvents.companyId, companyIds), inArray(heartbeatRunEvents.runId, ids),
+    isNull(heartbeatRunEvents.sourceEventId),
+    inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED]),
+  )).orderBy(heartbeatRunEvents.runId, desc(heartbeatRunEvents.seq));
+  const remote = new Set((await db.select({ runId: environmentLeases.heartbeatRunId }).from(environmentLeases).where(and(
+    inArray(environmentLeases.companyId, companyIds), inArray(environmentLeases.heartbeatRunId, ids),
+    sql`${environmentLeases.provider} is distinct from 'local'`,
+  ))).map(row => row.runId));
+  const latestByRun = new Map(latest.map(row => [row.runId, row]));
+  for (const run of candidates) {
+    const event = latestByRun.get(run.id);
+    result.set(run.id, event?.eventType === LOCAL_PROCESS_STOPPED ? "already_stopped"
+      : event?.eventType !== PROCESS_START_REQUESTED
+        ? { code: "no_unidentified_launch", message: "This run has no unconfirmed runner launch to stop." }
+        : record(event.payload).hostname !== os.hostname()
+          ? { code: "launch_on_other_host", message: "The runner was launched on another host. Confirm the stop there." }
+          : remote.has(run.id)
+            ? { code: "remote_environment", message: "This run used a remote environment. Its environment cleanup confirms the stop." }
+            : null);
+  }
+  return result;
+}
+
+export async function unidentifiedLocalLaunchRefusal(db: Db, run: UnidentifiedLaunchRun): Promise<LaunchRefusal> {
+  return (await unidentifiedLocalLaunchRefusals(db, [run])).get(run.id) ?? null;
+}
+
+export async function confirmUnidentifiedLocalRunnerStopped(db: Db, input: {
+  companyId: string; issueId: string; runId: string; actorId: string;
+}): Promise<{ runId: string; alreadyStopped: boolean }> {
+  const refuse = (code: string, message: string) => { throw new UnidentifiedRunnerStopRefusedError(code, message); };
+  const [run] = await db.select().from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
+  if (!run || ![run.issueId, run.nativeIssueId, record(run.contextSnapshot).issueId].includes(input.issueId))
+    return refuse("run_not_found", "This run does not belong to the task.");
+  const refusal = await unidentifiedLocalLaunchRefusal(db, run);
+  if (refusal === "already_stopped") return { runId: run.id, alreadyStopped: true };
+  if (refusal) return refuse(refusal.code, refusal.message);
+  const { noLocalRunnerProcessForRun } = await import("./native-runtime/native-session-executor.js");
+  if (!await noLocalRunnerProcessForRun(run.id))
+    return refuse("runner_still_running", "A runner for this run is still running on this host. Stop it first.");
+  await db.transaction(async tx => {
+    const [locked] = await tx.select().from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id))).for("update");
+    const current = locked ? await unidentifiedLocalLaunchRefusal(tx as unknown as Db, locked) : null;
+    if (!locked || current === "already_stopped" || current !== null || locked.finishedAt?.getTime() !== run.finishedAt?.getTime())
+      return refuse("run_changed", "This run changed while its stop was being confirmed. Check it again.");
+    await appendHeartbeatRunEvent(tx as unknown as Db, {
+      companyId: run.companyId,
+      runId: run.id,
+      agentId: run.agentId,
+      eventType: LOCAL_PROCESS_STOPPED,
+      stream: "system",
+      level: "info",
+      message: "A board operator confirmed that this run's runner and its agent processes have stopped.",
+      payload: { processPid: null, processGroupId: null, processStartedAt: null, basis: "operator_attested",
+        attestedByUserId: input.actorId },
+    });
+    await notifyDeliveryWork(tx as unknown as Db, DELIVERY_QUEUES.accounting, run.companyId);
+  });
+  return { runId: run.id, alreadyStopped: false };
+}
+
+const FINISHED_RUN_STATUSES = new Set(["failed", "cancelled", "timed_out", "succeeded", "interrupted"]);
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
 /** A native run that an admission fence refused before it requested any
  * runner launch (a quarantined prior-session cleanup is checked before the
  * provider starts) never had a process: there is nothing to stop. Any launch

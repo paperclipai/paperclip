@@ -74,11 +74,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .windows(2)
             .find(|pair| pair[0] == "--journal")
             .ok_or("source journal is missing")?;
+        let live_predecessors = std::fs::read_to_string(&path[1])
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter_map(|line| line["processStart"].as_u64())
+            .filter(|pid| {
+                std::process::Command::new("kill")
+                    .args(["-0", &pid.to_string()])
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|status| status.success())
+            })
+            .collect::<Vec<_>>();
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path[1])?;
-        write_json(&mut file, &json!({"processStart": std::process::id()}))?;
+        write_json(
+            &mut file,
+            &json!({"processStart": std::process::id(), "livePredecessors": live_predecessors}),
+        )?;
         if args.iter().any(|arg| arg == "--spawn-owned-child") {
             let child = std::process::Command::new("/bin/sleep")
                 .arg("120")
@@ -224,7 +240,45 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 response = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
                     "error":{"code":"temporarily_unavailable","message":"Optional read is temporarily unavailable.","retryable":true}});
             }
+            if command == "session.open" && fault == "slow-open" {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+            if command == "session.open" && fault == "reject-open" {
+                response = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
+                    "error":{"code":"session_open_failed","message":"The replacement provider could not open.","retryable":false}});
+            }
             write_json(&mut stdout, &response)?;
+            if command == "session.open" && args.iter().any(|arg| arg == "--emit-process") {
+                write_json(
+                    &mut stdout,
+                    &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                        "sequence":next_sequence,"eventType":"runtime.process","runId":null,"turnId":null,
+                        "payload":{"role":"sidecar","pid":std::process::id(),"processGroupId":null,"startedAt":"2026-01-01T00:00:00.000Z"}}),
+                )?;
+                next_sequence += 1;
+            }
+            if command == "session.suspend" && fault == "late-tool-after-suspend" {
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.tool_called",
+                    &source_run,
+                    "late-turn",
+                    json!({"callId":"late-call","operationId":"issues.delete","input":{"source":"late-old-generation"}}),
+                )?;
+                next_sequence += 1;
+            }
+            if command == "run.attach" && fault == "pre-turn-tool" {
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.tool_called",
+                    &source_run,
+                    "pre-turn",
+                    json!({"callId":"pre-turn-call","operationId":"issues.read","input":{"id":"issue-1"}}),
+                )?;
+                next_sequence += 1;
+            }
             if command == "turn.start" {
                 let turn = request["params"]["turnId"].as_str().unwrap();
                 if args.iter().any(|arg| arg == "--wait-completion-feedback") {
@@ -244,6 +298,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     next_sequence += 1;
                     source_pending_completion = Some(turn.to_owned());
                     continue;
+                }
+                if fault == "pending-input" {
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.input_requested",
+                        &source_run,
+                        turn,
+                        json!({"requestId":"input-at-terminal","questionSet":{
+                            "schema":"paperclip.question_set.v1",
+                            "questions":[{"id":"target","prompt":"Which target?","required":true,
+                                "answerMode":"single_select","options":[{"id":"first","label":"First"}]}]}}),
+                    )?;
+                    next_sequence += 1;
                 }
                 write_turn_event(
                     &mut stdout,

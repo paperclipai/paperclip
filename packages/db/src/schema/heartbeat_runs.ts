@@ -152,6 +152,15 @@ export const heartbeatRuns = pgTable(
     ),
     scheduledRetryCancellationIdx: index("heartbeat_runs_scheduled_retry_cancellation_idx").on(table.id)
       .where(sql`${table.status} = 'scheduled_retry' and jsonb_typeof(${table.resultJson}->'startupCancellation') = 'object'`),
+    // Committed budget Stops that are not delivered yet. The predicate must stay
+    // identical to `pendingBudgetRunCancellationPredicate` in the server, so the
+    // budget worker, run control, and the idle check read only these few rows
+    // instead of every run's result JSON.
+    pendingBudgetCancellationIdx: index("heartbeat_runs_pending_budget_cancellation_idx")
+      .on(table.companyId)
+      .where(sql`jsonb_typeof(${table.resultJson}->'startupCancellation'->'budgetEnforcement') = 'object'
+        and ${table.resultJson}->'startupCancellation'->'budgetEnforcement'->>'deliveredAt' is null`)
+      .concurrently(),
     // Runs a dispatch gate refused for a pause; that hold's release resumes them.
     treeHoldSuppressionIdx: index("heartbeat_runs_tree_hold_suppression_idx")
       .on(table.companyId, sql`(${table.resultJson}->'treeHoldSuppression'->>'holdId')`)
@@ -190,6 +199,9 @@ export const heartbeatRuns = pgTable(
       table.agentId,
       table.startedAt,
     ),
+    companyNativeWorkspaceIdx: index("heartbeat_runs_company_native_workspace_idx")
+      .on(table.companyId, sql`(${table.runnerProfileJson}->'nativeWorkspaceSync'->>'workspaceId')`)
+      .concurrently(),
     companyIssueCreatedIdx: index("heartbeat_runs_company_issue_created_idx").on(
       table.companyId,
       table.issueId,

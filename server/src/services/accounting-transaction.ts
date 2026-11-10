@@ -23,9 +23,13 @@ export async function withAccountingTransaction<T>(db: Db, companyId: string, wo
 
 /** Independent paid operations share a consistent snapshot, never a company
  * writer mutex. Only retry transactions PostgreSQL proves were rolled back;
- * an uncertain commit must be replayed by its durable operation identity. */
+ * an uncertain commit must be replayed by its durable operation identity.
+ * A writer whose mutable reads are protected by an aggregate row lock can use
+ * READ COMMITTED, so unrelated updates before that lock do not invalidate its
+ * snapshot. Multi-aggregate readers keep the default consistent snapshot. */
 export async function withOperationAccountingTransaction<T>(db: Db, companyId: string,
-  work: (tx: Db, publications: ActivityPublication[]) => Promise<T>): Promise<T> {
+  work: (tx: Db, publications: ActivityPublication[]) => Promise<T>,
+  options: { isolationLevel?: "read committed" } = {}): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     const publications: ActivityPublication[] = [];
     try {
@@ -34,7 +38,7 @@ export async function withOperationAccountingTransaction<T>(db: Db, companyId: s
         const [company] = await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, companyId));
         if (!company) throw notFound("Company not found");
         return work(tx, publications);
-      }, { isolationLevel: "repeatable read" }));
+      }, { isolationLevel: options.isolationLevel ?? "repeatable read" }));
       publishAccountingActivities(companyId, publications);
       return result;
     } catch (error) {

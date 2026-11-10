@@ -244,6 +244,32 @@ writer and finalization holds remain until ordinary snapshot publication and
 cleanup complete. This fallback does not remove source files, rerun provider
 work, or solve capacity failure while creating the workspace archive itself.
 
+### Delayed tool approvals
+
+Ordinary tool reviews have no implicit one-hour deadline. A person may approve
+the saved action after the requesting run ends or the server restarts. Explicit
+action deadlines and terminal-task expiry still apply. The shared interaction
+payload represents the absence of a deadline with `toolAction.expiresAt = null`.
+
+New connected-tool snapshots bind the reviewed arguments, tool contract,
+connection settings, credential owner, consent and permissions. Authenticated
+OAuth refresh preserves the vault's credential identity epoch; manual credential
+replacement and new consent do not. Token versions and refresh timestamps may
+change without invalidating the action. Fixed credential versions and non-OAuth
+credentials retain their exact-version checks. Earlier signed snapshots retain
+their original strict comparison and saved deadlines; the server does not infer
+continuity for historical rotations or revive already-expired requests.
+
+If sign-in is required before dispatch, the accepted decision remains saved.
+The card shows that approval is waiting for the app connection and links to its
+repair surface. Recovery waits without a recurring timer and wakes on committed
+connection changes or startup. It checks the exact saved action and current
+authority again. Repair under the same authorization can continue automatically;
+new consent, changed permissions or changed credentials require a new review.
+The existing execution claim and result receipt prevent repeated approval from
+dispatching the action twice. Uncertain provider outcomes retain the existing
+no-replay recovery contract.
+
 ### Answered Slack conversations
 
 An accepted scheduled-monitor yield remains unfinished task work. Its committed
@@ -514,6 +540,8 @@ Another run's unfinished accounting or cleanup never refuses new work (see `doc/
 
 A user's message refused by a pause (a paused agent, a paused company, or a budget pause that is not a reached hard stop) is saved as a deferred intent that names the refusal and its release trigger; it is never written as a terminal skip. The pause's own stop keeps it. Lifting the pause is the operator's explicit authorization to send what the pause refused, as Send is after a Stop: when the pause stopped the task's run, the lifted pause issues the task's next explicit wake, which adopts the saved message once. A task that never ran keeps the message in the task, and stranded-work recovery starts it.
 
+A reached budget hard stop cancels the scope's running work. When a board member resolves the incident with Raise budget and resume, Paperclip claims every task run that the stop cancelled since the incident opened (runs the budget enforcement fenced, and runs the agent lifecycle pause stopped for this budget: each pause records why it started, and the runs it stops carry that cause), with that member and their session source, in one write before the incident closes, as rows in `budget_resume_claims`, outside the run's result JSON so a Stop settling at the same moment cannot erase them. This includes runs whose stop is still being delivered. Resolving again keeps existing claims. The execution-continuation worker delivers each claim once its run's stop has settled: it files that member's Retry for the task. The Retry clears the task's execution hold and is accepted only while the cancelled run is still the task's latest run and the task is open and assigned, checked under the task lock, so completed or continued work is never repeated. Its idempotency key names the cancelled run, so every pass, restart, or repeated resume returns the same single request. The claim and its activity entry settle in one commit. The Retry starts a new run through normal admission and charges no attempt to the cancelled run. Paperclip records `budget.cancelled_work_resume_requested` on the incident and `budget.cancelled_work_continued` (or `budget.cancelled_work_not_continued`, with the reason) on each task. A run a person stopped is never continued this way, even if budget enforcement also fenced it. A pause's stop is intentional, not a failure: a native run that the agent lifecycle pause or a budget pause cancelled keeps its task's status and never opens a reconciliation incident; resuming continues it. A retryable Retry refusal leaves the claim pending for the next pass.
+
 The same holds for accepted work beyond a first assignment. A temporary refusal never terminally cancels or escalates accepted work: an unstarted queued run (a promoted comment, a Retry, or a recovery) stays queued, and stranded-work recovery leaves the task as it is instead of moving it to `blocked`. These waits are passive, so settling a run's accounting wakes queued-run dispatch, the saved-receipt worker, and stranded-work recovery for the company. The held work then starts through normal admission, once. When a native run reaches a terminal status through recovery, or releases its environment, each message saved behind it is hinted by its own receipt, so delivery does not wait out a company-wide rescan interval.
 
 New comments received during an execution hold retain their individual deferred receipts and ordered comment ids. Release cannot drain those receipts while replay remains blocked; the next eligible wake can adopt them. Authorized external-chat requests also remain deferred with their exact durable receipt. They must use normal promotion and current authorization; a generic wake cannot adopt only their comment ids and discard their actor or session contract. A wait does not authorize replay, reset an incident retry budget, or bypass an interaction's delivery rules.
@@ -569,7 +597,24 @@ writer, measured from the time the writer ended. After the cutoff, preparation
 fails with the unfinished-writer error and leaves the held files unchanged.
 This wait is also one parked retry, for example after a reassignment stops the
 writer. It is re-checked every minute while the ended writer's hold settles, is
-admitted once the hold releases, and stops parking at the same cutoff.
+admitted once the hold releases, and stops parking at the same cutoff. The
+writer's final save commit and an unchanged release (below) make these waiters
+due immediately instead of at the next re-check.
+
+A writer that ended (failed, cancelled, interrupted or timed out) without
+changing its files releases the hold at once, with no snapshot. Its workspace
+keeps the saved version it started from. Preparation records that starting
+point only when it began from a clean saved version and added nothing to it:
+no recovered attachments, no repository outside the saved version and no
+workspace migration. The release requires durable evidence that nothing ran
+after that point: no execution or provider event, process, runner checkpoint,
+native result or provider turn in a checkpoint for that run; no workspace
+operation other than a restore or a finalize or recovery receipt; and no task
+repository outside the saved version. The writer's owner fence must also be clear. Any missing or ambiguous evidence,
+including a writer prepared by an earlier release without that starting point,
+keeps the full save. The next run's reservation, cancelled-workspace
+preservation and a later final save each apply this release. A repeated save
+returns the same version.
 
 A writer stopped mid-run, for example by reassignment, keeps its unsaved files
 in its stopped sandbox. When the run used a reusable (warm) sandbox, the stop
@@ -592,6 +637,45 @@ progress, its last progress counts as the ended writer's activity for the holder
 failing setup. The save's retry budget bounds that wait. A save that exhausts
 its retries is handed to the board as a named recovery action. After that hand-off,
 the cutoff no longer advances.
+
+Automatic wakes do not run into a hold that preparation would refuse. A parent or
+dependent woken because a child or blocker stalled on the board
+(`issue_blocker_stalled`) is not woken again when its assignee's last run on the
+task failed setup on its bound workspace's hold and that hold is still past the
+cutoff, or held by a writer that cannot be named: another run could only fail
+the same way. The wake is delivered once the hold settles or the task changes
+assignee, and the sweep checks again at most hourly. Failed runs that carry a
+stall, including resource-wait retries of its wake, are retried after ten
+minutes, then twenty, and not after the third failed run. The stall stays
+listed on the waiting task, and a new stall wakes it again.
+
+An unstarted queued turn names an agent setup or verification wait. A failed
+setup that requires explicit Retry shows **Agent setup needs attention**, while
+its saved turn remains queued. Temporary errors with automatic retries still show
+**Waiting for agent setup**.
+Queued setup failures also create the existing inline AI connection card on the
+task, addressed to the person whose account host verification checks (the saved
+lifecycle responsible user or company default). A queued turn can have a different
+responsible user; neither its authority nor its saved identity is rewritten.
+Runtime tokens remain unavailable for
+queued runs. Completing the card rechecks verification through the lifecycle
+worker and retains the original queued turn; it does not enqueue another model
+turn. Decline, Stop, reassignment and other lifecycle holds remain effective.
+Setup cards stay bound to their queued source turn. A replacement turn supersedes
+the prior setup card instead of reusing a stopped turn's delivery.
+New cards also name the lifecycle operation, so a stale completion cannot recheck
+a newer configuration. Owned AI selection failures park during resume as well as
+initial verification. For a routed agent, repair uses the account already pinned
+to that lifecycle operation; it never allocates a task route, advances the pool
+cursor, or replaces the agent's pool. Legacy direct-account setup cards remain
+readable without an operation ID.
+AI account selection failures use the selector's owned configuration evidence:
+missing defaults, unavailable or incompatible connections, missing responsible
+users, and credential sharing refusals park automatic host verification until
+configuration repair or explicit Retry. They retain fixed, redacted guidance.
+Provider and infrastructure failures keep their existing retry policy. Readiness
+must commit before normal queue dispatch; this display grants no execution or
+credential authority and does not change the task's lifecycle status.
 
 An instance admission drain keeps accepted new turns queued and displays
 **Waiting for maintenance**. Ending the audited drain requests admission for
@@ -685,6 +769,28 @@ The same admission rule covers any task bound to a workspace that a relative in
 its task tree created: the task that created the workspace keeps it, and the
 relative bound to it (for example a parent that selected its child's workspace)
 moves to its own on its next admission.
+
+A legacy child can have no next admission: when another task's writer held the
+shared workspace, the child's run failed setup before any provider work, and
+stranded-work recovery blocked it with a board-owned escalation. The
+active recovery action sweep moves such a child without a person, in one
+transaction, when the escalation's latest run failed setup on that workspace
+hold, the child's Blocked status came from that escalation (no status decision
+at or after the block), the shared dependency-readiness rule allows work, and
+the binding release above is allowed. The child's binding is released, the
+escalation resolves with the outcome `legacy_shared_workspace_rehomed`
+(`issue.legacy_workspace_rehomed` system activity), the child returns to
+`todo`, and a pending wake is recorded. The assignee is then woken once with a
+fresh session. Only a created run settles the wake: a wake lost to a crash or
+refused by the heartbeat stays pending, backs off (5 minutes, doubling, at most
+an hour), and is retried at that deadline while the child is still an assigned
+`todo`. What the moved child
+sees is a fresh workspace from the project base: no parent changes, and none of
+its own earlier files from the shared workspace. The child that still holds the
+shared workspace with unsaved files is not moved; its save recovery owns the
+hold, its files stay in the shared workspace and its saved-work receipts, and it
+moves on its first admission after that recovery settles. The parent keeps its
+workspace throughout.
 
 ### Blockers (`blockedByIssueIds`)
 
@@ -1550,6 +1656,24 @@ and any run saved by an older release without these facts, keeps verified
 reattachment. A reattachment that loses its runner still requests the user's
 Retry as described above.
 
+A local runnerd that dies (for example SIGKILL during a tool call) cannot
+suspend, and its provider and tool processes are re-parented, so they cannot be
+found from the controller's process records. Durable runnerd therefore journals
+each provider's process lineage to `<runner state>/process-lineage/` from the
+moment the provider is spawned: the provider, every descendant, and every
+process group or session a descendant leads, each named by PID and start time.
+When close finds that runnerd exited without suspending and without a signal
+from close, it runs `paperclip-runnerd reap-lineage` from the same executable.
+The reaper refuses while runnerd is alive or when runnerd never journalled. It
+signals only processes whose PID and start time still match the journal, and it
+reports `verified` only when none remain. The journal also records how far the
+process table was read. A same-user orphan that started after that point cannot
+be attributed, so the reaper refuses without signalling it. A failed journal write removes the writer marker, so a
+record that may be missing a member never verifies. A verified report ends the session as
+a crash stop with its durable record intact, and recovery continues within the
+normal attempt budget. Any other report keeps the cleanup quarantine below.
+Launcher-owned (remote) and adopted runners are not reaped this way.
+
 When a native attempt fails before launch because its predecessor's session is
 quarantined, explicit task Retry verifies the retained journal's actual owner.
 That owner must belong to the same company, task, agent, workspace, native session,
@@ -1851,8 +1975,13 @@ A native run can accept its result and then lose its server to a hard kill
 before finalization. Its result stays leased to the controller of the earlier
 boot, which cannot release the lease the way a graceful drain does. Startup
 native recovery releases that lease at once when the lease belongs to a
-different boot and its recorded controller process has exited or its PID now
-names another process. Only the executor's lease carries that controller
+different boot in the same known kernel and PID namespace, and its recorded
+controller process has exited or its PID now names another process. The
+executor saves that namespace with its claim. Linux uses its boot UUID and PID
+namespace; macOS uses its kernel boot-session UUID. An unreadable or unsupported
+identity, a different namespace, or an older claim without this proof keeps the
+original lease expiry and does not probe the recorded PID. Only the executor's
+lease carries that controller
 identity; a finalizer or cleanup lease is never released this way and expires
 on its own short lease. The stored result is then
 finalized without another
@@ -1860,22 +1989,146 @@ provider turn, and saved follow-up messages are reconsidered. A live owner, an
 owner without a recorded process, a lease of the current boot, and a remote
 workspace keep the lease until it expires. Lease age alone is never proof.
 
+Before claiming an in-flight local native run, restart recovery also requires
+this same known process space. Expiry alone does not prove a local controller
+stopped. A missing, foreign or unreadable namespace creates one board-owned
+recovery action for the exact saved authority, without probing the recorded PID,
+spending retry attempts, or arming a polling loop. Renewed authority gets a new
+opaque fingerprint and preserves the previous action. Remote and plugin tasks
+retain their ordinary Stop/provider-cleanup path and do not offer the local
+containment confirmation.
+
+When automatic recovery cannot prove a local owner stopped, an operator can
+record containment through the task's recovery action after the original lease
+expires. The operator separately confirms the controller and provider/tools
+stopped on their original host, and records reviewed action outcomes and evidence.
+The server rechecks board `runtime:confirm_owner_stop` permission for a company
+owner, company administrator or instance administrator, plus company, assignee, source binding,
+opaque authority, exact expiry (including microseconds), pending Stop, accepted
+results and cleanup obligations under the normal ownership locks. A renewed or
+replaced owner invalidates the confirmation. This is explicit operator evidence,
+not a local process-stop observation.
+
+Containment uses normal failed-owner settlement and preserves usage uncertainty,
+workspaces and outcome evidence. Containment records the canonical `restored`
+outcome while keeping the task status unchanged, including when it is already
+`todo`. A separate ordinary Retry then consumes that committed evidence. It does not accept a provider result or queue a
+replacement. Only exact unadmitted Retry receipts for the contained source are
+closed with an inspectable reason; accepted or newer work stays intact. After
+cleanup and outcome review, the user makes a new ordinary Retry request under
+current authorization. Unknown outcomes keep the hold; reviewed completed or
+mixed effects remain in the continuation context and never authorize automatic
+replay. A later successful ordinary recovery claim resolves only its exact prior
+namespace attention.
+
 A recorded process is judged only in the PID space that recorded it. Native
 controller rows store `controller_host_hash` and run processes store
 `process_host_hash` (`"remote"` for a sandbox process). A dead PID on this host
 never proves that a process on another host, in another PID namespace, or in a
 sandbox is gone; such a record keeps its lease, fence or staleness TTL.
 
-Rows saved before those columns existed have no recorded host. For one release
-only, a single-host server keeps the previous local proof for them, and each use
+Rows saved before those columns existed have no recorded host. The legacy
+compatibility helper and run-process sweep retain one-release single-host local
+proof where their existing owners permit it. Each use
 writes a `legacy_host_unknown_dead_pid_proof` activity-log entry, so the release that
 removes this fallback can confirm that no rows still depend on it. An ephemeral
 server (`PAPERCLIP_EPHEMERAL_SERVER=true`) never uses the fallback. Its native
 controller rows with no recorded host wait as `controller_host_unrecorded`, with
 a board recovery action to confirm that the previous server stopped. Its run
 processes with no recorded host are left to the run's Stop control. The next
-release removes the fallback and treats every row with no recorded host as
-unprovable.
+release removes that compatibility fallback. The strict Native in-flight claim,
+early accepted-result release, and failed-owner guards above do not use it.
+A previous-server-only confirmation is not same-namespace proof and does not
+confirm that a provider or its tools stopped. It cannot override those guards.
+Its notification requests recovery inspection; unfinished ownership can still
+require the separate containment and ordinary Retry described above.
+
+A server boot that holds work keeps a controller instance lease
+(`controller_instances`): a row named by its boot id, with an epoch and a lease
+on the database clock (90 s TTL).
+
+- **Renewal.** The shared delivery-work coordinator schedules it every 30 s,
+  only while the boot holds work. A single upsert both creates the row on first
+  use and extends the lease, but only if the boot stamped ownership in the last
+  90 s or still has an in-progress record stamped with its boot id: an
+  environment lease or cleanup claim, a sandbox creation intent, a workspace
+  finalize attempt, an agent lifecycle step, a native finalizer or cleanup
+  lease, an open native coordinator claim, or a running legacy run. A stamp
+  whose ownership write may still be pending also counts until the server's
+  tracked work settles (at most 10 minutes). Otherwise the lease lapses and
+  the worker issues no statements until the next stamp, so an idle server's
+  database can sleep.
+- **Renewal failure.** Each renewal has a 10 s bound. A failed or timed-out
+  renewal quiesces the boot: it reports a task drain and dispatches no new work.
+  If it renews again before anyone fences it, it resumes. It exits only if
+  renewal has kept failing for 60 s, counted from the first failed attempt's
+  start, while it still holds work.
+
+A record owned by the server process itself (a lease, claim or intent with no
+recorded process group) that names a boot in another host or PID space is
+judged through that boot's row:
+
+- `stopped`: the boot shut down cleanly, so the record's owner is gone.
+- live lease: the owner is alive.
+- otherwise, the boot's last sign of life is the later of its lease expiry and
+  the record's last write plus the TTL. A boot that resumes after an idle lapse
+  renews on its first stamp.
+  - Within 30 s after that, the owner still counts as alive, so the settle watch
+    re-checks it.
+  - After that, the prover fences the boot (only a newer epoch may), and the
+    owner is gone. A boot that held work has exited by then.
+- no row (a boot from before the lease): the record stays unprovable.
+
+A record with a recorded process group stays unprovable across hosts, because
+agent processes may outlive their server. The lease is enabled on volume-backed
+Railway services too: a process can crash and restart inside the same deployment,
+and some saved ownership records do not contain a deployment identity.
+`PAPERCLIP_CONTROLLER_INSTANCE_LEASE=off` explicitly disables it.
+
+Native execution and restart claims register held preparation with this lease before
+a runner PID or checkpoint exists. Passive identity reads do not register work.
+Restart recovery uses the recorded controller
+boot and last write to prove its owner stopped or to fence it after the existing
+grace period when the PID space is foreign or unknown. Within the same readable
+PID space, the existing process and start-time proof still governs takeover.
+A live owner or a grace period keeps the preparation held, with a
+scheduled recovery check. Repeating the same evidence wait preserves its last-write
+timestamp so the recovery check cannot keep extending its own grace period.
+After owner proof, the normal launch, checkpoint, provider-evidence and admission
+checks still govern resumption; controller fencing alone does not prove an agent
+process stopped or authorize repeating its work.
+
+Older native controller records with no verifiable boot lease remain held. Recovery
+exposes the existing board stop-confirmation action for an unknown or foreign PID
+space. It requires `runtime:confirm_owner_stop` and confirmation of the exact run,
+boot, PID, process start and recorded host. A changed owner rejects the confirmation.
+The receipt only permits normal recovery to inspect and resume the saved work.
+Scoped recovery wakes also select fenced preparations with no runner process or
+checkpoint yet. They use the existing finite expired-run inventory and normal
+restart classifier; a missing checkpoint cannot silently discard that wake.
+
+A record saved before its owner was fully recorded (`no_owner_stamp`,
+`missing_identity`, `process_space_unrecorded`) stays unprovable and is never
+released on its own. For a settling kind that opts in, recovery asks the board
+on the record's task (`ownership_owner_unprovable`) to confirm that the previous
+server stopped. The board action (`POST /api/issues/{id}/recovery-actions/confirm-owner-gone`)
+is board-only, needs `runtime:confirm_owner_stop`, writes an
+`issue.ownership_owner_gone_confirmed` activity entry and wakes the reconciler.
+The confirmation then proves the owner gone (`operator_attested`) and the kind's
+own compare-and-swap settle releases the record:
+
+- The environment run lease stores the confirmation on the lease.
+- Every other opted-in kind (legacy controller lease, teardown claim, sandbox
+  creation intent, runtime-control operation, workspace finalize attempt,
+  native finalizer and cleanup leases) keeps it on the resolved recovery action,
+  bound to the record's last write. It applies only while the record is
+  unchanged and its recorded process is still unprovable for that legacy reason
+  (`missing_identity`, `process_space_unrecorded`). A record that changed since
+  is judged again, and recovery asks again about its current version. These
+  settles compare-and-swap on the recorded process, so a record of these kinds
+  with no owner stamp at all keeps its existing recovery path and is not offered.
+- Kinds that are unowned by design, such as queued pending cleanup and
+  accounting debt, are never offered.
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output.
 
@@ -2157,6 +2410,17 @@ apply. Stream closure without a turn terminal is not proof of success. Event
 replay uses the existing source receipts and never repeats provider work merely
 to recover recorded output.
 
+In an Agent Chat conversation, a successful turn whose status decision committed
+posts its final answer to the conversation even when the task stays held: a
+pending or revision-requested approval, a pending execution stage, or a
+dependency blocker. A held task does not present the turn. Only a pending
+thread interaction (a question or confirmation card) that the turn's own run
+created presents the turn in place of its prose. A card from an earlier turn,
+or one the board addressed to another person, can hold the task but does not
+present the turn, so its answer is still posted. Background presentation recovery applies the same rule, so a
+restart between the status commit and the live presentation posts the held
+turn's answer once, or records that its card presented the turn.
+
 A delegated-task completion callback can finish native execution before its
 accepted final reply is saved. The completion outbox must retain that callback's
 queued target and attempt while the existing presentation selector finds pending
@@ -2389,6 +2653,30 @@ times; new input, Retry or a new recovery generation reconsiders the hold. The
 recovery worker discovers these holds itself, so holds saved by earlier releases
 take the same path after deploy. An exhausted hold whose run's files a sibling
 recovery action already saved settles as recovered.
+
+An exhausted save whose last failure was `agent_stop_unconfirmed` is not a
+refusal of the saved files: its recovery window ran out before the agent's stop
+could be proven. This applies to every workspace recovery the worker owns,
+export holds and restore holds alike. Once the source run is provably over (its
+run is terminal, no local execution remains, and neither its controller lease
+nor its finalizer lease is live), the recovery worker re-arms it with a new
+bounded system generation. A live lease defers the re-arm to that lease's
+expiry; the worker is not woken earlier. The new generation repeats the strict
+stop proof (a provider stop receipt for every allocation of the run) and the
+save, then settles the hold exactly like any completed recovery, so other tasks
+on the workspace can start. Re-arms are bounded: at most four, the first at once
+and the next ones 30 minutes, 2 hours and 8 hours after the previous re-arm,
+each recorded in the action's `stopProofRecovery` marker and as
+`issue.workspace_recovery_rearmed` system activity. When every re-arm of an
+export hold is spent and the stop still cannot be proven, the hold takes the
+retained-source fallback above: the unsaved files are attached to the task,
+unapplied, and the task continues from the last save. A fallback whose bounded
+checks are spent is reconsidered once whenever an allocation of the source run
+changes afterwards, for example when a late provider stop receipt arrives.
+While a re-arm remains, the hold names the wait and says that Paperclip tries
+again automatically; after that it names Retry. Holds exhausted by earlier
+releases carry no marker and are re-armed on the worker's first pass after
+deploy, with no migration.
 
 An exhausted workspace export records the exact Blocked status version it
 creates, bound to its source run, result, contract and identity. Recovery may
@@ -2661,6 +2949,33 @@ for that allocation. Restore requires one final owner and the existing matching
 predecessor/successor receipts for every earlier owner. Unrelated, live, or
 incompletely linked owners remain ambiguous. The run then fails closed
 with `runner_harness_state_mismatch: backup_without_reusable_lease`.
+
+A workspace-restore hold also takes a warm sandbox out of reuse. When a run
+that holds a warm lease ends with a workspace-restore failure, the hold stops
+the sandbox under a stop-and-retain receipt, changes the lease policy to
+`retain_on_failure`, and records a `workspaceRestoreRecovery` marker with the
+original policy. Workspace recovery then saves the files. In the transaction
+that completes that recovery, Paperclip returns the lease to
+`reuse_by_environment` only when all of these are true: the original policy
+was `reuse_by_environment` (or, for a marker saved by an older release, the
+lease carries its reusable-lease scope), the recovery is complete with a
+saved-file receipt from this allocation, the stop receipt is confirmed with
+state `stopped`, no unsaved writer or pending native workspace export is bound
+to the allocation, the run's recorded disposition is not `destroy`, and the
+allocation has one verified owner chain. The update is a compare-and-swap on
+the checked row. It moves the marker to `workspaceRestoreRecoverySettled`, so
+the next run resumes the warm sandbox. A hold that fails any condition keeps
+its protection.
+
+Older releases left settled holds in `retain_on_failure`, and reuse never
+selects that policy. For those rows, the hold's lease also counts as a retired
+backup source when all of these are true: the lease is `released` with policy
+`retain_on_failure`, it has a `workspaceRestoreRecovery` marker for its own
+run, it has a confirmed stop-and-retain receipt with state `stopped`, and no
+unsaved writer or pending native workspace export is bound to it. The backup
+stamp, single-owner, and later-provider-work checks above still apply. A
+stopped lease that is still `reuse_by_environment` remains ambiguous and fails
+closed.
 
 A Runner close can also fail to prove suspension after the control plane
 accepted the run's result (`native.post_result_failure` with category
@@ -3224,7 +3539,8 @@ Recorded system recovery failures retain their original attempt and intent.
 When system workspace recovery exhausts its bounded attempts or deadline, the
 recovery action stays active and its owner changes from system to board. Its
 next action names the attempt count and last failure code and tells the board to
-use **Retry recovery**. The task blocker shows that same text. Retry starts one
+use **Retry recovery**. An unproven agent stop (`agent_stop_unconfirmed`) instead
+names the automatic re-arm described above; Retry remains available. The task blocker shows that same text. Retry starts one
 new bounded system generation and returns ownership to the system. A sweep that
 finds an action already exhausted and still system-owned applies the same handoff
 as bookkeeping only; it grants no attempt. Exhaustion never submits a provider
@@ -3313,6 +3629,19 @@ system wake cannot release a hold. The source task keeps its assignee. Process
 ownership, active controllers, cleanup leases, pause, approval, budget, and normal
 execution gates still apply. Dependency-blocked interaction mode remains limited
 to its existing answer/triage contract.
+
+A saved human answer or confirmation can reach the requesting assignee while
+dependencies remain unfinished. Admission and dispatch verify the stored response
+against its company, task, requesting agent, resolved status, and human resolver.
+The response uses dependency-blocked answer/triage mode. It does not check out the
+task, set it to `in_progress`, resolve its dependencies, or approve another action.
+An absent, changed, pending, or agent-resolved response grants no such exception.
+That bounded response remains a continuation after a workspace or AI-account wait,
+so final dispatch still verifies it. Finishing a dependency during preparation
+does not turn the admitted response into an attempt to check out the task.
+Task interruption notices ignore Retry receipts for a superseded run. A later
+successful conversation must not inherit the old failure banner. This read-only
+projection neither retires Retry authority nor acknowledges independent saved input.
 
 Snapshot preservation and native copyback are distinct receipts. A historical
 workspace recovered as an immutable snapshot does not make its old native sync
@@ -3530,6 +3859,17 @@ provider event, or process-launch evidence may exist. Environment cleanup still
 requires the same receipts. This historical proof permits explicit Retry or a
 newer saved user message; it does not replay the cancelled input.
 
+Workspace and AI-capacity waits use the same pre-dispatch classification for
+recovery and stop proof. A cancelled legacy run must retain its matching
+`workspace_wait` or `ai_connection_wait` receipt with `providerWorkStarted: false`.
+The runtime must remain unresolved, and the stage must be `preparing` or
+`settled`. Native execution references, workspace recovery obligations, a live
+controller lease, retained resources, or dispatch events still reject the proof.
+Remote cleanup requires the exact termination receipt. This rule also covers
+historical waits without a process ID; neither an old timestamp nor a different
+server boot proves that a run stopped. Pause and terminate can then finish,
+while a subsequent run still requires ordinary admission and new authorization.
+
 The existing bounded saved-message worker rechecks this proof after restart.
 Admission atomically settles an unclaimed coordinator and admits one fresh turn,
 preserving history, unknown action outcomes, and attempt counts. Pauses, approvals,
@@ -3544,6 +3884,32 @@ its resource identity is durable. It is queued for cleanup instead of attached
 after cancellation. The old task's Stop receipt cannot settle cleanup of a new
 replacement task. A lost reply with no known resource identity remains unresolved
 until provider inspection or operator reconciliation establishes its outcome.
+
+### Queued messages before a native run's first turn
+
+A user message that arrives while a Paperclip Runner run is still preparing,
+or after its coordinator claim but before `turn.start`, is not a reason to stop
+that run. Immediately before the first `turn.start`, the runner seals the
+turn's input: in one transaction under the task, queue, and run locks it takes
+the responsible user's plain queued comments for the task, in their queued
+order, adds them to that turn's prompt, and records a
+`firstTurnQueuedInput` receipt (`paperclip.first-turn-queued-input.v1`) in the
+run context. Interaction answers, interrupt intents, independent
+continuations, conversations, and other users' messages keep their own
+delivery. Taken messages leave the visible queue.
+
+The receipt does not consume the messages. They stay on their deferred wake
+until the provider accepts that run's turn (`turn.accepted` or the provider's
+`turn.started`); only then do release promotion, Send, and later first turns
+treat them as delivered, whatever the run's later outcome. A run that ends
+before acceptance leaves them queued for the next run, and a restart before
+acceptance repeats the same sealed input. An edit after the seal is unread.
+
+**Interrupt** on a run that has neither sealed its first turn nor had a turn
+accepted records no intent and does not stop the run; the response's
+`executionWait.reason` is `first_turn_pending`. Once the input is sealed or a
+turn was accepted, Interrupt stops the run as described below. A run saved by
+a release without the seal counts as started once its provider accepted a turn.
 
 ### Delivering queued messages after a legacy run stops
 
@@ -3813,10 +4179,33 @@ run's wait marker along with its terminal, result and pending-request authority.
 Already-numbered cancellation acknowledgements and cancelled/expired runtime requests
 are retained during shutdown so recovery can replay a contiguous journal. They
 carry no permission to start work. Stream closure, stream failure or drain timeout
-after complete usage leaves the saved wait unfinalized until a provider terminal
-is retained; complete token counters alone cannot certify a stopped provider.
-A timeout, missing accounting, or an unproven provider terminal remains a failure;
-the saved wait does not certify successful provider execution.
+after complete usage leaves the saved wait unfinalized until execution is proven
+stopped; complete token counters alone cannot certify that boundary. Codex allows
+up to 30 seconds for its interruption terminal, matching the transport command
+window; the caller's execution deadline can shorten it. After that bounded drain,
+a supporting driver uses its existing owned shutdown.
+For Runner, this requires exact run/session/turn identity, provider settlement,
+durable event drain, settled semantic tool outcomes and verified Runner
+suspension. An interrupt acknowledgement, process signal or ordinary close
+promise alone is insufficient. This proof settles the saved yielded result
+without asserting provider success or complete accounting. The stopped session
+is retired from warm reuse.
+
+The checkpoint may add a shutdown settlement receipt to the existing governed
+wait. Previous checkpoints without it follow the same terminal-or-shutdown
+settlement path. Recovery validates the original triggering event and receipt
+binding, rejects later turns and failed provider terminals, and completes the
+same saved handoff without starting a model turn, even if its question has been
+answered. A crash after receipt persistence retains that proof. Late settlement
+after controller cancellation cannot publish a result.
+
+If shutdown cannot be proven, the run retains its checkpoint and the named
+`native_governed_wait_settlement_pending` condition. The existing bounded
+same-run recovery schedule owns further settlement; it grants no replacement
+or tool replay. The task explains that work is saved and shutdown is pending.
+Exhausted or gated recovery holds continuation and names the shutdown problem.
+Actual provider failures and integrity failures retain their existing meaning.
+Accounting keeps its separate receipt and reconciliation requirements.
 
 An exact governed-cancellation terminal with an explicit turn ID may return its
 durable event receipt before postcommit accounting and output observers finish.
@@ -4774,6 +5163,19 @@ dispatch retains a bounded retry obligation rather than losing its deadline.
 Upgrade diagnostics retain their existing `ready` meaning and add bounded retained-pointer
 header evidence. That inventory is preliminary, reports partial coverage, and
 does not certify workspace durability or volume removal.
+
+The upgrade census separates current execution from an old, unowned native
+preparation that recovery explicitly retained as `awaiting_evidence`. This requires
+an observed preparation with no result, failure, process identity, or checkpoint
+header, and an expired, recorded owner from a different controller boot. Such a
+run is counted as `retainedBlockedRuns`, rather than `activeRuns` or
+`recoverableRuns`. It remains unchanged and held for its normal recovery path;
+the observation does not prove that its old controller stopped or authorize
+replay, resource release, or volume removal. A run registered in the current
+process still blocks unless it has positive recovery evidence. Before/after
+execution counters, pending wake operations, drain state, and a truncated census
+continue to prevent readiness. Persisted queued wakes are not deleted by an
+upgrade; the pending wake counter measures in-process admission operations.
 
 `importNativeControllerRecovery` is an internal one-source operation for the
 migration owner while old controller files remain available. It requires the

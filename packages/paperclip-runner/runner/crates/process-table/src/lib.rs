@@ -68,6 +68,16 @@ pub fn read(pid: i32) -> Read {
     platform::read(pid)
 }
 
+/// The session a process belongs to. `None` when the process cannot be read,
+/// or when its session is not visible here: a kernel thread, or a process
+/// whose session leader is outside this PID namespace, reports session 0.
+pub fn session(pid: i32) -> Option<i32> {
+    if pid <= 0 {
+        return None;
+    }
+    platform::session(pid).filter(|sid| *sid > 0)
+}
+
 #[cfg(target_os = "macos")]
 mod platform {
     use super::{ProcessEntry, Read};
@@ -137,6 +147,12 @@ mod platform {
             zombie: info.pbi_status == SZOMB,
         })
     }
+
+    pub(super) fn session(pid: i32) -> Option<i32> {
+        // SAFETY: getsid reads no caller memory; it returns -1 on error.
+        let sid = unsafe { libc::getsid(pid) };
+        (sid > 0).then_some(sid)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -181,6 +197,17 @@ mod platform {
             zombie: state == "Z" || state == "X",
         })
     }
+
+    pub(super) fn session(pid: i32) -> Option<i32> {
+        parse_session(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+    }
+
+    /// The session field of `/proc/<pid>/stat`. The kernel writes 0 when the
+    /// session is not visible in the reader's PID namespace.
+    pub(super) fn parse_session(stat: &str) -> Option<i32> {
+        let rest = &stat[stat.rfind(')')? + 1..];
+        rest.split_whitespace().nth(3)?.parse().ok()
+    }
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -193,6 +220,10 @@ mod platform {
 
     pub(super) fn read(_pid: i32) -> Read {
         Read::Unreadable
+    }
+
+    pub(super) fn session(_pid: i32) -> Option<i32> {
+        None
     }
 }
 
@@ -239,5 +270,31 @@ mod tests {
             (parsed.ppid, parsed.pgid, parsed.started, parsed.zombie),
             (1, 4200, 987654, false)
         );
+        assert_eq!(platform::parse_session(stat), Some(4200));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reports_no_session_for_a_kernel_thread() {
+        // A kernel thread, or a process whose session leader is outside this
+        // PID namespace, reports session 0. rustix's getsid asserts a nonzero
+        // session in debug builds, which panicked runnerd's lineage sampler.
+        let stat = "2 (kthreadd) S 0 0 0 0 -1 2129984 0 0 0 0 0 0 0 0 20 0 1 0 9 0 0";
+        assert_eq!(platform::parse_session(stat), Some(0));
+        let kthreadd = std::fs::read_to_string("/proc/2/stat")
+            .ok()
+            .filter(|stat| stat.contains("(kthreadd)"));
+        if kthreadd.is_some() {
+            assert_eq!(session(2), None);
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn reads_this_process_session() {
+        let me = i32::try_from(std::process::id()).unwrap();
+        assert!(session(me).is_some_and(|sid| sid > 0));
+        assert_eq!(session(0), None);
+        assert_eq!(session(-1), None);
     }
 }

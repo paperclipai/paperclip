@@ -42,6 +42,7 @@ import { budgetService, budgetServiceInTransaction, recheckAdmittedRunBudgetRead
 import { lockRunBudgetRecoveryOwnerInTransaction, recheckRunBudgetReservationInTransaction } from "../../../services/budget-reservations.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
 import { isUnstartedTaskQuestionAnswer } from "../../../services/unstarted-task-question-answer.js";
+import { isVerifiedDependencyInteractionResponse } from "../../../services/queued-interaction-response.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
 import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
@@ -51,6 +52,7 @@ import { legacyDispositionEpisode, legacyDispositionFingerprint } from "../../..
 import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.js";
 import { emitAgentTaskRun } from "../../../services/agent-task-run-telemetry.js";
 import { issueService } from "../../../services/issues.js";
+import { verifyBlockerStallWake } from "../../../services/recovery/blocker-stall-wakeups.js";
 import {
   issueTreeControlService,
   isVerifiedIssueTreeControlInteractionWake,
@@ -479,8 +481,20 @@ export function createPostgresRunDispatchAdapter(
 
     const dependencyReadiness = await issuesSvcForRead.listDependencyReadiness(input.companyId, [issueId]);
     const readiness = dependencyReadiness.get(issueId);
+    // A verified stall wake runs while its stalled dependency is unresolved,
+    // including after a resource wait replaced it with a scheduled retry.
+    const stallAdmitted = readiness && !readiness.isDependencyReady && input.contextSnapshot.blockerStall
+      ? await verifyBlockerStallWake(db, { companyId: input.companyId, issueId, contextSnapshot: input.contextSnapshot,
+          requestedByActorType: input.wakeupRequestId ? await db.select({ actor: agentWakeupRequests.requestedByActorType })
+            .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, input.companyId),
+              eq(agentWakeupRequests.id, input.wakeupRequestId))).then(rows => rows[0]?.actor ?? null) : null })
+      : false;
+    const responseAdmitted = readiness && !readiness.isDependencyReady
+      && input.contextSnapshot.dependencyBlockedInteraction === true
+      && await isVerifiedDependencyInteractionResponse(dbOrTx, { companyId: input.companyId,
+        issueId, agentId: input.agentId, context: input.contextSnapshot });
     facts.dependenciesBlocked =
-      readiness && !readiness.isDependencyReady
+      readiness && !readiness.isDependencyReady && !stallAdmitted && !responseAdmitted
         ? {
             unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
             unresolvedBlockerCount: readiness.unresolvedBlockerCount,
@@ -646,9 +660,13 @@ export function createPostgresRunDispatchAdapter(
     const retryReasonKind = classifyRetryReasonKind(retryReason);
     // Dependency edges can change after scheduled promotion without changing
     // the displayed status. Read them again under the queued/final issue lock.
-    const readiness = issue && retryReasonKind === "native_safe_replacement"
+    const replacementReadiness = issue && retryReasonKind === "native_safe_replacement"
       ? (await issueService(dbOrTx).listDependencyReadiness(input.companyId, [issueId])).get(issueId)
       : null;
+    const readiness = replacementReadiness && !replacementReadiness.isDependencyReady && context.blockerStall
+      && await verifyBlockerStallWake(dbOrTx as unknown as Db, { companyId: input.companyId, issueId,
+        contextSnapshot: context, requestedByActorType: null })
+      ? null : replacementReadiness;
     return {
       runId: input.runId,
       runAgentId: input.agentId,
@@ -667,6 +685,10 @@ export function createPostgresRunDispatchAdapter(
       issueExecutionRunId: issue?.executionRunId ?? null,
       issueCheckoutRunId: issue?.checkoutRunId ?? null,
       isResolvedInteractionContinuation,
+      isDependencyBlockedInteractionResponse: Boolean(isResolvedInteractionContinuation && issue?.status === "blocked"
+        && context.dependencyBlockedInteraction === true
+        && await isVerifiedDependencyInteractionResponse(dbOrTx, { companyId: input.companyId, issueId,
+          agentId: input.agentId, context })),
       isUnstartedTaskQuestionAnswer: Boolean(isResolvedInteractionContinuation && issue?.status === "todo" &&
         await isUnstartedTaskQuestionAnswer(dbOrTx, { companyId: input.companyId, issueId, interactionId: context.interactionId })),
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")

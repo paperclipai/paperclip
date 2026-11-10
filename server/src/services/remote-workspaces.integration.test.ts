@@ -760,7 +760,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(await fs.readFile(path.join(current, "runner", "state.json"), "utf8")).toBe("unchanged opaque provider state");
   }, 60_000);
 
-  it("cold restores a workspace and prepares its preserved pending repository through normal admission", async () => {
+  it.each(["pending", "needs_repair"] as const)("cold restores a workspace and prepares its preserved %s repository through normal admission", async state => {
     const original = path.join(root, "pending-original"), origin = path.join(root, "pending-origin.git");
     await fs.mkdir(original); await fs.mkdir(origin);
     await fs.writeFile(path.join(original, "saved.txt"), "saved before repository request\n");
@@ -787,7 +787,8 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       await db.update(issues).set({ executionWorkspaceId: local.id }).where(eq(issues.id, ids.issue));
       const [repository] = await db.insert(executionWorkspaceRepositories).values({ companyId: ids.company,
         executionWorkspaceId: local.id, requestedByIssueId: ids.issue, repoUrl, repositoryIdentity: repoUrl,
-        relativePath, requestedRef: "HEAD", requestKey: "pending-request", requestKeys: ["pending-request"] }).returning();
+        relativePath, requestedRef: "HEAD", requestKey: "pending-request", requestKeys: ["pending-request"],
+        state, failureCode: state === "needs_repair" ? "repository_preparation_failed" : null }).returning();
       vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
       await migrateRemoteWorkspace({ db, storage, companyId: ids.company, workspaceId: local.id, apply: true, writersStopped: true });
       expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.source).toEqual({ kind: "empty" });
@@ -842,7 +843,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.snapshotId).toBe(savedId);
       expect(await fs.readFile(path.join(restored.remoteRoot, relativePath, "code.txt"), "utf8")).toBe("acquired on next admission\n");
       expect(await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, repository.id)))
-        .toMatchObject([{ ...repository, state: "ready", pinnedCommit: prepared.find(row => row.id === repository.id)!.pinnedCommit,
+        .toMatchObject([{ ...repository, state: "ready", failureCode: null, pinnedCommit: prepared.find(row => row.id === repository.id)!.pinnedCommit,
           branchName: prepared.find(row => row.id === repository.id)!.branchName, updatedAt: expect.any(Date) }]);
     } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
   }, 60_000);
@@ -1112,6 +1113,10 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     const [operation] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, ids.company),
       eq(workspaceOperations.heartbeatRunId, nextRun), eq(workspaceOperations.phase, "remote_workspace_restore")));
     expect(operation).toMatchObject({ status: "succeeded", metadata: { exportCleanup: { ...location, state: "pending" } } });
+    // The restore records where it spent its time and the storage requests it sent.
+    expect(operation?.metadata?.restoreTiming).toMatchObject({ schema: "paperclip.remote-workspace-restore-timing.v1",
+      downloadMs: expect.any(Number), decryptMs: expect.any(Number), plaintextVerifyMs: expect.any(Number), publishMs: expect.any(Number),
+      bytes: expect.any(Number), requests: expect.objectContaining({ requests: expect.any(Number) }) });
     await fs.writeFile(path.join(restored.remoteRoot, "saved.txt"), "later agent edits\n");
     await fs.writeFile(path.join(restored.remoteRoot, "newer.txt"), "keep untracked work\n");
     failCleanup = false;
@@ -1254,7 +1259,8 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       sql`${workspaceOperations.metadata}->>'boundary' = 'final'`))).map(save => save.metadata?.saveTiming);
     const duration = expect.any(Number), archive = { byteSize: expect.any(Number), entries: expect.any(Number) };
     expect(await finalTiming()).toEqual([{ schema: "paperclip.remote-workspace-save-timing.v1", outcome: "failed", totalMs: duration,
-      captureMs: duration, transferMs: duration, verifyMs: duration, ...archive, at: expect.any(String) }]);
+      captureMs: duration, transferMs: duration, verifyMs: duration, ...archive, storage: expect.objectContaining({ requests: expect.any(Object) }),
+      at: expect.any(String) }]);
     const beforeSuccess = await workspace(reserved.id);
     const saved = await saveRemoteWorkspace({ db, storage, workspace: beforeSuccess, runId: ids.run,
       lease: prepared.lease, target: first, assertOwned: async () => undefined });
@@ -1266,6 +1272,8 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(await finalTiming()).toEqual([succeededTiming]);
     expect(await finalTiming()).toEqual([{ schema: "paperclip.remote-workspace-save-timing.v1", outcome: "succeeded", totalMs: duration,
       captureMs: duration, transferMs: duration, verifyMs: duration, uploadMs: duration, publishMs: duration, ...archive,
+      storage: expect.objectContaining({ encryptMs: duration, digestMs: duration, putMs: duration, verifyMs: duration,
+        bytes: expect.any(Number), requests: expect.any(Object) }),
       at: expect.any(String) }]);
     expect(await fs.readdir(path.join(prepared.remoteRoot, ".paperclip-runtime", "workspace-snapshots"))).toEqual([]);
   }, 60_000);

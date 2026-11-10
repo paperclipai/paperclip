@@ -5,7 +5,11 @@ import { readControllerLeaseLoss, readControllerLeaseLossCause, readRunCancellat
 import { readProcessLossDiagnostic } from "./process-loss-diagnostics.js";
 import { readReviewedChatBindingDenialReason } from "./reviewed-chat-binding-diagnostics.js";
 import { WORKSPACE_RESTORE_FAILURE_CODES } from "@paperclipai/shared";
-import { collectDiagnosticEnvironmentSecrets, redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
+import {
+  collectDiagnosticEnvironmentSecrets,
+  collectHostEnvironmentTokenSecrets,
+  redactDiagnosticText,
+} from "@paperclipai/adapter-utils/command-redaction";
 import { directoryMergeLockTimeoutDiagnosticsFor } from "@paperclipai/adapter-utils/directory-merge-lock-diagnostics";
 import { sanitizeWorkspaceRestoreDiagnostic } from "@paperclipai/adapter-utils/workspace-restore-diagnostics";
 import {
@@ -36,6 +40,12 @@ export interface RunFailureReportOptions {
    * read, as closed labels and counts; its message and stack are never copied.
    */
   nativeCloseFailure?: unknown;
+  /**
+   * The bounded retry decision for a reviewed chat setup wait. The setup path
+   * writes the failed status while `pending`, then reports again with the
+   * decision; a scheduled retry owns recovery and reports its own outcome.
+   */
+  reviewedChatRetry?: "pending" | "scheduled" | "not_scheduled";
 }
 
 export interface RunFailureException {
@@ -168,15 +178,31 @@ function scalars(value: unknown, fields: readonly string[]): Context {
 /** Select credential fields, credential-shaped values, and declared bindings. */
 export const collectRunFailureSecretValues = collectDiagnosticEnvironmentSecrets;
 
+/** Short host values that stay private as whole tokens only. */
+export const collectRunFailureHostTokenSecrets = collectHostEnvironmentTokenSecrets;
+
 /** Redact literal, JSON-escaped and URI-encoded forms without rewriting markers. */
-export function redactRunFailureSecretValues<T>(input: T, values: readonly string[]): T {
-  const forms = [...new Set(values.filter(Boolean).flatMap((value) => {
+export function redactRunFailureSecretValues<T>(input: T, values: readonly string[],
+  tokenValues: readonly string[] = []): T {
+  const variants = (list: readonly string[]) => [...new Set(list.filter(Boolean).flatMap((value) => {
     const forms = [value, JSON.stringify(value).slice(1, -1)];
     try { forms.push(encodeURIComponent(value)); } catch { /* malformed Unicode */ }
     return forms;
   }))].sort((a, b) => b.length - a.length);
-  if (forms.length === 0) return input;
-  const pattern = new RegExp(forms.map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "gu");
+  const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const forms = variants(values);
+  // Short host values are private only as whole tokens: "vi" is redacted in
+  // "editor vi", never inside "service". One alternation ordered by length
+  // across both lists, so a longer complete match always wins over a shorter
+  // prefix that starts at the same position.
+  const tokenForms = variants(tokenValues).filter((value) => !forms.includes(value));
+  const alternatives = [
+    ...forms.map((value) => ({ value, pattern: escape(value) })),
+    ...tokenForms.map((value) => ({ value,
+      pattern: `(?<![\\p{L}\\p{N}_])${escape(value)}(?![\\p{L}\\p{N}_])` })),
+  ].sort((a, b) => b.value.length - a.value.length);
+  if (alternatives.length === 0) return input;
+  const pattern = new RegExp(alternatives.map((entry) => entry.pattern).join("|"), "gu");
   const redact = (value: unknown): unknown => {
     if (typeof value === "string") return value.replace(pattern, () => REDACTED_EVENT_VALUE);
     if (Array.isArray(value)) return value.map(redact);

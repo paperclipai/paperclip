@@ -152,6 +152,7 @@ fn config(state_dir: &Path) -> DurableRunnerConfig {
         reconnect_delay: Duration::from_millis(1),
         reconnect_grace: None,
         max_runtime: Duration::from_secs(60),
+        turn_scoped: false,
     }
 }
 
@@ -604,42 +605,7 @@ fn assert_no_replayed_turn_or_request(events: &[PolledEvent]) {
 }
 
 fn shutdown_recovered_acpx_fixture(executor: &mut NativeProviderCommandExecutor, directory: &Path) {
-    // The fake sidecar advertises the same three lifetime-fence ports for all
-    // fixtures. Parallel recovered shutdowns hold a quorum through state fsync,
-    // temporarily preventing another fixture from proving cleanup. Retry only
-    // that rejection, using the real production quorum proof on every attempt.
-    // This is fixture synchronization, not a production cleanup workaround.
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let mut blocked_attempts = 0;
-    loop {
-        match executor.shutdown() {
-            Ok(()) => break,
-            Err(error) => {
-                assert_eq!(
-                    error.to_string(),
-                    "ACPX original provider lifetime remains active; cleanup is not yet proven",
-                    "unexpected recovered fixture shutdown failure"
-                );
-                let persisted: Value = serde_json::from_slice(
-                    &fs::read(directory.join("acpx-provider-state.json")).unwrap(),
-                )
-                .unwrap();
-                assert_eq!(persisted["providerExitUnconfirmed"], true);
-                blocked_attempts += 1;
-                if blocked_attempts == 1 {
-                    eprintln!("recovered fixture cleanup waiting for the shared lifetime quorum");
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "recovered fixture cleanup never acquired the lifetime quorum"
-                );
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        }
-    }
-    if blocked_attempts > 0 {
-        eprintln!("recovered fixture cleanup proved after {blocked_attempts} quorum rejections");
-    }
+    executor.shutdown().unwrap();
     let persisted: Value =
         serde_json::from_slice(&fs::read(directory.join("acpx-provider-state.json")).unwrap())
             .unwrap();

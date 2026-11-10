@@ -158,6 +158,79 @@ describe("Codex driver terminal-turn history replay", () => {
     ).toMatchObject({ code: "turn_binding_mismatch" });
   });
 
+  it("keeps a checkpointed failed turn as history even when the runner's accepted-turn record names it", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport() as FakeCodexTransport & { controllerAcceptedCompletedTurnId?: () => string | null };
+    const failed = { id: "turn-1", status: "failed", items: [], error: { code: "provider_failed", message: "failed", recoverable: false } };
+    second.controllerAcceptedCompletedTurnId = () => "turn-1";
+    second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE, turns: [failed] } };
+    second.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({ runId: "run-saved-failure", normalizedSessionId: "normalized-saved-failure", workingDirectory: WORKSPACE });
+    await original.startTurn({ message: { role: "user", text: "Complete." } });
+    first.push("turn/completed", { threadId: "thread-1", turn: failed });
+    await collectUntilTerminal(original.events());
+    const snapshot = await original.snapshot();
+    expect(snapshot.terminalTurns).toMatchObject([{ turnId: "turn-1" }]);
+    await original.close({ reason: "controller detached" });
+    const recovery = await driver.recoverSession!(snapshot);
+    expect(recovery.recovered).toBe(true);
+    const session = recovery.session!;
+    await session.reconcile?.();
+    // The replacement runner re-delivers the checkpointed failure.
+    second.push("turn/completed", { threadId: "thread-1", turn: failed });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    await session.startTurn({ message: { role: "user", text: "Report disposition only." } });
+    second.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-2", status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.find(event => event.eventType === "session.failed")).toBeUndefined();
+    expect(events.find(event => event.eventType === "turn.completed")?.turnId).toBe("turn-2");
+  });
+
+  async function recoverWithUnadoptedAcceptedTurn(runId: string) {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport() as FakeCodexTransport & { controllerAcceptedCompletedTurnId?: () => string | null };
+    // The runner accepted "turn-lost" for the previous controller; the restored provider has no live turn.
+    second.controllerAcceptedCompletedTurnId = () => "turn-lost";
+    second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE, turns: [] } };
+    second.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({ runId, normalizedSessionId: `normalized-${runId}`, workingDirectory: WORKSPACE });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "controller detached" });
+    const recovery = await driver.recoverSession!(snapshot);
+    expect(recovery.recovered).toBe(true);
+    // The runner replays the start it recorded after the previous controller detached.
+    second.push("turn/started", { threadId: "thread-1", turn: { id: "turn-lost", status: "inProgress", items: [] } });
+    return { session: recovery.session!, transport: second };
+  }
+
+  it("treats the replayed start of an accepted turn the restore lost as history, then starts its own turn (t48)", async () => {
+    const { session, transport } = await recoverWithUnadoptedAcceptedTurn("run-late-start");
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-lost", status: "failed", items: [],
+      error: { code: "provider_turn_lost_on_restore", message: "lost", recoverable: true } } });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    await session.startTurn({ message: { role: "user", text: "Continue." } });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-2", status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.find(event => event.eventType === "session.failed")).toBeUndefined();
+    expect(events.find(event => event.eventType === "turn.completed")?.turnId).toBe("turn-2");
+    expect(events.some(event => event.eventType === "harness.diagnostic"
+      && event.payload.classification === "stale_generation_event" && event.payload.receivedTurnId === "turn-lost")).toBe(true);
+  });
+
+  it.each([
+    ["an ordinary failure", { method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-lost", status: "failed", items: [],
+      error: { code: "provider_failed", message: "real failure", recoverable: false } } } }],
+    ["a semantic result", { method: "paperclip/runResult", params: { threadId: "thread-1", turnId: "turn-lost", result: { status: "completed" } } }],
+  ])("fails closed on %s from an accepted turn the restore did not find live", async (_label, report) => {
+    const { session, transport } = await recoverWithUnadoptedAcceptedTurn("run-lost-outcome");
+    transport.push(report.method, report.params);
+    const events: PrpEvent[] = [];
+    for await (const event of session.events()) events.push(event);
+    expect(events.find(event => event.eventType === "session.failed")?.payload).toMatchObject({ code: "turn_binding_mismatch" });
+  });
+
   it("records a restore-lost turn this session never bound without failing its own turn", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({

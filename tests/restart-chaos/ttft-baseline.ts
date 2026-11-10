@@ -19,11 +19,13 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
+import { releaseInstance } from "../runner-e2e/instance-retention.js";
 import { ChaosApi } from "./api.js";
 import { CREDENTIAL_FOR_ADAPTER } from "./config.js";
 import { ACTIVE_RUN_STATUSES } from "./grader.js";
 import { chaosLifecycleOverrides, seedChaosLab, type ChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
+import { createDb } from "../../packages/db/src/index.js";
 import { Timeline } from "./timeline.js";
 import type { AdapterId, FaultKind } from "./types.js";
 import {
@@ -189,14 +191,21 @@ async function readyAdapters(api: ChaosApi, lab: ChaosLab, adapters: AdapterId[]
 
 function report(runs: BaselineRun[], faults: BaselineFault[]): string {
   const ms = (value: number | null) => value === null ? "—" : `${(value / 1000).toFixed(2)} s`;
-  const lines = ["| Adapter | Env | Start | n | TTFT p50 | TTFT p95 | Wait behind live turn p50 / p95 (n) | TTFT from run created p50 / p95 | Boot p50 | Boot p95 | TTFT anchors |", "|---|---|---|---|---|---|---|---|---|---|---|"];
-  for (const row of baselineRows(runs)) {
-    lines.push(`| ${row.adapter} | ${row.environment} | ${row.warmth} | ${row.ttft.n}/${row.boot.n} | ${ms(row.ttft.p50)} | ${ms(row.ttft.p95)} | ${ms(row.inputWait.p50)} / ${ms(row.inputWait.p95)} (${row.inputWait.n}) | ${ms(row.ttftAfterRunCreated.p50)} / ${ms(row.ttftAfterRunCreated.p95)} | ${ms(row.boot.p50)} | ${ms(row.boot.p95)} | ${Object.entries(row.anchors).map(([k, v]) => `${k}×${v}`).join(", ") || "—"} |`);
+  const lines = ["| Adapter | Env | Start | n | TTFT p50 | TTFT p95 | Wait behind live turn p50 / p95 (n) | First activity from run created p50 / p95 (budget) | TTFT from run created p50 / p95 | Boot p50 | Boot p95 | TTFT anchors |", "|---|---|---|---|---|---|---|---|---|---|---|---|"];
+  const rowLine = (row: ReturnType<typeof baselineRows>[number]) => `| ${row.adapter} | ${row.environment} | ${row.warmth} | ${row.ttft.n}/${row.boot.n} | ${ms(row.ttft.p50)} | ${ms(row.ttft.p95)} | ${ms(row.inputWait.p50)} / ${ms(row.inputWait.p95)} (${row.inputWait.n}) | ${ms(row.firstActivityAfterRunCreated.p50)} / ${ms(row.firstActivityAfterRunCreated.p95)} | ${ms(row.ttftAfterRunCreated.p50)} / ${ms(row.ttftAfterRunCreated.p95)} | ${ms(row.boot.p50)} | ${ms(row.boot.p95)} | ${Object.entries(row.anchors).map(([k, v]) => `${k}×${v}`).join(", ") || "—"} |`;
+  for (const row of baselineRows(runs)) lines.push(rowLine(row));
+  // New agents wait for harness verification before their run is created:
+  // their own rows, so that wait never blends into ordinary cold starts.
+  const verifyRuns = runs.filter(run => run.phase === "verify").map(run => ({ ...run, phase: "cold" as const }));
+  if (verifyRuns.length) {
+    lines.push("", "New agent behind harness verification (TTFT counts from run creation; the verification wait precedes it):", "", lines[0]!, lines[1]!);
+    for (const row of baselineRows(verifyRuns)) lines.push(rowLine(row));
   }
+
   lines.push("", "| Pre-turn step | n | p50 | p95 | Adapters |", "|---|---|---|---|---|");
   for (const step of rankPreTurnSteps(runs).slice(0, 25)) lines.push(`| \`${step.step}\` | ${step.n} | ${ms(step.p50)} | ${ms(step.p95)} | ${step.adapters.join(", ")} |`);
   const samples = recoverySamples(runs, faults);
-  lines.push("", "| Adapter | Fault | Disposition | n | Recovery p50 | Recovery p95 | No provider event |", "|---|---|---|---|---|---|---|");
+  lines.push("", "| Adapter | Fault | Disposition | n | Recovery p50 | Recovery p95 | Paperclip share p50 / p95 | No provider event |", "|---|---|---|---|---|---|---|---|");
   const groups = new Map<string, typeof samples>();
   for (const sample of samples) {
     const key = `${sample.adapter}|${sample.kind}|${sample.disposition}`;
@@ -205,7 +214,8 @@ function report(runs: BaselineRun[], faults: BaselineFault[]): string {
   for (const [key, group] of [...groups.entries()].sort()) {
     const [adapter, kind, disposition] = key.split("|");
     const d = distribution(group.flatMap(sample => sample.latencyMs === null ? [] : [sample.latencyMs]));
-    lines.push(`| ${adapter} | ${kind} | ${disposition} | ${d.n} | ${ms(d.p50)} | ${ms(d.p95)} | ${group.length - d.n} |`);
+    const control = distribution(group.flatMap(sample => sample.controlPlaneMs === null ? [] : [sample.controlPlaneMs]));
+    lines.push(`| ${adapter} | ${kind} | ${disposition} | ${d.n} | ${ms(d.p50)} | ${ms(d.p95)} | ${ms(control.p50)} / ${ms(control.p95)} | ${group.length - d.n} |`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -226,6 +236,8 @@ async function main() {
     "midturn-mode": { type: "string", default: "queue" },
     // Fault the control plane right after a steered comment is acknowledged (K1, K2 or K6).
     "midturn-fault": { type: "string" },
+    // verify phase: fault the control plane while a newly hired agent runs harness verification.
+    "verify-fault": { type: "string" },
     "idle-ms": { type: "string", default: "600000" },
   } });
   if (values.report) {
@@ -244,6 +256,8 @@ async function main() {
   const midturnFault = values["midturn-fault"] as FaultKind | undefined;
   if (midturnFault !== undefined && !["K1", "K2", "K6"].includes(midturnFault)) throw new Error("--midturn-fault must be K1, K2 or K6");
   if (midturnFault && midturnMode !== "steer") throw new Error("--midturn-fault applies to --midturn-mode steer");
+  const verifyFault = values["verify-fault"] as FaultKind | undefined;
+  if (verifyFault !== undefined && !["K1", "K2", "K6"].includes(verifyFault)) throw new Error("--verify-fault must be K1, K2 or K6");
   const lifecycle = values.lifecycle;
   if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm" && lifecycle !== "default") {
     throw new Error("--lifecycle must be per_turn, warm or default");
@@ -267,9 +281,11 @@ async function main() {
   // One shutdown path for normal completion and for SIGINT/SIGTERM: the server
   // runs in a detached process group and the embedded Postgres has no exit hook.
   let stopping: Promise<void> | null = null;
-  const shutdown = () => (stopping ??= supervisor.stop().catch(error => {
+  const shutdown = () => (stopping ??= supervisor.stop().then(() => false, error => {
     process.stderr.write(`supervisor stop: ${String(error)}\n`);
-  }));
+    return true;
+  }).then(stopFailed => releaseInstance(supervisor.paths.temporaryRoot, { keep: false, stopFailed, owner: "ttft-baseline" }))
+    .then(() => undefined, error => { process.stderr.write(`instance cleanup: ${String(error)}\n`); }));
   const onSignal = (signal: NodeJS.Signals) => {
     timeline.add("baseline_interrupted", { signal });
     void shutdown().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
@@ -318,6 +334,58 @@ async function main() {
         timeline.add("baseline_warm_done", { adapter, issueId, runs: warm.runs.length - cold.runs.length });
       }
     }));
+
+    // New agent: hire an agent identical to the seeded one and assign it a task
+    // at once, so the task waits for harness verification. Optionally restart
+    // the control plane while it verifies. TTFT is comment-to-first-token.
+    if (phases.has("verify")) for (const adapter of adapters) {
+      const source = lab.agents[adapter];
+      if (!source.body) continue;
+      for (let index = 0; index < samples; index += 1) {
+        const nonce = `${adapter}-v${index}-${Date.now().toString(36)}`;
+        const hired = await api.post<Json>(`/api/companies/${lab.companyId}/agents`, { ...source.body, name: `${source.name} verify ${nonce}` });
+        const agentId = String(hired.id);
+        const issue = await api.post<Json>(`/api/companies/${lab.companyId}/issues`, {
+          title: `TTFT verify ${nonce}`, description: coldTask(nonce), status: "todo", priority: "medium", assigneeAgentId: agentId });
+        const issueId = String(issue.id);
+        tasks.push({ issueId, adapter, phase: "verify" });
+        let fault: Awaited<ReturnType<typeof supervisor.fault>> | null = null;
+        if (verifyFault) {
+          const deadline = Date.now() + 60_000;
+          let state = "unknown";
+          while (Date.now() < deadline && (state = String((await api.get<Json>(`/api/agents/${agentId}`).catch(() => null))?.lifecycleState)) !== "verifying"
+            && state !== "ready") await delay(200);
+          // Fault only while a verifier holds the lifecycle lease, read from the
+          // instance database; otherwise the sample is skipped, not faulted.
+          const config = JSON.parse(await readFile(supervisor.paths.configPath, "utf8")) as { database?: { connectionString?: string } };
+          const db = createDb(config.database!.connectionString!);
+          let held = false;
+          try {
+            while (state === "verifying" && Date.now() < deadline && !held) {
+              const rows = await db.$client`select 1 from agents where id = ${agentId}
+                and lifecycle_state = 'verifying' and lifecycle_operation ? 'leaseOwner'`;
+              held = rows.length > 0;
+              if (!held) await delay(100);
+            }
+          } finally { await db.$client.end({ timeout: 5 }).catch(() => undefined); }
+          timeline.add("baseline_verify_fault_point", { adapter, agentId, state, leaseHeld: held });
+          if (!held) timeline.add("baseline_verify_sample_skipped", { adapter, agentId, reason: "no_held_verification_lease" });
+          if (held) {
+            fault = await supervisor.fault(verifyFault, 0, `verify-${index}`);
+          }
+        }
+        const settled = await waitForRest(api, supervisor, issueId, 1);
+        if (settled.timedOut) {
+          timedOutIssues.add(issueId);
+          timeline.add("baseline_sample_timeout", { adapter, issueId, phase: "verify" });
+          continue;
+        }
+        // The task's run is created only after verification, so name it once it
+        // exists: the recovery table then measures fault ready to first event.
+        if (fault) faults.push({ kind: verifyFault!, readyAt: fault.readyAt ?? Date.now(), runIds: settled.runs.map(runIdOf) });
+        timeline.add("baseline_verify_done", { adapter, agentId, issueId, faulted: Boolean(fault), runs: settled.runs.length });
+      }
+    }
 
     // Mid-turn follow-up: a comment posted while the agent is inside a long
     // tool call. Records when the comment landed and every run of the task,

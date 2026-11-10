@@ -1,5 +1,6 @@
 import { settleOwnableKind } from "../recovery/ownership-invariant-report.js";
 import { ORPHANED_RUN_LEASE_FAILURE_REASON } from "../environment-run-lease-settlement.js";
+import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../environment-lease-controller.js";
 import { readNativeStartupCleanup, readNativeStartupContext } from "../native-runtime/native-startup-cleanup.js";
 import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
@@ -1561,8 +1562,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
   // whose native workspace export is still pending is preserved, never
   // released, while its run is not executing here.
   //
-  // A login or probe lease has no run. It keeps the idle backoff below until
-  // its kind moves to the shared path.
+  // A run-less (login, probe, harness verification) lease is settled by the
+  // shared ownership path once its stamped holder is proven gone. Only a
+  // legacy row saved before holders were stamped keeps the idle backoff below.
   async function sweepOrphanedActiveLeases(opts: {
     /** Idle time before a run-less (login/probe) lease is recovered. */
     backoffMs: number;
@@ -1624,6 +1626,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         opts.companyId ? eq(environmentLeases.companyId, opts.companyId) : undefined,
         opts.leaseId ? eq(environmentLeases.id, opts.leaseId) : undefined,
         isNull(environmentLeases.heartbeatRunId),
+        sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? ${ENVIRONMENT_LEASE_CONTROLLER_KEY})`,
         lte(environmentLeases.updatedAt, cutoff),
       ))
       .orderBy(asc(environmentLeases.updatedAt))

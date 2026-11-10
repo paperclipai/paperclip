@@ -60,7 +60,7 @@ import {
   runWithRuntimeParent,
   type StartupSpanContext,
 } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
-import { environmentService } from "./environments.js";
+import { environmentService, KEPT_SANDBOX_LEASE_POLICIES } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { hasSandboxSnapshotQualification, qualifiedSandboxSnapshotId, usesManagedCloudSandboxImage, type SandboxTemplateIdentity } from "./sandbox-snapshot-qualification.js";
 import { verifyRecoverableNativeHarnessBackup } from "./native-runtime/native-harness-backup-storage.js";
@@ -3322,6 +3322,30 @@ function createPluginEnvironmentDriver(
     };
   }
 
+  async function releasePluginRunLease(input: EnvironmentDriverReleaseInput, executionStopObserved = false) {
+    await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"pluginLeaseCleanupMethod":"release"}'::jsonb` }).where(and(eq(environmentLeases.id, input.lease.id), eq(environmentLeases.companyId, input.lease.companyId)));
+    const settled = await settleDispatchedEnvironmentTask(db, workerManager, input.lease, { executionStopObserved });
+    const taskStopped = settled !== false ||
+      (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true && !input.lease.metadata?.runnerTaskStartup && !input.lease.metadata?.runnerTaskStartupCleanup);
+    if (settled !== "completed") {
+      const { plugin, driverKey, driverConfig } = await resolvePluginDriverForRelease(input);
+      await workerManager.call(plugin.id, "environmentReleaseLease", {
+        driverKey,
+        companyId: input.lease.companyId,
+        environmentId: input.environment.id,
+        issueId: input.lease.issueId,
+        config: driverConfig,
+        providerLeaseId: input.lease.providerLeaseId,
+        leaseMetadata: input.lease.metadata ?? undefined,
+      });
+    }
+    return await environmentsSvc.releaseLease(input.lease.id, input.status, {
+      cleanupStatus: "success",
+      ...(taskStopped ? { remoteExecutionTermination: remoteTerminationReceipt(input.lease,
+        { providerLeaseId: input.lease.providerLeaseId, state: "stopped" }) } : {}),
+    });
+  }
+
   return {
     driver: "plugin",
 
@@ -3363,7 +3387,7 @@ function createPluginEnvironmentDriver(
           providerLeaseId: previous.providerLeaseId, leaseMetadata: previous.metadata ?? undefined,
         });
         if (!resumed?.providerLeaseId) {
-          await this.releaseRunLease({ environment: input.environment, lease: toEnvironmentLeaseSnapshot(previous), status: "released" });
+          await releasePluginRunLease({ environment: input.environment, lease: toEnvironmentLeaseSnapshot(previous), status: "released" }, true);
           resumed = undefined;
         }
       }
@@ -3423,25 +3447,8 @@ function createPluginEnvironmentDriver(
       });
     },
 
-    async releaseRunLease(input) {
-      await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"pluginLeaseCleanupMethod":"release"}'::jsonb` }).where(and(eq(environmentLeases.id, input.lease.id), eq(environmentLeases.companyId, input.lease.companyId)));
-      const taskStopped = await settleDispatchedEnvironmentTask(db, workerManager, input.lease) ||
-        (input.lease.metadata?.runnerTaskLease === true && input.lease.metadata?.runnerTaskDispatched !== true && !input.lease.metadata?.runnerTaskStartup && !input.lease.metadata?.runnerTaskStartupCleanup);
-      const { plugin, driverKey, driverConfig } = await resolvePluginDriverForRelease(input);
-      await workerManager.call(plugin.id, "environmentReleaseLease", {
-        driverKey,
-        companyId: input.lease.companyId,
-        environmentId: input.environment.id,
-        issueId: input.lease.issueId,
-        config: driverConfig,
-        providerLeaseId: input.lease.providerLeaseId,
-        leaseMetadata: input.lease.metadata ?? undefined,
-      });
-      return await environmentsSvc.releaseLease(input.lease.id, input.status, {
-        cleanupStatus: "success",
-        ...(taskStopped ? { remoteExecutionTermination: remoteTerminationReceipt(input.lease,
-          { providerLeaseId: input.lease.providerLeaseId, state: "stopped" }) } : {}),
-      });
+    releaseRunLease(input) {
+      return releasePluginRunLease(input);
     },
 
     async resumeRunLease(input) {
@@ -3697,6 +3704,26 @@ export function environmentRuntimeService(
     return driver;
   }
 
+  function renewCleanupClaim(leaseId: string, attemptId: string, failure: string): ReturnType<typeof setInterval> {
+    let renewalInFlight = false;
+    const renewal = setInterval(() => {
+      if (renewalInFlight) return;
+      renewalInFlight = true;
+      void db.update(environmentLeases).set({
+        metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({
+          pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000,
+        })}::jsonb`,
+      }).where(and(eq(environmentLeases.id, leaseId), eq(environmentLeases.status, "pending_cleanup"),
+        sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${attemptId}`,
+        sql`${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'`,
+      )).then(() => {}).catch(() => {
+        logger.warn({ leaseId }, failure);
+      }).finally(() => { renewalInFlight = false; });
+    }, 30_000);
+    renewal.unref();
+    return renewal;
+  }
+
   async function destroyClaimedSandboxLease(input: {
     environment: Environment;
     leaseRow: typeof environmentLeases.$inferSelect;
@@ -3747,22 +3774,7 @@ export function environmentRuntimeService(
     if (!claimed) return null;
     crashPoint("environment.teardown.after_claim_before_destroy");
     const lease = toEnvironmentLeaseSnapshot(claimed);
-    let renewalInFlight = false;
-    const renewal = setInterval(() => {
-      if (renewalInFlight) return;
-      renewalInFlight = true;
-      void db.update(environmentLeases).set({
-        metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({
-          pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000,
-        })}::jsonb`,
-      }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.status, "pending_cleanup"),
-        sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${attemptId}`,
-        sql`${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'`,
-      )).then(() => {}).catch(() => {
-        logger.warn({ leaseId: lease.id }, "scoped cleanup ownership renewal failed");
-      }).finally(() => { renewalInFlight = false; });
-    }, 30_000);
-    renewal.unref();
+    const renewal = renewCleanupClaim(lease.id, attemptId, "scoped cleanup ownership renewal failed");
     try {
       const driver = getDriver(getLeaseDriverKey(lease, input.environment));
       if (!driver?.destroyRunLease) return lease;
@@ -3984,16 +3996,21 @@ export function environmentRuntimeService(
             if (!claimed) continue;
             crashPoint("environment.stop_retain.after_claim_before_stop");
             const snapshot = toEnvironmentLeaseSnapshot(claimed);
+            const renewal = renewCleanupClaim(snapshot.id, attemptId, "stop-only cleanup ownership renewal failed");
             try {
               const driver = requireDriverKey(getLeaseDriverKey(snapshot, environment));
               if (!driver.retryPendingSandboxTeardown) throw new Error("Workspace export recovery requires stop-only cleanup.");
               const receipt = await driver.retryPendingSandboxTeardown({ environment, lease: snapshot });
+              clearInterval(renewal);
               const lease = await settleStopOnlyCleanup(db, snapshot, { attemptId, receipt });
               if (lease && environment) released.push({ environment, lease: toEnvironmentLeaseSnapshot(lease),
                 leaseContext: { executionWorkspaceId: lease.executionWorkspaceId, executionWorkspaceMode: null } });
             } catch (error) {
+              clearInterval(renewal);
               await settleStopOnlyCleanup(db, snapshot, { attemptId });
               throw error;
+            } finally {
+              clearInterval(renewal);
             }
             continue;
           }
@@ -4299,19 +4316,40 @@ export function environmentRuntimeService(
      * throw leaves the lease in place — so the caller re-checks the blast
      * radius instead of trusting these counts for the delete decision.
      */
+    /**
+     * The operator consented to deleting this environment and the files only
+     * its restore sources hold (the delete dialog says so). That consent is the
+     * decision that releases the restore protection: drop `workspaceRestoreRecovery`
+     * from every row on each of the environment's restore-source sandboxes, and
+     * record who released it, so the consented teardown can destroy them.
+     * Without this, every teardown refuses a protected restore source and the
+     * delete stays blocked with nothing the operator can do.
+     */
+    async releaseRestoreSourcesForEnvironmentDelete(input: { environmentId: string; consentedBy: string }): Promise<number> {
+      return await releaseRestoreSourcesForEnvironmentDelete(db, input);
+    },
+
     async destroyReusableSandboxLeasesForEnvironment(input: {
       environmentId: string;
       failureReason?: string;
+      /** The operator who consented to the delete; releases restore protection. */
+      consentedBy?: string;
     }): Promise<{ destroyed: number; failed: number; skippedLiveRun: number }> {
       const environment = await environmentsSvc.getById(input.environmentId);
       if (!environment) return { destroyed: 0, failed: 0, skippedLiveRun: 0 };
+      if (input.consentedBy) {
+        await releaseRestoreSourcesForEnvironmentDelete(db, { environmentId: input.environmentId, consentedBy: input.consentedBy });
+      }
       const leaseRows = await db
         .select()
         .from(environmentLeases)
         .where(
           and(
             eq(environmentLeases.environmentId, input.environmentId),
-            eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+            // Reusable sandboxes, and retain-on-failure sandboxes kept stopped as
+            // workspace-restore sources: both outlive their run, so a deleted
+            // environment must tear them down or they are orphaned.
+            inArray(environmentLeases.leasePolicy, [...KEPT_SANDBOX_LEASE_POLICIES]),
             // A failed run may have stopped its reusable sandbox without
             // destroying it; that provider handle still needs scoped teardown.
             inArray(environmentLeases.status, ["active", "released", "retained", "failed"]),
@@ -4350,7 +4388,8 @@ export function environmentRuntimeService(
           skippedLiveRun += 1;
           continue;
         }
-        const lease = await destroyClaimedSandboxLease({ environment, leaseRow, failureReason });
+        const lease = await destroyClaimedSandboxLease({ environment, leaseRow, failureReason, anyLeasePolicy: true,
+          scopeCondition: inArray(environmentLeases.leasePolicy, [...KEPT_SANDBOX_LEASE_POLICIES]) });
         if (!lease) {
           // Lost to a racing resume or a concurrent terminal transition — the
           // lease is no longer ours to destroy.
@@ -4498,5 +4537,31 @@ export function environmentRuntimeService(
     },
   };
 }
+
+async function releaseRestoreSourcesForEnvironmentDelete(db: Db, input: { environmentId: string; consentedBy: string }): Promise<number> {
+  const sources = await db.select({ provider: environmentLeases.provider, providerLeaseId: environmentLeases.providerLeaseId })
+    .from(environmentLeases).where(and(
+      eq(environmentLeases.environmentId, input.environmentId),
+      eq(environmentLeases.leasePolicy, "retain_on_failure"),
+      inArray(environmentLeases.status, ["released", "retained", "failed", "pending_cleanup"]),
+      sql`${environmentLeases.metadata} ? 'workspaceRestoreRecovery'`,
+      sql`${environmentLeases.providerLeaseId} is not null`,
+    ));
+  let released = 0;
+  for (const source of sources) {
+    const rows = await db.update(environmentLeases).set({ updatedAt: new Date(),
+      metadata: sql`(${environmentLeases.metadata} - 'workspaceRestoreRecovery') || ${JSON.stringify({
+        restoreSourceReleasedByEnvironmentDelete: { consentedBy: input.consentedBy, releasedAt: new Date().toISOString() },
+      })}::jsonb`,
+    }).where(and(
+      sql`${environmentLeases.provider} is not distinct from ${source.provider}`,
+      eq(environmentLeases.providerLeaseId, source.providerLeaseId!),
+      sql`${environmentLeases.metadata} ? 'workspaceRestoreRecovery'`,
+    )).returning({ id: environmentLeases.id });
+    released += rows.length;
+  }
+  return released;
+}
+
 
 export type EnvironmentRuntimeService = ReturnType<typeof environmentRuntimeService>;

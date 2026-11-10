@@ -10,10 +10,14 @@ import { runnerE2EPlaywrightCaseTimeoutMs, runnerE2EPlaywrightInvocation, runner
 import { verifyInstalledDaytonaPlugin } from "./installed-daytona-plugin.js";
 import { assertInstalledCliSelection, assertInstalledStartupOnly, verifyInstalledCli } from "./installed-cli.js";
 import { createProcessTreeOwner, stopOwnedProcessTree } from "./process-tree-owner.js";
-import { createRunnerE2ETemporaryRoot } from "./server-config.js";
+import { createRunnerE2ETemporaryRoot, keepInstance } from "./server-config.js";
 import { createExternalControllerDatabase } from "./external-controller-database.js";
 import { createHash, randomBytes } from "node:crypto";
 import { prepareCodexCiSandbox, requiresCodexCiSandbox } from "./codex-ci-sandbox.js";
+import {
+  AGENT_FILESYSTEM_SANDBOX_ENV, agentFilesystemSandboxApplies, agentFilesystemSandboxConfig, agentTemporaryParent,
+  defaultPlaywrightCacheDirectory, playwrightCacheDirectory,
+} from "./agent-filesystem-sandbox.js";
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { createRequire } from "node:module";
@@ -21,7 +25,6 @@ import os from "node:os";
 import path from "node:path";
 import {
   access,
-  chmod,
   cp,
   lstat,
   mkdir,
@@ -66,6 +69,7 @@ import {
   buildMatrixJobs,
   parseRunnerSelectors,
   RunnerSelectorError,
+  selectorArgumentsWithEnvironment,
   selectRunnerExecutions,
 } from "./selectors.js";
 import { resolveRunnerE2ESource } from "./source.js";
@@ -492,7 +496,8 @@ async function runAttempt(input: {
   const installedPlugin = await verifyInstalledDaytonaPlugin(process.env, executions);
   const startedAtMs = Date.now();
   const sharedMemoryBaseline = snapshotDarwinSharedMemory();
-  const temporaryParent = await realpath(os.tmpdir());
+  const sandboxedAgents = agentFilesystemSandboxApplies({ platform: process.platform, executions, installedRelease: Boolean(installedCli) });
+  const temporaryParent = agentTemporaryParent(sandboxedAgents);
   const temporaryRoot = await createRunnerE2ETemporaryRoot(temporaryParent);
   const privateDir = manualPrivateHandoff ? path.join(manualPrivateHandoff.root, "capture") : path.join(temporaryRoot, "artifacts-private");
   const publishedResults: RunnerE2EResult[] = [];
@@ -554,6 +559,13 @@ async function runAttempt(input: {
       executions,
       repositoryRoot,
     );
+    const agentFilesystemSandbox = agentFilesystemSandboxConfig({
+      platform: process.platform, env: process.env, executions, repositoryRoot, temporaryRoot, privateDir,
+      evidenceRoot: manualPrivateHandoff?.root, installedRelease: Boolean(installedCli),
+      instanceRoot: path.join(paperclipHome, "instances", instanceId),
+    });
+    // Playwright's default cache holds compiled graders in the shared /tmp.
+    if (sandboxedAgents) await rm(defaultPlaywrightCacheDirectory(), { recursive: true, force: true });
     const childEnv: NodeJS.ProcessEnv = {
       ...buildRunnerE2EProcessEnvironment(process.env, executions),
       PATH: providerPath,
@@ -568,6 +580,8 @@ async function runAttempt(input: {
       PAPERCLIP_RUNNER_E2E_PORT: String(port),
       PAPERCLIP_RUNNER_E2E_TEMP_ROOT: temporaryRoot,
       PAPERCLIP_RUNNER_E2E_PRIVATE_DIR: privateDir,
+      [AGENT_FILESYSTEM_SANDBOX_ENV]: agentFilesystemSandbox ? JSON.stringify(agentFilesystemSandbox) : undefined,
+      PWTEST_CACHE_DIR: playwrightCacheDirectory(temporaryRoot),
       PAPERCLIP_RUNNER_E2E_WORKSPACE: workspace,
       PAPERCLIP_RUNNER_E2E_SERVER_LOG: path.join(privateDir, "server.log"),
       PAPERCLIP_RUNNER_BINARY: runnerBinary,
@@ -900,7 +914,7 @@ async function runAttempt(input: {
     if (preserveRecovery || cleanupError) {
       // Remote allocation cleanup is journaled in this instance's database.
       // Deleting it after the controller exits would strand uncertain creates.
-      await chmod(temporaryRoot, 0o700);
+      await keepInstance(temporaryRoot, { owner: "runner-e2e-launch", reason: "recovery_state" });
       cleanupError = new Error(`Preserving private recovery state after unconfirmed cleanup: ${temporaryRoot}`);
     } else if (shouldKeepFailedDiagnostics({
       enabled: process.env.PAPERCLIP_RUNNER_E2E_KEEP_FAILED_PRIVATE === "1",
@@ -909,7 +923,7 @@ async function runAttempt(input: {
     })) {
       // Explicit diagnosis only. Confirmed resource cleanup stays confirmed;
       // keep private traces for investigation without publishing provider data.
-      await chmod(temporaryRoot, 0o700);
+      await keepInstance(temporaryRoot, { owner: "runner-e2e-launch", reason: "keep" });
       console.warn(`Retained private failed-case diagnostics: ${temporaryRoot}`);
     } else if (
       temporaryRoot.startsWith(`${temporaryParent}${path.sep}paperclip-runner-e2e-`)
@@ -1056,14 +1070,14 @@ async function runWithConcurrency<T, R>(
 }
 
 async function main() {
-  const args = process.argv.slice(2);
+  const args = selectorArgumentsWithEnvironment(process.argv.slice(2));
   if (args.includes("--target-config") || args.includes("product-journeys")) {
     const { launchProductJourneys } = await import("./product-journeys/launch.js");
     return launchProductJourneys(args, repositoryRoot);
   }
   let options: ReturnType<typeof parseRunnerSelectors>;
   try {
-    options = parseRunnerSelectors(process.argv.slice(2));
+    options = parseRunnerSelectors(args);
   } catch (error) {
     if (error instanceof RunnerSelectorError)
       throw new Error(`${error.message}\nUse --list to inspect valid cells.`);

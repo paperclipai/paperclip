@@ -122,6 +122,25 @@ original-volume anchor or filesystem read. These validations add bounded
 per-retained-scope database reads during startup. They do not add a worker or a
 poll. Missing or invalid byte evidence remains an enrollment blocker.
 
+The original-volume owner can refresh a WEB receipt whose database facts digest
+has become stale only when fresh source inspection, current-key checkpoint
+validation and ciphertext hash/size readback prove the preserved bindings unchanged.
+It reuses the same archive and takes the existing finalizer, task and run fences before
+comparing the prior receipt digest and replacing it. The company activity log
+retains the prior database and local facts digests, source witness fingerprint,
+observation time and receipt digest. Those four changed fields must reconstruct
+the exact prior proof from the unchanged current bindings before publication. No source paths
+enter the audit delta; normal activity redaction remains enabled. Changed
+evidence, concurrent invalid receipts and active sources remain blocked; remote
+recovery obligations are unchanged.
+
+Local inode and timestamp observations may change between preservation attempts
+without changing byte coverage. Valid receipts remain idempotent after those
+changes; stale database facts can refresh with the same archive and fresh local
+observations. During one attempt, the local metadata digest must remain stable
+from capture through the locked publication check. Changed bytes, paths or modes
+still invalidate preservation evidence.
+
 Receipt validation adds bounded per-scope database reads to startup eligibility.
 It does not add a recurring scan or network work. Qualification must measure the
 selected cohort's startup latency on the serving revision before enrollment.
@@ -333,10 +352,32 @@ by company and normalized session. Migration 0432 builds both indexes
 concurrently. A poll therefore reads a few index entries, not a run's full event
 history.
 
+The attention feed finds retry-exhausted runs through the partial index
+`heartbeat_run_events_retry_exhausted_idx`. The index covers only `lifecycle`
+events whose message starts with `Bounded retry exhausted`, keyed by company,
+run, and newest event first. The query predicate must stay textually equal to
+the index predicate, or the scan reads every company event again. Migration
+0454 builds the index concurrently.
+
 A subtree pause release finds the runs that a dispatch gate refused for that pause
 through the partial index `heartbeat_runs_tree_hold_suppression_idx`. The index
 covers only cancelled runs with a `treeHoldSuppression` marker, keyed by company and
 hold. Migration 0436 builds it concurrently.
+
+The budget worker finds committed budget Stops that are not delivered yet
+through the partial index `heartbeat_runs_pending_budget_cancellation_idx`. The
+index covers only runs whose `result_json.startupCancellation.budgetEnforcement`
+is an object without `deliveredAt`, keyed by company. Its predicate must stay
+identical to `pendingBudgetRunCancellationPredicate` in
+`server/src/services/heartbeat/budget-cancellation.ts`; a regression test checks
+that the planner uses it. The worker check, run control, and the idle-sleep
+check therefore read a few index entries, not every run's result JSON. The
+migration builds the index concurrently. To compare both plans on a disposable
+local fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-budget-cancellation-scan.ts --runs=20000 --payload-kib=16
+```
 
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
@@ -1577,6 +1618,18 @@ Lifecycle polls can page past failed resources using the last returned event id 
 cursor, never a persisted high-water mark. This retries failures and includes
 transactions that commit later with lower ids.
 
+A lifecycle page reads the company's unacknowledged events for the requested
+types once. It keeps one head for each resource: the unacknowledged creation,
+else the oldest unacknowledged event. Then it applies `afterId`, id order and
+the limit. Cost grows with the company's journal size, not with pending events
+times acknowledged history. The idle-sleep check only asks whether any
+unacknowledged event exists, because each such resource has a head. No index
+or migration is needed.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-plugin-lifecycle-inbox.ts --baseline-ref=02bfe71a6b
+```
+
 ## Legacy controller ownership
 
 Legacy run claims atomically record `controller_boot_id`, a database-clock
@@ -1891,6 +1944,22 @@ delivery queries, including complete positional results and database plans.
 All data is synthetic. Query timings exclude process liveness probes, HTTP and
 provider work.
 
+The reconciler's lost-wake check for user comments reads in three stages.
+The first stage keeps recent user comments that no wake request carries. The
+second stage removes comments with a live or later run, and it requires an
+earlier run. Each stage probes native and legacy run bindings separately with
+existing indexes. Only the remaining comments reach the steer check, which
+reads run event payloads. An OR across both bindings let PostgreSQL hash the
+runs by company only and test each comment against every run of its company.
+No new index or migration is needed.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-comment-wake-check.ts --baseline-ref=02bfe71a6b
+```
+
+This disposable fixture compares the complete check result, the complete
+positional SQL rows, plans, and timings with and without nested-loop joins.
+
 ### Agent runtime synchronization journal
 
 Migration 0347 adds the opt-in `agent_runtime` resource stream. Database triggers
@@ -2029,6 +2098,14 @@ verified late receipt updates effective token/request fields; each adjustment
 retains its previous usage in `previous_usage_json`.
 Unknown late run receipts remain durable per-receipt debt; resolving one receipt
 cannot clear another unresolved receipt.
+
+Live usage receipt writes use READ COMMITTED and the existing run-row lock. All
+mutable receipt and accounting reads occur under that lock. A streamed run-log
+append between company validation and lock acquisition therefore cannot exhaust
+serialization retries. A concurrent finalization is read under the lock and
+keeps the normal late-receipt reconciliation path. Other independent accounting
+operations retain their repeatable-read snapshot. Receipt identity, replay
+conflicts, company scoping and budget-work publication remain transactional.
 
 Upgrade all controllers/workers to this accounting contract and drain incompatible
 pre-upgrade database transactions before enabling independent writers. Do not run

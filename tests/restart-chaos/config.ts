@@ -1,8 +1,14 @@
+import { execFileSync } from "node:child_process";
+import path from "node:path";
 import { parseArgs } from "node:util";
+import { STORAGE_FAULT_KINDS } from "./storage-chaos.js";
 import {
   ADAPTER_IDS, ENVIRONMENT_KINDS, FAULT_KINDS, TRIGGER_IDS, WORKLOAD_IDS,
   type AdapterId, type EnvironmentKind, type FaultKind, type TriggerId, type WaveOptions, type WorkloadId,
 } from "./types.js";
+
+/** A storm's default faults: every restart kind except K14, which needs an older build (`--upgrade-from`). */
+export const STORM_DEFAULT_FAULTS: FaultKind[] = ["K1", "K2", "K4", "K6"];
 
 export const CREDENTIAL_FOR_ADAPTER: Record<AdapterId, "OPENAI_API_KEY" | "ANTHROPIC_API_KEY" | "OPENROUTER_API_KEY"> = {
   codex: "OPENAI_API_KEY",
@@ -83,19 +89,27 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       replay: { type: "string" },
       "daytona-image": { type: "string" },
       "daytona-cpu": { type: "string" },
+      "daytona-reuse-lease": { type: "boolean" },
       keep: { type: "boolean" },
       "rc06-masked": { type: "boolean" },
       "storm-minutes": { type: "string" },
       lifecycle: { type: "string" },
       "k4-hold-max-seconds": { type: "string" },
+      "fault-after-seconds": { type: "string" },
       "crash-point": { type: "string" },
+      "crash-point-hold-ms": { type: "string" },
+      "upgrade-from": { type: "string" },
+      "workspace-repo": { type: "string" },
+      storage: { type: "string" },
+      "storage-faults": { type: "string" },
+      "storage-fault-seconds": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "fault-after-seconds"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -127,12 +141,15 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     }
   }
   if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm" && lifecycle !== "default") throw new Error("--lifecycle must be per_turn, warm or default");
+  const adapters = list<AdapterId>(values.adapters, ADAPTER_IDS, "adapters", ["codex", "claude"]);
   const options: WaveOptions = {
     env,
-    adapters: list<AdapterId>(values.adapters, ADAPTER_IDS, "adapters", ["codex", "claude"]),
-    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices),
+    adapters,
+    // The governance scenarios (G1, H1) are opt-in: H1 needs a wave of its own.
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1"
+      && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
-    faults: list<FaultKind>(values.faults, FAULT_KINDS, "faults", stormMinutes ? FAULT_KINDS : crashPoint ? ["K1"] : ["K1", "K2", "K4"]),
+    faults: list<FaultKind>(values.faults, FAULT_KINDS, "faults", stormMinutes ? STORM_DEFAULT_FAULTS : crashPoint ? ["K1"] : ["K1", "K2", "K4"]),
     triggers: list<TriggerId>(values.triggers, TRIGGER_IDS, "triggers", ["time"]),
     concurrency: integer(values.concurrency, "concurrency", 4, 1, 20),
     tasks: integer(values.tasks, "tasks", stormMinutes ? 200 : 8, 1, 200),
@@ -140,15 +157,66 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     seed: integer(values.seed, "seed", now % 2_147_483_647, 0, 2_147_483_647),
     budgetCents,
     pollMs,
-    ...(env === "daytona" ? { daytonaImage, daytonaCpu: integer(values["daytona-cpu"], "daytona-cpu", DAYTONA_DEFAULT_CPU, 1, 4) } : {}),
+    ...(env === "daytona" ? { daytonaImage, daytonaCpu: integer(values["daytona-cpu"], "daytona-cpu", DAYTONA_DEFAULT_CPU, 1, 4),
+      ...(values["daytona-reuse-lease"] ? { daytonaReuseLease: true } : {}) } : {}),
     ...(values["rc06-masked"] ? { masks: ["rc06"] } : {}),
     ...(lifecycle ? { lifecycle } : {}),
     // Seeded K4 hold upper end; the controller-outage cap is 600 s (#19797).
     ...(values["k4-hold-max-seconds"] !== undefined
       ? { k4HoldMaxMs: integer(values["k4-hold-max-seconds"], "k4-hold-max-seconds", 300, 120, 600) * 1000 } : {}),
+    ...(values["fault-after-seconds"] !== undefined
+      ? { faultAfterMs: integer(values["fault-after-seconds"], "fault-after-seconds", 60, 5, 3_600) * 1000 } : {}),
     ...(crashPoint ? { crashPoint } : {}),
+    ...(crashPoint && values["crash-point-hold-ms"] !== undefined
+      ? { crashPointHoldMs: integer(values["crash-point-hold-ms"], "crash-point-hold-ms", 0, 0, 600_000) } : {}),
   };
+  if (values["fault-after-seconds"] !== undefined && (stormMinutes || crashPoint)) {
+    throw new Error("--fault-after-seconds sets planned fault times; a storm or crash-point wave has none");
+  }
+  if (values["fault-after-seconds"] !== undefined && (options.triggers ?? []).some(trigger => trigger !== "time")) {
+    throw new Error("--fault-after-seconds fires faults by time; use it with --triggers time");
+  }
+  if (!crashPoint && values["crash-point-hold-ms"] !== undefined) throw new Error("--crash-point-hold-ms applies only to --crash-point");
+  const upgradeFrom = values["upgrade-from"];
+  if (options.faults.includes("K14") !== (upgradeFrom !== undefined)) {
+    throw new Error("K14 (upgrade mid-run) and --upgrade-from <older checkout> go together: pass both or neither");
+  }
+  if (upgradeFrom !== undefined) {
+    // The remote runner must match its Daytona image, so an older build cannot run there.
+    if (env !== "local") throw new Error("--upgrade-from runs only with --env local");
+    if (crashPoint) throw new Error("--upgrade-from does not combine with --crash-point");
+    options.upgradeFrom = path.resolve(upgradeFrom);
+  }
+  const storage = values.storage ?? "local";
+  const workspaceRepo = values["workspace-repo"];
+  if (options.workloads.includes("R1") !== (workspaceRepo !== undefined)) {
+    throw new Error("R1 (code change in a cloned repository) and --workspace-repo <git repository> go together: pass both or neither");
+  }
+  if (workspaceRepo !== undefined) {
+    if (env !== "local" && storage !== "s3") throw new Error("--workspace-repo on Daytona needs --storage s3, so the clone reaches the sandbox as a remote workspace");
+    if (options.workloads.some(id => id === "B1" || id === "B5")) throw new Error("--workspace-repo replaces the chaoscli fixture that B1 and B5 need");
+    options.workspaceRepo = path.resolve(workspaceRepo);
+    const git = (...args: string[]) => execFileSync("git", ["-C", options.workspaceRepo!, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    if (env === "daytona") {
+      options.workspaceGitUrl = publicGitHubUrl(git("remote", "get-url", "origin"));
+      options.workspaceCommit = git("rev-parse", "origin/master");
+    } else {
+      options.workspaceCommit = git("rev-parse", "HEAD");
+    }
+  }
+  // H1 pauses the whole company when its budget hard stop is crossed: no other task can share its
+  // wave, its tasks run one at a time, and the hard stop must be on.
+  if (options.workloads.includes("H1")) {
+    if (options.workloads.length !== 1) throw new Error("--workloads H1 pauses the whole company; run it in its own wave (--workloads H1)");
+    if (options.concurrency !== 1) throw new Error("--workloads H1 runs one task at a time; pass --concurrency 1");
+    if (options.masks?.includes("rc06")) throw new Error("--workloads H1 needs the budget hard stop; do not combine it with --rc06-masked");
+    if (stormMinutes) throw new Error("--workloads H1 does not combine with --storm-minutes");
+  }
+  if (options.workloads.includes("M1") && options.adapters.length < 2) {
+    throw new Error("--workloads M1 delegates between two agents; pass at least two --adapters");
+  }
   if (env !== "daytona" && values["daytona-cpu"] !== undefined) throw new Error("--daytona-cpu applies only to --env daytona");
+  if (env !== "daytona" && values["daytona-reuse-lease"]) throw new Error("--daytona-reuse-lease applies only to --env daytona");
   if (options.daytonaCpu !== undefined) {
     const budget = integer(process.env.RESTART_CHAOS_DAYTONA_VCPU_BUDGET, "RESTART_CHAOS_DAYTONA_VCPU_BUDGET", DAYTONA_VCPU_BUDGET, 1, 1_000);
     if (options.concurrency * options.daytonaCpu > budget) {
@@ -156,7 +224,26 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
         + "for chaos tasks. Lower one of them (RESTART_CHAOS_DAYTONA_VCPU_BUDGET sets the budget).");
     }
   }
+  if (storage !== "local" && storage !== "s3") throw new Error("--storage must be local or s3");
+  if (storage === "s3") options.storage = "s3";
+  if (values["storage-faults"] !== undefined) {
+    if (storage !== "s3") throw new Error("--storage-faults needs --storage s3");
+    options.storageFaults = list<"ST1" | "ST2" | "ST3">(values["storage-faults"], STORAGE_FAULT_KINDS, "storage-faults", []);
+  }
+  if (values["storage-fault-seconds"] !== undefined) {
+    if (!options.storageFaults?.length) throw new Error("--storage-fault-seconds needs --storage-faults");
+    const match = /^(\d+)-(\d+)$/.exec(values["storage-fault-seconds"]);
+    const [min, max] = match ? [Number(match[1]), Number(match[2])] : [0, -1];
+    if (!match || min < 5 || max < min || max > 900) throw new Error("--storage-fault-seconds takes <min>-<max> seconds, 5 to 900, min not above max");
+    options.storageFaultMs = [min * 1000, max * 1000];
+  }
   return { mode: "wave", options, keep };
+}
+
+export function publicGitHubUrl(remote: string): string {
+  const match = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/.exec(remote.trim());
+  if (!match) throw new Error(`--workspace-repo on Daytona needs a GitHub origin the sandbox can clone over https; origin is ${remote}`);
+  return `https://github.com/${match[1]}.git`;
 }
 
 export function waveIdFor(seed: number, at = new Date()): string {

@@ -173,6 +173,44 @@ Speed: remote environments have no budget yet (#19863). These are the first remo
 
 A Daytona budget needs a dedicated remote baseline. Restart recovery is 5–10× the local values.
 
+## Final Daytona wave and Daytona-only crash points (2026-11-08)
+
+**Wave `w-20261108T083036-s9401`.** Setup:
+- controller at master `8475826d2d`;
+- signed `image_only` image `ghcr.io/paperclipai/paperclip-daytona-runner@sha256:c24059f1…` (content ID `abc82e78…`, revision `838e9bf3d2`);
+- 6 tasks;
+- faults: K1, K4 (167 s hold, 175 s outage), K2, K1, K1, K4 (280 s hold, 287 s outage).
+
+All 6 tasks crossed a fault and all 6 passed. The sandbox sweep was clean, and no run breached a budget.
+
+The earlier attempt, `w-20261108T082021`, never started. A skopeo blob read timed out during image extraction, and the retry refused the half-written directory. This is a harness problem, fixed in #20021.
+
+**One real violation: I2 `environment_login_probe_lease` (`pid_dead`), 2 records.**
+- These are run-less leases. The codex agent's harness verification acquires one before any run is admitted.
+- A restart killed the process holding each lease. The lease stayed `active` until the five-minute idle sweep released it.
+- That same idle sweep also releases a live login session's sandbox after five idle minutes.
+- The fix is in PR fix/login-probe-lease-settle. The kind gets a settle that moves the lease to cleanup only once its stamped holder is proven gone. The idle sweep now covers only legacy rows saved before holders were stamped.
+
+**Speed.**
+- Restart recovery from `ready` to the next provider event: claude p50 23.9 s, codex 4.6 s.
+- Codex time from comment to first token on runs that crossed no fault was about 450 s, but boot was about 32 s.
+- The wait came before any run sandbox existed. The tasks launched at 09:55:46, while the first run sandboxes appeared at 10:02:43 (417 s later).
+- In between, the codex agent's harness verification ran in a fresh Daytona sandbox four times (09:55:46, 09:56:27, 09:59:43, 10:02:13). Each fault restarted it, and runs stay queued until verification completes.
+- This is lifecycle admission, not run boot. In a fault-free product it costs one verification per newly hired agent: one sandbox boot plus a hello probe (for comparison, the seed environment probe took 68 s).
+
+**Crash points `cp-20261108T104102`** (Daytona, codex A1). The run took 8.7 min; it reused the cached image.
+
+| Point | Outcome |
+|---|---|
+| `sandbox.create.after_intent_before_provider` | pass, no violations |
+| `sandbox.create.after_provider_before_lease` | pass, no violations |
+| `environment.lease_release.after_provider_before_lease` | not reached: a plain native Daytona run now releases through teardown (the two teardown points below), not this path |
+| `environment.teardown.after_claim_before_destroy` | pass, no violations |
+| `environment.teardown.after_destroy_before_lease` | pass, no violations |
+| `environment.stop_retain.after_claim_before_stop` | not reached: needs a stop-and-retain intent (a native workspace export resume), which no harness workload produces yet |
+
+The R6 sweep found no orphaned sandboxes and no held leases. The first crash-point attempt, `cp-20261108T101304`, exited 2 before any point ran. Cause: the same skopeo timeout, plus a per-run image cache that downloaded the image again. #20021 fixes both.
+
 ## Step 2: kinds moved to the shared path
 
 Order of the moves, highest risk first:
@@ -197,6 +235,10 @@ Phase 3 is not started. It needs a separate go-ahead.
 
 - **Daytona** is covered by one wave only (see "Daytona wave"). The first apparent content-ID mismatch was a misreading: CI run 42422571919 built target commit `a37a2e4`, not master. Local content IDs reproduce CI's for the same commit.
 - The remote, workspace-operation, sandbox and accounting kinds (see "Per-kind data").
+- `environment.stop_retain.after_claim_before_stop` is covered since #20049 (`--daytona-reuse-lease`; passed in `cp-20261108T133351`).
+- **Known gap: `environment.lease_release.after_provider_before_lease` is unreached on Daytona.** Native runs release their sandbox through teardown, not this path. Recorded, not pursued.
+- **Known gap: orphans confirmed stopped while `canary/v2026.1108.0-canary.6` or `canary.7` ran.** #19964 shipped without #19976 for about three hours, and those orphans kept no durable marker, so they cannot be told apart from an intentional stop-and-retain. The provider's auto-delete bounds them. A stop still pending at upgrade is covered by #20043. Recorded, not pursued.
+- A replaced container's stamp (Docker, Kubernetes, Fly, a rebooted host) is now provable through the controller instance lease (see `doc/execution-semantics.md`). Boots from before the lease remain unprovable.
 - Crash points that sit between two durable writes. Random waves hit 20 ms–1 s windows only by luck. The crash-point suite (Phase 5) is the tool for those.
 
 ## Reproduce
