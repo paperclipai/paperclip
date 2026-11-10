@@ -5635,6 +5635,26 @@ describe("host-tool callback orphaned by a server restart", () => {
     }
   });
 
+  it.each([
+    { admission: "earlier_controller" as const, settles: true },
+    { admission: "this_controller" as const, settles: false },
+  ])("treats an authority's unknown outcome by owner ($admission)", async ({ admission, settles }) => {
+    // The receipt owner proves the effect may have happened, with no result.
+    const unknown = Object.assign(new Error("paperclip_runner_instruction_outcome_unknown"), { code: "semantic_tool_outcome_unknown" });
+    const call = { runId: identity.runId, admission, call: { tool: "update_agent_instructions", callId: `exec-unknown-${admission}`, arguments: {} },
+      recover: async () => { throw unknown; } };
+    if (settles) {
+      await expect(recoverToolCallback(call)).resolves.toMatchObject({ isError: true,
+        result: { error: { code: TOOL_CALLBACK_INTERRUPTED_CODE, outcome: "unknown" } } });
+    } else {
+      // A callback this controller owns keeps the earlier fail-closed rejection.
+      await expect(recoverToolCallback(call)).rejects.toBe(unknown);
+    }
+    // Any other rejection is never turned into a settlement.
+    await expect(recoverToolCallback({ ...call, recover: async () => { throw new Error("authority unavailable"); } }))
+      .rejects.toThrow("authority unavailable");
+  });
+
   it("keeps a callback pending while this process still runs it", async () => {
     const callId = "exec-still-running";
     // This process still owns the dispatch (for example a session recreated in
