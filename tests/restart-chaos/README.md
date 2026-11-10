@@ -538,7 +538,9 @@ Codex app-server is late, missing or repeated. `--faults` takes them next to res
 governed wait (a saved question or approval) or a board Stop sends. `interrupt_ack` picks the
 acknowledgement of that interruption. Each rule applies once per task, to the first matching message.
 Provider faults run only with `--env local --adapters codex,claude` (either or both) and only with
-workloads that interrupt a turn (Q1, S1, G1). A PV1 task passes `provider_fault_applied` only when the
+workloads that interrupt a turn (Q1, S1). G1 does not: its agent asks for approval through `call_api`
+and ends its own turn, so no rule ever applied there (waves w-20261110T050407-s206, w-20261110T063253-s208,
+w-20261110T085554-s211) and the board waited for a restart that never came. A PV1 task passes `provider_fault_applied` only when the
 held message was released; a provider that exited first turned the delay into a drop.
 For Claude, the runner settles a cancelled turn about 3–4 s after the cancel without waiting for the
 provider's prompt response, and it later closes the sidecar with the provider. A Claude PV1 delay
@@ -546,8 +548,7 @@ longer than that is therefore a drop (wave w-20261110T040202-s202: 18 s held, ne
 still passed its Q1 oracle). Sweep Claude PV1 below that window, for example
 `--provider-fault-delays 1,3`.
 
-G1 grades the board decision after a restart, so G1 with a provider fault needs
-`--provider-fault-restart K1`. On a board Stop (S1) the runner ends Codex without waiting for its terminal:
+On a board Stop (S1) the runner ends Codex without waiting for its terminal:
 in wave w-20261110T050407-s206 Codex exited 1.5 s after `turn/interrupt` with no `turn/completed`, so a
 `terminal` rule never applies there and the task fails `provider_fault_applied`. Use `interrupt_ack` for S1.
 An S1 task with a provider fault clicks Stop on the first poll that shows a live provider turn
@@ -570,10 +571,28 @@ after its fault applied, through the `provider` trigger. That delay must be shor
 so the message is still held, and the wave runs with `--concurrency 1`, because every K1 kills the whole control plane. K1 kills the runner with its provider and the held message, so the late
 or missing terminal straddles the restart: the replacement control plane must settle the saved wait
 without it. Planned restart faults (`--faults K1,PV2`) are still rejected, and PV3 does not combine with
-a restart, since a duplicate holds nothing. Such a task passes when:
+a restart, since a duplicate holds nothing.
 
-- `provider_fault_applied`: the fault applied once, the K1 started after it, and for PV1 no release
-  came before the K1;
+`--provider-fault-restart` also takes K2 (SIGTERM, a graceful restart whose shutdown drain meets the
+held or missing message) and K4 (kill -9, then the control plane stays down for 120 s, the low end of
+the seeded K4 range). For a restart, `provider_fault_applied` requires that the held message was not
+released before the old control plane stopped (`stoppedAt`), not only before the fault started. A K2 drain took 15–20 s in wave w-20261110T092735-s213, so a PV1 that must straddle a K2 needs a
+longer delay, for example `--provider-fault-delays 40`. A comma list such as `K1,K2,K4` cycles across the PV1/PV2 tasks in plan order,
+so one wave covers several restart kinds. `--provider-fault-message` takes `WORKLOAD=message` entries
+next to the default, for example `S1=interrupt_ack,terminal`: S1 tasks fault the interrupt
+acknowledgement (Codex ends a Stop without its terminal) while Q1 tasks fault the terminal.
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads Q1,S1 --faults PV1,PV2 --provider-fault-restart K2,K4 --provider-fault-delays 40 \
+  --provider-fault-message S1=interrupt_ack,terminal --concurrency 1 --tasks 4 --seed 211
+```
+
+Such a task passes when:
+
+- `provider_fault_applied`: the fault applied once, the restart started after it, the held message was
+  not released before the old control plane stopped, and it was not discarded before the restart started
+  (a discard during a K2 shutdown is the restart stopping the provider);
 - the ordinary grade passes: R1–R6 for a restart-crossing task and the workload's T-oracle. For Q1
   that means one question, the asking run `succeeded`, no failed run, nothing started before the
   answer, and the brief carries the answer.
@@ -942,7 +961,11 @@ re-arms the task's own triggered faults instead of using their offsets.
 - Speed: an aggregate p50/p95 row can breach only with at least 5 samples; a
   smaller row is reported as `insufficient sample (n < 5)`. Every cold or warm run
   over its p95 budget, and every restart recovery whose Paperclip share exceeds
-  its p95 budget, still fails the wave on its own.
+  its p95 budget, still fails the wave on its own. `speed.json` keeps each graded
+  run's own split (`runs`): `bootMs` (Paperclip: claim to the provider accepting
+  the turn), `providerFirstActivityMs` (turn accepted to first visible activity),
+  and the spans before the turn, so a breach stays attributable after the
+  temporary instance is deleted.
 - Faults are serialized; each one hits every task running at that moment.
 - A `todo` or `in_progress` task with no live run and no named wait is not a rest. The observer keeps watching it until it resumes or passes the R5 stall limit.
 - R5 also fails a run that stays `running` with no live evidence (no new run event, `lastUsefulActionAt` or `execution.lastConfirmedActivityAt`, and no start) for more than 3 minutes after the server is ready. A `running` status alone is not proof of life. A quiet run is still live while a tool it started has not ended (for example a 4-minute `bench.sh`) or while its recorded local runner process still runs with the same PID and start time.

@@ -7,7 +7,7 @@ import { STORAGE_FAULT_KINDS, type StorageFaultKind } from "./storage-chaos.js";
 import { parseTimeFaultOptions } from "./time-faults-config.js";
 import { parseStorageTrigger } from "./storage-trigger.js";
 import { parseRepeatedRestartOptions } from "./repeated-restarts.js";
-import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, isProviderFault, parseProviderDelays, parseProviderMessage, type ProviderFaultKind } from "./provider-faults.js";
+import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, isProviderFault, parseProviderDelays, parseProviderMessages, type ProviderFaultKind } from "./provider-faults.js";
 import { PROVIDER_FAULT_ADAPTERS, parseProviderFaultRestart } from "./acpx-provider-faults.js";
 import {
   ADAPTER_IDS, ENVIRONMENT_KINDS, FAULT_KINDS, TRIGGER_IDS, WORKLOAD_IDS,
@@ -209,17 +209,16 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     // Every planned task gets the fault; only these workloads send the turn/interrupt the rules target.
     const idle = options.workloads.filter(id => !PROVIDER_FAULT_WORKLOADS.includes(id));
     if (idle.length) throw new Error(`Provider message faults (PV*) need workloads that interrupt a provider turn (${PROVIDER_FAULT_WORKLOADS.join(", ")}); remove ${idle.join(", ")} from --workloads`);
-    const message = parseProviderMessage(values["provider-fault-message"]);
-    if (message) options.providerFaultMessage = message;
+    const messages = parseProviderMessages(values["provider-fault-message"]);
+    if (messages.message) options.providerFaultMessage = messages.message;
+    if (messages.byWorkload) options.providerFaultMessageByWorkload = messages.byWorkload;
     const delays = parseProviderDelays(values["provider-fault-delays"]);
     if (delays && !providerFaults.includes("PV1")) throw new Error("--provider-fault-delays sets PV1 delays; add PV1 to --faults");
     if (delays) options.providerFaultDelaysMs = delays;
     Object.assign(options, parseProviderFaultRestart(values["provider-fault-restart"], values["provider-fault-restart-after-seconds"], providerFaults, delays));
     // Each K1 kills the whole control plane: a second task in flight would lose its held message to the
     // first task's restart and miss its own, so a restart wave runs one task at a time.
-    if (options.providerFaultRestart && options.concurrency !== 1) throw new Error("--provider-fault-restart kills the whole control plane per task; run it with --concurrency 1");
-    // G1's oracle requires the board's decision to come after a restart (board_decided_after_restart).
-    if (options.workloads.includes("G1") && !options.providerFaultRestart) throw new Error("G1 grades the board decision after a restart; with provider faults add --provider-fault-restart K1");
+    if (options.providerFaultRestart && options.concurrency !== 1) throw new Error("--provider-fault-restart restarts the whole control plane per task; run it with --concurrency 1");
   } else if (values["provider-fault-message"] !== undefined || values["provider-fault-delays"] !== undefined
     || values["provider-fault-restart"] !== undefined || values["provider-fault-restart-after-seconds"] !== undefined) {
     throw new Error("--provider-fault-message, --provider-fault-delays and --provider-fault-restart need a provider fault (PV1, PV2 or PV3) in --faults");

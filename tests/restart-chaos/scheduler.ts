@@ -3,7 +3,7 @@ import { takesJourneyTriggers } from "./journeys.js";
 import { workloadDefinitions } from "./workloads.js";
 import { isTimeFault, timeFaultHoldMs } from "./time-faults-config.js";
 import { isRepeatedRestartFault, planRestartSteps, type RestartStep } from "./repeated-restarts.js";
-import type { AdapterId, FaultKind, ScheduledFault, StormFault, StormPlan, TaskFaultKind, TaskPlan, TriggerId, WavePlan, WaveOptions, WorkloadId } from "./types.js";
+import { K4_MIN_HOLD_MS, type AdapterId, type FaultKind, type ScheduledFault, type StormFault, type StormPlan, type TaskFaultKind, type TaskPlan, type TriggerId, type WavePlan, type WaveOptions, type WorkloadId } from "./types.js";
 import type { ReplayRef } from "./config.js";
 
 /** mulberry32: small, fast and fully determined by its 32-bit seed. */
@@ -31,7 +31,7 @@ export function createRng(seed: number) {
   };
 }
 
-export const K4_HOLD_RANGE_MS: readonly [number, number] = [120_000, 300_000];
+export const K4_HOLD_RANGE_MS: readonly [number, number] = [K4_MIN_HOLD_MS, 300_000];
 
 /** The seeded K4 hold range; `--k4-hold-max-seconds` raises its upper end
  * (up to the 600 s controller-outage cap) to reach the 7-minute reconnect
@@ -290,7 +290,7 @@ export function taskFaultSchedule(task: TaskPlan): ScheduledFault[] {
   // A storm crosses K13 tasks; a provider fault (PV*) and a matrix baseline (K0) restart nothing, unless
   // `--provider-fault-restart` asked for a K1 once the provider fault applied (the `provider` trigger).
   const restart = task.providerFault?.restart;
-  if (restart) return [{ kind: restart.kind, holdMs: 0, atMs: 0, trigger: "provider", delayMs: restart.afterAppliedMs }];
+  if (restart) return [{ kind: restart.kind, holdMs: restart.holdMs ?? 0, atMs: 0, trigger: "provider", delayMs: restart.afterAppliedMs }];
   if (task.fault === "K13" || task.fault === "K0" || isProviderFault(task.fault)) return [];
   const planned: ScheduledFault = { kind: task.fault, holdMs: task.holdMs, atMs: task.fireAfterMs,
     ...(task.restartSteps ? { restartSteps: task.restartSteps } : {}) };
