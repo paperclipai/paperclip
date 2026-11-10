@@ -112,6 +112,22 @@ unconfirmed cleanup do not qualify. Error messages cannot authorize recovery.
 An arbitrary `closed` provider state stays closed. This path does not establish
 recovery for a Runner killed during an accepted turn.
 
+## ACPX cancellation without a reply
+
+The Runner serves controller commands one at a time. It therefore waits at most
+five seconds for the sidecar's reply to `turn.cancel`, not the 30-second request
+bound. The provider's turn terminal settles a cancelled turn; the reply does
+not. When the reply is missing, the Runner keeps the transport, retires the
+runtime from warm reuse, and keeps polling. It ignores the late reply if one
+arrives. A provider that never stops is still reaped by `turn.stop` and the
+lifetime-fence proof. A rejected reply or a transport error still fails closed.
+
+A tool result can reach the sidecar after the session's own `turn.cancel`
+retired that call. The sidecar rejects it as stale (`ACPX_TOOL_CALL_STALE`).
+The Runner then keeps the durable result, as it does for a result that arrives
+after a polled terminal. The same rejection without that cancellation still
+fails closed.
+
 ## Settled ACPX sessions across a Runner upgrade
 
 Saved ACPX provider state records the digest of the launch profile that wrote
