@@ -38,6 +38,7 @@ import { withS3FailureDiagnostics } from "../../storage/s3-failure.js";
 import { workspaceProviderCallFailure } from "../workspace-provider-failure.js";
 import { logger } from "../../middleware/logger.js";
 import { unprocessable } from "../../errors.js";
+import { ACCOUNTING_CONTENTION_CODE, ACCOUNTING_CONTENTION_MESSAGE, AccountingContentionError } from "../accounting-transaction.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure, classifyManagedProjectAuthFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
@@ -1412,6 +1413,28 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "runner_revision_mismatch" });
     expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, RUNNER_REVISION_MISMATCH_RETRY);
     expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+  });
+
+  it.each(["exhausted accounting retries", "another raw query failure"] as const)("saves a bounded cause without SQL for %s", async kind => {
+    const f = await fixture();
+    const logged = vi.spyOn(logger, "error");
+    onTestFinished(() => logged.mockRestore());
+    const sqlState = kind === "exhausted accounting retries" ? "40001" : "23503";
+    const driverError = Object.assign(new Error(kind === "exhausted accounting retries"
+      ? "could not serialize access due to concurrent update" : "insert or update violates foreign key constraint"),
+    { name: "PostgresError", code: sqlState });
+    const queryError = new Error("Failed query: select \"id\" from \"heartbeat_runs\" where \"id\" = $1 for update\nparams: secret-run-id",
+      { cause: driverError });
+    await f.completion.failRun(f.failure(kind === "exhausted accounting retries" ? new AccountingContentionError(queryError, 4) : queryError));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed",
+      errorCode: kind === "exhausted accounting retries" ? ACCOUNTING_CONTENTION_CODE : "adapter_failed" });
+    if (kind === "exhausted accounting retries") expect(failed.error).toBe(ACCOUNTING_CONTENTION_MESSAGE);
+    else expect(failed.error).toContain(`SQLSTATE ${sqlState}`);
+    expect(JSON.stringify(failed)).not.toMatch(/heartbeat_runs|secret-run-id|Failed query/);
+    const failureLog = logged.mock.calls.find(call => call[1] === "heartbeat execution failed");
+    expect(failureLog?.[0]).toMatchObject({ runId: f.run.id, sqlState, databaseMessage: driverError.message,
+      errorCode: failed.errorCode });
   });
 
   it("records a workspace provider's reason on the run and in the setup failure log without retrying", async () => {
