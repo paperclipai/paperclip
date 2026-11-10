@@ -53,12 +53,6 @@ function sessionLimitCategory(failure: AcpxTerminalSessionFailure | undefined): 
  * account) as an AIR `request` failure with this fixed title. The user must
  * choose another model, so it is an unavailable model, not a generic request.
  */
-/**
- * Codex and other ACP providers surface an exhausted credit/billing balance
- * only as free-text titles or messages, not typed error codes. Credit
- * exhaustion is an exhausted account allowance, so it is `quota_exhausted`
- * regardless of whether it arrives typed or as plain text.
- */
 const CREDIT_EXHAUSTED = /\bout of (?:extra )?credits\b|credit balance exhausted/i;
 const CLAUDE_SELECTED_MODEL_REJECTED =
   /^There's an issue with the selected model \([^()\n]{1,200}\)\. It may not exist or you may not have access to it\./;
@@ -89,8 +83,6 @@ export function acpxProviderFailure(error: unknown, agent: string, phase: Provid
   const status = data.status ?? data.statusCode ?? detail.status
     ?? (agent === "claude" ? Number(/^API error: (\d{3})\b/.exec(message)?.[1]) : undefined);
   const code = detail.type ?? detail.code ?? data.errorType ?? data.errorKind;
-  // `message` already includes the provider's session-failure title, so this
-  // catches both typed `limit` failures and plain error text (issue #20506).
   const category = (typeof code === "string" ? CATEGORIES.get(code) : undefined)
     ?? (acp?.code === ACP_AUTH_REQUIRED ? "authentication" : undefined)
     ?? sessionLimitCategory(sessionFailure)
