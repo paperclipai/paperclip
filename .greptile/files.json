@@ -135,6 +135,13 @@
         "packages/db/src/schema/heartbeat_run_events.ts",
         "server/src/services/heartbeat.ts"
       ]
+    },
+    {
+      "path": "rules/api-route-expectations.mdc",
+      "description": "Company access checks, actor permissions, activity logging for mutations, and consistent HTTP errors on API routes.",
+      "scope": [
+        "server/src/routes/**"
+      ]
     }
   ]
 }
