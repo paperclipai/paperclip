@@ -36,6 +36,8 @@ import { reconcileNativeFinalizations, registerOwnershipReconciliationWork } fro
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 import { currentProcessProbe, proveOwnerGone } from "../services/owner-proof.js";
 import { createRunLogWriterAuthority } from "../services/heartbeat/run-log-authority.js";
+import { resolveHotRestartIntentPath, writeHotRestartIntent } from "../services/hot-restart.js";
+import fs from "node:fs/promises";
 import { detachNativeSessionsForRestart } from "../services/native-runtime/native-session-executor.js";
 
 const preparationFault = vi.hoisted(() => ({
@@ -276,6 +278,7 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
   it.each([
     { mode: "drain", stage: "run_output" },
     { mode: "drain", stage: "task_context" },
+    { mode: "hot_restart", stage: "run_output" },
     { mode: "lease_expired", stage: "run_output" },
     { mode: "restart_detach_only", stage: "run_output" },
     { mode: "begin_failed", stage: "run_output" },
@@ -285,7 +288,14 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     let drained: unknown;
     const loseAuthority = async () => {
       if (mode === "drain") drained = await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [f.runId]);
-      else if (mode === "restart_detach_only") {
+      else if (mode === "hot_restart") {
+        await writeHotRestartIntent({ previousServerPid: process.pid, previousServerVersion: "previous" });
+        try {
+          expect(await heartbeat.prepareHotRestartShutdown("SIGTERM")).toMatchObject({ mode: "hot_restart", skipDrain: true });
+        } finally { await fs.rm(resolveHotRestartIntentPath(), { force: true }); }
+        await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) })
+          .where(eq(nativeRunFinalizations.runId, f.runId));
+      } else if (mode === "restart_detach_only") {
         await detachNativeSessionsForRestart([f.runId]);
         await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) })
           .where(eq(nativeRunFinalizations.runId, f.runId));
@@ -313,14 +323,16 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     const handoffEvents = await f.db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.runId),
       eq(heartbeatRunEvents.eventType, "lifecycle"), sql`${heartbeatRunEvents.payload}->>'disposition' = 'left_to_next_controller'`));
-    if (mode !== "drain") {
+    if (mode !== "drain" && mode !== "hot_restart") {
       expect(run.status).toBe("failed");
       expect(handoffEvents).toEqual([]);
       return;
     }
-    expect(drained).toMatchObject({ restartSuspendedRunIds: [f.runId] });
     expect({ status: run.status, errorCode: run.errorCode, finishedAt: run.finishedAt }).toEqual({
       status: "running", errorCode: null, finishedAt: null });
+    expect(handoffEvents).toHaveLength(1);
+    if (mode === "hot_restart") return;
+    expect(drained).toMatchObject({ restartSuspendedRunIds: [f.runId] });
     expect(owner).toMatchObject({ phase: "observed", resultId: null, recoveryState: "awaiting_runner_reattach" });
     expect(handoffEvents).toEqual([expect.objectContaining({ payload: expect.objectContaining({
       errorCode: "run_log_writer_authority_lost", processPid: process.pid }) })]);
