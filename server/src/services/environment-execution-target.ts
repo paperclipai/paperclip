@@ -416,6 +416,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
           : parsed.config.runnerLifecycleMode === "per_turn"
             ? { mode: "per_turn", idleTimeoutMs: null }
             : null,
+      ...(typeof parsed.config.runnerIdleTimeoutMs === "number" ? { runnerIdleTimeoutMs: parsed.config.runnerIdleTimeoutMs } : {}),
       reusableLeaseConfigured: parsed.config.reuseLease === true,
       sandboxLeaseAcquisition: sandboxLeaseAcquisitionFromMetadata(
         input.lease?.metadata?.sandboxLeaseAcquisition,

@@ -1,5 +1,5 @@
 import { environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
-import type { PluginTaskCredentialWritebackBinding } from "./plugin-task-credential-writeback.js";
+import type { ManagedAiCredentialWritebackBinding } from "./managed-ai-credential-writeback.js";
 import { OPENROUTER_ATTRIBUTION_HEADERS, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import { createHash } from "node:crypto";
 import { HttpError, unprocessable } from "../errors.js";
@@ -606,9 +606,9 @@ export async function prepareManagedAiRuntime(
     return {
       sessionIdentity,
       ...(retainedCleanupScope ? { retainedCleanupScope } : {}),
-      ...(subscriptionFile && input.binding.provider === "openai" && credentialRef && freshness ? {
+      ...(subscriptionFile && (input.binding.provider === "openai" || input.binding.provider === "xai") && credentialRef && freshness ? {
         credentialWriteback: { grantId: selection.grant.id, secretId: credentialRef.secretId, sessionEpoch: freshness.epoch,
-          versionSelector: credentialRef.versionSelector ?? "latest" } satisfies PluginTaskCredentialWritebackBinding,
+          versionSelector: credentialRef.versionSelector ?? "latest" } satisfies ManagedAiCredentialWritebackBinding,
       } : {}),
       config: {
         ...input.config,

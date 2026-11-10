@@ -21,6 +21,7 @@ import { canonicalExecutionUuid } from "./execution-identity.js";
 import { chatActionDeadline } from "./chat-action-work.js";
 import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED } from "./native-runtime/completed-turn-cleanup.js";
 import { isQueuedDependencyWait } from "./run-cancellation.js";
+import { exhaustedNativeFinalizationCondition, savedResultRetryPendingCondition } from "./native-runtime/exhausted-finalization-retry.js";
 import { AI_CONNECTION_BUSY_RETRY_REASON, AI_CONNECTION_POOL_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON } from "../modules/run-dispatch/index.js";
 
@@ -45,6 +46,10 @@ type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   nativeResumeAt?: Date | null;
   /** When the native coordinator saved this run's terminal failure, if it did. */
   nativeFailedAt?: Date | null;
+  /** A succeeded native run whose accepted result ran out of finalization retries; Retry applies it again. */
+  nativeFinalizationRetry?: boolean;
+  /** A saved-result Retry of this succeeded run is still being applied. */
+  nativeFinalizationRetryPending?: boolean;
   /** The configured model id the provider rejected (native_provider_model_rejected only). */
   rejectedModel?: string | null;
   /** A cleanup-gate refusal after this run's own provider turn completed; its work is saved. */
@@ -207,7 +212,11 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
   const base: TaskInterruptionPresentation = { intentId: wait?.id ?? null, responsibility: "system",
     state: "resolved", nextRetryAt: null, canRetry: false, userAction: null,
     sourceRunIds: [run.id], observedRunId: run.id };
-  if (["done", "cancelled"].includes(issue.status) || (run.status === "succeeded" && !wait)) return base;
+  if (["done", "cancelled"].includes(issue.status)) return base;
+  // Retry took effect: the saved result is being applied again.
+  if (run.status === "succeeded" && run.nativeFinalizationRetryPending)
+    return { ...base, state: "working", recoveryStep: "finishing_recovery" };
+  if (run.status === "succeeded" && !wait && !run.nativeFinalizationRetry) return base;
   const providerFailure = run.status === "failed" || run.status === "scheduled_retry"
     ? readProviderFailure(run.resultJson?.providerFailure) : null;
   if (providerFailure) base.providerFailure = providerFailure;
@@ -390,6 +399,8 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       nativeFailedAt: sql<Date | null>`(select ${nativeRunFinalizations.updatedAt} from ${nativeRunFinalizations}
         where ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId} and ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
           and ${nativeRunFinalizations.phase} = 'terminal_failure')`.mapWith(value => value == null ? null : new Date(value)),
+      nativeFinalizationRetry: exhaustedNativeFinalizationCondition(),
+      nativeFinalizationRetryPending: savedResultRetryPendingCondition(),
       // The run whose resultJson supplied providerFailure. A scheduled retry
       // shows its predecessor's reason, so redaction must use that run's registry.
       providerFailureRunId: sql<string>`case when ${heartbeatRuns.resultJson}->'providerFailure' is null

@@ -1,5 +1,5 @@
 {
-  "id": "1c0da987-ca1c-4dce-8858-1c7c6f80e8db",
+  "id": "f93ccf18-7e86-4788-be77-b17430c86b2f",
   "prevId": "e070677d-cfb8-4438-847c-29c4da7ca8c5",
   "version": "7",
   "dialect": "postgresql",
@@ -36017,6 +36017,28 @@
           "method": "btree",
           "with": {}
         },
+        "heartbeat_runs_company_ctx_execution_workspace_idx": {
+          "name": "heartbeat_runs_company_ctx_execution_workspace_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"context_snapshot\" ->> 'executionWorkspaceId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"context_snapshot\" ? 'executionWorkspaceId'",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
         "heartbeat_runs_company_ctx_paperclip_issue_created_idx": {
           "name": "heartbeat_runs_company_ctx_paperclip_issue_created_idx",
           "columns": [
@@ -59471,13 +59493,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "''"
-        },
-        "pending_reveal": {
-          "name": "pending_reveal",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
         },
         "allowed_actions": {
           "name": "allowed_actions",
