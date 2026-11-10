@@ -27,8 +27,18 @@ const fakeGit = `#!${process.execPath}
 const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const args = process.argv.slice(2);
+if (args.includes('symbolic-ref')) {
+  process.stdout.write(process.env.PAPERCLIP_TEST_BRANCH || '');
+  process.exit(process.env.PAPERCLIP_TEST_BRANCH ? 0 : 1);
+}
+if (args.includes('config') && args.includes('--get')) {
+  const value = JSON.parse(process.env.PAPERCLIP_TEST_CONFIG || '{}')[args[args.length - 1]] || '';
+  process.stdout.write(value);
+  process.exit(value ? 0 : 1);
+}
 if (args.includes('remote') && args.includes('get-url')) {
-  process.stdout.write(process.env.PAPERCLIP_TEST_REMOTE_URL || '');
+  const map = JSON.parse(process.env.PAPERCLIP_TEST_REMOTE_MAP || '{}');
+  process.stdout.write(map[args[args.length - 1]] || process.env.PAPERCLIP_TEST_REMOTE_URL || '');
   process.exit(0);
 }
 if (args.includes('clone') || args.includes('push')) {
@@ -198,6 +208,41 @@ it.each([
   }).catch(error => error as Error & { code?: number });
   expect(result).toMatchObject({ code: 1 });
   expect(f.requests.map(item => item.path)).toEqual(["/runtime-tools/git/credentials"]);
+  await expect(readFile(f.capture, "utf8")).rejects.toThrow();
+});
+
+it("does not allow fetch.all to bypass remote authorization", async () => {
+  const f = await fixture({ hostGitHub: true });
+  f.setResponse(403, { error: "denied" });
+  const result = await exec(process.execPath, [f.launcher, "fetch"], { cwd: f.root, env: f.env({
+    PAPERCLIP_TEST_BRANCH: "main", PAPERCLIP_TEST_CONFIG: JSON.stringify({ "fetch.all": "true", "branch.main.remote": "origin" }),
+    PAPERCLIP_TEST_REMOTE_URL: githubUrl,
+  }) }).catch(error => error as Error & { code?: number });
+  expect(result).toMatchObject({ code: 1 });
+  await expect(readFile(f.capture, "utf8")).rejects.toThrow();
+});
+
+it("keeps a default GitHub push on the host credential path", async () => {
+  const f = await fixture({ hostGitHub: true });
+  const result = await exec(process.execPath, [f.launcher, "push"], { cwd: f.root, env: f.env({
+    PAPERCLIP_TEST_BRANCH: "main", PAPERCLIP_TEST_CONFIG: JSON.stringify({ "branch.main.remote": "origin" }),
+    PAPERCLIP_TEST_REMOTE_MAP: JSON.stringify({ origin: githubUrl }), PAPERCLIP_TEST_REPOSITORY_URL: githubUrl,
+  }) });
+  expect(result.stdout).toContain("fake git operation completed");
+  expect(JSON.parse(await readFile(f.capture, "utf8"))).toMatchObject({ password: hostGithubCredential });
+  expect(f.requests).toEqual([]);
+});
+
+it("resolves the configured push destination before using host credentials", async () => {
+  const f = await fixture({ hostGitHub: true });
+  f.setResponse(403, { error: "denied" });
+  const result = await exec(process.execPath, [f.launcher, "push"], { cwd: f.root, env: f.env({
+    PAPERCLIP_TEST_BRANCH: "main",
+    PAPERCLIP_TEST_CONFIG: JSON.stringify({ "branch.main.pushRemote": "azure", "branch.main.remote": "origin" }),
+    PAPERCLIP_TEST_REMOTE_MAP: JSON.stringify({ azure: azureUrl, origin: githubUrl }),
+  }) }).catch(error => error as Error & { code?: number });
+  expect(result).toMatchObject({ code: 1 });
+  expect(f.requests[0]?.body).toEqual({ repositoryUrl: azureUrl });
   await expect(readFile(f.capture, "utf8")).rejects.toThrow();
 });
 

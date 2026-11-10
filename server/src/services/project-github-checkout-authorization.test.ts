@@ -68,7 +68,6 @@ describe("project GitHub checkout authorization", () => {
   it.each([
     ["missing workspace", []],
     ["workspace for another repository", [{ repoUrl: "https://github.com/org/other.git", metadata: { repositoryProvider: "github", repositoryId: "123" } }]],
-    ["workspace without repository identity", [{ repoUrl: input.repoUrl, metadata: { repositoryProvider: "github" } }]],
     ["non-numeric repository identity", [{ repoUrl: input.repoUrl, metadata: { repositoryProvider: "github", repositoryId: "org/repo" } }]],
   ])("rejects %s without resolving credentials or falling back", async (_label, rows) => {
     const { db } = workspaceDb(rows as Array<{ repoUrl: string | null; metadata: Record<string, unknown> | null }>);
@@ -78,6 +77,16 @@ describe("project GitHub checkout authorization", () => {
     await expect(authorizeProjectGitHubCheckout(db, input, resolve, request)).rejects.toThrow(/reconnect and reselect/i);
     expect(resolve).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();
+  });
+
+  it("checks a URL-only workspace against the live grant catalog and GitHub", async () => {
+    const workspace = { repoUrl: input.repoUrl, metadata: null };
+    const { db } = checkoutDb([[workspace], [workspace]]);
+    const resolve = vi.fn().mockResolvedValue(available());
+    const request = vi.fn().mockResolvedValue(liveRepositoryResponse(123)) as unknown as typeof fetch;
+    await expect(authorizeProjectGitHubCheckout(db, input, resolve, request)).resolves.toMatchObject({ grantId: "grant-test" });
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledTimes(2);
   });
 
   it("rejects a persisted repository ID that differs from the authorized grant catalog", async () => {

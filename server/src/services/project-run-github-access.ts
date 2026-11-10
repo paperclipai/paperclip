@@ -109,18 +109,20 @@ export async function authorizeProjectGitHubCheckout(db: Db, input: {
     const matches = rows.filter(row => row.repoUrl && githubRepository(row.repoUrl)?.toLowerCase() === repository.toLowerCase());
     const ids = [...new Set(matches.map(row => {
       const metadata = row.metadata ?? {};
-      if (metadata.repositoryProvider !== undefined && metadata.repositoryProvider !== 'github') return null;
+      if (metadata.repositoryProvider !== undefined && metadata.repositoryProvider !== 'github') throw unavailable();
+      if ((metadata.repositoryId !== undefined && typeof metadata.repositoryId !== 'string') ||
+          (metadata.githubRepositoryId !== undefined && typeof metadata.githubRepositoryId !== 'string')) throw unavailable();
       if (typeof metadata.repositoryId === 'string' && typeof metadata.githubRepositoryId === 'string' &&
-          metadata.repositoryId !== metadata.githubRepositoryId) return null;
+          metadata.repositoryId !== metadata.githubRepositoryId) throw unavailable();
       return typeof metadata.repositoryId === 'string' && (metadata.repositoryProvider === undefined || metadata.repositoryProvider === 'github')
         ? metadata.repositoryId : typeof metadata.githubRepositoryId === 'string' ? metadata.githubRepositoryId : null;
     }))];
-    if (ids.length !== 1 || !ids[0] || !/^\d+$/.test(ids[0])) throw unavailable();
-    return ids[0];
+    if (matches.length !== 1 || ids.length !== 1 || (ids[0] !== null && !/^\d+$/.test(ids[0]))) throw unavailable();
+    return ids[0] ?? null;
   };
   const id = await currentId();
   const result = await resolveRunProjectGitHubCredentials(db, { ...input, repoUrls: [input.repoUrl],
-    expectedRepositoryIds: { [repository.toLowerCase()]: id } }, resolve, request);
+    ...(id ? { expectedRepositoryIds: { [repository.toLowerCase()]: id } } : {}) }, resolve, request);
   if (!result || await currentId() !== id) throw unavailable();
   return result;
 }
