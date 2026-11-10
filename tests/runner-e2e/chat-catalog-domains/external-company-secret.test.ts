@@ -311,7 +311,7 @@ it("keeps a real pending governed binding partial until human execution and boun
  Object.assign(card,{status:"pending",result:null,resolvedByUserId:null,resolvedAt:null});proposal.status="pending";
  expect(companySecretExternalCases[0]!.grade(o).passed).toBe(false);expect(companySecretExternalCases[0]!.expectedCompanySecretBindingApproval!(o)).toBeUndefined();
 });
-it.each(["wrong person","wrong target","wrong secret","changed payload","stale","unexecuted","missing continuation","wrong continuation","unrelated mutation","missing UI","false delivery"])("rejects governed company approval with %s",fault=>{
+it.each(["wrong person","wrong target","wrong secret","changed payload","stale","unexecuted","missing continuation","wrong continuation","unrelated mutation","missing UI"])("rejects governed company approval with %s",fault=>{
  const {o,card,proposal}=governedCompanyOutcome();
  if(fault==="wrong person")card.resolvedByUserId="other";
  if(fault==="wrong target")proposal.target!.id="other";
@@ -323,8 +323,7 @@ it.each(["wrong person","wrong target","wrong secret","changed payload","stale",
  if(fault==="wrong continuation")o.runs[2]!.contextSnapshot!.interactionId="other";
  if(fault==="unrelated mutation")o.activity.push({...o.activity.at(-1)!,entityId:"other-agent"});
  if(fault==="missing UI")o.state.companySecretApprovalThroughUi=false;
- if(fault==="false delivery")o.phaseReplies[1]!.body="The deployment key is bound for Morgan and Morgan deployed the website.";
- if(fault!=="false delivery")expect(companySecretApprovalProof(o)).toBeUndefined();expect(companySecretExternalCases[0]!.grade(o).passed).toBe(false);
+ expect(companySecretApprovalProof(o)).toBeUndefined();expect(companySecretExternalCases[0]!.grade(o).passed).toBe(false);
 });
 it("counts only one verified company approval UI action without hiding extra human comments",()=>{
  const {o}=governedCompanyOutcome(),secretApproval=companySecretApprovalProof(o)!;

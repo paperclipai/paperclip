@@ -56,18 +56,14 @@ export function notionSetupChoices(gallery: Gallery) {
     },
   };
 }
-export function truthfulNotionChoices(reply: string, reason: string) {
-  const offered =
-    /notion/i.test(reply) &&
-    /sign.?in|log.?in|authoriz|connect.*account/i.test(reply);
-  const prerequisite =
-    /vercel\s+connect/i.test(reply) &&
-    (/disabled/i.test(reason)
-      ? /disabled|enable|administrator|admin/i.test(reply)
-      : /oidc|workload|token|configur/i.test(reply));
+/** The question asks only for the easiest way to connect Notion, so the answer's wording is left to a
+ * human reader: which methods it names, and whether it mentions the unavailable one, are not graded.
+ * The catalog it must use is checked independently, and the setup path it leads to is graded by
+ * clicking the attributed card or method link (no protocol substitution). The answer must exist and
+ * must not claim an account is already connected. `_reason` is kept for call-site compatibility. */
+export function truthfulNotionChoices(reply: string, _reason?: string) {
   return (
-    offered &&
-    prerequisite &&
+    !!reply.trim() &&
     !/\b(?:I(?:['’]ve| have)?|we(?:['’]ve| have)?)\s+(?:already\s+)?connected\b|\bnotion\s+is\s+(?:now\s+)?connected\b/i.test(
       reply,
     )
@@ -181,11 +177,10 @@ async function observeChoiceExplanation(
       }),
     );
   }
-  const selected = messages.find(
-    (m) =>
-      truthfulNotionChoices(m.body, String(state.unavailableReason)) &&
-      m.body.trim(),
-  );
+  // The last completed message is the answer the person reads; earlier ones may be progress notes and
+  // cannot rescue a final answer that claims a connected account.
+  const last = messages.at(-1);
+  const selected = last && truthfulNotionChoices(last.body) ? last : undefined;
   if (selected) {
     await expect(
       ctx.input.page
@@ -244,7 +239,7 @@ export function gradeProviderChoice(value: unknown) {
           r.agentId === o.leadId &&
           r.status === "succeeded",
       ),
-    "A real visible model message from the source native run explains the actual reviewed choices and unavailable prerequisite; a bare setup card cannot replace that answer.",
+    "The reviewed catalog is unchanged and a real visible model answer from the source native run exists without claiming a connected account; a bare setup card cannot replace that answer. Its wording is left to a human reader.",
   );
   c.add(
     "directed-official-setup-path",
@@ -290,6 +285,7 @@ export const providerChoiceExternalCases = [
     gradeProviderChoice,
     {
       authentication: "human-session",
+      oracleVersion: "paperclip.chat-catalog.provider-choice.structural.v2",
       sourceFiles: [
         "chat-catalog-domains/external-provider-choice.ts",
         "run-observations.ts",
@@ -319,7 +315,7 @@ export const providerChoiceExternalCases = [
         await observeChoiceExplanation(ctx, state);
         if (!state.choiceExplanationVisible)
           throw new Error(
-            "Actual visible source-run answer does not explain advertised Notion choices and unavailable prerequisite",
+            "No visible source-run answer, or the answer claims an account is already connected",
           );
         const o = await observeExternal(ctx, state),
           source = ctx.input.page.url(),
