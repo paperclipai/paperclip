@@ -15,7 +15,7 @@
  * (50000 runs of a second agent), RUNS_PER_SESSION (4), PROFILE_KIB (4).
  */
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { promises as fs, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -28,7 +28,10 @@ const RUNS = size("RUNS", 50_000), OTHER_RUNS = size("OTHER_RUNS", 50_000);
 const RUNS_PER_SESSION = size("RUNS_PER_SESSION", 4), PROFILE_KIB = size("PROFILE_KIB", 4);
 const DAY_MS = 24 * 60 * 60 * 1000;
 const migrationName = "0457_native_session_run_index";
-const statement = readFileSync(new URL(`../packages/db/src/migrations/${migrationName}.sql`, import.meta.url), "utf8").trim();
+const migration = readFileSync(new URL(`../packages/db/src/migrations/${migrationName}.sql`, import.meta.url), "utf8");
+const statement = migration.trim();
+// The migration runner records each migration by the SHA-256 of its file.
+const migrationHash = createHash("sha256").update(migration).digest("hex");
 const indexName = statement.match(/IF NOT EXISTS "([a-z_]+)"/)![1]!;
 
 const keepAlive = setInterval(() => {}, 1_000);
@@ -146,8 +149,8 @@ try {
   assert.ok(runs[1]!.nodes.some(node => node.includes(indexName)), "The index must serve the lookup");
 
   async function migrate() {
-    await sql.unsafe(`delete from drizzle.__drizzle_migrations where hash in (
-      select hash from drizzle.__drizzle_migrations order by created_at desc limit 1)`);
+    const removed = await sql.unsafe(`delete from drizzle.__drizzle_migrations where hash = $1 returning hash`, [migrationHash]);
+    assert.equal(removed.length, 1, `Exactly one ${migrationName} receipt`);
     const start = performance.now();
     await applyPendingMigrations(temporary!.connectionString);
     return round(performance.now() - start);
