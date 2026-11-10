@@ -242,13 +242,8 @@ function sideEffectIdempotencyKey(ctx: ToolAccessContext, argumentsHash: string)
   })}`;
 }
 
-const TERMINAL_TOOL_INVOCATION_STATUSES = new Set([
-  "denied",
-  "succeeded",
-  "failed",
-  "cancelled",
-  "timed_out",
-  "rate_limited",
+const REGENERABLE_IMPLICIT_SIDE_EFFECT_TOOLS = new Set([
+  "media_generate_upload_link",
 ]);
 
 function nextSideEffectIdempotencyKey(previousKey: string, previousInvocationId: string): string {
@@ -1426,16 +1421,37 @@ export function toolAccessPolicyService(db: Db) {
     const callerIdempotencyKey = input.request.idempotencyKey ?? null;
     let idempotencyKey = callerIdempotencyKey
       ?? (input.request.sideEffecting ? sideEffectIdempotencyKey(ctx, argumentsHash) : null);
-    while (idempotencyKey) {
-      const [existing] = await db.select().from(toolInvocations).where(and(
+    if (idempotencyKey) {
+      const [existingForKey] = await db.select().from(toolInvocations).where(and(
         eq(toolInvocations.companyId, input.companyId),
         eq(toolInvocations.idempotencyKey, idempotencyKey),
       ));
-      if (!existing) break;
-      if (callerIdempotencyKey || !TERMINAL_TOOL_INVOCATION_STATUSES.has(existing.status)) {
-        return { invocation: existing, replayed: true, actionRequest: null };
+      let existing: typeof toolInvocations.$inferSelect | undefined = existingForKey;
+      if (
+        existing
+        && !callerIdempotencyKey
+        && REGENERABLE_IMPLICIT_SIDE_EFFECT_TOOLS.has(ctx.toolName)
+      ) {
+        [existing] = await db.select().from(toolInvocations).where(and(
+          eq(toolInvocations.companyId, input.companyId),
+          eq(toolInvocations.toolName, ctx.toolName),
+          eq(toolInvocations.argumentsHash, argumentsHash),
+          sql`${toolInvocations.runId} is not distinct from ${ctx.heartbeatRunId}`,
+          sql`${toolInvocations.issueId} is not distinct from ${ctx.issueId}`,
+          sql`${toolInvocations.applicationId} is not distinct from ${ctx.applicationId}`,
+          sql`${toolInvocations.connectionId} is not distinct from ${ctx.connectionId}`,
+          sql`${toolInvocations.catalogEntryId} is not distinct from ${ctx.catalogEntryId}`,
+          sql`${toolInvocations.idempotencyKey} like 'side_effect:%'`,
+        )).orderBy(desc(toolInvocations.createdAt), desc(toolInvocations.id)).limit(1);
+        if (existing?.status === "succeeded") {
+          idempotencyKey = nextSideEffectIdempotencyKey(
+            existing.idempotencyKey ?? idempotencyKey,
+            existing.id,
+          );
+          existing = undefined;
+        }
       }
-      idempotencyKey = nextSideEffectIdempotencyKey(idempotencyKey, existing.id);
+      if (existing) return { invocation: existing, replayed: true, actionRequest: null };
     }
     const status = accessDecision.decision === "allow"
       ? "authorized"

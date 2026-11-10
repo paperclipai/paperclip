@@ -885,7 +885,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     expect(replay.invocation.id).toBe(first.invocation.id);
   });
 
-  it("creates the next implicit side-effect generation after a terminal invocation", async () => {
+  it("creates one fresh implicit upload-link generation after success and deduplicates concurrent callers", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection } = await createTool(db, company.id);
@@ -912,15 +912,153 @@ describeEmbeddedPostgres("tool access policy service", () => {
     await db.update(toolInvocations).set({ status: "succeeded", completedAt: new Date() })
       .where(eq(toolInvocations.id, first.invocation.id));
 
-    const second = await toolAccessPolicyService(db).recordInvocation(input, decision);
+    const [second, concurrent] = await Promise.all([
+      toolAccessPolicyService(db).recordInvocation(input, decision),
+      toolAccessPolicyService(db).recordInvocation(input, decision),
+    ]);
     const replay = await toolAccessPolicyService(db).recordInvocation(input, decision);
 
     expect(second.replayed).toBe(false);
     expect(second.invocation.id).not.toBe(first.invocation.id);
     expect(second.invocation.idempotencyKey).toMatch(/^side_effect:/);
     expect(second.invocation.idempotencyKey).not.toBe(first.invocation.idempotencyKey);
+    expect(concurrent.invocation.id).toBe(second.invocation.id);
     expect(replay).toMatchObject({ replayed: true });
     expect(replay.invocation.id).toBe(second.invocation.id);
+  });
+
+  it.each(["authorized", "executing", "timed_out"] as const)(
+    "replays an implicit upload-link invocation in %s state",
+    async (status) => {
+      const company = await createCompany(db);
+      const agent = await createAgent(db, company.id);
+      const { connection } = await createTool(db, company.id);
+      await db.insert(principalPermissionGrants).values({
+        companyId: company.id,
+        principalType: "agent",
+        principalId: agent.id,
+        permissionKey: "tools:use",
+        scope: { toolName: "media_generate_upload_link" },
+      });
+      const input = {
+        companyId: company.id,
+        actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+        request: {
+          connectionId: connection.id,
+          toolName: "media_generate_upload_link",
+          arguments: {},
+          sideEffecting: true,
+        },
+      };
+      const service = toolAccessPolicyService(db);
+      const decision = await service.decide(input);
+      const first = await service.recordInvocation(input, decision);
+      await db.update(toolInvocations).set({ status }).where(eq(toolInvocations.id, first.invocation.id));
+
+      const replay = await service.recordInvocation(input, decision);
+
+      expect(replay).toMatchObject({ replayed: true });
+      expect(replay.invocation.id).toBe(first.invocation.id);
+    },
+  );
+
+  it("keeps implicit successful publish writes and explicit upload keys idempotent", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createTool(db, company.id);
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent.id,
+      permissionKey: "tools:use",
+      scope: {},
+    });
+    const service = toolAccessPolicyService(db);
+    for (const request of [
+      {
+        connectionId: connection.id,
+        toolName: "media_publish_post",
+        arguments: { postId: "same-post" },
+        sideEffecting: true,
+      },
+      {
+        connectionId: connection.id,
+        toolName: "media_generate_upload_link",
+        arguments: {},
+        sideEffecting: true,
+        idempotencyKey: "story-frame-1-upload",
+      },
+    ]) {
+      const input = {
+        companyId: company.id,
+        actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+        request,
+      };
+      const decision = await service.decide(input);
+      const first = await service.recordInvocation(input, decision);
+      await db.update(toolInvocations).set({ status: "succeeded", completedAt: new Date() })
+        .where(eq(toolInvocations.id, first.invocation.id));
+
+      const replay = await service.recordInvocation(input, decision);
+
+      expect(replay).toMatchObject({ replayed: true });
+      expect(replay.invocation.id).toBe(first.invocation.id);
+    }
+  });
+
+  it("isolates identical implicit upload arguments by company, issue, run, and agent context", async () => {
+    const company = await createCompany(db);
+    const otherCompany = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const otherAgent = await createAgent(db, company.id);
+    const foreignAgent = await createAgent(db, otherCompany.id);
+    const issue = await createIssue(db, company.id, "Story A");
+    const otherIssue = await createIssue(db, company.id, "Story B");
+    const run = await createRun(db, company.id, agent.id);
+    const otherRun = await createRun(db, company.id, otherAgent.id);
+    const foreignRun = await createRun(db, otherCompany.id, foreignAgent.id);
+    const { connection } = await createTool(db, company.id);
+    const { connection: foreignConnection } = await createTool(db, otherCompany.id);
+    await db.insert(principalPermissionGrants).values([
+      ...[agent, otherAgent].map((current) => ({
+        companyId: company.id,
+        principalType: "agent" as const,
+        principalId: current.id,
+        permissionKey: "tools:use",
+        scope: { toolName: "media_generate_upload_link" },
+      })),
+      {
+        companyId: otherCompany.id,
+        principalType: "agent" as const,
+        principalId: foreignAgent.id,
+        permissionKey: "tools:use",
+        scope: { toolName: "media_generate_upload_link" },
+      },
+    ]);
+    const contexts = [
+      { companyId: company.id, agent, issueId: issue.id, runId: run.id, connectionId: connection.id },
+      { companyId: company.id, agent: otherAgent, issueId: otherIssue.id, runId: otherRun.id, connectionId: connection.id },
+      { companyId: otherCompany.id, agent: foreignAgent, issueId: null, runId: foreignRun.id, connectionId: foreignConnection.id },
+    ];
+    const ids: string[] = [];
+    for (const context of contexts) {
+      const input = {
+        companyId: context.companyId,
+        actor: { actorType: "agent" as const, actorId: context.agent.id, agentId: context.agent.id },
+        runContext: { heartbeatRunId: context.runId, issueId: context.issueId },
+        request: {
+          connectionId: context.connectionId,
+          toolName: "media_generate_upload_link",
+          arguments: {},
+          sideEffecting: true,
+        },
+      };
+      const service = toolAccessPolicyService(db);
+      const decision = await service.decide(input);
+      ids.push((await service.recordInvocation(input, decision)).invocation.id);
+    }
+
+    expect(new Set(ids).size).toBe(3);
   });
 
   it("enforces rate-limit policies before explicit grants", async () => {
