@@ -2229,6 +2229,8 @@ export async function unidentifiedLocalRunnerProvenAbsent(input: {
   return true;
 }
 
+const COARSE_FILE_TIMESTAMP_MARGIN_MS = 2_000;
+
 function runnerStateUnchangedSince(root: string, requestedAt: number | null | undefined): boolean {
   if (typeof requestedAt !== "number" || !Number.isFinite(requestedAt)) return false;
   const stateFile = resolve(root, "runner", "runner-state.json");
@@ -2236,7 +2238,10 @@ function runnerStateUnchangedSince(root: string, requestedAt: number | null | un
   const paths = [stateFile, ...existsSync(lineage) ? readdirSync(lineage).map(name => resolve(lineage, name)) : []];
   return paths.every(path => {
     const stats = lstatSync(path, { throwIfNoEntry: false });
-    return path === stateFile && !stats ? true : Boolean(stats?.isFile() && stats.mtimeMs < requestedAt);
+    if (path === stateFile && !stats) return true;
+    if (!stats?.isFile()) return false;
+    const coarseTimestamp = stats.mtimeMs % 1000 === 0;
+    return stats.mtimeMs + (coarseTimestamp ? COARSE_FILE_TIMESTAMP_MARGIN_MS : 0) < requestedAt;
   });
 }
 

@@ -1273,7 +1273,8 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     },
   );
 
-  it.each(["proven", "state_after_request", "lineage_after_request", "previous_release", "earlier_runner_unproven", "live_runner"] as const)(
+  it.each(["proven", "coarse_before_request", "coarse_same_second", "state_after_request", "lineage_after_request", "previous_release",
+    "earlier_runner_unproven", "live_runner"] as const)(
     "starts a Retry after restarts cut off a relaunch whose earlier runners were proven stopped (%s)", async kind => {
       const f = await seed();
       const stateBase = await mkdtemp(join(tmpdir(), "relaunched-runner-"));
@@ -1317,9 +1318,11 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
           schema: "paperclip.runner.durable.control-plane-state.v1", identity: { runId: f.sourceRunId } }));
         await writeFile(join(root, "runner/runner-state.json"), JSON.stringify({ schema: "paperclip.runner.durable.state.v1" }));
         await writeFile(join(root, `runner/process-lineage/writer-${deadPid}.json`), JSON.stringify({ schema: "paperclip.runner.process-lineage-writer.v1" }));
-        const requestedAt = new Date(Date.now() + 60_000);
+        const requestedAt = new Date(Math.floor(Date.now() / 1000) * 1000 + 60_500);
         const earlier = new Date(requestedAt.getTime() - 30_000), later = new Date(requestedAt.getTime() + 30_000);
-        await utimes(join(root, "runner/runner-state.json"), earlier, kind === "state_after_request" ? later : earlier);
+        const stateTime = { state_after_request: later, coarse_same_second: new Date(requestedAt.getTime() - 500),
+          coarse_before_request: new Date(requestedAt.getTime() - 3_500) }[kind as string] ?? earlier;
+        await utimes(join(root, "runner/runner-state.json"), earlier, stateTime);
         await utimes(join(root, `runner/process-lineage/writer-${deadPid}.json`), earlier, kind === "lineage_after_request" ? later : earlier);
         await event(PROCESS_START_REQUESTED, { hostname: host, providerAttempt: 1,
           ...(kind === "previous_release" ? {} : { requestedAt: requestedAt.toISOString() }) });
@@ -1333,14 +1336,14 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
           return admitExplicitNativeContinuation({ ...f, db: tx as unknown as typeof db, reason: "retry_failed_run",
             failedRunId: f.sourceRunId, onBlocked: reason => blocked.push(reason) });
         });
-        if (kind === "proven") {
+        if (kind === "proven" || kind === "coarse_before_request") {
           expect(admitted).toMatchObject({ previousRunId: f.sourceRunId, failedRunId: f.sourceRunId });
           expect(blocked).toEqual([]);
         } else {
           expect(admitted).toBeNull();
           expect(blocked).toEqual(["process_identity_missing"]);
         }
-        expect(await hasNativeLocalProcessStop(db, f.companyId, f.sourceRunId)).toBe(kind === "proven");
+        expect(await hasNativeLocalProcessStop(db, f.companyId, f.sourceRunId)).toBe(kind === "proven" || kind === "coarse_before_request");
       } finally {
         if (child) { const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; }
         if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
