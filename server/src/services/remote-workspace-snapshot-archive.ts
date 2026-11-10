@@ -17,6 +17,7 @@ export async function workspaceArchive(input: {
   signal?: AbortSignal;
   maxEntries?: number;
   maxManifestBytes?: number;
+  integrity?: "files" | "archive";
 }): Promise<{ schema: "paperclip.remote-workspace-archive.v1"; manifestDigest: string; byteSize: number; sha256: string; entries: number }> {
   const fs = await import("node:fs/promises");
   const { createReadStream } = await import("node:fs");
@@ -26,6 +27,7 @@ export async function workspaceArchive(input: {
   const child = await import("node:child_process");
   const schema = "paperclip.remote-workspace-archive.v1" as const;
   const magic = Buffer.from("PCWS1\n");
+  const archiveIntegrity = input.integrity === "archive";
   type Entry = { path: string; type: "directory" | "file" | "symlink"; mode?: number; size?: number; sha256?: string; target?: string };
   const fail = (reason: string): never => { throw new Error(`remote_workspace_archive_${reason}`); };
   const check = () => input.signal?.throwIfAborted();
@@ -248,8 +250,20 @@ export async function workspaceArchive(input: {
       || await git(repo, ["ls-files", "--unmerged", "-z"])) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
     return { objects: [{ object, type: "commit" }], metadata: [{ name: "REBASE_HEAD", sha256: entry.sha256 }] };
   };
-  const readStableFile = async (source: string, consume?: (bytes: Buffer) => Promise<void>) => {
+  const readStableFile = async (source: string, consume?: (bytes: Buffer) => Promise<void>, hashContents = true) => {
     check();
+    if (!hashContents) {
+      const handle = await fs.open(source, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+      try {
+        const stat = await handle.stat();
+        if (!stat.isFile() || await fs.realpath(source) !== source) fail("changed");
+        let size = 0;
+        for await (const bytes of handle.createReadStream({ autoClose: false, signal: input.signal, highWaterMark: 1024 * 1024 })) {
+          check(); size += bytes.length; await consume?.(bytes);
+        }
+        return { sha256: "", size, mode: stat.mode & 0o777 };
+      } finally { await handle.close(); }
+    }
     const original = await fs.lstat(source, { bigint: true });
     const handle = await fs.open(source, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
     try {
@@ -452,6 +466,10 @@ export async function workspaceArchive(input: {
         } else if (stat.isFile()) {
           const entry: Entry = { path: next, type: "file" };
           entries.push(entry);
+          if (archiveIntegrity) {
+            entry.size = stat.size; entry.mode = stat.mode & 0o777;
+            continue;
+          }
           const read = readStableFile(source).then(value => { Object.assign(entry, value); }, error => {
             if (!failed) { failed = true; failure = error; }
           });
@@ -499,14 +517,14 @@ export async function workspaceArchive(input: {
       for (let index = 0; index < repositories.length; index++) {
         const relative = repositories[index]!, repo = path.join(root, relative), normalized = path.join(scratch, `repo-${index}.git`);
         const settings = await portableGitSettings(repo);
-        gitSignatures.set(relative, await signature(repo, settings));
+        if (!archiveIntegrity) gitSignatures.set(relative, await signature(repo, settings));
         const offline = await gitStateHash(repo, "shallow") !== null
           || settings.some(setting => /^remote\..*\.promisor$/u.test(setting.key) && setting.value === "true");
         if (offline) {
           // A shallow local clone uses upload-pack. It drops index-only objects
           // and asks a filtered source for promised blobs it never downloaded.
           // Preserve its existing stores and promisor boundaries without fetch.
-          await verifyGitObjects(repo);
+          if (!archiveIntegrity) await verifyGitObjects(repo);
           const format = (await git(repo, ["rev-parse", "--show-object-format"])).trim();
           if (!["sha1", "sha256"].includes(format)) fail("unsupported_git_setting");
           await git(root, ["init", "--bare", "--template=", `--object-format=${format}`, normalized]);
@@ -557,33 +575,45 @@ export async function workspaceArchive(input: {
           await git(restoredRepo, ["cat-file", "-e", `${object}^{${type}}`]);
         }
         await fs.rm(path.join(destination, "objects", "info", "alternates"), { force: true });
-        await verifyGitObjects(restoredRepo);
-        if (await signature(repo) !== gitSignatures.get(relative)) fail("changed");
+        if (!archiveIntegrity) {
+          await verifyGitObjects(restoredRepo);
+          if (await signature(repo) !== gitSignatures.get(relative)) fail("changed");
+        }
       }
       const originals = new Map(before.map(entry => [entry.path, entry]));
       const entries = [...before, ...(await walk(tree)).filter(entry => !originals.has(entry.path))]
         .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
-      const manifest = { schema, exclusionPolicy: "paperclip.remote-workspace-exclusions.v1", excluded: [...excludedPaths].sort(), entries }, body = Buffer.from(JSON.stringify(manifest));
+      const manifest = { schema, exclusionPolicy: "paperclip.remote-workspace-exclusions.v1", excluded: [...excludedPaths].sort(), entries,
+        ...(archiveIntegrity ? { bodySha256: "0".repeat(64) } : {}) };
+      let body = Buffer.from(JSON.stringify(manifest));
       if (body.length > 64 * 1024 * 1024) fail("manifest_too_large");
-      const digest = manifestHash(manifest), length = Buffer.alloc(4); length.writeUInt32BE(body.length);
+      const length = Buffer.alloc(4); length.writeUInt32BE(body.length);
       const output = await fs.open(input.archivePath, "wx", 0o600);
+      const bodyDigest = archiveIntegrity ? crypto.createHash("sha256") : undefined;
       archiveCreated = true;
       try {
         await output.writeFile(Buffer.concat([magic, length, body]));
         for (const entry of entries) if (entry.type === "file") {
-          const observed = await readStableFile(path.join(originals.has(entry.path) ? root : tree, entry.path), bytes => output.writeFile(bytes));
-          if (observed.size !== entry.size || observed.sha256 !== entry.sha256 || observed.mode !== entry.mode) fail("changed");
+          const observed = await readStableFile(path.join(originals.has(entry.path) ? root : tree, entry.path), async bytes => {
+            bodyDigest?.update(bytes); await output.writeFile(bytes);
+          }, !archiveIntegrity);
+          if (observed.size !== entry.size || !archiveIntegrity && observed.sha256 !== entry.sha256 || observed.mode !== entry.mode) fail("changed");
+        }
+        if (bodyDigest) {
+          manifest.bodySha256 = bodyDigest.digest("hex");
+          body = Buffer.from(JSON.stringify(manifest));
+          if ((await output.write(body, 0, body.length, magic.length + 4)).bytesWritten !== body.length) fail("changed");
         }
       } finally { await output.close(); }
       directories.length = 0;
-      if (JSON.stringify(before) !== JSON.stringify(await walk(root, true))) fail("changed");
-      for (const relative of repositories) {
+      if (!archiveIntegrity && JSON.stringify(before) !== JSON.stringify(await walk(root, true))) fail("changed");
+      for (const relative of archiveIntegrity ? [] : repositories) {
         if (await signature(path.join(root, relative)) !== gitSignatures.get(relative)) fail("changed");
       }
       if (input.manifestPath) await fs.writeFile(input.manifestPath, body, { flag: "wx", mode: 0o600 });
       const content = await hashFile(input.archivePath);
       completed = true;
-      return { schema, manifestDigest: digest, ...content, entries: entries.length };
+      return { schema, manifestDigest: manifestHash(manifest), ...content, entries: entries.length };
     } finally {
       if (archiveCreated && !completed) await fs.rm(input.archivePath, { force: true });
       await fs.rm(scratch, { recursive: true, force: true });
@@ -604,8 +634,10 @@ export async function workspaceArchive(input: {
     const bytes = Buffer.alloc(manifestSize);
     if ((await archive.read(bytes, 0, manifestSize, prefix.length)).bytesRead !== manifestSize) fail("truncated");
     check();
-    const manifest = JSON.parse(bytes.toString("utf8")) as { schema: string; entries: Entry[] };
+    const manifest = JSON.parse(bytes.toString("utf8")) as { schema: string; entries: Entry[]; bodySha256?: string };
     if (manifest.schema !== schema || !Array.isArray(manifest.entries) || manifestHash(manifest) !== input.expectedManifestDigest) fail("manifest_mismatch");
+    if (manifest.bodySha256 !== undefined && !/^[a-f0-9]{64}$/.test(manifest.bodySha256)) fail("manifest_mismatch");
+    const bodyDigest = manifest.bodySha256 === undefined ? undefined : crypto.createHash("sha256");
     if (input.maxEntries !== undefined && manifest.entries.length > input.maxEntries) fail("entry_limit");
     const kinds = new Map<string, string>(); let bodySize = 0;
     for (const entry of manifest.entries) {
@@ -614,7 +646,8 @@ export async function workspaceArchive(input: {
       const parent = path.posix.dirname(entry.path);
       if (parent !== "." && kinds.get(parent) !== "directory") fail("invalid_parent");
       if (entry.type === "file") {
-        if (!Number.isSafeInteger(entry.size) || entry.size! < 0 || !/^[a-f0-9]{64}$/.test(entry.sha256 ?? "")) fail("invalid_file");
+        if (!Number.isSafeInteger(entry.size) || entry.size! < 0
+          || (bodyDigest ? entry.sha256 !== undefined : !/^[a-f0-9]{64}$/.test(entry.sha256 ?? ""))) fail("invalid_file");
         bodySize += entry.size!;
       } else if (entry.type === "symlink") { if (!safeLink(entry.path, entry.target!)) fail("unsafe_symlink"); }
       else if (entry.type !== "directory") fail("invalid_type");
@@ -634,20 +667,21 @@ export async function workspaceArchive(input: {
       if (entry.type === "directory") { await fs.mkdir(target, { mode: 0o700 }); stagedDirectories.push(target); }
       else if (entry.type === "symlink") await fs.symlink(entry.target!, target);
       else {
-        const output = await fs.open(target, "wx", 0o600), digest = crypto.createHash("sha256");
+        const output = await fs.open(target, "wx", 0o600), digest = bodyDigest ? undefined : crypto.createHash("sha256");
         try {
           let remaining = entry.size!;
           while (remaining) {
             check(); const read = await archive.read(buffer, 0, Math.min(buffer.length, remaining), offset);
             if (!read.bytesRead) fail("truncated");
-            const part = buffer.subarray(0, read.bytesRead); await output.writeFile(part); digest.update(part);
+            const part = buffer.subarray(0, read.bytesRead); await output.writeFile(part); (bodyDigest ?? digest!).update(part);
             offset += read.bytesRead; remaining -= read.bytesRead;
           }
-          if (digest.digest("hex") !== entry.sha256) fail("file_hash_mismatch");
+          if (digest && digest.digest("hex") !== entry.sha256) fail("file_hash_mismatch");
         } finally { await output.close(); }
         await fs.chmod(target, entry.mode!);
       }
     }
+    if (bodyDigest && bodyDigest.digest("hex") !== manifest.bodySha256) fail("archive_hash_mismatch");
     for (const entry of manifest.entries.filter(entry => entry.type === "directory").reverse()) {
       check(); await fs.chmod(path.join(staging, entry.path), entry.mode!);
     }
@@ -737,7 +771,7 @@ archive({...workerData,signal:controller.signal}).then(result=>parentPort.postMe
   }
 }
 
-export function captureRemoteWorkspaceDirectory(input: { cwd: string; archivePath: string; manifestPath?: string; exclude?: string[]; requireNoGit?: boolean; gitSourceRoots?: string[]; signal?: AbortSignal }) {
+export function captureRemoteWorkspaceDirectory(input: { cwd: string; archivePath: string; manifestPath?: string; exclude?: string[]; requireNoGit?: boolean; gitSourceRoots?: string[]; signal?: AbortSignal; integrity?: "files" | "archive" }) {
   return runArchiveWorker({ ...input, kind: "capture" });
 }
 
