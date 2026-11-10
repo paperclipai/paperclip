@@ -886,6 +886,9 @@ pub struct CodexProvider {
     /// The latest synchronous request ended because its deadline passed with
     /// the provider still running and silent (no reply, no exit).
     last_request_got_no_reply: bool,
+    /// The latest stdout receive returned nothing because its own timeout
+    /// passed, not because stdout closed or the reader disconnected.
+    last_receive_timed_out: bool,
 }
 
 #[derive(Debug)]
@@ -1330,6 +1333,7 @@ impl CodexProvider {
             permission_profile,
             exit_drain: None,
             last_request_got_no_reply: false,
+            last_receive_timed_out: false,
         };
         let mut stage = ProviderStartupStage::Initialize;
         let initialized_result = (|| -> Result<(), LocalRunnerError> {
@@ -3989,7 +3993,6 @@ impl CodexProvider {
                     format!("Provider {method} exceeded its bounded response deadline"),
                 )));
             }
-            let receive_deadline = std::time::Instant::now() + remaining;
             let line = self
                 .receive_provider_stdout_line(remaining)
                 .map_err(ProviderRequestError::Ambiguous)?;
@@ -4008,8 +4011,8 @@ impl CodexProvider {
                         exit.exit_code, exit.signal
                     )
                 } else {
-                    // Only a deadline that passed, not a closed stdout.
-                    self.last_request_got_no_reply = std::time::Instant::now() >= receive_deadline;
+                    // Only the receive's own timeout, never a closed stdout.
+                    self.last_request_got_no_reply = self.last_receive_timed_out;
                     format!("Codex {method} response timed out{diagnostic_suffix}")
                 };
                 return Err(ProviderRequestError::Ambiguous(LocalRunnerError::invalid(
@@ -4100,10 +4103,12 @@ impl CodexProvider {
         &mut self,
         timeout: Duration,
     ) -> Result<Option<String>, LocalRunnerError> {
+        self.last_receive_timed_out = false;
         let deadline = std::time::Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
+                self.last_receive_timed_out = true;
                 return Ok(None);
             }
             match self.process.recv_timeout(remaining) {
@@ -4116,7 +4121,10 @@ impl CodexProvider {
                 }
                 Ok(ProcessOutput::StdoutClosed) => return Ok(None),
                 Ok(ProcessOutput::StderrClosed) => {}
-                Err(mpsc::RecvTimeoutError::Timeout) => return Ok(None),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.last_receive_timed_out = true;
+                    return Ok(None);
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(None),
             }
         }

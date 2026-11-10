@@ -213,6 +213,71 @@ fn restart_relaunches_a_provider_whose_relaunch_timed_out_without_a_reply() {
     fs::remove_dir_all(directory).unwrap();
 }
 
+/// A provider that closed its stdout without replying failed; it was not a
+/// silent stall. Its fence stays closed even after its process is gone.
+#[cfg(unix)]
+#[test]
+fn restart_keeps_the_fence_for_a_provider_that_closed_stdout_without_a_reply() {
+    let directory = temporary_directory("closed-stdout-provider-startup");
+    let runner_config = durable_config(&directory);
+    let mut first = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": provider_config(
+                &directory,
+                &["--hold-turn", "--close-stdout-on-first-thread-resume"],
+            )}),
+        ))
+        .unwrap();
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    first
+        .execute(&command(
+            "start",
+            3,
+            "turn.start",
+            json!({"text": "Fail a provider relaunch by closing stdout."}),
+        ))
+        .unwrap();
+    first.shutdown().unwrap();
+    drop(first);
+
+    let mut failed = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    failed
+        .execute(&command(
+            "command_resume_probe_1",
+            9,
+            "runner.drain",
+            json!({}),
+        ))
+        .unwrap_err();
+    drop(failed);
+    let state_path = directory.join("codex-provider-state.json");
+    let saved: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    let fact = &saved["startupAttempt"];
+    assert_eq!(fact["phase"], "initialization_failed");
+    assert_eq!(fact["failedStage"], "thread_open");
+    assert!(fact.get("noReply").is_none(), "{fact}");
+
+    let mut restarted = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    let error = restarted
+        .execute(&command(
+            "command_resume_probe_2",
+            10,
+            "runner.drain",
+            json!({}),
+        ))
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("provider startup ownership remains unadmitted"));
+    fs::remove_dir_all(directory).unwrap();
+}
+
 fn temporary_directory(label: &str) -> PathBuf {
     let directory = std::env::temp_dir().join(format!(
         "paperclip-runner-codex-{label}-{}-{}",
