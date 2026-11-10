@@ -23,6 +23,7 @@ function callbacks() {
     getRun: vi.fn<HeartbeatRetryDependencies["getRun"]>(async () => null),
     getAgent: vi.fn<HeartbeatRetryDependencies["getAgent"]>(async () => undefined),
     resolveSessionBeforeForWakeup: vi.fn(async () => null),
+    getTaskSession: vi.fn(async () => null as never),
     resolveResponsibleUserIdForRunContext: vi.fn(async () => "retry-user"),
     getAgentInvokability: vi.fn<HeartbeatRetryDependencies["getAgentInvokability"]>(async () => ({ invokable: true })),
     appendRunEvent: vi.fn<HeartbeatRetryDependencies["appendRunEvent"]>(async () => undefined),
@@ -275,7 +276,7 @@ describePostgres("heartbeat retry module database wiring", () => {
     const deps = {
       ...callbacks(), getRun: state.getRun, getAgent: state.getAgent,
       hasCaseHandoffForRun: async (run: Pick<Run, "id" | "companyId">) => Boolean(await pendingCaseHandoffForRun(db, run.id, run.companyId)),
-      resolveSessionBeforeForWakeup: state.resolveSessionBeforeForWakeup,
+      resolveSessionBeforeForWakeup: state.resolveSessionBeforeForWakeup, getTaskSession: state.getTaskSession,
       getAgentInvokability: (agent: Agent | null | undefined) => evaluateAgentInvokabilityFromDb(db, agent),
       runDispatch: createRunDispatch(db),
     };
@@ -439,24 +440,22 @@ describePostgres("heartbeat retry module database wiring", () => {
   });
 
   it.each([
-    { name: "resumes the session that the failed run saved", savedByFailedRun: true, reconstruction: false, fresh: false },
-    { name: "keeps the fresh-session request when the failed run saved no session", savedByFailedRun: false, reconstruction: false, fresh: true },
-    { name: "keeps the fresh-session request on a workspace reconstruction retry", savedByFailedRun: true, reconstruction: true, fresh: true },
-  ])("a retry of a fresh-session run $name", async ({ savedByFailedRun, reconstruction, fresh }) => {
+    { name: "drops the request when the task session is the failed run's", session: "failed-run", reconstruction: false, fresh: false },
+    { name: "keeps the request when the task session is an earlier run's", session: "earlier-run", reconstruction: false, fresh: true },
+    { name: "keeps the request when no task session exists", session: "none", reconstruction: false, fresh: true },
+    { name: "keeps the request on a workspace reconstruction retry", session: "failed-run", reconstruction: true, fresh: true },
+  ] as const)("a retry of a fresh-session run $name", async ({ session, reconstruction, fresh }) => {
     const { run, agent, companyId } = await fixture();
     const taskRetryRequestId = randomUUID();
     const failed = { ...run, contextSnapshot: { ...run.contextSnapshot, taskKey: "retry-task", forceFreshSession: true, taskRetryRequestId,
       ...(reconstruction ? { workspaceReconstructionActionId: randomUUID() } : {}) } };
-    await db.insert(agentTaskSessions).values({ companyId, agentId: agent.id, adapterType: agent.adapterType, taskKey: "retry-task",
-      sessionParamsJson: { sessionId: "session-1" }, sessionDisplayId: "session-1", lastRunId: savedByFailedRun ? run.id : null });
+    if (session !== "none") await db.insert(agentTaskSessions).values({ companyId, agentId: agent.id, adapterType: agent.adapterType, taskKey: "retry-task",
+      sessionParamsJson: { sessionId: "session-1" }, sessionDisplayId: "session-1", lastRunId: session === "failed-run" ? run.id : null });
     const result = await boundRetries().retries.scheduleBoundedRetryForRun(failed, agent, { now, random: () => 0 });
     expect(result.outcome).toBe("scheduled");
     const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
-    if (fresh) expect(successor!.contextSnapshot).toMatchObject({ forceFreshSession: true, taskRetryRequestId });
-    else {
-      expect(successor!.contextSnapshot).not.toHaveProperty("forceFreshSession");
-      expect(successor!.contextSnapshot).not.toHaveProperty("taskRetryRequestId");
-    }
+    expect(successor!.contextSnapshot).toMatchObject({ taskRetryRequestId });
+    expect(successor!.contextSnapshot?.forceFreshSession).toBe(fresh ? true : undefined);
     expect(shouldResetTaskSessionForWake(successor!.contextSnapshot)).toBe(fresh);
   });
 

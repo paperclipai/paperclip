@@ -788,6 +788,20 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledOnce();
   });
 
+  it("saves the failed run's task session before it schedules the retry, and saves it once", async () => {
+    const f = await fixture();
+    let sessionAtScheduling: Awaited<ReturnType<typeof f.deps.getTaskSession>> | undefined;
+    f.deps.scheduleBoundedRetryForRun.mockImplementationOnce(async () => {
+      sessionAtScheduling = await f.deps.getTaskSession(f.agent.companyId, f.agent.id, f.agent.adapterType, "completion-task");
+      return { outcome: "not_scheduled", reason: "Fixture scheduler boundary", issueId: null };
+    });
+    await f.completion.completeRun({ ...f.input, adapterResult: { ...f.input.adapterResult, exitCode: 1, errorCode: "provider_quota", errorMessage: "quota" } });
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledOnce();
+    expect(sessionAtScheduling).toMatchObject({ lastRunId: f.run.id, sessionDisplayId: "provider-session" });
+    expect(f.deps.upsertTaskSession).toHaveBeenCalledOnce();
+    expect(f.deps.updateRuntimeState).toHaveBeenCalledOnce();
+  });
+
   it("clears only the completed task session when the adapter requests a reset", async () => {
     const f = await fixture();
     f.input.adapterResult.clearSession = true;
