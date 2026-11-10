@@ -629,9 +629,11 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         }
         if (presentation.setupFailure) {
           const value = safe[index]?.setupFailure;
-          const command = safeMessage(value?.command), message = safeMessage(value?.message);
+          // Redact the whole text, then shorten: the output keeps its final lines, not a head slice.
+          const whole = (text: unknown) => typeof text === "string" ? redactCurrentUserText(text, { enabled: settings.censorUsernameInLogs }) : "";
+          const command = whole(value?.command), message = whole(value?.message);
           const failure = value && command.trim() && message.trim()
-            ? boundSetupCommandFailure({ ...value, command, output: value.output == null ? null : safeMessage(value.output) || null, message })
+            ? boundSetupCommandFailure({ ...value, command, output: value.output == null ? null : whole(value.output) || null, message })
             : null;
           if (failure) presentation.setupFailure = failure;
           else delete presentation.setupFailure;
