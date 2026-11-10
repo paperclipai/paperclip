@@ -356,7 +356,8 @@ export async function ageWaveDatabase(input: { connectionString: string; faultId
             if (!recorded.has(statement.table)) continue;
             // Identity, state and times only: payload columns can carry run output.
             const keys = identityColumns.filter(key => key.table === statement.table).map(key => key.column);
-            const times = columns.filter(column => column.table === statement.table && column.kind === "timestamp").map(column => column.column);
+            const times = columns.filter(column => column.table === statement.table && column.kind === "timestamp"
+              && !isProcessIdentityTime(column.column)).map(column => column.column);
             const select = [...keys, ...times].map(quote).join(", ");
             const order = times.includes("created_at") ? " order by created_at desc" : "";
             before[statement.table] = await tx.unsafe(`select ${select} from public.${quote(statement.table)}${order} limit ${RECORDED_ROWS_PER_TABLE}`) as unknown as unknown[];
@@ -373,7 +374,7 @@ export async function ageWaveDatabase(input: { connectionString: string; faultId
         const evidencePath = path.join(input.evidenceDir, `${input.faultId}.json`);
         await mkdir(input.evidenceDir, { recursive: true, mode: 0o700 });
         await writeFile(evidencePath, `${JSON.stringify({ faultId: input.faultId, ageMs: input.ageMs, startedAt, appliedAt,
-          note: "Rows of the time-bound tables as they were before the shift; after the shift every timestamp shown is ageMs earlier.",
+          note: "Rows of the time-bound tables as they were before the shift; after the shift every timestamp shown is ageMs earlier. Process start identity is not aged and not shown.",
           tables, rowsBefore: outcome.before }, null, 2)}\n`, { mode: 0o600 });
         return { faultId: input.faultId, ageMs: input.ageMs, appliedAt, waveStartedAt: input.waveStartedAt, startedAt, tables,
           totalRows: tables.reduce((sum, table) => sum + table.rows, 0), triggersDisabled, lockRetries, evidencePath };
