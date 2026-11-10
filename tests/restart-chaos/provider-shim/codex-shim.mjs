@@ -16,6 +16,7 @@
 import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { fileURLToPath } from "node:url";
 
 const configPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "shim-config.json");
@@ -73,10 +74,12 @@ const child = spawn(config.realCommand, process.argv.slice(2), { stdio: ["pipe",
 log({ event: "spawned", childPid: child.pid ?? null, args: process.argv.slice(2).filter(arg => arg === "app-server" || arg === "--version") });
 
 // Parent -> provider: relayed byte for byte; read only to bind and to see interrupts.
+// A decoder per stream keeps a multibyte character that spans two chunks intact.
+const inputDecoder = new StringDecoder("utf8");
 let inputBuffer = "";
 process.stdin.on("data", chunk => {
   child.stdin.write(chunk);
-  inputBuffer += chunk.toString("utf8");
+  inputBuffer += inputDecoder.write(chunk);
   let newline;
   while ((newline = inputBuffer.indexOf("\n")) >= 0) {
     const line = inputBuffer.slice(0, newline);
@@ -99,7 +102,8 @@ process.stdin.on("data", chunk => {
 process.stdin.on("end", () => child.stdin.end());
 child.stdin.on("error", () => undefined);
 
-const pendingTimers = new Set();
+/** Held PV1 messages: timer -> the rule it belongs to. */
+const pendingTimers = new Map();
 function emit(line) { process.stdout.write(`${line}\n`); }
 
 function classify(message) {
@@ -140,12 +144,13 @@ function relay(line) {
     emit(line);
     log({ event: "released", nonce: rule.nonce, kind: rule.kind, message: target.message, delayMs });
   }, delayMs);
-  pendingTimers.add(timer);
+  pendingTimers.set(timer, { nonce: rule.nonce, kind: rule.kind, message: target.message, delayMs });
 }
 
+const outputDecoder = new StringDecoder("utf8");
 let outputBuffer = "";
 child.stdout.on("data", chunk => {
-  outputBuffer += chunk.toString("utf8");
+  outputBuffer += outputDecoder.write(chunk);
   let newline;
   while ((newline = outputBuffer.indexOf("\n")) >= 0) {
     const line = outputBuffer.slice(0, newline);
@@ -153,7 +158,10 @@ child.stdout.on("data", chunk => {
     relay(line);
   }
 });
-child.stdout.on("end", () => { if (outputBuffer) { process.stdout.write(outputBuffer); outputBuffer = ""; } });
+child.stdout.on("end", () => {
+  outputBuffer += outputDecoder.end();
+  if (outputBuffer) { process.stdout.write(outputBuffer); outputBuffer = ""; }
+});
 
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
   process.on(signal, () => { try { child.kill(signal); } catch { /* already gone */ } });
@@ -167,8 +175,11 @@ child.on("error", error => {
 // "close": the provider exited and its stdout is fully relayed.
 child.on("close", (code, signal) => {
   // A provider that exits takes its held messages with it, as a dead provider would.
-  if (pendingTimers.size) log({ event: "held_messages_discarded", count: pendingTimers.size });
-  for (const timer of pendingTimers) clearTimeout(timer);
+  for (const [timer, held] of pendingTimers) {
+    clearTimeout(timer);
+    log({ event: "held_message_discarded", ...held });
+  }
+  pendingTimers.clear();
   log({ event: "exited", code, signal });
   const finish = () => process.exit(code ?? (signal ? 128 + (signal === "SIGKILL" ? 9 : signal === "SIGINT" ? 2 : 15) : 1));
   if (process.stdout.writableNeedDrain) process.stdout.once("drain", finish); else finish();

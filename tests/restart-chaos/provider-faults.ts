@@ -45,7 +45,7 @@ export interface ProviderFaultRule {
 export interface ProviderFaultEvent {
   at: number;
   pid: number;
-  event: "spawned" | "bound" | "interrupt_requested" | "applied" | "released" | "held_messages_discarded" | "exited" | "spawn_failed";
+  event: "spawned" | "bound" | "interrupt_requested" | "applied" | "released" | "held_message_discarded" | "exited" | "spawn_failed";
   nonce?: string | null;
   kind?: ProviderFaultKind;
   message?: ProviderMessage;
@@ -199,9 +199,11 @@ export function withProviderFaultCheck(oracle: OracleResult, plan: TaskPlan, eve
   const rule = plan.providerFault;
   const applied = events.filter(event => event.event === "applied" && event.kind === rule.kind && event.message === rule.message);
   const released = events.filter(event => event.event === "released" && event.kind === rule.kind);
-  const exercised = applied.length === 1 && (rule.kind !== "PV1" || released.length === 1 || events.some(event => event.event === "held_messages_discarded"));
+  // A held message the provider took with it when it exited still counts: the delay happened.
+  const discarded = events.filter(event => event.event === "held_message_discarded" && event.kind === rule.kind);
+  const exercised = applied.length === 1 && (rule.kind !== "PV1" || released.length + discarded.length === 1);
   const checks = [...oracle.checks, { name: "provider_fault_applied", ok: exercised,
-    detail: `${describeProviderFault(rule)}: applied=${applied.length}${rule.kind === "PV1" ? ` released=${released.length}` : ""}`
+    detail: `${describeProviderFault(rule)}: applied=${applied.length}${rule.kind === "PV1" ? ` released=${released.length} discarded=${discarded.length}` : ""}`
       + (applied[0]?.turnStatus ? ` turnStatus=${applied[0].turnStatus}` : "") }];
   return { verdict: checks.every(check => check.ok) ? "pass" : "fail", checks };
 }

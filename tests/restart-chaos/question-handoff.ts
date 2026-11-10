@@ -21,6 +21,8 @@ export interface QuestionRecord {
   interactionIds: string[];
   /** First poll that saw the question pending. */
   seenAt: number | null;
+  /** When the question was saved (the interaction's createdAt), else the first poll that saw it. */
+  savedAt?: number | null;
   /** The run that saved the question. */
   askedByRunId: string | null;
   /** The question is pending at the latest poll. */
@@ -29,7 +31,7 @@ export interface QuestionRecord {
 }
 
 export interface QuestionArtifacts extends QuestionRecord {
-  runs: Array<{ id: string; status: string; errorCode: string | null; createdAt: string | null }>;
+  runs: Array<{ id: string; status: string; errorCode: string | null; createdAt: string | null; startedAt?: string | null }>;
   statuses: Record<string, string>;
 }
 
@@ -72,6 +74,8 @@ export async function questionStep(input: { api: Pick<ChaosApi, "get" | "post">;
   if (!pending || question.answer) return;
   if (question.seenAt === null) {
     question.seenAt = input.now;
+    const created = Date.parse(String(pending.createdAt ?? ""));
+    question.savedAt = Number.isFinite(created) ? Math.min(created, input.now) : input.now;
     question.askedByRunId = typeof pending.sourceRunId === "string" ? pending.sourceRunId
       : (input.sample.runs ?? []).find(run => run.status === "running")?.id ?? null;
     input.note("question_pending", { interactionId: pending.id, askedByRunId: question.askedByRunId });
@@ -112,7 +116,7 @@ export async function collectQuestionArtifacts(api: Pick<ChaosApi, "get">, issue
     interactionIds: [...new Set([...question.interactionIds, ...interactions.map(interaction => String(interaction.id))])],
     statuses: Object.fromEntries(interactions.map(interaction => [String(interaction.id), String(interaction.status)])),
     runs: (runs ?? []).map(run => ({ id: String(run.runId ?? run.id), status: String(run.status), errorCode: run.errorCode ?? null,
-      createdAt: run.createdAt ?? null })),
+      createdAt: run.createdAt ?? null, startedAt: run.startedAt ?? null })),
   };
 }
 
@@ -125,9 +129,11 @@ export function gradeQuestionHandoff(nonce: string, artifacts: OracleArtifacts):
   const failed = runs.filter(run => run.status === "failed" || run.status === "timed_out");
   const asked = question?.askedByRunId ? runs.find(run => run.id === question.askedByRunId) : undefined;
   const answeredAt = question?.answer?.at ?? null;
-  // Repeated work: a run that started after the question was saved and before the board answered.
-  const between = question?.seenAt && answeredAt ? runs.filter(run => run.id !== question.askedByRunId && run.createdAt
-    && Date.parse(run.createdAt) > question.seenAt! && Date.parse(run.createdAt) < answeredAt) : [];
+  // Repeated work: another run that started (or was created) after the question was saved and
+  // before the board answered. A run queued earlier that starts during the wait counts too.
+  const savedAt = question?.savedAt ?? question?.seenAt ?? null;
+  const between = savedAt !== null && answeredAt !== null ? runs.filter(run => run.id !== question?.askedByRunId
+    && [run.startedAt, run.createdAt].some(at => at && Date.parse(at) > savedAt && Date.parse(at) < answeredAt)) : [];
   const checks = [
     { name: "issue_done", ok: artifacts.issueStatus === "done", detail: `status=${artifacts.issueStatus ?? "unknown"}` },
     { name: "one_question_asked", ok: question?.interactionIds.length === 1, detail: `questions=${question?.interactionIds.length ?? 0}` },

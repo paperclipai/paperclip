@@ -152,8 +152,8 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const options: WaveOptions = {
     env,
     adapters,
-    // The governance scenarios (G1, H1) are opt-in: H1 needs a wave of its own.
-    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1"
+    // The governance scenarios (G1, H1) and the saved question (Q1) are opt-in: H1 needs a wave of its own.
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "Q1"
       && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
     faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault)),

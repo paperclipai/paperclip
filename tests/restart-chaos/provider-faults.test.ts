@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseCommand } from "./config.js";
 import {
-  RESOLVE_HOOK, installProviderFaultSeam, parseProviderDelays, readProviderFaultEvents, withProviderFaultCheck, withProviderFaultRules,
+  RESOLVE_HOOK, installProviderFaultSeam, parseProviderDelays, withProviderFaultCheck, withProviderFaultRules,
   type ProviderFaultEvent, type ProviderFaultSeam,
 } from "./provider-faults.js";
 import { planWave, taskFaultSchedule } from "./scheduler.js";
@@ -22,16 +22,27 @@ process.stdin.on("data", chunk => {
     const message = JSON.parse(buffer.slice(0, index));
     buffer = buffer.slice(index + 1);
     if (message.method === "turn/start") {
-      send({ id: message.id, result: { turn: { id: "turn-" + message.id } } });
-      send({ method: "turn/started", params: { threadId: message.params.threadId, turn: { id: "turn-" + message.id } } });
+      // A multibyte character split across two writes must reach the runner intact.
+      const delta = Buffer.from(JSON.stringify({ method: "item/agentMessage/delta", params: { delta: "h\\u00e9llo \\u2713" } }) + "\\n");
+      const cut = delta.indexOf(Buffer.from("\\u2713")) + 1;
+      process.stdout.write(delta.subarray(0, cut));
+      setTimeout(() => {
+        process.stdout.write(delta.subarray(cut));
+        send({ id: message.id, result: { turn: { id: "turn-" + message.id } } });
+        send({ method: "turn/started", params: { threadId: message.params.threadId, turn: { id: "turn-" + message.id } } });
+      }, 20);
     }
     if (message.method === "turn/interrupt") {
-      send({ id: message.id, result: {} });
-      send({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { id: message.params.turnId, status: "interrupted" } } });
+      // After the split delta above has finished, even when both requests arrive in one read.
+      setTimeout(() => {
+        send({ id: message.id, result: {} });
+        send({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { id: message.params.turnId, status: "interrupted" } } });
+      }, 50);
     }
   }
 });
-process.stdin.on("end", () => process.exit(0));
+// Let replies scheduled above go out first.
+process.stdin.on("end", () => setTimeout(() => process.exit(0), 100));
 `;
 
 const roots: string[] = [];
@@ -57,11 +68,12 @@ async function turnThroughShim(root: string, prompt: string, waitMs = 600) {
   const child = spawn(shim, ["app-server"], { stdio: ["pipe", "pipe", "inherit"] });
   const lines: Array<{ at: number; message: Record<string, any> }> = [];
   let buffer = "";
+  child.stdout.setEncoding("utf8");
   child.stdout.on("data", chunk => {
     buffer += chunk;
     let index;
     while ((index = buffer.indexOf("\n")) >= 0) {
-      lines.push({ at: Date.now(), message: JSON.parse(buffer.slice(0, index)) });
+      const text = buffer.slice(0, index); let parsed; try { parsed = JSON.parse(text); } catch { throw new Error(`bad line: ${JSON.stringify(text)}`); } lines.push({ at: Date.now(), message: parsed });
       buffer = buffer.slice(index + 1);
     }
   });
@@ -78,6 +90,7 @@ async function turnThroughShim(root: string, prompt: string, waitMs = 600) {
     acks: lines.filter(line => line.message.id === 2),
     terminals: lines.filter(line => line.message.method === "turn/completed"),
     starts: lines.filter(line => line.message.id === 1),
+    deltas: lines.filter(line => line.message.method === "item/agentMessage/delta").map(line => line.message.params.delta as string),
   };
 }
 
@@ -89,6 +102,7 @@ describe("provider message fault shim", () => {
     expect(result.starts).toHaveLength(1);
     expect(result.acks).toHaveLength(1);
     expect(result.terminals).toHaveLength(1);
+    expect(result.deltas).toEqual(["h\u00e9llo \u2713"]);
   });
 
   it("PV1 delays only the interrupted turn's terminal, once per task", async () => {
@@ -128,8 +142,10 @@ describe("provider message fault shim", () => {
     await installed.arm([task("eeee4444", { kind: "PV1", message: "terminal", delayMs: 5_000 })]);
     const result = await turnThroughShim(root, "nonce eeee4444", 200);
     expect(result.terminals).toHaveLength(0);
-    const events = await readProviderFaultEvents(installed.logPath);
-    expect(events.some(event => event.event === "held_messages_discarded")).toBe(true);
+    const events = await installed.eventsFor("eeee4444");
+    expect(events.filter(event => event.event === "held_message_discarded")).toMatchObject([{ kind: "PV1", message: "terminal", delayMs: 5_000 }]);
+    const rule = { kind: "PV1" as const, message: "terminal" as const, delayMs: 5_000 };
+    expect(withProviderFaultCheck({ verdict: "pass", checks: [] }, task("eeee4444", rule), events).verdict).toBe("pass");
   });
 
   it("the server hook answers only the Codex package lookup and leaves no hook for children", async () => {
