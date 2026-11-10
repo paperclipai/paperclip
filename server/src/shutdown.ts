@@ -127,8 +127,10 @@ export async function closeHttpListenerForShutdown(input: {
   signal: "SIGINT" | "SIGTERM";
   timeoutMs?: number;
   drainRequests?: (signal: AbortSignal) => Promise<void>;
+  closeRunAdmission?: () => void;
   log: ShutdownLogger;
 }): Promise<"closed" | "timed_out" | "not_listening"> {
+  input.closeRunAdmission?.();
   if (!input.server.listening) return "not_listening";
   const timeoutMs = input.timeoutMs ?? 5_000;
   let timer: NodeJS.Timeout | null = null;

@@ -887,6 +887,8 @@ async function executeProcess(input: {
   env?: NodeJS.ProcessEnv;
   maxStdoutBytes?: number;
   maxStderrBytes?: number;
+  /** Stops the child (SIGTERM, then SIGKILL 5 s later) and reports a failure after this long. */
+  timeoutMs?: number;
 }): Promise<{
   stdout: string;
   stderr: string;
@@ -901,10 +903,13 @@ async function executeProcess(input: {
     stderr: ProcessOutputAccumulator;
     code: number | null;
   }>((resolve, reject) => {
+    // A deadline-bound command runs in its own process group, so its hooks and
+    // helpers stop with it instead of holding the output pipes open.
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       stdio: ["ignore", "pipe", "pipe"],
       env: input.env ?? process.env,
+      detached: input.timeoutMs !== undefined && process.platform !== "win32",
     });
     const stdout = createProcessOutputCapture(input.maxStdoutBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
     const stderr = createProcessOutputCapture(input.maxStderrBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
@@ -914,8 +919,42 @@ async function executeProcess(input: {
     child.stderr?.on("data", (chunk) => {
       stderr.append(String(chunk));
     });
+    let timedOut = false;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+    const signal = (name: NodeJS.Signals) => {
+      try {
+        if (child.pid && process.platform !== "win32") process.kill(-child.pid, name);
+        else child.kill(name);
+      } catch { /* already exited */ }
+    };
+    let settled = false;
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      if (deadline) clearTimeout(deadline);
+      if (killTimer) clearTimeout(killTimer);
+      if (timedOut) stderr.append(`\n${input.command} timed out after ${input.timeoutMs} ms`);
+      resolve({ stdout, stderr, code: timedOut ? null : code });
+    };
+    const deadline = input.timeoutMs === undefined ? null : setTimeout(() => {
+      timedOut = true;
+      signal("SIGTERM");
+      killTimer = setTimeout(() => signal("SIGKILL"), 5_000);
+      killTimer.unref?.();
+    }, input.timeoutMs);
+    deadline?.unref?.();
     child.on("error", reject);
-    child.on("close", (code) => resolve({ stdout, stderr, code }));
+    child.on("close", finish);
+    // After a deadline the group is signalled; do not wait for pipes a straggler may hold.
+    child.on("exit", (code) => {
+      if (!timedOut) return;
+      // Git can exit while a helper that ignores SIGTERM keeps running; stop
+      // the whole group now so nothing still writes when the queue moves on.
+      signal("SIGKILL");
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      finish(code);
+    });
   });
   const stdout = proc.stdout.finish();
   const stderr = proc.stderr.finish();
@@ -3077,14 +3116,24 @@ function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
  */
 export class WorkspaceCommandExitError extends Error {
   readonly exitCode: number | null;
+  /** The configured setup step and command, so the task page can name the setting that broke. */
+  readonly step: WorkspaceCommandPhase | null;
+  readonly command: string | null;
+  readonly output: string | null;
 
-  constructor(message: string, exitCode: number | null) {
+  constructor(message: string, exitCode: number | null, failure?: { step: WorkspaceCommandPhase; command: string; output: string }) {
     super(message);
     this.exitCode = exitCode;
+    this.step = failure?.step ?? null;
+    this.command = failure?.command ?? null;
+    this.output = failure?.output || null;
   }
 }
 
+type WorkspaceCommandPhase = "workspace_provision" | "workspace_seed" | "workspace_runtime_provision" | "workspace_teardown";
+
 async function runWorkspaceCommand(input: {
+  phase?: WorkspaceCommandPhase;
   command: string;
   resolvedCommand?: string;
   cwd: string;
@@ -3109,7 +3158,70 @@ async function runWorkspaceCommand(input: {
       ? `${input.label} failed: ${details}`
       : `${input.label} failed with exit code ${proc.code ?? -1}`,
     proc.code,
+    input.phase ? { step: input.phase, command: input.command, output: details } : undefined,
   );
+}
+
+/**
+ * `git worktree add` writes the repository's shared `.git/config` (the new
+ * branch's upstream). Two creates on one repository at once fail with "could
+ * not lock config file". Creates in this process run one at a time per
+ * repository, keyed by its git common dir; a create that still meets another
+ * process's lock retries a few times after a short wait.
+ */
+const repositoryWorktreeLocks = new Map<string, Promise<unknown>>();
+export const WORKTREE_CONFIG_LOCK_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000] as const;
+/** A stuck create must not hold its repository's queue forever. Tests shorten it. */
+export const worktreeCreateLimits = { timeoutMs: 10 * 60_000 };
+
+async function withRepositoryWorktreeLock<T>(cwd: string, work: () => Promise<T>): Promise<T> {
+  const commonDir = await executeProcess({ command: "git", args: ["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd })
+    .then(result => result.code === 0 && result.stdout.trim() ? result.stdout.trim() : path.resolve(cwd))
+    .catch(() => path.resolve(cwd));
+  const key = await fs.realpath(commonDir).catch(() => commonDir);
+  const previous = repositoryWorktreeLocks.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(work);
+  const tail = current.catch(() => undefined);
+  repositoryWorktreeLocks.set(key, tail);
+  try {
+    return await current;
+  } finally {
+    if (repositoryWorktreeLocks.get(key) === tail) repositoryWorktreeLocks.delete(key);
+  }
+}
+
+function isGitConfigLockFailure(result: { code: number | null; stderr: string }) {
+  return result.code !== 0 && /could not lock config file/i.test(result.stderr);
+}
+
+async function executeGitCommand(args: string[], cwd: string) {
+  if (args[0] !== "worktree" || args[1] !== "add") return executeProcess({ command: "git", args, cwd });
+  return withRepositoryWorktreeLock(cwd, async () => {
+    const branchIndex = args.indexOf("-b");
+    const branch = branchIndex > 0 ? args[branchIndex + 1] : undefined;
+    const startPoint = branch ? args[branchIndex + 3] : undefined;
+    const baseCommit = branch && startPoint ? await executeProcess({ command: "git",
+      args: ["rev-parse", "--verify", "--quiet", `${startPoint}^{commit}`], cwd }).then(result => result.code === 0 ? result.stdout.trim() : null)
+      .catch(() => null) : null;
+    for (let attempt = 0; ; attempt += 1) {
+      const result = await executeProcess({ command: "git", args, cwd, timeoutMs: worktreeCreateLimits.timeoutMs });
+      if (!isGitConfigLockFailure(result)) return result;
+      // `worktree add -b` creates the branch, then fails writing its upstream,
+      // and adds no worktree. The branch did not exist before (otherwise git
+      // refuses with "already exists" first), so this command created it.
+      // Remove it, also after the last attempt, so a retry creates it again
+      // with its upstream. A branch that moved off the base commit belongs to
+      // someone else meanwhile (a same-issue retry elsewhere) and is kept.
+      if (branch && baseCommit) {
+        const tip = await executeProcess({ command: "git", args: ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], cwd })
+          .then(found => found.code === 0 ? found.stdout.trim() : null).catch(() => null);
+        if (tip === baseCommit) await executeProcess({ command: "git", args: ["branch", "-D", branch], cwd }).catch(() => undefined);
+      }
+      const delayMs = WORKTREE_CONFIG_LOCK_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined) return result;
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  });
 }
 
 async function recordGitOperation(
@@ -3124,7 +3236,9 @@ async function recordGitOperation(
   },
 ): Promise<string> {
   if (!recorder) {
-    return runGit(input.args, input.cwd);
+    const result = await executeGitCommand(input.args, input.cwd);
+    if (result.code !== 0) throw new Error(result.stderr.trim() || result.stdout.trim() || `git ${input.args.join(" ")} failed`);
+    return result.stdout.trim();
   }
 
   let stdout = "";
@@ -3136,11 +3250,7 @@ async function recordGitOperation(
     cwd: input.cwd,
     metadata: input.metadata ?? null,
     run: async () => {
-      const result = await executeProcess({
-        command: "git",
-        args: input.args,
-        cwd: input.cwd,
-      });
+      const result = await executeGitCommand(input.args, input.cwd);
       stdout = result.stdout;
       stderr = result.stderr;
       code = result.code;
@@ -3177,7 +3287,7 @@ async function recordGitOperation(
 async function recordWorkspaceCommandOperation(
   recorder: WorkspaceOperationRecorder | null | undefined,
   input: {
-    phase: "workspace_provision" | "workspace_seed" | "workspace_runtime_provision" | "workspace_teardown";
+    phase: WorkspaceCommandPhase;
     command: string;
     resolvedCommand?: string;
     cwd: string;
@@ -3246,6 +3356,7 @@ async function recordWorkspaceCommandOperation(
       ? `${input.label} failed: ${details}`
       : `${input.label} failed with exit code ${code ?? -1}`,
     code,
+    { step: input.phase, command: input.command, output: details },
   );
 }
 
@@ -4491,8 +4602,13 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
 
+  // A local directory the runtime did not create is never removed here (operator-owned or
+  // retained, such as an isolated task directory). Closing such a record has nothing left to
+  // clean, so its surviving directory is the intended outcome, not a failed cleanup.
+  const retainedByDesign = input.workspace.providerType === "local_fs" && !createdByRuntime;
   const cleaned =
     !workspacePath ||
+    retainedByDesign ||
     !(await directoryExists(workspacePath));
   if (cleaned) warnings.push(...await releaseNestedRepositoryWorktrees(nestedWorktrees));
 

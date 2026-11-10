@@ -16,6 +16,7 @@ import type { NativeRestartRecoveryClaim, NativeRestartRecoveryDisposition } fro
 import { NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE } from "../native-runtime/native-runner-ownership.js";
 import { claimNativeRestartRecoveries, currentNativeControllerIdentity, NATIVE_RESTART_RECOVERY_FAILED } from "../native-runtime/native-restart-recovery.js";
 import { startNativeSessionExecutionLeaseRenewal } from "../native-runtime/native-execution-lease.js";
+import { createRunLogWriterAuthority } from "./run-log-authority.js";
 import { allowLegacyShutdownWorkspaceCleanup, beginLegacyShutdownWorkspaceSettlement, finishLegacyShutdownWorkspaceSettlement, maintainLegacyShutdownWorkspaceSettlement, legacyShutdownWorkspaceResourceProtected, sweepLegacyShutdownWorkspaceSettlements } from "../legacy-shutdown-workspace-settlement.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../adapter-execution-control.js";
 import { currentControllerProcessStamp, currentProcessSpaceHash, currentProcessStartedAtMs } from "../controller-process-identity.js";
@@ -210,6 +211,36 @@ describePostgres("heartbeat recovery module ownership", () => {
     await db.insert(issues).values({ id: issueId, companyId, title: "Recover this run", status: "in_progress", assigneeAgentId: agentId });
     return (await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, invocationSource: "automation", status: "running", runtimeMode: "legacy" }).returning())[0];
   }
+
+  it.each([false, true])("delivers scoped recovery to a preparation without a runner PID or checkpoint (locally tracked=%s)", async tracked => {
+    const run = await seedRun(), deps = callbacks(db);
+    await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, run.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: run.issueId,
+      nativePhase: "observed", runnerProfileJson: { nativePreparationFencingVersion: 1 },
+    }).where(eq(heartbeatRuns.id, run.id));
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: run.companyId, issueId: run.issueId!,
+      phase: "observed", leaseOwner: "old-preparation", leaseExpiresAt: new Date(0), controllerHostHash: "operator_attested" });
+    const claim: NativeRestartRecoveryClaim = { kind: "bootstrap_incomplete", runId: run.id, leaseOwner: "recovered-owner",
+      controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null };
+    native.claims.mockResolvedValue([claim]);
+    if (tracked) deps.activeRunExecutions.add(run.id);
+    try {
+      await createHeartbeatRecovery(db, deps).recoverActiveExecutions({ companyId: run.companyId, runId: run.id });
+      if (tracked) {
+        expect(native.claims).not.toHaveBeenCalled();
+        expect(deps.executeRun).not.toHaveBeenCalled();
+      } else {
+        expect(native.claims).toHaveBeenCalledWith(expect.objectContaining({ runIds: [run.id] }));
+        expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(run.id, { nativeLeaseOwner: claim.leaseOwner, nativeRestartRecovery: claim });
+      }
+      expect(deps.setRunStatusFromLive).not.toHaveBeenCalled();
+      expect(deps.terminateHeartbeatRunProcess).not.toHaveBeenCalled();
+    } finally {
+      await Promise.all([...deps.activeRunExecutionPromises]);
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    }
+  });
 
   it("routes an expired pre-capability startup to cleanup before generic orphan ownership holds", async () => {
     const run = await seedRun(), leaseId = randomUUID(), environmentId = randomUUID(), leaseOwner = randomUUID();
@@ -1280,6 +1311,67 @@ describePostgres("heartbeat recovery module ownership", () => {
       expect(deps.executeRun).toHaveBeenCalledOnce();
       const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
       expect(coordinator.leaseExpiresAt).toEqual(outcome === "completion" ? null : expiresAt);
+    } finally {
+      finish();
+      await Promise.all([...deps.activeRunExecutionPromises]);
+      vi.useRealTimers();
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  it("keeps a remote bootstrap restart claim through preparation longer than its first lease, then hands it to the next attempt", async () => {
+    const run = await seedRun();
+    const deps = callbacks(db);
+    const controller = await currentNativeControllerIdentity();
+    const claim: NativeRestartRecoveryClaim = { kind: "bootstrap_incomplete", runId: run.id, leaseOwner: randomUUID(),
+      controllerGeneration: 3, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null };
+    const scope = { companyId: run.companyId, issueId: run.issueId!, controller, remote: true };
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: run.issueId, status: "running" }).where(eq(heartbeatRuns.id, run.id));
+    const firstLeaseEndsAt = new Date(Date.now() + 4_000);
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: run.companyId, issueId: run.issueId!, phase: "observed", attempt: 1,
+      controllerBootId: controller.bootId, controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt,
+      leaseOwner: claim.leaseOwner, leaseExpiresAt: firstLeaseEndsAt });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    native.claims.mockImplementationOnce(async input => {
+      await input.onClaim?.(claim, scope);
+      return [claim];
+    });
+    const [admitted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    const authority = createRunLogWriterAuthority(db, admitted, claim.leaseOwner);
+    let finish!: () => void, report!: (outcome: unknown) => void;
+    const outcome = new Promise<unknown>(resolve => { report = resolve; });
+    const finished = new Promise<void>(resolve => { finish = resolve; });
+    deps.executeRun.mockImplementationOnce(async (_runId, options) => { try {
+      await vi.advanceTimersByTimeAsync(21_000);
+      await vi.waitFor(async () => {
+        const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+        expect(coordinator.leaseExpiresAt!.getTime()).toBeGreaterThan(firstLeaseEndsAt.getTime() + 10_000);
+      });
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, firstLeaseEndsAt.getTime() - Date.now() + 1_000)));
+      await authority();
+      await db.update(nativeRunFinalizations).set({ attempt: 2 }).where(eq(nativeRunFinalizations.runId, run.id));
+      const execution = startNativeSessionExecutionLeaseRenewal({ db, ...scope, runId: run.id,
+        leaseOwner: claim.leaseOwner, attempt: 2, onLost: () => native.detach() });
+      try {
+        await options?.onNativeExecutionLeaseAcquired?.();
+        const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+        await vi.advanceTimersByTimeAsync(21_000);
+        await vi.waitFor(async () => {
+          const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+          expect(after.leaseExpiresAt!.getTime()).toBeGreaterThan(before.leaseExpiresAt!.getTime());
+        });
+        report("handed off");
+        await finished;
+      } finally { await execution.stop(); }
+    } catch (error) { report(error); } });
+    try {
+      native.detach.mockClear();
+      await createHeartbeatRecovery(db, deps).recoverNativeRunsAfterRestart(new Date(), [run.id]);
+      expect(await outcome).toBe("handed off");
+      expect(deps.executeRun).toHaveBeenCalledWith(run.id, expect.objectContaining({ nativeLeaseOwner: claim.leaseOwner,
+        onNativeExecutionLeaseAcquired: expect.any(Function) }));
+      await vi.waitFor(() => expect(native.detach).not.toHaveBeenCalled());
     } finally {
       finish();
       await Promise.all([...deps.activeRunExecutionPromises]);

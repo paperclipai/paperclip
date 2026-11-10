@@ -1,4 +1,5 @@
 import { RUNNER_REVISION_WAIT_RETRY_REASON } from "./runner-revision-mismatch.js";
+import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
 import { PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT } from "./native-runtime/provider-attempt-outcome.js";
 
 /**
@@ -14,7 +15,7 @@ export const INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS = PROVIDER_ATTEMPT_CREDI
 /** Retry lanes that keep their own counter and never spend failures. */
 const UNCHARGED_RETRY_LANES: ReadonlySet<string> = new Set([
   "workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", RUNNER_REVISION_WAIT_RETRY_REASON,
-  INTERRUPTED_PREPARATION_RETRY_REASON,
+  INTERRUPTED_PREPARATION_RETRY_REASON, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON,
 ]);
 
 type RetryRun = {
@@ -34,6 +35,8 @@ export interface ExecutionRetryAccounting {
    * wait retry in between never resets it. Omitted while zero.
    */
   interruptedPreparations?: number;
+  /** Storage-outage waits in this chain, kept across intervening resource waits. Omitted while zero. */
+  storageWaits?: number;
 }
 
 function count(value: unknown): number | null {
@@ -48,8 +51,10 @@ function savedAccounting(run: RetryRun): ExecutionRetryAccounting | null {
   const maxTurnContinuations = count(saved.maxTurnContinuations);
   if (saved.version !== 1 || failureRetries === null || maxTurnContinuations === null) return null;
   const interruptedPreparations = count(saved.interruptedPreparations) ?? 0;
+  const storageWaits = count(saved.storageWaits) ?? 0;
   return { version: 1, failureRetries, maxTurnContinuations,
-    ...(interruptedPreparations > 0 ? { interruptedPreparations } : {}) };
+    ...(interruptedPreparations > 0 ? { interruptedPreparations } : {}),
+    ...(storageWaits > 0 ? { storageWaits } : {}) };
 }
 
 function historicalFailureCount(run: RetryRun): number {
@@ -72,12 +77,15 @@ export function executionRetryAccounting(run: RetryRun): ExecutionRetryAccountin
   const nonFailureLane = reason === "max_turns_continuation" || reason === "issue_disposition_repair" || UNCHARGED_RETRY_LANES.has(reason);
   const interruptedPreparations = Math.max(saved?.interruptedPreparations ?? 0,
     reason === INTERRUPTED_PREPARATION_RETRY_REASON ? count(run.scheduledRetryAttempt) ?? 0 : 0);
+  const storageWaits = Math.max(saved?.storageWaits ?? 0,
+    reason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON ? count(run.scheduledRetryAttempt) ?? 0 : 0);
   return {
     version: 1,
     failureRetries: Math.max(saved?.failureRetries ?? 0, saved && nonFailureLane ? 0 : historicalFailureCount(run)),
     maxTurnContinuations: Math.max(saved?.maxTurnContinuations ?? 0,
       run.scheduledRetryReason === "max_turns_continuation" ? count(run.scheduledRetryAttempt) ?? 0 : 0),
     ...(interruptedPreparations > 0 ? { interruptedPreparations } : {}),
+    ...(storageWaits > 0 ? { storageWaits } : {}),
   };
 }
 
@@ -88,6 +96,7 @@ export function executionFailureRetryCount(run: RetryRun): number {
 
 export function executionRetryAttemptCount(run: RetryRun, reason: string): number {
   if (reason === INTERRUPTED_PREPARATION_RETRY_REASON) return executionRetryAccounting(run).interruptedPreparations ?? 0;
+  if (reason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON) return executionRetryAccounting(run).storageWaits ?? 0;
   if (UNCHARGED_RETRY_LANES.has(reason)) {
     return run.scheduledRetryReason === reason ? count(run.scheduledRetryAttempt) ?? 0 : 0;
   }
@@ -99,6 +108,7 @@ export function accountingForScheduledRetry(run: RetryRun, reason: string, attem
   const accounting = executionRetryAccounting(run);
   if (reason === "max_turns_continuation") accounting.maxTurnContinuations = attempt;
   else if (reason === INTERRUPTED_PREPARATION_RETRY_REASON) accounting.interruptedPreparations = attempt;
+  else if (reason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON) accounting.storageWaits = attempt;
   else if (!UNCHARGED_RETRY_LANES.has(reason)) accounting.failureRetries = attempt;
   return accounting;
 }

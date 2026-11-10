@@ -236,9 +236,9 @@ export function registerPluginLifecycleDelivery(
       if (!current()) return "unknown";
       if (!types) continue;
       const { plugin, companyId } = target;
-      const events = await pluginLifecycleInbox(db, plugin.id).list(companyId, 1, undefined, types);
+      const hasEvents = await pluginLifecycleInbox(db, plugin.id).hasPending(companyId, types);
       if (!current()) return "unknown";
-      if (events.length) { wake(); inspectionFailure = false; return "present"; }
+      if (hasEvents) { wake(); inspectionFailure = false; return "present"; }
     }
     inspectionFailure = false;
     return "none";

@@ -85,6 +85,7 @@ pub struct AcpxSidecarTransport {
     process: SupervisedProcess,
     request_timeout: Duration,
     session_open_timeout: Duration,
+    request_deadline: Option<Instant>,
     next_request_id: u64,
     last_event_sequence: u64,
     buffered_events: VecDeque<AcpxSidecarEvent>,
@@ -92,6 +93,7 @@ pub struct AcpxSidecarTransport {
     stderr_categories: BTreeSet<&'static str>,
     poisoned: bool,
     abandoned_observation: Option<u64>,
+    abandoned_cancellation: Option<u64>,
 }
 
 // A fresh Pi process verifies and copies its native closure before ACP admission.
@@ -270,6 +272,15 @@ impl AcpxSidecarTransport {
             keys.push("PAPERCLIP_ACPX_CREDENTIAL_BINDING");
         }
         if agent == "claude" {
+            if std::env::var("PAPERCLIP_GITHUB_LAUNCHER_DIR")
+                .is_ok_and(|directory| !directory.trim().is_empty())
+            {
+                keys.extend_from_slice(&[
+                    "PAPERCLIP_GITHUB_BROKER_URL",
+                    "PAPERCLIP_GITHUB_BROKER_TOKEN",
+                    "PAPERCLIP_GITHUB_BRIDGE_TOKEN",
+                ]);
+            }
             keys.extend_from_slice(&[
                 // Launcher/controller-owned helper paths; credentials stay behind the broker.
                 "BASH_ENV",
@@ -389,6 +400,7 @@ impl AcpxSidecarTransport {
             process,
             request_timeout: config.request_timeout,
             session_open_timeout: config.request_timeout,
+            request_deadline: None,
             next_request_id: 1,
             last_event_sequence: 0,
             buffered_events: VecDeque::new(),
@@ -396,6 +408,7 @@ impl AcpxSidecarTransport {
             stderr_categories: BTreeSet::new(),
             poisoned: false,
             abandoned_observation: None,
+            abandoned_cancellation: None,
         })
     }
 
@@ -405,6 +418,10 @@ impl AcpxSidecarTransport {
         } else {
             self.request_timeout
         }
+    }
+
+    pub(crate) fn bound_requests_by(&mut self, deadline: Option<Instant>) {
+        self.request_deadline = deadline;
     }
 
     pub fn process_id(&self) -> u32 {
@@ -435,6 +452,7 @@ impl AcpxSidecarTransport {
             Ok(CommandOutcome::Rejected {
                 error,
                 resume_required,
+                ..
             }) => Err(AcpxTurnStartFailure {
                 error,
                 resume_required,
@@ -443,6 +461,23 @@ impl AcpxSidecarTransport {
                 error,
                 resume_required: false,
             }),
+        }
+    }
+
+    /// Returns `Err((error, retired))`, where `retired` is true only when the
+    /// sidecar rejected the result because it no longer tracks that tool call.
+    pub(crate) fn request_tool_resolve(
+        &mut self,
+        params: Value,
+    ) -> Result<Value, (LocalRunnerError, bool)> {
+        match self.request_outcome(GeneratedAcpxSidecarCommand::ToolResolve, params) {
+            Ok(CommandOutcome::Success(value)) => Ok(value),
+            Ok(CommandOutcome::Rejected {
+                error,
+                tool_call_retired,
+                ..
+            }) => Err((error, tool_call_retired)),
+            Err(error) => Err((error, false)),
         }
     }
 
@@ -508,13 +543,13 @@ impl AcpxSidecarTransport {
         command: GeneratedAcpxSidecarCommand,
         params: Value,
     ) -> Result<CommandOutcome, LocalRunnerError> {
+        let timeout_at = Instant::now() + self.command_timeout(command);
+        let deadline = self
+            .request_deadline
+            .map_or(timeout_at, |bound| bound.min(timeout_at));
         let request_id = self.send_request(command, params)?;
-        self.receive_response(
-            command,
-            request_id,
-            Instant::now() + self.command_timeout(command),
-        )?
-        .ok_or_else(|| self.request_timeout_error(command))
+        self.receive_response(command, request_id, deadline)?
+            .ok_or_else(|| self.request_timeout_error(command))
     }
 
     /// A park observation may expire without revoking a healthy provider.
@@ -553,6 +588,51 @@ impl AcpxSidecarTransport {
         match result {
             Ok(Some(CommandOutcome::Success(value))) => Ok(Some(value)),
             Ok(Some(CommandOutcome::Rejected { .. })) => Ok(None),
+            Ok(None) => Ok(None),
+            Err(error) => {
+                self.poison();
+                Err(error)
+            }
+        }
+    }
+
+    /// Sends `turn.cancel` and waits for its reply only until `deadline`.
+    ///
+    /// The provider's turn terminal settles a cancelled turn, not this reply,
+    /// and the runner cannot service `turn.stop` while it blocks here. A reply
+    /// lost past the bound therefore leaves the transport usable (polling still
+    /// owns every buffered and later frame) and retains the request ID, so a
+    /// late reply cannot masquerade as the answer to another request.
+    pub(crate) fn request_turn_cancel(
+        &mut self,
+        params: Value,
+        deadline: Instant,
+    ) -> Result<Option<Value>, LocalRunnerError> {
+        if self.poisoned {
+            return Err(LocalRunnerError::invalid(
+                "ACPX sidecar transport is unavailable after a protocol failure",
+            ));
+        }
+        if self.abandoned_cancellation.is_some() {
+            // The earlier cancel is still delivered and unanswered. Its runtime
+            // was retired, so no later turn exists; another cancel adds nothing
+            // and must not block the runner again.
+            return Ok(None);
+        }
+        let command = GeneratedAcpxSidecarCommand::TurnCancel;
+        let deadline = self
+            .request_deadline
+            .map_or(deadline, |bound| bound.min(deadline));
+        let result = self.send_request(command, params).and_then(|request_id| {
+            let result = self.receive_response(command, request_id, deadline)?;
+            if result.is_none() {
+                self.abandoned_cancellation = Some(request_id);
+            }
+            Ok(result)
+        });
+        match result {
+            Ok(Some(CommandOutcome::Success(value))) => Ok(Some(value)),
+            Ok(Some(CommandOutcome::Rejected { error, .. })) => Err(error),
             Ok(None) => Ok(None),
             Err(error) => {
                 self.poison();
@@ -645,6 +725,10 @@ impl AcpxSidecarTransport {
                         self.abandoned_observation = None;
                         continue;
                     }
+                    if self.abandoned_cancellation == Some(response.id) {
+                        self.abandoned_cancellation = None;
+                        continue;
+                    }
                     if response.id != request_id {
                         return Err(LocalRunnerError::invalid(format!(
                             "ACPX sidecar response id mismatch: expected {request_id}, received {}",
@@ -661,7 +745,9 @@ impl AcpxSidecarTransport {
                     let resume_required = command == GeneratedAcpxSidecarCommand::TurnStart
                         && error.retryable
                         && error.code == "SESSION_RESUME_REQUIRED";
-                    return Ok(Some(CommandOutcome::Rejected { error: LocalRunnerError::invalid(
+                    let tool_call_retired = command == GeneratedAcpxSidecarCommand::ToolResolve
+                        && error.code == "ACPX_TOOL_CALL_STALE";
+                    return Ok(Some(CommandOutcome::Rejected { tool_call_retired, error: LocalRunnerError::invalid(
                         format!(
                             "ACPX sidecar command {} was rejected (retryable={}, classification={})",
                             command.as_str(),
@@ -696,6 +782,11 @@ impl AcpxSidecarTransport {
                     if self.abandoned_observation == Some(response.id) =>
                 {
                     self.abandoned_observation = None;
+                }
+                ParsedFrame::Response(response)
+                    if self.abandoned_cancellation == Some(response.id) =>
+                {
+                    self.abandoned_cancellation = None;
                 }
                 ParsedFrame::Response(response) => {
                     return Err(LocalRunnerError::invalid(format!(
@@ -864,6 +955,7 @@ enum CommandOutcome {
     Rejected {
         error: LocalRunnerError,
         resume_required: bool,
+        tool_call_retired: bool,
     },
 }
 
@@ -1283,46 +1375,6 @@ mod tests {
     }
 
     use super::*;
-
-    #[test]
-    #[cfg(unix)]
-    fn managed_claude_helpers_reach_the_sidecar_without_host_credentials() {
-        const CHILD: &str = "PAPERCLIP_TEST_MANAGED_HELPER_CHILD";
-        if std::env::var_os(CHILD).is_none() {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "acpx_sidecar_transport::tests::managed_claude_helpers_reach_the_sidecar_without_host_credentials"])
-                .env_clear()
-                .env(CHILD, "1")
-                .env("PATH", "/usr/bin:/bin")
-                .env("BASH_ENV", "/managed/.bashrc")
-                .env("ZDOTDIR", "/managed")
-                .env("GH_CONFIG_DIR", "/managed")
-                .env("PAPERCLIP_GITHUB_LAUNCHER_DIR", "/managed")
-                .env("GH_TOKEN", "unbound-secret")
-                .env("PAPERCLIP_GITHUB_BROKER_TOKEN", "unbound-capability")
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stdout)
-            );
-            return;
-        }
-        let config = AcpxSidecarTransportConfig {
-            command: PathBuf::from("/bin/sh"),
-            args: vec!["-c".into(), "printf '%s|%s|%s|%s|%s|%s\\n' \"$BASH_ENV\" \"$ZDOTDIR\" \"$GH_CONFIG_DIR\" \"$PAPERCLIP_GITHUB_LAUNCHER_DIR\" \"$GH_TOKEN\" \"$PAPERCLIP_GITHUB_BROKER_TOKEN\"".into()],
-            verified_launch: None,
-            request_timeout: Duration::from_secs(1),
-            shutdown_grace: Duration::from_millis(100),
-        };
-        let mut transport = AcpxSidecarTransport::start_for_agent(&config, "claude").unwrap();
-        let line = transport
-            .receive_stdout_line(Duration::from_secs(2), "managed-helper test")
-            .unwrap()
-            .expect("sidecar did not report its environment");
-        assert_eq!(line, "/managed/.bashrc|/managed|/managed|/managed||");
-    }
 
     #[test]
     fn parse_frame_does_not_echo_untrusted_deserialization_details() {

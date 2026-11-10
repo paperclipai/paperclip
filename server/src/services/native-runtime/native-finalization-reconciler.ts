@@ -1,4 +1,5 @@
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
+import { currentControllerProcessStamp } from "../controller-process-identity.js";
 import { NATIVE_SESSION_RESUMPTION_ISSUE_STATUSES } from "./native-session-resumption-statuses.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { pendingNativeRunProjectionCondition } from "./native-run-projection.js";
@@ -312,6 +313,11 @@ export async function claimNativeSessionResumptions(input: {
         phase: "observed",
         leaseOwner,
         leaseExpiresAt,
+        ...(() => {
+          const stamp = currentControllerProcessStamp();
+          return { controllerBootId: stamp.bootId, controllerPid: stamp.pid, controllerHostHash: stamp.hostHash,
+            controllerProcessStartedAt: stamp.processStartedAt ? new Date(stamp.processStartedAt) : null };
+        })(),
         failureCode: null,
         failureDetail: null,
         nextAttemptAt: null,
@@ -840,8 +846,9 @@ export async function applyOwnershipReportBackstops(db: Db, report: OwnershipRep
         .where(and(eq(issues.companyId, violation.companyId), eq(issues.id, violation.issueId)));
       if (!issue?.assigneeAgentId) continue;
       const saved = await saveUndeliveredUserComments(db, { companyId: violation.companyId, issueId: violation.issueId,
-        agentId: issue.assigneeAgentId, commentIds: [violation.recordId], allowedStatuses: lost ? ["todo", "in_progress"] : ["done"],
-        ...(lost ? { executionWait: deferredWorkIntentWait("wake_lost", "This message's wake was lost; it is sent now.") } : {}) });
+        agentId: issue.assigneeAgentId, commentIds: [violation.recordId], allowedStatuses: lost ? ["todo", "in_progress", "done"] : ["done"],
+        ...(lost ? { executionWait: deferredWorkIntentWait("wake_lost", "This message's wake was lost; it is sent now."),
+          reopenAgentClosedDone: true } : {}) });
       if (saved) await db.transaction(tx => promoteDeferredWorkIntents(tx, { companyId: violation.companyId!,
         trigger: "reconciler_backstop", issueId: violation.issueId }));
     } catch (error) {

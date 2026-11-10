@@ -881,6 +881,18 @@ Agent-authenticated changes cannot set or restore host-executed process adapter
 configuration, including commands and environment values. Agent-authenticated
 rollbacks cannot restore host-executed workspace commands either.
 
+### Individual agent interaction restrictions
+
+The optional `agents.permissions.interactions` object holds independent incoming
+and outgoing controls for assignments, mentions, comments, task edits and peer
+configuration, plus a separate outgoing assignment-to-humans control. Absence
+adds no restriction; explicit false cannot be bypassed by grants or agent roles.
+Human permission managers alone write the subtree through the dedicated API/CLI.
+No migration, default write, grant backfill or UI is introduced. Mutation and
+pending-delivery authorization use current settings while preserving history and
+running work. See [the interaction permission contract](agent-interaction-permissions.md)
+for the settings, ownership rules, atomic updates and compatibility boundaries.
+
 ### 9.3.1 Shared default-open issue writes
 
 For standard-trust agents, issue comments, issue field/status updates, child
@@ -1520,6 +1532,20 @@ timestamps, including on repeated release. For unfinished issues it clears the
 agent assignee; only `in_progress` changes to `todo`. Existing company access,
 assignee/run ownership checks, and the `issue.released` activity event still apply.
 
+A status change releases the checkout and execution locks but does not stop the
+run that holds them. An agent request (`PATCH /issues/:issueId` or a recovery
+resolution) that sets a status other than `in_progress` (even its current value) on
+a task whose lock is held by a different queued or running run is refused with
+`409` and code `issue_status_change_live_run`;
+otherwise the run would keep going with no task bound to it, which is the effect
+of interrupting another agent's run. The denial is final and names the person's
+controls on the linked task: the run's Stop or Interrupt, or More task actions,
+then Pause subtree on the parent. The lock-holding run, board users, and paths
+that stop the run themselves (cancelling the task, reassigning it, and completing
+through `PATCH` a task whose Runner goal is paused first) are unaffected. The write
+is conditional on the lock the check saw; a run that acquires the lock in between returns `409`
+`issue_execution_lock_changed`.
+
 `POST /issues/:issueId/admin/force-release` is an operator recovery endpoint for stale harness locks. It requires board access to the issue company, clears checkout and execution run lock fields, and may clear the agent assignee when `clearAssignee=true` is passed. The route must write an `issue.admin_force_release` activity log entry containing the previous checkout and execution run IDs.
 
 ## 10.5 Projects
@@ -1769,7 +1795,10 @@ hard stop refuses new work even while evaluation lags.
 waits on another run's cleanup or accounting completeness. Only these refuse it:
 
 - spend at the limit (ledger plus observed running spend), or unpriced usage
-  under a blocking policy (the hard stop);
+  a provider reported, under a blocking policy (the hard stop). A charge that
+  accounting settled without its receipt (lost, closure evidence that never
+  arrived, or a failed capture) is recorded and shown in Costs, but it is never
+  a company gate;
 - an explicit pause of the company, project or agent;
 - an inactive company.
 
@@ -1986,12 +2015,12 @@ its display label after fifteen minutes. Elapsed time never discards a late
 receipt. It settles the debt only for a native run whose recovery has ended
 (terminal failure or an accepted result) and whose closure evidence has not
 arrived after ten minutes (the remote runner reconnect grace plus a margin): the known usage is recorded as unpriced with
-provenance saying closure evidence never arrived, an activity entry names the
-run, and the blocking unpriced-usage policy keeps counting that charge unless
-a control-plane restart caused it. A restart-derived receipt (the run replaced
-its receipt source, recovered from a restart, or lost a provider turn on
-restore) never hard-stops or pauses a company under the blocking policy,
-whatever its token count; its activity entry and provenance remain the notice. A lost
+provenance saying closure evidence never arrived, and an activity entry names
+the run. Like any charge accounting settled without its receipt, it never
+hard-stops or pauses a company under the blocking policy, whatever its token
+count; its activity entry and provenance remain the notice. A verified local
+process stop closes the receipt source for a failed, cancelled, timed-out or
+interrupted run alike, so a restart-cancelled run settles at once. A lost
 receipt that already carries a provider-reported cost settles at that cost as
 an estimate marked as a lower bound, not as unpriced. A failed native run that
 never started provider work (no usage receipt, no replaced receipt source, and a
@@ -2001,7 +2030,12 @@ that every usage recorder binds is not evidence that provider work began. A nati
 turn that the restored Runner reports as lost on restore can never report its
 usage. It does not hold the run's receipt open: the receipt closes when the
 run's other turns do, and its provenance says the observed usage is a lower
-bound. Raw provider errors and credentials are excluded from
+bound. The same applies to a turn that was open when the provider session was
+restored after process loss and that the restored Runner then reports
+terminal without a complete usage report: the provider process that would have
+sent the final report was stopped. Local and remote Runners both apply it; the
+remote producer journals the restore as a receipt so a replacement controller
+rebuilds the same turn state. Raw provider errors and credentials are excluded from
 cost details. ACP usage retains the runtime-selected model, including defaults;
 conflicting before/after model IDs do not authorize a single-model estimate.
 Remote OpenCode billing uses only credentials forwarded to the execution target.
@@ -2406,6 +2440,13 @@ contract, setup, recovery, boundaries, and qualification status.
 
 ### Native task completion
 
+A durable question or approval handoff survives a missing provider shutdown
+notification. Paperclip settles its yielded result once the provider terminal
+or exact host-owned shutdown proves stopped execution and settled tool outcomes.
+Until then it retains the saved handoff and explains the shutdown hold. Recovery
+must not repeat completed work or release an overlapping execution. See
+`doc/execution-semantics.md` for the bounded settlement and restart contract.
+
 For ordinary low-risk tasks, accept the current agent's structured `done` claim
 subject to explicit workflow constraints. Missing independent evidence or a
 `needs_review` label alone must not create a human approval. Require a concrete
@@ -2797,18 +2838,36 @@ cherry-pick, revert, merge, and bisect. The source files remain protected. Finis
 or abort the Git operation before saving. V1 does not claim a complete saved
 copy while these continuation records cannot be restored safely.
 
-Saved-copy browsing restores and verifies the complete archive for each request.
-Availability batches share one verified access per execution workspace within
-the request and allow at most eight remote workspace accesses. Each path still
-checks current authority. V1 has no extraction cache across requests. Large saved workspaces can therefore need
-substantial transfer time and temporary disk space for each browse request.
-Saved Files access admits at most two open extractions per process. It limits an
-encrypted archive to 512 MiB, its manifest to 4 MiB, and extraction to 10,000
-entries. It reserves at most 2 GiB of temporary space across those accesses and
-checks free disk space with a 256 MiB margin. Capacity failures stop before an
-object download. Cleanup releases capacity after it removes the owned files.
-These limits apply to saved-copy file access. Agent workspace saves and restores
-retain their existing archive limits.
+Saved-copy browsing reads the committed archive in place. It range-reads and
+decrypts the archive header and manifest, and verifies the manifest against the
+snapshot's recorded manifest digest. Listing and file details come from that
+verified manifest. Reading or downloading one file range-reads and decrypts only
+that file's bytes into a private temporary file, verifies them against the
+file's manifest SHA-256, and only then serves them. No browse request downloads or
+extracts the whole archive, so archive size does not limit saved Files access.
+A preview decrypts and verifies the file in memory, within its preview size limit.
+A download reserves the file's size against a 4 GiB per-process budget and checks
+free temporary disk with a 256 MiB margin before writing. Cleanup releases the
+reservation. A file larger than the budget reports `too_large`. A storage read
+that sends no bytes for five minutes is closed. The process keeps parsed
+manifests of recent snapshots, charged by manifest size plus their entries, up
+to 256 MiB. Concurrent opens of one snapshot share one manifest read, and at most
+two manifests are read and parsed at once per process. Manifests are limited to 64 MiB, the archive format's limit, and
+500,000 entries; a larger saved copy reports `too_large`.
+Saved files carry no modification times, so the recent view of a saved copy is
+ordered by path. Availability batches share one verified access per execution
+workspace within the request and allow at most eight remote workspace accesses.
+Each path still checks current authority.
+The changed-files view needs the repository status, so it still restores the
+complete archive for that request. That extraction admits at most two open
+extractions per process. It limits an encrypted archive to 512 MiB, its manifest
+to 4 MiB, and extraction to 10,000 entries. It reserves at most 2 GiB of
+temporary space across those accesses and checks free disk space with a 256 MiB
+margin. A saved copy beyond those limits reports changed files as unavailable;
+its other views stay available. Capacity failures stop before an object download.
+Cleanup releases capacity after it removes the owned files. These limits apply to
+saved-copy file access. Agent workspace saves and restores retain their existing
+archive limits.
 Each managed repository preparation also saves a complete workspace archive.
 These saves preserve each preparation boundary; V1 does not combine them or use
 incremental uploads.
@@ -2962,5 +3021,7 @@ Standard agents can configure connections through the same domain APIs used by t
 The agent performs authorized setup, reuses saved accounts and drafts, and hands off only required human authentication, consent, credential entry or identity confirmation. Saved handoffs resume through existing task continuation after current authority is rechecked. Management, tool execution and approval remain separate. Private accounts, host commands and stored credentials retain their boundaries; agent-issued gateway clients preserve issuer and responsible-user restrictions at use time.
 
 Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.
+
+Ordinary tool approvals remain reviewable without an implicit one-hour deadline. Authenticated OAuth refresh preserves a pending approval for the same saved action and authorization. Sign-in repair retains an accepted decision and resumes through connection-change events after revalidation; changed consent, permissions, credentials or action targets require a new review. Current access, explicit deadlines, task closure and execution receipts remain enforced. See [Delayed tool approvals](execution-semantics.md#delayed-tool-approvals).
 
 The implementation, operation inventory, permission matrix and fixture qualification are recorded in [Agent API parity for connection configuration](plans/2026-10-13-connection-api-parity.md). Provider fixtures establish API behavior; they do not constitute live provider setup or an empirical agent-success claim.

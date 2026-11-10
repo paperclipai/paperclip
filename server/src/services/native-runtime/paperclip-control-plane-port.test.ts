@@ -327,7 +327,7 @@ describe("PaperclipControlPlanePort conformance", () => {
     await rm(outputStorageRoot, { recursive: true, force: true });
   });
 
-  it.each(["settles", "checkpoint timeout", "unscoped terminal"] as const)("retains a durably recorded governed terminal while its postcommit observer is pending: %s", async mode => {
+  it.each(["settles", "checkpoint timeout", "unscoped terminal", "verified shutdown"] as const)("settles a durable governed wait through its recorded terminal or shutdown: %s", async mode => {
     const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, issueId: randomUUID(), runId: randomUUID(), sessionId: randomUUID() };
     const runnerId = randomUUID();
     const fixtureContractId = randomUUID();
@@ -383,9 +383,11 @@ describe("PaperclipControlPlanePort conformance", () => {
         async capabilities() { return { resume: false, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
         async startTurn() { starts++; return { turnId: "park-turn" }; },
         cancel() { return { cleanup: Promise.resolve() }; },
-        async *events() { yield event(1, "item.completed", { kind: "dynamicToolCall" }); terminalEmitted = true; yield event(2, "turn.interrupted", { status: "interrupted", error: null }); },
+        async settleCancelledTurn() { return { runId: identity.runId, normalizedSessionId: identity.sessionId, turnId: "park-turn" }; },
+        async *events() { yield event(1, "item.completed", { kind: "dynamicToolCall" }); terminalEmitted = true;
+          if (mode !== "verified shutdown") yield event(2, "turn.interrupted", { status: "interrupted", error: null }); },
         async snapshot() { return { backendKind: "mock", sessionId: identity.sessionId, identity,
-          activeTurnId: terminalEmitted ? null : "park-turn", cursor: terminalEmitted ? "2" : "1" }; },
+          activeTurnId: terminalEmitted ? null : "park-turn", cursor: terminalEmitted && mode !== "verified shutdown" ? "2" : "1" }; },
         async result() { return null; }, async close() {},
       }; },
     };
@@ -409,6 +411,19 @@ describe("PaperclipControlPlanePort conformance", () => {
     const execution = executeNativeSession(options);
     const outcome = execution.then(value => ({ value }), error => ({ error }));
     try {
+      if (mode === "verified shutdown") {
+        expect(await outcome).toMatchObject({ value: { result: yielded, terminal: { runTerminalState: "succeeded" } } });
+        expect(starts).toBe(1);
+        expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toHaveLength(1);
+        expect((await port.loadSessionCheckpoint())?.governedWait?.settlement).toEqual({
+          runId: identity.runId, normalizedSessionId: identity.sessionId, turnId: "park-turn",
+        });
+        expect((await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId)))
+          .some(row => row.eventType.startsWith("turn."))).toBe(false);
+        expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id)))[0])
+          .toMatchObject({ status: "pending", result: null, effectiveResolverPolicy: "human_only", sourceRunId: identity.runId });
+        return;
+      }
       await Promise.race([recorded, outcome.then(result => { if ("error" in result) throw result.error; throw new Error("run settled before recording terminal"); })]);
       const rows = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
       expect(rows.some(row => row.eventType === "turn.interrupted")).toBe(true);
@@ -1930,6 +1945,13 @@ describe("PaperclipControlPlanePort conformance", () => {
     const agentReview = (await db.select().from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.issueId, issueId)))
       .find((entry) => entry.addresseeAgentId === reviewerAgentId)!;
+    await issueThreadInteractionService(db).sweepSupersededPendingRequestConfirmations();
+    expect(await db.select({ status: issueThreadInteractions.status, createdByAgentId: issueThreadInteractions.createdByAgentId })
+      .from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId)))
+      .toEqual([
+        { status: "pending", createdByAgentId: identity.agentId },
+        { status: "pending", createdByAgentId: identity.agentId },
+      ]);
     expect(reviewWakes[0]).toMatchObject({
       companyId: identity.companyId, status: "queued", reason: "native_completion_review",
       payload: { issueId, nativeReviewInteractionId: agentReview.id },

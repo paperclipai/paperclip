@@ -37,7 +37,7 @@ export interface HeartbeatTaskContextInput {
   policy: {
     recovering?: boolean;
     trustPreset: Pick<TrustPresetResolution, "kind">;
-    experimentalInstanceSettings: { enableSimplifiedEnglishInteractions?: boolean; enableCases?: boolean; enableConferenceRoomChat?: boolean };
+    experimentalInstanceSettings: { enableSimplifiedEnglishInteractions?: boolean; enableCases?: boolean; enableConferenceRoomChat?: boolean; enableStatusCards?: boolean };
   };
   services: {
     issuesSvc: Pick<ReturnType<typeof issueService>, "getAncestors">;
@@ -242,6 +242,8 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
   const taskMarkdownInput = {
     coordinatorWorkspace: Boolean(coordinatorWorkspace),
     conferenceRoomEnabled: experimentalInstanceSettings.enableConferenceRoomChat === true,
+    statusCardsEnabled: experimentalInstanceSettings.enableStatusCards === true,
+    casesEnabled: experimentalInstanceSettings.enableCases === true,
     conversationConfirmations: issueRef && isConversation(issueContext)
       ? await getConversationConfirmationContext({ db, companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id })
       : null,

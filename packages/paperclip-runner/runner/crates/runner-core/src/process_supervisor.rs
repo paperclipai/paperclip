@@ -102,6 +102,26 @@ impl VerifiedProcessArtifact {
         #[cfg(not(target_os = "macos"))]
         Self::snapshot_verified(display_path, file, expected_sha256)
     }
+
+    /// Hold a launch artifact open in place instead of snapshotting it.
+    ///
+    /// Only `qualified_launch` calls this, and only after the trusted launch
+    /// root proved that this open descriptor itself lies on an immutable
+    /// mount under that root. The process then executes this descriptor
+    /// through `/proc/self/fd/N`, so a later path swap cannot change what
+    /// runs and nested launches reopen the same file.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn in_place_on_trusted_root(display_path: PathBuf, file: File) -> Self {
+        Self {
+            display_path,
+            file: Arc::new(file),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn held_file(&self) -> &File {
+        &self.file
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1282,7 +1302,7 @@ impl SupervisedProcess {
     /// never treats the provider as stopped while its tools still run.
     fn terminate_lineage(&mut self, grace: Duration) -> Result<(), LocalRunnerError> {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if let Some(lineage) = self.lineage.as_ref() {
+        if let Some(lineage) = self.lineage.as_mut() {
             lineage
                 .terminate(grace, grace + LINEAGE_KILL_PROOF_WINDOW)
                 .map_err(|reason| {
@@ -2010,6 +2030,52 @@ mod tests {
         assert!(inherited.args[2].starts_with("/proc/self/fd/"));
         #[cfg(target_os = "macos")]
         assert!(inherited.args[2].starts_with("/dev/fd/"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trusted_root_artifacts_execute_the_held_file_and_reopen_it_for_nested_launches() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-trusted-root-launch-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let shell = fs::canonicalize(directory.join(".")).unwrap().join("sh");
+        fs::copy(fs::canonicalize("/bin/sh").unwrap(), &shell).unwrap();
+        let program = VerifiedProcessArtifact::in_place_on_trusted_root(
+            shell.clone(),
+            File::open(&shell).unwrap(),
+        );
+        let launch = VerifiedProcessLaunch::new(
+            program,
+            vec![
+                VerifiedProcessArgument::Literal("-c".to_owned()),
+                VerifiedProcessArgument::Literal(format!(
+                    "readlink /proc/$$/exe; \"${VERIFIED_RUNTIME_EXECUTABLE_ENV}\" -c 'readlink /proc/$$/exe'"
+                )),
+            ],
+        );
+
+        let inherited = launch.inherited_command().unwrap();
+        assert!(inherited.program.starts_with("/proc/self/fd/"));
+        let output = Command::new(&inherited.program)
+            .args(&inherited.args)
+            .env(VERIFIED_RUNTIME_EXECUTABLE_ENV, &inherited.program)
+            .output()
+            .unwrap();
+        drop(inherited);
+
+        assert!(output.status.success(), "{output:?}");
+        let expected = format!("{}\n", shell.display());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            expected.repeat(2)
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 
