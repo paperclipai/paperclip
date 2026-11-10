@@ -1,5 +1,5 @@
-import { and, eq, isNotNull, isNull, notExists, sql } from "drizzle-orm";
-import { agentFileRoots, agents, environments, executionWorkspaces, heartbeatRuns, providerTraceRecords, type Db } from "@paperclipai/db";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { agentFileRoots, agents, executionWorkspaces, heartbeatRuns, providerTraceRecords, type Db } from "@paperclipai/db";
 import type { Config } from "../config.js";
 import { isValidLocalEncryptedMasterKey } from "../secrets/local-encrypted-provider.js";
 import { agentInstructionsBundleMode } from "./agent-instructions.js";
@@ -8,6 +8,7 @@ import { hasLocalNativeHarnessObligations } from "./native-runtime/native-harnes
 import { hasLocalNativeControllerObligations } from "./native-runtime/native-controller-migration.js";
 import { hasUnsettledLocalInstructionCopies } from "./agent-instruction-copy-preservation.js";
 import { hasLocalRuntimeSkillObligations } from "./native-runtime/runtime-skill-preservation.js";
+import { localWorkspaceDependencyWhere } from "./local-workspace-dependencies.js";
 
 import { ephemeralServerEnabled } from "./ephemeral-server-mode.js";
 
@@ -58,28 +59,8 @@ export async function readEphemeralServerDataEligibility(db: Db, options: { purp
   // empty directory on the replacement machine as the old server's content.
   const configured = await db.select({ id: agents.id, companyId: agents.companyId, name: agents.name, adapterConfig: agents.adapterConfig }).from(agents);
   if (configured.some(agent => agentInstructionsBundleMode(agent) === "external")) blockers.push("external_agent_instructions");
-  const taskOwner = sql`${executionWorkspaces.metadata}->'runnerTaskWorkspaceOwner'`;
-  const pluginTaskWorkspace = db.select({ id: agents.id }).from(agents).innerJoin(environments,
-    sql`${environments.id}::text = ${taskOwner}->>'environmentId'`).where(and(
-    eq(executionWorkspaces.providerType, "adapter_managed"),
-    eq(agents.companyId, executionWorkspaces.companyId), eq(agents.adapterType, "paperclip_runner"),
-    sql`${agents.id}::text = ${taskOwner}->>'agentId'`, eq(environments.driver, "plugin"),
-    sql`jsonb_typeof(${taskOwner}) = 'object'`,
-    sql`jsonb_typeof(${taskOwner}->'agentId') = 'string'`,
-    sql`jsonb_typeof(${taskOwner}->'environmentId') = 'string'`,
-    sql`jsonb_typeof(${taskOwner}->'pluginKey') = 'string'`,
-    sql`jsonb_typeof(${taskOwner}->'driverKey') = 'string'`,
-    sql`jsonb_typeof(${environments.config}->'pluginKey') = 'string'`,
-    sql`jsonb_typeof(${environments.config}->'driverKey') = 'string'`,
-    sql`btrim(${taskOwner}->>'pluginKey') <> ''`, sql`btrim(${taskOwner}->>'driverKey') <> ''`,
-    sql`${environments.config}->>'pluginKey' = ${taskOwner}->>'pluginKey'`,
-    sql`${environments.config}->>'driverKey' = ${taskOwner}->>'driverKey'`,
-  ));
-  const [localWorkspace] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces).where(and(
-    isNotNull(executionWorkspaces.cwd), sql`${executionWorkspaces.providerType} <> 'plugin'`,
-    sql`coalesce(${executionWorkspaces.metadata}->'remoteWorkspace'->>'schema', '') <> 'paperclip.remote-workspace.v1'`,
-    notExists(pluginTaskWorkspace),
-  )).limit(1);
+  const [localWorkspace] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+    .where(localWorkspaceDependencyWhere(db)).limit(1);
   if (localWorkspace) blockers.push("workspaces_require_migration");
   const [localLog] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.logStore, "local_file"), isNotNull(heartbeatRuns.logRef),
