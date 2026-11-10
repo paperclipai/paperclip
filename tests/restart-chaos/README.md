@@ -464,8 +464,8 @@ U1, U2 and U4 fail the task (signature `U<n>:...`). U3 is a warning: it is repor
 never fails a task. U3 reads run error text and recovery-action causes from the wave database at
 wave end, because the board's run list hides most error text.
 
-The rules and bounds come from an audit of the saved evidence of 70 waves (1,572 tasks, 1,450 of
-them passing R1–R6 and T; 27 waves where every task passed), run with:
+The rules and bounds come from an audit of the saved evidence of 74 waves (1,592 tasks, 1,465 of
+them passing R1–R6 and T; 28 waves where every task passed), run with:
 
 ```sh
 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/universal-audit.ts <results dir> [...]
@@ -473,15 +473,18 @@ node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/universal-audit.ts <r
 
 | Rule | Flagged tasks | On passing tasks | On all-pass waves |
 | --- | --- | --- | --- |
-| U1 | 1 | 0 | 0 |
-| U2 | 2 | 0 | 0 |
-| U3 | 21 | 3 | 0 |
+| U1 | 7 | 0 | 0 |
+| U2 | 1 | 0 | 0 |
+| U3 | 22 | 3 | 0 |
 | U4 | 0 | 0 | 0 |
 
 On passing tasks the longest ownerless stretch was 19 s and the longest queue wait 136 s (p99 40 s),
 and no failure repeated more than twice; the bounds leave about 9×, 2× and one more repeat of
-headroom. U1's one flag is a C1 task that sat 181 s in `todo` with a resolved interruption (it also
-failed R5). U2's two flags are claude tasks that failed six times with `adapter_failed`. Every U3
+headroom. U1 flags a C1 task that sat 181 s in `todo` with a resolved interruption (it also failed
+R5), and six R1 tasks in three waves whose run stayed `queued` for 8 minutes while the issue still
+showed a retry row: the #20361 shape, which those waves graded only as a late R1. A retry row counts
+as a live timer only until its run is dispatched. U2 flags a claude task that failed four times in a
+row with `adapter_failed`. Every U3
 flag is `adapter_failed`, including three tasks that passed after a retry, which is why U3 stays a
 warning until `adapter_failed` names its cause. The audit saw only failure codes; the error-text
 part of U3 is checked only in waves run with this harness.

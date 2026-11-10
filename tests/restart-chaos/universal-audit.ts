@@ -59,6 +59,9 @@ export function auditWaves(roots: readonly string[], bounds: UniversalBounds = D
         const passed = known(grade);
         if (passed) report.knownGoodTasks += 1;
         const universal = gradeUniversal(record, { bounds, enforced: new Set() });
+        // A grade saved with universal checks graded U3 with the wave database (run messages, recovery
+        // actions) that the saved record lacks: keep that verdict instead of a samples-only recomputation.
+        if (grade.universal?.U3) universal.U3 = { ...grade.universal.U3, enforced: false };
         for (const rule of RULES) {
           if (passed) for (const [name, value] of Object.entries(universal[rule].metrics ?? {})) metrics.set(name, [...(metrics.get(name) ?? []), value]);
           if (universal[rule].verdict !== "fail") continue;

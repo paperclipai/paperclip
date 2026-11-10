@@ -63,6 +63,13 @@ describe("U1 liveness", () => {
     expect(gradeU1(record(samples, { restAt: null }), BOUNDS).verdict).toBe("pass");
   });
 
+  it("does not let a retry row keep a stuck dispatched retry run alive", () => {
+    const samples = polls(0, 9 * 60 * SEC, at => sample(at, "todo", [run("r1", "queued", 0)], { scheduledRetry: true }));
+    expect(gradeU1(record(samples, { restAt: null }), BOUNDS).verdict).toBe("fail");
+    const pending = polls(0, 9 * 60 * SEC, at => sample(at, "todo", [run("r0", "failed", 0, SEC, { errorCode: "process_lost" })], { scheduledRetry: true }));
+    expect(gradeU1(record(pending, { restAt: null }), BOUNDS).verdict).toBe("pass");
+  });
+
   it("fails a silent running run once it stops counting as an owner", () => {
     const samples = polls(0, 7 * 60 * SEC, at => sample(at, "in_progress", [run("r1", "running", 0)]));
     expect(gradeU1(record(samples, { restAt: null }), BOUNDS).verdict).toBe("fail");

@@ -34,7 +34,7 @@ export interface UniversalBounds {
 }
 
 /**
- * Defaults from the 2026-11-09 audit of 72 saved waves (1,572 tasks; README
+ * Defaults from the 2026-11-09 audit of 74 saved waves (1,592 tasks; README
  * "Universal checks"). Override with RESTART_CHAOS_U1_ORPHAN_SECONDS,
  * RESTART_CHAOS_U1_QUEUED_SECONDS, RESTART_CHAOS_U2_SAME_FAILURE_RUNS and
  * RESTART_CHAOS_U4_STALE_SECONDS.
@@ -117,7 +117,9 @@ export function liveOwner(sample: TaskSample, queuedFor: ReadonlyMap<string, num
       if ((queuedFor.get(run.id) ?? 0) <= bounds.queuedMs) return `run ${run.id} ${run.status}`;
     }
   }
-  if (sample.scheduledRetry || sample.interruption?.retryWait || sample.interruption?.state === "retry_scheduled") return "retry timer";
+  // A retry row stays on the issue after its run is dispatched; once a run exists the run's own bounds above decide.
+  const dispatched = (sample.runs ?? []).some(run => ["queued", "running", "scheduled_retry"].includes(run.status));
+  if (!dispatched && (sample.scheduledRetry || sample.interruption?.retryWait || sample.interruption?.state === "retry_scheduled")) return "retry timer";
   if (sample.activeRecoveryAction && sample.recoveryOwner !== "board") return "system recovery action";
   return null;
 }
