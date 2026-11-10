@@ -383,13 +383,6 @@ const activeNativeSessions = new Map<string, ActiveNativeSession>();
 // Shutdown can race provider startup before onSession publishes its handle.
 const nativeRunsDetachingForRestart = new Map<string, symbol>();
 
-export function watchNativeRestartDetach(runId: string): () => boolean {
-  const atStart = nativeRunsDetachingForRestart.get(runId);
-  return () => {
-    const current = nativeRunsDetachingForRestart.get(runId);
-    return current !== undefined && current !== atStart;
-  };
-}
 /** Flushes a run's pending restart-recovery budget check when the controller
  * detaches it for another restart (its trace never finishes). */
 const nativeRunRecoveryFlushers = new Map<string, () => void>();
