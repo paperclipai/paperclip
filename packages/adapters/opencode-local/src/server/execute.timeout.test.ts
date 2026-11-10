@@ -87,7 +87,7 @@ describe("OpenCode timeout reporting", () => {
       expect(asset).toBeDefined();
       const plugins = await fs.readdir(path.join(asset!.localDir, "opencode", "plugins"));
       expect(plugins).toHaveLength(1);
-      return { target: input.target!, additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null,
+      return { target: input.target!, additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null, taskWorkspaceIdentity: null,
         runtimeRootDir: "/workspace/runtime", workspaceRemoteDir: "/workspace",
         assetDirs: { xdgConfig: "/workspace/runtime/config" }, restoreWorkspace: mocks.restore };
     });

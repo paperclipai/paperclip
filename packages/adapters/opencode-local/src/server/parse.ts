@@ -33,6 +33,11 @@ export function createOpenCodeJsonlParser() {
     inputTokens: 0,
     cachedInputTokens: 0,
     outputTokens: 0,
+    // Effective context high-water mark: the largest single-step footprint
+    // (input + cache reads + cache writes + output + reasoning). OpenCode
+    // serves most of the prompt from cache, so per-step input alone is tiny
+    // and cumulative sums of cache reads vastly overstate the real context.
+    contextTokens: 0,
   };
   let costUsd: number | null = null;
   let missingCost = false;
@@ -67,7 +72,8 @@ export function createOpenCodeJsonlParser() {
         if (counts.every(value => typeof value === "number" && Number.isSafeInteger(value) && value >= 0)) {
           const [input, output, cached, written, reasoning] = counts as number[];
           const next = { inputTokens: usage.inputTokens + input + written,
-            outputTokens: usage.outputTokens + output + reasoning, cachedInputTokens: usage.cachedInputTokens + cached };
+            outputTokens: usage.outputTokens + output + reasoning, cachedInputTokens: usage.cachedInputTokens + cached,
+            contextTokens: Math.max(usage.contextTokens, input + output + cached + written + reasoning) };
           if (Object.values(next).every(Number.isSafeInteger)) { Object.assign(usage, next); usageReported = true; }
           else missingUsage = true;
         } else missingUsage = true;

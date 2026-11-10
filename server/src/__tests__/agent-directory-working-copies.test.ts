@@ -963,7 +963,7 @@ describe("persistent agent directories", () => {
     }
     const transport = vi.spyOn(executionTargetTools, "prepareAdapterExecutionTargetRuntime").mockImplementation(async options => ({
       target: options.target!, workspaceRemoteDir: options.workspaceRemoteDir!, runtimeRootDir: options.runtimeRootDir!,
-      assetDirs: {}, additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null,
+      assetDirs: {}, additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null, taskWorkspaceIdentity: null,
       restoreWorkspace: async () => { await fs.cp(path.join(remoteFiles, "files"), options.workspaceLocalDir, { recursive: true }); },
     }));
     const ephemeralBefore = process.env.PAPERCLIP_EPHEMERAL_SERVER;
@@ -1731,7 +1731,7 @@ describe("persistent agent directories", () => {
     const shell = vi.spyOn(executionTargetTools, "runAdapterExecutionTargetShellCommand").mockResolvedValue({ exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: null });
     const stage = vi.spyOn(executionTargetTools, "prepareAdapterExecutionTargetRuntime").mockImplementation(async options => ({ target: executionTarget,
       workspaceRemoteDir: path.posix.join(remoteCwd, ".paperclip-runtime", "agent-files", agentId, runId), runtimeRootDir: options.runtimeRootDir ?? null,
-      assetDirs: {}, additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null, restoreWorkspace, cleanupWorkspaceSnapshot }));
+      assetDirs: {}, additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null, taskWorkspaceIdentity: null, restoreWorkspace, cleanupWorkspaceSnapshot }));
     try {
       const copy = (await copies.prepare({ ...target(), runId, cwd: home, target: executionTarget }))!;
       await copies.reportUnavailable(companyId, runId);

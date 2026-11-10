@@ -2,6 +2,15 @@ export interface SessionCompactionPolicy {
   enabled: boolean;
   maxSessionRuns: number;
   maxRawInputTokens: number;
+  /**
+   * Rotation threshold on the session's effective context high-water mark
+   * (the largest single-step token footprint the adapter observed). Unlike
+   * `maxRawInputTokens` this is not a cumulative sum: providers that serve
+   * most of the prompt from cache report tiny per-step input plus large cache
+   * reads, and summing those reads across steps inflates a request-sum metric
+   * far beyond the real context size. `0` disables the context check.
+   */
+  maxContextTokens: number;
   maxSessionAgeHours: number;
 }
 
@@ -24,6 +33,7 @@ const DEFAULT_SESSION_COMPACTION_POLICY: SessionCompactionPolicy = {
   enabled: true,
   maxSessionRuns: 200,
   maxRawInputTokens: 2_000_000,
+  maxContextTokens: 0,
   maxSessionAgeHours: 72,
 };
 
@@ -33,7 +43,23 @@ const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
   enabled: true,
   maxSessionRuns: 0,
   maxRawInputTokens: 0,
+  maxContextTokens: 0,
   maxSessionAgeHours: 0,
+};
+
+// OpenCode reports per-step token counts where cache reads dominate the
+// effective prompt. A cumulative raw-input sum therefore grows by roughly the
+// whole (cache-served) prompt on every step and trips the 2M threshold long
+// before the real context is exhausted. Rotate OpenCode sessions on the
+// effective-context high-water mark instead, keeping the explicit wake-count
+// and age limits. Operators can still override every field via
+// `runtimeConfig.heartbeat.sessionCompaction`.
+const OPENCODE_SESSION_COMPACTION_POLICY: SessionCompactionPolicy = {
+  enabled: true,
+  maxSessionRuns: 200,
+  maxRawInputTokens: 0,
+  maxContextTokens: 200_000,
+  maxSessionAgeHours: 72,
 };
 
 export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
@@ -88,7 +114,7 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
   opencode_local: {
     supportsSessionResume: true,
     nativeContextManagement: "unknown",
-    defaultSessionCompaction: DEFAULT_SESSION_COMPACTION_POLICY,
+    defaultSessionCompaction: OPENCODE_SESSION_COMPACTION_POLICY,
   },
   pi_local: {
     supportsSessionResume: true,
@@ -151,11 +177,13 @@ export function readSessionCompactionOverride(runtimeConfig: unknown): Partial<S
   const enabled = readBoolean(compaction.enabled);
   const maxSessionRuns = readNumber(compaction.maxSessionRuns);
   const maxRawInputTokens = readNumber(compaction.maxRawInputTokens);
+  const maxContextTokens = readNumber(compaction.maxContextTokens);
   const maxSessionAgeHours = readNumber(compaction.maxSessionAgeHours);
 
   if (enabled !== undefined) explicit.enabled = enabled;
   if (maxSessionRuns !== undefined) explicit.maxSessionRuns = maxSessionRuns;
   if (maxRawInputTokens !== undefined) explicit.maxRawInputTokens = maxRawInputTokens;
+  if (maxContextTokens !== undefined) explicit.maxContextTokens = maxContextTokens;
   if (maxSessionAgeHours !== undefined) explicit.maxSessionAgeHours = maxSessionAgeHours;
 
   return explicit;
@@ -179,6 +207,7 @@ export function resolveSessionCompactionPolicy(
       enabled: explicitOverride.enabled ?? basePolicy.enabled,
       maxSessionRuns: explicitOverride.maxSessionRuns ?? basePolicy.maxSessionRuns,
       maxRawInputTokens: explicitOverride.maxRawInputTokens ?? basePolicy.maxRawInputTokens,
+      maxContextTokens: explicitOverride.maxContextTokens ?? basePolicy.maxContextTokens,
       maxSessionAgeHours: explicitOverride.maxSessionAgeHours ?? basePolicy.maxSessionAgeHours,
     },
     adapterSessionManagement,
@@ -193,7 +222,12 @@ export function resolveSessionCompactionPolicy(
 
 export function hasSessionCompactionThresholds(policy: Pick<
   SessionCompactionPolicy,
-  "maxSessionRuns" | "maxRawInputTokens" | "maxSessionAgeHours"
+  "maxSessionRuns" | "maxRawInputTokens" | "maxContextTokens" | "maxSessionAgeHours"
 >) {
-  return policy.maxSessionRuns > 0 || policy.maxRawInputTokens > 0 || policy.maxSessionAgeHours > 0;
+  return (
+    policy.maxSessionRuns > 0 ||
+    policy.maxRawInputTokens > 0 ||
+    policy.maxContextTokens > 0 ||
+    policy.maxSessionAgeHours > 0
+  );
 }

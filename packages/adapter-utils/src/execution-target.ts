@@ -19,6 +19,7 @@ import {
   buildRemoteExecutionSessionIdentity,
   prepareRemoteManagedRuntime,
   remoteExecutionSessionMatches,
+  type RemoteTaskWorkspaceIdentity,
 } from "./remote-managed-runtime.js";
 import type {
   AdditionalSourceStagingFailure,
@@ -277,6 +278,12 @@ export interface PreparedAdapterExecutionTargetRuntime {
     gitSnapshot: GitWorkspaceSnapshot | null;
     repositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
   } | null;
+  /**
+   * Present when the remote workspace was realized at a stable per-task
+   * directory instead of the legacy per-run directory; null otherwise
+   * (local target, sandbox transport, or legacy per-run SSH mode).
+   */
+  taskWorkspaceIdentity: RemoteTaskWorkspaceIdentity | null;
   cleanupWorkspaceSnapshot?(): Promise<void>;
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
@@ -1486,6 +1493,11 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   /** Sandbox transfer scratch, confined to the lease's reserved runtime tree. */
   runtimeRootDir?: string;
   syncWorkspace?: boolean;
+  /**
+   * Opt in to a stable per-task remote workspace directory (SSH transport
+   * only). See `RemoteTaskWorkspaceIdentity`.
+   */
+  taskWorkspace?: RemoteTaskWorkspaceIdentity;
   workspaceInboundMode?: WorkspaceInboundMode;
   workspaceSnapshotIsolation?: "worker";
   workspaceGitIndexRefresh?: boolean;
@@ -1534,6 +1546,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       additionalSourceDirs: {},
       additionalSourceFailures: [],
       workspaceSyncSnapshot: null,
+      taskWorkspaceIdentity: null,
       restoreWorkspace: async () => {},
     };
   }
@@ -1545,6 +1558,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       adapterKey: input.adapterKey,
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
+      taskWorkspace: input.taskWorkspace,
       syncWorkspace: input.syncWorkspace,
       workspaceFileMode: input.workspaceFileMode,
       workspaceExclude: input.workspaceExclude,
@@ -1562,6 +1576,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       // reports a per-project staging failure.
       additionalSourceFailures: [],
       workspaceSyncSnapshot: null,
+      taskWorkspaceIdentity: prepared.taskWorkspaceIdentity,
       restoreWorkspace: prepared.restoreWorkspace,
     };
   }
@@ -1615,6 +1630,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     additionalSourceDirs: prepared.additionalSourceDirs,
     additionalSourceFailures: prepared.additionalSourceFailures,
     workspaceSyncSnapshot: prepared.workspaceSyncSnapshot,
+    taskWorkspaceIdentity: null,
     cleanupWorkspaceSnapshot: prepared.cleanupWorkspaceSnapshot,
     restoreWorkspace: prepared.restoreWorkspace,
   };
