@@ -314,6 +314,8 @@ export const queryKeys = {
     list: (companyId: string) => ["issues", companyId] as const,
     onboardingFirstTask: (companyId: string) =>
       ["issues", companyId, "onboarding-first-task"] as const,
+    starPromptDone: (companyId: string) =>
+      ["issues", companyId, "star-prompt-done"] as const,
     mentionPool: (companyId: string) =>
       ["issues", companyId, "mention-pool"] as const,
     search: (

@@ -269,7 +269,7 @@ export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Wo
   return [];
 }
 
-async function importedWorkspaceCandidates(db: ReadDb, workspace: Workspace) {
+async function importedWorkspaceCandidates(db: ReadDb, workspace: Workspace, linkedRoots: readonly string[] = []) {
   const sourceRoot = rootOf(workspace);
   if (!sourceRoot) return [];
   const root = await physicalPath(sourceRoot);
@@ -289,12 +289,14 @@ async function importedWorkspaceCandidates(db: ReadDb, workspace: Workspace) {
     if (!row.operation.cwd) continue;
     located.push({ ...row, sourcePath: await physicalPath(row.operation.cwd) });
   }
-  return located.filter(row => row.sourcePath.startsWith(`${root}/.paperclip/worktrees/`))
+  const linked = new Set(linkedRoots);
+  return located.filter(row => row.sourcePath.startsWith(`${root}/.paperclip/worktrees/`) || linked.has(row.sourcePath)
+    && row.operation.finishedAt !== null && row.operation.metadata?.manifestDigest === row.snapshot.manifestDigest)
     .sort((a, b) => a.sourcePath.length - b.sourcePath.length || a.operation.id.localeCompare(b.operation.id));
 }
 
-export async function inspectImportedWorkspaceSourcePaths(db: ReadDb, workspace: Workspace) {
-  return (await importedWorkspaceCandidates(db, workspace)).map(({ operation, snapshot, sourcePath }) => ({
+export async function inspectImportedWorkspaceSourcePaths(db: ReadDb, workspace: Workspace, linkedRoots: readonly string[] = []) {
+  return (await importedWorkspaceCandidates(db, workspace, linkedRoots)).map(({ operation, snapshot, sourcePath }) => ({
     workspaceId: snapshot.executionWorkspaceId, operationId: operation.id, snapshotId: snapshot.id,
     sourcePath, manifestDigest: snapshot.manifestDigest, operationManifestDigest: operation.metadata?.manifestDigest,
   }));
@@ -361,6 +363,7 @@ export function createNestedWorkspaceImportVerifier(input: {
     },
   };
   return {
+    assertOwner,
     prepare(options: Omit<NestedVerificationInput, "db" | "storage" | "signal">): Promise<ImportedWorkspaceChild[]> {
       if (closed || current) return Promise.reject(new Error("nested_workspace_verifier_unavailable"));
       const work = (async () => {

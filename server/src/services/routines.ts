@@ -1,3 +1,5 @@
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
+import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyApprovalWork } from "./approval-work-notifications.js";
 import { notifyDecisionTargetIssueRemoval } from "./decision-targets.js";
@@ -156,6 +158,7 @@ async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorU
 
 type Actor = {
   agentId?: string | null;
+  agentCompanyId?: string;
   userId?: string | null;
   actorResponsibleUserId?: string | null;
   runId?: string | null;
@@ -970,6 +973,10 @@ export function routineService(
       restoredFromRevisionId?: string | null;
     } = {},
   ) {
+    const pluginOrigin = currentPluginInteractionOrigin();
+    if (pluginOrigin) actor = { ...actor, agentId: pluginOrigin.agentId, userId: null, runId: pluginOrigin.runId };
+    await assertAgentInteraction(executor, { companyId: routine.companyId, actorAgentId: actor.agentId, actorCompanyId: actor.agentCompanyId,
+      operation: "assign", targetAgentId: routine.assigneeAgentId, parentIssueId: routine.parentIssueId, lock: true });
     const snapshot = await buildRoutineRevisionSnapshot(executor, routine);
     const nextRevisionNumber = routine.latestRevisionId ? routine.latestRevisionNumber + 1 : 1;
     const now = new Date();
@@ -1792,6 +1799,23 @@ export function routineService(
       await tx.execute(
         sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`,
       );
+      const revisionActor = input.source !== "manual" && input.routine.latestRevisionId
+        ? await tx.select({ agentId: routineRevisions.createdByAgentId, userId: routineRevisions.createdByUserId })
+          .from(routineRevisions).where(and(eq(routineRevisions.companyId, input.routine.companyId),
+            eq(routineRevisions.routineId, input.routine.id), eq(routineRevisions.id, input.routine.latestRevisionId)))
+          .then(rows => rows[0]) : undefined;
+      const sourceRunActor = input.createdByRunId ? await tx.select({ agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.routine.companyId), eq(heartbeatRuns.id, input.createdByRunId)))
+        .then(rows => rows[0]?.agentId ?? null) : null;
+      const interactionActorAgentId = currentPluginInteractionOrigin()?.agentId ?? input.actor?.agentId ?? sourceRunActor
+        ?? (input.actor?.userId ? null : revisionActor ? revisionActor.agentId
+          : input.routine.updatedByAgentId ?? (input.routine.updatedByUserId ? null : input.routine.createdByAgentId));
+      const interactionActorCompanyId = interactionActorAgentId ? await tx.select({ companyId: agents.companyId }).from(agents)
+        .where(eq(agents.id, interactionActorAgentId)).then(rows => rows[0]?.companyId) : undefined;
+      await assertAgentInteraction(tx, { companyId: input.routine.companyId, actorAgentId: interactionActorAgentId,
+        actorCompanyId: interactionActorCompanyId,
+        operation: "assign", targetAgentId: assigneeAgentId, parentIssueId: input.routine.parentIssueId,
+        texts: [title, description ?? ""], lock: true });
 
       if (input.trigger && (input.source === "webhook" || input.source === "schedule")) {
         const currentTrigger = await txDb.select().from(routineTriggers).where(eq(routineTriggers.id, input.trigger.id)).then((rows) => rows[0]);
@@ -1975,7 +1999,9 @@ export function routineService(
           reason: "issue_assigned",
           mutation: "create",
           contextSource: "routine.dispatch",
-          requestedByActorType: input.source === "schedule" ? "system" : undefined,
+          requestedByActorType: interactionActorAgentId ? "agent" : input.actor?.userId ? "user" : input.source === "schedule" ? "system" : undefined,
+          requestedByActorId: interactionActorAgentId ?? input.actor?.userId ?? null,
+          requestedByActorCompanyId: interactionActorCompanyId,
           rethrowOnError: true,
         });
         const updated = await finalizeRun(createdRun.id, {
@@ -2236,6 +2262,9 @@ export function routineService(
       }
       const createdRoutine = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        await assertAgentInteraction(tx, { companyId, actorAgentId: actor.agentId, actorCompanyId: actor.agentCompanyId, operation: "assign",
+          targetAgentId: input.assigneeAgentId, parentIssueId: input.parentIssueId,
+          texts: [input.title, input.description ?? ""], lock: true });
         await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         const [created] = await txDb
           .insert(routines)
@@ -2350,6 +2379,13 @@ export function routineService(
           .where(eq(routines.id, id))
           .then((rows) => rows[0] ?? null);
         if (!locked) return null;
+        await assertAgentInteraction(tx, { companyId: locked.companyId, actorAgentId: actor.agentId, actorCompanyId: actor.agentCompanyId, operation: "assign",
+          targetAgentId: patch.assigneeAgentId === undefined ? locked.assigneeAgentId : patch.assigneeAgentId,
+          parentIssueId: patch.parentIssueId === undefined ? locked.parentIssueId : patch.parentIssueId,
+          texts: [
+            ...(patch.title !== undefined && patch.title !== locked.title ? [patch.title] : []),
+            ...(patch.description !== undefined && patch.description !== locked.description ? [patch.description ?? ""] : []),
+          ], lock: true });
         previousResponsibleUserId = locked.responsibleUserId;
 
         if (patch.baseRevisionId && patch.baseRevisionId !== locked.latestRevisionId) {

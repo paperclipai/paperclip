@@ -1,3 +1,4 @@
+import { withPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { pluginIdleManifestGeneration, type IdlePluginCatalogEntry } from "./plugin-idle-catalog.js";
 import { createHash, randomUUID } from "node:crypto";
 import { PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
@@ -1266,6 +1267,19 @@ export function createPluginWorkerHandle(
   ): PluginInvocationScope | null {
     if (!isRecord(params)) return null;
 
+    if (method === "executeTool" && isRecord(params.runContext)) {
+      const companyId = readNonEmptyString(params.runContext.companyId);
+      const agentId = readNonEmptyString(params.runContext.agentId);
+      const runId = readNonEmptyString(params.runContext.runId);
+      return companyId ? { companyId, ...(agentId ? { agentOrigin: { agentId, runId } } : {}) } : null;
+    }
+    if (method === "performAction" && isRecord(params.actorContext)) {
+      const companyId = readNonEmptyString(params.actorContext.companyId);
+      const agentId = params.actorContext.type === "agent" ? readNonEmptyString(params.actorContext.agentId) : null;
+      const runId = readNonEmptyString(params.actorContext.runId);
+      return companyId ? { companyId, ...(agentId ? { agentOrigin: { agentId, runId } } : {}) } : null;
+    }
+
     const directCompanyId = readNonEmptyString(params.companyId);
     if (directCompanyId) {
       if (method === "resourceLifecycle" && params.resourceType === "project" && readNonEmptyString(params.resourceId)) {
@@ -1286,16 +1300,6 @@ export function createPluginWorkerHandle(
         }
       }
       return { companyId: directCompanyId };
-    }
-
-    if (method === "performAction" && isRecord(params.actorContext)) {
-      const companyId = readNonEmptyString(params.actorContext.companyId);
-      return companyId ? { companyId } : null;
-    }
-
-    if (method === "executeTool" && isRecord(params.runContext)) {
-      const companyId = readNonEmptyString(params.runContext.companyId);
-      return companyId ? { companyId } : null;
     }
 
     if (method === "onEvent" && isRecord(params.event)) {
@@ -2843,6 +2847,9 @@ export function createPluginWorkerHandle(
       (message as { paperclipInvocationId?: unknown }).paperclipInvocationId,
     );
     if (!invocationId) {
+      if (Array.from(activeInvocations.values()).some(entry => entry.scope.agentOrigin)) {
+        return { invalidInvocationScope: true };
+      }
       // No host-issued invocation is being echoed. This is a genuinely
       // proactive worker→host call (timer/loop). If it references a company the
       // plugin is authorized to act on proactively, resolve it to that
@@ -2923,7 +2930,13 @@ export function createPluginWorkerHandle(
     }
 
     try {
-      const result = await handler(request.params, contextForWorkerMessage(request));
+      const context = contextForWorkerMessage(request);
+      if (context.invalidInvocationScope) throw Object.assign(new Error("Missing or unknown invocation scope"), {
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+      const source = context.invocationScope?.agentOrigin;
+      const origin = source && context.invocationScope ? { ...source, companyId: context.invocationScope.companyId } : undefined;
+      const result = await withPluginInteractionOrigin(origin, () => handler(request.params, context));
       sendMessage({
         jsonrpc: JSONRPC_VERSION,
         id: request.id,

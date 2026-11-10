@@ -94,30 +94,80 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       onBlocked: reason => blocked.push(reason) });
     return { result, blocked, reads };
   }
+  const PRIOR_OWNER_REFUSAL = "runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate; "
+    + "retirement_refused=journal_commands_unsettled(turn.start.failed)";
   it.each([
     { shape: "refused by the cleanup quarantine before launch", errorCode: "native_session_cleanup_quarantined", launched: false,
       comment: "local_cleanup", retry: "cleanup_quarantined" },
     { shape: "quarantined after it requested a launch", errorCode: "native_session_cleanup_quarantined", launched: true,
       comment: "process_identity_missing", retry: "process_identity_missing" },
-    { shape: "failed for another reason without a process record", errorCode: "adapter_failed", launched: false,
+    // w-20261110T050818-s20386: a run that failed before it asked for a runner
+    // (here a failed preparation query) never had a process to stop.
+    { shape: "failed before it requested a launch", errorCode: "adapter_failed", launched: false,
+      comment: null, retry: null },
+    { shape: "failed after a runner event without a process record", errorCode: "adapter_failed", launched: false,
+      runnerEvent: true, comment: "process_identity_missing", retry: "process_identity_missing" },
+    { shape: "failed before launch after its native session was prepared", errorCode: "adapter_failed", launched: false,
+      prepared: true, comment: "process_identity_missing", retry: "process_identity_missing" },
+    { shape: "failed without a process record after native selection", errorCode: "adapter_failed", launched: false,
+      coordinator: true, comment: "process_identity_missing", retry: "process_identity_missing" },
+    // w-20261110T033426-s108/t03: a restart cut off the previous run's turn
+    // start, so its saved runner state could not be proven finished. The next
+    // run was refused at that runner-state fence before it asked for a runner,
+    // and Retry then waited forever for a stop record of a process that never
+    // existed.
+    { shape: "was refused at the prior-owner runner-state fence before launch", errorCode: "adapter_failed", launched: false,
+      prepared: true, error: PRIOR_OWNER_REFUSAL, comment: null, retry: null },
+    { shape: "was refused at the prior-owner runner-state fence with a coordinator", errorCode: "adapter_failed", launched: false,
+      prepared: true, coordinator: true, error: PRIOR_OWNER_REFUSAL, comment: null, retry: null },
+    { shape: "was refused at the prior-owner runner-state fence after it requested a launch", errorCode: "adapter_failed", launched: true,
+      prepared: true, error: PRIOR_OWNER_REFUSAL, comment: "process_identity_missing", retry: "process_identity_missing" },
+    { shape: "was refused at the prior-owner runner-state fence after a runner event", errorCode: "adapter_failed", launched: false,
+      runnerEvent: true, prepared: true, error: PRIOR_OWNER_REFUSAL, comment: "process_identity_missing", retry: "process_identity_missing" },
+    { shape: "failed its own runner-state authority check", errorCode: "adapter_failed", launched: false,
+      prepared: true, error: "runner_state_identity_mismatch: authority_indeterminate",
       comment: "process_identity_missing", retry: "process_identity_missing" },
-  ])("routes input after a run $shape to the gate that can clear it", async ({ errorCode, launched, comment, retry }) => {
+    { shape: "timed out before it requested a launch", status: "timed_out", errorCode: "timeout", launched: false,
+      comment: null, retry: null },
+    { shape: "timed out after a runner event without a process record", status: "timed_out", errorCode: "timeout", launched: false,
+      runnerEvent: true, comment: "process_identity_missing", retry: "process_identity_missing" },
+    { shape: "was interrupted without a process record after native selection", status: "interrupted", errorCode: "process_lost", launched: false,
+      coordinator: true, comment: "process_identity_missing", retry: "process_identity_missing" },
+  ] as Array<{ shape: string; status?: "timed_out" | "interrupted"; errorCode: string; launched: boolean; runnerEvent?: boolean; prepared?: boolean; coordinator?: boolean;
+    error?: string; comment: string | null; retry: string | null }>)("routes input after a run $shape to the gate that can clear it", async ({
+    status, errorCode, launched, runnerEvent, prepared, coordinator, error, comment, retry }) => {
     // s7532/t04: a Retry's run failed at the quarantine fence before it asked
     // for a runner. Input then waited for a stop record of a process that
     // never existed ("process_identity_missing", Retry still offered) instead
     // of the quarantine's own gate, which names the action that clears it.
     const f = await seed();
-    await db.update(heartbeatRuns).set({ processPid: null, errorCode }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(heartbeatRuns).set({ processPid: null, errorCode, ...(status ? { status } : {}), ...(error ? { error } : {}) })
+      .where(eq(heartbeatRuns.id, f.sourceRunId));
+    // A run that failed before native selection has no native issue and no
+    // coordinator. A coordinator row requires the run's native issue (foreign
+    // key), so the coordinator rows keep it and are held by that evidence.
+    if (errorCode !== "native_session_cleanup_quarantined" && !coordinator) {
+      await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+      await db.update(heartbeatRuns).set({ nativeIssueId: null }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    }
     if (launched) await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId,
       seq: 1, eventType: "native.process_start_requested", stream: "system", level: "info", message: "launch requested",
       payload: { hostname: "another-host" } });
+    if (runnerEvent) await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId,
+      seq: 1, eventType: "session.started", stream: "system", level: "info", message: "runner event",
+      sourceEventId: "runner-event-1", payload: {} });
+    if (prepared) await db.update(heartbeatRuns).set({ nativeIssueId: f.issueId, nativeSessionId: randomUUID(), runnerInstanceId: randomUUID() })
+      .where(eq(heartbeatRuns.id, f.sourceRunId));
     const { result, blocked } = await readAdmission(f, false);
-    expect(result).toBeNull();
-    expect(blocked).toEqual([comment]);
+    if (comment === null) expect(result).not.toBeNull();
+    else expect(result).toBeNull();
+    expect(blocked).toEqual(comment === null ? [] : [comment]);
     const retryBlocked: string[] = [];
-    expect(await admitExplicitNativeContinuation({ ...f, db, dryRun: true, reason: "retry_failed_run",
-      failedRunId: f.sourceRunId, onBlocked: reason => retryBlocked.push(reason) })).toBeNull();
-    expect(retryBlocked).toEqual([retry]);
+    const retried = await admitExplicitNativeContinuation({ ...f, db, dryRun: true, reason: "retry_failed_run",
+      failedRunId: f.sourceRunId, onBlocked: reason => retryBlocked.push(reason) });
+    if (retry === null) expect(retried).not.toBeNull();
+    else expect(retried).toBeNull();
+    expect(retryBlocked).toEqual(retry === null ? [] : [retry]);
   });
 
   it("keeps admission and the complete locked session profile while omitting prompt data", async () => {

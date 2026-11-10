@@ -164,7 +164,8 @@ export interface HeartbeatRecoveryDependencies extends Pick<HeartbeatRetryDepend
     graceMs?: number;
   }) => Promise<void>;
   setRunStatus: (runId: string, status: string, patch?: Partial<typeof heartbeatRuns.$inferInsert>) => Promise<HeartbeatRun | null>;
-  setRunStatusFromLive: (runId: string, status: string, fromStatuses: string[], patch?: Partial<typeof heartbeatRuns.$inferInsert>) => Promise<{
+  setRunStatusFromLive: (runId: string, status: string, fromStatuses: string[], patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+    failureReport?: undefined, cancellationCondition?: undefined, options?: { onlyWhileNativeLeaseLapsed?: true }) => Promise<{
     updated: boolean;
     run: HeartbeatRun | null;
   }>;
@@ -1980,6 +1981,12 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         | "native_chat_workspace_scope_mismatch";
       processPidAlive?: boolean;
       processGroupAlive?: boolean;
+      /**
+       * The orphan sweep acted on a lapsed executor lease it read earlier. The
+       * owner may have taken that lease back since (host sleep), so mark only
+       * while it is still lapsed, under the coordinator lock.
+       */
+      leaseLapsed?: boolean;
     },
   ) {
     const durableOwnershipHold =
@@ -1992,21 +1999,20 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     )
       return run;
     const blockedStatus = run.status === "failed" ? "failed" : "running";
-    const blockedWrite = await setRunStatusFromLive(
-      run.id,
-      blockedStatus,
-      [blockedStatus],
-      {
-        error: NATIVE_OWNERSHIP_UNVERIFIED_MESSAGE,
-        errorCode: NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE,
-        ...(durableOwnershipHold
-          ? {
-              nativePhase: "terminal_failure",
-              nativePhaseUpdatedAt: new Date(),
-            }
-          : {}),
-      },
-    );
+    const blockedPatch = {
+      error: NATIVE_OWNERSHIP_UNVERIFIED_MESSAGE,
+      errorCode: NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE,
+      ...(durableOwnershipHold
+        ? {
+            nativePhase: "terminal_failure",
+            nativePhaseUpdatedAt: new Date(),
+          }
+        : {}),
+    };
+    const blockedWrite = evidence.leaseLapsed
+      ? await setRunStatusFromLive(run.id, blockedStatus, [blockedStatus], blockedPatch,
+        undefined, undefined, { onlyWhileNativeLeaseLapsed: true })
+      : await setRunStatusFromLive(run.id, blockedStatus, [blockedStatus], blockedPatch);
     if (!blockedWrite.updated || !blockedWrite.run) {
       return blockedWrite.run ?? run;
     }
@@ -2506,6 +2512,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
               : "observed_owner_unverified",
           processPidAlive: nativeProcessPidAlive,
           processGroupAlive: nativeProcessGroupAlive,
+          // Read as lapsed (or unset): its owner may take it back before this write.
+          leaseLapsed: nativeRun && !(nativeControllerLeaseExpiresAt && nativeControllerLeaseExpiresAt > now),
         });
         if (nativeControllerLeaseExpiresAt && nativeControllerLeaseExpiresAt > now)
           scope.onDeferredDeadline?.(nativeControllerLeaseExpiresAt.getTime());

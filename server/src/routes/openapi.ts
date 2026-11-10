@@ -54,6 +54,8 @@ import {
   updatePrimaryAgentSchema,
   updateAgentPermissionsSchema,
   updateAgentPermissionGrantSchema,
+  updateAgentInteractionPermissionsSchema,
+  agentInteractionPermissionsSchema,
   addAgentProjectAccessSchema,
   updateAgentInstructionsPathSchema,
   updateAgentInstructionsBundleSchema,
@@ -3848,6 +3850,26 @@ registry.registerPath({
   description: "Board-only. Requires users:manage_permissions in the agent's company. Enables an unscoped grant or removes that permission key without replacing other grants. Does not reactivate inactive memberships or start agent work. Writes an activity record in the same transaction.",
   request: { params: z.object({ id: z.string().uuid() }), body: jsonBody(updateAgentPermissionGrantSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+const agentInteractionPermissionsResponse = z.object({
+  agentId: z.string().uuid(), companyId: z.string().uuid(), overrides: agentInteractionPermissionsSchema,
+  effective: agentInteractionPermissionsSchema.required(),
+});
+registry.registerPath({
+  method: "get", path: "/api/agents/{id}/interaction-permissions", tags: ["agents"],
+  summary: "Read individual agent interaction restrictions",
+  description: "Requires agent configuration read access. Returns sparse saved overrides and effective restriction values; true does not grant authority denied by other policies.",
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: { 200: r.ok(agentInteractionPermissionsResponse), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registry.registerPath({
+  method: "patch", path: "/api/agents/{id}/interaction-permissions", tags: ["agents"],
+  summary: "Set individual agent interaction restrictions",
+  description: "Human permission managers only: requires board authentication and users:manage_permissions. A partial map sets true/false; null removes the override. Missing values preserve existing behavior. Does not change grants or start work. Every change is audited atomically.",
+  request: { params: z.object({ id: z.string().uuid() }), body: jsonBody(updateAgentInteractionPermissionsSchema) },
+  responses: { 200: r.ok(agentInteractionPermissionsResponse), 400: r.badRequest, 401: r.unauthorized,
+    403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 const agentProjectAccessResponse = z.object({ projectIds: z.array(z.string().uuid()), canManage: z.boolean() });
