@@ -87,7 +87,11 @@ describe("ttft baseline statistics", () => {
   it("counts held Daytona sandboxes per concurrent task, or per sampled task when they stay warm", () => {
     const phases = new Set(["coldwarm", "midturn", "restart"]);
     expect(daytonaBaselineHolders({ adapters: 3, samples: 5, phases, restarts: 2, retainsSandboxes: false })).toBe(3);
-    expect(daytonaBaselineHolders({ adapters: 3, samples: 5, phases, restarts: 2, retainsSandboxes: true })).toBe(60);
+    // 5 samples x (coldwarm + midturn) + K1 and K2 for each of 2 restarts = 14 tasks per adapter.
+    expect(daytonaBaselineHolders({ adapters: 3, samples: 5, phases, restarts: 2, retainsSandboxes: true })).toBe(42);
+    // Restart tasks do not scale with --samples.
+    expect(daytonaBaselineHolders({ adapters: 3, samples: 1, phases: new Set(["restart"]), restarts: 2, retainsSandboxes: true })).toBe(12);
+    expect(daytonaBaselineHolders({ adapters: 3, samples: 5, phases: new Set(["restart"]), restarts: 2, retainsSandboxes: true })).toBe(12);
     expect(daytonaBaselineHolders({ adapters: 2, samples: 0, phases: new Set(["postfault"]), restarts: 0, retainsSandboxes: true })).toBe(2);
   });
 
@@ -95,7 +99,7 @@ describe("ttft baseline statistics", () => {
     expect(daytonaRetainsSandboxes({ warmEnvironment: true, inheritEnvironment: false, lifecycle: undefined })).toBe(true);
     expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: true, lifecycle: undefined })).toBe(false);
     expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: true, lifecycle: "per_turn" })).toBe(false);
-    expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: true, lifecycle: "default" })).toBe(true);
+    expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: true, lifecycle: "default" })).toBe(false);
     expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: true, lifecycle: "warm" })).toBe(true);
     expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: false, lifecycle: "warm" })).toBe(false);
   });

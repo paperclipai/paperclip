@@ -313,12 +313,12 @@ export function openShellExecutions(events: readonly BaselineEvent[], marker?: s
 /**
  * Whether finished tasks keep their Daytona sandbox for the idle window. The warm
  * fixture always does. An inheriting environment defers to the agent, whose catalog
- * profile pins per_turn unless --lifecycle warm or default (the product's warm
- * default on a remote sandbox) replaces it.
+ * profile pins per_turn unless --lifecycle warm replaces it. --lifecycle default
+ * leaves the agent unset, and a remote run with no lifecycle anywhere is per-turn.
  */
 export function daytonaRetainsSandboxes(input: { warmEnvironment: boolean; inheritEnvironment: boolean; lifecycle: string | undefined }): boolean {
   if (input.warmEnvironment) return true;
-  return input.inheritEnvironment && (input.lifecycle === "warm" || input.lifecycle === "default");
+  return input.inheritEnvironment && input.lifecycle === "warm";
 }
 
 /** Daytona sandboxes a TTFT baseline can hold at once, for the vCPU budget check. */
@@ -327,9 +327,11 @@ export function daytonaBaselineHolders(input: { adapters: number; samples: numbe
   // The default fixture releases each sandbox after its turn, so only the concurrent tasks hold one.
   if (!input.retainsSandboxes) return input.adapters;
   // A warm sandbox outlives its task for the idle window and no other task reuses it.
-  const perTaskPhases = ["coldwarm", "midturn", "verify"].filter(phase => input.phases.has(phase)).length
-    + (input.phases.has("restart") ? Math.max(1, input.restarts) : 0);
-  return input.adapters * Math.max(1, input.samples) * Math.max(1, perTaskPhases);
+  // coldwarm, midturn and verify create one task per sample; restart creates one per
+  // fault, K1 and K2 for each --restarts, independent of --samples.
+  const sampledTasks = Math.max(1, input.samples) * ["coldwarm", "midturn", "verify"].filter(phase => input.phases.has(phase)).length;
+  const restartTasks = input.phases.has("restart") ? 2 * input.restarts : 0;
+  return input.adapters * Math.max(1, sampledTasks + restartTasks);
 }
 
 /** Validates the TTFT driver's environment options; returns the environment. */

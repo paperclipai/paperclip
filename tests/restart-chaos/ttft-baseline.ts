@@ -316,7 +316,8 @@ async function main() {
   let sweeper: DaytonaWaveSweeper | null = null;
   const workspaceOperations: Array<{ runId: string; adapter: string; phase: string; operation: string; status: string;
     durationMs: number | null; command: string | null }> = [];
-  const followUpTasks = new Map<AdapterId, { issueId: string; nonce: string; runs: number }>();
+  // Every coldwarm sample that finished at rest gets its own post-restart follow-up.
+  const followUpTasks: Array<{ adapter: AdapterId; issueId: string; nonce: string; runs: number }> = [];
   // One shutdown path for normal completion and for SIGINT/SIGTERM: the server
   // runs in a detached process group and the embedded Postgres has no exit hook.
   let stopping: Promise<void> | null = null;
@@ -399,7 +400,7 @@ async function main() {
           continue;
         }
         timeline.add("baseline_warm_done", { adapter, issueId, runs: warm.runs.length - cold.runs.length });
-        followUpTasks.set(adapter, { issueId, nonce, runs: warm.runs.length });
+        followUpTasks.push({ adapter, issueId, nonce, runs: warm.runs.length });
       }
     }));
 
@@ -463,22 +464,36 @@ async function main() {
     const allAtRest = timedOutIssues.size === 0 && (await Promise.all(tasks.map(async task =>
       (await api.get<Json[]>(`/api/issues/${task.issueId}/runs`, 10_000).catch(() => null))
         ?.every(run => !ACTIVE_RUN_STATUSES.has(String(run.status))) ?? false))).every(Boolean);
-    if (phases.has("postfault") && followUpTasks.size && !allAtRest) {
+    if (phases.has("postfault") && followUpTasks.length && !allAtRest) {
       timeline.add("baseline_postfault_skipped", { reason: "work_not_at_rest", timedOut: timedOutIssues.size });
     }
-    if (phases.has("postfault") && followUpTasks.size && allAtRest) {
-      const receipt = await supervisor.fault("K1", 0, "ttft-baseline-postfault");
-      faults.push({ kind: "K1", readyAt: receipt.readyAt ?? Date.now(), runIds: [] });
-      await Promise.all([...followUpTasks.entries()].map(async ([adapter, entry]) => {
-        await api.post(`/api/issues/${entry.issueId}/comments`, { body: warmFollowUp(`${entry.nonce}-postfault`), reopen: true });
-        const after = await waitForRest(api, supervisor, entry.issueId, entry.runs + 1);
-        for (const run of after.runs) if (!runPhase.has(runIdOf(run))) runPhase.set(runIdOf(run), "postfault");
-        if (after.timedOut) {
-          timedOutIssues.add(entry.issueId);
-          timeline.add("baseline_sample_timeout", { adapter, issueId: entry.issueId, phase: "postfault" });
+    if (phases.has("postfault") && followUpTasks.length && allAtRest) {
+      // One idle K1 per round, then the first follow-up on one task per adapter, so each
+      // sample is a genuine first turn after a restart. A timed-out follow-up may still be
+      // running, so it ends the rounds: the next fault must stay idle.
+      const rounds = Math.max(...adapters.map(adapter => followUpTasks.filter(entry => entry.adapter === adapter).length));
+      for (let round = 0; round < rounds; round += 1) {
+        const batch = adapters.flatMap(adapter => followUpTasks.filter(entry => entry.adapter === adapter).slice(round, round + 1));
+        const receipt = await supervisor.fault("K1", 0, `ttft-baseline-postfault-${round}`);
+        faults.push({ kind: "K1", readyAt: receipt.readyAt ?? Date.now(), runIds: [] });
+        let timedOut = false;
+        await Promise.all(batch.map(async entry => {
+          const { adapter } = entry;
+          await api.post(`/api/issues/${entry.issueId}/comments`, { body: warmFollowUp(`${entry.nonce}-postfault`), reopen: true });
+          const after = await waitForRest(api, supervisor, entry.issueId, entry.runs + 1);
+          for (const run of after.runs) if (!runPhase.has(runIdOf(run))) runPhase.set(runIdOf(run), "postfault");
+          if (after.timedOut) {
+            timedOut = true;
+            timedOutIssues.add(entry.issueId);
+            timeline.add("baseline_sample_timeout", { adapter, issueId: entry.issueId, phase: "postfault" });
+          }
+          else timeline.add("baseline_postfault_done", { adapter, issueId: entry.issueId, round });
+        }));
+        if (timedOut) {
+          if (round + 1 < rounds) timeline.add("baseline_postfault_skipped", { reason: "work_not_at_rest", round: round + 1 });
+          break;
         }
-        else timeline.add("baseline_postfault_done", { adapter, issueId: entry.issueId });
-      }));
+      }
     }
 
     // Mid-turn follow-up: a comment posted while the agent is inside a long

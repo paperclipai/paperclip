@@ -265,7 +265,8 @@ describe("Daytona options", () => {
     const wave = (...extra: string[]) => parseCommand(["--env", "daytona", "--daytona-image", image, "--tasks", "20", "--concurrency", "4", ...extra]);
     expect(() => wave("--daytona-warm")).toThrow(/--daytona-warm keeps each task's sandbox.*20 tasks/);
     expect(() => wave("--daytona-inherit", "--lifecycle", "warm")).toThrow(/--daytona-inherit with --lifecycle warm keeps each task's sandbox/);
-    expect(() => wave("--daytona-inherit", "--lifecycle", "default")).toThrow(/exceeds the Daytona vCPU budget of 40/);
+    // --lifecycle default leaves the lifecycle unset everywhere, and a remote run then stays per-turn.
+    expect(wave("--daytona-inherit", "--lifecycle", "default")).toMatchObject({ mode: "wave" });
     // The catalog agents pin per-turn, so an inheriting environment alone releases each sandbox after its turn.
     expect(wave("--daytona-inherit")).toMatchObject({ mode: "wave", options: { daytonaInherit: true, tasks: 20 } });
     expect(wave("--daytona-inherit", "--lifecycle", "per_turn")).toMatchObject({ mode: "wave" });
