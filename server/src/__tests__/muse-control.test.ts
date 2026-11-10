@@ -26,7 +26,7 @@ import { activityLog, agentCommentary, documents, issueDocuments } from "@paperc
 import request from "supertest";
 import { createHash, generateKeyPairSync, sign, randomBytes, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, onTestFailed, onTestFinished, vi } from "vitest";
 import { agents, agentWakeupRequests, authUsers, companies, companyMemberships, createDb, closeRegisteredClients, applyPendingMigrations, externalAgentHolds, heartbeatRuns, issueAccessGrants, issueComments, issues, projects, principalPermissionGrants, mcpOauthGrants, mcpOauthRequests, mcpOauthTokens, dotAgentBindings, dotRunnerAssignments, dotRunnerOperations, museIdleReceipts, museAgentBindings as bindings, museCredentials, museInputDeliveries, museReceiverContactBuckets, museMailboxItems as mailbox, museRunnerAssignments as assignments, museRunnerOperations as operations, nativeRunFinalizations } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.js";
 import { startAgentLifecycle } from "../services/agent-lifecycle.js";
@@ -1115,32 +1115,69 @@ describe("personal Muse control plane",()=>{
   });
   const closeMuseHttp=(server:Server|undefined)=>server?.listening
     ?new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve())):Promise.resolve();
-  async function actualReadyContact() {
-    const f=await oauthFixture(false),tokens=await f.oauth.token(f.tokenInput());
+  async function actualReadyContact(frontier:(stage:string)=>void=()=>{}) {
+    frontier("ready:oauth:start");const f=await oauthFixture(false);frontier("ready:oauth:done");
+    frontier("ready:token:start");const tokens=await f.oauth.token(f.tokenInput());frontier("ready:token:done");
     const receiverOwner=createDb(externalDatabaseUrl??temporary!.connectionString,{maxConnections:1});
     const receiver=museReceiver(receiverOwner);receiver.start();
     const app=express();app.use(museTransportRoutes(receiverOwner,oauthOrigin));app.use(errorHandler);
     const access=tokens.access_token,httpServer=createServer(app);
     try {
-    const origin=await listenMuseHttp(httpServer);
-    expect((await request(origin).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",f.binding.id)).status).toBe(200);
-    await receiver.flush();
-    const inbox=await request(origin).post("/api/muse/v1/queries").set("Authorization","Bearer "+access)
+    frontier("ready:listen:start");const origin=await listenMuseHttp(httpServer);frontier("ready:listen:done");
+    frontier("ready:signal:start");expect((await request(origin).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",f.binding.id)).status).toBe(200);frontier("ready:signal:done");
+    frontier("ready:flush:start");await receiver.flush();frontier("ready:flush:done");
+    frontier("ready:mailbox:start");const inbox=await request(origin).post("/api/muse/v1/queries").set("Authorization","Bearer "+access)
       .send({version:1,query:"mailbox",after:0});
-    expect(inbox.status).toBe(200);
+    frontier("ready:mailbox:done");expect(inbox.status).toBe(200);
     const challenge=inbox.body.items.find((item:{kind:string})=>item.kind==="readiness_challenge");
     expect(challenge).toBeDefined();
-    const confirmed=await request(origin).post("/api/muse/v1/commands").set("Authorization","Bearer "+access)
+    frontier("ready:confirm:start");const confirmed=await request(origin).post("/api/muse/v1/commands").set("Authorization","Bearer "+access)
       .send({version:1,command:"challenge.confirm",nonce:challenge.references.nonce,requestId:randomUUID()});
-    expect(confirmed.status).toBe(200);expect(confirmed.body.status).toBe("ready");
-    const acknowledged=await request(origin).post("/api/muse/v1/queries").set("Authorization","Bearer "+access)
+    frontier("ready:confirm:done");expect(confirmed.status).toBe(200);expect(confirmed.body.status).toBe("ready");
+    frontier("ready:ack-query:start");const acknowledged=await request(origin).post("/api/muse/v1/queries").set("Authorization","Bearer "+access)
       .send({version:1,query:"mailbox",after:inbox.body.nextCursor});
-    expect(acknowledged.status).toBe(200);expect(acknowledged.body.items).toEqual([]);
+    frontier("ready:ack-query:done");expect(acknowledged.status).toBe(200);expect(acknowledged.body.items).toEqual([]);
     const [ready]=await db.select().from(bindings).where(eq(bindings.id,f.binding.id));
     expect(ready.status).toBe("ready");expect(ready.verifiedReplyAt).not.toBeNull();
     return {...f,receiverOwner};
-    } catch(error) {try {await receiver.stop();} finally {await receiverOwner.$client.end({timeout:1});}throw error;} finally {await closeMuseHttp(httpServer);}
+    } catch(error) {frontier("ready:failed-cleanup:start");try {await receiver.stop();} finally {await receiverOwner.$client.end({timeout:1});}throw error;} finally {frontier("ready:http-close:start");await closeMuseHttp(httpServer);frontier("ready:http-close:done");}
   }
+  it("keeps the first public Muse HTTP signal inside its transaction-owned single-connection pool",async()=>{
+    const stages:string[]=[],forbiddenOuterReads:string[]=[];
+    const mark=(stage:string)=>{if(stages.length<16)stages.push(stage);};
+    onTestFailed(()=>{console.error("MUSE_FIRST_HTTP_FAILURE_FRONTIER "+JSON.stringify({stages,forbiddenOuterReads}));});
+    mark("oauth:start");const f=await oauthFixture(false);await f.oauth.token(f.tokenInput());mark("oauth:done");
+    const database=createDb(externalDatabaseUrl??temporary!.connectionString,{maxConnections:1});
+    let transactionActive=false;
+    const owner=new Proxy(database,{get(target,key,receiver){
+      if(key==="transaction")return (...args:Parameters<typeof database.transaction>)=>{
+        const [callback,...options]=args;
+        return Reflect.apply(target.transaction,target,[async(tx:Parameters<Parameters<typeof database.transaction>[0]>[0])=>{
+          transactionActive=true;try {return await callback(tx);} finally {transactionActive=false;}
+        },...options]);
+      };
+      if(key==="select")return (...args:Parameters<typeof database.select>)=>{
+        // A real transaction and normal HTTP still run; refuse only the outer
+        // acquisition that would wait forever on this already-held sole pool.
+        if(transactionActive){forbiddenOuterReads.push("outer-select");throw new Error("FORBIDDEN_MUSE_OUTER_SELECT_DURING_SIGNAL_TRANSACTION");}
+        return Reflect.apply(target.select,target,args);
+      };
+      return Reflect.get(target,key,receiver);
+    }});
+    const receiver=museReceiver(owner),app=express();app.use(museTransportRoutes(owner,oauthOrigin));app.use(errorHandler);
+    const server=createServer(app);
+    onTestFinished(async()=>{
+      try {mark("cleanup:receiver-stop");await receiver.stop();}
+      finally {try {mark("cleanup:client-close");await database.$client.end({timeout:1});}
+      finally {mark("cleanup:http-close");await closeMuseHttp(server);}}
+    });
+    receiver.start();mark("listen:start");const origin=await listenMuseHttp(server);mark("listen:done");
+    mark("signal:start");const response=await request(origin).get("/api/muse/v1/signal").set("X-Paperclip-Muse-Binding",f.binding.id);mark("signal:settled");
+    expect(forbiddenOuterReads).toEqual([]);expect(response.status).toBe(200);expect(response.body.version).toBe(1);
+    mark("flush:start");await receiver.flush();mark("flush:done");
+    const contacts=await database.select().from(museReceiverContactBuckets).where(eq(museReceiverContactBuckets.bindingId,f.binding.id));
+    expect(contacts.reduce((sum,row)=>sum+row.contacts,0)).toBe(1);
+  },15000);
   it("observes a real settled HTTP contact admitted after empty handoff and persists it on normal stop",async()=>{
     const f=await actualReadyContact(),receiver=museReceiver(f.receiverOwner);
     await receiver.prepareHostedHandoff(new AbortController().signal);
@@ -1204,6 +1241,11 @@ describe("personal Muse control plane",()=>{
   // Selected fresh-paired-DB control. This tests actual worker/HTTP/commit/ACK
   // composition; logical pressure seeding is NOT the physical 5s/90s cadence proof.
   async function coupledMuseContactRecovery(physicalCadence: boolean) {
+    // Static phase labels only; no extra requests/SQL/timers or quiet-window I/O.
+    const stages:string[]=[];
+    const frontier=(stage:string)=>{if(stages.length<64)stages.push(stage);};
+    onTestFailed(()=>{console.error("MUSE_COUPLED_FAILURE_FRONTIER "+JSON.stringify({physicalCadence,stages}));});
+    frontier("coupled:load:start");
     const cloudUrl=process.env.PAPERCLIP_MUSE_CONTACT_CLOUD_TEST_DATABASE_URL;
     const checkout=process.env.PAPERCLIP_MUSE_CONTACT_CLOUD_CHECKOUT;
     if(!externalDatabaseUrl||!cloudUrl||!checkout||!path.isAbsolute(checkout))throw new Error("Explicit paired owned databases and own compiled Cloud checkout required");
@@ -1220,7 +1262,7 @@ describe("personal Muse control plane",()=>{
       load("runtime/runtime-identity-assertion.js"),load("sleep/wake-readiness.js"),load("muse-receiver/store.js"),
       load("muse-receiver/contact-import-wake.js"),load("assistant-mcp/import-quota.js"),load("assistant-mcp/client-mirror-store.js"),load("muse-receiver/contract.js"),load("muse-receiver/contact-import-pressure.js")]);
     const provider=new fakeModule.FakeCloudStackProvider();
-    const f=await actualReadyContact(),stackId="contact-paired-"+randomUUID(),instanceId="instance-"+randomUUID(),cloudOrigin="https://muse-contact-cloud.example.test";
+    frontier("coupled:load:done");const f=await actualReadyContact(frontier);frontier("coupled:ready:done");const stackId="contact-paired-"+randomUUID(),instanceId="instance-"+randomUUID(),cloudOrigin="https://muse-contact-cloud.example.test";
     const qualified = (await f.broker.bindingForAgent(f.company.id, f.agent.id))!;
     await f.broker.beginQualification({companyId:f.company.id,agentId:f.agent.id,bindingId:f.binding.id,
       generation:qualified.generation,expectedRevision:qualified.revision,qualificationId:randomUUID(),
@@ -1302,8 +1344,8 @@ describe("personal Muse control plane",()=>{
     };
     const stopApp=async()=>{try {await app?.locals.paperclipShutdown();} finally {app=undefined;try {await close(appServer);} finally {appServer=undefined;await appDb?.$client.end({timeout:1});appDb=undefined;}}};
     try {
-      registry=await registryModule.PostgresCloudHarnessRegistry.connect({connectionString:cloudUrl,maxConnections:2,runMigrations:true,migrationsPath:path.join(checkout,"migrations"),migrationLockTimeoutMs:5000});
-      await registry.createFleetReleaseArtifact({id:stackId,appVersion:"paired"});await registry.importFeatureCatalog({releaseArtifactId:stackId,catalogVersion:"paired",features:{"cloud.feature-masking":{tier:"managed"}}});
+      frontier("coupled:registry:start");registry=await registryModule.PostgresCloudHarnessRegistry.connect({connectionString:cloudUrl,maxConnections:2,runMigrations:true,migrationsPath:path.join(checkout,"migrations"),migrationLockTimeoutMs:5000});
+      frontier("coupled:registry:done");await registry.createFleetReleaseArtifact({id:stackId,appVersion:"paired"});await registry.importFeatureCatalog({releaseArtifactId:stackId,catalogVersion:"paired",features:{"cloud.feature-masking":{tier:"managed"}}});
       await new provisionerModule.CloudStackProvisioner({registry,provider}).provisionDevelopmentStack({idempotencyKey:stackId,
         accountGroup:{id:stackId,slug:stackId,displayName:"Muse paired"},owner:{id:f.operatorId,email:f.operatorId+"@example.test"},
         stack:{stackId,accountGroupId:stackId,stackSlug:"paperclip",displayName:"Muse paired",kind:"demo",primaryHost:new URL(oauthOrigin).hostname,region:"us-east-1"},
@@ -1324,7 +1366,7 @@ describe("personal Muse control plane",()=>{
       // acknowledged prior custody. These direct normal-store ACKs establish
       // NO claimed historical App proof or current import capability. Current
       // capability/full mirror below must come from actual App registration.
-      const historicalRecords=Array.from({length:96},()=>({bindingId:randomUUID(),companyId:f.company.id,agentId:randomUUID(),operatorId:f.operatorId,
+      frontier("coupled:retained-seed:start");const historicalRecords=Array.from({length:96},()=>({bindingId:randomUUID(),companyId:f.company.id,agentId:randomUUID(),operatorId:f.operatorId,
         generation:1,state:"idle",qualificationExpiresAt:null,item:null})).sort((a,b)=>Buffer.compare(Buffer.from(a.bindingId),Buffer.from(b.bindingId)));
       const reference={profile:"hosted-muse-v1",generation:museContractModule.museReceiverGeneration(namespace,0,historicalRecords),count:historicalRecords.length};
       const initial={version:1,instanceId,origin:oauthOrigin,revision:0,baseRevision:null,expectedRecords:0,museReceivers:reference};
@@ -1341,11 +1383,11 @@ describe("personal Muse control plane",()=>{
       const retained=await cloudState();expect(retained.mcp_import_usage.museContactRows).toBe(97);
       expect(retained.mcp_import_usage.museContactRows).toBeGreaterThan(limits.stack.museContactRows/2);
       expect(retained.mcp_client_mirror.published.museReceivers.contactImportWakeVersion).toBeUndefined();
-      vi.stubGlobal("fetch",mapped);let store=await makeCloud();await makeApp();
+      frontier("coupled:retained-seed:done");vi.stubGlobal("fetch",mapped);frontier("coupled:cloud-app:start");let store=await makeCloud();await makeApp();frontier("coupled:cloud-app:done");
       await vi.waitFor(async()=>{const state=await cloudState();expect(state.mcp_client_mirror.stage).toBeNull();
         expect(state.mcp_client_mirror.published.museReceivers.contactImportWakeVersion).toBe(1);
         expect(state.mcp_client_mirror.museRecords.find((record:{bindingId:string})=>record.bindingId===f.binding.id)).toMatchObject({state:"idle",item:null});},{timeout:15000,interval:50});
-      const baseline=await contacts(),baselineCount=baseline.reduce((n,row)=>n+row.contacts,0),originalExpiry=(await db.select().from(bindings).where(eq(bindings.id,f.binding.id)))[0].qualificationExpiresAt;
+      frontier("coupled:full-armed-mirror:done");const baseline=await contacts(),baselineCount=baseline.reduce((n,row)=>n+row.contacts,0),originalExpiry=(await db.select().from(bindings).where(eq(bindings.id,f.binding.id)))[0].qualificationExpiresAt;
       expect(originalExpiry).toBeInstanceOf(Date);
       let physicalContacts = 0;
       const publicPresence = () => new Promise<void>((resolve, reject) => {
@@ -1379,19 +1421,19 @@ describe("personal Muse control plane",()=>{
       const preceding = await cloudState(), precedingPending = pending(preceding), physicalBeforePressure = physicalContacts;
       // Explicit normal-store pressure admissions are distinct from the real
       // wall-clock contact stream. No SQL state, capability or ACK is stamped.
-      armLostAck=true;const at=Date.now()-24*30000-(physicalCadence?90_000:0);for(let i=0;i<24;i++)await store.signal(namespace,f.binding.id,at+i*30000);
+      frontier("coupled:pressure:start");armLostAck=true;const at=Date.now()-24*30000-(physicalCadence?90_000:0);for(let i=0;i<24;i++)await store.signal(namespace,f.binding.id,at+i*30000);
       const pressureBefore=await cloudState();expect(pending(pressureBefore)).toBe(precedingPending+24);
       const projected=(await pool.query(`${pressureModule.MUSE_CONTACT_PRESSURE_CTE} SELECT * FROM eligible WHERE stack_id=$13`,[...pressureModule.museContactPressureParameters(limits),stackId])).rows[0];
       expect(Number(projected.floor_rows)).toBeGreaterThan(limits.stack.museContactRows/2);
       expect(projected.low_watermark_met).toBe(false);expect(projected.admission_headroom).toBe(true);expect(projected.eligible).toBe(true);
-      await vi.waitFor(()=>{expect(wakeHints).toBeGreaterThan(0);},{timeout:45000,interval:50});await vi.waitFor(()=>{expect(firstAckEntered).toBe(true);},{timeout:15000,interval:25});
-      expect(pending(await cloudState())).toBe(pending(pressureBefore));expect(ackCommits).toBe(0);
+      frontier("coupled:pressure:done");frontier("coupled:wake-ack-gate:start");await vi.waitFor(()=>{expect(wakeHints).toBeGreaterThan(0);},{timeout:45000,interval:50});await vi.waitFor(()=>{expect(firstAckEntered).toBe(true);},{timeout:15000,interval:25});
+      frontier("coupled:wake-ack-gate:done");expect(pending(await cloudState())).toBe(pending(pressureBefore));expect(ackCommits).toBe(0);
       // 202 is only a wake hint. Actual import has committed while Cloud ACK is withheld.
       const committedBeforeAck=await contacts();expect(committedBeforeAck.reduce((n,row)=>n+row.contacts,0)).toBeGreaterThan(baselineCount);
       const arrival=await mapped(oauthOrigin+"/api/muse/v1/signal",{headers:{"X-Paperclip-Muse-Binding":f.binding.id}});
       expect(arrival.status).toBe(200);expect(await arrival.json()).toEqual({version:1,signal:null});releaseAck();
       await vi.waitFor(()=>{expect(ackCommits).toBe(1);expect(lostAckObserved).toBe(true);},{timeout:15000,interval:25});
-      await stopApp();await cloud.stopBackgroundTasks();await close(cloudServer);cloudServer=undefined;
+      frontier("coupled:reconstruct:start");await stopApp();await cloud.stopBackgroundTasks();await close(cloudServer);cloudServer=undefined;
       for(const restore of restorers.splice(0).reverse())restore();await registry.close();
       registry=await registryModule.PostgresCloudHarnessRegistry.connect({connectionString:cloudUrl,maxConnections:2,runMigrations:false});
       store=await makeCloud();await makeApp();
@@ -1401,7 +1443,7 @@ describe("personal Muse control plane",()=>{
         const receipt=mcpClientMirrorReceiptSchema.parse(local.receipt);expect(receipt).toEqual(state.mcp_client_mirror.published);expect(receipt.revision).toBe(local.revision);
         expect(idleWorkSnapshot().active).toBe(0);
       },{timeout:15000,interval:50});
-      const imported=await contacts();expect(imported.reduce((n,row)=>n+row.contacts,0)).toBe(baselineCount+25+physicalBeforePressure);
+      frontier("coupled:reconstruct:done");const imported=await contacts();expect(imported.reduce((n,row)=>n+row.contacts,0)).toBe(baselineCount+25+physicalBeforePressure);
       expect((await db.select().from(bindings).where(eq(bindings.id,f.binding.id)))[0].qualificationExpiresAt).toEqual(originalExpiry);
       const drained=await cloudState();expect(drained.mcp_import_usage.museContactRows).toBe(98);
       expect(limits.stack.museContactRows-drained.mcp_import_usage.museContactRows).toBeGreaterThanOrEqual(3);
@@ -1413,9 +1455,9 @@ describe("personal Muse control plane",()=>{
       if (physicalCadence) await physicalQuiet();
       else await new Promise(resolve=>setTimeout(resolve,15000));
       expect(wakeHints).toBe(hintCount);expect(appQueries).toBe(queries);expect(await contacts()).toEqual(imported);
-      passed=true;
+      frontier("coupled:business:done");passed=true;
     } finally {
-      releaseAck();const failures:unknown[]=[];
+      frontier("coupled:cleanup:start");releaseAck();const failures:unknown[]=[];
       for(const join of [stopApp,()=>cloud?.stopBackgroundTasks(),()=>close(cloudServer),
         ...restorers.reverse().map(restore=>async()=>restore()),()=>registry?.close(),()=>pool.end(),
         ()=>museReceiver(f.receiverOwner).stop(),()=>f.receiverOwner.$client.end({timeout:1}),
