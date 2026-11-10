@@ -1,7 +1,12 @@
+import { registerInteractionLocationTests } from "./interaction-location.cases.js";
 import express from "express";
 import request from "supertest";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TaskWatchdogMutationScope } from "../services/task-watchdog-scope.js";
+
+vi.mock("../services/fast-responses.js", () => ({
+  enqueueFastResponse: vi.fn(async () => undefined),
+}));
 
 const ASSIGNEE_AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const UNRELATED_AGENT_ID = "33333333-3333-4333-8333-333333333333";
@@ -32,6 +37,7 @@ const mockDocumentService = vi.hoisted(() => ({ getIssueDocumentRevision: vi.fn(
 const mockProjectService = vi.hoisted(() => ({ getById: vi.fn() }));
 
 const mockInteractionService = vi.hoisted(() => ({
+  getById: vi.fn(),
   listForIssue: vi.fn(),
   getForIssue: vi.fn(),
   create: vi.fn(),
@@ -3718,4 +3724,7 @@ describe("issue thread interaction routes", () => {
       ]);
     },
   );
+
+  registerInteractionLocationTests({ mockInteractionService, mockIssueService, mockAccessDecide, createApp, createIssue, ISSUE_ID, ASSIGNEE_AGENT_ID });
+
 });
