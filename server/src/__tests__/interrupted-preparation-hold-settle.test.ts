@@ -223,15 +223,16 @@ suite("held interrupted preparations on the shared ownership path", () => {
       .rejects.toMatchObject({ code: "source_unavailable", retryClass: "use_alternative_strategy" });
   });
 
-  it.each([
+  const proofCases: Array<[string, { authority?: Record<string, unknown>; profile?: Record<string, unknown>; writer?: boolean }, boolean]> = [
     ["the workspace is still at the run's epoch", { authority: { epoch: 1 } }, false],
-    ["the run is still the workspace writer", { authority: { writerRunId: "self" } }, false],
+    ["the run is still the workspace writer", { writer: true }, false],
     ["the run also has a native workspace sync reference", { profile: { nativeWorkspaceSync: { state: "prepared" } } }, false],
     ["the receipt matches the run's exact epoch and allocation", {}, true],
-  ] as const)("treats the prepared workspace as retired only when proven: %s", async (_label, options, expected) => {
+  ];
+  it.each(proofCases)("treats the prepared workspace as retired only when proven: %s", async (_label, options, expected) => {
     const f = await interruptedPreparation();
-    const authority = options.authority && "writerRunId" in options.authority ? { writerRunId: f.runId } : options.authority;
-    await preparedRemoteWorkspace(f.runId, f.issueId, { ...options, authority });
+    const authority = options.writer ? { writerRunId: f.runId } : options.authority;
+    await preparedRemoteWorkspace(f.runId, f.issueId, { profile: options.profile, authority });
     expect(await isAbandonedPreparedRemoteWorkspace(db, await runRow(f.runId))).toBe(expected);
   });
 

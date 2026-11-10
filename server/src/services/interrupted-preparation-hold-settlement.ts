@@ -20,9 +20,11 @@ import { abandonedPreparedRemoteWorkspaceExists } from "./remote-workspace-aband
  *
  * Only holds the system recorded itself are listed: an operator decision (an
  * owner-gone attestation, an explicit user continuation, an assigned owner) is
- * never reopened, and a workspace-restore hold (restore failure or recovery
- * evidence) belongs to restore recovery, not to this kind. A run with a lease still cleaning up is not listed yet; the
- * next pass lists it once the lease settles.
+ * never reopened. A workspace-restore hold (restore failure or recovery
+ * evidence) belongs to restore recovery, unless the workspace already retired
+ * the run's exact prepared epoch (`isAbandonedPreparedRemoteWorkspace`): then
+ * nothing is left to restore and this kind settles it. A run with a lease still
+ * cleaning up is not listed yet; the next pass lists it once the lease settles.
  */
 export function heldInterruptedPreparationWhere() {
   return and(inArray(heartbeatRuns.status, ["interrupted", "failed"]), eq(heartbeatRuns.runtimeMode, "legacy"),
