@@ -1,4 +1,5 @@
 import type { StorageFaultRule } from "./storage-proxy.js";
+import { bandwidthDraw } from "./storage-bandwidth.js";
 
 export const STORAGE_FAULT_KINDS = ["ST1", "ST2", "ST3"] as const;
 export type StorageFaultKind = typeof STORAGE_FAULT_KINDS[number];
@@ -20,7 +21,7 @@ export function storageFaultRules(kind: StorageFaultKind, random: () => number):
     case "ST1": return [{ fault: { kind: "outage", status: 503 } }];
     case "ST2": {
       const ms = 1_000 + Math.round(random() * 9_000);
-      return [{ fault: { kind: "latency", ms, jitterMs: Math.round(ms / 4) } }];
+      return [{ fault: { kind: "latency", ms, jitterMs: Math.round(ms / 4), bytesPerSecond: bandwidthDraw(random) } }];
     }
     case "ST3": return [{ fault: { kind: "errors", rate: 0.3, status: 503, slowDown: random() < 0.5 } }];
   }
