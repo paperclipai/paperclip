@@ -197,7 +197,8 @@
           "properties": {
             "code": { "type": "string", "minLength": 1, "maxLength": 160 },
             "message": { "type": "string", "maxLength": 8192 },
-            "retryable": { "type": "boolean" }
+            "retryable": { "type": "boolean" },
+            "providerFailure": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-failure.schema.json" }
           },
           "additionalProperties": false
         }
@@ -225,6 +226,14 @@
       "additionalProperties": false,
       "allOf": [
         {
+          "if": { "properties": { "eventType": { "const": "runtime.event" }, "payload": {
+            "type": "object",
+            "properties": { "type": { "const": "status" }, "tag": { "const": "usage_update" } },
+            "required": ["type", "tag"]
+          } } },
+          "then": { "properties": { "payload": { "type": "object", "properties": { "cost": { "$ref": "#/$defs/usageCost" } } } } }
+        },
+        {
           "if": { "properties": { "eventType": { "const": "runtime.rich_event" } } },
           "then": {
             "properties": {
@@ -235,6 +244,16 @@
           }
         }
       ]
+    },
+    "usageCost": {
+      "description": "Provider cost is session-cumulative unless basis explicitly identifies a complete turn total. A turn total is never a session counter.",
+      "type": ["object", "null"],
+      "properties": {
+        "amount": { "type": ["number", "null"], "minimum": 0 },
+        "currency": { "type": ["string", "null"], "maxLength": 16 },
+        "basis": { "enum": ["turn", "session_cumulative"] }
+      },
+      "additionalProperties": false
     },
     "richEvent": {
       "type": "object",
@@ -247,6 +266,7 @@
         "eventType": {
           "enum": [
             "plan.updated",
+            "plan.proposed",
             "tool.execution.started",
             "tool.execution.progressed",
             "tool.execution.completed",

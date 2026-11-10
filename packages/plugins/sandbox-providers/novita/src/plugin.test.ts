@@ -120,10 +120,10 @@ describe("Novita sandbox provider plugin", () => {
     mockSandboxConnect.mockRejectedValueOnce(new Error("sandbox not found"));
 
     const result = await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "novita",
       companyId: "company-1",
       environmentId: "env-1",
       issueId: "issue-1",
-      runId: "run-1",
       config: { apiKey: "sk-test" },
       lease: { providerLeaseId: "sb-expired", metadata: {} },
       command: "true",

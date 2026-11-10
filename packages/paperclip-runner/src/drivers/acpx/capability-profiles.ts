@@ -62,6 +62,12 @@ export const ACPX_CAPABILITY_PROFILES: Readonly<Record<QualifiedAcpxAgent, AcpxC
     artifacts: "references-pending", extensionRequests: [],
     extensionNotifications: ["github.com/copilot/sessionEvent"],
   },
+  kimi: {
+    displayName: "Kimi Code", qualification: "qualified", models: "explicit-provider-verified",
+    permissions: "interactive", questions: "semantic-only", plans: "semantic-only", tools: "authenticated-mcp",
+    recovery: "unverified", usage: "unverified", steering: "unsupported", followUp: "controller-queue",
+    artifacts: "policy_disabled", extensionRequests: [], extensionNotifications: [],
+  },
   pi: {
     displayName: "Pi", qualification: "qualified", models: "explicit-provider-verified",
     permissions: "interactive", questions: "form", plans: "semantic-only", tools: "owned-extension",

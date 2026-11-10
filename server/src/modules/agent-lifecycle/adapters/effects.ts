@@ -6,9 +6,14 @@ import type { ActivityPublication } from "../../../types/activity-publication.js
 
 /** Services supply integrations; lifecycle owns the transaction and state writes. */
 export interface LifecycleEffects {
-  setupRequiresPreparation(db: Db, companyId: string, environmentId?: string | null): Promise<boolean>;
+  setupRequiresPreparation(db: Db, companyId: string, environmentId: string | null | undefined,
+    profile: Pick<CreateAgentData, "adapterType" | "adapterConfig">): Promise<boolean>;
+  environmentRequiresNewPlugin(db: Db, environmentId: string | null | undefined, selectedPluginIds: string[] | null): Promise<boolean>;
   notifyWork(db: Db): Promise<void>;
+  /** The calling controller process, stamped on a lifecycle lease so restart recovery can settle a dead holder. */
+  leaseHolder?(): Record<string, unknown> | null;
   beforeStatusChange(db: Db, companyId: string, agentId: string, before: string, after: string): Promise<void>;
+  beforeConnectionEligibilityRestore?(db: Db, companyId: string, agentId: string): Promise<void>;
   reportFailure(context: LifecycleFailure, error: unknown): void;
   deleteDependencies(db: Db, companyId: string, agentId: string): Promise<void>;
   prepareConfiguration(db: Db, current: AgentConfigurationRecord, data: AgentConfigurationPatch, options?: UpdateAgentOptions): Promise<AgentConfigurationPatch>;

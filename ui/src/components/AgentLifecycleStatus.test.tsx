@@ -26,6 +26,12 @@ it.each([undefined, "ready", "paused", "pending_approval", "terminated", "reject
   expect(agentLifecycleRefetchInterval(lifecycleState)).toBe(30_000);
 });
 
+it("does not promise automatic retry of a failed configuration check", () => {
+  const html = renderToStaticMarkup(<AgentLifecycleStatus agent={{ lifecycleState: "verifying", lifecycleError: "Update Configuration or choose Retry now." }} onRetry={() => {}} retryPending={false} />);
+  expect(html).toContain("Retry now");
+  expect(html).not.toContain("Paperclip retries automatically");
+});
+
 it("retries a failed step once while pending and removes the failure after recovery", async () => {
   const container = document.createElement("div");
   const root = createRoot(container);

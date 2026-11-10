@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { and, eq, ne, sql } from "drizzle-orm";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentWakeupRequests,
@@ -88,7 +88,7 @@ import {
   isExternalChatWaitAuthorizationContention,
   resolveExternalChatResponseWaitAuthorization,
 } from "./chat-attachment-reuse.js";
-import { attestReviewedExternalChatRun, buildPaperclipWakePayload } from "../heartbeat.js";
+import { attestReviewedExternalChatRun, buildPaperclipWakePayload, heartbeatService } from "../heartbeat.js";
 import { voiceCredentialFingerprint } from "../voice/voice-session-store.js";
 import { nativeSha256 } from "./canonical.js";
 import { questionResponseDeliveryValues } from "../question-response-delivery.js";
@@ -922,7 +922,7 @@ describe("native external-chat response wait", () => {
       await authorizeChatConversationForBoundRun(db, fixture, contextSnapshot, "read");
       const observed = createDb(temporary?.connectionString ?? externalTestDatabaseUrl!);
       const events: Array<Record<string, unknown>> = [], now = Date.now();
-      const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+      const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
       installDatabaseResponseCapture(observed, { issues, heartbeatRuns }, capture);
       try {
         expect(await listExternalReviewWaits(observed, fixture.companyId, [fixture.issueId])).toEqual(governed ? [] : [
@@ -1296,6 +1296,100 @@ describe("native external-chat response wait", () => {
       }
     },
   );
+
+  async function answerAttestationRetry(attempts: number) {
+    const native = await seedAnsweredChatTurn();
+    const [admitted] = await db.insert(heartbeatRuns).values({ companyId: native.companyId, agentId: native.agentId,
+      scopeKind: "issue", issueId: native.issueId, status: "running", runtimeMode: "legacy",
+      responsibleUserId: native.userId, wakeupRequestId: native.wakeId, contextSnapshot: native.context }).returning();
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, native.runId));
+    await db.update(agentWakeupRequests).set({ runId: admitted!.id }).where(eq(agentWakeupRequests.id, native.wakeId));
+    await db.update(issueQuestionResponseDeliveries).set({ targetRunId: admitted!.id }).where(eq(issueQuestionResponseDeliveries.id, native.responseDeliveryId));
+    const fixture = { ...native, runId: admitted!.id };
+    await db.update(issues).set({ responsibleUserId: fixture.userId, executionRunId: fixture.runId }).where(eq(issues.id, fixture.issueId));
+    let predecessorId = fixture.runId;
+    let child: typeof heartbeatRuns.$inferSelect | undefined;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(), runtimeMode: "legacy",
+        nativeIssueId: null, nativeSessionId: null, runnerInstanceId: null, scopeKind: "issue", issueId: fixture.issueId,
+        responsibleUserId: fixture.userId, errorCode: "reviewed_chat_execution_binding_not_ready",
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      }).where(eq(heartbeatRuns.id, predecessorId));
+      const scheduled = await heartbeatService(db).scheduleBoundedRetry(predecessorId, {
+        now: new Date(), random: () => 0, retryReason: "interaction_continuation_infra_retry",
+        wakeReason: "interaction_continuation_infra_retry", maxAttempts: 2,
+      });
+      expect(scheduled.outcome).toBe("scheduled");
+      if (scheduled.outcome !== "scheduled") throw new Error("expected the admitted answer retry");
+      child = scheduled.run;
+      predecessorId = child.id;
+    }
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, child!.id));
+    return { fixture, child: child!, binding: { ...fixture, runId: child!.id }, context: structuredClone(child!.contextSnapshot!) };
+  }
+
+  it.each([1, 2])("attests answered retry %s against its unchanged original user receipt", async (attempts) => {
+    const { fixture, child, binding, context } = await answerAttestationRetry(attempts);
+    const [delivery] = await db.select().from(issueQuestionResponseDeliveries).where(eq(issueQuestionResponseDeliveries.id, fixture.responseDeliveryId));
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, fixture.wakeId));
+    expect(await attestReviewedExternalChatRun({ db, ...binding, contextSnapshot: context })).toBe(true);
+    context.paperclipExternalChatExecutionBound = true;
+    context.paperclipWake = await buildPaperclipWakePayload({ db, companyId: fixture.companyId,
+      agentId: fixture.agentId, runId: child.id, contextSnapshot: context });
+    await db.update(heartbeatRuns).set({ contextSnapshot: context }).where(eq(heartbeatRuns.id, child.id));
+    expect(await resolveExternalChatQuestionResponse(db, binding, context, "read"))
+      .toMatchObject({ interactionIds: [fixture.interactionId], marker: { responseDeliveryId: fixture.responseDeliveryId } });
+    expect(await materializeExternalChatQuestionResponseInput({ db, binding, contextSnapshot: context }))
+      .toEqual([expect.objectContaining({ interactionId: fixture.interactionId })]);
+    expect((await db.select().from(issueQuestionResponseDeliveries).where(eq(issueQuestionResponseDeliveries.id, fixture.responseDeliveryId)))[0]).toEqual(delivery);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, fixture.wakeId)))[0]).toEqual(wake);
+  });
+
+  it.each(["revoked_identity", "receipt_actor", "delivery_target", "parent_batch", "provider_started", "parent_session", "unrelated_retry", "foreign_parent", "foreign_task"] as const)(
+    "rejects answered retry authority after %s", async (change) => {
+      const { fixture, child, binding, context } = await answerAttestationRetry(1);
+      if (change === "revoked_identity") await db.update(chatIdentityLinks).set({ status: "revoked" }).where(eq(chatIdentityLinks.principalId, fixture.principalId));
+      if (change === "receipt_actor") await db.update(agentWakeupRequests).set({ requestedByActorId: "different-user" }).where(eq(agentWakeupRequests.id, fixture.wakeId));
+      if (change === "delivery_target") await db.update(issueQuestionResponseDeliveries).set({ targetRunId: child.id }).where(eq(issueQuestionResponseDeliveries.id, fixture.responseDeliveryId));
+      if (change === "parent_batch") await db.update(heartbeatRuns).set({ contextSnapshot: { ...fixture.context, wakeCommentIds: [randomUUID()] } }).where(eq(heartbeatRuns.id, fixture.runId));
+      if (change === "provider_started") await db.update(heartbeatRuns).set({ resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } }).where(eq(heartbeatRuns.id, fixture.runId));
+      if (change === "parent_session") await db.update(heartbeatRuns).set({ nativeSessionId: randomUUID() }).where(eq(heartbeatRuns.id, fixture.runId));
+      if (change === "unrelated_retry") await db.update(heartbeatRuns).set({ scheduledRetryReason: "transient_failure" }).where(eq(heartbeatRuns.id, child.id));
+      if (change === "foreign_parent" || change === "foreign_task") {
+        const [company] = change === "foreign_parent" ? await db.insert(companies).values({ name: "Foreign retry", issuePrefix: `F${randomUUID().replaceAll("-", "")}` }).returning() : [];
+        const [actor] = company ? await db.insert(agents).values({ companyId: company.id, name: "Foreign agent", adapterType: "process" }).returning() : [];
+        const companyId = company?.id ?? fixture.companyId;
+        const [other] = await db.insert(issues).values({ companyId, title: "Another task" }).returning();
+        const [foreign] = await db.insert(heartbeatRuns).values({ companyId, agentId: actor?.id ?? fixture.agentId,
+          scopeKind: "issue", issueId: other!.id, finishedAt: new Date(),
+          status: "failed", errorCode: "reviewed_chat_execution_binding_not_ready", contextSnapshot: fixture.context,
+          resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } }).returning();
+        context.retryOfRunId = foreign!.id;
+        await db.update(heartbeatRuns).set({ retryOfRunId: foreign!.id, contextSnapshot: context }).where(eq(heartbeatRuns.id, child.id));
+      }
+      expect(await attestReviewedExternalChatRun({ db, ...binding, contextSnapshot: context })).toBe(false);
+      expect(context.paperclipExternalChatQuestionResponse).toBeUndefined();
+    },
+  );
+
+  it("exhausts answered retries and rejects a forged child beyond their authority bound", async () => {
+    const { fixture, child } = await answerAttestationRetry(2);
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(),
+      errorCode: "reviewed_chat_execution_binding_not_ready",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, child.id));
+    expect(await heartbeatService(db).scheduleBoundedRetry(child.id, { retryReason: "interaction_continuation_infra_retry",
+      wakeReason: "interaction_continuation_infra_retry", maxAttempts: 3 })).toMatchObject({ outcome: "retry_exhausted" });
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: fixture.companyId, agentId: fixture.agentId,
+      source: "automation", status: "claimed" }).returning();
+    const context = { ...child.contextSnapshot, retryOfRunId: child.id, scheduledRetryAttempt: 3,
+      executionRetryAccounting: { version: 1, failureRetries: 3, maxTurnContinuations: 0 } };
+    const [forged] = await db.insert(heartbeatRuns).values({ ...child, id: randomUUID(), status: "running",
+      wakeupRequestId: wake!.id, retryOfRunId: child.id, scheduledRetryAttempt: 3, contextSnapshot: context }).returning();
+    await db.update(agentWakeupRequests).set({ runId: forged!.id }).where(eq(agentWakeupRequests.id, wake!.id));
+    await db.update(issues).set({ executionRunId: forged!.id }).where(eq(issues.id, fixture.issueId));
+    expect(await attestReviewedExternalChatRun({ db, ...fixture, runId: forged!.id, contextSnapshot: context })).toBe(false);
+  });
 
   async function attestAnswer(
     fixture:
@@ -5462,7 +5556,7 @@ describe("native external-chat response wait", () => {
     if (reply) await db.update(chatActions).set({ result: { ...reply.result, savedProviderOutput: payload } }).where(eq(chatActions.id, reply.id));
     const observed = createDb(temporary?.connectionString ?? externalTestDatabaseUrl!);
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns, chatActions }, capture);
     try {
       const context = await new PaperclipRunnerToolAuthority(observed, fixture)

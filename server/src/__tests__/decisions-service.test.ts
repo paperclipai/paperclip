@@ -24,6 +24,7 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { attentionService } from "../services/attention.js";
 import { decisionService } from "../services/decisions.js";
+import { signDecisionSpec } from "../services/decision-signing.js";
 import * as retentionModule from "../services/decision-retention.js";
 import { hashAttentionArchiveManifest } from "../services/decision-retention.js";
 import type { AttentionArchiveManifestEntry, AttentionArchiveTargetSnapshot } from "@paperclipai/shared";
@@ -395,9 +396,12 @@ describePg("decisionService", () => {
     const created = await service().create({
       companyId, actor: agentActor(), agentId, runId, title: "Cancel?", body: "Body",
       options: [{ id: "yes", label: "Yes", effects: [{
-        type: "cancel_issue_tree", targetIssueId, staleness: "lenient", reasonComment: "cleanup",
+        type: "cancel_issue_tree", targetIssueId, staleness: "strict", reasonComment: "cleanup",
       }] }],
     });
+    // The effect type admits only strict cancellation, so a lenient one can exist only as a stored, signed row.
+    const [stored] = await db.update(decisions).set({ options: sql`jsonb_set(${decisions.options}, '{0,effects,0,staleness}', '"lenient"')` }).where(eq(decisions.id, created.id)).returning();
+    await db.update(decisions).set({ signedSpec: signDecisionSpec({ decisionId: stored!.id, options: stored!.options, targetSnapshots: stored!.targetSnapshots }) }).where(eq(decisions.id, created.id));
     const unreviewedChildId = randomUUID();
     await db.insert(issues).values({ id: unreviewedChildId, companyId, title: "Unreviewed child", status: "todo", priority: "medium",
       parentId: targetIssueId, responsibleUserId: decidedByUserId });
@@ -793,7 +797,7 @@ describePg("decisionService", () => {
       expect((await service().get(id))?.metadata.continuationPending).toBe(false);
     }
     const markReady = (id: string, source = db) => writeDecisionChange(source, async tx => tx.update(decisions)
-      .set({ status: "cancelled", metadata: { continuationPending: true } }).where(eq(decisions.id, id)));
+      .set({ status: "cancelled", metadata: { continuationPending: true } }).where(eq(decisions.id, id)), { companyId });
 
     it("coalesces sequential tenant writes without dropping pending recovery", async () => {
       const row = await createCommentDecision();

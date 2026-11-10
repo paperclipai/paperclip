@@ -55,7 +55,14 @@ Policy: Company model discovery requires company access; account-backed discover
 also enforces its account/pool and target-agent rules. Instance adapter inventory
 and installation retain board/admin gates. Delegated managed
 AI-account login operations are enumerated under `model-accounts`; they do not
-grant raw host administration or execution-session reset.
+grant raw host administration or execution-session reset. On Cloud-managed
+instances, external adapter install, reinstall, reload, removal and override
+operations return `403` with `adapter_install_platform_managed`, including for
+instance admins. Built-in metadata remains available to board users. Startup
+and UI parser reads do not consume saved external registrations or package code.
+[Local fixture controls](../../server/src/adapters/cloud-external-adapters.test.ts)
+and [route controls](../../server/src/__tests__/adapter-routes-authz.test.ts)
+cover this boundary; they do not establish live agent or provider qualification.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L6608) at
 the reviewed commit above.
@@ -69,6 +76,19 @@ Runner discovery exposes `supportedRunners` and `defaultRunner`; it describes
 qualified selection, not successful authentication or task execution. Native
 Claude retains existing account grants and company/responsible-user boundaries.
 Source: [adapter discovery](../../server/src/adapters/registry.ts).
+
+Kimi Code has a qualified native ACPX profile on Mac ARM64 and Linux x64. It
+requires an explicit model and a company-secret `KIMI_API_KEY` binding, and uses
+the global Code API. Ordinary selection, setup and Runtime Test require no
+candidate grant. Runtime Test queries the authenticated Code model catalog and
+sends no model prompt. Future pending profiles retain exact trusted startup
+admission; saved agent configuration and public requests cannot supply authority.
+Inactive setup drafts can precede model entry; Test and hire still require it.
+The native model route returns no suggestions and accepts typed identifiers.
+Managed Kimi account connections, ambient OAuth borrowing, and automatic legacy
+migration are outside this release. Source/control evidence only; see the
+[Kimi release ledger](../../doc/plans/2026-10-28-kimi-code-runner-integration.md)
+for the separately recorded runtime and product results.
 
 Gaps: Raw instance adapter listing requires board, while company model discovery exists
 for eligible agents.
@@ -140,6 +160,21 @@ remaining operations before qualifying the whole capability.
 Gaps: Environment test path checks creation/configuration policy; missing provider auth
 must use its owner setup flow.
 
+Scoped experimental Cursor Cloud native support uses the existing configuration
+and environment-test APIs with an explicit `cursor_cloud` Runner provider. Legacy
+records retain their runtime. Native admission requires a local controller,
+per-turn lifecycle, exact model, selected `CURSOR_API_KEY`, and repository or named
+Cloud environment. Hosted semantic calls use
+`POST /mcp/native-runs/{runId}` with a separate expiring run capability. The relay
+checks the current source company/agent/task/run and authority epoch, then forwards
+to the provider bridge and normal PRP/Core tool policy. It grants no board or
+cross-company access. Source/control evidence:
+[runtime helper](../../server/src/services/native-runtime/cursor-cloud-runtime.ts),
+[relay regressions](../../server/src/services/native-runtime/remote-mcp-relay.test.ts)
+and [provider client](../../packages/paperclip-runner/src/drivers/cursor-cloud/cloud-client.test.ts).
+Live provider authorization and task qualification remain `not-run`; see the
+[acceptance ledger](../../doc/plans/2026-10-28-cursor-cloud-native-runner.md).
+
 Scoped source-only Claude CLI preparation: both the selected environment test
 and normal CLI execution use
 [versioned sandbox preparation](../../packages/adapters/claude-local/src/server/sandbox-cli-version.ts).
@@ -194,7 +229,9 @@ use the server-owned authenticated relay. The provider sees bounded
 then uses pinned aliases. Search describes its 1–20 page limit and default of 5
 in the tool and parameter descriptions. It intersects fresh grants and work modes; calls
 retain the run's original gateway policy, validation, approvals, revocation and
-audit path. Prompt arguments cannot select gateway authority. Assigned gateway
+audit path. Blank schema references perform normal discovery; positive schema
+offsets require an exact reference, and unavailable references explain how to
+search again. Prompt arguments cannot select gateway authority. Assigned gateway
 launch credentials stay on the controller. Former direct-catalog OpenCode
 checkpoints refresh; other provider fingerprints stay unchanged. The
 [projection controls](../../server/src/services/native-runtime/assigned-mcp-tools.test.ts)
@@ -232,6 +269,14 @@ settings. See [creation access](./agents.md#hire).
 Capability ID: `runs-adapters/runs`.
 
 Review: `baseline`.
+
+Run reads and task interruption projections can include a sanitized
+`paperclip.provider-failure.v1` cause. Existing company and task/run read policy
+applies. The cause exposes no credential values or new secret access and grants
+no retry authority. Startup receipts and failed-turn events use the same cause;
+unknown categories retain their explanation. Transport/controller restart and
+PostgreSQL finalization tests cover retention. These tests do not independently
+qualify actor access through the routes.
 
 Scoped source-only timing evidence: workspace preparation spans carry only the
 existing hashed run ID. Controller startup phase spans carry no custom attributes.
@@ -298,12 +343,44 @@ session-control access. Deployed diagnostic usefulness remains unverified.
 
 ## `session`
 
+Native OpenCode semantic tool requests wait under the existing durable Runner
+owner across the ordinary 30-second MCP deadline. The native MCP client uses
+a fixed one-hour ceiling; ordinary driver calls keep their deadline.
+Company, tool, run and Stop authority do not change. Unanswered effects still
+block run attachment, including after the client ceiling expires while the
+Runner lease remains valid. The [proxy regression](../../packages/paperclip-runner/src/live/runnerd-opencode-streaming-tools.test.ts)
+checks delayed delivery, one tool call, and a settled next run with a deterministic
+provider. The [bridge suite](../../packages/paperclip-runner/src/drivers/opencode/mcp-bridge.test.ts)
+covers result replay, cancellation and teardown. These are local protocol checks;
+live provider and deployed access remain separate checks in the
+[session recipe](../feature-map/runs-adapters.md#session).
+
+Fresh remote Retry preparation retains the admitted strategy in its saved
+fingerprint. An unchanged follow-up must not report strategy drift; actual policy
+changes retain the replacement guard. This changes no retry, session-reset,
+workspace or credential authority. The
+[preparation regression](../../server/src/services/heartbeat/workspace-preparation.test.ts)
+uses PostgreSQL and controlled runtime acquisition. Live provider resumption
+remains a separate check in the [session recipe](../feature-map/runs-adapters.md#session).
+
+Older strategy fingerprints retain their existing guard until an explicitly
+admitted fresh recovery. A remote Git row alone does not authorize rewriting its
+configuration history or bypassing a real policy change.
+
 Scoped source evidence: restart preparation transfers its lease renewal to the
 native executor after the executor acquires its own reference. Completion stops
 renewal before coordinator release, while real ownership loss retains the detach
 guard. This changes no actor permission or session-reset authority. Follow the
 [session recipe](../feature-map/runs-adapters.md#session) for recovery followed by
 ordinary turns; deterministic runner checks do not establish live provider access.
+
+Warm continuation without a retained controller owner refreshes a prior-run local
+projection from its company/task/session-bound canonical checkpoint, including
+later commits under the same run ID. Current-run state keeps its owner. Pending
+canonical commands and mismatched checkpoint bindings still hold admission. This
+adds no agent permission, session-reset authority, or provider replay path. The
+executor and remote continuity regressions cover this internal recovery boundary;
+live provider access remains separate evidence.
 
 Sandbox export carries shallow Git boundaries through the full-bundle fallback
 and uses normal Git fetch connectivity checks. Existing host ancestry and merge

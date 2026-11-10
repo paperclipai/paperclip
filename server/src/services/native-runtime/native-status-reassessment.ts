@@ -9,9 +9,10 @@ import { classifyNativeEvidence } from "./evidence-classifier.js";
 import { hasPendingNativeChildCompletion } from "./native-child-completion-delivery.js";
 import { resolveNativeReconciliationStatus, type NativeReconciliationFacts } from "./native-reconciliation-status.js";
 import { pendingNativeGovernance, resolveNativeFinalizerStatus } from "./native-run-finalizer.js";
-import { NATIVE_STATUS_ARBITER_POLICY_VERSION, type NativeAuthoritativeIssueStatus, type NativeStatusDecision } from "./status-arbiter.js";
+import { NATIVE_STATUS_ARBITER_POLICY_VERSION, supersedeStaleOwnerCompletion, type NativeAuthoritativeIssueStatus, type NativeStatusDecision } from "./status-arbiter.js";
 import { commitNativeStatusDecision, NativeStatusRaceError } from "./status-decision-committer.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
+import { readPreservedNativeResultFinalization } from "./preserved-native-result-finalization.js";
 
 export type NativeStatusReassessmentSource = {
   runId: string; companyId: string; agentId: string; issueId: string;
@@ -123,6 +124,11 @@ export async function reassessNativeStatusFromSource(
     assessment.priorIssueStatus !== row.issueStatus
     || Number(assessment.priorStatusVersion) !== Number(row.issueStatusVersion)
   );
+  if (authoritativeStatusChanged && row.coordinatorPhase !== "committed") {
+    const preserved = await readPreservedNativeResultFinalization(db, row);
+    if (preserved?.statusRestoration === "owned" && preserved.resultId === assessment.resultId
+      && preserved.contractId === assessment.contractId) return { kind: "unchanged" };
+  }
   const retiredAutomaticReview = issueMatchesCurrentDecision && currentDecision
     ? await decisionHasRetiredAutomaticReview(db, currentDecision) : false;
   let reassessment = null;
@@ -227,6 +233,10 @@ export async function reassessNativeStatusFromSource(
     if (decision.statusAction === "done" && qualityReview?.satisfied === false) {
       decision = resolveNativeFinalizerStatus({ assessment: reassessment, terminalState: "succeeded", workspaceFinalizeStatus: "succeeded",
         requiredQualityReviewSatisfied: false, priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus, agentId: row.agentId });
+    }
+    // New evidence from a reassigned-away run cannot close the new owner's task.
+    if (currentIssue && !currentIssue.conversationAgentId) {
+      decision = supersedeStaleOwnerCompletion(decision, { ...currentIssue, status: row.issueStatus }, row.agentId);
     }
     let committed: Awaited<ReturnType<typeof commitNativeStatusDecision>>;
     try {

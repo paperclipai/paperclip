@@ -1,7 +1,7 @@
 import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { enableRunFailureReporting } from "../__tests__/helpers/run-failure-reporting.js";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, completionContracts, createDb, environmentLeases, environments, heartbeatRuns, issues, issueRecoveryActions, issueThreadInteractions, nativeRunFinalizations, nativeRunResults, statusDecisions, workAssessments } from "@paperclipai/db";
 import {
@@ -78,6 +78,55 @@ describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine f
     return { companyId, agentId, issueId, runId };
   }
 
+  it("recognizes pending cleanup selected only by the run deadline batch", async () => {
+    const f = await seedAbandonedRunFixture(), now = new Date();
+    const cleanupIds = Array.from({ length: 51 }, () => randomUUID());
+    const hidden = cleanupIds[50]!;
+    await db.insert(heartbeatRuns).values(cleanupIds.map(id => ({ id, companyId: f.companyId, agentId: f.agentId,
+      nativeIssueId: f.issueId, runtimeMode: "native", status: "running",
+      executionControlDeadlineAt: id === hidden ? new Date(now.getTime() - 120_000) : null })));
+    await db.insert(nativeRunFinalizations).values(cleanupIds.map(runId => ({ runId, companyId: f.companyId,
+      issueId: f.issueId, phase: "terminal_failure", failureCode: "native_startup_cleanup_pending",
+      controlDeadlineAt: new Date(now.getTime() - (runId === hidden ? 60_000 : 120_000)) })));
+    const attempted: string[] = [];
+    try {
+      await reconcileAbandonedExecutionControl(db, now, { startupCleanup: async ({ runId }) => { attempted.push(runId); throw new Error("Provider unavailable"); } });
+      expect(attempted).toContain(hidden);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, hidden)))[0].status).toBe("running");
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, hidden)))[0].controlDeadlineAt! > now).toBe(true);
+    } finally {
+      await db.update(nativeRunFinalizations).set({ controlDeadlineAt: null }).where(inArray(nativeRunFinalizations.runId, cleanupIds));
+      await db.update(heartbeatRuns).set({ executionControlDeadlineAt: null }).where(inArray(heartbeatRuns.id, cleanupIds));
+    }
+  });
+
+  it("moves failed startup cleanup retries behind later expired runs", async () => {
+    const f = await seedAbandonedRunFixture();
+    const now = new Date();
+    const cleanupIds = Array.from({ length: 50 }, () => randomUUID());
+    const firstDeadline = new Date(now.getTime() - 120_000);
+    await db.insert(heartbeatRuns).values(cleanupIds.map(id => ({ id, companyId: f.companyId, agentId: f.agentId,
+      nativeIssueId: f.issueId, runtimeMode: "native", status: "running", executionControlDeadlineAt: firstDeadline,
+      contextSnapshot: { issueId: f.issueId } })));
+    await db.insert(nativeRunFinalizations).values(cleanupIds.map(runId => ({ runId, companyId: f.companyId,
+      issueId: f.issueId, phase: "terminal_failure", failureCode: "native_startup_cleanup_pending", controlDeadlineAt: firstDeadline })));
+    const attempted: string[] = [];
+    const startupCleanup = async ({ runId }: { runId: string }) => { attempted.push(runId); throw new Error("Provider unavailable"); };
+    try {
+      await reconcileAbandonedExecutionControl(db, now, { startupCleanup });
+      await reconcileAbandonedExecutionControl(db, now, { startupCleanup });
+      expect(new Set(attempted)).toEqual(new Set(cleanupIds));
+      expect(attempted).toHaveLength(50);
+      const [later] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      expect(later?.status).toBe("failed");
+      const retries = await db.select().from(nativeRunFinalizations).where(inArray(nativeRunFinalizations.runId, cleanupIds));
+      expect(retries.every(row => row.controlDeadlineAt && row.controlDeadlineAt > now)).toBe(true);
+    } finally {
+      await db.update(nativeRunFinalizations).set({ controlDeadlineAt: null }).where(inArray(nativeRunFinalizations.runId, cleanupIds));
+      await db.update(heartbeatRuns).set({ executionControlDeadlineAt: null }).where(inArray(heartbeatRuns.id, cleanupIds));
+    }
+  });
+
   it("reports exactly one Sentry event for a genuine finalization-deadline failure", async () => {
     const { runId } = await seedAbandonedRunFixture();
     const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
@@ -98,6 +147,49 @@ describeEmbeddedPostgres("reconcileAbandonedExecutionControl reports a genuine f
       runStatus: "failed",
       errorCode: "execution_finalization_deadline_exceeded",
     });
+  });
+
+  it("keeps the run's prior failure code as the reported root cause", async () => {
+    const { runId } = await seedAbandonedRunFixture();
+    await db.update(heartbeatRuns).set({
+      errorCode: "native_execution_ownership_unverified",
+      resultJson: { workspaceRestoreFailure: "restore_failed" },
+    }).where(eq(heartbeatRuns.id, runId));
+    const captureCallsBefore = mockCaptureRunFailure.mock.calls.length;
+
+    await reconcileAbandonedExecutionControl(db);
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run).toMatchObject({
+      status: "failed",
+      errorCode: "execution_finalization_deadline_exceeded",
+      resultJson: { workspaceRestoreFailure: "restore_failed", originalFailureCode: "native_execution_ownership_unverified" },
+    });
+    await vi.waitFor(() => {
+      expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)).toHaveLength(1);
+    }, { timeout: 5_000 });
+    expect(mockCaptureRunFailure.mock.calls.slice(captureCallsBefore)[0]?.[0]).toMatchObject({
+      runId,
+      errorCode: "execution_finalization_deadline_exceeded",
+      diagnostics: { execution: { originalFailureCode: "native_execution_ownership_unverified" } },
+    });
+  });
+
+  it("does not replace an earlier recorded root cause or record the deadline as its own cause", async () => {
+    const earlier = await seedAbandonedRunFixture();
+    await db.update(heartbeatRuns).set({
+      errorCode: "native_execution_ownership_unverified",
+      resultJson: { originalFailureCode: "native_provider_session_failed" },
+    }).where(eq(heartbeatRuns.id, earlier.runId));
+    const repeated = await seedAbandonedRunFixture();
+    await db.update(heartbeatRuns).set({ errorCode: "execution_finalization_deadline_exceeded" })
+      .where(eq(heartbeatRuns.id, repeated.runId));
+
+    await reconcileAbandonedExecutionControl(db);
+
+    const runs = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.id, [earlier.runId, repeated.runId]));
+    expect(runs.find(run => run.id === earlier.runId)?.resultJson).toEqual({ originalFailureCode: "native_provider_session_failed" });
+    expect(runs.find(run => run.id === repeated.runId)?.resultJson ?? {}).not.toHaveProperty("originalFailureCode");
   });
 
   it("leaves a run owned by a live legacy controller to that controller", async () => {

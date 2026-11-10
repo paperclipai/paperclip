@@ -142,22 +142,29 @@ it("hides project isolation controls without rewriting its policy", () => {
 
 describe("ProjectProperties — workspace storage selection", () => {
   const inherited = {
-    source: "default" as const, pluginId: "provider-one", displayName: "Managed storage", error: null,
+    source: "core" as const, pluginId: null, displayName: "Managed storage", error: null,
     effectivePolicy: { enabled: true, defaultMode: "isolated_workspace" as const, storageProviderPluginId: "provider-one", workspaceStrategy: { type: "git_worktree" as const } },
     providers: [{ id: "provider-one", displayName: "Managed storage", isDefault: true }, { id: "provider-two", displayName: "Alternative", isDefault: false }],
   };
   function storageSelect() { return container.querySelector<HTMLSelectElement>('select[aria-label="Workspace storage provider"]')!; }
-  it("displays the inherited default without saving it as an override", () => {
+  it("shows an unattached project on Core storage and offers each plugin", () => {
     render(makeProject({ executionWorkspacePolicy: null, workspaceProvider: inherited }), vi.fn());
-    expect(storageSelect().value).toBe("inherit");
-    expect(container.textContent).toContain("Inherited default: Managed storage");
+    expect(storageSelect().value).toBe("core");
+    expect(storageSelect().disabled).toBe(false);
+    expect(Array.from(storageSelect().options).map(option => option.value)).toEqual(["core", "provider-one", "provider-two"]);
+    expect(container.textContent).toContain("A project moved to a storage plugin stays on that plugin.");
   });
-  it.each(["core", "provider-two", "inherit"])("saves the deliberate %s choice while preserving explicit settings", value => {
+  it("saves a move to a plugin while preserving explicit settings", () => {
     const onFieldUpdate = vi.fn();
-    render(makeProject({ executionWorkspacePolicy: { enabled: true, storageProviderPluginId: "provider-one", sharedWorkspaceConcurrency: "serialize" }, workspaceProvider: inherited }), onFieldUpdate);
-    act(() => { storageSelect().value = value; storageSelect().dispatchEvent(new Event("change", { bubbles: true })); });
-    const policy = { enabled: true, sharedWorkspaceConcurrency: "serialize", ...(value === "inherit" ? {} : { storageProviderPluginId: value === "core" ? null : value }) };
-    expect(onFieldUpdate).toHaveBeenCalledWith("workspace_storage_provider", { executionWorkspacePolicy: policy });
+    render(makeProject({ executionWorkspacePolicy: { enabled: true, sharedWorkspaceConcurrency: "serialize" }, workspaceProvider: inherited }), onFieldUpdate);
+    act(() => { storageSelect().value = "provider-two"; storageSelect().dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(onFieldUpdate).toHaveBeenCalledWith("workspace_storage_provider", { executionWorkspacePolicy: { enabled: true, sharedWorkspaceConcurrency: "serialize", storageProviderPluginId: "provider-two" } });
+  });
+  it("locks the control on a plugin-backed project", () => {
+    render(makeProject({ executionWorkspacePolicy: { enabled: true, storageProviderPluginId: "provider-one" }, workspaceProvider: { ...inherited, source: "project" as const, pluginId: "provider-one" } }), vi.fn());
+    expect(storageSelect().value).toBe("provider-one");
+    expect(storageSelect().disabled).toBe(true);
+    expect(container.textContent).toContain("This project stays on Managed storage.");
   });
   it("does not copy inherited mode, strategy, or provider when another setting changes", () => {
     const onFieldUpdate = vi.fn();
@@ -165,9 +172,8 @@ describe("ProjectProperties — workspace storage selection", () => {
     act(() => { concurrencySelect().value = "allow"; concurrencySelect().dispatchEvent(new Event("change", { bubbles: true })); });
     expect(onFieldUpdate).toHaveBeenCalledWith("execution_workspace_shared_concurrency", { executionWorkspacePolicy: { enabled: true, sharedWorkspaceConcurrency: "allow" } });
   });
-  it("shows default conflicts and keeps the provider control usable", () => {
-    render(makeProject({ workspaceProvider: { ...inherited, error: "Select a storage provider in project configuration" } }), vi.fn());
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Select a storage provider");
-    expect(storageSelect().disabled).toBe(false);
+  it("shows a provider configuration error", () => {
+    render(makeProject({ workspaceProvider: { ...inherited, error: "The workspace storage plugin is unavailable" } }), vi.fn());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("unavailable");
   });
 });

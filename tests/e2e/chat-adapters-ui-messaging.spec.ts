@@ -236,6 +236,9 @@ test.describe("Board send delivery refresh", () => {
           }),
           "create linked task in another organization",
         );
+        await page.route("**/api/workspace-preferences/me", route => fulfill(route, {
+          userId: "local-board", coordinatorWorkspaceEnabled: !classic, updatedAt: null,
+        }));
         await page.route("**/api/instance/settings/experimental", (route) =>
           fulfill(route, {
             enableChatConnectors: true,
@@ -257,6 +260,9 @@ test.describe("Board send delivery refresh", () => {
               ? `/issues/${issue.id.toUpperCase()}`
               : `/${selected.prefix}/issues/${issue.identifier}?external=chat#files`,
         );
+        if (!classic) {
+          await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
+        }
         await expect(
           page.getByRole("heading", {
             name: "Organization-bound task link",
@@ -1349,11 +1355,12 @@ test.describe("Failed chat task and exact run retry", () => {
     );
   });
 
-  for (const surface of ["agent run", "Inbox", "Legacy Inbox"] as const) {
+  for (const surface of ["agent run", "Inbox", "Coordinator Tasks", "Legacy Inbox"] as const) {
     for (const outcome of ["queued", "deferred", "denied"] as const) {
       test(`${surface}: selected run ${outcome} preserves exact retry authority and truthful feedback`, async ({
         page,
       }, testInfo) => {
+        const usesTaskRetry = surface === "Inbox" || surface === "Coordinator Tasks";
         const now = Date.now();
         const run = {
           id: failedRunId,
@@ -1406,6 +1413,14 @@ test.describe("Failed chat task and exact run retry", () => {
         await page.route("**/api/**", async (route) => {
           const url = new URL(route.request().url());
           const pathname = url.pathname;
+          if (pathname === "/api/workspace-preferences/me") {
+            await fulfill(route, {
+              userId: "local-board",
+              coordinatorWorkspaceEnabled: surface === "Coordinator Tasks",
+              updatedAt: null,
+            });
+            return;
+          }
           if (pathname === "/api/instance/settings/experimental") {
             await fulfill(route, {
               enableChatConnectors: true,
@@ -1450,7 +1465,7 @@ test.describe("Failed chat task and exact run retry", () => {
             });
             return;
           }
-          const retryPath = surface === "Inbox"
+          const retryPath = usesTaskRetry
             ? `/api/issues/${issue.id}/retry`
             : `/api/agents/${seed.agentId}/wakeup`;
           if (pathname === retryPath) {
@@ -1472,7 +1487,7 @@ test.describe("Failed chat task and exact run retry", () => {
               // The durable action exists, but no run has been admitted yet.
               await fulfill(
                 route,
-                surface === "Inbox"
+                usesTaskRetry
                   ? {
                       requestId: actionId,
                       accepted: true,
@@ -1532,7 +1547,7 @@ test.describe("Failed chat task and exact run retry", () => {
         await expect(retry).toHaveCount(1);
         await retry.click();
         await expect.poll(() => requests.length).toBe(1);
-        expect(requests[0]).toEqual(surface === "Inbox"
+        expect(requests[0]).toEqual(usesTaskRetry
           ? {
               companyId: null,
               body: {
@@ -1572,7 +1587,9 @@ test.describe("Failed chat task and exact run retry", () => {
               ? new RegExp(
                   `/${seed.prefix}/agents/(${seed.agentId}|maya)/runs/${failedRunId}$`,
                 )
-              : new RegExp(`${startPath}$`),
+              : surface === "Coordinator Tasks"
+                ? new RegExp(`/${seed.prefix}/issues\\?view=everything$`)
+                : new RegExp(`${startPath}$`),
           );
           await expect(retry).toBeEnabled();
           await testInfo.attach(`${surface}-retry-denied`, {

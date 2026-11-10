@@ -1,17 +1,21 @@
 import type { Page } from "@playwright/test";
+import { isBoundNativePrpEventRow, type NativePrpRunBinding } from "./native-event-envelope.js";
 type Row = Record<string, any>;
 
 /** Work emitted by a retired turn, excluding accounting and control-plane bookkeeping. */
-export function nativeWorkEvents<T extends Row>(events: T[]): T[] {
+export function nativeWorkEvents<T extends Row>(events: T[], binding?: NativePrpRunBinding): T[] {
   return events.filter(row => {
-    const kind = row.payload?.prpEvent?.eventType;
+    const event = row.payload?.prpEvent;
+    const kind = event?.eventType;
+    if (kind === "item.completed" && row.eventType === kind
+      && isBoundNativePrpEventRow(row, binding) && event.payload?.kind === "usage") return false;
     return typeof kind === "string" && /^(tool\.execution\.|turn\.|message\.|item\.)/.test(kind);
   });
 }
 
 /** Detect post-cancellation output even if it arrived before the first snapshot. */
-export function nativeCancellationHasNoLaterWork(events: Row[]): boolean {
-  const work = nativeWorkEvents(events);
+export function nativeCancellationHasNoLaterWork(events: Row[], binding?: NativePrpRunBinding): boolean {
+  const work = nativeWorkEvents(events, binding);
   const cancellation = work.findIndex(row => row.payload.prpEvent.eventType === "turn.cancelled");
   return cancellation >= 0 && cancellation === work.length - 1;
 }
@@ -26,10 +30,12 @@ export function activeNativeTurnStarted(run: Row | undefined, events: Row[]): bo
 /** Shared story order; target adapters supply authoritative retirement observations. */
 export async function stopAndRedirectThroughUi(input: {
   page: Page; nonce: string;
+  beforeStop?(): Promise<void>;
   awaitRetirement(): Promise<void>;
   beforeRedirect(): Promise<void>;
   reply(message: string): Promise<unknown>;
 }) {
+  await input.beforeStop?.();
   await input.page.getByTestId("task-chat-composer-stop").last().click();
   await input.awaitRetirement();
   await input.beforeRedirect();

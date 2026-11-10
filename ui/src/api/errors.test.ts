@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ApiError } from "./client";
+import { ApiError } from "./api-error";
 import {
   apiErrorMessage,
   classifyError,
@@ -162,7 +162,7 @@ describe("ApiError", () => {
 });
 
 describe("isRawErrorCode", () => {
-  it.each(["tenant_app_unavailable", "WORKER_UNAVAILABLE", "TIMEOUT", "issue.not_found"])("%s is a code", (value) => {
+  it.each(["tenant_app_unavailable", "WORKER_UNAVAILABLE", "TIMEOUT", "issue.not_found", "forbidden", "unauthorized", "conflict"])("%s is a code", (value) => {
     expect(isRawErrorCode(value)).toBe(true);
   });
 

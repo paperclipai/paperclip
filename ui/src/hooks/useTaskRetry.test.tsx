@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Issue } from "@paperclipai/shared";
 import { useTaskRetry } from "./useTaskRetry";
 import { ExecutionBlockerNotice } from "../components/ExecutionBlockerNotice";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
+import { queryKeys } from "../lib/queryKeys";
 vi.mock("../api/issues", () => ({ issuesApi: { retryTask: vi.fn() } }));
 const issue = { id: "task", interruption: { observedRunId: "failed-run" } } as Issue;
 function View({ task = issue }: { task?: Issue }) {
@@ -38,6 +39,15 @@ describe("optimistic task Retry", () => {
     expect(container.textContent).not.toContain("Thinking");
     expect(container.textContent).not.toContain("Taking longer");
   });
+  it("refreshes the inspected file recovery after an accepted Retry", async () => {
+    vi.mocked(issuesApi.retryTask).mockResolvedValue({ requestId: "retry", accepted: true, stale: false,
+      observedRunId: "failed-run", presentation: null } as Awaited<ReturnType<typeof issuesApi.retryTask>>);
+    const key = queryKeys.issues.recoveryActions("task", "hold", "failed-run");
+    client.setQueryData(key, { active: null, actions: [] });
+    await render();
+    await act(async () => container.querySelector("button")!.click());
+    expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+  });
   it("paints Thinking before admission resolves and shares the same request across double clicks", async () => {
     let settle!: (value: Awaited<ReturnType<typeof issuesApi.retryTask>>) => void;
     vi.mocked(issuesApi.retryTask).mockImplementation(() => new Promise(resolve => { settle = resolve; }));
@@ -66,5 +76,34 @@ describe("optimistic task Retry", () => {
     await render({ ...issue, id: "other-task" }); await act(async () => container.querySelector("button")!.click());
     await act(async () => settlements[0]({ requestId: "old", accepted: true, stale: false, presentation: null }));
     expect(container.textContent).toContain("Thinking");
+  });
+  it.each(["id", "identifier"])("reads a deferred Retry reason on the %s route and stops checking once explained", async route => {
+    vi.useFakeTimers();
+    const presentation = { intentId: "intent", responsibility: "system" as const, state: "failed" as const,
+      canRetry: true, nextRetryAt: null, userAction: null, sourceRunIds: ["failed-run"], observedRunId: "failed-run" };
+    let saved = { ...issue, identifier: "RTA-1", interruption: presentation } as Issue;
+    const queryFn = vi.fn(async () => saved);
+    const detailKey = queryKeys.issues.detail(route === "identifier" ? saved.identifier! : issue.id);
+    client.setQueryData(detailKey, saved);
+    function Observed() {
+      const { data } = useQuery({ queryKey: detailKey, queryFn, staleTime: Infinity });
+      const retry = useTaskRetry(data);
+      return <ExecutionBlockerNotice presentation={data?.interruption} canRetry onRetry={retry.retry}
+        optimistic={retry.optimistic} takingLonger={retry.takingLonger} error={retry.error} />;
+    }
+    vi.mocked(issuesApi.retryTask).mockResolvedValue({ requestId: "intent", accepted: true, stale: false, presentation });
+    await act(async () => root.render(<QueryClientProvider client={client}><Observed /></QueryClientProvider>));
+    await act(async () => container.querySelector("button")!.click());
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    saved = { ...saved, interruption: { ...presentation, retryWait: {
+      reason: "remote_cleanup", message: "Retry is waiting for the previous environment to stop. Your message is saved.",
+    } } };
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(container.textContent).toContain(saved.interruption!.retryWait!.message);
+    const reads = queryFn.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(queryFn).toHaveBeenCalledTimes(reads);
+    expect(issuesApi.retryTask).toHaveBeenCalledTimes(1);
   });
 });

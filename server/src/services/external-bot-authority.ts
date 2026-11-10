@@ -6,8 +6,11 @@ import { boardAuthService } from "./board-auth.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { McpOAuthError, type McpPrincipal } from "./public-mcp/oauth.js";
 
-export async function externalBotEnabled(db: Db, provider: "openai_dot" | "grok_bot") {
-  const experimental = await instanceSettingsService(db).getExperimental();
+export async function externalBotEnabled(db: Db, provider: "openai_dot" | "grok_bot", queryOwner?: Pick<Db, "select">) {
+  const settings = instanceSettingsService(db);
+  const experimental = queryOwner
+    ? await settings.getExperimentalReadOnly(queryOwner)
+    : await settings.getExperimental();
   return experimental.enablePublicMcp && (provider === "openai_dot" ? experimental.enableOpenAiDot : experimental.enableGrokBot && experimental.enableNativeRunner);
 }
 

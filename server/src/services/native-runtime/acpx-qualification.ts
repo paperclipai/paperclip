@@ -1,5 +1,5 @@
 import { PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
-import { parseAcpxCandidateAdmission, type AcpxCandidateAdmission, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { parseAcpxCandidateAdmission, QUALIFIED_ACPX_PROFILES, type AcpxCandidateAdmission, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 
 /** Trusted operator startup authority, separate from saved agent configuration. */
 export const ANTIGRAVITY_CANDIDATE_ADMISSION_ENV = "PAPERCLIP_ACPX_CANDIDATE_ADMISSION";
@@ -23,9 +23,31 @@ export function resolveAntigravityCandidateAdmission(
   });
 }
 
+export function resolveKimiCandidateAdmission(
+  input: { companyId?: string; model?: string; target?: { platform: string; architecture: string } },
+  hostEnvironment: NodeJS.ProcessEnv = process.env,
+): AcpxCandidateAdmission | undefined {
+  if (QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus !== "pending") return undefined;
+  const encoded = hostEnvironment[ANTIGRAVITY_CANDIDATE_ADMISSION_ENV];
+  if (!encoded || !input.companyId) return undefined;
+  let value: unknown;
+  try { value = JSON.parse(encoded); } catch { throw new Error("Invalid Kimi candidate admission"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Kimi candidate admission");
+  const record = value as Record<string, unknown>;
+  if (record.companyId !== input.companyId || record.agent !== "kimi") return undefined;
+  const admission = parseAcpxCandidateAdmission(value, {
+    companyId: input.companyId, agent: "kimi",
+    model: input.model ?? (typeof record.model === "string" ? record.model : ""),
+  });
+  if (input.target && (admission.platform !== input.target.platform || admission.architecture !== input.target.architecture)) {
+    throw new Error("Kimi candidate admission does not match the execution target");
+  }
+  return admission;
+}
+
 /** Operator-only admission for an exact candidate/model during qualification. */
 export const ACPX_QUALIFICATION_ENV = "PAPERCLIP_RUNNER_ACPX_QUALIFICATION";
-export type AcpxQualificationCandidate = "cursor" | "copilot" | "pi";
+export type AcpxQualificationCandidate = "cursor" | "copilot" | "pi" | "kimi";
 
 export function resolveAcpxQualification(
   provider: NativeExecutionInput["provider"] | { kind: "acpx"; agent: string; model: string },
@@ -45,14 +67,14 @@ export function resolveAcpxQualification(
   if (!encoded) return undefined;
   let entries: unknown;
   try { entries = JSON.parse(encoded); } catch { throw new Error("Invalid ACPX qualification authorization"); }
-  if (!Array.isArray(entries) || entries.length < 1 || entries.length > 3) {
+  if (!Array.isArray(entries) || entries.length < 1 || entries.length > 4) {
     throw new Error("Invalid ACPX qualification authorization");
   }
   const agents = new Set<string>();
   for (const entry of entries) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)
       || Object.keys(entry).sort().join(",") !== "agent,model"
-      || !["cursor", "copilot", "pi"].includes(entry.agent)
+      || !["cursor", "copilot", "pi", "kimi"].includes(entry.agent)
       || typeof entry.model !== "string" || !entry.model.trim() || entry.model !== entry.model.trim()
       || agents.has(entry.agent)) throw new Error("Invalid ACPX qualification authorization");
     agents.add(entry.agent);

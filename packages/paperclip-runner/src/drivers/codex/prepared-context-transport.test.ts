@@ -91,7 +91,7 @@ describe("prepared native context transport", () => {
         text: expect.stringContaining('"task"'),
       }),
     ]);
-    expect((input?.[0] as { text: string }).text).toContain(
+    expect((input as Array<{ text: string }>)[0]!.text).toContain(
       '"message":"ordinary standalone task"',
     );
   });

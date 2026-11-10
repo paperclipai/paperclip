@@ -8,6 +8,10 @@
     ".npmrc",
     "tsconfig*.json",
     "vitest.config.ts",
+    "**/vitest.config.*",
+    "**/vite.config.*",
+    "**/vitest.setup.*",
+    "**/tsconfig*.json",
     "scripts/**",
     ".github/**",
     "patches/**",
@@ -192,6 +196,15 @@
       "outputs": [],
       "cache": false
     },
+    "//#ci:sandbox-providers": {
+      "inputs": [
+        "packages/plugins/sandbox-providers/**",
+        "packages/plugins/sdk/**",
+        "packages/shared/**"
+      ],
+      "outputs": [],
+      "cache": false
+    },
     "//#ci:docker": {
       "inputs": [
         "server/**",
@@ -213,6 +226,16 @@
       "cache": false
     },
     "//#ci:e2e": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/**"
+      ],
+      "outputs": [],
+      "cache": false
+    },
+    "//#ci:runner-e2e-support": {
       "inputs": [
         "server/**",
         "cli/**",

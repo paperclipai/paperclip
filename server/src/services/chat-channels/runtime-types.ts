@@ -48,6 +48,34 @@ export type InternalSetupState = ChatEndpointSetupState & {
   runtimeGeneration?: number;
   /** Binds pre-install URL verification to the signing secret later configured. */
   slackVerificationSigningFingerprint?: string;
+
+  slackCloudSubject?: string;
+  slackCloudInstanceId?: string;
+  slackCloudRetiredGeneration?: number;
+  slackCloudIntent?: {
+    version: 1;
+    id: string;
+    subject: string;
+    instanceId: string;
+    companyId: string;
+    endpointId: string;
+    publicId: string;
+    connectionId: string;
+    runtimeGeneration: number;
+    active: boolean;
+    teamId?: string;
+    appId?: string;
+    attempts: number;
+    nextAttemptAt: string | null;
+    failureCode?: string;
+  };
+  slackCloudEvents?: {
+    version: 1;
+    bindingId: string;
+    runtimeGeneration: number;
+    teamId: string;
+    appId: string;
+  };
   slackCallbackSurfaces?: Partial<
     Record<SlackCallbackSurface, SlackCallbackObservation>
   >;

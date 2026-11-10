@@ -1,3 +1,9 @@
+import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
+import { assertEphemeralAgentInstructions } from "./agent-instructions.js";
+import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifySkillVersionPinChange } from "./skill-version-retention-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
@@ -7,8 +13,8 @@ import { normalizeAgentUrlKey } from "@paperclipai/shared";
 import { normalizePaperclipRunnerAdapterConfig } from "@paperclipai/adapter-utils/server-utils";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { agentRecordQueries, type UpdateAgentOptions, type AgentConfigurationPatch, type AgentConfigurationRecord, isPlainRecord, buildConfigSnapshot,
-  hasConfigPatchFields, changedPendingApprovalConfigFields, diffConfigSnapshot } from "../lib/agent-records.js";
-import { normalizeAgentPermissions } from "../lib/agent-permissions.js";
+  hasConfigPatchFields, changedPendingApprovalConfigFields, diffConfigSnapshot, jsonEqual } from "../lib/agent-records.js";
+import { CEO_HIRING_DENIAL_KEY, ceoHiringDenial, normalizeAgentPermissions } from "../lib/agent-permissions.js";
 import type { ActivityPublication } from "../types/activity-publication.js";
 import { secretService, assertClaudeOAuthBindingInvariant } from "./secrets.js";
 import { agentCredentialService } from "./agent-credentials.js";
@@ -16,6 +22,7 @@ import { clearPrimaryAgent } from "./primary-agent.js";
 import { budgetServiceInTransaction } from "./budgets.js";
 
 export async function prepareAgentConfiguration(db: Db, existing: AgentConfigurationRecord, data: AgentConfigurationPatch, options?: UpdateAgentOptions): Promise<AgentConfigurationPatch> {
+  await notifyAttentionRetentionWork(db, { companyId: existing.companyId });
   const id = existing.id;
   const { ensureManager, assertNoCycle, assertCompanyShortnameAvailable, assertBuiltInAgentMetadataMutationAllowed } = agentRecordQueries(db);
   if (existing.status === "pending_approval" && !options?.allowPendingApprovalConfigUpdate) {
@@ -59,7 +66,15 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
   }
   const normalizedPatch = { ...data } as AgentConfigurationPatch;
   if (data.permissions !== undefined) {
-    normalizedPatch.permissions = normalizeAgentPermissions(data.permissions);
+    // Only the permissions control records a CEO hiring restriction. Keep an
+    // existing one unless this write turns hiring on, and never take one from input.
+    const incoming = data.permissions && typeof data.permissions === "object" && !Array.isArray(data.permissions)
+      ? Object.fromEntries(Object.entries(data.permissions).filter(([key]) => key !== CEO_HIRING_DENIAL_KEY)) : data.permissions;
+    const denial = ceoHiringDenial(existing.permissions);
+    normalizedPatch.permissions = normalizeAgentPermissions(
+      denial && (incoming as Record<string, unknown> | null)?.canCreateAgents !== true
+        ? { ...(incoming as Record<string, unknown>), [CEO_HIRING_DENIAL_KEY]: denial } : incoming,
+    );
   }
   if (
     Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterConfig") &&
@@ -83,12 +98,19 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
       existing.adapterConfig,
     );
   }
+  if(normalizedPatch.adapterType!==undefined&&normalizedPatch.adapterType!==existing.adapterType
+    ||normalizedPatch.adapterConfig!==undefined&&!jsonEqual(normalizedPatch.adapterConfig,existing.adapterConfig))
+    await notifyMuseContactVerification(db,{companyId:existing.companyId,agentId:existing.id});
+  await notifyStrandedAgentStatus(db, { companyId: existing.companyId, agentId: existing.id });
+  await notifyRunDispatch(db, { companyId: existing.companyId });
+  await notifyDeferredExecutionEligibility(db, { companyId: existing.companyId });
   if (normalizedPatch.runtimeConfig !== undefined || normalizedPatch.reportsTo !== undefined) {
     await notifyDeliveryWork(db, DELIVERY_QUEUES.agentTimers);
   }
   if (normalizedPatch.adapterConfig !== undefined) {
     await notifySkillVersionPinChange(db, existing.companyId, existing.adapterConfig ?? {}, normalizedPatch.adapterConfig);
   }
+  assertEphemeralAgentInstructions({ ...existing, ...normalizedPatch });
   return normalizedPatch;
 }
 

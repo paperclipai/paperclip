@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import {
   costEvents,
@@ -32,6 +32,21 @@ import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../serv
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+// These process fixtures do not consume skills. Keep the real scheduler,
+// execution lifecycle and selection snapshot, without a cold catalog expansion
+// competing with the monitor's existing three-second settlement assertion.
+vi.mock("../services/company-skills.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../services/company-skills.js")>();
+  return { ...actual, companySkillService: (...args: Parameters<typeof actual.companySkillService>) => {
+    const service = actual.companySkillService(...args);
+    return { ...service, withRuntimeSkillEntries: async <T>(_companyId: string,
+      options: Parameters<typeof service.withRuntimeSkillEntries>[1],
+      consume: (entries: Awaited<ReturnType<typeof service.listRuntimeSkillEntries>>) => T | Promise<T>) => {
+      await options.selectVersions?.([]);
+      return consume([]);
+    } };
+  } };
+});
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSUE_MONITOR_TEST_DATABASE_URL");
 const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -166,7 +181,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
     const monitorAttemptCount = input?.monitorAttemptCount ?? 0;
-    const monitor = {
+    const monitor: Record<string, unknown> = {
       nextCheckAt: nextCheckAt.toISOString(),
       notes: "Check deploy",
       scheduledBy: "assignee",

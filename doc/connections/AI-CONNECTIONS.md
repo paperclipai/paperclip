@@ -9,11 +9,45 @@ Onboarding and new-agent setup retain upstream's `SavedProviderKeySelect` and
 homes. Managed default/shared accounts are additional choices in that same
 selector. Selecting “Sign in to another account” survives background refreshes;
 Claude authorization paste keeps upstream's immediate Connecting feedback.
+The onboarding sign-in link and footer use the same action. Either opens the
+provider in a new tab and disables the footer with Waiting for auth… for OpenAI
+or Waiting for code… for Claude. The Claude code field stays available. A Claude code entered without a paste event can be sent
+with Submit code in the footer or Enter in the field. These actions submit to
+the current login session and do not open another provider window.
+Failed or expired sign-ins show a short message and a Retry sign-in footer
+button. Retry releases the old session before starting a fresh sign-in. It keeps
+the onboarding setup and clears the old code.
+
+Returning from Review to Connect can change the existing agent's connection.
+Connect verifies and saves the current selection before returning to Review;
+it does not create another agent. A new API account selected in onboarding becomes
+the user's provider default, so a previous subscription does not override that
+choice. A failed default selection can retry the saved account without creating
+another connection. Failed verification or saving keeps the user on Connect.
+Switching back to subscription explicitly selects the completed subscription
+account again. Browser sign-in uses its saved session result; local sign-in uses
+its saved account result. Reusing the entered API key selects that account again.
+Default changes for the same company and provider run in order. Connect waits
+for earlier changes before deciding whether the selected account is already the
+default. A failed or lost response cannot count as a confirmed default selection.
+The unchanged-setup shortcut expires when another default selection is attempted,
+including one that finishes after Back.
+An agent that already uses a connected account cannot switch to a legacy secret
+binding. Selecting one stays on Connect and directs the user to choose a connected
+API account or connect a new key. Unmanaged setup can still reuse saved secrets.
 
 New-agent Connect offers three persistent tiles: the provider's subscription,
 the provider's API key, and Advanced. All three stay visible while the selected
 mode's form is shown below. Advanced opens the existing compatible-connection
 picker and provider setup. Execution environment selection lives in Configure.
+
+Back from subscription sign-in cancels that attempt and pending prompt or status
+reads. A session returned after Back is released instead of reopening sign-in. If an
+aborted read hides the session ID, a separate owner lookup releases the attempt
+before a replacement can start. Cleanup checks the abandoned environment and
+account intent, so a conflicting settings sign-in stays active.
+Selecting a subscription again starts a fresh attempt. Reloading the page can
+still resume a sign-in that was not cancelled.
 
 Storybook's simulated controllers and page annotations do not run in the app.
 
@@ -38,6 +72,26 @@ browser sign-in presentation with a local login runner and require no sandbox.
 Environment selection does not change agent execution settings.
 API keys are validated against fixed provider endpoints; redirects
 and caller-supplied validation URLs are rejected.
+
+In **Connectors**, expand a provider's accounts. A crown beside an account's name
+marks your saved default for that provider in this company. Hover, focus, or tap
+the crown for its label. In another personal account's menu, choose **Set as
+default for OpenAI**, **Set as default for Claude**, or the matching provider.
+Subscription and API-key accounts share one provider default. The current default
+has a disabled **Default for {provider}** menu item. The list API's `canSetDefault`
+flag projects human self-service configure authority once per list request.
+Agent list responses omit this optional UI field and retain their existing
+write authorization. Shared accounts, other owners,
+routed profiles, and callers without permission do not receive this action.
+
+While saving, the previous crown stays visible and other default writes for that
+provider are disabled. After success, scoped account data and agent selectors
+refresh from the server. Failed writes retain the previous selection and offer
+an explicit Retry for the same grant, with eligibility checked again. Returning
+to the tab refreshes defaults changed elsewhere. An unavailable selected account
+keeps its crown and **Default unavailable** state until it is reconnected or
+explicitly replaced. Changing the preference grants no access and affects the
+next normal run admission; pinned selections and active runs retain their accounts.
 
 `runtimeConfig.aiConnection` contains `provider`, `mode`, and `method`. For responsible-user selections, `method` is a legacy wire hint retained for rolling upgrades; the resolver uses the selected account’s actual method:
 
@@ -97,6 +151,23 @@ Provider/method metadata lives in `config.ai`. Credentials live on the existing
 grant through encrypted vault secret references, with existing consumer bindings.
 Safe provider-reported account identity is optional; secret references, tokens,
 and authentication paths are never account labels.
+
+Permissions shows account details separately from the connection's maintenance
+controls: the provider account email and organization when available, the sign-in
+method, and personal or company-shared access. A Paperclip owner name is not
+evidence of the provider login. Anthropic setup tokens can permit inference while
+denying profile access; in that case the screen explains that Anthropic did not
+permit reading the account email. A profile denial does not mark a connected
+credential as disconnected.
+
+`GET /api/companies/:companyId/ai-connections/:connectionId/identity?grantId=...`
+checks company membership, connection-management authority, and the selected
+credential's human audience before opening the credential. The response contains
+only safe account labels and bounded status messages. The Anthropic profile read
+has a 15-second headers/body deadline and no redirects. It runs separately from
+the account/grants reads, so profile loading or failure cannot block account
+maintenance. The UI reuses an observation for five minutes, scoped to the company,
+connection, grant, and grant update time. Reconnect requires a new observation.
 
 Company-scoped `/api/companies/:companyId/ai-connections` operations provide list,
 API-key creation/reconnect, personal defaults, completed login references, and
@@ -320,8 +391,10 @@ grant's credentials. Inherited credential variables are cleared. Conflicting
 project authentication and provider-routing overrides are rejected. Managed
 failure cannot reactivate host or legacy credentials.
 
-A subscription invocation takes no lease. Two invocations of one grant, from
-the same or a different provider account, run at the same time. At cleanup,
+A subscription invocation takes no lease or account mutex. Runs and manual
+account tests using one grant can start at the same time. Ordinary credential
+reads take no company file lock or grant/secret write locks. Pending cleanup
+belongs to its original runtime and does not block another invocation. At cleanup,
 each invocation re-reads the credential stored at that moment under a row
 lock on the grant, then compares it against its own refreshed copy using the
 provider's own freshness field: Codex compares `last_refresh` and bounds it
@@ -536,15 +609,14 @@ existing account name. Connecting installs access for that agent and resumes the
 work automatically. Explicit incompatible bindings and shared-account permission
 denials still fail; hiring never expands a restricted shared account's audience.
 
-Concurrent runs of one subscription do not hold a credential lease. A fresh
-task can briefly wait when a credential rotation holds the company file lock or
-a grant/secret database row lock. Lock timeouts become `ai_connection_busy`,
-keeping the task on its automatic pre-provider scheduled retry path. It does
-not request new credentials, and it does not consume the provider-failure retry
-allowance. Each retry revalidates the account, and existing run-dispatch rules
-still suppress cancelled, reassigned, or otherwise ineligible work. An assignee
-retry must still keep execution-lock ownership at scheduling, promotion, and
-dispatch.
+Concurrent runs and manual tests do not hold an AI-connection execution lock.
+An unfinished or failed cleanup from another runtime cannot cancel a new task
+with `ai_connection_busy`. New invocations can request a bounded cleanup retry
+without waiting for it. A home-specific cleanup check only joins work for that
+same private home. Actual credential updates and durable replacement recovery
+retain their atomic storage transactions and generation checks. Historical
+scheduled retries still revalidate the account and task eligibility, including
+assignee execution-lock ownership at scheduling, promotion, and dispatch.
 
 `server/src/__tests__/agent-hire-ai-connections.test.ts` covers both creation routes,
 both providers and methods, approval gates, native provider mapping, shared access
@@ -580,22 +652,33 @@ transaction or an intentional freshness/authorization discard. These retained
 homes are recovery evidence, not a background replay queue; persistent database
 or lock failures still require operator intervention.
 
-Quota OAuth replacement tokens are encrypted with the instance secrets master
-key and fsynced under `<instance-root>/quota-credential-recovery/<company-id>/`
-before vault, grant, or activity writes. Storage and encryption are checked before
-exchanging a single-use refresh token. Failed saves retry without another OAuth
-exchange; persistent failures keep the encrypted record for the next quota poll,
-including after a restart. New OpenAI subscription runtimes serialize credential
-reads with quota exchanges and recover a matching pending replacement before
-materializing an auth home. Authentication-failure handling also recovers a
-matching replacement before marking the grant invalid. A failed recovery save
-defers these actions and leaves both the active grant and journal intact.
-The journal is removed only after database commit (or
-when an authorized newer credential makes it obsolete). Replay checks the grant,
-connection, secret, and original credential fingerprint and cannot reactivate a
-revoked grant or overwrite a reconnect. Back up this directory and the instance
-secrets key with the instance data. Loss of durable storage while receiving a
-provider token can still require reconnecting the account.
+Server-owned quota refresh validates and locks the current grant and secret in
+Postgres before exchanging a token. A failed database prerequisite prevents the
+exchange. A returned replacement is saved directly into the existing secret
+store. The same logical operation keeps it in memory for at most three save
+attempts. A lost commit response is reconciled against the current saved value;
+reconnect, revocation, secret-version and session-epoch changes win over a delayed
+save. Save retries never repeat the OAuth exchange and no new recovery file is
+written for this path, in cloud or local deployments.
+
+If all save attempts fail, the request fails. If the server process then exits,
+the unsaved replacement is lost. V1 accepts signing in again after the next failed
+use; it does not report successful refresh or keep a second credential vault.
+
+Remote Codex Runner tasks retain their private credential until secret writeback
+and the lease's credential handoff commit. Provider completion follows that
+handoff. Failed exports or database saves leave it pending for the existing
+cleanup path, including a replacement web receiver. Its authority still checks
+the company, grant, secret, version selector and session epoch.
+
+Existing encrypted records in
+`<instance-root>/quota-credential-recovery/<company-id>/` remain readable for
+cutover settlement. Do not delete unresolved files or remove the old volume
+before inventory and settlement. Legacy replay cannot reactivate a revoked grant
+or overwrite a reconnect. Local Google Antigravity retirement still uses its
+existing encrypted recovery record and private-home ownership; remote and warm
+Google subscription sessions remain unsupported. This local path is not a cloud
+fallback. Cloud cutover must settle any observed legacy credential files first.
 
 ## Advanced provider routing (2026-10-02)
 

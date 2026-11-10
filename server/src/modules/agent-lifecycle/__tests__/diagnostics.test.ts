@@ -5,7 +5,7 @@ import type { LifecycleAgent, LifecycleStore, LifecycleDriver } from "../applica
 import { startAgentLifecycle } from "../index.js";
 import { createAgentLifecycleEffects } from "../../../services/agent-lifecycle.js";
 import { logger } from "../../../middleware/logger.js";
-import { lifecycleFailureMessage } from "../application/failure.js";
+import { lifecycleFailureMessage, lifecycleVerificationNeedsRetry } from "../application/failure.js";
 
 const agent: LifecycleAgent = { id: "agent", companyId: "company", lifecycleState: "verifying", lifecycleVersion: 3,
   lifecycleRequiredPluginIds: null, lifecycleError: null,
@@ -23,6 +23,17 @@ function fixture() {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("lifecycle readiness handoff", () => {
+  it("defers event-owned host verification without marking host or readiness complete", async () => {
+    const { store, driver, worker } = fixture();
+    driver.runHost.mockResolvedValue("waiting");
+    await worker.process(agent.id);
+    expect(store.defer).toHaveBeenCalledWith(agent, expect.any(String), null, expect.any(Date), { waitForSignal: true });
+    expect(store.completeHost).not.toHaveBeenCalled();
+    expect(store.change).not.toHaveBeenCalled();
+    expect(driver.onReady).not.toHaveBeenCalled();
+    await worker.stop();
+  });
+
   it("notifies the scheduler only after host, plugins, and readiness have committed", async () => {
     const { store, driver, worker } = fixture();
     let commit!: (ready: LifecycleAgent) => void;
@@ -67,8 +78,23 @@ describe("lifecycle readiness handoff", () => {
 });
 
 describe("lifecycle failure diagnostics", () => {
+  it.each(["ai_connection_required", "harness_auth_failed", "harness_model_unavailable", "harness_command_unavailable", "harness_cwd_invalid", "harness_probe_unexpected_output"])("waits for repair only for a host verification failure: %s", code => {
+    const error = { code };
+    expect(lifecycleVerificationNeedsRetry({ stage: "host", phase: "verifying" }, error)).toBe(true);
+    expect(lifecycleVerificationNeedsRetry({ stage: "plugin", phase: "verifying" }, error)).toBe(false);
+    expect(lifecycleVerificationNeedsRetry({ stage: "host", phase: "cleaning_up" }, error)).toBe(false);
+  });
+
+  it("allows two automatic retries of a generic failed test before waiting for repair", () => {
+    for (const verificationFailures of [1, 2, 3, 8_000]) {
+      const context = { stage: "host" as const, phase: "verifying" as const, attempts: 8_000, verificationFailures };
+      expect(lifecycleVerificationNeedsRetry(context, { code: "harness_test_failed" })).toBe(verificationFailures >= 3);
+    }
+  });
+
   it.each([
     ["host", "harness_model_unavailable", "Execution configuration check failed. The selected model is unavailable."],
+    ["host", "ai_connection_required", "Execution configuration check failed. This agent's environment requires a managed AI connection and an isolated Runner home."],
     ["plugin", "required_plugin_unavailable", "Execution configuration check: required plugin step failed. A required plugin is unavailable."],
     ["select_plugins", "unknown private code", "Execution configuration check: finding required plugins failed. Paperclip could not complete this step."],
     ["transition", "40P01", "Execution configuration check: saving progress failed. Paperclip could not complete this step."],
@@ -80,7 +106,8 @@ describe("lifecycle failure diagnostics", () => {
     if (stage === "select_plugins") driver.requiredPluginIds.mockRejectedValue(error);
     if (stage === "transition") store.change.mockRejectedValue(error);
     await worker.process(agent.id);
-    expect(store.defer).toHaveBeenCalledWith(agent, expect.any(String), expect.stringContaining(expected), expect.any(Date));
+    expect(store.defer).toHaveBeenCalledWith(agent, expect.any(String), expect.stringContaining(expected), expect.any(Date),
+      ...(stage === "host" ? [{ retryRequired: true }] : []));
     expect(JSON.stringify(store.defer.mock.calls)).not.toContain("secret provider output");
     expect(JSON.stringify(store.defer.mock.calls)).not.toContain("unknown private code");
     await worker.stop();

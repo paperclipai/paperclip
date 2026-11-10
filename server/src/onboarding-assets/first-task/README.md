@@ -33,6 +33,14 @@ answer reaches the agent in its wake payload and the `first-task` skill tells it
 which path to take; when the user types a message instead, the card expires
 and the message wakes the agent as before.
 
+With the coordinator chat enabled, the agent's chat with the user mirrors the
+onboarding task's pending questions. If the agent asks a question in that chat
+(for example, the user moved onboarding there), the onboarding task's pending
+question cards expire as superseded, so only one card stays answerable. When
+that leaves the onboarding task in review with no other pending card, it is
+marked done with a comment linking to the chat, so the user is never asked to
+decide how an internal task continues.
+
 ## Placeholders
 
 - `{{agentName}}` → the agent's chosen name. When the agent has no name the

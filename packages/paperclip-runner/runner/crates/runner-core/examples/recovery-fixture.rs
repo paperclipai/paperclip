@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use paperclip_runner_core::durable::{
     capture_bootstrap_ticket, run_durable_runner, Command, CommandExecution, CommandExecutor,
@@ -21,6 +21,12 @@ struct Script {
     retention_limit: usize,
     release_file: PathBuf,
     receipt_file: PathBuf,
+    #[serde(default)]
+    accounting: bool,
+    #[serde(default)]
+    provider_stop_ms: Option<u64>,
+    #[serde(default)]
+    reconnect_delay_ms: Option<u64>,
 }
 
 #[derive(Default)]
@@ -86,11 +92,37 @@ fn workload(script: Script, shared: Shared) {
             digest = Sha256::digest(digest);
         }
         work = lock.lock().unwrap();
+        let (event_type, payload) = if script.accounting {
+            if step == 1 {
+                (
+                    "usage.reported",
+                    json!({"provider":"openai", "model":"test-model",
+                    "runDeltaAvailable":true, "runDeltaBasis":"run", "runDelta":{"inputTokens":120,"outputTokens":10,"providerCostUsd":0.25}}),
+                )
+            } else if step == 2 {
+                ("turn.completed", json!({"status":"completed"}))
+            } else {
+                (
+                    "usage.reported",
+                    json!({"provider":"openai","model":"test-model","runDeltaAvailable":true,"runDeltaBasis":"run",
+                    "runDelta":{"inputTokens":150,"outputTokens":15,"providerCostUsd":0.5}}),
+                )
+            }
+        } else {
+            (
+                "item.delta",
+                json!({"text": format!("step={step} sha256={digest:x}\n")}),
+            )
+        };
         work.events.push_back(PolledEvent {
             executor_event_id: format!("fixture-step-{step}"),
-            event_type: "item.delta".to_owned(),
-            priority: EventPriority::P2,
-            payload: json!({"text": format!("step={step} sha256={digest:x}\n")}),
+            event_type: event_type.to_owned(),
+            priority: if script.accounting {
+                EventPriority::P0
+            } else {
+                EventPriority::P2
+            },
+            payload,
         });
         work.completed = step;
         work.peak_retained = work.peak_retained.max(work.events.len());
@@ -101,6 +133,8 @@ fn workload(script: Script, shared: Shared) {
 struct ScriptedExecutor {
     shared: Shared,
     worker: Option<thread::JoinHandle<()>>,
+    stop_after: Option<Duration>,
+    stop_at: Option<Instant>,
 }
 
 impl ScriptedExecutor {
@@ -109,6 +143,8 @@ impl ScriptedExecutor {
         let worker_shared = shared.clone();
         Self {
             shared,
+            stop_after: script.provider_stop_ms.map(Duration::from_millis),
+            stop_at: None,
             worker: Some(thread::spawn(move || workload(script, worker_shared))),
         }
     }
@@ -123,6 +159,7 @@ impl CommandExecutor for ScriptedExecutor {
                     return Err(DurableRunnerError::invalid("fixture turn started twice"));
                 }
                 work.started = true;
+                self.stop_at = self.stop_after.map(|delay| Instant::now() + delay);
             }
             "turn.steer" => work.resumed = true,
             "session.snapshot" => {}
@@ -139,6 +176,18 @@ impl CommandExecutor for ScriptedExecutor {
     }
 
     fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        self.retained_events()
+    }
+
+    fn maintain_disconnected_provider(&mut self) -> Result<Option<Instant>, DurableRunnerError> {
+        if self.stop_at.is_some_and(|due| due <= Instant::now()) {
+            self.shutdown()?;
+            self.stop_at = None;
+        }
+        Ok(self.stop_at)
+    }
+
+    fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
         self.retained_events()
     }
 
@@ -215,10 +264,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         runner_digest: value("--runner-digest")?,
         acpx_launch_profile: None,
         opencode_launch_profile: None,
+        cursor_cloud_launch_profile: None,
         max_outbox_bytes: value("--max-outbox-bytes")?.parse()?,
         p0_reserve_bytes: value("--p0-reserve-bytes")?.parse()?,
         max_frame_bytes: 1024 * 1024,
-        reconnect_delay: Duration::from_millis(20),
+        reconnect_delay: Duration::from_millis(script.reconnect_delay_ms.unwrap_or(20)),
         reconnect_grace: Some(Duration::from_millis(
             value("--reconnect-grace-ms")?.parse()?,
         )),

@@ -1,3 +1,5 @@
+import { notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { readNativeEventEvidenceOutcome } from "./native-runtime/evidence-classifier.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { isNativeResponseEvidence, notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
@@ -8,6 +10,8 @@ import { and, asc, eq, getTableColumns, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
 import { nativeSha256 } from "./native-runtime/canonical.js";
+
+export const RETRY_EXHAUSTION_MESSAGE_PREFIX = "Bounded retry exhausted";
 
 export interface AppendHeartbeatRunEventInput {
   companyId: string;
@@ -32,7 +36,18 @@ export interface AppendHeartbeatRunEventInput {
     protocolSchemaVersion: number;
     canonicalPayload: Record<string, unknown>;
   };
+  /**
+   * Run columns to change in the same UPDATE that reserves the sequence. A
+   * second UPDATE of a run row this transaction already changed makes
+   * PostgreSQL re-check every foreign key on heartbeat_runs (KEY SHARE on the
+   * agent, issue, predecessor run, ...), so it can wait behind, or deadlock
+   * with, an unrelated transaction that holds one of those rows FOR UPDATE.
+   */
+  runUpdate?: HeartbeatRunEventRunUpdate;
 }
+
+export type HeartbeatRunEventRunUpdate = Partial<Pick<typeof heartbeatRuns.$inferInsert,
+  "legacyProcessSettlement" | "processPid" | "processGroupId" | "processHostHash" | "processStartedAt">>;
 
 export interface AppendHeartbeatRunEventResult {
   row: typeof heartbeatRunEvents.$inferSelect;
@@ -57,10 +72,12 @@ export class HeartbeatRunEventConflictError extends Error {
 export async function allocateHeartbeatRunEventSeq(
   db: Db,
   runId: string,
+  runUpdate: HeartbeatRunEventRunUpdate = {},
 ): Promise<number> {
   const [updated] = await db
     .update(heartbeatRuns)
     .set({
+      ...runUpdate,
       nextEventSeq: sql`${heartbeatRuns.nextEventSeq} + 1`,
       updatedAt: new Date(),
     })
@@ -74,10 +91,17 @@ export async function appendHeartbeatRunEvent(
   db: Db,
   input: AppendHeartbeatRunEventInput,
 ): Promise<AppendHeartbeatRunEventResult> {
+  const projectsRetention = input.eventType === "lifecycle" && Boolean(input.message?.startsWith(RETRY_EXHAUSTION_MESSAGE_PREFIX));
+  // Terminal proof may arrive after controller retirement and a quiet Stop
+  // check. Register the scoped wake before writing it, in the same transaction.
+  const projectsRecovery = ["native.process_start_requested", "native.process_identity_recorded", "native.local_process_stopped"].includes(input.eventType)
+    || Boolean(input.nativeSource && ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"].includes(input.eventType));
   const projectsReassessment = readNativeEventEvidenceOutcome(input.payload?.prpEvent) !== null;
   const projectsProgress = isSafeNativeChatProgressEventType(input.eventType);
   const projectsResponse = isNativeResponseEvidence(input.eventType, input.payload?.prpEvent);
-  if (!input.nativeSource && !input.retryExhaustion && !projectsProgress && !projectsResponse && !projectsReassessment) {
+  // Deduplicated receipts return without allocating, so they cannot carry run changes.
+  if (input.runUpdate && (input.nativeSource || input.retryExhaustion)) throw new Error("heartbeat_run_event_run_update_unsupported");
+  if (!input.runUpdate && !input.nativeSource && !input.retryExhaustion && !projectsProgress && !projectsResponse && !projectsReassessment && !projectsRecovery && !projectsRetention) {
     const allocated = db.$with("allocated_run_event", {}).as(sql`
       update ${heartbeatRuns}
       set next_event_seq = ${heartbeatRuns.nextEventSeq} + 1,
@@ -117,6 +141,8 @@ export async function appendHeartbeatRunEvent(
       throw new Error("heartbeat_run_event_binding_mismatch");
     }
 
+    if (projectsRecovery) await notifyLiveRunRecovery(tx, input);
+
     if (input.retryExhaustion && !input.nativeSource) {
       // The run lock also serializes concurrent recovery checks across server
       // instances. Reusing the receipt must not allocate a sequence or publish
@@ -129,7 +155,7 @@ export async function appendHeartbeatRunEvent(
           eq(heartbeatRunEvents.runId, input.runId),
           eq(heartbeatRunEvents.agentId, input.agentId),
           eq(heartbeatRunEvents.eventType, "lifecycle"),
-          sql`${heartbeatRunEvents.message} like 'Bounded retry exhausted%'`,
+          sql`${heartbeatRunEvents.message} like ${`${RETRY_EXHAUSTION_MESSAGE_PREFIX}%`}`,
           sql`${heartbeatRunEvents.payload} @> ${JSON.stringify(input.retryExhaustion)}::jsonb`,
         ))
         .limit(1)
@@ -187,9 +213,11 @@ export async function appendHeartbeatRunEvent(
     if (projectsResponse && run.runtimeMode === "native") {
       await notifyNativeResponsePresentation(tx, { companyId: run.companyId, runId: input.runId });
     }
+    if (projectsRetention) await notifyAttentionRetentionWork(tx, { companyId: input.companyId, sourceKind: "failed_run" });
     const seq = await allocateHeartbeatRunEventSeq(
       tx as unknown as Db,
       input.runId,
+      input.runUpdate,
     );
     const [row] = await tx.insert(heartbeatRunEvents).values({
       companyId: input.companyId,

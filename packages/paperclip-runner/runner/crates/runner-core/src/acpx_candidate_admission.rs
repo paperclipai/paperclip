@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::generated_acpx_profiles::acpx_release_profile;
+use crate::generated_acpx_profiles::{acpx_release_profile, kimi_native_closure};
 use crate::local_runner::LocalRunnerError;
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
@@ -63,15 +63,41 @@ impl AcpxCandidateAdmission {
     }
 
     fn validate_at(&self, now: u64, os: &str, architecture: &str) -> Result<(), LocalRunnerError> {
-        let profile = acpx_release_profile("antigravity").ok_or_else(invalid)?;
-        let manifest: Value = serde_json::from_str(DISTRIBUTIONS).map_err(|_| invalid())?;
-        let closure = manifest
-            .pointer("/platforms/darwin-arm64/closureSha256")
-            .and_then(Value::as_str)
-            .ok_or_else(invalid)?;
+        let profile = acpx_release_profile(&self.agent).ok_or_else(invalid)?;
+        let (closure, host_matches) = match self.agent.as_str() {
+            "antigravity" => {
+                let manifest: Value = serde_json::from_str(DISTRIBUTIONS).map_err(|_| invalid())?;
+                let closure = manifest
+                    .pointer("/platforms/darwin-arm64/closureSha256")
+                    .and_then(Value::as_str)
+                    .ok_or_else(invalid)?
+                    .to_owned();
+                (
+                    closure,
+                    self.platform == "darwin"
+                        && self.architecture == "arm64"
+                        && os == "macos"
+                        && architecture == "aarch64",
+                )
+            }
+            "kimi" if profile.qualification_pending => {
+                let closure =
+                    kimi_native_closure(&self.platform, &self.architecture).ok_or_else(invalid)?;
+                let host_matches = matches!(
+                    (
+                        self.platform.as_str(),
+                        self.architecture.as_str(),
+                        os,
+                        architecture
+                    ),
+                    ("darwin", "arm64", "macos", "aarch64") | ("linux", "x64", "linux", "x86_64")
+                );
+                (closure.to_owned(), host_matches)
+            }
+            _ => return Err(invalid()),
+        };
         if self.schema != SCHEMA
             || !is_stable_id(&self.company_id, DURABLE_STABLE_ID_CHARS)
-            || self.agent != "antigravity"
             || self.model.trim().is_empty()
             || self.model != self.model.trim()
             || self.model.len() > 512
@@ -79,16 +105,34 @@ impl AcpxCandidateAdmission {
             || matches!(self.model.to_ascii_lowercase().as_str(), "auto" | "default")
             || self.profile_digest != profile.command_digest
             || self.native_closure_digest != format!("sha256:{closure}")
-            || self.platform != "darwin"
-            || self.architecture != "arm64"
-            || os != "macos"
-            || architecture != "aarch64"
+            || !host_matches
             || self.expires_at > MAX_JSON_SAFE_INTEGER
             || self.expires_at <= now
             || self.expires_at > now.saturating_add(MAX_LIFETIME_MS)
             || !is_stable_id(&self.run_id, SHORT_STABLE_ID_CHARS)
             || !is_stable_id(&self.normalized_session_id, SHORT_STABLE_ID_CHARS)
         {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
+    pub fn validate_next_run(
+        &self,
+        next: &Self,
+        agent: &str,
+        model: &str,
+        run_id: &str,
+        normalized_session_id: &str,
+    ) -> Result<(), LocalRunnerError> {
+        if self.agent != "kimi" || self.run_id == next.run_id {
+            return Err(invalid());
+        }
+        self.validate()?;
+        next.validate_binding(agent, model, run_id, normalized_session_id)?;
+        let mut rebound = next.clone();
+        rebound.run_id = self.run_id.clone();
+        if &rebound != self {
             return Err(invalid());
         }
         Ok(())
@@ -207,5 +251,170 @@ mod tests {
         }
         let error = AcpxCandidateAdmission::parse_json("private malformed input").unwrap_err();
         assert!(!error.to_string().contains("private"));
+    }
+
+    fn kimi_admission(platform: &str, architecture: &str) -> AcpxCandidateAdmission {
+        AcpxCandidateAdmission {
+            agent: "kimi".to_owned(),
+            model: "kimi-for-coding".to_owned(),
+            profile_digest: acpx_release_profile("kimi")
+                .unwrap()
+                .command_digest
+                .to_owned(),
+            native_closure_digest: format!(
+                "sha256:{}",
+                kimi_native_closure(platform, architecture).unwrap()
+            ),
+            platform: platform.to_owned(),
+            architecture: architecture.to_owned(),
+            ..test_admission("kimi-run", "kimi-session")
+        }
+    }
+
+    #[test]
+    fn released_kimi_rejects_candidate_records_on_both_native_platforms() {
+        assert!(!acpx_release_profile("kimi").unwrap().qualification_pending);
+        for (platform, architecture, os, host_arch) in [
+            ("darwin", "arm64", "macos", "aarch64"),
+            ("linux", "x64", "linux", "x86_64"),
+        ] {
+            let candidate = kimi_admission(platform, architecture);
+            let now = candidate.expires_at - 1;
+            assert!(candidate.validate_at(now, os, host_arch).is_err());
+            for (wrong_os, wrong_arch) in [
+                ("windows", "x86_64"),
+                ("linux", "aarch64"),
+                ("macos", "x86_64"),
+            ] {
+                assert!(candidate.validate_at(now, wrong_os, wrong_arch).is_err());
+            }
+            let (other_os, other_arch) = if os == "macos" {
+                ("linux", "x86_64")
+            } else {
+                ("macos", "aarch64")
+            };
+            assert!(candidate.validate_at(now, other_os, other_arch).is_err());
+            assert!(candidate
+                .validate_at(candidate.expires_at, os, host_arch)
+                .is_err());
+            assert!(candidate
+                .validate_at(candidate.expires_at - MAX_LIFETIME_MS - 1, os, host_arch)
+                .is_err());
+            for (field, value) in [
+                ("companyId", json!("bad company")),
+                ("agent", json!("copilot")),
+                ("model", json!("default")),
+                ("profileDigest", json!("sha256:wrong")),
+                ("nativeClosureDigest", json!("sha256:wrong")),
+                ("platform", json!("windows")),
+                ("architecture", json!("s390x")),
+                ("runId", json!("bad/run")),
+                ("normalizedSessionId", json!("bad/session")),
+            ] {
+                let mut changed = serde_json::to_value(&candidate).unwrap();
+                changed[field] = value;
+                let changed: AcpxCandidateAdmission = serde_json::from_value(changed).unwrap();
+                assert!(changed.validate_at(now, os, host_arch).is_err(), "{field}");
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
+    fn released_kimi_rejects_candidate_rebinding_and_startup_records() {
+        assert!(!acpx_release_profile("kimi").unwrap().qualification_pending);
+        let (platform, architecture) = if cfg!(target_os = "macos") {
+            ("darwin", "arm64")
+        } else {
+            ("linux", "x64")
+        };
+        let current = kimi_admission(platform, architecture);
+        let mut next = current.clone();
+        next.run_id = "kimi-next-run".to_owned();
+        assert!(current.validate().is_err());
+        assert!(
+            AcpxCandidateAdmission::parse_json(&serde_json::to_string(&current).unwrap()).is_err()
+        );
+        assert!(current
+            .validate_next_run(
+                &next,
+                "kimi",
+                "kimi-for-coding",
+                "kimi-next-run",
+                "kimi-session",
+            )
+            .is_err());
+        assert!(current
+            .validate_next_run(
+                &current,
+                "kimi",
+                "kimi-for-coding",
+                "kimi-run",
+                "kimi-session"
+            )
+            .is_err());
+        for (field, change) in [
+            ("companyId", json!("another-company")),
+            ("model", json!("another-model")),
+            ("profileDigest", json!("sha256:wrong")),
+            ("nativeClosureDigest", json!("sha256:wrong")),
+            ("normalizedSessionId", json!("another-session")),
+            ("expiresAt", json!(next.expires_at + 1)),
+        ] {
+            let mut value = serde_json::to_value(&next).unwrap();
+            value[field] = change;
+            let changed = serde_json::from_value(value).unwrap();
+            assert!(current
+                .validate_next_run(
+                    &changed,
+                    "kimi",
+                    "kimi-for-coding",
+                    "kimi-next-run",
+                    "kimi-session"
+                )
+                .is_err());
+        }
+        assert!(current
+            .validate_next_run(
+                &next,
+                "kimi",
+                "kimi-for-coding",
+                "foreign-run",
+                "kimi-session"
+            )
+            .is_err());
+        assert!(current
+            .validate_next_run(
+                &next,
+                "kimi",
+                "kimi-for-coding",
+                "kimi-next-run",
+                "foreign-session"
+            )
+            .is_err());
+        let mut expired = current.clone();
+        expired.expires_at = 0;
+        assert!(expired
+            .validate_next_run(
+                &next,
+                "kimi",
+                "kimi-for-coding",
+                "kimi-next-run",
+                "kimi-session"
+            )
+            .is_err());
+        let antigravity = test_admission("run-1", "session-1");
+        assert!(antigravity
+            .validate_next_run(
+                &next,
+                "kimi",
+                "kimi-for-coding",
+                "kimi-next-run",
+                "kimi-session"
+            )
+            .is_err());
     }
 }

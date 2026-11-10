@@ -1,9 +1,11 @@
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { and, eq, sql } from "drizzle-orm";
-import { heartbeatRuns, issueComments, issueRecoveryActions, type Db } from "@paperclipai/db";
+import { agents, issues, heartbeatRuns, issueComments, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { writeExecutionControl } from "./execution-control-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
-import { createSystemRecovery, readSystemRecovery, type SystemRecoveryState } from "./system-recovery-state.js";
+import { createSystemRecovery, exhaustedSystemRecoveryAction, readSystemRecovery, type SystemRecoveryState } from "./system-recovery-state.js";
 import { workspaceRecoverySourceEligible, type WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
+import { retainedSourceFallbackDueAt, retainedSourceFallbackPendingCondition } from "./workspace-recovery-fallback-discovery.js";
 
 export async function adoptSystemRecovery(db: Db, source: WorkspaceRecoverySourceIdentity) {
   return db.transaction(async tx => {
@@ -11,6 +13,7 @@ export async function adoptSystemRecovery(db: Db, source: WorkspaceRecoverySourc
       .where(and(eq(issueRecoveryActions.companyId, source.companyId), eq(issueRecoveryActions.id, source.actionId),
         eq(issueRecoveryActions.sourceIssueId, source.issueId))).for("update");
     if (!existing || existing.evidence.systemRecovery) return;
+    await notifyIssueRecovery(tx, { companyId: source.companyId });
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery);
     const state = createSystemRecovery(source.runId);
     // Atomic, once per source. An exhausted previous execution budget is history;
@@ -45,20 +48,28 @@ export async function adoptSystemRecovery(db: Db, source: WorkspaceRecoverySourc
   });
 }
 
+export { exhaustedSystemRecoveryAction };
+
 /** CAS protects a newer manual generation from an old worker's late write.
  * This is bookkeeping authority only; physical writes still require ownership. */
 export async function updateSystemRecovery(db: Db, source: WorkspaceRecoverySourceIdentity,
   previous: SystemRecoveryState, next: SystemRecoveryState) {
   const status = next.state === "complete" ? "recovered" : next.state === "exhausted" ? "blocked"
     : next.state === "running" ? "recovering" : "queued";
+  // A spent budget is not system work any more. Hand it to the board with the
+  // one action that can progress it, instead of leaving an inert system owner.
+  const exhausted = next.state === "exhausted";
+  const handoff = exhausted ? exhaustedSystemRecoveryAction(next) : null;
   const compatibility = {
     schema: "paperclip.workspace-recovery.v1", runId: source.runId, status,
     stage: next.phase === "verify_execution" ? "verifying_stop" : next.phase === "preserve_files" ? "restoring_files" : "saving_receipts",
     attempt: next.attempts, attemptLimit: 6, retryable: true, retryAt: next.nextAttemptAt ?? undefined,
+    ...(handoff ? { message: handoff } : {}),
   };
   return writeExecutionControl(db, DELIVERY_QUEUES.workspaceRecovery, async tx => {
     const [updated] = await tx.update(issueRecoveryActions).set({
-      ownerType: "system", ownerAgentId: null, ownerUserId: null,
+      ownerType: exhausted ? "board" : "system", ownerAgentId: null, ownerUserId: null,
+      ...(handoff ? { nextAction: handoff } : {}),
       evidence: sql`${issueRecoveryActions.evidence} || jsonb_build_object('systemRecovery', ${JSON.stringify(next)}::jsonb ||
         ${next.generationId === previous.generationId && next.intentId === previous.intentId
           ? sql`jsonb_build_object('intentId', ${issueRecoveryActions.evidence}#>'{systemRecovery,intentId}')`
@@ -71,7 +82,27 @@ export async function updateSystemRecovery(db: Db, source: WorkspaceRecoverySour
       sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,revision}' = ${String(previous.revision)}`))
       .returning({ id: issueRecoveryActions.id });
     return Boolean(updated);
-  });
+  }, { companyId: source.companyId });
+}
+
+/** Bookkeeping only: an action that was exhausted before the board handoff
+ * existed still reaches the board. It grants no attempt and keeps the generation. */
+export async function handOffExhaustedSystemRecovery(db: Db, source: WorkspaceRecoverySourceIdentity,
+  state: SystemRecoveryState) {
+  if (state.state !== "exhausted") return false;
+  const handoff = exhaustedSystemRecoveryAction(state);
+  const [updated] = await db.update(issueRecoveryActions).set({
+    ownerType: "board", ownerAgentId: null, ownerUserId: null, nextAction: handoff,
+    evidence: sql`jsonb_set(${issueRecoveryActions.evidence}, '{workspaceRecovery,message}', ${JSON.stringify(handoff)}::jsonb)`,
+    updatedAt: new Date(),
+  }).where(and(eq(issueRecoveryActions.companyId, source.companyId), eq(issueRecoveryActions.id, source.actionId),
+    eq(issueRecoveryActions.sourceIssueId, source.issueId), eq(issueRecoveryActions.ownerType, "system"),
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'exhausted'`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,generationId}' = ${state.generationId}`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,revision}' = ${String(state.revision)}`,
+    sql`jsonb_typeof(${issueRecoveryActions.evidence}->'workspaceRecovery') = 'object'`))
+    .returning({ id: issueRecoveryActions.id });
+  return Boolean(updated);
 }
 
 export async function loadSystemRecovery(db: Db, source: WorkspaceRecoverySourceIdentity) {
@@ -83,6 +114,7 @@ export async function loadSystemRecovery(db: Db, source: WorkspaceRecoverySource
 
 export async function nextWorkspaceRecoveryAt(db: Db): Promise<number | null> {
   const rows = await db.select({ at: sql<number>`case
+    when ${retainedSourceFallbackPendingCondition()} then ${retainedSourceFallbackDueAt()}
     when jsonb_typeof(${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}') = 'number'
     then (${issueRecoveryActions.evidence}#>>'{systemRecovery,nextAttemptAt}')::bigint else 0 end` })
     .from(issueRecoveryActions).innerJoin(heartbeatRuns, and(
@@ -91,8 +123,19 @@ export async function nextWorkspaceRecoveryAt(db: Db): Promise<number | null> {
         then (${issueRecoveryActions.evidence}->>'runId')::uuid end`),
       sql`${heartbeatRuns.status} in ('failed', 'interrupted', 'timed_out', 'cancelled', 'succeeded')`,
     )).where(and(
-      workspaceRecoverySourceEligible(),
-      sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')`,
+      workspaceRecoverySourceEligible(true),
+      sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
+        or ${retainedSourceFallbackPendingCondition()}
+        or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete'
+          and ${issueRecoveryActions.evidence}->>'bootstrapPreparationSettledAt' is not null
+          and coalesce(${issueRecoveryActions.evidence}->>'bootstrapPreparationContinuation', 'pending') = 'pending'
+          and exists (select 1 from ${issues} inner join ${agents}
+            on ${agents.id} = ${heartbeatRuns.agentId} and ${agents.companyId} = ${heartbeatRuns.companyId}
+            where ${issues.id} = ${issueRecoveryActions.sourceIssueId} and ${issues.companyId} = ${heartbeatRuns.companyId}
+              and ${issues.assigneeAgentId} = ${heartbeatRuns.agentId}
+              and ${issues.status} in ('todo', 'in_progress', 'in_review')
+              and ${issues.executionRunId} is null and ${issues.checkoutRunId} is null
+              and ${agents.status} in ('idle', 'running', 'error'))))`,
     )).orderBy(sql`1`).limit(1);
   return rows.length ? Number(rows[0].at) : null;
 }

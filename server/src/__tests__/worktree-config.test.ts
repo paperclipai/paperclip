@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { paperclipConfigSchema } from "@paperclipai/shared";
 import {
   applyRuntimePortSelectionToConfig,
   maybePersistWorktreeRuntimePorts,
@@ -958,7 +959,7 @@ describe("worktree config repair", () => {
 
   it("can update the in-memory config when auth URL already includes a port", () => {
     const { config, changed } = applyRuntimePortSelectionToConfig(
-      buildLegacyConfig("/tmp/shared", "http://my-host.ts.net:3100"),
+      paperclipConfigSchema.parse(buildLegacyConfig("/tmp/shared", "http://my-host.ts.net:3100")),
       {
         serverPort: 3104,
         databasePort: 54340,
@@ -975,7 +976,7 @@ describe("worktree config repair", () => {
 
   it("does not rewrite the in-memory config when auth URL has no explicit port", () => {
     const { config, changed } = applyRuntimePortSelectionToConfig(
-      buildLegacyConfig("/tmp/shared", "https://paperclip.example"),
+      paperclipConfigSchema.parse(buildLegacyConfig("/tmp/shared", "https://paperclip.example")),
       {
         serverPort: 3104,
         databasePort: 54340,

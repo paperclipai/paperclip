@@ -1,4 +1,9 @@
+import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
+import { superviseRollingDeployment } from "./rolling-deployment-supervisor.js";
+import { isLegacyWorkspaceMigration } from "./legacy-workspace-migration.js";
+import { superviseLegacyWorkspaceMigration } from "./legacy-workspace-migration-supervisor.js";
 import { readRestartRequest, type RestartRequest } from "./server-restart-request.js";
+import { startCursorCloudCallbackProxy } from "./cursor-cloud-callback-proxy.js";
 import { prepareControllerDatabase } from "./controller-database.js";
 import { readUpgradeArtifacts, verifyUpgradeArtifact, assertServingArtifact, upgradeArtifactKey, type ServingArtifact } from "./upgrade-artifacts.js";
 import { createControllerRecoveryObserver } from "./controller-recovery-observer.js";
@@ -10,6 +15,7 @@ import { CREDENTIAL_NAMES } from "./types.js";
 import { EVAL_OBSERVABILITY_SECRET_NAMES } from "./braintrust.js";
 import { usesInstalledCli, verifyInstalledCli } from "./installed-cli.js";
 import { runnerMatrix } from "./catalog.js";
+import { remoteWorkspaceStorageServerEnvironment } from "./remote-workspace-storage.js";
 import { createRunnerE2EServerStopper, runnerE2EServerDetached } from "./server-stop.js";
 import { runnerE2ETypeScriptProcessArgs } from "./web-server-command.js";
 import { qualifyLegacyClaudeCli } from "./legacy-claude-cli.js";
@@ -42,6 +48,7 @@ const paperclipCli = path.join(repositoryRoot, "tests/runner-e2e/server-entry.ts
 const executionIds: string[] = JSON.parse(process.env.PAPERCLIP_RUNNER_E2E_EXECUTION_IDS ?? "[]");
 const upgradeArtifacts = await readUpgradeArtifacts(process.env[upgradeArtifactKey]);
 let artifactIndex = 0;
+let kimiCandidateAdmission: RestartRequest["kimiCandidateAdmission"];
 const selectedExecutions = usesInstalledCli(process.env) || upgradeArtifacts ? executionIds.map(id => {
   const execution = runnerMatrix.find(row => row.id === id);
   if (!execution) throw new Error("Unknown installed CLI proof execution");
@@ -56,6 +63,10 @@ const restartTimeoutMs = 180_000;
 const gracefulStopTimeoutMs = 30_000;
 const initialCli = upgradeArtifacts?.artifacts.A.pins.PAPERCLIP_RUNNER_E2E_INSTALLED_CLI ?? process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_CLI;
 const installedRelease = initialCli ? installedReleaseLaunch(initialCli) : null;
+const workspaceStorage = remoteWorkspaceStorageServerEnvironment({
+  executions: executionIds.map(id => runnerMatrix.find(execution => execution.id === id)).filter((execution): execution is typeof runnerMatrix[number] => Boolean(execution)),
+  env: process.env, instanceId: required("PAPERCLIP_INSTANCE_ID"),
+});
 const servingArtifacts = new WeakMap<ChildProcess, ServingArtifact>();
 const serverEnvironment = buildPaperclipServerEnvironment(installedRelease
   ? installedReleaseEnvironment(process.env, repositoryRoot, path.join(temporaryRoot, "provider-bin"))
@@ -99,11 +110,13 @@ const serverEnvironment = buildPaperclipServerEnvironment(installedRelease
   // Onboarding normally opens the app after listen. Browser ownership belongs
   // to Playwright in this harness, so never create a developer desktop tab.
   PAPERCLIP_OPEN_ON_LISTEN: "false",
+  ...workspaceStorage,
 });
 assertIsolatedServerEnvironment(serverEnvironment, {
   temporaryRoot,
   paperclipHome,
   configPath,
+  workspaceStorage,
 });
 const definedServerEnvironment = Object.fromEntries(
   Object.entries(serverEnvironment).filter(
@@ -198,6 +211,7 @@ async function startServer() {
   const launch = installed ? installedReleaseLaunch(installed.entry) : null;
   // The serving process must report its baked-in revision, never a test-supplied SHA.
   const environment = { ...definedServerEnvironment };
+  if (kimiCandidateAdmission) environment.PAPERCLIP_ACPX_CANDIDATE_ADMISSION = JSON.stringify(kimiCandidateAdmission);
   if (upgradeArtifacts) {
     delete environment.PAPERCLIP_BUILD_COMMIT;
     delete environment[upgradeArtifactKey];
@@ -342,7 +356,7 @@ async function writeRestartAck(
   await rename(temporaryAckPath, restartAckPath);
 }
 
-async function restartServer({ requestId, preserveRunner, discardControllerCache, crashAfterResult, controllerOutage, recoveryBinding, controllerDowntimeMs = 0 }: RestartRequest) {
+async function restartServer({ requestId, kimiCandidateAdmission: stagedKimiAdmission, preserveRunner, discardControllerCache, crashAfterResult, controllerOutage, recoveryBinding, controllerDowntimeMs = 0 }: RestartRequest) {
   activeRestartRequestId = requestId;
   appendLog(`\nRestart request ${requestId}: stopping Paperclip\n`);
   const previous = child;
@@ -404,6 +418,7 @@ async function restartServer({ requestId, preserveRunner, discardControllerCache
     throw new Error("Wrapper shutdown interrupted the Paperclip restart");
   }
 
+  if (stagedKimiAdmission) kimiCandidateAdmission = stagedKimiAdmission;
   appendLog(`Restart request ${requestId}: starting Paperclip\n`);
   const replacement = await startServer();
   await waitForHealth(replacement);
@@ -436,10 +451,23 @@ async function supervise() {
   });
   // Postgres needs the socket itself; release immediately before child spawn.
   await databaseReservation?.close();
-  if (upgradeArtifacts || executionIds.some(id => id.endsWith(".recover-controller"))) {
+  const legacyMigration = executionIds.some(id => { const execution = runnerMatrix.find(row => row.id === id); return execution && isLegacyWorkspaceMigration(execution); });
+  if (upgradeArtifacts || legacyMigration || executionIds.some(id => id.endsWith(".recover-controller"))) {
     // The wrapper owns this sibling process. Killing the serving child must
     // leave Postgres available to the stopped-controller observer and successor.
     controllerDatabase = await prepareControllerDatabase(configPath, temporaryRoot);
+  }
+  if (legacyMigration) {
+    if (upgradeArtifacts || installedRelease) throw new Error("Migration source qualification cannot claim installed-artifact evidence");
+    await superviseLegacyWorkspaceMigration({ temporaryRoot, repositoryRoot, configPath, port: Number(port),
+      environment: definedServerEnvironment, executionIds, cancelled: shutdownRequested });
+    return;
+  }
+  if (executionIds.some(id => { const execution = runnerMatrix.find(row => row.id === id); return execution && isRollingWebDeployment(execution); })) {
+    if (upgradeArtifacts || installedRelease) throw new Error("Rolling source qualification cannot claim installed-artifact evidence");
+    await superviseRollingDeployment({ temporaryRoot, repositoryRoot, configPath, port: Number(port),
+      environment: definedServerEnvironment, executionIds, cancelled: shutdownRequested });
+    return;
   }
   const initial = await startServer();
   if (upgradeArtifacts) await waitForHealth(initial);
@@ -459,7 +487,9 @@ async function supervise() {
 }
 
 let exitCode = 0;
+let closeCursorCloudCallbackProxy: (() => Promise<void>) | undefined;
 try {
+  if (executionIds.some(id => id.startsWith("cursor-cloud."))) closeCursorCloudCallbackProxy = await startCursorCloudCallbackProxy({ port: Number(required("PAPERCLIP_CURSOR_CLOUD_CALLBACK_PORT")), appPort: Number(port) });
   await supervise();
 } catch (error) {
   exitCode = 1;
@@ -487,5 +517,6 @@ catch (error) {
   exitCode = 1;
   appendLog(`Qualification database cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`);
 }
+await closeCursorCloudCallbackProxy?.();
 await new Promise<void>((resolve) => log.end(resolve));
 process.exitCode = exitCode;

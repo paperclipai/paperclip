@@ -1,4 +1,6 @@
 import { CoordinatorRelativeTime } from "@/components/coordinator/CoordinatorRelativeTime";
+import { useAgentChatRead } from "@/hooks/useAgentChatRead";
+import { Link } from "@/lib/router";
 import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
 import { useArtifactsV1Enabled } from "@/hooks/useArtifactsV1Enabled";
@@ -14,6 +16,7 @@ import { useEmailComment } from "@/components/EmailMessageCard";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { cn } from "@/lib/utils";
+import { agentDetailHref } from "@/pages/agent-detail-navigation";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import {
@@ -39,6 +42,7 @@ import {
   stripStandaloneImageEmbeds,
   type AttachmentRef,
 } from "./task-chat-attachments";
+import { TaskChatBubbleActions } from "./TaskChatBubbleActions";
 import { TaskChatSystemNotice } from "./TaskChatSystemNotice";
 import type { TaskChatMessageItem } from "./task-chat-model";
 
@@ -89,13 +93,24 @@ export function TaskChatAgentIdentity({
   agentIcon?: string | null;
   agent?: AvatarAgent;
 }) {
-  return (
-    <span
-      className="flex items-center gap-2 px-1"
-      data-testid="task-chat-agent-identity"
-    >
+  const identity = (
+    <>
       <span data-testid="task-chat-agent-avatar"><AgentAvatar agent={agent} name={agentName} size={24} /></span>
       <span className="text-sm font-semibold text-foreground">{agentName}</span>
+    </>
+  );
+  const className = "flex items-center gap-2 px-1";
+  return agent?.id ? (
+    <Link
+      to={agentDetailHref(agent.id)}
+      className={cn(className, "no-underline hover:no-underline")}
+      data-testid="task-chat-agent-identity"
+    >
+      {identity}
+    </Link>
+  ) : (
+    <span className={className} data-testid="task-chat-agent-identity">
+      {identity}
     </span>
   );
 }
@@ -147,6 +162,7 @@ function TaskChatBubbleContent({
   onTryAgainNoLiveExecutionPath,
   tryAgainNoLiveExecutionPathPending,
 }: TaskChatBubbleProps) {
+  const readRef = useAgentChatRead(item.id, item.createdAtIso, item.author === "agent" && !item.optimistic);
   const streamlined = useStreamlinedTaskChatPresentation();
   const coordinator = useCoordinatorPresentation();
   const recordedTimestamp = item.createdAtIso ?? (typeof item.atMs === "number" && Number.isFinite(item.atMs) ? new Date(item.atMs) : null);
@@ -229,6 +245,7 @@ function TaskChatBubbleContent({
   return (
     <div
       data-conversation-message={isHuman ? "human" : "agent"}
+      ref={readRef}
       className={cn(
         "flex w-full flex-col gap-1",
         animateEntry && "tc-enter-bubble",
@@ -236,6 +253,9 @@ function TaskChatBubbleContent({
       )}
     >
       {beforeTurn ? <div className="w-full pb-1">{beforeTurn}</div> : null}
+      {item.chatMessage && <Link to={`/issues/${item.chatMessage.sourceTaskIdentifier}`} className="px-1 text-xs text-muted-foreground underline underline-offset-4">
+        From {item.chatMessage.sourceTaskIdentifier}
+      </Link>}
       {isHuman && !item.isCurrentUser && item.authorName ? (
         <span className="px-1 text-sm font-semibold text-foreground" data-testid="task-chat-human-identity" data-author-user-id={item.authorUserId}>
           <Identity name={item.authorName} avatarUrl={paperclipHumanAvatarUrl(item.authorAvatarUrl)} size="default" className="gap-2" />
@@ -411,6 +431,17 @@ function TaskChatBubbleContent({
           data-testid="task-chat-bubble-attached-turn"
         >
           {attachedTurn}
+        </div>
+      ) : isOwnMessage ? (
+        <div className="group/message-toolbar flex items-center gap-1">
+          <div className="transition-opacity motion-reduce:transition-none sm:opacity-0 sm:group-hover/message-toolbar:opacity-100 sm:group-focus-within/message-toolbar:opacity-100 pointer-coarse:opacity-100">
+            <TaskChatBubbleActions copyText={item.text} />
+          </div>
+          <span className="px-1 text-(length:--text-micro) text-muted-foreground">
+            {sentFromIMessage ? "Sent from iMessage" : null}
+            {sentFromIMessage && timestamp ? " · " : null}
+            {timestamp}
+          </span>
         </div>
       ) : actions ? (
         streamlined ? (

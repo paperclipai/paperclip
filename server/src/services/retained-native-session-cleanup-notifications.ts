@@ -1,3 +1,4 @@
+import { notifyNativeHarnessBackupExpiration } from "./native-harness-backup-expiration-notifications.js";
 import { notifySkillVersionRetention } from "./skill-version-retention-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
@@ -9,14 +10,15 @@ export type RetainedNativeSessionCleanupScope = {
 };
 
 export async function notifyRetainedNativeSessionCleanup(tx: object, scope: RetainedNativeSessionCleanupScope) {
+  await notifyNativeHarnessBackupExpiration(tx, scope);
   await notifySkillVersionRetention(tx, scope.companyId);
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.retainedNativeSessionCleanup, JSON.stringify({ companyId: scope.companyId, runId: scope.runId, issueId: scope.issueId, agentId: scope.agentId }));
 }
 
 
 
-const listeners = new WeakMap<object, Set<(scope: RetainedNativeSessionCleanupScope) => void>>();
-export function onRetainedNativeSessionCleanupRelease(db: object, listener: (scope: RetainedNativeSessionCleanupScope) => void) {
+const listeners = new WeakMap<object, Set<(scope: RetainedNativeSessionCleanupScope, source: RetainedNativeSessionCleanupScope) => void>>();
+export function onRetainedNativeSessionCleanupRelease(db: object, listener: (scope: RetainedNativeSessionCleanupScope, source: RetainedNativeSessionCleanupScope) => void) {
   let owned = listeners.get(db);
   if (!owned) { owned = new Set(); listeners.set(db, owned); }
   owned.add(listener);
@@ -25,6 +27,7 @@ export function onRetainedNativeSessionCleanupRelease(db: object, listener: (sco
     if (!owned.size && listeners.get(db) === owned) listeners.delete(db);
   };
 }
-export function releaseRetainedNativeSessionCleanup(db: object, scope: RetainedNativeSessionCleanupScope) {
-  for (const listener of listeners.get(db) ?? []) listener(scope);
+export function releaseRetainedNativeSessionCleanup(db: object, scope: RetainedNativeSessionCleanupScope,
+  source: RetainedNativeSessionCleanupScope = scope) {
+  for (const listener of listeners.get(db) ?? []) listener(scope, source);
 }

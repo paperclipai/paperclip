@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getTableName } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { getTableName, type SQL } from "drizzle-orm";
 
 const mockCreateChild = vi.fn();
 
@@ -48,8 +49,18 @@ function createFakeDb(args: {
   const toolActionRequestUpdates: Array<Record<string, unknown>> = [];
   const inserts: Array<{ table: string; values: Record<string, unknown> }> = [];
   let selectCallCount = 0;
+  let transactionDepth = 0;
 
   const db: any = {
+    execute: vi.fn(async (query: SQL) => {
+      const statement = new PgDialect().sqlToQuery(query);
+      expect(transactionDepth).toBeGreaterThan(0);
+      expect(statement.params).toContain(interactionRow.companyId);
+      expect(statement.params).toContain(interactionRow.issueId);
+      if (statement.sql.includes("origin_kind")) return [{ id: interactionRow.issueId, originKind: null, originId: null }];
+      if (statement.sql.includes("with recursive affected")) return [{ issueId: interactionRow.issueId }];
+      throw new Error(`Unexpected interaction fixture query: ${statement.sql}`);
+    }),
     select: vi.fn(() => {
       selectCallCount += 1;
       const rows = selectCallCount === 1 ? [interactionRow] : (args.parentRows ?? []);
@@ -84,7 +95,10 @@ function createFakeDb(args: {
         inserts.push({ table: getTableName(table as never), values });
       },
     })),
-    transaction: async (callback: (tx: typeof db) => Promise<void>) => callback(db),
+    transaction: async (callback: (tx: typeof db) => Promise<void>) => {
+      transactionDepth++;
+      try { return await callback(db); } finally { transactionDepth--; }
+    },
   };
 
   return {
@@ -177,6 +191,7 @@ describe("issueThreadInteractionService", () => {
     };
 
     let selectCallCount = 0;
+  let transactionDepth = 0;
     const db: any = {
       select: vi.fn(() => {
         selectCallCount += 1;

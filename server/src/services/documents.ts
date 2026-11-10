@@ -1,3 +1,5 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -179,11 +181,12 @@ export function documentService(db: Db) {
         format: documentRevisions.format, body: documentRevisions.body, changeSummary: documentRevisions.changeSummary,
         createdByAgentId: documentRevisions.createdByAgentId, createdByUserId: documentRevisions.createdByUserId,
         createdByRunId: documentRevisions.createdByRunId, createdAt: documentRevisions.createdAt,
+        latestRevisionId: documents.latestRevisionId, latestRevisionNumber: documents.latestRevisionNumber,
       }).from(issueDocuments)
         .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
         .innerJoin(documentRevisions, and(eq(documentRevisions.documentId, documents.id), eq(documentRevisions.companyId, documents.companyId)))
         .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key), eq(documentRevisions.id, revisionId))).limit(1);
-      return revision ?? null;
+      return revision ? { ...revision, isLatest: revision.latestRevisionId === revision.id } : null;
     },
 
     listIssueDocumentRevisions: async (issueId: string, rawKey: string) => {
@@ -238,6 +241,7 @@ export function documentService(db: Db) {
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         try {
           return await db.transaction(async (tx) => {
+          await notifyStatusCardIssueChange(tx, issue.companyId);
           const now = new Date();
           const existing = await tx
             .select({
@@ -275,6 +279,7 @@ export function documentService(db: Db) {
                   .where(eq(issueDocuments.issueId, issue.id));
                 const fallbackKey = nextAvailableDocumentKey(key, issueDocumentKeys.map((row) => row.key));
 
+                await notifyIssueRecovery(tx, { companyId: issue.companyId });
                 const [document] = await tx
                   .insert(documents)
                   .values({
@@ -376,6 +381,7 @@ export function documentService(db: Db) {
               });
             }
 
+            await notifyIssueRecovery(tx, { companyId: issue.companyId });
             const nextRevisionNumber = existing.latestRevisionNumber + 1;
             const [revision] = await tx
               .insert(documentRevisions)
@@ -438,6 +444,7 @@ export function documentService(db: Db) {
             throw conflict("Document does not exist yet", { key });
           }
 
+          await notifyIssueRecovery(tx, { companyId: issue.companyId });
           const [document] = await tx
             .insert(documents)
             .values({
@@ -592,6 +599,10 @@ export function documentService(db: Db) {
         });
       }
       await db.transaction(async (tx) => {
+        for (const companyId of new Set(rows.map(row => row.companyId))) {
+          await notifyStatusCardIssueChange(tx, companyId);
+          await notifyIssueRecovery(tx, { companyId });
+        }
         await insertRowsInChunks(tx, documents, documentRows);
         await insertRowsInChunks(tx, documentRevisions, revisionRows);
         await insertRowsInChunks(tx, issueDocuments, linkRows);
@@ -644,6 +655,7 @@ export function documentService(db: Db) {
           });
         }
 
+        await notifyIssueRecovery(tx, { companyId: existing.companyId });
         const now = new Date();
         const nextRevisionNumber = existing.latestRevisionNumber + 1;
         const [restoredRevision] = await tx
@@ -662,6 +674,7 @@ export function documentService(db: Db) {
           })
           .returning();
 
+        await notifyStatusCardIssueChange(tx, existing.companyId);
         await tx
           .update(documents)
           .set({
@@ -722,6 +735,7 @@ export function documentService(db: Db) {
           };
         }
 
+        await notifyIssueRecovery(tx, { companyId: existing.companyId });
         const now = new Date();
         await tx
           .update(documents)
@@ -769,6 +783,7 @@ export function documentService(db: Db) {
           };
         }
 
+        await notifyIssueRecovery(tx, { companyId: existing.companyId });
         const now = new Date();
         await tx
           .update(documents)
@@ -817,7 +832,9 @@ export function documentService(db: Db) {
           });
         }
 
+        await notifyIssueRecovery(tx, { companyId: existing.companyId });
         await tx.delete(issueDocuments).where(eq(issueDocuments.documentId, existing.id));
+        await notifyStatusCardIssueChange(tx, existing.companyId);
         await tx.delete(documents).where(eq(documents.id, existing.id));
 
         return {

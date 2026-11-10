@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { HttpError } from "../../errors.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
-import { createRunDispatch, type PostCommitEffect } from "../../modules/run-dispatch/index.js";
+import { createRunDispatch, isResolvedInteractionContinuationWakeContext, type PostCommitEffect } from "../../modules/run-dispatch/index.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import * as legacy from "../heartbeat.js";
 import { createHeartbeatRunState } from "./run-state.js";
@@ -35,6 +35,7 @@ function callbacks() {
     getWorktreeExecutionCutoff: vi.fn(async (): Promise<Date | null> => null),
     applyRunDispatchPostCommitEffects: vi.fn<(effects: PostCommitEffect[]) => void>(),
     runDispatch: {
+      nextScheduledRetryAt: vi.fn(async () => null),
       evaluateScheduledRetryGate: vi.fn<HeartbeatRetryDependencies["runDispatch"]["evaluateScheduledRetryGate"]>(async () => ({ allowed: true })),
       promoteDueScheduledRetries: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteDueScheduledRetries"]>(async () => ({ promoted: 0, runIds: [], postCommitEffects: [] })),
       promoteScheduledRetry: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteScheduledRetry"]>(async () => ({ outcome: "not_promoted" })),
@@ -111,6 +112,22 @@ describe("heartbeat retry module callbacks", () => {
     expect(database.access).not.toHaveBeenCalled();
   });
 
+  it("gives every caller the Runner wait budget for a Runner mismatch and reports its exhaustion", async () => {
+    const database = guardedDatabase();
+    const deps = callbacks();
+    const run = { ...unitRun(), status: "failed", errorCode: "runner_revision_mismatch", scheduledRetryReason: "runner_revision_wait", scheduledRetryAttempt: 10,
+      contextSnapshot: { issueId: "issue", executionRetryAccounting: { version: 1, failureRetries: 0, maxTurnContinuations: 0 } } } as Run;
+    const retry = await extracted.createHeartbeatRetries(database.db, deps).scheduleBoundedRetryForRun(run, { adapterType: "codex_local" } as Agent);
+    expect(retry).toMatchObject({ outcome: "retry_exhausted", attempt: 11, maxAttempts: 10 });
+    expect(deps.appendRunEvent).toHaveBeenCalledWith(run, expect.objectContaining({
+      retryExhaustion: { retryReason: "runner_revision_wait", scheduledRetryAttempt: 10, maxAttempts: 10 },
+    }));
+    expect(extracted.failedRunRetryBudgetSpent(run)).toBe(true);
+    expect(extracted.failedRunRetryBudgetSpent({ ...run, scheduledRetryAttempt: 9 })).toBe(false);
+    expect(extracted.failedRunRetryBudgetSpent({ ...run, errorCode: "setup_failed" })).toBe(false);
+    expect(database.access).not.toHaveBeenCalled();
+  });
+
   it("leaves successor work to the committed case handoff without retry escalation", async () => {
     const database = guardedDatabase();
     const deps = callbacks();
@@ -181,9 +198,41 @@ describe("heartbeat retry module callbacks", () => {
     expect(deps.finalizeAgentStatus).toHaveBeenCalledAfter(deps.releaseIssueExecutionAndPromote);
     expect(database.access).not.toHaveBeenCalled();
   });
+
+  it("decides an interaction continuation retry from a refused exact resume's refusal, not its earlier spawn failure", async () => {
+    const refusal = "Plugin Runner retained session is not authorized";
+    const interaction = { issueId: "issue", interactionId: "interaction-1", interactionStatus: "answered", mutation: "interaction",
+      wakeReason: "issue_commented", timerClaimWasFirstHeartbeat: true };
+    // The retry budget is spent, so an eligible run reports exhaustion
+    // without scheduling, and an ineligible one escalates directly.
+    const failed = { ...unitRun(), status: "failed", errorCode: "adapter_failed", scheduledRetryAttempt: 2,
+      scheduledRetryReason: legacy.INTERACTION_CONTINUATION_INFRA_RETRY_REASON, contextSnapshot: interaction } as Run;
+    const refused = { ...failed,
+      error: `native_session_interrupted: failed to start command: spawn agent ENOENT; exact checkpoint resume refused: ${refusal}`,
+      resultJson: { nativeExactResumeRefusal: { originalFailureCode: "native_session_interrupted",
+        originalMessage: "failed to start command: spawn agent ENOENT", interruptedAttempt: 1, refusal } } } as Run;
+    const spawnFailure = { ...failed, error: "failed to start command: spawn agent ENOENT", resultJson: {} } as Run;
+    const exhaustion = expect.objectContaining({ retryExhaustion: expect.objectContaining({
+      retryReason: legacy.INTERACTION_CONTINUATION_INFRA_RETRY_REASON }) });
+
+    const database = guardedDatabase();
+    const refusedDeps = callbacks();
+    await expect(extracted.createHeartbeatRetries(database.db, refusedDeps)
+      .scheduleInteractionContinuationInfrastructureRetryIfEligible(refused, { adapterType: "codex_local" } as Agent)).resolves.toBeNull();
+    expect(refusedDeps.appendRunEvent).not.toHaveBeenCalledWith(refused, exhaustion);
+    expect(refusedDeps.escalatePlanApprovalResumeFailureNeedsAttention).toHaveBeenCalledOnce();
+
+    const spawnDeps = callbacks();
+    await extracted.createHeartbeatRetries(database.db, spawnDeps)
+      .scheduleInteractionContinuationInfrastructureRetryIfEligible(spawnFailure, { adapterType: "codex_local" } as Agent);
+    expect(spawnDeps.appendRunEvent).toHaveBeenCalledWith(spawnFailure, exhaustion);
+    expect(database.access).not.toHaveBeenCalled();
+  });
 });
 
-const support = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_HEARTBEAT_RETRIES_TEST_DATABASE_URL");
+const support = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 if (!support.supported) console.warn(`Skipping retry PostgreSQL tests: ${support.reason ?? "unsupported host"}`);
 
@@ -193,11 +242,11 @@ describePostgres("heartbeat retry module database wiring", () => {
   const now = new Date("2026-10-08T12:00:00Z");
 
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("heartbeat-retries-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("heartbeat-retries-");
+    db = createDb(external ?? database.connectionString, { maxConnections: 6 });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
-  afterAll(async () => { await database?.cleanup(); });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
 
   afterEach(async () => {
     await db.delete(issues);
@@ -234,6 +283,113 @@ describePostgres("heartbeat retry module database wiring", () => {
     await db.update(issues).set({ executionRunId: run.id, checkoutRunId: run.id }).where(eq(issues.id, issue.id));
     return { companyId, agent, issue, run };
   }
+
+  it.each([false, true])("records a workspace wait only for the deferral's workspace (task moved after cancel: %s)", async (moved) => {
+    const { run, agent, issue, companyId } = await fixture();
+    const [project] = await db.insert(projects).values({ companyId, name: "Shared" }).returning();
+    const [deferredOn, movedTo] = await db.insert(projectWorkspaces).values([
+      { companyId, projectId: project.id, name: "Deferred", sourceType: "local_path", cwd: "/tmp/deferred" },
+      { companyId, projectId: project.id, name: "Moved", sourceType: "local_path", cwd: "/tmp/moved" },
+    ]).returning();
+    try {
+      await db.update(issues).set({ projectId: project.id, projectWorkspaceId: deferredOn.id }).where(eq(issues.id, issue.id));
+      await db.update(heartbeatRuns).set({ status: "running", finishedAt: null, errorCode: null }).where(eq(heartbeatRuns.id, run.id));
+      const { retries, deps } = boundRetries();
+      // The move lands in the gap after the cancellation commits, as a user edit can.
+      deps.setRunStatusIfRunning.mockImplementation(async (runId, status, patch) => {
+        const [cancelled] = await db.update(heartbeatRuns).set({ status, ...patch }).where(eq(heartbeatRuns.id, runId)).returning();
+        if (moved) await db.update(issues).set({ projectWorkspaceId: movedTo.id }).where(eq(issues.id, issue.id));
+        return { updated: true, run: cancelled! };
+      });
+      await retries.finalizeWorkspaceBusyDeferral({ ...run, status: "running" }, new extracted.WorkspaceBusyDeferral({
+        holder: { runId: randomUUID(), agentId: agent.id, issueId: randomUUID(), issueIdentifier: null },
+        projectWorkspaceId: deferredOn.id, deferralAttempt: 0, wasIssueAssignee: true,
+      }));
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+      expect(successor?.status).toBe("scheduled_retry");
+      const wait = (successor!.contextSnapshot as Record<string, unknown>).workspaceBusyWait;
+      if (moved) expect(wait).toBeUndefined();
+      else expect(wait).toMatchObject({ key: `project:${deferredOn.id}`, issueProjectWorkspaceId: deferredOn.id, issueExecutionWorkspaceId: null });
+    } finally {
+      await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, companyId));
+      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      await db.delete(issues).where(eq(issues.companyId, companyId));
+      await db.delete(projectWorkspaces).where(eq(projectWorkspaces.companyId, companyId));
+      await db.delete(projects).where(eq(projects.companyId, companyId));
+    }
+  });
+
+  it("bounds answered chat attestation retries across restarts and escalates their exhaustion", async () => {
+    const { run, agent, companyId } = await fixture();
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId: agent.id,
+      runId: run.id, source: "automation", status: "failed" }).returning();
+    const contextSnapshot = { ...run.contextSnapshot, source: "issue.interaction.respond", externalChatContinuation: true,
+      interactionId: randomUUID(), interactionStatus: "answered", interactionKind: "ask_user_questions",
+      mutation: "interaction", wakeReason: "issue_commented", wakeCommentIds: [randomUUID()] };
+    const [failed] = await db.update(heartbeatRuns).set({ wakeupRequestId: wake!.id,
+      errorCode: "reviewed_chat_execution_binding_not_ready", contextSnapshot,
+    }).where(eq(heartbeatRuns.id, run.id)).returning();
+    let predecessor = failed!;
+    for (const attempt of [1, 2]) {
+      const { retries, deps } = boundRetries();
+      expect(await retries.scheduleInteractionContinuationInfrastructureRetryIfEligible(predecessor, agent))
+        .toMatchObject({ outcome: "scheduled", attempt, maxAttempts: 2 });
+      const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, predecessor.id));
+      expect(successors).toHaveLength(1);
+      const successor = successors[0]!;
+      expect(successor).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: attempt,
+        scheduledRetryReason: legacy.INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+        contextSnapshot: { ...contextSnapshot, wakeReason: legacy.INTERACTION_CONTINUATION_INFRA_WAKE_REASON } });
+      expect(deps.escalatePlanApprovalResumeFailureNeedsAttention).not.toHaveBeenCalled();
+      const [next] = await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(),
+        errorCode: "reviewed_chat_execution_binding_not_ready", resultJson: run.resultJson,
+      }).where(eq(heartbeatRuns.id, successor.id)).returning();
+      predecessor = next!;
+    }
+    const { retries, deps } = boundRetries();
+    expect(await retries.scheduleInteractionContinuationInfrastructureRetryIfEligible(predecessor, agent))
+      .toMatchObject({ outcome: "retry_exhausted", maxAttempts: 2 });
+    expect(deps.escalatePlanApprovalResumeFailureNeedsAttention).toHaveBeenCalledOnce();
+    expect(deps.escalatePlanApprovalResumeFailureNeedsAttention)
+      .toHaveBeenCalledWith(expect.objectContaining({ attempt: 2, maxAttempts: 2, run: predecessor }));
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+  });
+
+  it("keeps the accepted interaction owner and its catalog provider deadline", async () => {
+    const { run, agent } = await fixture();
+    const retryAt = new Date(now.getTime() + 3600_000);
+    const [failed] = await db.update(heartbeatRuns).set({ errorCode: "repository_catalog_unavailable",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        errorFamily: "transient_upstream", retryNotBefore: retryAt.toISOString() },
+      contextSnapshot: { ...run.contextSnapshot, interactionId: "answered-question", interactionStatus: "answered",
+        interactionKind: "ask_user_questions", mutation: "interaction", wakeReason: "issue_commented" },
+    }).where(eq(heartbeatRuns.id, run.id)).returning();
+    expect(await boundRetries().retries.scheduleBoundedRetryForRun(failed!, agent, {
+      now, random: () => 0, retryReason: legacy.INTERACTION_CONTINUATION_INFRA_RETRY_REASON, maxAttempts: 2,
+    })).toMatchObject({ outcome: "scheduled" });
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    expect(successor!.scheduledRetryAt!.getTime()).toBeGreaterThanOrEqual(retryAt.getTime());
+    expect(successor).toMatchObject({ scheduledRetryReason: legacy.INTERACTION_CONTINUATION_INFRA_RETRY_REASON });
+    expect(isResolvedInteractionContinuationWakeContext(successor!.contextSnapshot)).toBe(true);
+    expect(successor!.contextSnapshot?.codexTransientFallbackMode).toBeUndefined();
+  });
+
+  it("waits for a Runner update without spending failure retries and keeps an answered interaction", async () => {
+    const { run, agent } = await fixture();
+    const snapshot = { ...run.contextSnapshot, interactionId: "interaction-1", interactionStatus: "answered", interactionKind: "ask_user_questions",
+      mutation: "interaction", wakeReason: "issue_commented", executionRetryAccounting: { version: 1, failureRetries: 1, maxTurnContinuations: 0 } };
+    const [failed] = await db.update(heartbeatRuns).set({ errorCode: "runner_revision_mismatch", contextSnapshot: snapshot })
+      .where(eq(heartbeatRuns.id, run.id)).returning();
+    const result = await boundRetries().retries.scheduleBoundedRetryForRun(failed!, agent, { now });
+    expect(result.outcome).toBe("scheduled");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    expect(successor).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "runner_revision_wait", scheduledRetryAttempt: 1 });
+    expect(successor!.contextSnapshot).toMatchObject({ mutation: "interaction", interactionId: "interaction-1",
+      executionRetryAccounting: { failureRetries: 1 } });
+    expect(isResolvedInteractionContinuationWakeContext(successor!.contextSnapshot)).toBe(true);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, successor!.wakeupRequestId!));
+    expect(wake!.payload).toMatchObject({ mutation: "interaction", interactionId: "interaction-1", retryReason: "runner_revision_wait" });
+  });
 
   it("resolves current skills on a retry while retaining the failed attempt snapshot", async () => {
     const {run,agent}=await fixture();

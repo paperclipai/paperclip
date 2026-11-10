@@ -1,18 +1,27 @@
 # Rich ACP integration and qualification report
 
-## Current source integration — 2026-10-19
+## Current profile identity
 
-The composed Claude source declares **Pi profile 27**
-(`sha256:b1b75a1ae3ac498eb07b95b96bebf4da86227b83d09276076dd5c222e3964dba`)
-and **Copilot profile 23**, still pending qualification
-(`sha256:6ca1e2c9efa23887ba6f08d89980c91d13114640ac8a1a79f00f27aa8cd39d63`).
-These identities bind the shared Claude effort and lifecycle changes plus
-master's OpenRouter attribution. Copilot's shared bridge binding also includes
-Claude-only essential tool metadata; its own tool catalog is unchanged. Provider executable closures, model/effort
-options and qualification boundaries are unchanged. Current package and source
-checks remain separate from retained provider execution results, which keep
-their literal profile/source identities. Earlier immutable fixtures remain
-historical; they are not accepted as the current source identity.
+Every ACPX provider's `commandDigest` attests only its own upstream release.
+Copilot (profile 92), Grok (20) and Pi (37) bind their upstream package
+versions, their platform closure pins and, for Grok, the launcher bytes.
+`scripts/acpx-release-attestations.mjs` computes these digests,
+`generate:acpx-profiles` writes them to `acpx-profiles.json`, and
+`check:acpx-profiles` refuses drift. Cursor (17) attests the release declaration
+in `cursor-contract.json`; Claude, Codex and Antigravity attest their upstream
+packages or distributions. Runner source changes do not change any of them.
+Every ACPX harness binds the shared ACPX layer the same way: saved inputs must
+match the current ACPX version, and the provider pack's `contractDigest` binds
+the Runner's ACPX patch with the other Runner contracts. Launch
+and recovery admission require the exact current profile and digest. Saved
+inputs with an earlier profile version still decode, so recovery can refuse
+them. A profile identity is not evidence of live qualification.
+
+## Profile chronology
+
+Until 2026-10-30, these digests hashed Paperclip source files, so each change
+to a bound file advanced the profile version. The dated sections below record
+that period; their profile versions and digests are not current.
 
 ## Historical source integration — 2026-10-14
 
@@ -25,13 +34,12 @@ profile/source identity. Copilot remains pending at profile 19. Current package
 and source controls are separate from those retained provider execution results.
 
 The actual Codex squash `adb69e8f09852c772d9901ae270e5b2d66e39c77`
-already owns Copilot profile 18 for the Grok descriptor schema. Its immutable
-fixture is retained. The combined Claude effort sources use profile 19
+already owns Copilot profile 18 for the Grok descriptor schema. The combined
+Claude effort sources use profile 19
 (`sha256:a4c7e955df18bf2448224ecce2120b43ede8054fe00e7b33b4044b8bd284b321`),
 with executable, permission policy and pending qualification unchanged. The
-prior unmerged Claude profile-18 attestation is retained separately as
-`copilot-profile-v18-claude-qualification-identity.json`; earlier evidence keeps
-its literal source. Pi profile 25 and its source digest remain unchanged by
+prior unmerged Claude profile-18 attestation was recorded separately; earlier
+evidence keeps its literal source. Pi profile 25 and its source digest remain unchanged by
 this reconciliation. Existing settings and effort/session admission still need
 final packaged and real-provider qualification on the composed Claude source.
 

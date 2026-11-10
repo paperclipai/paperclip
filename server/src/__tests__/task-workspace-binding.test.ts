@@ -134,7 +134,7 @@ const support = await getEmbeddedPostgresTestSupport();
     }
   });
 
-  it.each(["create", "createChild"] as const)("inherits a parent task folder through %s with isolated workspaces disabled", async (entryPoint) => {
+  it.each(["create", "createChild"] as const)("gives a child its own task folder instead of the parent's through %s with isolated workspaces disabled", async (entryPoint) => {
     const f = await fixture(), settings = instanceSettingsService(db), previous = await settings.getExperimental();
     await settings.updateExperimental({ enableIsolatedWorkspaces: false });
     try {
@@ -145,10 +145,13 @@ const support = await getEmbeddedPostgresTestSupport();
       const child = entryPoint === "create"
         ? await tasks.create(f.companyId, { ...input, parentId: f.issueId })
         : (await tasks.createChild(f.issueId, input)).issue;
-      expect(child).toMatchObject({ parentId: f.issueId, projectId: null, executionWorkspaceId: f.workspaceId,
-        executionWorkspacePreference: "reuse_existing" });
+      expect(child).toMatchObject({ parentId: f.issueId, projectId: null, executionWorkspaceId: null });
+      expect(child.executionWorkspacePreference).not.toBe("reuse_existing");
       const view = await executionWorkspaceService(db).inspectTaskWorkspace(f.companyId, child.id, f.actor);
-      expect(view.workspace).toMatchObject({ id: f.workspaceId, cwd: `/tmp/task-${f.issueId}` });
+      expect(view.workspace).toBeNull();
+      // The parent keeps its own task folder.
+      expect((await executionWorkspaceService(db).inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).workspace)
+        .toMatchObject({ id: f.workspaceId, cwd: `/tmp/task-${f.issueId}` });
       const explicit = await tasks.create(f.companyId, { ...input, title: "Explicit separate folder", parentId: f.issueId,
         workspaceSelectionSource: "explicit" });
       expect(explicit.executionWorkspaceId).toBeNull();
@@ -233,6 +236,11 @@ const support = await getEmbeddedPostgresTestSupport();
           : source === "inherited" ? {}
             : { workspaceSelection: { kind: "existing" as const, workspaceId: f.workspaceId }, workspaceSelectionSource: source }),
       });
+      if (source === "inherited") {
+        // A child never inherits the files its parent is bound to.
+        expect(created).toMatchObject({ projectId: project.id, executionWorkspaceId: null });
+        return;
+      }
       expect(created).toMatchObject({ projectId: project.id, executionWorkspaceId: f.workspaceId, projectWorkspaceId: null });
       const [original] = await db.select().from(issues).where(eq(issues.id, f.issueId));
       expect(original).toMatchObject({ projectId: null, projectWorkspaceId: null, executionWorkspaceId: f.workspaceId });
@@ -242,7 +250,8 @@ const support = await getEmbeddedPostgresTestSupport();
         await expect(assertGitSensitiveAdapterWorkspaceValid({
           adapterType: "codex_local", agentId: randomUUID(), issue: task,
           resolvedWorkspace: { cwd: workspace!.cwd!, source: "task_session", projectId: null, workspaceId: null,
-            repoUrl: null, repoRef: null, workspaceHints: [], warnings: [] },
+            repoUrl: null, repoRef: null, workspaceHints: [], warnings: [], baseCwdFallback: false,
+            materializationFailures: [], additionalWorkspaces: [], referencedProjectFailures: [] },
           executionWorkspace: { cwd: workspace!.cwd!, baseCwd: workspace!.cwd!, source: "task_session", projectId: null,
             workspaceId: null, repoUrl: null, repoRef: null, strategy: "project_primary", branchName: null,
             worktreePath: null, warnings: [], created: false, branchCreatedByRuntime: false },

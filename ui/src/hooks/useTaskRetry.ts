@@ -4,23 +4,31 @@ import type { Issue } from "@paperclipai/shared";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
+import { createUuid } from "../lib/uuid";
+
+type RetryRequest = { issueId: string; identifier?: string | null; idempotencyKey: string; observedRunId: string | null };
 
 export function useTaskRetry(issue: Issue | undefined) {
   const queryClient = useQueryClient();
-  const request = useRef<{ issueId: string; idempotencyKey: string; observedRunId: string | null } | null>(null);
+  const request = useRef<RetryRequest | null>(null);
   const [optimistic, setOptimistic] = useState(false);
   const [takingLonger, setTakingLonger] = useState(false);
+  const [reconcile, setReconcile] = useState<{ refs: string[]; sourceRunId: string | null } | null>(null);
   const mutation = useMutation({
-    mutationFn: ({ issueId, ...body }: { issueId: string; idempotencyKey: string; observedRunId: string | null }) =>
+    mutationFn: ({ issueId, identifier: _identifier, ...body }: RetryRequest) =>
       issuesApi.retryTask(issueId, body),
     onSuccess: async (result, variables) => {
       const isCurrent = request.current?.idempotencyKey === variables.idempotencyKey;
       if (isCurrent) request.current = null;
+      const refs = [...new Set([variables.issueId, variables.identifier].filter((ref): ref is string => Boolean(ref)))];
+      if (isCurrent && result.accepted) setReconcile({ refs, sourceRunId: variables.observedRunId });
       {
-        queryClient.setQueryData<Issue>(queryKeys.issues.detail(variables.issueId), current =>
+        for (const ref of refs) queryClient.setQueryData<Issue>(queryKeys.issues.detail(ref), current =>
           current ? { ...current, interruption: result.presentation } : current);
-        await Promise.all([queryKeys.issues.detail(variables.issueId), queryKeys.issues.runs(variables.issueId),
-          queryKeys.issues.liveRuns(variables.issueId), queryKeys.issues.activeRun(variables.issueId)].map(queryKey =>
+        // Retry can queue retained-file recovery; refresh its inspected state too.
+        await Promise.all(refs.flatMap(ref => [queryKeys.issues.detail(ref), queryKeys.issues.runs(ref),
+          queryKeys.issues.liveRuns(ref), queryKeys.issues.activeRun(ref),
+          queryKeys.issues.allRecoveryActions(ref)]).map(queryKey =>
           queryClient.invalidateQueries({ queryKey })));
       }
       if (isCurrent && !request.current) { setOptimistic(false); setTakingLonger(false); }
@@ -37,6 +45,17 @@ export function useTaskRetry(issue: Issue | undefined) {
     },
   });
   useEffect(() => {
+    if (!reconcile || !issue || !reconcile.refs.includes(issue.id) || issue.interruption?.retryWait ||
+        issue.interruption?.observedRunId !== reconcile.sourceRunId) return;
+    // Dispatch follows the committed HTTP receipt. Read its admission reason
+    // after that handoff, including the existing ten-second presentation grace.
+    // These bounded reads end with this click; idle tasks do not poll.
+    const timers = [1_000, 10_000].map(delay => window.setTimeout(() => {
+      for (const ref of reconcile.refs) void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref) });
+    }, delay));
+    return () => timers.forEach(timer => window.clearTimeout(timer));
+  }, [reconcile, issue?.id, issue?.interruption?.observedRunId, issue?.interruption?.retryWait, queryClient]);
+  useEffect(() => {
     if (!optimistic) return;
     const timer = window.setTimeout(() => {
       setTakingLonger(true);
@@ -50,12 +69,14 @@ export function useTaskRetry(issue: Issue | undefined) {
     request.current = null;
     setOptimistic(false);
     setTakingLonger(false);
+    setReconcile(null);
     mutation.reset();
   }, [issue?.id]);
   return { retry: () => {
     if (!issue) return;
+    setReconcile(null);
     mutation.reset();
-    request.current ??= { issueId: issue.id, idempotencyKey: crypto.randomUUID(),
+    request.current ??= { issueId: issue.id, identifier: issue.identifier, idempotencyKey: createUuid(),
       observedRunId: issue.interruption?.observedRunId ?? issue.executionBlocker?.runId ?? null };
     setOptimistic(true);
     setTakingLonger(false);

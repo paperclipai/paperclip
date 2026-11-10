@@ -1,4 +1,4 @@
-import { connectionManagementService } from "./connection-management.js";
+import { assertAgentConnectionInstallAccess, connectionManagementService } from "./connection-management.js";
 import { CHAT_HUMAN_CREDENTIAL_FIELDS, chatCredentialEntryGenerations } from "./chat-channels/credentials.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { emailChannelService } from "./email-channels.js";
@@ -55,6 +55,7 @@ import {
   type AiConnectionBinding,
 } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
+import { createNativeConnectorYield } from "./connection-native-yield.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
 import { issueThreadInteractionService, type InteractionResolutionMutationOptions } from "./issue-thread-interactions.js";
@@ -123,6 +124,17 @@ function availableToolConnectionMethods(
   return getAvailableConnectionMethods(app).filter(
     (method) => (method.purpose ?? "tool") === "tool" && method.transport !== "runtime_auth",
   );
+}
+
+// Large enough for first-party catalogs such as GitHub's; aggregator catalogs
+// stay bounded and still report their total.
+const MAX_SCOPED_REQUEST_TOOL_NAMES = 100;
+
+/** Tells an agent outside a connection's grant how to request scoped access to it. */
+function scopedToolRequestGuidance(connectionId: string, catalog: ReadonlyArray<{ toolName: string }>) {
+  const names = [...new Set(catalog.map(tool => tool.toolName))].sort();
+  const listed = names.slice(0, MAX_SCOPED_REQUEST_TOOL_NAMES);
+  return `Call connection_request again with connectionId ${JSON.stringify(connectionId)} and toolNames set to only the exact names this task needs. Available indexed tool names (first ${listed.length} of ${names.length}): ${JSON.stringify(listed)}. No access was granted.`;
 }
 
 export function connectionIntentService(db: Db) {
@@ -452,6 +464,9 @@ export function connectionIntentService(db: Db) {
     const inventory = await connectionInventory(run.companyId);
     const candidates: Array<{ item: ConnectionSearchResultItem; score: number; nameScore: number }> = [];
     const authorizedCatalogs = new Map<string, Awaited<ReturnType<typeof indexedCatalog>>>();
+    // New setup of these native services is offered through aggregators instead.
+    const yieldsToAggregators = createNativeConnectorYield(settings);
+    const yieldingServices = new Set<string>();
     const discoveryMethods = (app: (typeof APP_STORE_DEFINITIONS)[number]) => getAvailableConnectionMethods(app)
       .filter(method => method.purpose !== "channel" || app.slug === "agentmail"
         || (method.provider === "github" ? settings.enableGitHubReviewBots : settings.enableChatConnectors));
@@ -496,6 +511,7 @@ export function connectionIntentService(db: Db) {
       const { score, nameScore } = scoreConnectionSearch(preparedQuery, [app.slug, app.name],
         `${app.description ?? ""} ${app.searchCapabilities} ${catalog.map(tool => `${tool.toolName} ${tool.description ?? ""}`).join(" ")}`);
       if (!score) continue;
+      if (definition && !matching.length && yieldsToAggregators(definition)) yieldingServices.add(service);
       const ready = await usableConnectionForAgent({ companyId: run.companyId, agentId: agent.id,
         responsibleUserId: run.responsibleUserId!, serviceSlug: service, purpose: aiOnly ? "ai" : service === "agentmail" ? "channel" : undefined, inventory });
       const denied = !aiOnly && !ready && matching.length > 0 && await administrativeDenial(run.companyId, agent.id, service, inventory);
@@ -527,6 +543,18 @@ export function connectionIntentService(db: Db) {
         connectionId: ready?.id ?? null,
       }});
     }
+    // A yielded native service is not offered for new setup when an aggregator
+    // route can serve it; its routes take its place in ranked results, so broad
+    // and capability-only searches still find the app. Without a route the
+    // native service remains the fallback.
+    const yieldedRoutes: typeof candidates = [];
+    for (const service of yieldingServices) {
+      const candidate = candidates.find(({ item }) => item.service === service);
+      const routes = candidate ? await aggregatorAlternatives(service, candidate.item.name, findAggregatorService(service)) : [];
+      if (!routes.length) continue;
+      candidates.splice(candidates.indexOf(candidate!), 1);
+      yieldedRoutes.push(...routes.map(item => ({ item, score: candidate!.score, nameScore: candidate!.nameScore })));
+    }
     const publicMatches = searchAggregatorServices(preparedQuery);
     const bestMatches = publicMatches.filter(match => Math.floor(match.nameScore / 100) === Math.floor((publicMatches[0]?.nameScore ?? 0) / 100));
     const namedPublicService = findAggregatorService(serviceQuery, publicMatches);
@@ -555,8 +583,13 @@ export function connectionIntentService(db: Db) {
     // A typo match such as Notion must not hide the distinctly named app Motion.
     const exact = candidates.filter(({ item, nameScore }) => ((nameScore >= 200 && Math.floor(nameScore / 100) >= bestExternalTier) || item.service === publicService?.slug)
       && (!isRemoteMcpConnectorId(item.service) || (!publicService && !indexedMatches.length)));
-    const ranked = () => candidates.sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
+    const ranked = () => [...candidates, ...yieldedRoutes].sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
       .slice(0, 40).map(({ item }) => item);
+    // Aggregator routes need a recorded provider choice before connection_request.
+    const rankedResult = (suggestions = false) => {
+      const results = ranked();
+      return results.some(item => item.source === "aggregator") ? discoverySuggestions(results) : directSearchResult(query, results, suggestions);
+    };
     const targetService = publicService?.slug ?? (indexedMatches.length === 1 ? indexedMatches[0]!.slug : normalizeConnectionQuery(serviceQuery).replaceAll(" ", "-"));
     // Indexed-only app labels must be identical when requests re-search the slug.
     const targetName = publicService?.name ?? targetService.split("-").map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
@@ -570,7 +603,7 @@ export function connectionIntentService(db: Db) {
           aggregatorAlternatives(service.slug, service.name, service)))).flat();
         if (otherRoutes.length) return discoverySuggestions([...ranked(), ...otherRoutes]);
       }
-      return directSearchResult(query, ranked());
+      return rankedResult();
     }
     async function aggregatorAlternatives(targetService: string, targetName: string, publicService?: AggregatorServiceDefinition) {
       const alternatives: ConnectionSearchResultItem[] = [];
@@ -636,7 +669,7 @@ export function connectionIntentService(db: Db) {
         aggregatorAlternatives(service.slug, service.name, service)))).flat();
       if (matches.length) return discoverySuggestions([...ranked(), ...matches]);
     }
-    if (!alternatives.length) return directSearchResult(query, ranked(), true);
+    if (!alternatives.length) return rankedResult(true);
     const question = aggregatorProviderQuestion(targetService, targetName, alternatives);
     const latest = previous[0];
     if (latest && (latest.status === "pending" || !options.retryProviderChoice)) {
@@ -657,7 +690,8 @@ export function connectionIntentService(db: Db) {
       instruction: "No matching built-in Paperclip connection was found. Ask the responsible user with providerQuestion exactly as returned (including its id, full prompt, and options). With native request_human_input, use interactionKind questions, continuationPolicy wake_assignee, and payload {version:1, questionSet:providerQuestionSet} exactly as returned. Otherwise use ask_user_questions with payload {version:1, questions:[providerQuestion]}. These are external services. Wait for the saved answer; then call connection_request with the selected service identifier and selectionInteractionId set to the answered question interaction ID. None for now means do not connect. Do not claim app access yet." };
 
     function discoverySuggestions(results: ConnectionSearchResultItem[]): ConnectionsSearchResult {
-      return { version: 1, query, results: results.slice(0, 40),
+      const seen = new Set<string>();
+      return { version: 1, query, results: results.filter(item => !seen.has(item.service) && Boolean(seen.add(item.service))).slice(0, 40),
         instruction: "These are possible connection matches. Choose the relevant service and method using descriptions and purposes. For available or needs_user_action results, tool methods and AgentMail use connection_request to show the inline setup card; other channel or AI methods use setupPath. Use ready tools as installed; ready AI authentication applies to the next execution without reconnection. For an aggregator result, search its aggregator.targetService to obtain the provider-choice question and follow that instruction before requesting a connection. Respect unavailable states. Do not treat a search match as provider consent or app authorization." };
     }
   }
@@ -810,9 +844,15 @@ export function connectionIntentService(db: Db) {
         }
         const effective = await access.getEffectiveToolAssignmentsForAgent(context.run.companyId, context.agent.id);
         const installed = effective.installedConnections.some(item => item.id === connection.id);
-        const missing = !installed || tools.some(tool => tool && !effective.allowedTools.some(allowed => allowed.id === tool.id));
+        // Without toolNames the agent is asking whether it can use the service at all.
+        // Existing scoped access answers that; only named tools can request more.
+        const missing = !installed || (options.toolNames
+          ? tools.some(tool => tool && !effective.allowedTools.some(allowed => allowed.id === tool.id))
+          : !effective.allowedTools.some(allowed => allowed.connectionId === connection.id));
         if (missing && tools.length && tools.every(tool => Boolean(tool))) {
-          if (tools.length > 20) throw unprocessable("Specify the tools needed for this task (up to 20)");
+          // Larger catalogs exceed the access-card bound. Keep scoped discovery
+          // actionable without granting access or creating an oversized card.
+          if (tools.length > 500) throw unprocessable(`Specify the tools needed for this task (up to 20). ${scopedToolRequestGuidance(connection.id, catalog)}`);
           accessRequest = {
             connectionId: connection.id, connectionName: connection.name,
             tools: tools.map(tool => ({ catalogEntryId: tool!.id, toolName: tool!.toolName, versionHash: tool!.versionHash,
@@ -1059,6 +1099,8 @@ export function connectionIntentService(db: Db) {
       canManageOrganizationGrant?: boolean;
       bypassCurrentMembershipCheck?: boolean;
       validatedAdoption?: { agentUpdatedAt: Date; binding: AiConnectionBinding };
+      /** Only the verified OAuth callback applies a saved draft audience. */
+      oauthCompletion?: boolean;
     } = {},
   ) {
     const loaded = await loadIntent(interactionId);
@@ -1094,6 +1136,17 @@ export function connectionIntentService(db: Db) {
         if (current.status === "accepted" && current.result?.connectionId === connectionId) return current;
         throw conflict("Connection intent is already resolved");
       }
+      const selectedSetup = connectionIntentPayloadSchema.parse(current.payload).setupAccess;
+      const setupAccess = options.oauthCompletion && selectedSetup?.connectionId === connectionId ? selectedSetup.access : undefined;
+      if (setupAccess && !options.canManageOrganizationGrant && (
+        setupAccess === "all_agents" || setupAccess.agentIds.some(id => id !== payload.requestingAgentId)
+      )) throw forbidden("Sharing a connection with other agents requires connection-management authority");
+      if (setupAccess && setupAccess !== "all_agents" && !setupAccess.agentIds.includes(payload.requestingAgentId)) {
+        throw conflict("Select the requesting agent or all agents to continue this task");
+      }
+      if (setupAccess && setupAccess !== "all_agents") await assertAgentConnectionInstallAccess(txDb,
+        { type: "board", userId, source: options.bypassCurrentMembershipCheck ? "local_implicit" : "session" },
+        loaded.issue.companyId, setupAccess.agentIds);
       if (payload.accessRequest && (payload.accessRequest.connectionId !== connectionId || !options.canManageOrganizationGrant)) {
         if (payload.accessRequest.connectionId !== connectionId) throw conflict("Use the connection named in this access request");
         throw forbidden("Granting agent tool access requires connection-management authority");
@@ -1180,16 +1233,18 @@ export function connectionIntentService(db: Db) {
       const pendingPersonalGrant = grants.find((grant) =>
         grant.kind === "user" && grant.status === "active" && grant.subjectUserId === userId
       );
-      if (!payload.accessRequest && selectedConnection.authKind === "oauth" && pendingPersonalGrant) {
+      const sharedSetup = Boolean(setupAccess && selectedConnection.credentialPolicy === "shared");
+      if (!payload.accessRequest && selectedConnection.authKind === "oauth" && (pendingPersonalGrant || sharedSetup)) {
         // txAccess is bound to the outer transaction. Its internal transactions
         // become savepoints, so activation, credential bindings, and the
         // requesting agent's access roll back with any later failure.
         await txAccess.finalizeOAuthAccess(
           loaded.issue.companyId,
           selectedConnection.id,
-          { grantKind: "user" },
+          { grantKind: sharedSetup ? "organization" : "user" },
           { actorType: "user", actorId: userId },
           payload.requestingAgentId,
+          setupAccess,
         );
         selectedConnection = await txAccess.getConnection(
           selectedConnection.id,
@@ -1229,7 +1284,7 @@ export function connectionIntentService(db: Db) {
       );
       const requestedInstall = { targetType: "agent" as const, targetId: payload.requestingAgentId };
       const additiveInstalls = installs.some((install) =>
-        install.targetType === requestedInstall.targetType && install.targetId === requestedInstall.targetId
+        install.targetType === "company" || (install.targetType === requestedInstall.targetType && install.targetId === requestedInstall.targetId)
       ) ? installs : [...installs, requestedInstall];
       await txAccess.putConnectionInstalls(selectedConnection.id, { installs: additiveInstalls }, {
         actorType: "user",
@@ -1327,7 +1382,11 @@ export function connectionIntentService(db: Db) {
       interactionId: string,
       phase: "requested" | "authorizing" | "needs_retry",
       userId: string,
-      options: { bypassCurrentMembershipCheck?: boolean } = {},
+      options: {
+        bypassCurrentMembershipCheck?: boolean;
+        canManageOrganizationGrant?: boolean;
+        setupAccess?: ConnectionIntentInteraction["payload"]["setupAccess"];
+      } = {},
     ) => {
       const loaded = await loadIntent(interactionId);
       if (loaded.interaction.addresseeUserId !== userId) throw forbidden("Only the addressed user can update this request");
@@ -1336,7 +1395,24 @@ export function connectionIntentService(db: Db) {
         userId,
         options.bypassCurrentMembershipCheck,
       );
-      return interactions.updateConnectionIntentPhase(loaded.issue, interactionId, phase, { userId });
+      const setupAccess = connectionIntentPayloadSchema.shape.setupAccess.parse(options.setupAccess);
+      if (setupAccess) {
+        if (loaded.interaction.payload.purpose || loaded.interaction.payload.accessRequest) {
+          throw unprocessable("Only tool connection setup can select a new audience");
+        }
+        await access.getConnection(setupAccess.connectionId, loaded.issue.companyId);
+        if (phase === "authorizing" && setupAccess.access !== "all_agents" && !setupAccess.access.agentIds.includes(loaded.interaction.payload.requestingAgentId)) {
+          throw conflict("Select the requesting agent or all agents to continue this task");
+        }
+        if (setupAccess.access !== "all_agents") await assertAgentConnectionInstallAccess(db,
+          { type: "board", userId, source: options.bypassCurrentMembershipCheck ? "local_implicit" : "session" },
+          loaded.issue.companyId, setupAccess.access.agentIds);
+        if (!options.canManageOrganizationGrant && (setupAccess.access === "all_agents"
+          || setupAccess.access.agentIds.some(id => id !== loaded.interaction.payload.requestingAgentId))) {
+          throw forbidden("Sharing a connection with other agents requires connection-management authority");
+        }
+      }
+      return interactions.updateConnectionIntentPhase(loaded.issue, interactionId, phase, { userId }, setupAccess);
     },
   };
 }

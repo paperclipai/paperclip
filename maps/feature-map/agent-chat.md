@@ -23,7 +23,15 @@ Agent access: [companion](../agent-access-map/agent-chat.md).
 
 ### `agent-conversation`
 
+Task and routine results can arrive proactively in the agent's standing chat.
+Each message has a source-task link; the agent row and Chat navigation indicate
+unread messages, including first delivery before any human chat. Foreground
+messages at the bottom of the chat are marked read with a comment cutoff.
+The existing ordering and per-human/company isolation remain in effect.
+
 Open `/chats`, choose an agent, or use `/chats/:agentRef` and its conversation sidebar.
+
+With Coordinator enabled, click the agent avatar, name, or caret in the chat header to open the agent picker. They form one button with the same keyboard focus and action.
 
 With Coordinator enabled, the composer exposes the shared model/thinking-level picker for supported agents. The agent stays fixed in this control; switching agents remains in the chat header. Choices save as conversation overrides on send, preserving the agent's configuration. A first message creates the conversation before saving settings and submitting through the ordered comments endpoint.
 
@@ -45,16 +53,15 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Enab
 
 Automated: [chat landing](../../ui/src/pages/AgentChats.test.tsx) checks recent-chat routing; [conversation service](../../server/src/__tests__/agent-conversations.test.ts) covers persisted conversation behavior.
 
-Automated: [composer picker](../../ui/src/components/task-chat/ComposerRunSettingsPicker.test.tsx) covers fixed-agent model/effort selection on desktop and mobile; [composer](../../ui/src/components/task-chat/TaskChatComposer.test.tsx) covers Coordinator gating and settings submission without reassignment. [Task detail](../../ui/src/pages/IssueDetail.test.tsx) verifies canonical first/existing-chat IDs, settings-before-comment ordering, and no comment submission when settings fail to save. These tests mock the API and do not prove provider execution with the chosen model.
+Automated: [proactive delivery](../../server/src/__tests__/agent-chat-messages.test.ts)
+exercises native/HTTP delivery, concurrency, retries, authority, privacy, active
+turns, resets and unread cutoffs. [Read visibility](../../ui/src/hooks/useAgentChatRead.test.tsx)
+checks foreground/bottom gating and unseen arrivals. The [routine digest journey](../../tests/e2e/agent-chat-messages.spec.ts)
+uses real app APIs and a deterministic process agent to verify first-chat discovery,
+unread state across reloads, source navigation and follow-up context. It does not
+qualify live PR retrieval or a model's editorial choices.
 
-Automated: [conversation delivery](../../server/src/__tests__/agent-conversation-delivery.test.ts)
-checks that paused or otherwise non-invokable agents leave comments pending
-without aborting startup recovery, and that a later unpause allows one delivery.
-The test persists queue admissions only; it does not start agents or providers.
-Automated: [historical chat](../../ui/src/pages/AgentChat.test.tsx) keeps an older
-conversation reachable after a cached roster refresh ends in HTTP 429. It checks
-lookup Retry and preserves permission and company boundaries. This is component
-evidence with real query state, not live provider proof.
+Automated: [composer picker](../../ui/src/components/task-chat/ComposerRunSettingsPicker.test.tsx) covers fixed-agent model/effort selection on desktop and mobile; [composer](../../ui/src/components/task-chat/TaskChatComposer.test.tsx) covers Coordinator gating and settings submission without reassignment. [Task detail](../../ui/src/pages/IssueDetail.test.tsx) verifies canonical first/existing-chat IDs, settings-before-comment ordering, and no comment submission when settings fail to save. These tests mock the API and do not prove provider execution with the chosen model.
 
 Automated: [thread and composer](../../ui/src/components/TaskChatThread.test.tsx)
 keeps an in-flight attachment through first-chat creation on desktop and mobile,
@@ -96,12 +103,12 @@ Manual: With the personal Coordinator workspace enabled, discuss a vague request
 until the agent suggests a task. Confirm that no execution task exists before
 acceptance. Accept it, stay in chat, and open the created card on demand. An
 explicit request to create a task may create it directly under normal authority.
-Approve a work product or answer a question in its task or Needs You, then return
+Approve a work product or answer a question in its task or Inbox, then return
 to the originating chat. Its compact update should link to the exact recorded
 decision and reviewed artifact, without needing another coordinator turn.
 Approval of artifact quality alone must not publish it or complete the task.
 
-Coordinator task clarification: create a task with only a description. When material context is missing, native task guidance asks one focused canonical question inside that task. Its actionable form is also projected into Needs You and the originating standing chat; direct user-created tasks appear in the assigned agent’s standing chat. Answer on either surface and verify the pending card/count clear and a compact recorded answer replaces it in chat. This projection is event-refreshed and does not wake another agent merely to repeat the question. Current direct-task questions survive a chat reset; their answered receipts start at the current chat boundary. The task brief remains editable context, not another stored question. Model choice and actual resumed execution still require live verification.
+Coordinator task clarification: create a task with only a description. When material context is missing, native task guidance asks one focused canonical question inside that task. Its actionable form is also projected into Inbox and the originating standing chat; direct user-created tasks appear in the assigned agent’s standing chat. Answer on either surface and verify the pending card/count clear and a compact recorded answer replaces it in chat. This projection is event-refreshed and does not wake another agent merely to repeat the question. Current direct-task questions survive a chat reset; their answered receipts start at the current chat boundary. The task brief remains editable context, not another stored question. Model choice and actual resumed execution still require live verification.
 
 ### `conference-room`
 
@@ -114,8 +121,6 @@ separate from Agent Chat's configured-agent prerequisites.
 Manual: Check disabled access first, enable in the disposable instance, then send and reload a conversation. Inspect the actual responding agent and persisted history; report this result separately from Agent Chat.
 
 ## Gotchas
-
-- Coordinator Markdown references to a standing agent conversation display “Chat with [agent]” and route to that chat, preserving anchors. Labels resolve once from the existing current-person/current-company chat list and agent roster; no task status glyph or task quicklook is shown for these references. Ordinary task links retain their existing treatment.
 
 - Idle chat is not failed execution.
 - See [steering](./steering.md) for in-flight messages and [questions](./questions-and-approvals.md) for interactions.

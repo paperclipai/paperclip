@@ -101,7 +101,7 @@ export type PrivateCellLayout = "original" | "final" | "final-wrapper";
 export async function privateCellEvidenceOwner(context: {
   private: true; root: string; runId: string; attempt: string; executionIds: string[]; cellReportProducer?: CellReportProducerIdentity;
 }, executionId: string): Promise<PrivateCellEvidenceOwner> {
-  if (context.private !== true || !context.executionIds.includes(executionId) || !/^chat-features\.runner-opencode\.local\.[a-z0-9][a-z0-9.-]{0,159}$/.test(executionId)
+  if (context.private !== true || !context.executionIds.includes(executionId) || (!/^chat-features\.runner-opencode\.local\.[a-z0-9][a-z0-9.-]{0,159}$/.test(executionId) && executionId !== "chat-features.runner-opencode-deepseek-1017.local.create-backlog")
     || executionId.includes("..") || !/^[1-9][0-9]{0,19}$/.test(context.runId) || context.attempt !== "1" || !context.cellReportProducer)
     throw new Error("Invalid private cell report owner");
   const root = await realpath(context.root), metadata = await lstat(context.root);
@@ -116,8 +116,9 @@ export function cellTraceAsset(relative: string, owner: PrivateCellEvidenceOwner
   const segments = relative.split("/");
   const reserved = segments.some((part, index) => part === "html-report" && segments[index + 1] === "trace");
   if (!reserved) return { reserved: false };
-  const scenario = owner.executionId.slice("chat-features.runner-opencode.local.".length);
-  const final = `gha-${owner.runId}-${owner.attempt}-${owner.executionId}/chat-features/runner-opencode/local/${scenario}/attempt-${owner.attempt}/html-report/trace/`;
+  const profile = owner.executionId === "chat-features.runner-opencode-deepseek-1017.local.create-backlog" ? "runner-opencode-deepseek-1017" : "runner-opencode";
+  const scenario = owner.executionId.slice(`chat-features.${profile}.local.`.length);
+  const final = `gha-${owner.runId}-${owner.attempt}-${owner.executionId}/chat-features/${profile}/local/${scenario}/attempt-${owner.attempt}/html-report/trace/`;
   const prefix = layout === "original" ? "html-report/trace/" : layout === "final" ? final : `html-report/${final}`;
   const canonical = relative.startsWith(prefix) ? canonicalGeneratedReportAsset(`html/trace/${relative.slice(prefix.length)}`) : undefined;
   return { reserved: true, canonical };
