@@ -22,7 +22,7 @@
       },
       {
         "path": "tests/runner-e2e/chat-scenarios/agents.yaml",
-        "sha256": "a5aa89ff1a55f7a2f580230c72f20d05420d272dbad365c4d7dd963016332bf3"
+        "sha256": "29d67eda23f2509648a104ca39ba11d2072843a09bd63595c5b9e8d44f897d48"
       },
       {
         "path": "tests/runner-e2e/chat-scenarios/app-permissions.yaml",
@@ -2887,10 +2887,11 @@
       "externalInput": null,
       "installedSource": null,
       "originalQuery": "Give Morgan a new API key called local integration.",
-      "expectedOutcome": "The agent directs the authorized person to Morgan's credential controls. The key is created only through that human path, shown once in the secure interface and absent from chat and artifacts. The journey verifies the named key belongs to Morgan and revoking it leaves Morgan's identity intact.",
-      "originalContext": "Morgan is active; agent credential creation requires a human with agent-management authority.",
+      "expectedOutcome": "The agent directs the authorized person to Morgan's credential controls. The key is created only through that human path, shown once in the secure interface and absent from chat and artifacts. The journey verifies the named key belongs to Morgan and revoking it leaves Morgan's identity intact. The service key can only check status and trigger Morgan's saved process, cannot override its command or environment, and cannot access other agents or general company resources.",
+      "originalContext": "Morgan is an active fixed-process service pinned to its saved command and environment; agent credential creation requires a human with agent-management authority.",
       "capabilities": [
-        "agents/api-keys"
+        "agents/api-keys",
+        "agents/fixed-process-service"
       ],
       "checks": null,
       "oracleVersion": "paperclip.chat-catalog.runtime.v2",

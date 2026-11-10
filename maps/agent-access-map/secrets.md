@@ -446,6 +446,13 @@ Agent access: `available` with same verified running JWT REST. Native POST call_
 
 Policy: list eligibility rechecked then exact grant/configPath/version; direct agent target or manifest-bound other consumer; only env/access namespace, active company/version/vault. Register redaction before response; Cache-Control:no-store, response key/value/version. Value-free access and secret.value.read success/failure audits. User/instance excluded. Credential replay encryption/history omission/10MiB applies to native surface; direct REST has no native replay receipt.
 
+Fixed-command service processes: the persistent key of a `process` agent with
+`fixedCommand: true` cannot read secret values. The temporary JWT of its active run keeps the
+existing binding-scoped access, and a finished run loses it. A watchdog run can read only the secret
+bound to the agent at `env.DOKPLOY_KEY` through `POST /api/agents/me/secrets/{key}/value` with an
+empty body (`assertWatchdogSecret`); other bindings of the same agent do not extend this access.
+Source: [watchdog requests](../../server/src/middleware/watchdog-service-request.ts).
+
 Evidence: `source-only` — Reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`. See the route/service and test references in this operation and the shared source/surface contract. Cited controls were inspected, not executed.
 
 Verification: `not-run` — allowed caller compares dummy securely, different/unbound peer and fake/ended/mismatched JWT/header/company/mode/scope denied. Remove grant/disable/rotate then issue a fresh call to prove current authority; same native call ID replays original response without re-dispatch and without plaintext stored receipt/response assets/history. Fail redaction registration ->no value response. Tests [agent-secrets-routes.test.ts:122,230,270](../../server/src/__tests__/agent-secrets-routes.test.ts), [secrets-service.test.ts:1271,1336,1414](../../server/src/__tests__/secrets-service.test.ts); real authenticated HTTP native authority tests [services/native-runtime/runner-api.integration.test.ts:349-372](../../server/src/services/native-runtime/runner-api.integration.test.ts), [runner-api.test.ts:323-350](../../server/src/services/native-runtime/runner-api.test.ts), [runner-api-log-redaction.test.ts](../../server/src/services/native-runtime/runner-api-log-redaction.test.ts).

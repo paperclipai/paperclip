@@ -179,16 +179,19 @@ scenarios:
   - id: agents.agent-api-key
     capabilities:
       - agents/api-keys
+      - agents/fixed-process-service
     context: >-
-      Morgan is active; agent credential creation requires a human with agent-management
-      authority.
+      Morgan is an active fixed-process service pinned to its saved command and environment;
+      agent credential creation requires a human with agent-management authority.
     query: >-
       Give Morgan a new API key called local integration.
     expected_outcome: >-
       The agent directs the authorized person to Morgan's credential controls. The key is
       created only through that human path, shown once in the secure interface and absent from
       chat and artifacts. The journey verifies the named key belongs to Morgan and revoking it
-      leaves Morgan's identity intact.
+      leaves Morgan's identity intact. The service key can only check status and trigger Morgan's
+      saved process, cannot override its command or environment, and cannot access other agents
+      or general company resources.
   - id: agents.existing-grok-bot
     capabilities:
       - agents/grok-bot
