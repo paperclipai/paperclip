@@ -1200,13 +1200,15 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
           ? await db.transaction(tx => admitExplicitNativeContinuation({ ...f, db: tx as unknown as typeof db,
               reason: "retry_failed_run", failedRunId: f.sourceRunId }))
           : await admit(f, mode === "dry_run");
-        expect(Boolean(result)).toBe(["verified", "dry_run", "duplicate"].includes(mode));
-        expect(retire).toHaveBeenCalledTimes(["verified", "changed", "duplicate"].includes(mode) ? 1 : 0);
+        // A native Retry starts a fresh conversation, so the same verified stop
+        // admits it; it never resumes the interrupted turn.
+        expect(Boolean(result)).toBe(["verified", "dry_run", "duplicate", "retry"].includes(mode));
+        expect(retire).toHaveBeenCalledTimes(["verified", "changed", "duplicate", "retry"].includes(mode) ? 1 : 0);
         const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
-        expect(Boolean(actions[0].evidence.explicitUserContinuation)).toBe(["verified", "duplicate"].includes(mode));
+        expect(Boolean(actions[0].evidence.explicitUserContinuation)).toBe(["verified", "duplicate", "retry"].includes(mode));
         const events = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.sourceRunId),
           eq(heartbeatRunEvents.eventType, "native.stopped_conversation_verified")));
-        expect(events).toHaveLength(["verified", "duplicate"].includes(mode) ? 1 : 0);
+        expect(events).toHaveLength(["verified", "duplicate", "retry"].includes(mode) ? 1 : 0);
         if (mode === "duplicate") {
           expect(await admit(f)).toBeNull();
           expect(retire).toHaveBeenCalledTimes(1);

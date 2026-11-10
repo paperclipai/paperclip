@@ -3141,6 +3141,28 @@ export function rebaseRetainedNativeCleanupProviderHome(
  * Retain the old durable root permanently; only the exact in-memory cleanup
  * owner is retired, and the successor must use a fresh normalized session.
  */
+/** A provider launch that failed its own admission (for example a restore
+ * that refused an ambiguous turn start), whose direct child exited and whose
+ * process and process group are gone, owns nothing. Any other recorded
+ * launch may own a process that never reported its session identity. */
+function failedStartupRetired(attempt: unknown): boolean {
+  if (attempt == null) return true;
+  const startup = record(attempt);
+  return startup.phase === "initialization_failed" && startup.directChildExitObserved === true &&
+    cleanupProcessAbsent(startup.processId) &&
+    (startup.processGroupId == null || cleanupProcessAbsent(startup.processGroupId));
+}
+
+/** The session's state root, or, when only the fence's quarantine holds it,
+ * that one `identity_indeterminate` copy. Several copies are ambiguous. */
+function quarantinedOwnerStateRoot(scoped: string): string {
+  if (existsSync(scoped)) return scoped;
+  const quarantine = resolve(runnerdStateBase(), "quarantine");
+  if (!isSafeNativeStateDirectory(quarantine)) return scoped;
+  const copies = readdirSync(quarantine).filter(name => name.startsWith(`${basename(scoped)}.identity_indeterminate.`));
+  return copies.length === 1 ? resolve(quarantine, copies[0]!) : scoped;
+}
+
 export async function verifyStoppedNativeSessionForContinuation(
   db: Db,
   run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "runtimeMode" |
@@ -3163,14 +3185,21 @@ export async function verifyStoppedNativeSessionForContinuation(
       eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
     if (leases.some(lease => lease.provider !== "local" || !lease.releasedAt ||
         lease.status === "pending_cleanup" || lease.cleanupStatus === "failed")) return null;
-    const root = scopedRunnerdStateRoot(execution);
+    // A run refused at the prior-owner fence moved the owner's state to
+    // quarantine before it failed. That single exact copy is the owner's state.
+    const root = quarantinedOwnerStateRoot(scopedRunnerdStateRoot(execution));
     const providerFile = runnerProviderStateFilename(execution);
     const snapshot = cleanupStateSnapshot(root, providerFile);
     const identity = record(snapshot.control.identity);
     let owner = run;
     let ownerExecution = execution;
     if (identity.runId !== run.id) {
-      if (run.errorCode !== "native_session_cleanup_quarantined" || typeof identity.runId !== "string") return null;
+      // Only a run refused before launch can stand in for the saved state's
+      // owner: the cleanup quarantine or the prior-owner runner-state fence.
+      const [fenced] = run.errorCode === "native_session_cleanup_quarantined" ? [] : await db.select({ id: heartbeatRunEvents.id })
+        .from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+          isNull(heartbeatRunEvents.sourceEventId), eq(heartbeatRunEvents.eventType, PRIOR_OWNER_FENCE_REFUSED))).limit(1);
+      if ((run.errorCode !== "native_session_cleanup_quarantined" && !fenced) || typeof identity.runId !== "string") return null;
       const [started] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
         eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
         inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED,
@@ -3228,7 +3257,7 @@ export async function verifyStoppedNativeSessionForContinuation(
         snapshot.runner.schema !== RUNNERD_STATE_SCHEMA ||
         snapshot.provider.schema !== (execution.provider.kind === "codex" ? "paperclip.runner.codex-provider-state.v1" : ACPX_PROVIDER_STATE_SCHEMA) ||
         !["turn_active", "prepared", "suspended", "session_open"].includes(String(snapshot.provider.lifecycle)) ||
-        snapshot.provider.startupAttempt != null) return null;
+        !failedStartupRetired(snapshot.provider.startupAttempt)) return null;
     const pending = JSON.stringify([snapshot.runner.outbox, snapshot.provider.pendingEvents, snapshot.provider.queuedEvents]);
     if (/session\.(started|resumed|reconciled)/.test(pending)) return null;
     const events = snapshot.control.committedEvents.map(entry => record(record(record(entry).envelope).payload));
@@ -3288,6 +3317,8 @@ export async function verifyStoppedNativeSessionForContinuation(
       if (!cleanupProcessAbsent(pid)) return null;
       providerPids.add(pid);
     }
+    const startup = record(snapshot.provider.startupAttempt);
+    for (const pid of [startup.processId, startup.processGroupId]) if (pid != null) providerPids.add(pid as number);
     const unchanged = () => idle() && !activeNativeSessions.has(owner.id) && cleanupProcessAbsent(stopped.processPid) &&
       [...providerPids].every(cleanupProcessAbsent) && cleanupStateSnapshot(root, providerFile).fingerprint === snapshot.fingerprint;
     return {

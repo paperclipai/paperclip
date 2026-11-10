@@ -219,6 +219,13 @@ runner, so it never had a process. The server records
 continue without waiting for a stop record of that run. A task Retry always
 starts a fresh provider conversation, so it never resumes or trips over the
 stuck conversation's saved or quarantined runner state.
+If this server process still holds the owner's provider-session cleanup
+quarantine (its close could not prove suspension once the runner died),
+Retry, like a new message, first proves the owner's runner, Codex and tools
+stopped and then releases that quarantine (`native.stopped_conversation_verified`).
+That proof also reads the fence's single quarantined copy of the owner's
+state, and accepts a provider restore that failed its own admission once its
+process and process group are gone.
 
 Saved OpenCode and Cursor Cloud provider state binds the digest of its own
 qualified launch profile (command, proxy script and, for OpenCode, the

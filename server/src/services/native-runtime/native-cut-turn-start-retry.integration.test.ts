@@ -3,9 +3,9 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
-import { completionContracts, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { completionContracts, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { expect, vi } from "vitest";
-import { createNativeSessionBackend, createRunnerdCodexTransport, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
+import { NativeSessionCloseUnrecoverableError, executeNativeSession, parseNativeExecutionInput, nativeSessionCleanupBlock, createNativeSessionBackend, createRunnerdCodexTransport, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 import { describeEmbeddedPostgres, nativeRestartFixture, processAlive, realProcessIt, waitForCondition } from "../../__tests__/helpers/native-restart.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
@@ -13,7 +13,8 @@ import { executePaperclipNativeSession, scopedRunnerdStateRoot } from "./native-
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { materializeAsset } from "./runtime-context.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
-import { nativeRunNeverLaunched, PRIOR_OWNER_FENCE_REFUSED } from "../native-local-process-stop.js";
+import { nativeRunNeverLaunched, PRIOR_OWNER_FENCE_REFUSED, recordNativeLocalProcessStop } from "../native-local-process-stop.js";
+import { admitExplicitNativeContinuation } from "../explicit-native-continuation.js";
 
 /**
  * w-20261110T033426-s108/t03, the branch the runner cannot settle by itself:
@@ -130,10 +131,42 @@ describeEmbeddedPostgres("Retry after a turn start cut off once Codex recorded t
       await expect(resumedOwner.transport.request("thread/read", {}))
         .rejects.toThrow(/cannot safely recover an ambiguous Codex turn start/);
       await resumedOwner.transport.close().catch(() => undefined);
+      // What restart recovery records for the owner: its runner identity, then
+      // the verified stop of that exact process.
       await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_session_interrupted", finishedAt: new Date(),
-        processPid: null, processGroupId: null, processStartedAt: null }).where(eq(heartbeatRuns.id, fixture.runId));
-      await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", leaseOwner: null, leaseExpiresAt: null })
+        processPid: killed.runnerPid, processGroupId: killed.runnerProcessGroupId }).where(eq(heartbeatRuns.id, fixture.runId));
+      const [stoppedOwner] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      expect(await db.transaction(tx => recordNativeLocalProcessStop(tx as never, stoppedOwner!))).toBe(true);
+      await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", leaseOwner: null, leaseExpiresAt: null,
+        nextAttemptAt: null, recoveryState: null, failureCode: "native_continuation_requires_reconciliation" })
         .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      // The owner's in-process session close cannot prove suspension once its
+      // runner died, so this process can keep an operator-required cleanup
+      // quarantine for the task. Whether the real close lands there is
+      // timing-dependent; pin that state so Retry is checked against it.
+      if (nativeSessionCleanupBlock({ companyId, issueId }) !== "operator_required") {
+        const capabilities = { resume: true, typedEvents: true, steering: false, interruption: false, structuredResult: true };
+        const identity = { runId: fixture.runId, sessionId: fixture.native.normalizedSessionId, companyId, issueId, agentId };
+        await expect(executeNativeSession({ input: parseNativeExecutionInput({ schema: "paperclip.native-execution-input.v1",
+          provider: { kind: "codex", model: null }, binding: execution.binding,
+          task: { identifier: "NRR-CUT", title: issue!.title, description: null, prompt: "Write the brief once.", workMode: "standard" },
+          workspace: { cwd: sandbox, repoUrl: null, repoRef: null, branchName: null },
+          session: { normalizedSessionId: fixture.native.normalizedSessionId, driverKind: "codex_app_server", protocolVersion: 1,
+            lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+          completionContract: execution.completionContract, interactionResponses: [], credentialBindings: [] }),
+          backend: { descriptor: async () => ({ kind: "runner", name: "cut-turn-start-owner", version: "1", capabilities }),
+            openSession: async () => ({ identity: () => identity, capabilities: async () => capabilities,
+              async *events() { throw new Error("owner runner exited"); },
+              startTurn: async () => ({ turnId: "owner-turn" }), result: async () => null,
+              snapshot: async () => ({ backendKind: "runner", sessionId: fixture.native.normalizedSessionId, identity,
+                providerSessionId: "owner-thread", cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] }),
+              close: async () => { throw new NativeSessionCloseUnrecoverableError(); } }) },
+          controlPlane: { openRun: async () => {}, checkpointSession: async () => {},
+            appendEvent: async () => ({ cursor: 0, highestContiguousSourceSeq: 0, disposition: "committed" }),
+            replayEvents: async () => ({ events: [], highestContiguousSourceSeq: 0 }), completeRun: async () => {} },
+          runnerInstanceId: fixture.native.runnerInstanceId, controlPlaneInstanceId: "cut-turn-start-owner" })).rejects.toThrow("owner runner exited");
+      }
+      expect(nativeSessionCleanupBlock({ companyId, issueId })).toBe("operator_required");
       const startsBeforeRetry = (await readFile(calls, "utf8")).match(/^turn\/start$/gm)?.length ?? 0;
       expect(startsBeforeRetry).toBe(1);
 
@@ -148,6 +181,13 @@ describeEmbeddedPostgres("Retry after a turn start cut off once Codex recorded t
       expect(String(refused)).not.toContain("quarantine_owner_unverified");
       await db.update(heartbeatRuns).set({ status: "failed", errorCode: "adapter_failed", error: String(refused), finishedAt: new Date() })
         .where(eq(heartbeatRuns.id, followUpId));
+      // What run failure handling records for it: a settled coordinator and
+      // the "Automatic recovery stopped" action that offers Retry.
+      await db.update(nativeRunFinalizations).set({ phase: "terminal_failure",
+        failureCode: "native_continuation_requires_reconciliation" }).where(eq(nativeRunFinalizations.runId, followUpId));
+      await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
+        cause: "native_continuation_requires_reconciliation", fingerprint: followUpId, status: "resolved", outcome: "blocked",
+        nextAction: "Automatic recovery stopped.", evidence: { runId: followUpId, automaticRecovery: { replay: "blocked" } } });
       const [refusedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, followUpId));
       expect(await db.select({ type: heartbeatRunEvents.eventType }).from(heartbeatRunEvents).where(and(
         eq(heartbeatRunEvents.runId, followUpId), eq(heartbeatRunEvents.eventType, PRIOR_OWNER_FENCE_REFUSED)))).toHaveLength(1);
@@ -156,8 +196,22 @@ describeEmbeddedPostgres("Retry after a turn start cut off once Codex recorded t
       expect(bundles).toHaveLength(2);
 
       // 3. The person's Retry starts a fresh conversation and completes once.
+      // The latest run is the refused follow-up, so the person retries it.
+      // Admission must not wait for a stop record of a process it never had.
       const retryId = randomUUID();
-      const retry = await admitRun(retryId, null);
+      const blocked: string[] = [];
+      const admitted = await admitExplicitNativeContinuation({ db, companyId, issueId, agentId, actorType: "user",
+        actorId: "local-board", reason: "retry_failed_run", failedRunId: followUpId, commentId: null,
+        successorRunId: retryId, onBlocked: reason => blocked.push(reason) });
+      expect(blocked).toEqual([]);
+      expect(admitted).toMatchObject({ previousRunId: followUpId });
+      // Admission proved the owner's runner, Codex and tools stopped and
+      // released the task's cleanup quarantine; nothing old is resumed.
+      expect(nativeSessionCleanupBlock({ companyId, issueId })).toBeNull();
+      expect(await db.select({ type: heartbeatRunEvents.eventType }).from(heartbeatRunEvents).where(and(
+        eq(heartbeatRunEvents.runId, followUpId), eq(heartbeatRunEvents.eventType, "native.stopped_conversation_verified"))))
+        .toHaveLength(1);
+      const retry = await admitRun(retryId, null, followUpId);
       expect(retry.normalizedSessionId).not.toBe(fixture.native.normalizedSessionId);
       const retryExecution = executionFor(retryId, retry.normalizedSessionId);
       const retried = run(retryExecution, retry.runnerInstanceId, retry.environmentLeaseId);
@@ -182,11 +236,12 @@ describeEmbeddedPostgres("Retry after a turn start cut off once Codex recorded t
       await rm(stateBase, { recursive: true, force: true });
     }
 
-    async function admitRun(runId: string, nativeSessionId: string | null) {
+    async function admitRun(runId: string, nativeSessionId: string | null, retryOf?: string) {
       const [row] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running",
         runtimeMode: "native", nativeIssueId: issueId, nativeSessionId, invocationSource: "on_demand", triggerDetail: "manual",
-        retryOfRunId: nativeSessionId ? null : fixture.runId,
-        contextSnapshot: { issueId, ...(nativeSessionId ? {} : { forceFreshSession: true, previousRunId: fixture.runId }) } })
+        runnerInstanceId: nativeSessionId ? fixture.native.runnerInstanceId : null,
+        retryOfRunId: retryOf ?? null,
+        contextSnapshot: { issueId, ...(retryOf ? { forceFreshSession: true, previousRunId: retryOf } : {}) } })
         .returning();
       await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
       const native = await prepareNativeHeartbeatRun({ db, run: row!,
