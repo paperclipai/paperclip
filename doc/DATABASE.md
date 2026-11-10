@@ -122,8 +122,8 @@ original-volume anchor or filesystem read. These validations add bounded
 per-retained-scope database reads during startup. They do not add a worker or a
 poll. Missing or invalid byte evidence remains an enrollment blocker.
 
-The original-volume owner can refresh a WEB receipt whose database facts digest
-has become stale only when fresh source inspection, current-key checkpoint
+The original-volume owner can refresh a WEB or full native receipt whose database
+facts digest has become stale only when fresh source inspection, current-key checkpoint
 validation and ciphertext hash/size readback prove the preserved bindings unchanged.
 It reuses the same archive and takes the existing finalizer, task and run fences before
 comparing the prior receipt digest and replacing it. The company activity log
@@ -133,6 +133,10 @@ the exact prior proof from the unchanged current bindings before publication. No
 enter the audit delta; normal activity redaction remains enabled. Changed
 evidence, concurrent invalid receipts and active sources remain blocked; remote
 recovery obligations are unchanged.
+Full native reproof still requires canonical destroyed-provider receipts. A
+database-only legacy workspace migration marker can stale the facts digest while
+the preserved controller, skill assets and local byte proof remain unchanged;
+refresh authenticates that same object and does not upload a replacement archive.
 
 Local inode and timestamp observations may change between preservation attempts
 without changing byte coverage. Valid receipts remain idempotent after those
