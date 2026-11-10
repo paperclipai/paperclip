@@ -1,4 +1,5 @@
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
+import { currentControllerProcessStamp } from "../controller-process-identity.js";
 import { NATIVE_SESSION_RESUMPTION_ISSUE_STATUSES } from "./native-session-resumption-statuses.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { pendingNativeRunProjectionCondition } from "./native-run-projection.js";
@@ -312,6 +313,11 @@ export async function claimNativeSessionResumptions(input: {
         phase: "observed",
         leaseOwner,
         leaseExpiresAt,
+        ...(() => {
+          const stamp = currentControllerProcessStamp();
+          return { controllerBootId: stamp.bootId, controllerPid: stamp.pid, controllerHostHash: stamp.hostHash,
+            controllerProcessStartedAt: stamp.processStartedAt ? new Date(stamp.processStartedAt) : null };
+        })(),
         failureCode: null,
         failureDetail: null,
         nextAttemptAt: null,
