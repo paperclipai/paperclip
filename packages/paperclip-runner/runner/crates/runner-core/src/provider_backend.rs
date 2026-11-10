@@ -2768,6 +2768,23 @@ impl CodexCommandExecutor {
                 self.save_state()?;
                 return Ok(());
             }
+            // A process loss can hide whether an in-flight turn/start reached
+            // Codex. When the resumed thread has no active turn and its history
+            // ends at a turn Paperclip already settled, Codex never created the
+            // turn: the start is settled as not started, and the controller
+            // may start it once. Any other evidence keeps it ambiguous.
+            let ambiguous_start_never_created = ambiguous_turn_start_pending
+                && recovered_active_turn_id.is_none()
+                && previous_active_turn_id.is_none()
+                && provider
+                    .ambiguous_turn_start_never_created_a_turn(&settled_provider_turn_ids)
+                    .map_err(|error| {
+                        DurableRunnerError::invalid(format!(
+                            "ambiguous {provider_name} turn start history probe failed: {error}"
+                        ))
+                    })?;
+            let ambiguous_turn_start_pending =
+                ambiguous_turn_start_pending && !ambiguous_start_never_created;
             if ambiguous_turn_start_pending {
                 let recovered_turn_id = recovered_active_turn_id.as_deref().ok_or_else(|| {
                 DurableRunnerError::invalid(
@@ -2844,6 +2861,19 @@ impl CodexCommandExecutor {
                 state.provider_session_id = resumed_provider_session_id.clone();
                 state.settled_provider_turn_ids = settled_provider_turn_ids;
                 state.settled_provider_turn_filter = settled_provider_turn_filter;
+                if ambiguous_start_never_created {
+                    state.ambiguous_turn_start_pending = false;
+                    state.push_event(NormalizedProviderEvent {
+                        event_type: "harness.diagnostic".to_owned(),
+                        priority: EventPriority::P0,
+                        payload: json!({
+                            "provider": provider_label,
+                            "code": "ambiguous_turn_start_not_created",
+                            "message": format!("{provider_name} recovery proved from the resumed thread's history that the turn start a process loss interrupted never created a turn"),
+                            "paperclipAccepted": false,
+                        }),
+                    })?;
+                }
                 state.push_terminal_event(NormalizedProviderEvent {
                     event_type: "session.resumed".to_owned(),
                     priority: EventPriority::P0,

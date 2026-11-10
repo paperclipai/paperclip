@@ -2514,6 +2514,46 @@ impl CodexProvider {
         Ok(())
     }
 
+    /// Provider evidence for a `turn/start` whose outcome a process loss hid.
+    /// Returns `true` only when this resumed Codex thread has no active turn
+    /// and its newest recorded turn is absent or one Paperclip already settled:
+    /// Codex records a turn in the thread before it runs anything, so the
+    /// ambiguous start never created one. Any other history, an incomplete
+    /// page, or another provider returns `false` and keeps the start ambiguous.
+    pub(crate) fn ambiguous_turn_start_never_created_a_turn(
+        &mut self,
+        settled_provider_turn_ids: &BTreeSet<String>,
+    ) -> Result<bool, LocalRunnerError> {
+        if self.config.provider != "codex" || self.active_provider_turn_id.is_some() {
+            return Ok(false);
+        }
+        let page = self.request("thread/turns/list", self.newest_turn_page_params())?;
+        let Some(turns) = page.pointer("/data").and_then(Value::as_array) else {
+            return Ok(false);
+        };
+        let Some(newest) = turns.first() else {
+            // An empty first page is the whole history only without a cursor.
+            return Ok(page.pointer("/nextCursor").is_none_or(Value::is_null));
+        };
+        Ok(newest
+            .pointer("/id")
+            .and_then(Value::as_str)
+            .is_some_and(|turn_id| settled_provider_turn_ids.contains(turn_id))
+            && newest.pointer("/status").and_then(Value::as_str) != Some("inProgress"))
+    }
+
+    /// The first `thread/turns/list` page `read_thread` requests, narrowed to
+    /// the newest turn's metadata.
+    fn newest_turn_page_params(&self) -> Value {
+        let mut params = serde_json::Map::new();
+        params.insert("threadId".to_owned(), Value::String(self.thread_id.clone()));
+        params.insert("cursor".to_owned(), Value::Null);
+        params.insert("limit".to_owned(), Value::from(1));
+        params.insert("sortDirection".to_owned(), Value::from("desc"));
+        params.insert("itemsView".to_owned(), Value::from("notLoaded"));
+        Value::Object(params)
+    }
+
     pub(crate) fn read_thread_after_recovery_goal(
         &mut self,
         goal_is_dormant: fn(&Value) -> bool,
