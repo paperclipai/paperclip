@@ -1,14 +1,14 @@
 import { and, eq } from "drizzle-orm";
 import { heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
-import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { persistActivity, publishActivity } from "./activity-log.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION } from "./remote-workspace-snapshot-archive.js";
 import { CAPTURE_POLICY_RECOVERY_KEY, CAPTURE_POLICY_RECOVERY_SCHEMA, createSystemRecovery, isCapturePolicyRearmable,
   readSystemRecovery, type SystemRecoveryState } from "./system-recovery-state.js";
-import { terminalWorkspaceRunStates, type WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
+import type { WorkspaceRecoverySourceIdentity } from "./workspace-recovery-source.js";
+import { sourceRunProvablyOver } from "./workspace-recovery-stop-proof.js";
 
 /** User-facing text while the retried save runs. It names no person who must act. */
 export const CAPTURE_POLICY_REARM_MESSAGE = "Paperclip is saving the previous run's files again with its updated save rules. "
@@ -47,8 +47,7 @@ export async function rearmExhaustedCapturePolicy(db: Db, input: WorkspaceRecove
     // Nothing still executes or finalizes the source run. The new attempt
     // still proves the sandbox stop itself before it reads any file.
     const at = new Date(now);
-    if (!terminalWorkspaceRunStates.includes(run.status) || !run.finishedAt || adapterExecutionControls.has(run.id)
-      || (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > at) || coordinator?.leaseOwner) return null;
+    if (!sourceRunProvablyOver(run, coordinator, at)) return null;
     const next: SystemRecoveryState = { ...createSystemRecovery(run.id), revision: system.revision + 1,
       preservationOperationIds: system.preservationOperationIds, providerCooldownAt: system.providerCooldownAt,
       nextAttemptAt: system.providerCooldownAt };

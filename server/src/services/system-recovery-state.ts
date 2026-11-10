@@ -141,7 +141,9 @@ export function failSystemRecovery(
  */
 export const CAPTURE_POLICY_RECOVERY_KEY = "capturePolicyRecovery";
 export const CAPTURE_POLICY_RECOVERY_SCHEMA = "paperclip.capture-policy-recovery.v1";
-export const CAPTURE_POLICY_REARM_CODES = ["export_interrupted", "archive_unsafe"] as const;
+// Capture refusals surface as export_interrupted. archive_unsafe names a restore
+// refusal, which the capture policy does not change, so it is not re-armed.
+export const CAPTURE_POLICY_REARM_CODES = ["export_interrupted"] as const;
 
 export function isCapturePolicyRearmable(state: Pick<SystemRecoveryState, "state" | "phase" | "failure" | "capturePolicyVersion"> | null | undefined) {
   return state?.state === "exhausted" && state.phase === "preserve_files"

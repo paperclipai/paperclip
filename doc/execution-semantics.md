@@ -2725,7 +2725,7 @@ releases carry no marker and are re-armed on the worker's first pass after
 deploy, with no migration.
 
 An exhausted save whose last failure happened while preserving files
-(`export_interrupted` or `archive_unsafe`) under an older workspace capture
+(`export_interrupted`) under an older workspace capture
 policy is retried once under the current policy. The capture policy has a
 version (`REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION`); each recovery generation
 records the version it saves with, and generations written before the field
