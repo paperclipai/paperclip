@@ -24,8 +24,9 @@ import * as workspaceArchive from "./remote-workspace-snapshot-archive.js";
 import * as onlineWorkspaceSource from "./online-workspace-source.js";
 
 const support = await getEmbeddedPostgresTestSupport(), execute = promisify(execFile);
-const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-c", `core.hooksPath=${os.devNull}`, "-C", cwd, ...args], {
-  env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull, GIT_TERMINAL_PROMPT: "0",
+const gitNull = process.platform === "win32" ? "NUL" : os.devNull;
+const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-c", `core.hooksPath=${gitNull}`, "-C", cwd, ...args], {
+  env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: gitNull, GIT_TERMINAL_PROMPT: "0",
     GIT_AUTHOR_NAME: "Cohort", GIT_AUTHOR_EMAIL: "cohort@example.test", GIT_COMMITTER_NAME: "Cohort", GIT_COMMITTER_EMAIL: "cohort@example.test" },
 })).stdout.trim();
 
@@ -239,15 +240,19 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
       try { return await transaction(...args); } finally { reservations--; }
     });
     const capture = vi.spyOn(workspaceArchive, "captureRemoteWorkspaceDirectory");
-    let entered = 0, release!: () => void, interrupt = mode === "resume";
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const barrier = new Promise<void>(done => { release = done; });
+    let entered = 0, release!: () => void, rejectBarrier!: (error: unknown) => void, interrupt = mode === "resume";
+    let uploadSignal: AbortSignal | undefined;
+    const barrier = new Promise<void>((done, reject) => { release = done; rejectBarrier = reject; });
+    const abortBarrier = () => rejectBarrier(uploadSignal!.reason);
     vi.spyOn(storage, "putFile").mockImplementation(async input => {
       uploads++; maximumUploads = Math.max(maximumUploads, uploads);
       try {
         if (interrupt && ++entered === 2) throw new Error("large_cohort_upload_interrupted");
         if (!interrupt) {
-          if (++entered === 1) timer = setTimeout(() => release(), 5000);
+          if (++entered === 1) {
+            uploadSignal!.throwIfAborted();
+            uploadSignal!.addEventListener("abort", abortBarrier, { once: true });
+          }
           if (entered === 8) release();
           await barrier;
         }
@@ -263,8 +268,9 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
         expect(savedOperations).toHaveLength(10); expect(savedSnapshotIds).toHaveLength(2);
         interrupt = false; entered = 0;
       }
-      await expect(run(f, { workspaceIds, concurrency: 8 })).resolves.toMatchObject({ applied: true });
-    } finally { clearTimeout(timer); }
+      uploadSignal = AbortSignal.timeout(50_000);
+      await expect(run(f, { workspaceIds, concurrency: 8, signal: uploadSignal })).resolves.toMatchObject({ applied: true });
+    } finally { uploadSignal?.removeEventListener("abort", abortBarrier); }
     expect(maximumReaders).toBe(8); expect(maximumReservations).toBe(8); expect(maximumUploads).toBe(8);
     expect(readers).toBe(0); expect(reservations).toBe(0); expect(uploads).toBe(0);
     const operations = (await db.select().from(workspaceOperations)).filter(row => workspaceIds.includes(row.executionWorkspaceId!));
