@@ -120,7 +120,8 @@ async function createTaskResources(api: ChaosApi, lab: ChaosLab, task: ConfigTas
     runtimeConfig.aiConnection = { provider: "openrouter", method: "api_key", mode: "responsible_user" };
   } else {
     const secret = await api.post<{ id: string }>(`/api/companies/${lab.companyId}/secrets`, {
-      name: `Chaos ${credentialKey} ${task.taskId}-${task.nonce}`, key: credentialKey, value: process.env[credentialKey],
+      // Secret keys are unique per company; the agent's env var name stays the provider's.
+      name: `Chaos ${credentialKey} ${task.taskId}-${task.nonce}`, key: `${credentialKey}_${task.taskId}_${task.nonce}`, value: process.env[credentialKey],
       description: `Restart chaos config fault ${task.taskId}` });
     secretId = secret.id;
     env[credentialKey] = secretRef(secret.id);
@@ -184,7 +185,7 @@ async function repairReference(api: ChaosApi, lab: ChaosLab, task: ConfigTaskPla
       return "restored the project workspace path";
     case "agent_secret": {
       const secret = await api.post<{ id: string }>(`/api/companies/${lab.companyId}/secrets`, {
-        name: `Chaos ${resources.credentialKey} ${task.taskId}-${task.nonce} repaired`, key: resources.credentialKey,
+        name: `Chaos ${resources.credentialKey} ${task.taskId}-${task.nonce} repaired`, key: `${resources.credentialKey}_${task.taskId}_${task.nonce}_repaired`,
         value: process.env[resources.credentialKey], description: "Restart chaos config fault repair" });
       await api.patch(`/api/agents/${resources.agentId}`, { adapterConfig: { env: { [resources.credentialKey]: secretRef(secret.id) } } });
       return "created a new secret and pointed the agent at it";
