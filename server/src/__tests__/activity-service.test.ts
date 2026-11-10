@@ -365,6 +365,28 @@ describeEmbeddedPostgres("activity service", () => {
     },
   );
 
+  it.each([
+    ["recorded", "40001", "40001"],
+    ["legacy row without the field", undefined, null],
+    ["malformed", 'Failed query: select "secret" from x', null],
+    ["overlong", "X".repeat(81), null],
+    ["boolean", true, null],
+    ["number", 40001, null],
+  ] as const)("projects only a closed-shape failure cause in issue history: %s", async (_case, stored, expected) => {
+    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Failure cause", issuePrefix: `F${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Failing runner", adapterType: "process" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Fail with a cause", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, scopeKind: "issue", status: "failed",
+      errorCode: "adapter_failed", finishedAt: new Date(), contextSnapshot: { issueId }, livenessState: "failed",
+      resultJson: { stopReason: "adapter_failed", ...(stored === undefined ? {} : { failureCause: stored }) } });
+
+    const [row] = await activityService(db).runsForIssue(companyId, issueId);
+    expect(row).toMatchObject({ runId, errorCode: "adapter_failed", failureCause: expected });
+    expect(row!.resultJson).toEqual({ stopReason: "adapter_failed" });
+    expect(JSON.stringify(row)).not.toContain("secret");
+  });
+
   it("backfills missing liveness for completed issue runs before returning the ledger", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

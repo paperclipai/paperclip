@@ -150,6 +150,18 @@ describe("ordinary task interruption", () => {
     await render({ ...failed, workspaceFailure, state: "working" });
     expect(container.textContent).toBe("");
   });
+  it("names a failed workspace setup command and what to change, keeping Retry", async () => {
+    const setupFailure = { step: "workspace_provision" as const, command: "bash ./scripts/provision-worktree.sh", exitCode: 127,
+      output: "bash: ./scripts/provision-worktree.sh: No such file or directory",
+      message: "The project's workspace provision command \"bash ./scripts/provision-worktree.sh\" failed with exit code 127: bash: ./scripts/provision-worktree.sh: No such file or directory" };
+    await render({ ...failed, setupFailure });
+    expect(container.textContent).toContain("Couldn’t set up the task workspace.");
+    expect(container.textContent).toContain(setupFailure.message);
+    expect(container.textContent).toContain("Fix the command in the project’s workspace settings");
+    expect(container.textContent).not.toContain("Couldn’t finish this attempt.");
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+    expect(retry).toHaveBeenCalledOnce();
+  });
   it("shows why an accepted Retry is waiting and keeps another attempt available", async () => {
     const retryWait = { reason: "remote_cleanup", message: "Retry is waiting for the previous environment to stop. Your message is saved." };
     await render({ ...failed, retryWait });

@@ -599,7 +599,7 @@ async function main(): Promise<number> {
     const speed = await (async () => {
       const childTasks = await childSpeedTasksInTurn(launched);
       return collectWaveSpeed(api, plan.options.env, [...launched.flatMap(observer => observer.record.issueId
-        ? [{ issueId: observer.record.issueId, adapter: observer.plan.adapter, samples: observer.record.samples }] : []), ...childTasks], faults);
+        ? [{ issueId: observer.record.issueId, adapter: observer.plan.adapter, samples: observer.record.samples }] : []), ...childTasks], faults, storageChaos?.receipts ?? []);
     })().catch(error => { timeline.add("wave_speed_failed", { error: String(error) }); anyFailure = true; return null; });
     if (speed) {
       speedSection = speedMarkdown(speed);

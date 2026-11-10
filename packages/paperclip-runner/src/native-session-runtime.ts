@@ -418,6 +418,22 @@ function isTurnTerminal(event: PrpEvent): boolean {
   ].includes(event.eventType);
 }
 
+/**
+ * The only provider facts a governed-wait accounting drain persists after its
+ * trigger: usage, the turn terminal and cancellation acknowledgements of the
+ * parked turn. The drain discards every other numbered event, so the saved
+ * replay has sequence gaps exactly where those discarded events were.
+ */
+function isGovernedDrainRetainedEvent(event: PrpEvent, turnId: string | undefined): boolean {
+  if (event.turnId !== turnId) return false;
+  return isTurnTerminal(event)
+    || (event.eventType === "item.completed"
+      && (event.payload.kind === "usage" || event.payload.kind === "interrupt_acknowledgement"))
+    || event.eventType === "runtime_request.cancelled"
+    || event.eventType === "runtime_request.expired"
+    || (event.eventType === "run.terminal" && ["failed", "cancelled"].includes(String(event.payload.runTerminalState)));
+}
+
 function terminalFromEvent(
   event: PrpEvent,
   disposition: PrpTerminalState["reportedWorkDisposition"],
@@ -1206,14 +1222,10 @@ async function consumeTurn(
           if (next.done || drainAbort.signal.aborted) return;
           const trailing = next.value;
           const terminal = isTurnTerminal(trailing);
-          const usage = trailing.eventType === "item.completed" && trailing.payload.kind === "usage";
-          // These already-numbered cancellation facts carry no new work
-          // authority. Retain them so later receipts have contiguous replay.
-          const cancellation = trailing.eventType === "runtime_request.cancelled"
-            || trailing.eventType === "runtime_request.expired"
-            || (trailing.eventType === "item.completed" && trailing.payload.kind === "interrupt_acknowledgement")
-            || (trailing.eventType === "run.terminal" && ["failed", "cancelled"].includes(String(trailing.payload.runTerminalState)));
-          if (trailing.turnId === event.turnId && (usage || terminal || cancellation)) {
+          // Usage, the terminal and already-numbered cancellation facts carry
+          // no new work authority. Everything else is discarded, leaving gaps
+          // that governed-wait recovery replay accepts only for these facts.
+          if (isGovernedDrainRetainedEvent(trailing, event.turnId)) {
             const receipt = await controlPlane.appendEvent(trailing, {
               signal: drainAbort.signal,
               ...(terminal && trailing.turnId && trailing.eventType !== "turn.failed" && trailing.payload.providerTerminalObserved !== false
@@ -2333,14 +2345,22 @@ export async function executeNativeSession(
       timeoutMessage: "native governed-wait recovery replay timed out",
       operation: async signal => {
         let afterSourceSeq = event.sourceSeq - 1;
+        let gapObserved = false;
         while (true) {
           const page = await options.controlPlane.replayEvents({ runId: identity.runId,
             sourceInstanceId: options.runnerInstanceId, afterSourceSeq, limit: 1_000 }, { signal });
           signal.throwIfAborted();
           if (!page.events.length) break;
           for (const entry of page.events) {
+            // The trigger must be the first replayed event. After it, the
+            // accounting drain persisted only facts of the parked turn and
+            // discarded the rest, so a gap is legitimate only when every later
+            // event is one of those facts. Identity never relaxes.
+            if (entry.sourceSeq !== afterSourceSeq + 1) gapObserved = true;
             if (entry.runId !== identity.runId || entry.normalizedSessionId !== identity.sessionId
-              || entry.sourceInstanceId !== event.sourceInstanceId || entry.sourceSeq !== afterSourceSeq + 1
+              || entry.sourceInstanceId !== event.sourceInstanceId || !Number.isSafeInteger(entry.sourceSeq)
+              || entry.sourceSeq <= afterSourceSeq || (gapObserved && (governedReplay.length === 0 || !event.turnId
+                || !isGovernedDrainRetainedEvent(entry, event.turnId)))
               || governedReplay.length >= 10_000) throw new Error("native_governed_wait_replay_mismatch");
             governedReplay.push(entry);
             afterSourceSeq = entry.sourceSeq;

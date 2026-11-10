@@ -86,6 +86,19 @@ describe("issue continuation summaries", () => {
     expect(body).toContain("Inspect the failed run, fix the cause");
   });
 
+  it("keeps SQL statement text saved by older runs out of the summary", () => {
+    const body = buildContinuationSummaryMarkdown({
+      issue: { id: "issue-1", identifier: "PAP-1579", title: "Add continuation summaries", description: null,
+        status: "in_progress", priority: "medium" },
+      run: { id: "run-3", status: "failed", errorCode: "adapter_failed", resultJson: { failureCause: "40001" },
+        error: 'Usage write failed: Failed query: update "heartbeat_runs" set "usage_json" = $1\nparams: {"apiKey":"sk-secret"}' },
+      agent: { id: "agent-1", name: "CodexCoder", adapterType: "codex_local" },
+    });
+
+    expect(body).toContain("Latest run error (adapter_failed): Usage write failed: Database query failed (40001)");
+    expect(body).not.toMatch(/heartbeat_runs|sk-secret/);
+  });
+
   it("detects continuation summaries that explicitly park executor work for review", () => {
     const body = [
       "# Continuation Summary",

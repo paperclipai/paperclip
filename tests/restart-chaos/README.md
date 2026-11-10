@@ -383,6 +383,9 @@ that re-resolves its credentials after a rejection keeps going. Rotations and pu
 
 `--storage-fault-seconds 15-45` sets the window length range (5–900 s), for example to find how long
 an outage a run survives. The windows are logged in the timeline and written to `storage-faults.json`.
+The speed grade removes storage fault window time from spans and restart recoveries the same way it
+removes restart outage time (overlap counted once), and reports the removed time on its own line in
+`SUMMARY.md` and as `storageFaultRemovedMs` in `speed.json`.
 
 With `--env daytona --storage s3`, each task's workspace is a remote workspace: the controller saves
 and restores it through the store, so the faults also hit workspace save, restore and copyback. R1
@@ -653,7 +656,7 @@ its workload. They catch a stuck or misleading task that no scenario anticipated
 | --- | --- | --- |
 | U1 liveness | a non-terminal task has neither a live owner (a running run with recent evidence, a run queued within the queue bound, a scheduled retry, an accepted Retry that waits on the system within the queue bound, a system recovery action) nor a visible, actionable item (Retry, a question or `userAction`, a failed notice, a board recovery action, an execution blocker, `blocked` or `in_review`; none of these count while an accepted Retry waits on the system) for longer than the bound, counting only time with the server ready | 3 min ownerless (`RESTART_CHAOS_U1_ORPHAN_SECONDS`); a queued run or an accepted Retry's wait counts as an owner for 5 min (`RESTART_CHAOS_U1_QUEUED_SECONDS`) |
 | U2 retry loop | more than N consecutive failed runs with the same status and code while the issue status stays the same | 3 (`RESTART_CHAOS_U2_SAME_FAILURE_RUNS`) |
-| U3 diagnosable | a failed run has no code or a generic one (`adapter_failed`, `unknown`, `error`, ...), its stored error is empty or names only a bare cause (`last cause: Error`), or a recovery action's cause or next action is empty or bare | none |
+| U3 diagnosable | a failed run has no code or a generic one (`adapter_failed`, `unknown`, `error`, ...) and no recorded `failureCause` (a bounded code such as `40001`, `exit_code_137` or `provider_http_429`; a bare `Error` or `unknown_error` does not count), its stored error is empty or names only a bare cause (`last cause: Error`), or a recovery action's cause or next action is empty or bare | none |
 | U4 stale notice | a Retry or failed notice stays on a task after its latest run succeeded, longer than the bound or at rest | 60 s (`RESTART_CHAOS_U4_STALE_SECONDS`) |
 
 U1, U2 and U4 fail the task (signature `U<n>:...`). U3 is a warning: it is reported in each grade
@@ -684,7 +687,9 @@ only until its run is dispatched. It also flags ten tasks whose accepted Retry w
 for 8 minutes without starting a run (five in saved waves, five in the L1 waves above). U2 flags a claude task that failed four times in a
 row with `adapter_failed`. Every U3
 flag is `adapter_failed`, including three tasks that passed after a retry, which is why U3 stays a
-warning until `adapter_failed` names its cause. The audit saw only failure codes; the error-text
+warning until `adapter_failed` names its cause. Runs now record that cause as `failureCause` (shown
+by the board's run list), and U3 accepts it; saved waves from before the field show none, so U3
+remains a warning until fresh waves show it holds. The audit saw only failure codes; the error-text
 part of U3 is checked only in waves run with this harness.
 
 ## Time faults (TM1–TM3, `--time-age-hours`)

@@ -190,6 +190,8 @@ export interface RunSample {
   startedAt: string | null;
   finishedAt: string | null;
   errorCode: string | null;
+  /** Bounded code naming why a generic `errorCode` (such as `adapter_failed`) failed, e.g. `40001`. */
+  failureCause?: string | null;
   retryOfRunId: string | null;
   wakeCommentIds: string[];
   livenessState: string | null;

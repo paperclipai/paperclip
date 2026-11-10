@@ -2418,10 +2418,15 @@ impl CodexCommandExecutor {
         let Some(attempt) = state.startup_attempt.clone() else {
             return Ok(());
         };
+        // A prepared state that already holds a provider thread is the
+        // settled checkpoint that run.attach restores (see attach_run): the
+        // launch that a kill cut off was restoring that saved thread.
         let restorable = matches!(
             state.lifecycle.as_str(),
             "session_open" | "turn_active" | "provider_exited"
-        );
+        ) || (state.lifecycle == "prepared"
+            && state.thread_id.is_some()
+            && state.provider_process_generation > 0);
         let orphaned = match attempt.phase {
             // The runner died while checking the launch, before any spawn.
             ProviderStartupPhase::Intent => attempt.before_spawn,
@@ -6305,6 +6310,7 @@ mod tests {
             state.config.driver = "codex_app_server".to_owned();
             state.config.command = PathBuf::from("codex");
             state.lifecycle = lifecycle.to_owned();
+            state.provider_process_generation = 1;
             if lifecycle != "turn_active" {
                 state.active_provider_turn_id = None;
             }
@@ -6352,7 +6358,7 @@ mod tests {
 
         #[test]
         fn restart_retires_a_spawned_startup_whose_provider_process_exited() {
-            for lifecycle in ["turn_active", "session_open", "provider_exited"] {
+            for lifecycle in ["turn_active", "session_open", "provider_exited", "prepared"] {
                 let pid = exited_process_group();
                 let directory =
                     orphaned_startup_fixture("orphaned-startup-exited", lifecycle, spawned(pid));
@@ -6371,6 +6377,21 @@ mod tests {
                 assert_eq!(saved.lifecycle, lifecycle);
                 fs::remove_dir_all(directory).unwrap();
             }
+        }
+
+        #[test]
+        fn restart_keeps_the_fence_for_a_prepared_state_without_a_saved_thread() {
+            // Only a prepared state over a saved thread is a settled checkpoint.
+            let pid = exited_process_group();
+            let directory =
+                orphaned_startup_fixture("orphaned-startup-unopened", "prepared", |executor| {
+                    executor.state.as_mut().unwrap().thread_id = None;
+                    spawned(pid)(executor);
+                });
+            assert!(reload_and_retire(&directory)
+                .assert_startup_admitted()
+                .is_err());
+            fs::remove_dir_all(directory).unwrap();
         }
 
         #[test]

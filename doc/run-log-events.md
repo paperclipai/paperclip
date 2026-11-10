@@ -1002,3 +1002,24 @@ the bounded stall policy, and operator recovery requirements stay unchanged.
 
 A later successful continuation does not establish the cause of an earlier
 failure that recorded only `Error`.
+
+### Failure cause of generic run failures
+
+A run that fails with a generic code (`adapter_failed`, `setup_failed`) keeps
+that code, because callers compare against it, and records
+`resultJson.failureCause`: one identifier of at most 80 characters
+(`[A-Za-z0-9_.:-]`). For a thrown error it is the provider's HTTP status
+(`provider_http_429`) or category, else the first safe code in the error and up
+to three nested `cause` objects (`40001`, `ECONNRESET`, the same extraction as
+the Runner's event commit stall diagnostics), else the error's class name. For
+an adapter result without a code it is the error family, `signal_<name>`,
+`process_cancellation_failed`, `exit_code_<n>` or `adapter_reported_error`. It
+never copies message text. The server's failure log line carries the same
+cause, and the board's run list shows it, for example "adapter failed (40001)".
+Older rows have no cause and read as before.
+
+Run error text keeps SQL statements off the board: a Drizzle `Failed query:`
+statement and its parameters, or unwrapped statement text with `$n`
+placeholders, is replaced with "Database query failed (<cause>)". The wrapper
+text before the statement is kept.
+
