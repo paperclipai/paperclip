@@ -918,13 +918,50 @@ describeEmbeddedPostgres("tool access policy service", () => {
     ]);
     const replay = await toolAccessPolicyService(db).recordInvocation(input, decision);
 
-    expect(second.replayed).toBe(false);
-    expect(second.invocation.id).not.toBe(first.invocation.id);
-    expect(second.invocation.idempotencyKey).toMatch(/^side_effect:/);
-    expect(second.invocation.idempotencyKey).not.toBe(first.invocation.idempotencyKey);
+    const fresh = [second, concurrent].find((result) => !result.replayed);
+
+    expect([second, concurrent].filter((result) => !result.replayed)).toHaveLength(1);
+    expect(fresh?.invocation.id).not.toBe(first.invocation.id);
+    expect(fresh?.invocation.idempotencyKey).toMatch(/^side_effect:implicit:/);
+    expect(fresh?.invocation.idempotencyKey).not.toBe(first.invocation.idempotencyKey);
     expect(concurrent.invocation.id).toBe(second.invocation.id);
     expect(replay).toMatchObject({ replayed: true });
-    expect(replay.invocation.id).toBe(second.invocation.id);
+    expect(replay.invocation.id).toBe(fresh?.invocation.id);
+  });
+
+  it("regenerates a connected upload tool identified by its upstream name", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createTool(db, company.id);
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent.id,
+      permissionKey: "tools:use",
+      scope: { toolName: "media_generate_upload_link" },
+    });
+    const input = {
+      companyId: company.id,
+      actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+      request: {
+        connectionId: connection.id,
+        toolName: `mcp.${connection.id}:media-generate-upload-link`,
+        upstreamToolName: "media_generate_upload_link",
+        arguments: { contentType: "image/png", sizeBytes: 1234 },
+        sideEffecting: true,
+      },
+    };
+    const service = toolAccessPolicyService(db);
+    const decision = await service.decide(input);
+    const first = await service.recordInvocation(input, decision);
+    await db.update(toolInvocations).set({ status: "succeeded", completedAt: new Date() })
+      .where(eq(toolInvocations.id, first.invocation.id));
+
+    const second = await service.recordInvocation(input, decision);
+
+    expect(second.replayed).toBe(false);
+    expect(second.invocation.id).not.toBe(first.invocation.id);
+    expect(second.invocation.idempotencyKey).toMatch(/^side_effect:implicit:/);
   });
 
   it.each(["authorized", "executing", "timed_out"] as const)(
@@ -1006,59 +1043,120 @@ describeEmbeddedPostgres("tool access policy service", () => {
     }
   });
 
-  it("isolates identical implicit upload arguments by company, issue, run, and agent context", async () => {
+  it("does not treat an explicit side_effect-prefixed key as implicit upload lineage", async () => {
     const company = await createCompany(db);
-    const otherCompany = await createCompany(db);
     const agent = await createAgent(db, company.id);
-    const otherAgent = await createAgent(db, company.id);
-    const foreignAgent = await createAgent(db, otherCompany.id);
+    const { connection } = await createTool(db, company.id);
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent.id,
+      permissionKey: "tools:use",
+      scope: { toolName: "media_generate_upload_link" },
+    });
+    const base = {
+      companyId: company.id,
+      actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+      request: {
+        connectionId: connection.id,
+        toolName: "media_generate_upload_link",
+        arguments: { sizeBytes: 1234 },
+        sideEffecting: true,
+      },
+    };
+    const service = toolAccessPolicyService(db);
+    const decision = await service.decide(base);
+    const implicit = await service.recordInvocation(base, decision);
+    await db.update(toolInvocations).set({ status: "succeeded", completedAt: new Date() })
+      .where(eq(toolInvocations.id, implicit.invocation.id));
+    const explicitInput = {
+      ...base,
+      request: { ...base.request, idempotencyKey: "side_effect:caller-supplied" },
+    };
+    const explicit = await service.recordInvocation(explicitInput, decision);
+    await db.update(toolInvocations).set({ status: "succeeded", completedAt: new Date() })
+      .where(eq(toolInvocations.id, explicit.invocation.id));
+
+    const next = await service.recordInvocation(base, decision);
+
+    expect(next.replayed).toBe(false);
+    expect(next.invocation.id).not.toBe(explicit.invocation.id);
+    expect(next.invocation.idempotencyKey).toMatch(/^side_effect:implicit:/);
+  });
+
+  it("isolates implicit upload lineage when only issue or only run changes", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
     const issue = await createIssue(db, company.id, "Story A");
     const otherIssue = await createIssue(db, company.id, "Story B");
     const run = await createRun(db, company.id, agent.id);
-    const otherRun = await createRun(db, company.id, otherAgent.id);
-    const foreignRun = await createRun(db, otherCompany.id, foreignAgent.id);
+    const otherRun = await createRun(db, company.id, agent.id);
     const { connection } = await createTool(db, company.id);
-    const { connection: foreignConnection } = await createTool(db, otherCompany.id);
-    await db.insert(principalPermissionGrants).values([
-      ...[agent, otherAgent].map((current) => ({
-        companyId: company.id,
-        principalType: "agent" as const,
-        principalId: current.id,
-        permissionKey: "tools:use",
-        scope: { toolName: "media_generate_upload_link" },
-      })),
-      {
-        companyId: otherCompany.id,
-        principalType: "agent" as const,
-        principalId: foreignAgent.id,
-        permissionKey: "tools:use",
-        scope: { toolName: "media_generate_upload_link" },
-      },
-    ]);
-    const contexts = [
-      { companyId: company.id, agent, issueId: issue.id, runId: run.id, connectionId: connection.id },
-      { companyId: company.id, agent: otherAgent, issueId: otherIssue.id, runId: otherRun.id, connectionId: connection.id },
-      { companyId: otherCompany.id, agent: foreignAgent, issueId: null, runId: foreignRun.id, connectionId: foreignConnection.id },
-    ];
-    const ids: string[] = [];
-    for (const context of contexts) {
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent.id,
+      permissionKey: "tools:use",
+      scope: { toolName: "media_generate_upload_link" },
+    });
+    const invoke = async (issueId: string, runId: string) => {
       const input = {
-        companyId: context.companyId,
-        actor: { actorType: "agent" as const, actorId: context.agent.id, agentId: context.agent.id },
-        runContext: { heartbeatRunId: context.runId, issueId: context.issueId },
+        companyId: company.id,
+        actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+        runContext: { heartbeatRunId: runId, issueId },
         request: {
-          connectionId: context.connectionId,
+          connectionId: connection.id,
           toolName: "media_generate_upload_link",
           arguments: {},
           sideEffecting: true,
         },
       };
       const service = toolAccessPolicyService(db);
-      const decision = await service.decide(input);
-      ids.push((await service.recordInvocation(input, decision)).invocation.id);
-    }
+      return service.recordInvocation(input, await service.decide(input));
+    };
 
-    expect(new Set(ids).size).toBe(3);
+    const baseline = await invoke(issue.id, run.id);
+    const issueOnly = await invoke(otherIssue.id, run.id);
+    const runOnly = await invoke(issue.id, otherRun.id);
+
+    expect(issueOnly.invocation.id).not.toBe(baseline.invocation.id);
+    expect(runOnly.invocation.id).not.toBe(baseline.invocation.id);
+  });
+
+  it("shares run-less implicit upload lineage across agents in the same issue", async () => {
+    const company = await createCompany(db);
+    const firstAgent = await createAgent(db, company.id);
+    const secondAgent = await createAgent(db, company.id);
+    const issue = await createIssue(db, company.id, "Shared story");
+    const { connection } = await createTool(db, company.id);
+    await db.insert(principalPermissionGrants).values([firstAgent, secondAgent].map((agent) => ({
+      companyId: company.id,
+      principalType: "agent" as const,
+      principalId: agent.id,
+      permissionKey: "tools:use",
+      scope: { toolName: "media_generate_upload_link" },
+    })));
+    const invoke = async (agent: typeof firstAgent) => {
+      const input = {
+        companyId: company.id,
+        actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+        runContext: { issueId: issue.id },
+        request: {
+          connectionId: connection.id,
+          toolName: "media_generate_upload_link",
+          arguments: {},
+          sideEffecting: true,
+        },
+      };
+      const service = toolAccessPolicyService(db);
+      return service.recordInvocation(input, await service.decide(input));
+    };
+
+    const first = await invoke(firstAgent);
+    const second = await invoke(secondAgent);
+
+    expect(second).toMatchObject({ replayed: true });
+    expect(second.invocation.id).toBe(first.invocation.id);
   });
 
   it("enforces rate-limit policies before explicit grants", async () => {

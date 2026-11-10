@@ -247,7 +247,12 @@ const REGENERABLE_IMPLICIT_SIDE_EFFECT_TOOLS = new Set([
 ]);
 
 function nextSideEffectIdempotencyKey(previousKey: string, previousInvocationId: string): string {
-  return `side_effect:${sha256({ previousKey, previousInvocationId })}`;
+  return `side_effect:implicit:${sha256({ previousKey, previousInvocationId })}`;
+}
+
+function isRegenerableImplicitSideEffectTool(ctx: ToolAccessContext): boolean {
+  return REGENERABLE_IMPLICIT_SIDE_EFFECT_TOOLS.has(ctx.toolName)
+    || (ctx.upstreamToolName !== null && REGENERABLE_IMPLICIT_SIDE_EFFECT_TOOLS.has(ctx.upstreamToolName));
 }
 
 function auditOutcome(accessDecision: ToolAccessDecision): "pending" | "success" | "denied" | "timeout" {
@@ -1430,7 +1435,7 @@ export function toolAccessPolicyService(db: Db) {
       if (
         existing
         && !callerIdempotencyKey
-        && REGENERABLE_IMPLICIT_SIDE_EFFECT_TOOLS.has(ctx.toolName)
+        && isRegenerableImplicitSideEffectTool(ctx)
       ) {
         [existing] = await db.select().from(toolInvocations).where(and(
           eq(toolInvocations.companyId, input.companyId),
@@ -1441,7 +1446,7 @@ export function toolAccessPolicyService(db: Db) {
           sql`${toolInvocations.applicationId} is not distinct from ${ctx.applicationId}`,
           sql`${toolInvocations.connectionId} is not distinct from ${ctx.connectionId}`,
           sql`${toolInvocations.catalogEntryId} is not distinct from ${ctx.catalogEntryId}`,
-          sql`${toolInvocations.idempotencyKey} like 'side_effect:%'`,
+          sql`(${toolInvocations.idempotencyKey} = ${idempotencyKey} or ${toolInvocations.idempotencyKey} like 'side_effect:implicit:%')`,
         )).orderBy(desc(toolInvocations.createdAt), desc(toolInvocations.id)).limit(1);
         if (existing?.status === "succeeded") {
           idempotencyKey = nextSideEffectIdempotencyKey(
