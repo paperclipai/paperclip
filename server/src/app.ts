@@ -128,6 +128,7 @@ import { workflowRoutes } from "./routes/workflows.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
 import { createRemoteWorkspaceFiles } from "./services/remote-workspace-files.js";
 import { createSavedWorkspaceLoader } from "./services/remote-workspaces.js";
+import { createSavedWorkspaceArchiveOpener } from "./services/saved-workspace-archive.js";
 import { routineRoutes } from "./routes/routines.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
@@ -811,6 +812,7 @@ export async function createApp(
   api.use(fileResourceRoutes(db, { remoteFiles: createRemoteWorkspaceFiles(db, {
     environmentRuntime: environmentRuntimeService(db, { pluginWorkerManager: workerManager }),
     loadSavedWorkspace: createSavedWorkspaceLoader(db, opts.storageService),
+    openSavedWorkspaceArchive: createSavedWorkspaceArchiveOpener(db, opts.storageService),
   }) }));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(

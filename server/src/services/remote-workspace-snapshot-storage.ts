@@ -7,7 +7,7 @@ import { link, lstat, mkdtemp, open, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
-import { Transform } from "node:stream";
+import { pipeline as streamPipeline, Readable, Transform } from "node:stream";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq } from "drizzle-orm";
 import { executionWorkspaceSnapshots, type Db } from "@paperclipai/db";
@@ -433,4 +433,99 @@ async function loadWorkspaceSnapshotArchiveTimed(input: Parameters<typeof loadWo
       });
     } finally { await rm(staged, { force: true }); }
   } finally { await rm(scratch, { recursive: true, force: true }); }
+}
+
+const GCM_HEADER_BYTES = MAGIC.length + 12;
+const GCM_TAG_BYTES = 16;
+const CTR_BLOCK_BYTES = 16;
+const GCM_MAX_PLAINTEXT_BYTES = (2 ** 32 - 2) * CTR_BLOCK_BYTES;
+
+export interface WorkspaceSnapshotRanges {
+  plaintextBytes: number;
+  plaintextSha256: string;
+  read(start: number, length: number, signal?: AbortSignal): Promise<Readable>;
+  close(): void;
+}
+
+export async function openWorkspaceSnapshotRanges(input: {
+  storage: StorageService; reference: WorkspaceSnapshotRef; signal?: AbortSignal; idleTimeoutMs?: number;
+}): Promise<WorkspaceSnapshotRanges> {
+  input.signal?.throwIfAborted();
+  const idleTimeoutMs = input.idleTimeoutMs ?? DOWNLOAD_IDLE_TIMEOUT_MS;
+  const ref = input.reference, wrapped = await snapshotKey(ref);
+  if (ref.byteSize !== GCM_HEADER_BYTES + wrapped.plaintextBytes + GCM_TAG_BYTES
+    || wrapped.plaintextBytes > GCM_MAX_PLAINTEXT_BYTES) failure("object_size_mismatch");
+  const header = Buffer.concat(await collect(await openObjectRange(input.storage, ref, 0, GCM_HEADER_BYTES, idleTimeoutMs, input.signal),
+    GCM_HEADER_BYTES));
+  if (header.length !== GCM_HEADER_BYTES) failure("range_truncated");
+  if (!header.subarray(0, MAGIC.length).equals(MAGIC)) failure("ciphertext_header_invalid");
+  const iv = header.subarray(MAGIC.length);
+  const key = Buffer.from(wrapped.dataKey, "base64");
+  if (key.length !== 32) { key.fill(0); failure("key_invalid"); }
+  let closed = false;
+  return {
+    plaintextBytes: wrapped.plaintextBytes,
+    plaintextSha256: wrapped.plaintextSha256,
+    async read(start, length, signal) {
+      if (closed) failure("ranges_closed");
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(length) || start < 0 || length < 0
+        || start + length > wrapped.plaintextBytes) failure("range_invalid");
+      if (length === 0) return Readable.from([]);
+      const block = Math.floor(start / CTR_BLOCK_BYTES), skip = start - block * CTR_BLOCK_BYTES;
+      const counter = Buffer.alloc(16); iv.copy(counter, 0); counter.writeUInt32BE(2 + block, 12);
+      const ciphertext = await openObjectRange(input.storage, ref, GCM_HEADER_BYTES + block * CTR_BLOCK_BYTES,
+        skip + length, idleTimeoutMs, signal);
+      let skipped = 0, emitted = 0;
+      const bounded = new Transform({ transform(bytes: Buffer, _encoding, callback) {
+        let part = bytes;
+        if (skipped < skip) { const drop = Math.min(skip - skipped, part.length); skipped += drop; part = part.subarray(drop); }
+        const room = length - emitted;
+        if (part.length > room) part = part.subarray(0, room);
+        emitted += part.length;
+        callback(null, part.length ? part : undefined);
+      }, flush(callback) { callback(emitted === length ? null : new Error("remote_workspace_snapshot_range_truncated")); } });
+      return streamPipeline(ciphertext, createDecipheriv("aes-256-ctr", key, counter), bounded, () => undefined);
+    },
+    close() { closed = true; key.fill(0); },
+  };
+}
+
+async function openObjectRange(storage: StorageService, ref: WorkspaceSnapshotRef, start: number, length: number,
+  idleTimeoutMs: number, signal?: AbortSignal): Promise<Readable> {
+  const stalled = new Error("remote_workspace_snapshot_download_stalled");
+  const idle = new AbortController();
+  let timer = setTimeout(() => idle.abort(stalled), idleTimeoutMs);
+  timer.unref();
+  const combined = signal ? AbortSignal.any([signal, idle.signal]) : idle.signal;
+  let object: Awaited<ReturnType<StorageService["getObject"]>>;
+  try {
+    object = await sendThroughStorageOutage(() => storage.getObject(ref.companyId, ref.objectKey, {
+      range: { start, end: start + length - 1 }, signal: combined }), combined);
+  } catch (error) { clearTimeout(timer); throw idle.signal.aborted ? stalled : error; }
+  let received = 0;
+  const guard = new Transform({ transform(bytes: Buffer, _encoding, callback) {
+    timer.refresh();
+    received += bytes.length;
+    callback(received > length ? new Error("remote_workspace_snapshot_object_size_mismatch") : null, bytes);
+  } });
+  const output = streamPipeline(object.stream, guard, () => clearTimeout(timer));
+  clearTimeout(timer);
+  timer = setTimeout(() => output.destroy(stalled), idleTimeoutMs);
+  timer.unref();
+  output.once("close", () => clearTimeout(timer));
+  return output;
+}
+
+async function collect(stream: Readable, limit: number): Promise<Buffer[]> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  try {
+    for await (const chunk of stream) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += bytes.length;
+      if (size > limit) failure("object_size_mismatch");
+      chunks.push(bytes);
+    }
+  } finally { stream.destroy(); }
+  return chunks;
 }
