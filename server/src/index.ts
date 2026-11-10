@@ -2045,8 +2045,8 @@ async function startServerWithDatabaseTeardown(
     );
   }
   
-  const abortStuckMultipartUploads = async (signal: "SIGINT" | "SIGTERM") => {
-    const abortedUploads = await abortInFlightMultipartUploads(new Error("server_shutdown"));
+  const abortStuckMultipartUploads = async (signal: "SIGINT" | "SIGTERM", graceMs = 0) => {
+    const abortedUploads = await abortInFlightMultipartUploads(new Error("server_shutdown"), { graceMs });
     if (abortedUploads) logger.info({ signal, abortedUploads }, "aborted in-flight multipart uploads before exit");
   };
 
@@ -2141,6 +2141,8 @@ async function startServerWithDatabaseTeardown(
       }
     }
 
+    await abortStuckMultipartUploads(signal, 5_000);
+
     if (!skipHeartbeatDrain) {
       await drainRunExecutionFinalizersForShutdown({
         signal,
@@ -2151,8 +2153,6 @@ async function startServerWithDatabaseTeardown(
     }
 
     await workspaceRecoveryStop;
-
-    await abortStuckMultipartUploads(signal);
 
     const telemetryClient = getTelemetryClient();
     if (telemetryClient) {

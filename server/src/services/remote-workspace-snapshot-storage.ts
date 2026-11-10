@@ -14,7 +14,7 @@ import { executionWorkspaceSnapshots, type Db } from "@paperclipai/db";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import type { StoredSecretVersionMaterial } from "../secrets/types.js";
 import type { StorageService } from "../storage/types.js";
-import { abortSnapshotAttemptUploads, notifyRemoteWorkspaceSnapshots, REMOTE_WORKSPACE_SNAPSHOT_GRACE_MS } from "./remote-workspace-snapshot-retention.js";
+import { abortSnapshotAttemptUploads, notifyRemoteWorkspaceSnapshots, snapshotAttemptKeys, REMOTE_WORKSPACE_SNAPSHOT_GRACE_MS } from "./remote-workspace-snapshot-retention.js";
 import { WORKSPACE_ARCHIVE_IO_BUFFER_BYTES } from "./remote-workspace-archive-io.js";
 
 const SCHEMA = "paperclip.workspace-snapshot.v1";
@@ -287,7 +287,7 @@ async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, v
     const winning = updated ?? (await input.db.select().from(executionWorkspaceSnapshots).where(scope(input)))[0];
     if (!winning || !["uploaded", "committed", "superseded"].includes(winning.status)) failure("publication_changed");
     const saved = reference(winning!);
-    if (updated) await abortSnapshotAttemptUploads(input.storage, saved.companyId, supersededAttemptKeys(updated));
+    if (updated) await abortSnapshotAttemptUploads(input.storage, saved.companyId, snapshotAttemptKeys(updated));
     if (!recapture && saved.manifestDigest !== input.manifestDigest) failure("operation_content_changed");
     if (saved.objectKey !== attempt.objectKey) await verifyTimed(saved);
     return saved;
@@ -384,13 +384,6 @@ async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, v
     }
     return await publish(attempt);
   } finally { await rm(scratch, { recursive: true, force: true }); }
-}
-
-function supersededAttemptKeys(row: SnapshotRow) {
-  const uploads = Array.isArray(row.metadata?.uploads) ? row.metadata.uploads as Array<{ objectKey?: unknown }> : [];
-  const prefix = `${row.companyId}/workspace-snapshots/${row.executionWorkspaceId}/${row.id}/`;
-  return [...new Set(uploads.flatMap(upload => typeof upload?.objectKey === "string" && upload.objectKey !== row.objectKey
-    && upload.objectKey.startsWith(prefix) && !upload.objectKey.includes("..") ? [upload.objectKey] : []))];
 }
 
 async function snapshotKey(ref: WorkspaceSnapshotRef) {

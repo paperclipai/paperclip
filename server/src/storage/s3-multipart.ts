@@ -23,15 +23,18 @@ function trackUpload(abort: (reason: unknown) => void) {
   return () => { inFlightUploads.delete(entry); settle(); };
 }
 
-export async function abortInFlightMultipartUploads(reason: unknown, timeoutMs = 2 * STORAGE_FAILURE_CLEANUP_MS) {
+function settledWithin(entries: Array<{ settled: Promise<void> }>, ms: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([Promise.all(entries.map(entry => entry.settled)).then(() => undefined),
+    new Promise<void>(resolve => { timer = setTimeout(resolve, ms); })]).finally(() => clearTimeout(timer));
+}
+
+export async function abortInFlightMultipartUploads(reason: unknown, options: { graceMs?: number; timeoutMs?: number } = {}) {
+  if (options.graceMs && inFlightUploads.size) await settledWithin([...inFlightUploads], options.graceMs);
   const entries = [...inFlightUploads];
   if (!entries.length) return 0;
   for (const entry of entries) entry.abort(reason);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([Promise.all(entries.map(entry => entry.settled)),
-      new Promise<void>(resolve => { timer = setTimeout(resolve, timeoutMs); })]);
-  } finally { clearTimeout(timer); }
+  await settledWithin(entries, options.timeoutMs ?? 2 * STORAGE_FAILURE_CLEANUP_MS);
   return entries.length;
 }
 

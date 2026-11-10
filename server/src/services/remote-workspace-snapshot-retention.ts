@@ -19,6 +19,13 @@ export function notifyRemoteWorkspaceSnapshots(transaction: object, hint?: strin
   return notifyDeliveryWork(transaction, DELIVERY_QUEUES.remoteWorkspaceSnapshots, hint);
 }
 
+export function snapshotAttemptKeys(row: Snapshot) {
+  const uploads = Array.isArray(row.metadata?.uploads) ? row.metadata.uploads as Array<{ objectKey?: unknown }> : [];
+  const prefix = `${row.companyId}/workspace-snapshots/${row.executionWorkspaceId}/${row.id}/`;
+  return [...new Set(uploads.flatMap(upload => typeof upload?.objectKey === "string" && upload.objectKey !== row.objectKey
+    && upload.objectKey.startsWith(prefix) && !upload.objectKey.includes("..") ? [upload.objectKey] : []))];
+}
+
 export async function abortSnapshotAttemptUploads(storage: StorageService, companyId: string, keys: Iterable<string>, signal?: AbortSignal) {
   const abort = storage.abortIncompleteUploads?.bind(storage);
   if (!abort) return 0;
