@@ -778,6 +778,15 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toEqual(f.task);
     await expect(fs.lstat(path.dirname(restored))).rejects.toMatchObject({ code: "ENOENT" });
   });
+  it("rechecks the current archived repository intent path at publication", async () => {
+    const f = await archivedRepositoryFixture(), put = storage.putFile.bind(storage); let uploaded = false;
+    storage.putFile = async input => { const saved = await put(input); uploaded = true;
+      await db.update(executionWorkspaceRepositories).set({ relativePath: "untracked.txt" }).where(eq(executionWorkspaceRepositories.id, f.repository.id)); return saved; };
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("repository_preparation_unresolved");
+    expect(uploaded).toBe(true); expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toEqual(f.task);
+    expect((await workspace(f.workspaceId)).metadata?.gitCacheRestoration).toEqual(f.before.metadata?.gitCacheRestoration);
+  });
   it("rechecks an archived repository intent against a recovered uploaded archive", async () => {
     const f = await archivedPreparedFixture(), transaction = db.transaction.bind(db); let interrupted = false;
     const fault = vi.spyOn(db, "transaction").mockImplementation(async (action, config) => {
