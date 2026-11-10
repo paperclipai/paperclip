@@ -10,6 +10,7 @@ import type { Approval, CompactIssue, HeartbeatRun, InboxMineSnapshot, Issue } f
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyJoinRequest } from "../api/access";
 import { ApiError } from "../api/client";
+import { shouldRetryRequest } from "../lib/query-client";
 import {
   clearLocalInboxArchive,
   getLocalInboxArchiveIssueIds,
@@ -1890,6 +1891,168 @@ describe("Inbox toolbar", () => {
 
     act(() => {
       root.unmount();
+    });
+  });
+
+  describe("optional reads and the reveal gate", () => {
+    const renderInbox = async (client: QueryClient, root: ReturnType<typeof createRoot>) => {
+      await act(async () => {
+        root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>);
+      });
+    };
+    const rowKeys = () => [...container.querySelectorAll("[data-inbox-item]")]
+      .map((row) => row.querySelector('[data-slot="task-row-identifier"]')?.textContent ?? "");
+    const selectedRowIndex = () => [...container.querySelectorAll("[data-inbox-item]")].findIndex((row) =>
+      row.querySelector<HTMLAnchorElement>("a[data-inbox-issue-link]")?.parentElement
+        ?.className.split(/\s+/).includes("bg-accent/50"));
+    const twoRows = () => {
+      const base = new Date("2026-03-11T00:00:00.000Z").getTime();
+      setIssueRows([
+        createIssue({ id: "issue-a", identifier: "PAP-4001", title: "Directory row A", assigneeUserId: "user-2", lastActivityAt: new Date(base + 2000) }),
+        createIssue({ id: "issue-b", identifier: "PAP-4002", title: "Directory row B", assigneeUserId: "user-2", lastActivityAt: new Date(base + 1000) }),
+      ]);
+    };
+
+    it("reveals rows while the user directory is pending and keeps their order and selection when it arrives", async () => {
+      routerMock.location.pathname = "/inbox/mine";
+      twoRows();
+      let resolveDirectory: (value: unknown) => void = () => {};
+      apiMocks.userDirectoryList.mockReturnValue(new Promise((resolve) => { resolveDirectory = resolve; }));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+      const root = createRoot(container);
+      try {
+        await renderInbox(client, root);
+        await vi.waitFor(() => expect(rowKeys()).toEqual(["PAP-4001", "PAP-4002"]));
+        for (let press = 0; press < 2; press += 1) {
+          await act(async () => {
+            document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true }));
+          });
+        }
+        expect(selectedRowIndex()).toBe(1);
+        const rowNodes = [...container.querySelectorAll("[data-inbox-item]")];
+
+        await act(async () => {
+          resolveDirectory({ users: [{ principalId: "user-2", user: { id: "user-2", name: "Robin Directory", email: "robin@example.test", image: null } }] });
+        });
+
+        expect(rowKeys()).toEqual(["PAP-4001", "PAP-4002"]);
+        expect([...container.querySelectorAll("[data-inbox-item]")]).toEqual(rowNodes);
+        expect(selectedRowIndex()).toBe(1);
+      } finally { await act(() => root.unmount()); client.clear(); }
+    });
+
+    it("waits for the user directory when rows are grouped by assignee", async () => {
+      routerMock.location.pathname = "/inbox/mine";
+      localStorage.setItem("paperclip:inbox:group-by", "assignee");
+      twoRows();
+      let resolveDirectory: (value: unknown) => void = () => {};
+      apiMocks.userDirectoryList.mockReturnValue(new Promise((resolve) => { resolveDirectory = resolve; }));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+      const root = createRoot(container);
+      try {
+        await renderInbox(client, root);
+        await vi.waitFor(() => expect(apiMocks.userDirectoryList).toHaveBeenCalled());
+        expect(container.querySelector("[data-inbox-item]")).toBeNull();
+        await act(async () => { resolveDirectory({ users: [] }); });
+        await vi.waitFor(() => expect(container.textContent).toContain("Directory row A"));
+      } finally { await act(() => root.unmount()); client.clear(); }
+    });
+
+    it("holds rows for a delayed approvals read so a late approval cannot push them down", async () => {
+      routerMock.location.pathname = "/inbox/mine";
+      twoRows();
+      let resolveApprovals: (value: Approval[]) => void = () => {};
+      apiMocks.approvalsList.mockReturnValue(new Promise((resolve) => { resolveApprovals = resolve; }));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+      const root = createRoot(container);
+      try {
+        await renderInbox(client, root);
+        await vi.waitFor(() => {
+          const mineQueries = client.getQueryCache().findAll({ queryKey: queryKeys.issues.listMineByMe("company-1") });
+          expect(mineQueries.some((query) => query.state.status === "success")).toBe(true);
+        });
+        expect(container.querySelector("[data-inbox-item]")).toBeNull();
+        await act(async () => { resolveApprovals([]); });
+        await vi.waitFor(() => expect(rowKeys()).toEqual(["PAP-4001", "PAP-4002"]));
+      } finally { await act(() => root.unmount()); client.clear(); }
+    });
+
+    it.each([
+      ["approvals", () => apiMocks.approvalsList],
+      ["join requests", () => apiMocks.joinRequestsList],
+    ] as const)("reveals rows and offers a retry when the %s read fails", async (_label, mock) => {
+      routerMock.location.pathname = "/inbox/mine";
+      twoRows();
+      mock().mockRejectedValue(new ApiError("Optional read failed", 500, null));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+      const root = createRoot(container);
+      try {
+        await renderInbox(client, root);
+        await vi.waitFor(() => expect(rowKeys()).toEqual(["PAP-4001", "PAP-4002"]));
+        await vi.waitFor(() => expect(document.body.textContent).toContain("Some inbox items couldn’t load."));
+        expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+      } finally { await act(() => root.unmount()); client.clear(); }
+    });
+
+    it("stops waiting for an approvals read after its first failed attempt while it retries", async () => {
+      routerMock.location.pathname = "/inbox/mine";
+      twoRows();
+      apiMocks.approvalsList
+        .mockRejectedValueOnce(new ApiError("Busy", 503, null))
+        .mockReturnValue(new Promise(() => {}));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: 3, retryDelay: 0, gcTime: 0 } } });
+      const root = createRoot(container);
+      try {
+        await renderInbox(client, root);
+        await vi.waitFor(() => expect(apiMocks.approvalsList).toHaveBeenCalledTimes(2));
+        await vi.waitFor(() => expect(rowKeys()).toEqual(["PAP-4001", "PAP-4002"]));
+      } finally { await act(() => root.unmount()); client.clear(); }
+    });
+
+    it.each([
+      ["approvals", () => apiMocks.approvalsList],
+      ["join requests", () => apiMocks.joinRequestsList],
+    ] as const)("shows the missing-items notice when %s keep timing out under the app retry policy", async (_label, mock) => {
+      routerMock.location.pathname = "/inbox/mine";
+      twoRows();
+      mock().mockRejectedValue(new ApiError("Timed out", 408, { error: "TIMEOUT" }));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: shouldRetryRequest, retryDelay: 0, gcTime: 0 } } });
+      const root = createRoot(container);
+      try {
+        await renderInbox(client, root);
+        await vi.waitFor(() => expect(rowKeys()).toEqual(["PAP-4001", "PAP-4002"]));
+        await vi.waitFor(() => expect(document.body.textContent).toContain("Some inbox items couldn’t load."));
+        expect(mock().mock.calls.length).toBeGreaterThan(1);
+        expect(document.body.textContent).toContain("Retry missing items");
+        expect(document.body.textContent).not.toContain("Inbox zero.");
+      } finally { await act(() => root.unmount()); client.clear(); }
+    });
+
+    it("bounds a stalled approvals read so rows do not stay behind a skeleton", async () => {
+      routerMock.location.pathname = "/inbox/mine";
+      twoRows();
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      // The API client turns `timeoutMs` into a 408 TIMEOUT error; model that for the stalled read.
+      apiMocks.approvalsList.mockImplementation((_companyId: string, _status: unknown, options?: { timeoutMs?: number }) =>
+        new Promise((_resolve, reject) => {
+          if (options?.timeoutMs === undefined) return;
+          setTimeout(() => reject(new ApiError("Timed out", 408, { error: "TIMEOUT" })), options.timeoutMs);
+        }));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+      const root = createRoot(container);
+      try {
+        await renderInbox(client, root);
+        await vi.waitFor(() => expect(apiMocks.approvalsList).toHaveBeenCalled());
+        const options = apiMocks.approvalsList.mock.calls[0]?.[2] as { timeoutMs?: number } | undefined;
+        expect(options?.timeoutMs).toBeGreaterThan(0);
+        expect(container.querySelector("[data-inbox-item]")).toBeNull();
+        await act(async () => { vi.advanceTimersByTime(options?.timeoutMs ?? 0); });
+        await vi.waitFor(() => expect(rowKeys()).toEqual(["PAP-4001", "PAP-4002"]));
+      } finally {
+        vi.useRealTimers();
+        await act(() => root.unmount());
+        client.clear();
+      }
     });
   });
 

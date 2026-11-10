@@ -1,3 +1,4 @@
+import { assertAgentToolAssignmentInteractions } from "./connection-management.js";
 import { isNewHumanIntentAfterToolRejection } from "./tool-action-replay-intent.js";
 import { approvalSnapshotsMatch, approvalTargetChangeMessage, oauthApprovalConfig,
   approvalGrantTenantIdentity, externalCredentialApprovalIdentity } from "./tool-approval-target.js";
@@ -9111,54 +9112,60 @@ export function createToolGatewayService(
         input.body.displaySlug ??
         input.body.slug ??
         slugSegment(input.body.name, "gateway");
-      const [gateway] = await db
-        .insert(toolMcpGateways)
-        .values({
-          companyId: input.companyId,
-          name: input.body.name,
-          slug,
-          displaySlug: slug,
-          description: input.body.description ?? null,
-          defaultProfileMode: input.body.defaultProfileMode ?? "gateway_only",
-          contextScopeType: input.body.contextScopeType ?? "none",
-          contextScopeId: input.body.contextScopeId ?? null,
-          profileId: input.body.profileId,
-          agentId: input.body.agentId ?? null,
-          projectId: input.body.projectId ?? null,
-          issueId: input.body.issueId ?? null,
-          approvalIssueId: input.body.approvalIssueId ?? null,
-          ...(input.body.authConfig !== undefined
-            ? { authConfig: input.body.authConfig }
-            : {}),
-          ...(input.body.headerPolicy !== undefined
-            ? { headerPolicy: input.body.headerPolicy }
-            : {}),
-          ...(input.body.metadataPolicy !== undefined
-            ? { metadataPolicy: input.body.metadataPolicy }
-            : {}),
-          ...(input.body.onDemandToolsConfig !== undefined
-            ? { onDemandToolsConfig: input.body.onDemandToolsConfig }
-            : {}),
-          metadata: input.body.metadata ?? {},
-          createdByAgentId: input.actor?.agentId ?? null,
-          createdByUserId: input.actor?.userId ?? null,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning();
-      await db
-        .insert(toolProfileBindings)
-        .values({
-          companyId: input.companyId,
-          profileId: input.body.profileId,
-          targetType: "gateway",
-          targetId: gateway.id,
-          priority: 10,
-          metadata: { source: "named_mcp_gateway" },
-          createdByAgentId: input.actor?.agentId ?? null,
-          createdByUserId: input.actor?.userId ?? null,
-        })
-        .onConflictDoNothing();
+      const gateway = await db.transaction(async tx => {
+        await assertAgentToolAssignmentInteractions(tx as unknown as Db,
+          input.managementContext?.actor.type === "agent" ? input.managementContext.actor.agentId : input.actor?.agentId,
+          input.companyId, input.body.agentId ? [input.body.agentId] : []);
+        const [gateway] = await tx
+          .insert(toolMcpGateways)
+          .values({
+            companyId: input.companyId,
+            name: input.body.name,
+            slug,
+            displaySlug: slug,
+            description: input.body.description ?? null,
+            defaultProfileMode: input.body.defaultProfileMode ?? "gateway_only",
+            contextScopeType: input.body.contextScopeType ?? "none",
+            contextScopeId: input.body.contextScopeId ?? null,
+            profileId: input.body.profileId,
+            agentId: input.body.agentId ?? null,
+            projectId: input.body.projectId ?? null,
+            issueId: input.body.issueId ?? null,
+            approvalIssueId: input.body.approvalIssueId ?? null,
+            ...(input.body.authConfig !== undefined
+              ? { authConfig: input.body.authConfig }
+              : {}),
+            ...(input.body.headerPolicy !== undefined
+              ? { headerPolicy: input.body.headerPolicy }
+              : {}),
+            ...(input.body.metadataPolicy !== undefined
+              ? { metadataPolicy: input.body.metadataPolicy }
+              : {}),
+            ...(input.body.onDemandToolsConfig !== undefined
+              ? { onDemandToolsConfig: input.body.onDemandToolsConfig }
+              : {}),
+            metadata: input.body.metadata ?? {},
+            createdByAgentId: input.actor?.agentId ?? null,
+            createdByUserId: input.actor?.userId ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+        await tx
+          .insert(toolProfileBindings)
+          .values({
+            companyId: input.companyId,
+            profileId: input.body.profileId,
+            targetType: "gateway",
+            targetId: gateway.id,
+            priority: 10,
+            metadata: { source: "named_mcp_gateway" },
+            createdByAgentId: input.actor?.agentId ?? null,
+            createdByUserId: input.actor?.userId ?? null,
+          })
+          .onConflictDoNothing();
+        return gateway;
+      });
       await writeAudit({
         session: {
           id: `gateway:${gateway.id}`,
@@ -9211,117 +9218,123 @@ export function createToolGatewayService(
       managementContext?: ConnectionManagementContext;
     }): Promise<ToolMcpGatewayWithTokens> {
       await input.managementContext?.reauthorize();
-      const [existing] = await db
-        .select()
-        .from(toolMcpGateways)
-        .where(
-          and(
-            eq(toolMcpGateways.companyId, input.companyId),
-            eq(toolMcpGateways.id, input.gatewayId),
-          ),
-        )
-        .limit(1);
-      if (!existing)
-        throw new ToolGatewayHttpError(
-          404,
-          "MCP gateway not found",
-          "gateway_not_found",
-        );
-      await assertGatewayContext({
-        companyId: input.companyId,
-        profileId: input.body.profileId ?? existing.profileId,
-        agentId:
-          input.body.agentId === undefined
-            ? existing.agentId
-            : input.body.agentId,
-        projectId:
-          input.body.projectId === undefined
-            ? existing.projectId
-            : input.body.projectId,
-        issueId:
-          input.body.issueId === undefined
-            ? existing.issueId
-            : input.body.issueId,
-      });
-      const [updated] = await db
-        .update(toolMcpGateways)
-        .set({
-          ...(input.body.name !== undefined ? { name: input.body.name } : {}),
-          ...(input.body.slug !== undefined ||
-          input.body.displaySlug !== undefined
-            ? { slug: input.body.displaySlug ?? input.body.slug }
-            : {}),
-          ...(input.body.slug !== undefined ||
-          input.body.displaySlug !== undefined
-            ? { displaySlug: input.body.displaySlug ?? input.body.slug }
-            : {}),
-          ...(input.body.description !== undefined
-            ? { description: input.body.description ?? null }
-            : {}),
-          ...(input.body.status !== undefined
-            ? { status: input.body.status }
-            : {}),
-          ...(input.body.profileId !== undefined
-            ? { profileId: input.body.profileId }
-            : {}),
-          ...(input.body.defaultProfileMode !== undefined
-            ? { defaultProfileMode: input.body.defaultProfileMode }
-            : {}),
-          ...(input.body.contextScopeType !== undefined
-            ? { contextScopeType: input.body.contextScopeType }
-            : {}),
-          ...(input.body.contextScopeId !== undefined
-            ? { contextScopeId: input.body.contextScopeId ?? null }
-            : {}),
-          ...(input.body.agentId !== undefined
-            ? { agentId: input.body.agentId ?? null }
-            : {}),
-          ...(input.body.projectId !== undefined
-            ? { projectId: input.body.projectId ?? null }
-            : {}),
-          ...(input.body.issueId !== undefined
-            ? { issueId: input.body.issueId ?? null }
-            : {}),
-          ...(input.body.approvalIssueId !== undefined
-            ? { approvalIssueId: input.body.approvalIssueId ?? null }
-            : {}),
-          ...(input.body.authConfig !== undefined
-            ? { authConfig: input.body.authConfig }
-            : {}),
-          ...(input.body.headerPolicy !== undefined
-            ? { headerPolicy: input.body.headerPolicy }
-            : {}),
-          ...(input.body.metadataPolicy !== undefined
-            ? { metadataPolicy: input.body.metadataPolicy }
-            : {}),
-          ...(input.body.onDemandToolsConfig !== undefined
-            ? { onDemandToolsConfig: input.body.onDemandToolsConfig }
-            : {}),
-          ...(input.body.metadata !== undefined
-            ? { metadata: input.body.metadata ?? {} }
-            : {}),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(toolMcpGateways.companyId, input.companyId),
-            eq(toolMcpGateways.id, input.gatewayId),
-          ),
-        )
-        .returning();
-      if (input.body.profileId && input.body.profileId !== existing.profileId) {
-        await db
-          .insert(toolProfileBindings)
-          .values({
-            companyId: input.companyId,
-            profileId: input.body.profileId,
-            targetType: "gateway",
-            targetId: input.gatewayId,
-            priority: 10,
-            metadata: { source: "named_mcp_gateway" },
+      const updated = await db.transaction(async tx => {
+        const [existing] = await tx
+          .select()
+          .from(toolMcpGateways)
+          .where(
+            and(
+              eq(toolMcpGateways.companyId, input.companyId),
+              eq(toolMcpGateways.id, input.gatewayId),
+            ),
+          )
+          .limit(1).for("update");
+        if (!existing)
+          throw new ToolGatewayHttpError(
+            404,
+            "MCP gateway not found",
+            "gateway_not_found",
+          );
+        const targets = [...new Set([existing.agentId, input.body.agentId].filter((id): id is string => Boolean(id)))];
+        await assertAgentToolAssignmentInteractions(tx as unknown as Db,
+          input.managementContext?.actor.type === "agent" ? input.managementContext.actor.agentId : null, input.companyId, targets);
+        await assertGatewayContext({
+          companyId: input.companyId,
+          profileId: input.body.profileId ?? existing.profileId,
+          agentId:
+            input.body.agentId === undefined
+              ? existing.agentId
+              : input.body.agentId,
+          projectId:
+            input.body.projectId === undefined
+              ? existing.projectId
+              : input.body.projectId,
+          issueId:
+            input.body.issueId === undefined
+              ? existing.issueId
+              : input.body.issueId,
+        });
+        const [updated] = await tx
+          .update(toolMcpGateways)
+          .set({
+            ...(input.body.name !== undefined ? { name: input.body.name } : {}),
+            ...(input.body.slug !== undefined ||
+            input.body.displaySlug !== undefined
+              ? { slug: input.body.displaySlug ?? input.body.slug }
+              : {}),
+            ...(input.body.slug !== undefined ||
+            input.body.displaySlug !== undefined
+              ? { displaySlug: input.body.displaySlug ?? input.body.slug }
+              : {}),
+            ...(input.body.description !== undefined
+              ? { description: input.body.description ?? null }
+              : {}),
+            ...(input.body.status !== undefined
+              ? { status: input.body.status }
+              : {}),
+            ...(input.body.profileId !== undefined
+              ? { profileId: input.body.profileId }
+              : {}),
+            ...(input.body.defaultProfileMode !== undefined
+              ? { defaultProfileMode: input.body.defaultProfileMode }
+              : {}),
+            ...(input.body.contextScopeType !== undefined
+              ? { contextScopeType: input.body.contextScopeType }
+              : {}),
+            ...(input.body.contextScopeId !== undefined
+              ? { contextScopeId: input.body.contextScopeId ?? null }
+              : {}),
+            ...(input.body.agentId !== undefined
+              ? { agentId: input.body.agentId ?? null }
+              : {}),
+            ...(input.body.projectId !== undefined
+              ? { projectId: input.body.projectId ?? null }
+              : {}),
+            ...(input.body.issueId !== undefined
+              ? { issueId: input.body.issueId ?? null }
+              : {}),
+            ...(input.body.approvalIssueId !== undefined
+              ? { approvalIssueId: input.body.approvalIssueId ?? null }
+              : {}),
+            ...(input.body.authConfig !== undefined
+              ? { authConfig: input.body.authConfig }
+              : {}),
+            ...(input.body.headerPolicy !== undefined
+              ? { headerPolicy: input.body.headerPolicy }
+              : {}),
+            ...(input.body.metadataPolicy !== undefined
+              ? { metadataPolicy: input.body.metadataPolicy }
+              : {}),
+            ...(input.body.onDemandToolsConfig !== undefined
+              ? { onDemandToolsConfig: input.body.onDemandToolsConfig }
+              : {}),
+            ...(input.body.metadata !== undefined
+              ? { metadata: input.body.metadata ?? {} }
+              : {}),
+            updatedAt: new Date(),
           })
-          .onConflictDoNothing();
-      }
+          .where(
+            and(
+              eq(toolMcpGateways.companyId, input.companyId),
+              eq(toolMcpGateways.id, input.gatewayId),
+            ),
+          )
+          .returning();
+        if (input.body.profileId && input.body.profileId !== existing.profileId) {
+          await tx
+            .insert(toolProfileBindings)
+            .values({
+              companyId: input.companyId,
+              profileId: input.body.profileId,
+              targetType: "gateway",
+              targetId: input.gatewayId,
+              priority: 10,
+              metadata: { source: "named_mcp_gateway" },
+            })
+            .onConflictDoNothing();
+        }
+        return updated;
+      });
       if (input.managementContext) await logActivity(db, { companyId: input.companyId, ...input.managementContext.audit,
         action: "tool_gateway.updated", entityType: "tool_mcp_gateway", entityId: updated.id,
         details: { profileId: updated.profileId, status: updated.status } });

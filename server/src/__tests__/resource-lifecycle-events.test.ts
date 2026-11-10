@@ -462,6 +462,44 @@ describePostgres("Resource lifecycle events", () => {
     await expect(inbox.list(companyId, 100, "invalid")).rejects.toMatchObject({ status: 400 });
   });
 
+  it("lists a resource's head without rechecking its acknowledged backlog for every later event", async () => {
+    // A long-lived resource accumulates an acknowledged prefix and then a
+    // backlog behind a deferred head. Checking each backlog event against
+    // every older event costs acknowledged × backlog probes; staging ran this
+    // statement for over 20 minutes per call.
+    const plugin = await createPlugin();
+    const inbox = pluginLifecycleInbox(db, plugin.id);
+    const resourceId = randomUUID();
+    const acknowledged = 2_000;
+    const backlog = 2_000;
+    const rows = await db.insert(resourceLifecycleEvents).values([
+      { companyId, resourceType: "agent" as const, resourceId, action: "create" as const },
+      ...Array.from({ length: acknowledged + backlog }, (_, index) => ({
+        companyId, resourceType: "agent" as const, resourceId, action: index % 2 ? "resume" as const : "pause" as const,
+      })),
+    ]).returning({ id: resourceLifecycleEvents.id });
+    await db.insert(pluginLifecycleAcknowledgments)
+      .values(rows.slice(0, acknowledged + 1).map(row => ({ pluginId: plugin.id, eventId: row.id })));
+    const other = randomUUID();
+    await db.insert(resourceLifecycleEvents).values({ companyId, resourceType: "agent", resourceId: other, action: "create" });
+
+    const started = performance.now();
+    const listed = await inbox.list(companyId, 100);
+    const elapsedMs = performance.now() - started;
+
+    expect(listed.map(event => [event.resourceId, event.id])).toEqual([
+      [resourceId, String(rows[acknowledged + 1].id)],
+      [other, expect.any(String)],
+    ]);
+    // Before: 3.5 s locally. After: under 30 ms. The bound leaves room for a slow runner.
+    expect(elapsedMs).toBeLessThan(2_000);
+
+    // Acknowledgement applies the same head rule that the list used.
+    await expect(inbox.acknowledge(companyId, String(rows[acknowledged + 2].id))).rejects.toMatchObject({ status: 409 });
+    await inbox.acknowledge(companyId, listed[0].id);
+    expect((await inbox.list(companyId, 100))[0]).toMatchObject({ resourceId, id: String(rows[acknowledged + 2].id) });
+  }, 120_000);
+
   it("lists exactly one head per resource across acknowledged history, late creations, gaps, and pages", async () => {
     const plugin = await createPlugin();
     const other = await createPlugin();
