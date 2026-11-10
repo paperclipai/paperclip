@@ -26,7 +26,7 @@ import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspace-epoch-
 import { hasStopOnlyCleanup, prepareHistoricalSandboxStopVerification, prepareSandboxStopAndRetain, restoreSandboxStopAfterFailedRestart, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
 import { nativeWorkspaceFinalizationBlockSchema } from "./native-runtime/preserved-native-result-finalization.js";
 import { withNativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
-import { PERMANENT_SOURCE_RETRY_CLASSES, RETAINED_SOURCE_FALLBACK_CHECK_KEY, UNVERIFIABLE_SOURCE_CODES, isRetainedFileHold,
+import { NATIVE_NO_REPLAY_HOLD_CAUSE, PERMANENT_SOURCE_RETRY_CLASSES, RETAINED_SOURCE_FALLBACK_CHECK_KEY, UNVERIFIABLE_SOURCE_CODES, isRetainedFileHold,
   retainedHoldFallbackEligible } from "./workspace-recovery-fallback-discovery.js";
 import { captureReadOnlyWorkspaceArchive, sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
@@ -479,7 +479,9 @@ export async function settleSiblingRecoveredHold(db: Db, input: Source) {
       eq(issueRecoveryActions.sourceIssueId, input.issueId), eq(issueRecoveryActions.id, input.actionId))).for("update");
     if (!issue || !run || !action || action.evidence.runId !== run.id) return null;
     if (object(action.evidence.siblingWorkspaceRecovery).schema === SIBLING_WORKSPACE_RECOVERY_SCHEMA) return "already" as const;
-    const noReplayHold = isRetainedFileHold(action);
+    // isRetainedFileHold also accepts export holds; only the no-replay cause
+    // may release the status here. An export hold leaves it to its result.
+    const noReplayHold = action.cause === NATIVE_NO_REPLAY_HOLD_CAUSE && isRetainedFileHold(action);
     const system = readSystemRecovery(action.evidence);
     // A no-replay hold is recorded resolved-but-blocked. It blocks the task
     // until its run's files are saved, so a sibling's save settles it too.
