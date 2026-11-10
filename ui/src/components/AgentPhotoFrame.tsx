@@ -136,7 +136,6 @@ function AgentPhotoDrag({ agent, onError, onMovable, children }: { agent: AgentP
     drag.current = null;
     releasePointer(event.currentTarget, event.pointerId);
     const next = focusAt(current.origin, event.clientX - current.x, event.clientY - current.y, current.container);
-    if (next.x === current.origin.x && next.y === current.origin.y) { setDraft(null); return; }
     commit(next);
   }
 
