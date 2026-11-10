@@ -156,13 +156,19 @@ describe("oracle for a remote workspace", () => {
       async post() { return { id: "i1", identifier: "CHA-1" }; },
       getText: (route: string) => new ChaosApi(baseUrl).getText(route),
     } as unknown as ChaosApi;
-    const observer = new TaskObserver(plan, api, lab, new Timeline(null), { serverReady: true, faultInProgress: false });
+    const timeline = new Timeline(null);
+    const observer = new TaskObserver(plan, api, lab, timeline, { serverReady: true, faultInProgress: false });
     await observer.launch();
     sandboxReleased = true;
     try {
       await observer.poll(observer.record.createdAt! + 1_000);
+      await observer.poll(observer.record.createdAt! + 5_000);
     } finally { sandboxReleased = false; }
     expect(observer.record.remoteFileErrors?.[modulePath]).toMatch(/422.*workspace_unavailable/);
+    expect(timeline.entries.filter(entry => entry.kind === "remote_file_read_failed" && entry.path === modulePath)).toHaveLength(1);
+    const artifacts = await observer.collectArtifacts();
+    expect(artifacts.files[modulePath]).toBe(remoteFiles[modulePath]);
+    expect(observer.record.remoteFileErrors?.[modulePath]).toBeUndefined();
   }, 60_000);
 });
 
