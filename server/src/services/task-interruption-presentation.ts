@@ -1,4 +1,5 @@
 import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
+import { readSetupCommandFailure } from "./workspace-setup-command-failure.js";
 import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { unidentifiedLocalLaunchRefusals } from "./native-local-process-stop.js";
 import { agents, agentWakeupRequests, approvals, chatActions, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
@@ -197,6 +198,10 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   if (providerFailure) base.providerFailure = providerFailure;
   if (["failed", "scheduled_retry"].includes(run.status) && run.errorCode === "workspace_validation_failed"
       && typeof run.error === "string" && run.error.trim()) base.workspaceFailure = { message: run.error };
+  if (["failed", "scheduled_retry"].includes(run.status) && run.errorCode === "setup_failed") {
+    const setupFailure = readSetupCommandFailure(run.resultJson, run.error);
+    if (setupFailure) base.setupFailure = setupFailure;
+  }
   const userAction = !issue.assigneeAgentId ? "assign_agent" : input.approval || run.errorCode === "native_provider_approval_required" ? "approval"
     : isAiAuthenticationBlocked(run) ? "reconnect"
       : run.errorCode === "native_provider_model_rejected" ? "choose_model"
@@ -579,20 +584,21 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   // workspace failure is the observed run's, while a scheduled retry's provider
   // failure may be its predecessor's.
   const disclosures = [...result.entries()].flatMap(([issueId, presentation]) =>
-    (presentation?.providerFailure || presentation?.workspaceFailure) && presentation.observedRunId
+    (presentation?.providerFailure || presentation?.workspaceFailure || presentation?.setupFailure) && presentation.observedRunId
       ? [{ id: presentation.observedRunId, providerFailureRunId: runMap.get(issueId)?.providerFailureRunId ?? presentation.observedRunId,
-        providerFailure: presentation.providerFailure, workspaceFailure: presentation.workspaceFailure, presentation }] : []);
+        providerFailure: presentation.providerFailure, workspaceFailure: presentation.workspaceFailure,
+        setupFailure: presentation.setupFailure, presentation }] : []);
   if (disclosures.length) {
     try {
       const [redacted, settings] = await Promise.all([
-        createRunSecretRedactionRegistry(db).redactForRuns(companyId, disclosures.flatMap(({ id, providerFailureRunId, providerFailure, workspaceFailure }) => [
-          { id: providerFailureRunId, providerFailure, workspaceFailure: undefined },
-          { id, providerFailure: undefined, workspaceFailure },
+        createRunSecretRedactionRegistry(db).redactForRuns(companyId, disclosures.flatMap(({ id, providerFailureRunId, providerFailure, workspaceFailure, setupFailure }) => [
+          { id: providerFailureRunId, providerFailure, workspaceFailure: undefined, setupFailure: undefined },
+          { id, providerFailure: undefined, workspaceFailure, setupFailure },
         ])),
         instanceSettingsService(db).getGeneral(),
       ]);
       const safe = disclosures.map((_, index) => ({ providerFailure: redacted[2 * index]?.providerFailure,
-        workspaceFailure: redacted[2 * index + 1]?.workspaceFailure }));
+        workspaceFailure: redacted[2 * index + 1]?.workspaceFailure, setupFailure: redacted[2 * index + 1]?.setupFailure }));
       const safeMessage = (value: unknown) => typeof value === "string"
         ? [...redactCurrentUserText(value, { enabled: settings.censorUsernameInLogs })].slice(0, 4000).join("") : "";
       disclosures.forEach(({ presentation }, index) => {
@@ -607,11 +613,20 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
           if (message.trim()) presentation.workspaceFailure = { message };
           else delete presentation.workspaceFailure;
         }
+        if (presentation.setupFailure) {
+          const value = safe[index]?.setupFailure;
+          const command = safeMessage(value?.command), message = safeMessage(value?.message);
+          if (value && command.trim() && message.trim()) {
+            const output = value.output == null ? null : safeMessage(value.output) || null;
+            presentation.setupFailure = { ...value, command, output, message };
+          } else delete presentation.setupFailure;
+        }
       });
     } catch {
       for (const { presentation } of disclosures) {
         delete presentation.providerFailure;
         delete presentation.workspaceFailure;
+        delete presentation.setupFailure;
       }
       logger.warn({ companyId, runCount: disclosures.length }, "Could not redact run failure display; explanations omitted");
     }

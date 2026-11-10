@@ -68,6 +68,7 @@ import type { getRunLogStore, RunLogHandle } from "../run-log-store.js";
 import type { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
 import type { EffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import type { Db, agents } from "@paperclipai/db";
+import { setupCommandFailureResultJson } from "../workspace-setup-command-failure.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Agent = typeof agents.$inferSelect;
@@ -1519,6 +1520,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
       ...(connectionFailure ? { connectionFailure } : {}),
       ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}),
+      // Names the configured setup command that exited non-zero, for the task page.
+      ...setupCommandFailureResultJson(outerErr),
       // A lease lost during setup surfaces as the thrown abort reason, or as
       // the signal's reason when a setup step threw a different error after it.
       ...controllerLeaseLossEvidence(outerErr),

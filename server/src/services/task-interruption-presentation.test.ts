@@ -195,6 +195,57 @@ it("preserves the actual workspace preparation error without changing retry auth
     .not.toHaveProperty("workspaceFailure");
 });
 
+describe("setup command failure presentation (CF1)", () => {
+  const setupError = "Execution workspace provision command \"bash ./scripts/provision-worktree.sh\" failed: bash: ./scripts/provision-worktree.sh: No such file or directory";
+  const setupRun = { ...run, errorCode: "setup_failed", error: setupError, resultJson: { setupCommandFailure: {
+    step: "workspace_provision", command: "bash ./scripts/provision-worktree.sh", exitCode: 127,
+    output: "bash: ./scripts/provision-worktree.sh: No such file or directory" } } };
+
+  it("names the broken setup command on the task without changing retry authority", () => {
+    const withCause = projectTaskInterruption(issue, { run: setupRun, agent, paused: false, approval: false });
+    const withoutCause = projectTaskInterruption(issue, { run: { ...setupRun, error: "x", resultJson: null }, agent, paused: false, approval: false });
+    expect(withCause).toMatchObject({ state: "failed", canRetry: true, userAction: null, setupFailure: {
+      step: "workspace_provision", command: "bash ./scripts/provision-worktree.sh", exitCode: 127,
+      message: "The project's workspace provision command \"bash ./scripts/provision-worktree.sh\" failed with exit code 127: bash: ./scripts/provision-worktree.sh: No such file or directory" } });
+    const { setupFailure: _named, ...rest } = withCause!;
+    expect(rest).toEqual(withoutCause);
+    expect(withCause).not.toHaveProperty("workspaceFailure");
+  });
+
+  it("recognizes a setup failure recorded before the structured cause existed", () => {
+    expect(projectTaskInterruption(issue, { run: { ...setupRun, resultJson: null }, agent, paused: false, approval: false }))
+      .toMatchObject({ state: "failed", setupFailure: { step: "workspace_provision", command: "bash ./scripts/provision-worktree.sh",
+        exitCode: null, output: "bash: ./scripts/provision-worktree.sh: No such file or directory" } });
+  });
+
+  it("keeps a transient setup retry scheduled and only adds the name", () => {
+    const retrying = { ...setupRun, status: "scheduled_retry", scheduledRetryAt: new Date(Date.now() + 60_000), scheduledRetryReason: "transient_failure" };
+    const named = projectTaskInterruption(issue, { run: retrying, agent, paused: false, approval: false });
+    const unnamed = projectTaskInterruption(issue, { run: { ...retrying, error: "x", resultJson: null }, agent, paused: false, approval: false });
+    expect(named?.setupFailure?.command).toBe("bash ./scripts/provision-worktree.sh");
+    const { setupFailure: _named, ...rest } = named!;
+    expect(rest).toEqual(unnamed);
+  });
+
+  it("bounds the output tail and strips credentials from the command", () => {
+    const noisy = { ...setupRun, resultJson: { setupCommandFailure: { step: "workspace_provision",
+      command: "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789 ./setup.sh --password hunter22", exitCode: 1,
+      output: `${"x".repeat(5_000)}\nfinal line` } } };
+    const failure = projectTaskInterruption(issue, { run: noisy, agent, paused: false, approval: false })?.setupFailure;
+    expect(failure?.command).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+    expect(failure?.command).not.toContain("hunter22");
+    expect(failure?.output?.length).toBeLessThanOrEqual(300);
+    expect(failure?.output).toMatch(/final line$/);
+  });
+
+  it("does not name setup for other failures or settled tasks", () => {
+    expect(projectTaskInterruption(issue, { run: { ...setupRun, errorCode: "adapter_failed" }, agent, paused: false, approval: false }))
+      .not.toHaveProperty("setupFailure");
+    expect(projectTaskInterruption({ ...issue, status: "done" }, { run: setupRun, agent, paused: false, approval: false }))
+      .not.toHaveProperty("setupFailure");
+  });
+});
+
 function operatorStoppedRun() {
   return { ...run, status: "cancelled", runtimeMode: "native" as const, companyId: issue.companyId,
     nativeIssueId: issue.id, errorCode: "cancelled", resultJson: {
