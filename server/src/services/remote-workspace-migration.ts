@@ -161,7 +161,7 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
   ));
   const legacyRecoverySources: LegacyWorkspaceRecoverySource[] = [];
   const onlineRecoveryAllowed = !input.writersStopped
-    && Boolean(input.onlineSource || workspace.status === "archived" && archivedGitSource?.recipe);
+    && Boolean(input.onlineSource || workspace.status === "archived" && archivedGitSource);
   for (const run of referencedRuns.filter(run => object(run.reference).state === "prepared").sort((a, b) => a.id.localeCompare(b.id))) {
     if (onlineRecoveryAllowed) {
       const source = await inspectOnlineLegacyWorkspaceRecoverySource(db, { workspace, runId: run.id });
@@ -416,7 +416,7 @@ type MigrationPlan = { input: MigrationInput; onlineSource?: OnlineWorkspaceSour
 
 async function lockMigrationRecovery(lock: MigrationTransaction, plans: MigrationPlan[], cohort?: WorkspaceMigrationCohort) {
   const online = plans.filter(plan => !plan.input.writersStopped
-    && (plan.onlineSource || plan.reserved.workspace.status === "archived" && plan.reserved.archivedGitSource?.recipe));
+    && (plan.onlineSource || plan.reserved.workspace.status === "archived" && plan.reserved.archivedGitSource));
   if (!online.length) return;
   if (!await lockOnlineLegacyWorkspaceRecoverySources(lock as unknown as Db, { companyId: online[0].input.companyId,
     sources: online.flatMap(({ reserved, onlineSource }) => [...reserved.legacyRecoverySources, ...(onlineSource?.companions.flatMap(proof => proof.sources) ?? [])]),
@@ -548,7 +548,7 @@ async function validateMigrationPublication(tx: MigrationTransaction, input: Mig
       || journal.issueId !== operation.issueId || journal.cwd !== operation.cwd
       || canonical(journal.metadata) !== canonical(operation.metadata)) throw new Error("workspace_cohort_journal_changed");
   }
-  await lockMigrationParents(tx, input.companyId, reserved.workspace.sourceIssueId, onlineSource || reserved.archivedGitSource?.recipe ? [
+  await lockMigrationParents(tx, input.companyId, reserved.workspace.sourceIssueId, onlineSource || reserved.archivedGitSource ? [
     ...reserved.legacyRecoverySources.map(source => source.issueId),
     ...(onlineSource?.companions.flatMap(proof => proof.sources.map(source => source.issueId)) ?? []),
   ] : []);
