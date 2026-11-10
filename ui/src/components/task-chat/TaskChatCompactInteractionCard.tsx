@@ -309,7 +309,8 @@ function CompactTarget({
     : target.href ? normalizeRequestConfirmationTargetHref(target.href)
       // A document on this chat opens in its document panel, like a reply's
       // `#document-<key>` link, so the person can read what they are asked to review.
-      : target.type === "issue_document" && (target.issueId ?? interaction.issueId) === interaction.issueId
+      // Plan reviews keep their header chip; their plan preview opens the plan.
+      : target.type === "issue_document" && target.key !== "plan" && (target.issueId ?? interaction.issueId) === interaction.issueId
         ? `#document-${encodeURIComponent(target.key)}`
         : null;
   if (href) {
