@@ -72,6 +72,8 @@ describe("native turn accounting", () => {
     [...before, ...restored].forEach(value => accounting.observe(value));
     const snapshot = accounting.snapshot();
     expect(snapshot.complete).toBe(true);
+    // The executor certifies completion only when the snapshot names the terminal turn.
+    expect(snapshot.turnId).toBe("turn-span");
     expect(snapshot.usage).toMatchObject({ accountingUsageLost: true, accountingCostIncomplete: true });
     // A replay of the same history after another restart reaches the same state.
     const replayed = createNativeTurnAccounting(acpx);
