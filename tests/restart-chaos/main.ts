@@ -321,6 +321,7 @@ async function main(): Promise<number> {
         rules: plan.tasks.flatMap(task => task.providerFault ? [`${task.taskId}:${describeProviderFault(task.providerFault)}`] : []) });
     }
     if (plan.options.timeAgeMs) supervisor.timeAgeMs = plan.options.timeAgeMs;
+    if (plan.options.rrStopOn) supervisor.rrStopOn = plan.options.rrStopOn;
     await supervisor.start(serverEnvironment);
     // TM2/TM3 age the database; the observer and grader read run times back at their real times.
     const api: ChaosApi = new TimeShiftedApi(supervisor.baseUrl, supervisor.agingShifts);
