@@ -447,6 +447,20 @@ through it instead of reading the agent's whole run history. To measure it:
 pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-native-session-run-index.ts
 ```
 
+Chat-admission checks use `chat_actions_company_issue_kind_idx` from migration
+0458, which builds it concurrently. The check decides whether an issue holds
+external chat input that was never admitted: recovery skips such an issue and
+manual task start refuses it. The index keys `inbound_wakeup` and
+`failed_run_retry` actions by company, `payload->>'issueId'`, kind and status.
+It serves the outer input lookup and the nested retry and later-input lookups,
+which all match on the same company and payload issue ID. Without it, each check
+reads the full `chat_actions` table. The check SQL is unchanged. Local proof:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-chat-admission-index.ts
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-chat-admission-index-migration.ts
+```
+
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
 still match nothing. The query can use existing primary keys without adding a
