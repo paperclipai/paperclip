@@ -904,7 +904,8 @@ server's pid, start, exit and freezes). A violation fails the wave.
 - `MS_foreign_failure`: a run failed with `process_lost` or `native_execution_ownership_unverified` while
   its owning server was alive and not frozen. The owner comes from the run's controller boot id and
   `controller_instances.pid`. The time is the run's `finished_at`. A freeze before the write does not
-  excuse it: that is #20508's shape. The owner's own `native_session_lease_lost` or
+  excuse it: that is #20508's shape. A run still `running` with
+  that code (how #20508's marker is stored) counts at its `updated_at`. The owner's own
   `controller_lease_lost` counts only when no freeze past the lease came before it.
 - `MS_double_executor`: a run recorded a second local runner identity
   (`native.process_identity_recorded`) before the first was shown stopped (`native.local_process_stopped`).

@@ -123,7 +123,7 @@ describe("checkCrossServer", () => {
   });
 
   it("allows the owner's own lease loss after a freeze past the lease, not without one", () => {
-    const leaseLost = run({ errorCode: "native_session_lease_lost", endedAt: 115_000 });
+    const leaseLost = run({ errorCode: "controller_lease_lost", endedAt: 115_000 });
     const pastLease = { ...A, frozen: [{ from: 10_000, to: 10_000 + CONTROLLER_LEASE_TTL_MS + 1 }] };
     expect(checkCrossServer({ runs: [leaseLost], events: [], windows: [pastLease, B] }).violations).toEqual([]);
     const shortFreeze = { ...A, frozen: [{ from: 10_000, to: 40_000 }] };

@@ -153,15 +153,21 @@ export async function runMultiServerFault(kind: MultiServerKind, holdMs: number,
 
 /** A sweep's verdict on another server's run. */
 export const FOREIGN_FAILURE_CODES: ReadonlySet<string> = new Set(["process_lost", "native_execution_ownership_unverified"]);
-/** The owner's own lease loss: expected after a freeze past the lease, a violation otherwise. */
-export const LEASE_LOSS_CODES: ReadonlySet<string> = new Set(["native_session_lease_lost", "controller_lease_lost"]);
+/**
+ * The owner's own lease loss: expected after a freeze past the lease, a violation otherwise. Only the legacy
+ * 60 s run lease persists a run code; a native session lease loss is recorded as `native_session_interrupted`.
+ */
+export const LEASE_LOSS_CODES: ReadonlySet<string> = new Set(["controller_lease_lost"]);
 
 export interface CrossServerRun {
   runId: string;
   issueId: string | null;
   status: string;
   errorCode: string | null;
-  /** When the run reached its final status (finished_at, else updated_at), ms. */
+  /**
+   * When the run reached its final status (finished_at), else when it was last written (updated_at), ms.
+   * #20508's marker leaves the run `running` with the ownership code, so its write time is updated_at.
+   */
   endedAt: number | null;
   ownerBootId: string | null;
   ownerPid: number | null;
@@ -257,7 +263,9 @@ export async function readCrossServerEvidence(db: Db, companyId: string): Promis
        from heartbeat_runs r
        left join native_run_finalizations f on f.run_id = r.id
        left join controller_instances ci on ci.boot_id = coalesce(r.controller_boot_id::text, f.controller_boot_id, f.lease_holder->>'bootId')
-      where r.company_id::text = $1 and r.status in ('failed', 'timed_out', 'cancelled')`, [companyId]) as Row[];
+      where r.company_id::text = $1
+        and (r.status in ('failed', 'timed_out', 'cancelled') or r.error_code in ('process_lost', 'native_execution_ownership_unverified'))`,
+    [companyId]) as Row[];
   const events = await client.unsafe(
     `select e.run_id::text as "runId", e.event_type as "eventType", e.payload->>'processPid' as pid,
             floor(extract(epoch from e.created_at) * 1000) as at
