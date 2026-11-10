@@ -235,7 +235,7 @@ it("shares one permission read among events queued behind it, never with an even
   expect(read).toHaveBeenCalledTimes(4);
   f.delivery.dispose();
 });
-it("stops sharing a read after 250 ms or 100 events and never reuses a failed read", async () => {
+it("stops sharing a read after 250 ms and never reuses a failed read", async () => {
   let now = 1_000_000;
   const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
   try {
@@ -252,16 +252,6 @@ it("stops sharing a read after 250 ms or 100 events and never reuses a failed re
     expect(read).toHaveBeenCalledTimes(3);
     f.delivery.dispose();
 
-    const counted = vi.fn(async () => true);
-    const h = fixture(vi.fn(async (value: LiveEvent, reads?: LiveDeliveryReads) =>
-      await sharedDeliveryRead(reads, "permission", counted) ? value : null));
-    h.subscribe(["run-1"]);
-    for (let seq = 1; seq <= 251; seq++) h.delivery.enqueue(event(seq));
-    await flush(); await flush();
-    expect(h.frames.filter(frame => frame.type === "heartbeat.run.log")).toHaveLength(251);
-    expect(counted).toHaveBeenCalledTimes(4);
-    h.delivery.dispose();
-
     const failing = vi.fn(async () => true).mockResolvedValueOnce(true).mockRejectedValueOnce(new Error("permission database unavailable"));
     const g = fixture(vi.fn(async (value: LiveEvent, reads?: LiveDeliveryReads) =>
       await sharedDeliveryRead(reads, "permission", failing) ? value : null));
@@ -269,5 +259,47 @@ it("stops sharing a read after 250 ms or 100 events and never reuses a failed re
     expect(failing).toHaveBeenCalledTimes(3);
     expect(g.frames.map(frame => frame.payload.seq)).toEqual([1, 3]);
     g.delivery.dispose();
+  } finally { clock.mockRestore(); }
+});
+it("serves exactly 100 events from one read set, so the 101st sees a revocation", async () => {
+  let allowed = true;
+  const read = vi.fn(async () => allowed);
+  const sets = new Map<number, LiveDeliveryReads | undefined>();
+  const f = fixture(vi.fn(async (value: LiveEvent, reads?: LiveDeliveryReads) => {
+    sets.set(value.payload.seq as number, reads);
+    const visible = await sharedDeliveryRead(reads, "permission", read);
+    if (value.payload.seq === 2) allowed = false;
+    return visible ? value : null;
+  }));
+  f.subscribe(["run-1"]);
+  for (let seq = 1; seq <= 102; seq++) f.delivery.enqueue(event(seq));
+  await flush();
+  expect(read).toHaveBeenCalledTimes(3);
+  expect(sets.get(2)).not.toBe(sets.get(1));
+  for (let seq = 3; seq <= 101; seq++) expect(sets.get(seq)).toBe(sets.get(2));
+  expect(sets.get(102)).not.toBe(sets.get(101));
+  expect(f.frames.filter(frame => frame.type === "heartbeat.run.log").map(frame => frame.payload.seq))
+    .toEqual(Array.from({ length: 101 }, (_, index) => index + 1));
+  f.delivery.dispose();
+});
+it("keeps a read set at 249 ms and replaces it at 250 ms", async () => {
+  let now = 1_000_000;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const steps = new Map([[2, 249], [3, 1]]);
+    const sets = new Map<number, LiveDeliveryReads | undefined>();
+    const f = fixture(vi.fn(async (value: LiveEvent, reads?: LiveDeliveryReads) => {
+      const seq = value.payload.seq as number;
+      sets.set(seq, reads);
+      now += steps.get(seq) ?? 0;
+      return value;
+    }));
+    f.subscribe(["run-1"]);
+    for (let seq = 1; seq <= 4; seq++) f.delivery.enqueue(event(seq));
+    await flush();
+    expect(sets.get(3)).toBe(sets.get(2));
+    expect(sets.get(4)).not.toBe(sets.get(3));
+    expect(f.frames.filter(frame => frame.type === "heartbeat.run.log")).toHaveLength(4);
+    f.delivery.dispose();
   } finally { clock.mockRestore(); }
 });
