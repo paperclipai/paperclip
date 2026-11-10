@@ -289,6 +289,38 @@ describe("S3 run log store", () => {
       .rejects.toThrow("object_journal_source_prefix_proof_invalid");
   });
 
+  it("reads a resumed run log while the store still hides the head it just published", async () => {
+    const m = memory(),
+      options = { provider: m.provider, keyPrefix: "logs", flushMs: 10, assertWriterAuthority: async () => undefined };
+    const lagged = { ...input, runId: "lagged-run" };
+    const a = createObjectRunLogStore(options),
+      handle = await a.begin(lagged);
+    await Promise.all([1, 2, 3].map((seq) => a.append(handle, event(seq))));
+    const b = createObjectRunLogStore(options),
+      successor = await b.begin(lagged);
+    const original = m.provider.getObject;
+    const hidden = new Map<string, number>();
+    m.provider.getObject = async (i) => {
+      const seen = hidden.get(i.objectKey) ?? 0;
+      if (i.objectKey.endsWith("lagged-run/head.json") && seen < 2) {
+        hidden.set(i.objectKey, seen + 1);
+        throw Object.assign(Error("not yet visible"), { name: "NoSuchKey", $metadata: { httpStatusCode: 404 } });
+      }
+      return original(i);
+    };
+    const read = await b.read(successor, { limitBytes: successor.initialBytes });
+    expect(read.content.trim().split("\n").map((line) => JSON.parse(line).seq)).toEqual([1, 2, 3]);
+    expect(hidden.size).toBeGreaterThan(0);
+    m.provider.getObject = original;
+  });
+  it("fails a read of a run log that was never written at once", async () => {
+    const m = memory(),
+      store = createObjectRunLogStore({ provider: m.provider, keyPrefix: "logs", assertWriterAuthority: async () => undefined });
+    const started = Date.now();
+    await expect(store.read({ store: "s3_segments", logRef: "company/agent/never-written", attemptId: "attempt" }))
+      .rejects.toThrow("Object run log not found");
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
   it("batches concurrent appends, confirms durability, and resumes offsets/sequence on a replacement", async () => {
     const m = memory(),
       options = {
