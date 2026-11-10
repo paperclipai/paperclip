@@ -6,8 +6,11 @@ import {
   effectiveColumnSpan,
   moveWidget,
   normalizeLayout,
+  pinContextualWidget,
   removeWidget,
   resizeWidget,
+  resolveVisibleWidgets,
+  setRuleEnabled,
   setWidgetConfig,
   widgetSetting,
   type WidgetMeta,
@@ -88,5 +91,52 @@ describe("dashboard layout operations", () => {
     expect(effectiveColumnSpan(4, 1)).toBe(1);
     expect(effectiveColumnSpan(3, 2)).toBe(2);
     expect(effectiveColumnSpan(2, 4)).toBe(2);
+  });
+});
+
+describe("contextual widgets", () => {
+  it("shows nothing extra when no signal is active", () => {
+    const visible = resolveVisibleWidgets(base, {}, catalog);
+    expect(visible.map((item) => item.placement.instanceId)).toEqual(["metric-agents", "recent-tasks"]);
+    expect(visible.every((item) => !item.highlighted && item.contextualRuleId === null)).toBe(true);
+  });
+
+  it("inserts a contextual widget at the top while its signal is active and removes it afterwards", () => {
+    const active = resolveVisibleWidgets(base, { "live-runs": true, "agent-errors": true }, catalog);
+    expect(active.map((item) => item.placement.instanceId)).toEqual([
+      "contextual:live-runs",
+      "contextual:agent-errors",
+      "metric-agents",
+      "recent-tasks",
+    ]);
+    expect(active[0]).toMatchObject({ contextualRuleId: "live-runs", highlighted: true });
+    const after = resolveVisibleWidgets(base, { "live-runs": false, "agent-errors": false }, catalog);
+    expect(after.map((item) => item.placement.instanceId)).toEqual(["metric-agents", "recent-tasks"]);
+  });
+
+  it("highlights a widget the user already placed instead of duplicating it", () => {
+    const withLive = addWidget(base, catalog.get("live-runs")!);
+    const visible = resolveVisibleWidgets(withLive, { "live-runs": true }, catalog);
+    expect(visible.map((item) => item.placement.instanceId)).toEqual(["metric-agents", "recent-tasks", "live-runs"]);
+    expect(visible[2]).toMatchObject({ highlighted: true, contextualRuleId: null });
+  });
+
+  it("respects a rule the user turned off", () => {
+    const off = setRuleEnabled(base, "live-runs", false);
+    expect(resolveVisibleWidgets(off, { "live-runs": true }, catalog)).toHaveLength(2);
+    expect(setRuleEnabled(off, "live-runs", false)).toBe(off);
+    expect(dashboardLayoutSchema.safeParse(off).success).toBe(true);
+  });
+
+  it("keeps a pinned contextual widget after its signal ends", () => {
+    const pinned = pinContextualWidget(base, "agent-errors", catalog);
+    expect(pinned.widgets[0]).toMatchObject({ instanceId: "agent-errors", widgetId: "agent-errors" });
+    expect(resolveVisibleWidgets(pinned, {}, catalog).map((item) => item.placement.instanceId)).toEqual([
+      "agent-errors",
+      "metric-agents",
+      "recent-tasks",
+    ]);
+    expect(pinContextualWidget(pinned, "agent-errors", catalog)).toBe(pinned);
+    expect(pinContextualWidget(base, "unknown-rule", catalog)).toBe(base);
   });
 });

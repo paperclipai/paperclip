@@ -28,6 +28,36 @@ export interface WidgetMeta {
 
 export type WidgetCatalog = ReadonlyMap<string, WidgetMeta>;
 
+export interface ContextualRule {
+  id: string;
+  widgetId: string;
+  label: string;
+  description: string;
+}
+
+export const CONTEXTUAL_RULES: readonly ContextualRule[] = [
+  {
+    id: "live-runs",
+    widgetId: "live-runs",
+    label: "Show live runs while agents are running",
+    description: "Adds or highlights Live runs while at least one run is active.",
+  },
+  {
+    id: "agent-errors",
+    widgetId: "agent-errors",
+    label: "Show agent errors when an agent fails",
+    description: "Adds or highlights Agent errors while at least one agent is in error.",
+  },
+  {
+    id: "pending-approvals",
+    widgetId: "pending-approvals",
+    label: "Show pending approvals when the board has decisions to make",
+    description: "Adds or highlights Pending approvals while approvals wait for the board.",
+  },
+];
+
+export const CONTEXTUAL_INSTANCE_PREFIX = "contextual:";
+
 export function clampSize(size: WidgetSize, meta: WidgetMeta | undefined): WidgetSize {
   const minW = meta?.minSize.w ?? 1;
   const minH = meta?.minSize.h ?? 1;
@@ -78,10 +108,13 @@ function uniqueInstanceId(layout: DashboardLayout, widgetId: string): string {
   return `${widgetId}-${counter}`;
 }
 
-export function addWidget(layout: DashboardLayout, meta: WidgetMeta): DashboardLayout {
+export function addWidget(layout: DashboardLayout, meta: WidgetMeta, position: "start" | "end" = "end"): DashboardLayout {
   if (layout.widgets.length >= DASHBOARD_MAX_WIDGETS) return layout;
   const placement = createPlacement(meta, uniqueInstanceId(layout, meta.id));
-  return { ...layout, widgets: [...layout.widgets, placement] };
+  return {
+    ...layout,
+    widgets: position === "start" ? [placement, ...layout.widgets] : [...layout.widgets, placement],
+  };
 }
 
 export function removeWidget(layout: DashboardLayout, instanceId: string): DashboardLayout {
@@ -128,6 +161,67 @@ export function setWidgetConfig(
   const widgets = [...layout.widgets];
   widgets[index] = { ...current, config: { ...current.config, [key]: value } };
   return { ...layout, widgets };
+}
+
+export function isRuleEnabled(layout: DashboardLayout, ruleId: string): boolean {
+  return layout.contextualRules[ruleId] !== false;
+}
+
+export function setRuleEnabled(layout: DashboardLayout, ruleId: string, enabled: boolean): DashboardLayout {
+  if (isRuleEnabled(layout, ruleId) === enabled) return layout;
+  return { ...layout, contextualRules: { ...layout.contextualRules, [ruleId]: enabled } };
+}
+
+export interface VisibleWidget {
+  placement: DashboardWidgetPlacement;
+  contextualRuleId: string | null;
+  highlighted: boolean;
+}
+
+export function resolveVisibleWidgets(
+  layout: DashboardLayout,
+  signals: Readonly<Record<string, boolean>>,
+  catalog: WidgetCatalog,
+  rules: readonly ContextualRule[] = CONTEXTUAL_RULES,
+): VisibleWidget[] {
+  const placed = new Set<string>();
+  for (const widget of layout.widgets) placed.add(widget.widgetId);
+  const highlightedWidgetIds = new Set<string>();
+  const contextual: VisibleWidget[] = [];
+  for (const rule of rules) {
+    if (!signals[rule.id] || !isRuleEnabled(layout, rule.id)) continue;
+    if (placed.has(rule.widgetId)) {
+      highlightedWidgetIds.add(rule.widgetId);
+      continue;
+    }
+    const meta = catalog.get(rule.widgetId);
+    if (!meta) continue;
+    contextual.push({
+      placement: createPlacement(meta, `${CONTEXTUAL_INSTANCE_PREFIX}${rule.id}`),
+      contextualRuleId: rule.id,
+      highlighted: true,
+    });
+  }
+  const permanent = layout.widgets
+    .filter((placement) => catalog.has(placement.widgetId))
+    .map((placement): VisibleWidget => ({
+      placement,
+      contextualRuleId: null,
+      highlighted: highlightedWidgetIds.has(placement.widgetId),
+    }));
+  return [...contextual, ...permanent];
+}
+
+export function pinContextualWidget(
+  layout: DashboardLayout,
+  ruleId: string,
+  catalog: WidgetCatalog,
+  rules: readonly ContextualRule[] = CONTEXTUAL_RULES,
+): DashboardLayout {
+  const rule = rules.find((item) => item.id === ruleId);
+  const meta = rule ? catalog.get(rule.widgetId) : undefined;
+  if (!meta || layout.widgets.some((widget) => widget.widgetId === meta.id)) return layout;
+  return addWidget(layout, meta, "start");
 }
 
 export function effectiveColumnSpan(w: number, columns: number): number {

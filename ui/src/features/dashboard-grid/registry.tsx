@@ -1,7 +1,7 @@
 import { lazy, type ComponentType, type LazyExoticComponent } from "react";
 import { SHOW_TASK_PRIORITY_UI } from "@/lib/ui-flags";
 import type { WidgetCatalog, WidgetMeta } from "./lib/dashboard-layout";
-import { RECENT_TASKS_LIMIT_SETTING } from "./widgets/settings";
+import { LIVE_LIST_LIMIT_SETTING, RECENT_TASKS_LIMIT_SETTING } from "./widgets/settings";
 import type { DashboardWidgetProps } from "./widgets/WidgetParts";
 
 export interface WidgetDefinition extends WidgetMeta {
@@ -17,6 +17,7 @@ function lazyWidget<TModule>(load: () => Promise<TModule>, name: keyof TModule &
 const metrics = () => import("./widgets/MetricWidgets");
 const charts = () => import("./widgets/ChartWidgets");
 const lists = () => import("./widgets/ListWidgets");
+const live = () => import("./widgets/LiveWidgets");
 
 const DEFINITIONS: WidgetDefinition[] = [
   {
@@ -120,6 +121,36 @@ const DEFINITIONS: WidgetDefinition[] = [
     minSize: { w: 1, h: 2 },
     settings: [RECENT_TASKS_LIMIT_SETTING],
     Component: lazyWidget(lists, "RecentTasksWidget"),
+  },
+  {
+    id: "live-runs",
+    title: "Live Runs",
+    description: "Runs that are queued or running right now.",
+    dataSource: "Company live runs",
+    defaultSize: { w: 2, h: 3 },
+    minSize: { w: 1, h: 2 },
+    settings: [LIVE_LIST_LIMIT_SETTING],
+    Component: lazyWidget(live, "LiveRunsWidget"),
+  },
+  {
+    id: "agent-errors",
+    title: "Agent Errors",
+    description: "Agents that are in error and why.",
+    dataSource: "Company agents",
+    defaultSize: { w: 2, h: 3 },
+    minSize: { w: 1, h: 2 },
+    settings: [LIVE_LIST_LIMIT_SETTING],
+    Component: lazyWidget(live, "AgentErrorsWidget"),
+  },
+  {
+    id: "pending-approvals",
+    title: "Pending Approvals",
+    description: "Approvals that wait for a board decision.",
+    dataSource: "Pending approvals",
+    defaultSize: { w: 2, h: 3 },
+    minSize: { w: 1, h: 2 },
+    settings: [LIVE_LIST_LIMIT_SETTING],
+    Component: lazyWidget(live, "PendingApprovalsWidget"),
   },
 ];
 

@@ -1,24 +1,33 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, rectSortingStrategy, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
-import { Check, LayoutDashboard, Plus, RotateCcw } from "lucide-react";
+import { Check, LayoutDashboard, Plus, RotateCcw, Sparkles } from "lucide-react";
 import { DASHBOARD_GRID_COLUMNS, DASHBOARD_MAX_WIDGETS, resolveDashboardLayout, type DashboardLayout } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { UiLayoutNotice } from "@/components/UiLayoutNotice";
+import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useUiLayout, type UiLayoutSaveState } from "@/hooks/useUiLayout";
 import { DASHBOARD_ROW_HEIGHT_REM, DashboardGridItem } from "./DashboardGridItem";
 import {
+  CONTEXTUAL_RULES,
   addWidget,
   buildDefaultLayout,
+  isRuleEnabled,
   moveWidget,
   normalizeLayout,
+  pinContextualWidget,
   removeWidget,
   resizeWidget,
+  resolveVisibleWidgets,
+  setRuleEnabled,
   setWidgetConfig,
   type WidgetSize,
 } from "./lib/dashboard-layout";
+import { deriveDashboardSignals } from "./lib/signals";
 import { DEFAULT_WIDGET_IDS, WIDGET_CATALOG, WIDGET_DEFINITIONS, WIDGET_REGISTRY } from "./registry";
+import { useCompanyAgents, useCompanyLiveRuns, useDashboardSummary } from "./widgets/data";
 
 const COLUMN_QUERIES: ReadonlyArray<{ query: string; columns: number }> = [
   { query: "(min-width: 1280px)", columns: DASHBOARD_GRID_COLUMNS },
@@ -95,11 +104,21 @@ export function DashboardGrid({ companyId }: { companyId: string }) {
     [save],
   );
 
-  const visible = useMemo(
-    () => (layout ? layout.widgets.filter((placement) => WIDGET_CATALOG.has(placement.widgetId)) : []),
-    [layout],
+  const summary = useDashboardSummary(companyId);
+  const liveRuns = useCompanyLiveRuns(companyId);
+  const agents = useCompanyAgents(companyId);
+  const signals = useMemo(
+    () => deriveDashboardSignals({ summary: summary.data, liveRuns: liveRuns.data, agents: agents.data }),
+    [summary.data, liveRuns.data, agents.data],
   );
-  const sortableIds = useMemo(() => visible.map((placement) => placement.instanceId), [visible]);
+  const visible = useMemo(
+    () => (layout ? resolveVisibleWidgets(layout, signals, WIDGET_CATALOG) : []),
+    [layout, signals],
+  );
+  const sortableIds = useMemo(
+    () => visible.filter((item) => item.contextualRuleId === null).map((item) => item.placement.instanceId),
+    [visible],
+  );
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -117,6 +136,7 @@ export function DashboardGrid({ companyId }: { companyId: string }) {
     [update],
   );
   const onRemove = useCallback((instanceId: string) => update((current) => removeWidget(current, instanceId)), [update]);
+  const onPin = useCallback((ruleId: string) => update((current) => pinContextualWidget(current, ruleId, WIDGET_CATALOG)), [update]);
   const onConfigChange = useCallback(
     (instanceId: string, key: string, value: number | boolean) =>
       update((current) => setWidgetConfig(current, instanceId, key, value)),
@@ -151,6 +171,32 @@ export function DashboardGrid({ companyId }: { companyId: string }) {
         >
           {blocked ? "" : SAVE_LABELS[saveState]}
         </span>
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button variant="ghost" size="sm">
+              <Sparkles aria-hidden />
+              Automatic widgets
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="flex w-80 flex-col gap-3">
+            <p className="text-xs text-muted-foreground">
+              Automatic widgets appear while something needs attention and leave when it ends. Pin one to keep it.
+            </p>
+            {CONTEXTUAL_RULES.map((rule) => (
+              <label key={rule.id} className="flex items-start justify-between gap-3 text-sm">
+                <span className="flex flex-col">
+                  {rule.label}
+                  <span className="text-xs text-muted-foreground">{rule.description}</span>
+                </span>
+                <ToggleSwitch
+                  checked={isRuleEnabled(layout, rule.id)}
+                  onCheckedChange={(checked) => update((current) => setRuleEnabled(current, rule.id, checked))}
+                  aria-label={rule.label}
+                />
+              </label>
+            ))}
+          </PopoverContent>
+        </Popover>
         {editing ? (
           <>
             <Button variant="outline" size="sm" disabled={atLimit} onClick={() => setCatalogOpen(true)}>
@@ -189,19 +235,20 @@ export function DashboardGrid({ companyId }: { companyId: string }) {
                 gridAutoFlow: "row dense",
               }}
             >
-              {visible.map((placement) => {
-                const definition = WIDGET_REGISTRY.get(placement.widgetId);
+              {visible.map((item) => {
+                const definition = WIDGET_REGISTRY.get(item.placement.widgetId);
                 if (!definition) return null;
                 return (
                   <DashboardGridItem
-                    key={placement.instanceId}
-                    placement={placement}
+                    key={item.placement.instanceId}
+                    item={item}
                     definition={definition}
                     companyId={companyId}
                     columns={columns}
                     editing={editing}
                     onResize={onResize}
                     onRemove={onRemove}
+                    onPin={onPin}
                     onConfigChange={onConfigChange}
                   />
                 );

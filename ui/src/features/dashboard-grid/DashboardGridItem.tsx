@@ -1,13 +1,13 @@
 import { Suspense, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { GripVertical, Minus, Plus, Settings2, X } from "lucide-react";
-import { DASHBOARD_GRID_COLUMNS, DASHBOARD_MAX_ROW_SPAN, type DashboardWidgetPlacement } from "@paperclipai/shared";
+import { GripVertical, Minus, Pin, Plus, Settings2, Sparkles, X } from "lucide-react";
+import { DASHBOARD_GRID_COLUMNS, DASHBOARD_MAX_ROW_SPAN } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { cn } from "@/lib/utils";
-import { effectiveColumnSpan, widgetSetting, type WidgetSize } from "./lib/dashboard-layout";
+import { effectiveColumnSpan, widgetSetting, type VisibleWidget, type WidgetSize } from "./lib/dashboard-layout";
 import type { WidgetDefinition } from "./registry";
 
 export const DASHBOARD_ROW_HEIGHT_REM = 7;
@@ -39,25 +39,29 @@ function SizeStepper({
 }
 
 export function DashboardGridItem({
-  placement,
+  item,
   definition,
   companyId,
   columns,
   editing,
   onResize,
   onRemove,
+  onPin,
   onConfigChange,
 }: {
-  placement: DashboardWidgetPlacement;
+  item: VisibleWidget;
   definition: WidgetDefinition;
   companyId: string;
   columns: number;
   editing: boolean;
   onResize: (instanceId: string, size: WidgetSize) => void;
   onRemove: (instanceId: string) => void;
+  onPin: (ruleId: string) => void;
   onConfigChange: (instanceId: string, key: string, value: number | boolean) => void;
 }) {
-  const sortable = useSortable({ id: placement.instanceId, disabled: !editing });
+  const { placement, contextualRuleId, highlighted } = item;
+  const contextual = contextualRuleId !== null;
+  const sortable = useSortable({ id: placement.instanceId, disabled: !editing || contextual });
   const elementRef = useRef<HTMLDivElement | null>(null);
   const [preview, setPreview] = useState<WidgetSize | null>(null);
   const size = preview ?? placement;
@@ -109,13 +113,28 @@ export function DashboardGridItem({
       style={style}
       data-testid="dashboard-widget"
       data-widget-id={placement.widgetId}
+      data-contextual={contextual ? "true" : undefined}
+      data-highlighted={highlighted ? "true" : undefined}
       className={cn(
         "relative flex min-w-0 flex-col rounded-lg",
         sortable.isDragging && "z-10 opacity-80",
+        highlighted && "ring-2 ring-primary/60 ring-offset-2 ring-offset-background",
         editing && "border border-dashed border-muted-foreground",
       )}
     >
-      {editing ? (
+      {contextual ? (
+        <div className="flex items-center justify-between gap-2 px-1 pb-1 text-xs text-muted-foreground">
+          <span className="inline-flex items-center gap-1">
+            <Sparkles className="size-3" aria-hidden />
+            Shown automatically
+          </span>
+          <Button variant="ghost" size="xs" onClick={() => onPin(contextualRuleId)}>
+            <Pin aria-hidden />
+            Pin to dashboard
+          </Button>
+        </div>
+      ) : null}
+      {editing && !contextual ? (
         <div className="flex flex-wrap items-center gap-1 border-b border-dashed border-muted-foreground bg-muted/50 px-1 py-0.5">
           <button
             type="button"
@@ -188,7 +207,7 @@ export function DashboardGridItem({
           <definition.Component companyId={companyId} placement={placement} />
         </Suspense>
       </div>
-      {editing ? (
+      {editing && !contextual ? (
         <button
           type="button"
           tabIndex={-1}

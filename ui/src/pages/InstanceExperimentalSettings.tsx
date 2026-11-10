@@ -418,7 +418,7 @@ export function InstanceExperimentalSettings() {
 
         <ExperimentalToggleCard
           title="Customizable Dashboard"
-          description="Replace the fixed dashboard with a widget grid that each user can rearrange, resize and extend."
+          description="Replace the fixed dashboard with a widget grid that each user can rearrange, resize and extend, with widgets that appear while runs are live or agents are in error."
           checked={enableCustomizableDashboard}
           onCheckedChange={(checked) => toggleMutation.mutate({ enableCustomizableDashboard: checked })}
           disabled={toggleMutation.isPending}

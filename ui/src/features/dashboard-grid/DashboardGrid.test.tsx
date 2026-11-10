@@ -7,10 +7,20 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { UI_LAYOUT_SAVE_DEBOUNCE_MS } from "@/hooks/useUiLayout";
 
 const uiLayoutsApi = vi.hoisted(() => ({ get: vi.fn(), save: vi.fn(), reset: vi.fn() }));
+const data = vi.hoisted(() => ({
+  summary: { agents: { running: 0, error: 0 }, pendingApprovals: 0, budgets: { pendingApprovals: 0 } },
+  liveRuns: [] as Array<{ status: string }>,
+  agents: [] as Array<{ status: string }>,
+}));
 
 vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => ({ user: { id: "user-1" } }) } }));
 vi.mock("@/api/uiLayouts", () => ({ uiLayoutsApi }));
 vi.mock("../../api/uiLayouts", () => ({ uiLayoutsApi }));
+vi.mock("./widgets/data", () => ({
+  useDashboardSummary: () => ({ data: data.summary }),
+  useCompanyLiveRuns: () => ({ data: data.liveRuns }),
+  useCompanyAgents: () => ({ data: data.agents }),
+}));
 vi.mock("./registry", async () => {
   const { lazy } = await import("react");
   const widget = (id: string, title: string, size = { w: 1, h: 1 }) => ({
@@ -50,6 +60,9 @@ beforeAll(async () => {
 }, 120_000);
 
 beforeEach(() => {
+  data.summary = { agents: { running: 0, error: 0 }, pendingApprovals: 0, budgets: { pendingApprovals: 0 } };
+  data.liveRuns = [];
+  data.agents = [];
   for (const fn of Object.values(uiLayoutsApi)) fn.mockReset();
   uiLayoutsApi.get.mockResolvedValue({ surface: "dashboard", schemaVersion: null, layout: null, updatedAt: null });
   uiLayoutsApi.save.mockImplementation(async (_companyId: string, surface: string, layout: unknown) => ({
@@ -135,6 +148,54 @@ describe("DashboardGrid", () => {
     });
     await render();
     expect(widgetIds()).toEqual(["recent-tasks", "metric-agents"]);
+  });
+
+  it("shows a contextual widget while runs are live, removes it afterwards, and keeps it once pinned", async () => {
+    await render();
+    data.liveRuns = [{ status: "running" }];
+    await render();
+    expect(widgetIds()).toEqual(["live-runs", "metric-agents", "recent-tasks"]);
+    const contextual = host.querySelector('[data-widget-id="live-runs"]')!;
+    expect(contextual.getAttribute("data-contextual")).toBe("true");
+    expect(uiLayoutsApi.save).not.toHaveBeenCalled();
+
+    data.liveRuns = [];
+    await render();
+    expect(widgetIds()).toEqual(["metric-agents", "recent-tasks"]);
+
+    data.liveRuns = [{ status: "running" }];
+    await render();
+    await act(async () => button("Pin to dashboard", host).click());
+    data.liveRuns = [];
+    await render();
+    expect(widgetIds()).toEqual(["live-runs", "metric-agents", "recent-tasks"]);
+    expect(host.querySelector('[data-widget-id="live-runs"]')!.getAttribute("data-contextual")).toBeNull();
+    await waitForSave();
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
+    expect(uiLayoutsApi.save.mock.calls[0]![2].widgets.map((widget: { widgetId: string }) => widget.widgetId)).toEqual([
+      "live-runs", "metric-agents", "recent-tasks",
+    ]);
+  });
+
+  it("highlights an existing widget instead of adding a second one when an agent is in error", async () => {
+    uiLayoutsApi.get.mockResolvedValue({
+      surface: "dashboard", schemaVersion: 1, updatedAt: null,
+      layout: { schemaVersion: 1, contextualRules: {}, widgets: [{ instanceId: "agent-errors", widgetId: "agent-errors", w: 2, h: 3 }] },
+    });
+    data.agents = [{ status: "error" }];
+    await render();
+    expect(widgetIds()).toEqual(["agent-errors"]);
+    expect(host.querySelector('[data-widget-id="agent-errors"]')!.getAttribute("data-highlighted")).toBe("true");
+  });
+
+  it("does not show a contextual widget whose rule is turned off", async () => {
+    uiLayoutsApi.get.mockResolvedValue({
+      surface: "dashboard", schemaVersion: 1, updatedAt: null,
+      layout: { schemaVersion: 1, contextualRules: { "agent-errors": false }, widgets: [] },
+    });
+    data.agents = [{ status: "error" }];
+    await render();
+    expect(widgetIds()).toEqual([]);
   });
 
   it("supports removing, resizing, adding and restoring in edit mode and saves one debounced layout", async () => {
