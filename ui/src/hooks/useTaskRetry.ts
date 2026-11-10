@@ -12,7 +12,11 @@ type RetryResult = Awaited<ReturnType<typeof issuesApi.retryTask>>;
 export const STALE_TASK_RETRY_MESSAGE = "This attempt was already replaced, so Retry did not start new work. The task now shows its current state.";
 
 export function taskRetryNotStartedReason(result: RetryResult): string | null {
-  if (!result.accepted) return STALE_TASK_RETRY_MESSAGE;
+  if (!result.accepted) {
+    const blockers = result.blockedBy?.unresolvedBlockerIssueIds;
+    if (blockers?.length) return `Retry did not start: this task is still blocked by ${blockers.length} unresolved ${blockers.length === 1 ? "dependency" : "dependencies"}.`;
+    return STALE_TASK_RETRY_MESSAGE;
+  }
   const outcome = result.scheduledRetry?.outcome;
   if (outcome && outcome !== "promoted" && outcome !== "already_promoted") return result.scheduledRetry!.message;
   return null;
