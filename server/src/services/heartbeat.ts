@@ -2008,6 +2008,10 @@ export function heartbeatService(
         }
         run = cleared;
       }
+      // The run's own failed close may still hold this process's cleanup gate.
+      // With its runner and providers proven stopped, retire it before admission.
+      const { retireStoppedOwnSessionCleanupGate } = await import("./native-runtime/native-session-executor.js");
+      await retireStoppedOwnSessionCleanupGate(db, run);
     }
 
     if (run.runtimeMode === "legacy" && run.controllerBootId &&

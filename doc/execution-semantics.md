@@ -1733,8 +1733,15 @@ run's own saved checkpoint records a completed provider turn (for example, a
 same-run disposition recovery that the gate refused), the work is saved. If the
 task waits on unresolved blocker tasks, the task view shows that wait and no
 failure banner. Otherwise the missing task disposition stays visible with plain
-wording. Every quarantined run keeps Retry hidden, because the retry route refuses
-it; a new message continues once the previous session has stopped. These rules
+wording. A quarantined run hides Retry only while a live owner settles the gate:
+an unreleased remote environment, or a scheduled close in this server process.
+An operator-required gate, or one lost with a restarted process, has no owner, so
+the task offers Retry. Retry (like a new message) proves the previous runner and
+every recorded provider process stopped, then continues in a fresh session. When
+a local run's own close failed but the host has durably recorded that its exact
+runner process and group stopped and its recorded provider processes are gone,
+the run's own same-run recovery retires the gate before admission instead of
+being refused by it. These rules
 read only `errorCode` and `runnerProfileJson.sessionCheckpoint`, so runs that
 earlier releases quarantined are shown the same way without a migration.
 

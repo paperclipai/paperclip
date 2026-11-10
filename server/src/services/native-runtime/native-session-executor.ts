@@ -186,6 +186,7 @@ import {
   NativeSessionProtocolIntegrityError,
   completeRetainedNativeSessionCleanup,
   completeTerminatedLocalNativeSessionCleanup,
+  nativeSessionCleanupBlock,
   acpxRuntimeSessionDirectoryName,
   OPENCODE_ISOLATED_HOMES_DIRECTORY,
   opencodeRuntimeSessionDirectoryName,
@@ -3510,6 +3511,93 @@ export async function verifyStoppedNativeSessionForAutomaticReplacement(
   const replacement = await verifyStoppedNativeSessionForReplacement(db, run);
   if (replacement || run.errorCode !== "native_session_cleanup_quarantined") return replacement;
   return verifyStoppedNativeSessionForContinuation(db, run);
+}
+
+const SESSION_OPEN_EVENT_TYPES = ["session.started", "session.resumed", "session.reconciled"] as const;
+
+/** This local run's exact runner process and group are durably recorded as
+ * stopped (no later launch), and every provider process it recorded is gone.
+ * Remote process IDs belong to another host, so remote runs never qualify. */
+export async function provenStoppedOwnNativeSession(
+  db: Db,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "runtimeMode" | "runnerInstanceId" | "runnerProfileJson">,
+): Promise<{ processPid: number; processGroupId: number; providerPids: number[] } | null> {
+  if (run.runtimeMode !== "native" || !run.runnerInstanceId || process.platform === "win32") return null;
+  if (activeNativeSessions.has(run.id)) return null;
+  const leases = await db.select({ provider: environmentLeases.provider }).from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
+  if (leases.some(lease => lease.provider !== "local")) return null;
+  const stopped = await readNativeLocalProcessStop(db, run.companyId, run.id);
+  if (!stopped) return null;
+  const events = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
+    .from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+      inArray(heartbeatRunEvents.eventType, [...SESSION_OPEN_EVENT_TYPES, "harness.diagnostic"])));
+  const providerPids: unknown[] = [];
+  // ACPX reports its sidecar separately. A sidecar without its own process
+  // group shares the runner's group, which the stop record proves empty, so
+  // the agent it started is gone with it.
+  const sidecars = events.flatMap(event => {
+    const payload = record(record(record(event.payload).prpEvent).payload);
+    return event.eventType === "harness.diagnostic" && payload.code === "acpx_process" ? [record(payload.details)] : [];
+  });
+  const sidecarsShareRunnerGroup = sidecars.length > 0 && sidecars.every(details => details.processGroupId == null);
+  for (const event of events) {
+    const payload = record(record(record(event.payload).prpEvent).payload);
+    if (event.eventType === "harness.diagnostic") {
+      if (payload.providerMethod === "acpx/process") providerPids.push(payload.pid);
+      if (payload.code === "acpx_process") providerPids.push(record(payload.details).pid);
+      continue;
+    }
+    // Otherwise a session open without a provider process identity cannot be proven gone.
+    if (payload.processId != null || !sidecarsShareRunnerGroup) providerPids.push(payload.processId);
+    if (event.eventType === "session.reconciled") providerPids.push(payload.previousProcessId);
+  }
+  const checkpointProcess = record(record(record(run.runnerProfileJson).sessionCheckpoint).process);
+  for (const key of ["processId", "processGroupId", "providerPid", "codexPid", "sidecarPid", "agentPid", "agentProcessId"]) {
+    if (checkpointProcess[key] != null) providerPids.push(checkpointProcess[key]);
+  }
+  if (!providerPids.every(cleanupProcessAbsent)) return null;
+  return { processPid: stopped.processPid, processGroupId: stopped.processGroupId, providerPids: providerPids as number[] };
+}
+
+/**
+ * A local run's own session close can fail without proof that its runner
+ * suspended (for example while the server was paused), which leaves an
+ * operator-required cleanup gate in this process. The gate guards process
+ * ownership only. Once the host has durably recorded that this run's exact
+ * runner process and group stopped, and every provider process the run
+ * recorded is gone, nothing can still own that session, so the gate is
+ * retired before the run's own authorized recovery is admitted.
+ *
+ * This never authorizes provider work: the caller's recovery decision, made
+ * from durable records, still decides whether and how the run continues.
+ */
+export async function retireStoppedOwnSessionCleanupGate(
+  db: Db,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "runtimeMode" | "nativeIssueId"
+    | "runnerInstanceId" | "runnerProfileJson">,
+): Promise<boolean> {
+  if (run.runtimeMode !== "native" || !run.nativeIssueId || !run.runnerInstanceId) return false;
+  if (nativeSessionCleanupBlock({ companyId: run.companyId, issueId: run.nativeIssueId }) !== "operator_required") return false;
+  const stopped = await provenStoppedOwnNativeSession(db, run);
+  if (!stopped) return false;
+  let retired = false;
+  try {
+    retired = completeTerminatedLocalNativeSessionCleanup({
+      companyId: run.companyId, runId: run.id, runnerInstanceId: run.runnerInstanceId,
+    });
+  } catch {
+    return false;
+  }
+  if (!retired) return false;
+  await appendHeartbeatRunEvent(db, {
+    companyId: run.companyId, runId: run.id, agentId: run.agentId,
+    eventType: "native.session_cleanup_gate_retired", stream: "system", level: "info",
+    message: "The run's previous runner and provider processes are verified stopped, so its session cleanup gate was retired.",
+    payload: { processPid: stopped.processPid, processGroupId: stopped.processGroupId,
+      providerPids: stopped.providerPids },
+  }).catch(() => undefined);
+  return true;
 }
 
 /** Exact local cleanup only: the accepted result and original quarantine are

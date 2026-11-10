@@ -9,7 +9,7 @@ import {
   heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, workspaceOperations,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { executeNativeSession, nativeSessionCleanupBlock, onNativeSessionCleanupSettled, parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
+import { executeNativeSession, NativeSessionCloseUnrecoverableError, nativeSessionCleanupBlock, onNativeSessionCleanupSettled, parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import type { NativeSession } from "../vendor/paperclip-runner/index.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { heartbeatService } from "./heartbeat.js";
@@ -19,7 +19,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { currentProcessStartedAtMs } from "./controller-process-identity.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
-import { scopedRunnerdStateRoot, verifyStoppedNativeSessionForAutomaticReplacement, verifyStoppedNativeSessionForContinuation } from "./native-runtime/native-session-executor.js";
+import { retireStoppedOwnSessionCleanupGate, scopedRunnerdStateRoot, verifyStoppedNativeSessionForAutomaticReplacement, verifyStoppedNativeSessionForContinuation } from "./native-runtime/native-session-executor.js";
 import { reconcileSafeNativeReplacements } from "./native-runtime/native-safe-replacement.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifications.js";
@@ -401,6 +401,110 @@ describe("task Retry after inherited native cleanup quarantine", () => {
       expect(await queued()).toHaveLength(1);
     } finally {
       releaseClose();
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  // s9107 t04/t05: the server paused (SIGSTOP) after a turn completed, its
+  // runner checkpoint owner lapsed, and the session close could not prove the
+  // runner suspended, leaving an operator-required gate in this process.
+  async function quarantineOwnClose(f: { companyId: string; agentId: string; issueId: string; sourceId: string;
+    workspaceId: string; runnerInstanceId: string }, base: string) {
+    const identity = { runId: f.sourceId, sessionId: "own-close-session", companyId: f.companyId, issueId: f.issueId, agentId: f.agentId };
+    const capabilities = { resume: true, typedEvents: true, steering: false, interruption: false, structuredResult: true };
+    const session: NativeSession = {
+      identity: () => identity, capabilities: async () => capabilities,
+      async *events() { throw new Error("native_runner_checkpoint_owner_lost"); },
+      startTurn: async () => ({ turnId: "own-close-turn" }), result: async () => null,
+      async snapshot() { return { backendKind: "mock", sessionId: "own-close-driver", identity,
+        providerSessionId: "own-close-provider", cursor: null, activeTurnId: null, pendingRuntimeRequests: [], lineage: [] }; },
+      close: async () => { throw new NativeSessionCloseUnrecoverableError({ runnerSuspended: false, providerDrained: true }); },
+    };
+    await expect(executeNativeSession({
+      input: parseNativeExecutionInput({ schema: "paperclip.native-execution-input.v1", provider: { kind: "codex", model: null },
+        binding: { companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, runId: f.sourceId, executionWorkspaceId: f.workspaceId },
+        task: { identifier: "TEST", title: "Continue saved work", description: null, prompt: "Continue saved work", workMode: "standard" },
+        workspace: { cwd: base, repoUrl: null, repoRef: null, branchName: null },
+        session: { normalizedSessionId: identity.sessionId, driverKind: "codex_app_server", protocolVersion: 1,
+          lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+        completionContract: { id: "contract", sha256: "sha", schemaVersion: "paperclip.completion-contract.v1",
+          contract: { revision: "1", objective: "Continue saved work", criteria: [{ id: "done", requirement: "Save the result" }] } },
+        interactionResponses: [], credentialBindings: [] }),
+      backend: { descriptor: async () => ({ kind: "runner", name: "own-close-backend", version: "1", capabilities }),
+        openSession: async () => session },
+      controlPlane: { openRun: async () => {}, checkpointSession: async () => {},
+        appendEvent: async () => ({ cursor: 0, highestContiguousSourceSeq: 0, disposition: "committed" }),
+        replayEvents: async () => ({ events: [], highestContiguousSourceSeq: 0 }), completeRun: async () => {} },
+      runnerInstanceId: f.runnerInstanceId, controlPlaneInstanceId: "control",
+    })).rejects.toThrow();
+    await vi.waitFor(() => expect(nativeSessionCleanupBlock({ companyId: f.companyId, issueId: f.issueId })).toBe("operator_required"));
+  }
+
+  // An ACPX session open names no provider PID; its sidecar reports one separately (s9107 t04).
+  async function recordOwnStop(f: { companyId: string; agentId: string; sourceId: string }, providerPid: number,
+    sidecar?: { processGroupId: number | null }) {
+    const processStartedAt = new Date(Date.now() - 90_000).toISOString();
+    await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceId, agentId: f.agentId, eventType: PROCESS_IDENTITY_RECORDED,
+      payload: { processPid: 99_999_996, processGroupId: 99_999_996, processStartedAt, targetKind: "local", hostname: hostname() } });
+    await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceId, agentId: f.agentId,
+      eventType: "session.started", payload: { prpEvent: { payload: { providerSessionId: "own-provider",
+        ...(sidecar ? {} : { processId: providerPid }) } } } });
+    if (sidecar) await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceId, agentId: f.agentId,
+      eventType: "harness.diagnostic", payload: { prpEvent: { payload: { code: "acpx_process",
+        details: { pid: providerPid, role: "sidecar", processGroupId: sidecar.processGroupId } } } } });
+    await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceId, agentId: f.agentId, eventType: "native.local_process_stopped",
+      payload: { processPid: 99_999_996, processGroupId: 99_999_996, processStartedAt } });
+  }
+
+  it.each(["stopped", "provider_alive", "no_stop", "acpx_sidecar", "acpx_sidecar_own_group"] as const)(
+    "retires a run's own failed-close gate once its runner and providers are proven stopped (%s)", async mode => {
+    const base = await mkdtemp(join(tmpdir(), "own-close-gate-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = base;
+    try {
+      const f = await seed(base);
+      await quarantineOwnClose(f, base);
+      if (mode !== "no_stop") await recordOwnStop(f, mode === "provider_alive" ? process.pid : 99_999_995,
+        mode === "acpx_sidecar" ? { processGroupId: null } : mode === "acpx_sidecar_own_group" ? { processGroupId: 99_999_995 } : undefined);
+      const retires = mode === "stopped" || mode === "acpx_sidecar";
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceId));
+      expect(await retireStoppedOwnSessionCleanupGate(db, source)).toBe(retires);
+      expect(nativeSessionCleanupBlock({ companyId: f.companyId, issueId: f.issueId }))
+        .toBe(retires ? null : "operator_required");
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["stopped", "provider_alive"] as const)(
+    "starts a task Retry for a run's own quarantine proven stopped by its own process record (%s)", async mode => {
+    const base = await mkdtemp(join(tmpdir(), "own-quarantine-retry-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = base;
+    try {
+      const f = await seed(base);
+      // The source launched its own runner, so the retained owner's inventory
+      // cannot stand in for it; only its own stop record can.
+      await recordOwnStop(f, mode === "provider_alive" ? process.pid : 99_999_995);
+      await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, processStartedAt: null })
+        .where(eq(heartbeatRuns.id, f.sourceId));
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceId));
+      expect(await verifyStoppedNativeSessionForContinuation(db, source)).toBeNull();
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+      const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "board",
+        actorSource: "local_implicit", observedRunId: f.sourceId, idempotencyKey: randomUUID() });
+      await heartbeatService(db).resumeTaskRetry(f.companyId, receipt.requestId!);
+      const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+      const [state] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      if (mode === "provider_alive") {
+        expect(queued).toHaveLength(0);
+        return;
+      }
+      expect(queued, JSON.stringify(state.payload)).toHaveLength(1);
+      expect(queued[0].contextSnapshot).toMatchObject({ previousRunId: f.sourceId, forceFreshSession: true });
+    } finally {
       if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
       await rm(base, { recursive: true, force: true });
     }

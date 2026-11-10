@@ -17,7 +17,7 @@ import { canContinueCancelledRun, userStopBoundaryAt } from "./run-cancellation.
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { isCancelledNativeStartup, isFailedNativePreparation, isFailedNativePreparationRetryAncestor } from "./cancelled-native-startup.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, nativeRunNeverLaunched, recordedLocalExecutionStopped, recordUnidentifiedLocalRunnerStop } from "./native-local-process-stop.js";
-import { completeTerminatedRemoteNativeSessionCleanup, nativeSessionCleanupBlock } from "../vendor/paperclip-runner/index.js";
+import { completeTerminatedLocalNativeSessionCleanup, completeTerminatedRemoteNativeSessionCleanup, nativeSessionCleanupBlock } from "../vendor/paperclip-runner/index.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
 import { z } from "zod";
 import { and, desc, eq, gt, inArray, isNull, ne, not, or, sql } from "drizzle-orm";
@@ -535,8 +535,20 @@ export async function admitExplicitNativeContinuation(input: {
       // Never permission to resume the interrupted turn: new input and a
       // native Retry both start a fresh provider conversation, and only after
       // the old runner, provider and tools are proven stopped.
-      const { verifyStoppedNativeSessionForContinuation } = await import("./native-runtime/native-session-executor.js");
-      const stopped = await verifyStoppedNativeSessionForContinuation(db, run);
+      const { verifyStoppedNativeSessionForContinuation, provenStoppedOwnNativeSession } =
+        await import("./native-runtime/native-session-executor.js");
+      let stopped = await verifyStoppedNativeSessionForContinuation(db, run);
+      // The run's own session (s9107 t04): its saved state may be past the
+      // states the inventory proof reads, but its exact runner and every
+      // provider process it recorded are durably proven stopped.
+      const ownStop = stopped || retainedCleanup === "pending" ? null : await provenStoppedOwnNativeSession(db, run);
+      if (ownStop && run.runnerInstanceId) {
+        const runnerInstanceId = run.runnerInstanceId;
+        stopped = { evidence: { schema: "paperclip.stopped_own_native_session.v1", runId: run.id,
+          runnerInstanceId, ...ownStop },
+          retire: () => { try { return completeTerminatedLocalNativeSessionCleanup({ companyId, runId: run.id, runnerInstanceId }); }
+            catch { return false; } } };
+      }
       if (!stopped) return retry
         ? blocked("cleanup_quarantined", "Send a new message after the previous provider has stopped.")
         : blocked("local_cleanup", "Waiting for the previous provider and its tools to stop. Your message is saved.");
