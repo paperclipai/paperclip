@@ -31,6 +31,17 @@ export interface WaveSpeed {
   singleRunBreaches: number;
   breaches: number;
   errors: string[];
+  /**
+   * Every graded (non-restart) run's own timing, so a breach can be attributed after the instance is
+   * gone: `bootMs` is Paperclip's share (claim to the provider accepting the turn), `providerFirstActivityMs`
+   * the provider's (turn accepted to first visible activity), and `preTurnSteps` the spans before the turn.
+   */
+  runs?: SpeedRunDetail[];
+}
+
+export interface SpeedRunDetail {
+  runId: string; adapter: string; start: "cold" | "warm"; firstActivityMs: number | null; bootMs: number | null;
+  queueMs: number | null; providerFirstActivityMs: number | null; preTurnSteps: Record<string, number>; breach: boolean;
 }
 
 const BUDGET_ADAPTER: Partial<Record<AdapterId, SpeedBudgetAdapter>> = { codex: "codex", claude: "claude", opencode: "opencode" };
@@ -59,16 +70,51 @@ export function breachesOf(measured: Distribution, budget: SpeedBudget | null): 
   return out;
 }
 
+/**
+ * When the primary server served again after a restart, the anchor of a restart-recovery sample; null when
+ * the fault did not restart it. A two-server fault's own `readyAt` comes after the second server stopped
+ * (multi-server.ts), which is not a restart of the primary:
+ *   MS1  leaves the primary serving: no restart.
+ *   MS2  freezes and thaws it: no restart, unless it exited after the thaw and was replaced (its `healthyAt`).
+ *   MS3  restarts it (K2): its replacement's `readyAt`, before the second server's tail.
+ */
+export function primaryRestartReadyAt(fault: FaultReceipt): number | null {
+  const multi = fault.multiServer;
+  if (!multi) return fault.readyAt;
+  if (multi.kind === "MS3") return multi.primaryRestart?.readyAt ?? null;
+  if (multi.kind === "MS2" && multi.primaryFreeze?.serverExitedAfterThaw) return fault.healthyAt;
+  return null;
+}
+
 export function faultRuns(faults: readonly FaultReceipt[], runs: ReadonlyArray<{ id: string; createdAt: number; finishedAt: number | null }>): BaselineFault[] {
-  return faults.filter(fault => fault.readyAt !== null).map(fault => ({ kind: fault.kind, readyAt: fault.readyAt!, startedAt: fault.startedAt,
-    runIds: runs.filter(run => run.createdAt <= fault.readyAt! && (run.finishedAt === null || run.finishedAt >= fault.startedAt))
-      .map(run => run.id) }));
+  return faults.flatMap(fault => {
+    const readyAt = primaryRestartReadyAt(fault);
+    return readyAt === null ? [] : [{ kind: fault.kind, readyAt, startedAt: fault.startedAt,
+      runIds: runs.filter(run => run.createdAt <= readyAt && (run.finishedAt === null || run.finishedAt >= fault.startedAt))
+        .map(run => run.id) }];
+  });
 }
 
 export interface OutageWindow { startedAt: number; readyAt: number }
 
+/**
+ * Time the primary could not serve, removed from run timings. MS1 has none. MS2's is the freeze (to the
+ * replacement's health when it exited after the thaw). MS3's ends when the replacement is ready.
+ */
 export function outageWindows(faults: readonly FaultReceipt[]): OutageWindow[] {
-  return faults.filter(fault => fault.readyAt !== null).map(fault => ({ startedAt: fault.startedAt, readyAt: fault.readyAt! }));
+  return faults.flatMap((fault): OutageWindow[] => {
+    const multi = fault.multiServer;
+    if (!multi) return fault.readyAt === null ? [] : [{ startedAt: fault.startedAt, readyAt: fault.readyAt }];
+    if (multi.kind === "MS2") {
+      const freeze = multi.primaryFreeze;
+      const end = freeze?.serverExitedAfterThaw ? fault.healthyAt : freeze?.thawedAt ?? null;
+      return freeze?.frozenAt !== undefined && end !== null && end > freeze.frozenAt ? [{ startedAt: freeze.frozenAt, readyAt: end }] : [];
+    }
+    // MS3 stops the primary only once the second server is ready; the primary served until then.
+    const ready = primaryRestartReadyAt(fault);
+    const stopping = multi.secondary?.readyAt ?? fault.startedAt;
+    return ready === null || ready <= stopping ? [] : [{ startedAt: stopping, readyAt: ready }];
+  });
 }
 
 export function storageFaultWindows(receipts: readonly StorageFaultReceipt[], now: number): OutageWindow[] {
@@ -237,23 +283,43 @@ export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly Base
       rows.push({ adapter, metric, start: "restart", measured, budget, breaches: breachesOf(measured, budget) });
     }
   }
-  const singleRunBreaches = runs.filter(run => run.phase !== "restart" && run.phase !== "verify").filter(run => {
-    const start = runWarmth(run);
-    const activity = firstActivityMs(run), boot = bootWithoutProvisionMs(run);
-    const activityBudget = budgetFor(environment, run.adapter, "time_to_first_activity", start);
-    const bootBudget = budgetFor(environment, run.adapter, "agent_boot", start);
-    return (activity !== null && activityBudget !== null && activity > activityBudget.p95Ms)
-      || (boot !== null && bootBudget !== null && boot > bootBudget.p95Ms);
-  }).length + samples.filter(sample => {
+  const singleRunBreaches = runs.filter(run => run.phase !== "restart" && run.phase !== "verify")
+    .filter(run => runOverBudget(environment, run)).length + samples.filter(sample => {
     const budget = budgetFor(environment, sample.adapter, "restart_recovery_control_plane", "restart");
     return !sample.interruptedByFault && sample.controlPlaneMs !== null && budget !== null && sample.controlPlaneMs > budget.p95Ms;
   }).length;
   const breaches = rows.reduce((total, row) => total + row.breaches.length, 0) + singleRunBreaches;
-  return { environment, rows,
+  const details = runs.filter(run => run.phase !== "restart" && run.phase !== "verify").map(run => runDetail(environment, run));
+  return { environment, rows, runs: details,
     recoveryWithoutProviderEvent: samples.filter(sample => sample.latencyMs === null && !sample.interruptedByFault).length,
     recoveryInterruptedByFault: samples.filter(sample => sample.interruptedByFault).length,
     runBudgetExceeded, singleRunBreaches, breaches, errors, outageAdjustedSpans: outage.adjusted, outageRemovedMs: outage.removedMs,
     storageFaultWindows: storageWindows.length, storageFaultRemovedMs: storageRemovedMs };
+}
+
+/** One cold or warm run over its own p95 budget (first activity or boot): a single-run breach. */
+function runOverBudget(environment: EnvironmentKind, run: BaselineRun): boolean {
+  const start = runWarmth(run);
+  const activity = firstActivityMs(run), boot = bootWithoutProvisionMs(run);
+  const activityBudget = budgetFor(environment, run.adapter, "time_to_first_activity", start);
+  const bootBudget = budgetFor(environment, run.adapter, "agent_boot", start);
+  return (activity !== null && activityBudget !== null && activity > activityBudget.p95Ms)
+    || (boot !== null && bootBudget !== null && boot > bootBudget.p95Ms);
+}
+
+function runDetail(environment: EnvironmentKind, run: BaselineRun): SpeedRunDetail {
+  const start = runWarmth(run);
+  const metrics = runMetrics(run);
+  const spans = runSpans(run);
+  const queue = spans.find(span => span.name === "heartbeat.queue") ?? null;
+  const submitted = spans.find(span => span.name === "runner.turn.submit") ?? spans.find(span => span.name === "runner.session.resume") ?? null;
+  const activity = spans.find(span => span.name === "task.time_to_first_agent_activity") ?? null;
+  const turnAt = submitted ? submitted.startOffsetMs + submitted.durationMs : null;
+  const activityAt = activity ? activity.startOffsetMs + activity.durationMs : null;
+  return { runId: run.runId, adapter: run.adapter, start, firstActivityMs: firstActivityMs(run), bootMs: bootWithoutProvisionMs(run), queueMs: queue?.durationMs ?? null,
+    providerFirstActivityMs: turnAt !== null && activityAt !== null ? Math.max(0, activityAt - turnAt) : null,
+    preTurnSteps: metrics.preTurnSteps,
+    breach: runOverBudget(environment, run) };
 }
 
 async function runEventsWithRetry(api: ChaosApi, runId: string, attempts = 3): Promise<BaselineEvent[]> {
@@ -286,6 +352,9 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
   const timing: Array<{ id: string; createdAt: number; finishedAt: number | null }> = [];
   const errors: string[] = [];
   const windows = outageWindows(faults);
+  // A freeze is downtime to remove, but only a restart makes a run a restart-phase run: a frozen-then-thawed
+  // primary (MS2) keeps its runs in their cold or warm budgets, with the freeze removed.
+  const restartWindows = outageWindows(faults.filter(fault => !fault.multiServer || primaryRestartReadyAt(fault) !== null));
   const storageWindows = storageFaultWindows(storageReceipts, now);
   const outage = { adjusted: 0, removedMs: 0, windows, storageWindows, storageRemovedMs: 0 };
   const perTask = tasks.map(task => {
@@ -306,7 +375,7 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
           errors.push(`${run.id}: ${error instanceof Error ? error.message : String(error)}`);
         }
         if (run.retryOfRunId && faultHit.has(run.retryOfRunId)) raw.phase = "restart";
-        if (faultBeforeFirstActivity(raw, windows, Date.parse(run.createdAt!))) raw.phase = "restart";
+        if (faultBeforeFirstActivity(raw, restartWindows, Date.parse(run.createdAt!))) raw.phase = "restart";
         // Stamp provider load starts from raw offsets before outage removal rewrites them.
         const stamped = stampProviderLoadStarts(raw);
         const restartOnly = withoutOutage(stamped, windows);

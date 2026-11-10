@@ -11,8 +11,10 @@
  *   the runner keeps working and calling a server that does not answer.
  * - TM2 sleep: SIGSTOP the server and every process under it (runners, providers),
  *   shift every timestamp in the wave's database back by the age (default 26 h),
- *   then SIGCONT. A laptop-sleep stand-in: the database says the age has passed,
- *   while the frozen processes' own monotonic timers barely moved.
+ *   then SIGCONT. A laptop-sleep stand-in: the database says the age has passed.
+ *   The processes' monotonic clocks keep running while they are stopped (only a
+ *   real system suspend stops them), so in-process deadlines shorter than the
+ *   20–45 s pause also lapse, as in a long process stall.
  * - TM3 aged outage: SIGKILL the server tree (as K1), shift every timestamp back
  *   by the age while it is down, then restart. The replacement must reconcile
  *   runs, leases, wakes and waits that look hours old. With `--workloads G1
