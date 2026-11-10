@@ -1247,6 +1247,25 @@ describe("TaskChatComposer", () => {
     expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode")).toBe("ask");
   });
 
+  it("uses the latest saved task mode when it changes before the send is acknowledged", async () => {
+    let completeSend!: () => void;
+    const onAdd = vi.fn(() => new Promise<void>(resolve => { completeSend = resolve; }));
+    const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
+    const props = { onAdd, onWorkModeChange, draftKey: "canonical-mode-before-receipt" };
+    renderComposer({ ...props, workMode: "standard" });
+    pressKey("Tab", { shiftKey: true });
+    typeText("Submit the planning choice");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledOnce();
+    renderComposer({ ...props, workMode: "ask" });
+    await flushAsync();
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode")).toBe("planning");
+    await act(async () => { completeSend(); });
+    await flushAsync();
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode")).toBe("ask");
+  });
+
   it("does not consume a new pending mode choice when an earlier send completes", async () => {
     let completeSend!: () => void;
     const onAdd = vi.fn(() => new Promise<void>(resolve => { completeSend = resolve; }));
