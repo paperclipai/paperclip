@@ -94,7 +94,8 @@ async function hasSettledFailedPreparationEvidence(db: Db, run: Run, historicalR
     || run.resultJson?.stopReason !== "adapter_failed"
     || Object.keys(run.resultJson).some(key => !["stopReason", "timeoutFired", "timeoutSource", "executionRecovery",
       "timeoutConfigured", "effectiveTimeoutSec", "systemRecoveryAdoption", "workspaceRestoreFailure",
-      "workspaceRestoreRecovery"].includes(key))) return false;
+      // A bounded diagnostic code; it carries no execution or replay authority.
+      "workspaceRestoreRecovery", "failureCause"].includes(key))) return false;
   return Boolean(await readFailedPreparationSettlement(db, { ...run, agentId: source.agentId }, historicalRetryAncestor));
 }
 

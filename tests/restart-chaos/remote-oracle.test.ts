@@ -38,6 +38,7 @@ beforeAll(async () => {
   server = createServer((incoming, outgoing) => {
     const url = new URL(incoming.url ?? "/", "http://x");
     if (url.pathname === "/api/issues/i1/file-resources/content" && url.searchParams.get("download") === "true") {
+      if (url.searchParams.get("workspace") !== "execution") { outgoing.writeHead(422, { "content-type": "application/json" }).end(JSON.stringify({ code: "no_local_workspace" })); return; }
       if (incoming.headers.origin !== baseUrl) { outgoing.writeHead(403).end(); return; }
       if (unavailableReads > 0) { unavailableReads -= 1; outgoing.writeHead(422, { "content-type": "application/json" }).end(JSON.stringify({ code: "workspace_unavailable" })); return; }
       if (sandboxReleased) { outgoing.writeHead(422, { "content-type": "application/json" }).end(JSON.stringify({ code: "workspace_unavailable" })); return; }
@@ -143,6 +144,33 @@ describe("oracle for a remote workspace", () => {
     const artifacts = await observer.collectArtifacts();
     expect(Object.values(artifacts.files)).toEqual([null, null]);
     expect(Date.now() - started).toBeLessThan(10_000);
+  }, 60_000);
+
+  it("records why a remote file could not be read", async () => {
+    const api = {
+      baseUrl,
+      async get(route: string) {
+        if (route.endsWith("/comments") || route.endsWith("/runs")) return [];
+        return { id: "i1", status: "done", currentExecutionWorkspace: { cwd: "/home/daytona/workspaces/not-on-this-host" } };
+      },
+      async post() { return { id: "i1", identifier: "CHA-1" }; },
+      getText: (route: string) => new ChaosApi(baseUrl).getText(route),
+    } as unknown as ChaosApi;
+    const timeline = new Timeline(null);
+    const observer = new TaskObserver(plan, api, lab, timeline, { serverReady: true, faultInProgress: false });
+    await observer.launch();
+    sandboxReleased = true;
+    try {
+      await observer.poll(observer.record.createdAt! + 1_000);
+      await observer.poll(observer.record.createdAt! + 5_000);
+    } finally { sandboxReleased = false; }
+    expect(observer.record.remoteFileErrors?.[modulePath]).toMatch(/422.*workspace_unavailable/);
+    expect(timeline.entries.filter(entry => entry.kind === "remote_file_read_failed" && entry.path === modulePath)).toHaveLength(1);
+    await observer.poll(observer.record.createdAt! + 9_000);
+    expect(observer.record.remoteFiles?.[modulePath]).toBe(remoteFiles[modulePath]);
+    const artifacts = await observer.collectArtifacts();
+    expect(artifacts.files[modulePath]).toBe(remoteFiles[modulePath]);
+    expect(observer.record.remoteFileErrors?.[modulePath]).toBeUndefined();
   }, 60_000);
 });
 

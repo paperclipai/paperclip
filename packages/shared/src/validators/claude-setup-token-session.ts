@@ -39,11 +39,12 @@ export type ClaudeSetupTokenOverwrite =
 // rotates the stored value under the captured version, so a concurrent change
 // fails closed with a stale conflict.
 //
-// `.strict()` rejects an extra field, so an agent id never validates. The scope
-// carries no agent id: a hire flow with no agent still starts one session. The
+// An optional agent id selects an existing computer for plugin environments.
+// Temporary sandbox login remains agentless. The
 // runtime does not support a caller-supplied session length, so the schema
 // exposes no `ttlSeconds` field; a legacy `ttlSeconds` fails the strict parse.
 export const startClaudeSetupTokenSessionRequestSchema = z.object({
+  agentId: z.string().guid().optional(),
   aiConnection: aiConnectionLoginIntentSchema.optional(),
   environmentId: z.string().guid(),
   adapterType: z.enum(AGENT_ADAPTER_TYPES),
@@ -87,6 +88,7 @@ export type ClaudeSetupTokenSessionPrompt =
 // public response.
 export const claudeSetupTokenSessionOwnerResponseSchema =
   claudeSetupTokenSessionResponseSchema.extend({
+    agentId: z.string().guid().optional(),
     panelMode: adapterAuthPanelModeSchema,
     prompt: claudeSetupTokenSessionPromptSchema.nullable(),
     aiConnection: aiConnectionLoginIntentSchema.optional(),

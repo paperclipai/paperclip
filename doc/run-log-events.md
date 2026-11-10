@@ -68,6 +68,10 @@ Every `run.performance.span` payload also carries `wallStartedAtMs`, the span's 
 start time in epoch milliseconds (since 2026-11-09). Span rows can be written late
 through deferred diagnostics, so readers take a span's start from this field (or
 from the trace start plus `startOffsetMs`), never from the row's write time.
+The preparation spans of a native run (`heartbeat.queue`, `heartbeat.prepare_*`,
+`environment.*`) are always written this way: in the order they ended, while the
+provider starts, and before the run's trace finishes. They can appear after the
+first Runner events of the run.
 
 `run.performance.span` also records `task.time_to_first_token` once per native
 dispatch at the first newly committed deliverable text: assistant or reasoning
@@ -998,3 +1002,24 @@ the bounded stall policy, and operator recovery requirements stay unchanged.
 
 A later successful continuation does not establish the cause of an earlier
 failure that recorded only `Error`.
+
+### Failure cause of generic run failures
+
+A run that fails with a generic code (`adapter_failed`, `setup_failed`) keeps
+that code, because callers compare against it, and records
+`resultJson.failureCause`: one identifier of at most 80 characters
+(`[A-Za-z0-9_.:-]`). For a thrown error it is the provider's HTTP status
+(`provider_http_429`) or category, else the first safe code in the error and up
+to three nested `cause` objects (`40001`, `ECONNRESET`, the same extraction as
+the Runner's event commit stall diagnostics), else the error's class name. For
+an adapter result without a code it is the error family, `signal_<name>`,
+`process_cancellation_failed`, `exit_code_<n>` or `adapter_reported_error`. It
+never copies message text. The server's failure log line carries the same
+cause, and the board's run list shows it, for example "adapter failed (40001)".
+Older rows have no cause and read as before.
+
+Run error text keeps SQL statements off the board: a Drizzle `Failed query:`
+statement and its parameters, or unwrapped statement text with `$n`
+placeholders, is replaced with "Database query failed (<cause>)". The wrapper
+text before the statement is kept.
+

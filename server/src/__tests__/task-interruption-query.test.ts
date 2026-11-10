@@ -353,6 +353,71 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     } finally { vi.unstubAllEnvs(); }
   });
 
+  it("names a failed setup command on task detail and list reads, redacted with the run's registry (CF1)", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
+    try {
+      const f = await seedInterruptionFixture(db, { selected: 1, history: 1, unrelated: 0, payloadBytes: 0 });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+      const secret = `private-setup-value-${randomUUID()}`;
+      const command = "bash ./scripts/provision-worktree.sh";
+      const output = `bash: ./scripts/provision-worktree.sh: No such file or directory (${secret})`;
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "setup_failed",
+        error: `Execution workspace provision command "${command}" failed: ${output}`,
+        resultJson: { setupCommandFailure: { step: "workspace_provision", command, exitCode: 127, output } } }).where(eq(heartbeatRuns.id, run!.id));
+      await createRunSecretRedactionRegistry(db).register(f.companyId, run!.id, secret);
+      const read = async () => [(await taskInterruptionPresentations(db, f.companyId, f.input)).get(f.input[0]!.id),
+        await taskInterruptionPresentation(db, f.input[0]!)];
+      for (const presentation of await read()) {
+        expect(presentation).toMatchObject({ state: "failed", canRetry: true, setupFailure: { step: "workspace_provision", command, exitCode: 127 } });
+        expect(presentation?.setupFailure?.message).toContain(`The project's workspace provision command "${command}" failed with exit code 127`);
+        expect(presentation?.setupFailure?.output).toContain("REDACTED");
+        expect(JSON.stringify(presentation)).not.toContain(secret);
+      }
+      // A run recorded before the structured cause existed is named from its fixed message shape. Its
+      // registered secret crosses the 300-character cut; it is removed whole before shortening.
+      const longOutput = `${secret}${"z".repeat(290)}`;
+      await db.update(heartbeatRuns).set({ resultJson: {}, error: `Execution workspace provision command "${command}" failed: ${longOutput}` })
+        .where(eq(heartbeatRuns.id, run!.id));
+      for (const presentation of await read()) {
+        expect(presentation?.setupFailure).toMatchObject({ step: "workspace_provision", command, exitCode: null });
+        expect(presentation?.setupFailure?.output?.length).toBeLessThanOrEqual(300);
+        const text = JSON.stringify(presentation);
+        for (let index = 0; index + 8 <= secret.length; index += 1) expect(text).not.toContain(secret.slice(index, index + 8));
+      }
+      // A long older log still shows its final error line.
+      await db.update(heartbeatRuns).set({ error: `Execution workspace provision command "${command}" failed: ${"filler\n".repeat(800)}No such file or directory` })
+        .where(eq(heartbeatRuns.id, run!.id));
+      for (const presentation of await read()) expect(presentation?.setupFailure?.output).toMatch(/No such file or directory$/);
+      // A transient retry shows its setup_failed predecessor's cause.
+      const predecessorId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: predecessorId, companyId: f.companyId, agentId: run!.agentId, status: "failed",
+        errorCode: "setup_failed", resultJson: { setupCommandFailure: { step: "workspace_provision", command, exitCode: 1, output } },
+        createdAt: new Date(run!.createdAt.getTime() - 60_000) });
+      await createRunSecretRedactionRegistry(db).register(f.companyId, predecessorId, secret);
+      await db.update(heartbeatRuns).set({ status: "scheduled_retry", retryOfRunId: predecessorId, errorCode: null, error: null, resultJson: {},
+        scheduledRetryAt: new Date(Date.now() + 30_000), scheduledRetryAttempt: 1 }).where(eq(heartbeatRuns.id, run!.id));
+      for (const presentation of await read()) {
+        expect(presentation?.setupFailure).toMatchObject({ command, exitCode: 1 });
+        expect(JSON.stringify(presentation)).not.toContain(secret);
+      }
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("names the configured model a provider rejected on task detail and list reads (CF3 model_id)", async () => {
+    const f = await seedInterruptionFixture(db, { selected: 1, history: 1, unrelated: 0, payloadBytes: 0 });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_provider_model_rejected",
+      runnerProfileJson: { nativeExecutionInput: { provider: { kind: "codex", model: "chaos-missing-model-1234" } } } }).where(eq(heartbeatRuns.id, run!.id));
+    for (const presentation of [(await taskInterruptionPresentations(db, f.companyId, f.input)).get(f.input[0]!.id),
+      await taskInterruptionPresentation(db, f.input[0]!)]) {
+      expect(presentation).toMatchObject({ responsibility: "user", state: "waiting_for_user", userAction: "choose_model",
+        rejectedModel: "chaos-missing-model-1234" });
+    }
+    // Only a model rejection discloses the configured model.
+    await db.update(heartbeatRuns).set({ errorCode: "adapter_failed" }).where(eq(heartbeatRuns.id, run!.id));
+    expect(await taskInterruptionPresentation(db, f.input[0]!)).not.toHaveProperty("rejectedModel");
+  });
+
   it.each(["decryption failure", "expanded message"])("keeps task reads available after provider display %s", async scenario => {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
     try {
