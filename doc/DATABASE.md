@@ -2166,6 +2166,18 @@ keeps the normal late-receipt reconciliation path. Other independent accounting
 operations retain their repeatable-read snapshot. Receipt identity, replay
 conflicts, company scoping and budget-work publication remain transactional.
 
+Run budget admission (`reserveRunBudget`), the usage recorder's receipt-source
+handoff and its capture-failure fence use the same pattern. Admission reads all
+mutable state after the shared admission fences, the agent share lock and the
+run-row lock. Its exposure is one statement, and the per-run reservation index
+plus the run lock prevent a second hold. Run-log appends and output progress that
+update a preparing run therefore cannot exhaust admission retries. Concurrent
+admissions of different runs remain best-effort, as before. When any operation
+transaction still exhausts its retries, it raises `AccountingContentionError`. The
+error carries a bounded message, keeps the SQLSTATE in `code` and the database
+error in `cause`, and is logged with both. A run that fails this way records
+`accounting_contention` with that bounded message.
+
 Upgrade all controllers/workers to this accounting contract and drain incompatible
 pre-upgrade database transactions before enabling independent writers. Do not run
 pre-upgrade synchronous counter/evaluation writers beside unlocked writers.
