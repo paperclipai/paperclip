@@ -33,7 +33,8 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
   hasPermission: vi.fn(async () => false),
 }));
-const mockAgentGetById = vi.hoisted(() => vi.fn());
+const mockMissingAgentIds = vi.hoisted(() => new Set<string>());
+const mockAgentQueryParams = vi.hoisted((): unknown[][] => []);
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
   for: () => ({
     then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
@@ -92,7 +93,11 @@ function registerModuleMocks() {
     }),
     accessService: () => mockAccessService,
     agentService: () => ({
-      getById: mockAgentGetById,
+      getById: vi.fn(async (agentId: string) => ({
+        id: agentId,
+        companyId: "company-1",
+        permissions: null,
+      })),
       resolveByReference: vi.fn(async (_companyId: string, reference: string) => ({
         ambiguous: false,
         agent: {
@@ -210,11 +215,8 @@ describe("issue execution policy routes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockAgentGetById.mockImplementation(async (agentId: string) => ({
-      id: agentId,
-      companyId: "company-1",
-      permissions: null,
-    }));
+    mockMissingAgentIds.clear();
+    mockAgentQueryParams.length = 0;
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
@@ -229,11 +231,13 @@ describe("issue execution policy routes", () => {
       const name = getTableName(table as Parameters<typeof getTableName>[0]);
       if (name !== "issues" && name !== "agents") return { where: mockDbSelectWhere };
       return { where: (condition: SQL) => {
-        const ids = [...new Set(new PgDialect().sqlToQuery(condition).params
+        const params = new PgDialect().sqlToQuery(condition).params;
+        if (name === "agents") mockAgentQueryParams.push(params);
+        const ids = [...new Set(params
           .filter((value): value is string => typeof value === "string" && value !== "company-1"))];
         const rows = async () => name === "issues"
           ? (await Promise.all(ids.map(id => mockIssueService.getById(id)))).filter(row => row && ids.includes(row.id))
-          : ids.map(id => ({ id, companyId: "company-1", permissions: null }));
+          : ids.filter(id => !mockMissingAgentIds.has(id)).map(id => ({ id, companyId: "company-1", permissions: null }));
         const query = {
           orderBy: () => query,
           for: () => query,
@@ -1203,8 +1207,7 @@ describe("issue execution policy routes", () => {
     });
 
     it("rejects a PATCH that names an agent that does not exist", async () => {
-      mockAgentGetById.mockImplementation(async (agentId: string) =>
-        agentId === unknownAgentId ? null : { id: agentId, companyId: "company-1", permissions: null });
+      mockMissingAgentIds.add(unknownAgentId);
       mockIssueService.getById.mockResolvedValue(issueWithPolicy(null));
 
       const res = await request(await createApp())
@@ -1219,12 +1222,8 @@ describe("issue execution policy routes", () => {
       expect(mockIssueService.update).not.toHaveBeenCalled();
     });
 
-    it("rejects a PATCH that names an agent from another company", async () => {
-      mockAgentGetById.mockImplementation(async (agentId: string) => ({
-        id: agentId,
-        companyId: agentId === unknownAgentId ? "company-2" : "company-1",
-        permissions: null,
-      }));
+    it("looks up participant agents only inside the issue company", async () => {
+      mockMissingAgentIds.add(unknownAgentId);
       mockIssueService.getById.mockResolvedValue(issueWithPolicy(null));
 
       const res = await request(await createApp())
@@ -1233,12 +1232,44 @@ describe("issue execution policy routes", () => {
 
       expect(res.status).toBe(422);
       expect(res.body.details).toMatchObject({ agentIds: [unknownAgentId] });
+      expect(mockAgentQueryParams.some((params) =>
+        params.includes("company-1") && params.includes(unknownAgentId))).toBe(true);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects the policy before a board interrupt stops the active run", async () => {
+      mockMissingAgentIds.add(unknownAgentId);
+      mockIssueService.getById.mockResolvedValue({
+        ...issueWithPolicy(null),
+        status: "in_progress",
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+        assigneeUserId: null,
+        executionRunId: "55555555-5555-4555-8555-555555555555",
+      });
+      mockHeartbeatService.getRun.mockResolvedValue({
+        id: "55555555-5555-4555-8555-555555555555",
+        companyId: "company-1",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        status: "running",
+        contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+      } as never);
+
+      const res = await request(await createApp())
+        .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .send({
+          comment: "Stop and wait for the new reviewer",
+          interrupt: true,
+          executionPolicy: reviewPolicy(unknownAgentId),
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.details).toMatchObject({ agentIds: [unknownAgentId] });
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
       expect(mockIssueService.update).not.toHaveBeenCalled();
     });
 
     it("accepts a PATCH that keeps an agent already stored in the policy", async () => {
-      mockAgentGetById.mockImplementation(async (agentId: string) =>
-        agentId === unknownAgentId ? null : { id: agentId, companyId: "company-1", permissions: null });
+      mockMissingAgentIds.add(unknownAgentId);
       const storedPolicy = normalizeIssueExecutionPolicy(reviewPolicy(unknownAgentId))!;
       const issue = issueWithPolicy(storedPolicy);
       mockIssueService.getById.mockResolvedValue(issue);
@@ -1257,8 +1288,7 @@ describe("issue execution policy routes", () => {
     });
 
     it("rejects a child issue created with an agent that does not exist", async () => {
-      mockAgentGetById.mockImplementation(async (agentId: string) =>
-        agentId === unknownAgentId ? null : { id: agentId, companyId: "company-1", permissions: null });
+      mockMissingAgentIds.add(unknownAgentId);
       mockIssueService.getById.mockResolvedValue(issueWithPolicy(null));
 
       const res = await request(await createApp())

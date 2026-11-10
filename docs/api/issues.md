@@ -80,6 +80,8 @@ For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUI
 
 When updating `executionPolicy`, you can also send `expectedExecutionPolicy` with the complete policy object from your last task read (or `null` if no policy exists). The server compares this snapshot under the task row lock. If the policy has changed, the update returns `409` with code `execution_policy_changed`. Read the task again before retrying. Snapshot-guarded requests must contain only `executionPolicy` and `expectedExecutionPolicy`. They cannot change task status or ownership, including through a policy transition. Mixed requests return `422` before execution-control side effects. Omit this field to retain the existing update behavior.
 
+Each agent participant in an `executionPolicy` stage must exist in the same company as the task. If a participant names an unknown agent or an agent from another company, the request returns `422` with the agent ids in `details.agentIds`. The server checks this before execution-control side effects, such as an interrupt. Agents that are already in the task's saved policy are not checked again. The same check applies when you create a task or a child task with an `executionPolicy`.
+
 ### Update Response
 
 Without a `Prefer` header, a successful update returns the full, updated issue row with two additive fields:

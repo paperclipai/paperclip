@@ -4161,11 +4161,17 @@ export function issueRoutes(
       }
     }
     if (requestedAgentIds.size === 0) return;
-    const unknownAgentIds: string[] = [];
-    for (const agentId of requestedAgentIds) {
-      const agent = await agentsSvc.getById(agentId);
-      if (!agent || agent.companyId !== companyId) unknownAgentIds.push(agentId);
+    const agentIds = [...requestedAgentIds];
+    const batchSize = 500;
+    const foundAgentIds = new Set<string>();
+    for (let index = 0; index < agentIds.length; index += batchSize) {
+      const rows = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds.slice(index, index + batchSize))));
+      for (const row of rows) foundAgentIds.add(row.id);
     }
+    const unknownAgentIds = agentIds.filter((agentId) => !foundAgentIds.has(agentId));
     if (unknownAgentIds.length > 0) {
       throw unprocessable("Execution policy references agents that do not exist in this company", {
         agentIds: unknownAgentIds,
@@ -14817,6 +14823,13 @@ export function issueRoutes(
               await decideIssueAccess(req, existing, commentOnlyUpdate ? "issue:comment" : "issue:mutate"),
             )
           : issueWriteAuthorizationReason(req, true);
+      if (req.body.executionPolicy !== undefined) {
+        await assertExecutionPolicyAgentsExist(
+          existing.companyId,
+          normalizeIssueExecutionPolicy(req.body.executionPolicy),
+          normalizeIssueExecutionPolicy(existing.executionPolicy ?? null),
+        );
+      }
 
       const actor = getActorInfo(req);
       const isClosed = isClosedIssueStatus(existing.status);
@@ -15254,13 +15267,6 @@ export function issueRoutes(
       const previousExecutionPolicy = normalizeIssueExecutionPolicy(
         existing.executionPolicy ?? null,
       );
-      if (req.body.executionPolicy !== undefined) {
-        await assertExecutionPolicyAgentsExist(
-          existing.companyId,
-          updateFields.executionPolicy as NormalizedExecutionPolicy | null,
-          previousExecutionPolicy,
-        );
-      }
       const nextExecutionPolicy =
         updateFields.executionPolicy !== undefined
           ? (updateFields.executionPolicy as NormalizedExecutionPolicy | null)
