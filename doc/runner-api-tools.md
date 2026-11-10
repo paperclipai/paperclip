@@ -54,6 +54,21 @@ exactly one authorized `artifactId` or task-workspace `path`, and an optional
 multipart `field`. No arbitrary URL, headers, authentication, or remote file URL
 can be supplied. Routes still validate payloads and enforce permissions.
 
+For lossless input to a local helper, set `saveResponse: true` on an authorized
+non-sensitive GET. This saves the complete response bytes as an immutable artifact
+regardless of size, including empty responses. The receipt contains `artifactId`,
+`byteSize` and `sha256`; pass those exact values to `download_artifact` with a
+workspace-relative destination. Pass the downloaded file to the helper instead of
+recreating JSON in model output. Pagination metadata remains in the receipt; each
+artifact contains one complete HTTP response, not all pages of a list. Continue
+list pagination explicitly. The file remains untrusted data.
+
+`saveResponse` cannot be combined with `responseText`, and is rejected before
+dispatch for mutations and sensitive endpoints. Denied or partial HTTP responses
+are not exported. It uses the same capture limits, storage admission, actor access
+and integrity validation as automatic large-response artifacts. The original
+request runs once. Default inline behavior is unchanged when the option is absent.
+
 Requests have a 16 KiB URL limit and 10 MiB request/upload limit. **New response
 captures are limited to 1 GiB of decoded bytes.** This is separate from the 24 KiB
 inline/page limit. The receiver rejects an oversized Content-Length before
@@ -74,7 +89,7 @@ assets; text previews are limited to 2,000 bytes.
 Large captures reserve 1 GiB against a **durable 4 GiB per-run capture budget**
 before creating a file. A completed capture settles to its actual byte count;
 failed/interrupted captures retain the full reservation to bound retry loops.
-A process restart does not reset that budget. Small inline responses and reads
+A process restart does not reset that budget. Small inline responses without explicit export and reads
 of existing assets need no reservation. Concurrent large captures are limited
 to **two per company and four per server process**, including the storage upload
 and temporary-file cleanup. Budget exhaustion returns `api_response_capture_limit`;
