@@ -504,6 +504,11 @@ acknowledgement of that interruption. Each rule applies once per task, to the fi
 Provider faults run only with `--env local --adapters codex,claude` (either or both) and only with
 workloads that interrupt a turn (Q1, S1, G1). A PV1 task passes `provider_fault_applied` only when the
 held message was released; a provider that exited first turned the delay into a drop.
+For Claude, the runner settles a cancelled turn about 3–4 s after the cancel without waiting for the
+provider's prompt response, and it later closes the sidecar with the provider. A Claude PV1 delay
+longer than that is therefore a drop (wave w-20261110T040202-s202: 18 s held, never released, the task
+still passed its Q1 oracle). Sweep Claude PV1 below that window, for example
+`--provider-fault-delays 1,3`.
 
 | Adapter | `terminal` | `interrupt_ack` |
 | --- | --- | --- |
