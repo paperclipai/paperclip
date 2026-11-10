@@ -2214,12 +2214,33 @@ export const __liveUpdatesTestUtils = {
   readRunLiveStatusPatchFromPayload,
   resolveLiveCompanyId,
   canUseLiveSession,
+  nextSocketAuthScope,
   shouldDeferIssueRefetchForVisibleAgentActivity,
   shouldDeferVisibleIssueCommentActivity,
   shouldSuppressActivityToastForVisibleIssue,
   shouldSuppressRunStatusToastForVisibleIssue,
   shouldSuppressAgentStatusToastForVisibleIssue,
 };
+
+type SocketAuthScope = { userId: string | null; sessionId: string | null; key: string };
+
+/**
+ * The socket's sign-in scope. A new key closes the socket, opens another and
+ * refreshes every active query, because events are not replayed.
+ *
+ * A session restored from the saved query cache carries the user but no
+ * session id. Its first verified read adds the id for the same user. That is
+ * the same sign-in, so the key stays and the open socket is kept. A
+ * different user, or a different session id once one is known, still
+ * reconnects.
+ */
+function nextSocketAuthScope(previous: SocketAuthScope | null, userId: string | null, sessionId: string | null): SocketAuthScope {
+  if (previous && userId !== null && previous.userId === userId) {
+    if (previous.sessionId === sessionId) return previous;
+    if (previous.sessionId === null) return { ...previous, sessionId };
+  }
+  return { userId, sessionId, key: sessionId ?? userId ?? "signed_out" };
+}
 
 function canUseLiveSession(sessionStatus: string, hasSession: boolean, deploymentMode?: string) {
   return sessionStatus === "success" && (hasSession || deploymentMode === "local_trusted");
@@ -2248,7 +2269,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { data: health } = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
   const currentUserId = session?.user?.id ?? session?.session?.userId ??
     (health?.deploymentMode === "local_trusted" ? "local-board" : null);
-  const socketAuthKey = session?.session?.id ?? currentUserId ?? "signed_out";
+  const socketAuth = useRef<SocketAuthScope | null>(null);
+  socketAuth.current = nextSocketAuthScope(socketAuth.current, currentUserId, session?.session?.id ?? null);
+  const socketAuthKey = socketAuth.current.key;
   const [connectedScopeKey, setConnectedScopeKey] = useState<string | null>(null);
   const liveCompanyId = resolveLiveCompanyId(selectedCompanyId, selectedCompany?.id ?? null);
   const socketScopeKey = JSON.stringify([liveCompanyId, socketAuthKey]);
