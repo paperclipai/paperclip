@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gradeGatewayCreate } from "./external-gateways-profiles.js";
+import { gradeGatewayCreate, requestedGateways } from "./external-gateways-profiles.js";
 
 function observation(agentCreated = true) {
   const gateway = agentCreated
@@ -23,6 +23,12 @@ describe("create-gateway oracle", () => {
   it("accepts an agent-created token that still waits for the person's reveal", () => {
     const o = observation(); (o.state.gatewaysAfter as Array<{ tokens: Array<{ pendingReveal?: boolean }> }>)[0]!.tokens = [{ pendingReveal: true }];
     expect(gradeGatewayCreate(o).passed).toBe(true);
+  });
+  it("ignores Paperclip's own runtime gateway when counting requested gateways", () => {
+    const native = { id: "native", metadata: { nativeRuntimeAssignmentDigest: "abc", agentId: "ceo" }, createdByAgentId: "ceo" };
+    const requested = { id: "gateway", metadata: {}, createdByAgentId: "ceo" };
+    expect(requestedGateways([native, requested]).map(row => row.id)).toEqual(["gateway"]);
+    expect(requestedGateways([requested, { ...requested, id: "second", metadata: null }]).length).toBe(2);
   });
   it("rejects wrong scope, duplicates, unlinked results, wrong attribution and token values", () => {
     for (const mutate of [

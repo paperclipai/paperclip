@@ -11,7 +11,11 @@ import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 
 const providers = new WeakMap<ChatCatalogContext, NotesProvider>();
 
-type SavedGateway = Entity & { profileId?: string; createdByUserId?: string | null; tokens?: Array<{ pendingReveal?: boolean; subjectType?: string }> };
+type SavedGateway = Entity & { profileId?: string; createdByUserId?: string | null; metadata?: Record<string, unknown> | null; tokens?: Array<{ pendingReveal?: boolean; subjectType?: string }> };
+/** Paperclip creates its own runtime gateway for an agent with assigned tools at run start; it is not a gateway anyone asked for. */
+export function requestedGateways(rows: SavedGateway[]) {
+  return rows.filter(row => typeof row.metadata?.nativeRuntimeAssignmentDigest !== "string");
+}
 /**
  * The agent may create the gateway under delegated authority or hand the step
  * to the person; either way exactly one gateway for the intended profile is
@@ -46,7 +50,8 @@ export const gatewayExternalCases = [definition("gateways-profiles.create-gatewa
   sourceFiles: ["chat-catalog-domains/external-gateways-profiles.ts", "chat-catalog-domains/external-gateway-rotation.ts", "chat-catalog-domains/external-provider.ts", "chat-catalog-domains/external-secret-scan.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-support.ts", "run-observations.ts", "chat-scenarios/gateways-profiles.yaml"],
   async act(ctx, state) {
     await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx));
-    const before = await ctx.input.api.get<{ gateways: SavedGateway[] }>(`${root(ctx)}/tools/gateways`); state.gatewayCountBeforeHuman = before.gateways.length;
+    const before = { gateways: requestedGateways((await ctx.input.api.get<{ gateways: SavedGateway[] }>(`${root(ctx)}/tools/gateways`)).gateways) };
+    state.gatewayCountBeforeHuman = before.gateways.length;
     if (before.gateways.length > 1) throw new Error("The agent saved more than one gateway");
     const source = ctx.input.page.url(), gatewaysPath = String(state.gatewaysPath);
     if (before.gateways.length === 1) {
@@ -73,12 +78,13 @@ export const gatewayExternalCases = [definition("gateways-profiles.create-gatewa
   },
   async observe(ctx, state) {
     const gateways = await ctx.input.api.get<{ gateways: SavedGateway[] }>(`${root(ctx)}/tools/gateways`);
-    state.gatewaysAfter = gateways.gateways;
+    state.gatewaysAfter = requestedGateways(gateways.gateways);
     const o = await observeExternal(ctx, state), events: unknown[] = [];
     for (const run of o.runs) events.push(...await collectRunEvents(after => privateScanJson(ctx, `/api/heartbeat-runs/${run.id}/events?afterSeq=${after}&limit=1000`)));
     // Creating a gateway needs no token. If the agent also created one, it must
     // still be waiting for the person to reveal its value.
     state.tokenScanComplete = gateways.gateways.every(row => Array.isArray(row.tokens));
+    // Every gateway, including Paperclip's runtime one: only run tokens may carry a value there.
     state.tokensWithheld = gateways.gateways.every(row => (row.tokens ?? []).every(token => token.subjectType === "heartbeat_run" || token.pendingReveal === true));
     state.tokenValueShapeSeen = GATEWAY_TOKEN_VALUE.test(JSON.stringify([events, o.runs, o.reply, o.phaseReplies, o.interactions]));
     return { ...o, state };
