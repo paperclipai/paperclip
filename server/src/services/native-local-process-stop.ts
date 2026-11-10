@@ -12,6 +12,9 @@ import { proveOwnerGone } from "./owner-proof.js";
 
 export const PROCESS_START_REQUESTED = "native.process_start_requested";
 export const PROCESS_IDENTITY_RECORDED = "native.process_identity_recorded";
+/** Server-authored: the runner-state fence refused this run before it asked for
+ * a runner, because a prior run's saved state could not be proven finished. */
+export const PRIOR_OWNER_FENCE_REFUSED = "native.prior_owner_fence_refused";
 const LOCAL_PROCESS_STOPPED = "native.local_process_stopped";
 const SETTLED_RUN_STATUSES = ["failed", "cancelled", "timed_out", "interrupted"];
 const SETTLED_COORDINATOR_PHASES = ["committed", "terminal_failure"];
@@ -243,8 +246,9 @@ function record(value: unknown): Record<string, unknown> {
  *   it requested a launch;
  * - the runner-state fence refused it before it requested a launch because a
  *   previous run still owns the conversation's saved runner state and that
- *   owner could not be proven finished (`prior_owner_*`). The root belonged
- *   to another run, so this run started nothing; or
+ *   owner could not be proven finished. The executor records
+ *   PRIOR_OWNER_FENCE_REFUSED before it fails the run. The root belonged to
+ *   another run, so this run started nothing; or
  * - it failed before native selection (for example a refused budget
  *   reservation or a failed preparation query). Selection records the run's
  *   native issue, native session, runner instance and coordinator, and a
@@ -252,16 +256,20 @@ function record(value: unknown): Record<string, unknown> {
  *   in any build.
  * Any launch request, identity record or runner event keeps the normal stop
  * proofs. */
-/** Thrown only by the executor's runner-state migration, before any launch,
- * when the conversation's saved state names a different (prior) run. */
-const PRIOR_OWNER_FENCE_REFUSAL = /^runner_state_identity_mismatch: (?:legacy_)?prior_owner_/;
+async function hasRunEvent(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">, eventType: string) {
+  const [event] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    isNull(heartbeatRunEvents.sourceEventId), eq(heartbeatRunEvents.eventType, eventType),
+  )).limit(1);
+  return Boolean(event);
+}
 
 export async function nativeRunNeverLaunched(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "runtimeMode" | "status" | "errorCode" | "processPid" | "processGroupId" |
-  "nativeSessionId" | "runnerInstanceId" | "nativeIssueId" | "error">): Promise<boolean> {
+  "nativeSessionId" | "runnerInstanceId" | "nativeIssueId">): Promise<boolean> {
   if (run.runtimeMode !== "native" || !SETTLED_RUN_STATUSES.includes(run.status) || run.processPid || run.processGroupId) return false;
   const refusedBeforeLaunch = run.status === "failed" && (run.errorCode === "native_session_cleanup_quarantined" ||
-    PRIOR_OWNER_FENCE_REFUSAL.test(run.error ?? ""));
+    await hasRunEvent(db, run, PRIOR_OWNER_FENCE_REFUSED));
   if (!refusedBeforeLaunch) {
     // A coordinator row requires the run's native issue (foreign key), so the
     // native issue also rules out a coordinator.

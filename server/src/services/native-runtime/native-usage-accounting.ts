@@ -143,6 +143,11 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
       return true;
     },
     snapshot,
+    /** A restore matters only while a turn is open. */
+    hasOpenTurn() {
+      for (const turn of turns.values()) if (!turn.terminal) return true;
+      return false;
+    },
     finish(turnId: string | null) {
       const turn = turnId ? turns.get(turnId) : undefined;
       if (turn) turn.terminal = true;
@@ -214,4 +219,12 @@ export function usesNativeUsageDelivery(input: {
 
 export function isNativeUsageAccountingEvent(event: Pick<PrpEvent, "eventType">) {
   return ["usage.reported", "turn.started", "turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"].includes(event.eventType);
+}
+
+/** Producer delivery for the run itself also needs the session restore: a
+ * turn open across it can close as a lower bound (see createNativeTurnAccounting).
+ * Recovery routing keeps isNativeUsageAccountingEvent: a source run's restore
+ * carries no usage and must not require a proven recovery source. */
+export function isNativeUsageDeliveryEvent(event: Pick<PrpEvent, "eventType">) {
+  return isNativeUsageAccountingEvent(event) || event.eventType === "session.resumed";
 }

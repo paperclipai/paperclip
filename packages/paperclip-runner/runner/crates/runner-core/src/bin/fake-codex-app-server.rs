@@ -1388,6 +1388,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(delay) = argument(&args, "--thread-resume-delay-ms") {
                     thread::sleep(Duration::from_millis(delay.parse()?));
                 }
+                // A provider that closes its stdout without replying once and
+                // stays alive: a provider failure, not a silent stall.
+                #[cfg(unix)]
+                if args
+                    .iter()
+                    .any(|arg| arg == "--close-stdout-on-first-thread-resume")
+                {
+                    let marker = state_path.with_file_name("fake-thread-resume-closed");
+                    if !marker.exists() {
+                        fs::write(&marker, b"closed")?;
+                        use std::os::fd::FromRawFd;
+                        // SAFETY: fd 1 is this process's stdout; nothing writes to it after this.
+                        drop(unsafe { std::os::fd::OwnedFd::from_raw_fd(1) });
+                        thread::sleep(Duration::from_secs(120));
+                    }
+                }
+                // A provider that stalls without replying once (host stall or
+                // freeze), then answers normally after a relaunch.
+                if let Some(delay) = argument(&args, "--stall-first-thread-resume-ms") {
+                    let marker = state_path.with_file_name("fake-thread-resume-stalled");
+                    if !marker.exists() {
+                        fs::write(&marker, b"stalled")?;
+                        thread::sleep(Duration::from_millis(delay.parse()?));
+                    }
+                }
                 if reject_missing_resume_state {
                     send(json!({"id": id, "error": {
                         "code": -32600,

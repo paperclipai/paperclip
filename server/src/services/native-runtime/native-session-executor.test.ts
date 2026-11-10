@@ -8698,12 +8698,25 @@ describe("native terminal-turn accounting", () => {
       expect(firstCapture).toHaveBeenCalledTimes(2);
       expect(secondCapture).toHaveBeenCalledTimes(1);
       await expect(retainedHook({ ...firstReport, runId: "unrelated-run" })).rejects.toThrow("native_usage_run_binding_mismatch");
+      // A session restore reaches the producer that owns its run, so an open
+      // turn can close as a lower bound; another run's restore is ignored.
+      const currentResume = { ...secondReport, eventType: "session.resumed" } as PrpEvent;
+      const drainingResume = { ...firstReport, eventType: "session.resumed" } as PrpEvent;
+      await retainedHook(currentResume);
+      expect(secondCapture).toHaveBeenLastCalledWith(currentResume);
+      await retainedHook(drainingResume);
+      expect(firstCapture).toHaveBeenLastCalledWith(drainingResume);
+      const [firstCalls, secondCalls] = [firstCapture.mock.calls.length, secondCapture.mock.calls.length];
+      await expect(retainedHook({ ...currentResume, runId: "unrelated-run" })).resolves.toBeUndefined();
+      expect([firstCapture.mock.calls.length, secondCapture.mock.calls.length]).toEqual([firstCalls, secondCalls]);
       const recoveryHook = state.createTransport.mock.calls.at(-1)![0].onRecoveryAccountingEvent!;
       const source = { runnerInstanceId: "warm-producer", environmentLeaseId: "warm-usage-workspace",
         runId: first.binding.runId, normalizedSessionId: first.session.normalizedSessionId!, turnId: "source-turn", itemId: "source-item" };
       await recoveryHook(firstReport, source);
-      expect(firstCapture).toHaveBeenCalledTimes(3);
-      expect(secondCapture).toHaveBeenCalledTimes(1);
+      expect(firstCapture).toHaveBeenCalledTimes(firstCalls + 1);
+      expect(secondCapture).toHaveBeenCalledTimes(secondCalls);
+      // Recovery routing stays usage-only: a source restore needs no proven source.
+      await expect(recoveryHook({ ...drainingResume, runId: "foreign-source" }, source)).resolves.toBeUndefined();
       await expect(recoveryHook({ ...firstReport, runId: "foreign-source" }, source)).rejects.toThrow("native_recovery_usage_source_unproven");
     } finally {
       if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
