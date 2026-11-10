@@ -411,6 +411,30 @@ pub(crate) fn has_bounded_rich_display_shape(event_type: &str, payload: &Value) 
         })
 }
 
+pub(crate) fn rich_display_length_overflows(
+    event_type: &str,
+    payload: &Value,
+) -> Vec<(String, usize)> {
+    let Some(schema) = rich_event_schema(event_type) else {
+        return Vec::new();
+    };
+    let Some(validator) = rich_event_validators()
+        .ok()
+        .and_then(|validators| validators.get(schema))
+    else {
+        return Vec::new();
+    };
+    validator
+        .iter_errors(payload)
+        .filter_map(|error| match error.kind() {
+            jsonschema::error::ValidationErrorKind::MaxLength { limit } => usize::try_from(*limit)
+                .ok()
+                .map(|limit| (error.instance_path().as_str().to_owned(), limit)),
+            _ => None,
+        })
+        .collect()
+}
+
 fn sanitize_question_set(mut value: Value) -> Result<Value, LocalRunnerError> {
     let original = value.clone();
     let Some(question_set) = value.as_object_mut() else {
