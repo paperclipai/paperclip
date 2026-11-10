@@ -37,7 +37,8 @@ export function gitExpirationSkipReason(error: unknown) {
 const skipReason = gitExpirationSkipReason;
 
 function expirationGitAuth(db: Db, workspace: Workspace) {
-  return withAnonymousGitFallback(createIssueGitRemoteAuthProvider(db, workspace.companyId, workspace.sourceIssueId!));
+  const resolve = createIssueGitRemoteAuthProvider(db, workspace.companyId, workspace.sourceIssueId!);
+  return withAnonymousGitFallback((url) => resolve(url, workspace.projectId ?? undefined));
 }
 
 const EXPIRATION_KEY = "gitCacheExpiration";

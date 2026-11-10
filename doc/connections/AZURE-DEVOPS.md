@@ -11,5 +11,5 @@ approve consent. Copy the application ID and client secret into connection setup
 For personal access tokens, grant repository read access and store the token in
 the connection vault.
 
-This connector exposes repository metadata. Project repository selection,
-workspace provisioning, and skill-source import require separate integration.
+Select Azure DevOps repositories in a project and authorize its connection to
+prepare managed workspaces. Skill-source import requires a separate integration.

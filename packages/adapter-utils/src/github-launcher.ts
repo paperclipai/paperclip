@@ -73,18 +73,21 @@ function azureRemote(args, env) {
   if (explicit) return explicit;
   if (!['clone', 'fetch', 'pull', 'push', 'ls-remote', 'archive'].includes(command)) return null;
   if (command === 'archive' && !remaining.some(arg => arg === '--remote' || arg.startsWith('--remote='))) return null;
-  if (command === 'clone' || command === 'ls-remote') return null;
+  if (command === 'clone') return null;
   // Remote names cannot contain options or control characters. Git determines
   // the configured URL without running a shell or consulting credential helpers.
   const remoteOption = remaining.indexOf('--remote');
   const namedRemote = remaining.find(arg => arg.startsWith('--remote='))?.slice('--remote='.length) || (remoteOption >= 0 ? remaining[remoteOption + 1] : undefined);
-  const remote = namedRemote || remaining.find(arg => !arg.startsWith('-') && /^[A-Za-z0-9_.-]+$/.test(arg)) || 'origin';
-  const lookup = spawnSync(executable, [...globalOptions, 'remote', 'get-url', ...(command === 'push' ? ['--push'] : []), '--', remote], {
+  const remote = namedRemote || remaining.find(arg => !arg.startsWith('-') && /^[A-Za-z0-9_.-]+$/.test(arg));
+  if (!remote) return ${options.hostGitHub ? "'paperclip:unresolved-git-remote'" : "null"};
+  const lookup = spawnSync(executable, [...globalOptions, 'remote', 'get-url', ...(command === 'push' ? ['--push', '--all'] : []), '--', remote], {
     env, encoding: 'utf8', timeout: 5000, maxBuffer: 4096, windowsHide: true,
   });
   const value = lookup.status === 0 ? String(lookup.stdout || '').trim() : '';
   if (!value) return ${options.hostGitHub ? "'paperclip:unresolved-git-remote'" : "null"};
-  return isAzure(value) ? value : null;
+  const destinations = value.split(/\r?\n/).filter(Boolean);
+  if (destinations.length !== 1) return ${options.hostGitHub ? "'paperclip:unresolved-git-remote'" : "null"};
+  return isAzure(destinations[0]) ? destinations[0] : null;
 }
 // Project-backed GitHub operations fail closed when the broker is unavailable.
 function requiresGitHubConnection(args, env) {
