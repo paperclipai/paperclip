@@ -17,7 +17,7 @@ const SECRET_NAME_START = String.raw`(?<![A-Za-z0-9_-])`;
 const SECRET_OPTION_NAME_PATTERN = String.raw`(?:[A-Za-z0-9_]|-(?!-))*${SECRET_NAME_WORDS}`;
 
 const COMMAND_CLI_SECRET_OPTION_RE = new RegExp(
-  String.raw`(\B-{1,2}${SECRET_OPTION_NAME_PATTERN}(?:\s+|=))(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s"'` +
+  String.raw`(\B-{1,2}${SECRET_OPTION_NAME_PATTERN}(?:\s+|=))(?:"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|[^\s"'` +
     "`" +
     String.raw`]+)`,
   "gi",

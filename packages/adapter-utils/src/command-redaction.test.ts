@@ -262,4 +262,9 @@ describe("quoted CLI secret option values containing whitespace", () => {
     expect(redactCommandText('tool --password="hun ter2"'))
       .toBe(`tool --password="${REDACTED_COMMAND_TEXT_VALUE}"`);
   });
+
+  it("redacts a double-quoted value that contains escaped double quotes", () => {
+    expect(redactCommandText('tool --token "my secret \\"TAIL\\" end" --verbose'))
+      .toBe(`tool --token "${REDACTED_COMMAND_TEXT_VALUE}" --verbose`);
+  });
 });
