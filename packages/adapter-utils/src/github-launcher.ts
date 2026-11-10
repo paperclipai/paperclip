@@ -179,10 +179,11 @@ main().catch(() => { process.stderr.write('Paperclip: GitHub launcher_setup_fail
 export function githubBrokerEnvironment(input: Record<string, unknown>, broker: { url: string; token: string }): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(input)) if (typeof value === "string") env[key] = value;
-  for (const key of ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "PAPERCLIP_GIT_TOKEN", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_CONFIG_COUNT", "PAPERCLIP_GITHUB_OPERATION_ACTIVE"]) env[key] = "";
+  for (const key of ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "PAPERCLIP_GIT_TOKEN", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "PAPERCLIP_GITHUB_OPERATION_ACTIVE"]) env[key] = "";
   for (const key of Object.keys(env)) {
     if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)) env[key] = "";
   }
+  env.GIT_CONFIG_COUNT = "0";
   env.GIT_CONFIG_GLOBAL = "/dev/null";
   env.GIT_CONFIG_SYSTEM = "/dev/null";
   env.GIT_CONFIG_NOSYSTEM = "1";
