@@ -15917,6 +15917,7 @@ export function issueRoutes(
 
       if (enteringBlocked) {
         const blockedIssue = issue;
+        let ownerNotifiedAt: Date | null = null;
         await deliverAgentUnblockNotification({
           issue: blockedIssue,
           wakeup: heartbeat.wakeup,
@@ -15930,7 +15931,7 @@ export function issueRoutes(
                   eq(issueRows.companyId, blockedIssue.companyId),
                 ),
               );
-            issue = { ...blockedIssue, blockedOwnerNotifiedAt };
+            ownerNotifiedAt = blockedOwnerNotifiedAt;
           },
           onError: async (err) => {
             logger.warn(
@@ -15943,6 +15944,9 @@ export function issueRoutes(
             );
           },
         });
+        if (ownerNotifiedAt) {
+          issue = { ...blockedIssue, blockedOwnerNotifiedAt: ownerNotifiedAt };
+        }
       }
 
       let cancelledStatusRunId: string | null = null;
