@@ -179,15 +179,16 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     const [childWorkspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, child.id));
     const readOnly = path.join(parent.cwd!, "read-only");
     await fs.mkdir(readOnly); await fs.writeFile(path.join(readOnly, "saved.txt"), "read-only parent payload\n"); await fs.chmod(readOnly, 0o555);
-    const capture = workspaceArchive.captureRemoteWorkspaceDirectory;
+    const copy = fs.copyFile.bind(fs);
     let firstScratch = "", waiting = false, release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
-    const captured = vi.spyOn(workspaceArchive, "captureRemoteWorkspaceDirectory").mockImplementation(async input => {
-      if (input.cwd === parent.cwd && path.basename(input.archivePath) === "workspace.pcws") {
-        if (!firstScratch) firstScratch = path.dirname(input.archivePath);
+    const captured = vi.spyOn(workspaceArchive, "captureRemoteWorkspaceDirectory");
+    vi.spyOn(fs, "copyFile").mockImplementation(async (...args) => {
+      if (path.basename(String(args[1])) === "workspace.pcws") {
+        if (!firstScratch) firstScratch = path.dirname(String(args[1]));
         else { waiting = true; await held; }
       }
-      return capture(input);
+      return copy(...args);
     });
     const restore = vi.spyOn(workspaceArchive, "restoreRemoteWorkspaceArchive");
     const get = vi.spyOn(storage, "getObject"), head = vi.spyOn(storage, "headObject");
@@ -201,6 +202,7 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
         expect.soft(await fs.lstat(path.join(firstScratch, name)).catch(error => { if (error.code === "ENOENT") return null; throw error; })).toBeNull();
       const covered = (await fs.readdir(firstScratch)).filter(name => name.startsWith("covered-"));
       expect(covered).toEqual([]);
+      expect((await fs.lstat(captured.mock.calls[0][0].archivePath)).isFile()).toBe(true);
       expect((await db.select().from(executionWorkspaces).where(inArray(executionWorkspaces.id, [parent.id, alias.id])))
         .every(row => !readRemoteWorkspaceAuthority(row.metadata))).toBe(true);
       await fs.writeFile(path.join(cwd, "untracked.txt"), "changed after first payload cleanup\n");
@@ -209,7 +211,7 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     expect((await db.select().from(executionWorkspaces).where(inArray(executionWorkspaces.id, [parent.id, alias.id])))
       .every(row => readRemoteWorkspaceAuthority(row.metadata))).toBe(true);
     expect(await db.select().from(activityLog)).toHaveLength(beforeActivity.length + 2);
-    expect(captured).toHaveBeenCalledTimes(2);
+    expect(captured).toHaveBeenCalledTimes(1);
     expect(captured.mock.calls.every(([input]) => input.cwd === parent.cwd && input.singlePass === true)).toBe(true);
     expect(restore).not.toHaveBeenCalled(); expect(get).not.toHaveBeenCalled(); expect(head).not.toHaveBeenCalled();
     expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, childSnapshot.id)))[0]).toEqual(childSnapshot);
@@ -222,6 +224,7 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     }
     expect(await fs.readFile(path.join(cwd, "untracked.txt"), "utf8")).toBe("changed after first payload cleanup\n");
     await expect(fs.lstat(firstScratch)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.lstat(path.dirname(captured.mock.calls[0][0].archivePath))).rejects.toMatchObject({ code: "ENOENT" });
   }, 60_000);
   it.each(["unchanged", "changed"] as const)("retains committed child metadata across parallel aliases without downloads or recaptures (%s child bytes)", async mode => {
     const f = await fixture(), parent = f.leaves[0], cwd = path.join(parent.cwd!, ".paperclip", "worktrees", "nested");
@@ -260,7 +263,7 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     expect(await db.select().from(activityLog)).toHaveLength(beforeActivity.length + 2);
     expect(uploads).toBe(2);
     expect(get).not.toHaveBeenCalled(); expect(head).not.toHaveBeenCalled(); expect(restore).not.toHaveBeenCalled();
-    expect(capture).toHaveBeenCalledTimes(2);
+    expect(capture).toHaveBeenCalledTimes(1);
     expect(capture.mock.calls.every(([input]) => input.cwd === parent.cwd && input.singlePass === true)).toBe(true);
     expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, snapshot.id)))[0]).toEqual(snapshot);
     expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, child.id)))[0]).toEqual(childWorkspace);
@@ -477,9 +480,14 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     expect(readers).toBe(0); expect(reservations).toBe(0); expect(uploads).toBe(0);
     const operations = (await db.select().from(workspaceOperations)).filter(row => workspaceIds.includes(row.executionWorkspaceId!));
     expect(operations).toHaveLength(10); expect(operations.every(row => row.status === "succeeded")).toBe(true);
-    expect(capture).toHaveBeenCalledTimes(mode === "fresh" ? 10 : 11);
+    expect(capture).toHaveBeenCalledTimes(mode === "fresh" ? 1 : 2);
     expect(capture.mock.calls.every(([input]) => input.cwd === f.root && input.singlePass === true)).toBe(true);
     expect(get).not.toHaveBeenCalled(); expect(restore).not.toHaveBeenCalled();
+    const snapshots = (await db.select().from(executionWorkspaceSnapshots)).filter(row => workspaceIds.includes(row.executionWorkspaceId));
+    expect(new Set(snapshots.map(row => row.id)).size).toBe(10);
+    expect(new Set(snapshots.map(row => row.objectKey)).size).toBe(10);
+    expect(new Set(snapshots.map(row => row.sha256)).size).toBe(10);
+    expect(new Set(snapshots.map(row => row.manifestDigest)).size).toBe(1);
     expect(head.mock.calls.filter(([, key]) => childSnapshots.some(snapshot => snapshot.objectKey === key))).toEqual([]);
     if (mode === "fresh") expect(head).not.toHaveBeenCalled();
     else {
@@ -488,7 +496,7 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
       expect((await db.select().from(executionWorkspaceSnapshots)).filter(row => savedSnapshotIds.includes(row.id))).toHaveLength(2);
     }
     await expect(run(f, { workspaceIds })).resolves.toMatchObject({ applied: true, replayed: true });
-    expect(capture).toHaveBeenCalledTimes(mode === "fresh" ? 10 : 11);
+    expect(capture).toHaveBeenCalledTimes(mode === "fresh" ? 1 : 2);
     expect((await db.select().from(executionWorkspaceSnapshots)).filter(row => childSnapshots.some(child => child.id === row.id)))
       .toEqual(childSnapshots);
     for (const child of f.leaves) {
@@ -508,6 +516,58 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
       expect(await git(targetDir, "log", "-1", "--format=%s")).toBe("Original history");
     }
   }, 90_000);
+  it("cleans a failed shared capture and captures again when the same journals resume", async () => {
+    const f = await fixture(), selected = await aliasMembers(f, f.leaves[0], 2), ids = selected.map(row => row.id);
+    const capture = workspaceArchive.captureRemoteWorkspaceDirectory, scratch: string[] = [];
+    const failed = vi.spyOn(workspaceArchive, "captureRemoteWorkspaceDirectory").mockImplementation(async input => {
+      scratch.push(path.dirname(input.archivePath));
+      await capture(input); throw new Error("shared_capture_failed");
+    });
+    const put = vi.spyOn(storage, "putFile");
+    await expect(run(f, { workspaceIds: ids })).rejects.toThrow("shared_capture_failed");
+    expect(failed).toHaveBeenCalledTimes(1); expect(put).not.toHaveBeenCalled();
+    expect(scratch).toHaveLength(1);
+    await expect(fs.lstat(scratch[0])).rejects.toMatchObject({ code: "ENOENT" });
+    const journals = await db.select().from(workspaceOperations), snapshots = await db.select().from(executionWorkspaceSnapshots);
+    expect(journals).toHaveLength(2); expect(snapshots.every(row => row.status === "pending")).toBe(true);
+    expect((await db.select().from(executionWorkspaces).where(inArray(executionWorkspaces.id, ids)))
+      .every(row => !readRemoteWorkspaceAuthority(row.metadata))).toBe(true);
+    failed.mockRestore();
+    const retried = vi.spyOn(workspaceArchive, "captureRemoteWorkspaceDirectory");
+    await expect(run(f, { workspaceIds: ids })).resolves.toMatchObject({ applied: true });
+    expect(retried).toHaveBeenCalledTimes(1); expect(put).toHaveBeenCalledTimes(2);
+    expect((await db.select().from(workspaceOperations)).map(row => row.id).sort()).toEqual(journals.map(row => row.id).sort());
+    expect((await db.select().from(executionWorkspaceSnapshots)).map(row => row.id).sort()).toEqual(snapshots.map(row => row.id).sort());
+    await expect(fs.lstat(path.dirname(retried.mock.calls[0][0].archivePath))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("keeps distinct exclusion scopes separate for aliases of the same source", async () => {
+    const f = await fixture(), selected = await aliasMembers(f, f.parent, 2), ids = selected.map(row => row.id).sort();
+    for (const child of f.leaves) await migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: child.id,
+      apply: true, signal: AbortSignal.timeout(50_000) });
+    await db.execute(sql.raw(`create function cohort_reserve_fault() returns trigger language plpgsql as $$ begin if new.execution_workspace_id='${ids[1]}'::uuid then raise exception 'cohort_reservation_fault'; end if; return new; end $$`));
+    await db.execute(sql`create trigger cohort_reserve_fault before insert on workspace_operations for each row execute function cohort_reserve_fault()`);
+    await expect(run(f, { workspaceIds: ids })).rejects.toThrow();
+    await db.execute(sql`drop trigger cohort_reserve_fault on workspace_operations`);
+    const [legacy] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, ids[0]));
+    const metadata = { ...legacy.metadata }; delete metadata.nestedWorkspaceScope;
+    await db.update(workspaceOperations).set({ metadata }).where(eq(workspaceOperations.id, legacy.id));
+    const capture = vi.spyOn(workspaceArchive, "captureRemoteWorkspaceDirectory");
+    await expect(run(f, { workspaceIds: ids })).resolves.toMatchObject({ applied: true });
+    expect(capture).toHaveBeenCalledTimes(2);
+    expect(capture.mock.calls.map(([input]) => input.exclude!.length).sort()).toEqual([0, 2]);
+    for (const id of ids) {
+      const [row] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, id));
+      const ref = (await getWorkspaceSnapshot(db, { companyId: f.companyId, workspaceId: id,
+        snapshotId: readRemoteWorkspaceAuthority(row.metadata)!.snapshotId! }))!;
+      const archivePath = path.join(home, `${id}.pcws`), targetDir = path.join(home, `${id}-scope`);
+      await loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath: archivePath });
+      await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref.manifestDigest });
+      const childPath = path.join(targetDir, ".paperclip", "worktrees", "one", "saved.txt");
+      if (id === legacy.executionWorkspaceId) expect(await fs.readFile(childPath, "utf8")).toBe("one dirty tracked work\n");
+      else await expect(fs.lstat(childPath)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    for (const [input] of capture.mock.calls) await expect(fs.lstat(path.dirname(input.archivePath))).rejects.toMatchObject({ code: "ENOENT" });
+  }, 60_000);
   it.each(["failure", "cancel"] as const)("joins the first extended reader batch before stopping later members (%s)", async mode => {
     const f = await fixture(), selected = await aliasMembers(f, f.parent, 10), ids = selected.map(row => row.id).sort();
     for (const child of f.leaves) await migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: child.id,
