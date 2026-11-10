@@ -25,7 +25,7 @@ import {
   recordNativeLocalProcessStopInTransaction,
 } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
@@ -821,6 +821,24 @@ async function hasNativeRunnerOriginatedEvidence(
   return event !== undefined;
 }
 
+/** A settled earlier run of the same native session saved this exact provider
+ * session. Admission rebinds that checkpoint to a follow-up run, so the
+ * follow-up's copy of the provider session is carried, not its own work. */
+async function carriesSettledPredecessorSession(
+  tx: Pick<Db, "select">,
+  run: { companyId: string; id: string; nativeSessionId: string | null; createdAt: Date },
+  providerSessionId: unknown,
+): Promise<boolean> {
+  if (typeof providerSessionId !== "string" || !providerSessionId || !run.nativeSessionId) return false;
+  const [predecessor] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.nativeSessionId, run.nativeSessionId),
+    ne(heartbeatRuns.id, run.id), lt(heartbeatRuns.createdAt, run.createdAt), isNotNull(heartbeatRuns.finishedAt),
+    inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"]),
+    sql`${heartbeatRuns.runnerProfileJson}#>>'{sessionCheckpoint,providerSessionId}' = ${providerSessionId}`,
+  )).limit(1);
+  return predecessor !== undefined;
+}
+
 async function hasNativeRunEvent(
   tx: Pick<Db, "select">, run: { companyId: string; id: string }, eventType: string,
 ): Promise<boolean> {
@@ -1516,18 +1534,29 @@ export async function claimNativeRestartRecoveries(input: {
       // provider session: session-open events may already be projected here,
       // but no session snapshot or turn exists. Those events alone do not make
       // the checkpoint proof ambiguous; any turn or provider event does.
-      const providerEvidenceIsSessionOpenOnly = !hasCheckpointProviderIdentity
+      // A follow-up on a continued session carries only its rebound admission
+      // checkpoint: the previous turn's provider session, with no cursor,
+      // turn, result or request of this run. When a settled earlier run of the
+      // same session saved that exact provider session, the carried session is
+      // not this run's provider work, so it does not make the controller
+      // checkpoint proof ambiguous (Daytona waves s9202, s9205).
+      const reboundSessionOnly = continuedSessionOnly && Boolean(durableAuthority) && remoteWorkspace !== null
+        && hasCheckpointProviderIdentity && !unclaimedBootstrap && !pluginTask && stagedAttachment === null
+        && await carriesSettledPredecessorSession(tx, row.run, checkpointRecord.providerSessionId);
+      const providerEvidenceIsSessionOpenOnly = (!hasCheckpointProviderIdentity || reboundSessionOnly)
         && providerEvents.every(event => SESSION_OPEN_PROVIDER_EVENT_TYPES.has(event.eventType));
       const remoteBootstrapProof = !unclaimedBootstrap && remoteWorkspace !== null && !pluginTask
-        && Boolean(durableAuthority) && stagedAttachment === null && !hasCheckpoint && providerEvidenceIsSessionOpenOnly
+        && Boolean(durableAuthority) && stagedAttachment === null && (!hasCheckpoint || reboundSessionOnly)
+        && providerEvidenceIsSessionOpenOnly
         && Boolean(row.run.runnerInstanceId && row.run.nativeSessionId)
         ? await nativeRunnerCheckpointRemoteBootstrapProof(tx, {
           companyId: row.run.companyId, issueId: row.coordinator.issueId, runId: row.run.id,
         }, { runnerInstanceId: row.run.runnerInstanceId!, normalizedSessionId: row.run.nativeSessionId! })
         : null;
       // Projected session-open events need the stronger session-opened proof.
+      const ownProviderEvidence = reboundSessionOnly ? providerEvents.length > 0 : hasProviderEvidence;
       const remoteBootstrapProvenIncomplete = remoteBootstrapProof !== null
-        && (!hasProviderEvidence || remoteBootstrapProof === "session_opened_without_turn");
+        && (!ownProviderEvidence || remoteBootstrapProof === "session_opened_without_turn");
 
       const remoteRunnerNeverReceivedCommands = !unclaimedBootstrap && !remoteRunnerNeverLaunched
         && !remoteRunnerExitedBeforeProviderWork && !remoteBootstrapProvenIncomplete
@@ -1538,8 +1567,10 @@ export async function claimNativeRestartRecoveries(input: {
         && row.coordinator.attempt >= 1 && row.coordinator.controllerGeneration >= 1
         && Boolean(row.coordinator.controllerBootId && row.coordinator.controllerPid && row.coordinator.controllerProcessStartedAt)
         && !row.coordinator.failureDetail?.successorRunId
-        && !row.run.processPid && !row.run.processGroupId && !row.run.processStartedAt
-        && !row.run.sessionIdBefore && !row.run.sessionIdAfter
+        // A follow-up may carry its predecessor's settled runner identity and
+        // session; neither is this run's runner or provider work.
+        && (inheritedRunnerIdentity || (!row.run.processPid && !row.run.processGroupId && !row.run.processStartedAt))
+        && (!row.run.sessionIdBefore || continuedSessionOnly) && !row.run.sessionIdAfter
         && Boolean(row.run.nativeSessionId && row.run.runnerInstanceId)
         && !(await hasNativeRunnerOriginatedEvidence(tx, row.run))
         && !(await hasNativeRunEvent(tx, row.run, PROCESS_IDENTITY_RECORDED));
@@ -1565,7 +1596,7 @@ export async function claimNativeRestartRecoveries(input: {
         knownProviderProcessIdentityAmbiguous:
           providerProcesses.ambiguousLivePids.length > 0,
         hasCheckpoint: hasCheckpoint && !remoteRunnerNeverReceivedCommands && !(unclaimedBootstrap && inheritedCheckpointOnly)
-          && !remoteRunnerNeverLaunched,
+          && !remoteRunnerNeverLaunched && !(remoteBootstrapProvenIncomplete && reboundSessionOnly),
         stagedAttachmentVerified: stagedAttachment !== null,
         checkpointIdentityMatches:
           checkpointIdentityMatches &&

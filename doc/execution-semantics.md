@@ -4171,6 +4171,14 @@ its normalized current run ID does not prove that the current controller attache
 Fenced remote Runner recovery requires a matching database controller checkpoint
 or a valid staged attachment for the target run before selecting exact-checkpoint
 resume. Local Runner recovery keeps its existing local controller checks.
+A follow-up run that a restart interrupted before its remote Runner launched
+carries only that copied checkpoint. Restart recovery does not treat the copied
+provider session as this run's provider work. When the run saved no controller
+checkpoint, or its controller checkpoint records no provider turn, and no Runner
+process identity or Runner-sent event exists for the run, recovery bootstraps
+the run again instead of attempting to reattach a Runner that never started. A
+copied session counts only when a settled earlier run of the same session saved
+that exact provider session.
 If the first attachment finds the retained runner gone, or replacement cannot
 archive its remote state before the new turn starts, ordinary failure settlement
 requests one normal Retry under the
