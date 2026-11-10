@@ -1368,6 +1368,32 @@ describe("plugin worker manager setup-token pty route gate", () => {
     } finally { await handle.stop().catch(() => undefined); }
   });
 
+  it("joins an in-flight close after input failure before releasing the login", async () => {
+    let releaseClose!: () => void;
+    const heldClose = new Promise<void>(resolve => { releaseClose = resolve; });
+    let closeCalls = 0;
+    const handle = makeLoginPtyHandle({ hostHandlers: { "companies.get": async (params: { stage: string }) => {
+      if (params.stage === "loginPtyClose") { closeCalls++; await heldClose; }
+      return { id: "company-1" };
+    } } });
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(ptyOpenInput({ rejectInput: true, probeLifecycle: true }));
+      session.write("browser-code");
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      await vi.waitFor(() => expect(closeCalls).toBe(1));
+      let completed = 0;
+      const first = session.close().then(() => { completed++; });
+      const second = session.close().then(() => { completed++; });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(completed).toBe(0);
+      releaseClose();
+      await Promise.all([first, second]);
+      expect(completed).toBe(2);
+      expect(closeCalls).toBe(1);
+    } finally { releaseClose(); await handle.stop().catch(() => undefined); }
+  });
+
   it("terminalizes the route when the cumulative output passes the per-route bound", async () => {
     const handle = makeLoginPtyHandle({
       loginPtyLimits: { maxTotalChars: 10 },

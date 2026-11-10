@@ -1567,6 +1567,7 @@ export function createPluginWorkerHandle(
   interface LoginPtyRoute {
     companyId: string;
     hostRouteId: string;
+    closePromise: Promise<void> | null;
     state: LoginPtyRouteState;
     workerSessionId: string | null;
     listener: ((chunk: string) => void) | null;
@@ -1649,6 +1650,9 @@ export function createPluginWorkerHandle(
   // every other route this worker still holds settles through the worker-exit
   // path that follows.
   async function terminalizeLoginPtyRoute(route: LoginPtyRoute): Promise<void> {
+    // A notification may already have started close. Every later disposer must
+    // join that acknowledgement before its owner can release the allocation.
+    if (route.closePromise) return route.closePromise;
     if (route.terminalized) return;
     route.terminalized = true;
     route.state = "closed";
@@ -1662,20 +1666,22 @@ export function createPluginWorkerHandle(
       loginPtyRoutesByWorkerSessionId.delete(route.workerSessionId);
     }
     releaseLoginPtyRouteSlot(route);
-    // A terminalized route reports a null exit code, which the runner treats as a
-    // failure.
+    route.closePromise = (async () => {
+      const confirmed = await closeLoginPtyTerminal(route.hostRouteId, route.companyId);
+      if (!confirmed) {
+        // The worker did not acknowledge the close, so the host cannot prove the
+        // terminal is gone. Retire the worker before any reuse.
+        log.error(
+          { pluginId },
+          "login pseudo-terminal close not acknowledged; retiring worker",
+        );
+        retireWorkerProcess();
+      }
+    })();
+    // Report failure promptly, but retain the shared close barrier so the
+    // runner's following dispose waits for confirmed stop (or worker retirement).
     settleRouteWait(route, { exitCode: null });
-    const confirmed = await closeLoginPtyTerminal(route.hostRouteId, route.companyId);
-    if (!confirmed) {
-      // The worker did not acknowledge the close, so the host cannot prove the
-      // terminal is gone. Fail closed: retire the worker before any reuse. This
-      // also settles and clears every other route the worker still holds.
-      log.error(
-        { pluginId },
-        "login pseudo-terminal close not acknowledged; retiring worker",
-      );
-      retireWorkerProcess();
-    }
+    return route.closePromise;
   }
 
   // Resolve one login pseudo-terminal notification to its route. Return null
@@ -1924,6 +1930,7 @@ export function createPluginWorkerHandle(
     const route: LoginPtyRoute = {
       companyId: input.companyId,
       hostRouteId,
+      closePromise: null,
       state: "reserved",
       workerSessionId: null,
       listener: null,
