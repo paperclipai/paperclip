@@ -44,8 +44,9 @@ export function canonicalGitHubProjectBindings(values: Array<{ projectId: string
 /** Check the run's managed connection before admitting a linked GitHub workspace. */
 export async function resolveRunProjectGitHubCredentials(db: Db, input: {
   companyId: string; agentId: string; runId: string; repoUrls: string[]; hostGitHub?: boolean;
-  expectedRepositoryIds?: Record<string, string>;
+  expectedRepositoryIds?: Record<string, string>; signal?: AbortSignal;
 }, resolve = resolveGitHubOperationCredentials, request = fetch) {
+  input.signal?.throwIfAborted();
   if (input.repoUrls.some(value => isGitHubProjectRemote(value) && !githubRepository(value)))
     throw forbidden('Project GitHub authorization is unavailable. Reconnect an authorized connection.');
   const repositories = [...new Set(input.repoUrls.map(githubRepository).filter((repo): repo is string => Boolean(repo)))];
@@ -78,7 +79,7 @@ export async function resolveRunProjectGitHubCredentials(db: Db, input: {
         const repository = repositories[cursor++]!;
         const response = await request(`https://api.github.com/repos/${repository}`, {
           headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
-          redirect: 'error', signal: AbortSignal.timeout(8_000),
+          redirect: 'error', signal: input.signal ? AbortSignal.any([input.signal, AbortSignal.timeout(8_000)]) : AbortSignal.timeout(8_000),
         });
         if (!response.ok) { await response.body?.cancel(); throw unavailable(); }
         const payload = await response.json() as { id?: unknown };
@@ -98,7 +99,7 @@ export async function resolveRunProjectGitHubCredentials(db: Db, input: {
 
 /** Authorize a project checkout against its persisted repository identity before Git runs. */
 export async function authorizeProjectGitHubCheckout(db: Db, input: {
-  companyId: string; projectId: string; agentId: string; runId: string; repoUrl: string;
+  companyId: string; projectId: string; agentId: string; runId: string; repoUrl: string; signal?: AbortSignal;
 }, resolve = resolveGitHubOperationCredentials, request = fetch) {
   const repository = githubRepository(input.repoUrl);
   const unavailable = () => forbidden('Project GitHub authorization is unavailable. Reconnect and reselect the repository.');
@@ -131,16 +132,27 @@ export async function authorizeProjectGitHubCheckout(db: Db, input: {
 export async function resolveBoundProjectGitHubCredentials(db: Db, input: {
   companyId: string; agentId: string; runId: string;
   bindings: Array<{ projectId: string; repositoryUrl: string }>;
-}) {
+}, authorize = authorizeProjectGitHubCheckout) {
   if (!input.bindings.length) throw forbidden('Project GitHub authorization is unavailable.');
+  const cancel = new AbortController();
+  const deadline = AbortSignal.any([AbortSignal.timeout(40_000), cancel.signal]);
   let credential: Awaited<ReturnType<typeof authorizeProjectGitHubCheckout>> | undefined;
-  for (const binding of input.bindings) {
-    const current = await authorizeProjectGitHubCheckout(db, { ...input, projectId: binding.projectId, repoUrl: binding.repositoryUrl });
-    if (credential && (credential.grantId !== current.grantId || credential.connectionId !== current.connectionId ||
-      credential.revision !== current.revision || credential.env?.PAPERCLIP_GIT_TOKEN !== current.env?.PAPERCLIP_GIT_TOKEN))
-      throw forbidden('Project GitHub authorization is unavailable.');
-    credential = current;
-  }
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(8, input.bindings.length) }, async () => {
+    while (cursor < input.bindings.length) {
+      deadline.throwIfAborted();
+      const binding = input.bindings[cursor++]!;
+      const current = await authorize(db, { ...input, projectId: binding.projectId, repoUrl: binding.repositoryUrl, signal: deadline });
+      deadline.throwIfAborted();
+      if (credential && (credential.grantId !== current.grantId || credential.connectionId !== current.connectionId ||
+        credential.revision !== current.revision || credential.env?.PAPERCLIP_GIT_TOKEN !== current.env?.PAPERCLIP_GIT_TOKEN))
+        throw forbidden('Project GitHub authorization is unavailable.');
+      credential = current;
+    }
+  });
+  try { await Promise.all(workers); }
+  catch (error) { cancel.abort(); await Promise.allSettled(workers); throw error; }
+  deadline.throwIfAborted();
   return credential!;
 }
 

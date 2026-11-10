@@ -66,7 +66,7 @@ describe('resolveCompanyProjectRepository', () => {
   it('uses credentials from the agent’s own active run', async () => {
     const result = await resolveCompanyProjectRepository(makeDb(), agent, { companyId: 'company-1', workspaceId: 'workspace-1' });
     expect(mocks.runCredentials).toHaveBeenCalledWith(expect.anything(), {
-      companyId: 'company-1', agentId: 'agent-1', runId: 'run-1', repoUrl: 'https://dev.azure.com/acme/project/_git/repo',
+      companyId: 'company-1', agentId: 'agent-1', runId: 'run-1', repoUrl: 'https://dev.azure.com/acme/project/_git/repo', projectId: 'project-1',
     });
     expect(mocks.openSnapshot).toHaveBeenCalledWith(expect.objectContaining({ providerAuth: agentAuth }));
     expect(result.type).toBe('inline');

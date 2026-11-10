@@ -43,7 +43,7 @@ export async function resolveCompanyProjectRepository(db: Db, actor: Request['ac
     }
     if (actor.type !== 'agent') throw denied();
     if (!actor.agentId || !actor.runId) throw denied();
-    return resolveAzureDevOpsRunGitCredentials(db, { companyId: source.companyId, agentId: actor.agentId, runId: actor.runId, repoUrl: repository.repositoryUrl });
+    return resolveAzureDevOpsRunGitCredentials(db, { companyId: source.companyId, agentId: actor.agentId, runId: actor.runId, repoUrl: repository.repositoryUrl, projectId: workspace.projectId });
   };
   const auth = await authorize();
   await assertProjectGitConnection(repository.repositoryUrl, async () => auth);

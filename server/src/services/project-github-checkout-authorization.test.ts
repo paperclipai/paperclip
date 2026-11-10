@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
-import { authorizeProjectGitHubCheckout } from "./project-run-github-access.js";
+import { authorizeProjectGitHubCheckout, resolveBoundProjectGitHubCredentials } from "./project-run-github-access.js";
 
 const input = {
   companyId: "company-test",
@@ -120,6 +120,23 @@ describe("project GitHub checkout authorization", () => {
     expect(request).toHaveBeenCalledTimes(1);
     expect(workspaceQueries[0]!.where).toHaveBeenCalledTimes(1);
     expect(workspaceQueries[1]!.where).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks all project bindings with bounded parallel work", async () => {
+    const { db } = workspaceDb([]);
+    let active = 0, maximum = 0;
+    const authorize = vi.fn(async (_db: Db, request: Parameters<typeof authorizeProjectGitHubCheckout>[1]) => {
+      expect(request.signal).toBeInstanceOf(AbortSignal);
+      active++; maximum = Math.max(maximum, active);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      active--;
+      return available() as never;
+    });
+    const bindings = Array.from({ length: 24 }, (_, i) => ({ projectId: `project-${i}`, repositoryUrl: `https://github.com/org/repo-${i}` }));
+    await expect(resolveBoundProjectGitHubCredentials(db, { companyId: input.companyId, agentId: input.agentId, runId: input.runId, bindings }, authorize))
+      .resolves.toMatchObject({ grantId: "grant-test" });
+    expect(authorize).toHaveBeenCalledTimes(bindings.length);
+    expect(maximum).toBe(8);
   });
 
   it("rejects an invalid repository URL before reading workspace authorization", async () => {
