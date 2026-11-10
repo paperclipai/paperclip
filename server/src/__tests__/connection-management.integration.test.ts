@@ -1582,6 +1582,8 @@ describe("connection management with production default agents", () => {
     const value = await revealed.json() as { token: string; pendingReveal: boolean; id: string };
     expect(value).toMatchObject({ id: created.data.id, pendingReveal: false, token: expect.stringMatching(new RegExp(`^pcgw_${created.data.id}\\.`)) });
     expect(await reveal()).toMatchObject({ status: 409 });
+    expect(await server.db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId), eq(activityLog.action, "tool_gateway.token_revealed"))))
+      .toEqual([expect.objectContaining({ actorType: "user", actorId: f.userId, entityId: gateway.body.id, details: { tokenId: created.data.id } })]);
     const use = () => f.request("POST", `/mcp/gateways/${gateway.body.gatewayPublicId}`, { jsonrpc: "2.0", id: 1, method: "tools/list" }, value.token);
     expect(await use()).toMatchObject({ status: 200 });
 

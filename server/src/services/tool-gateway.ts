@@ -9456,9 +9456,7 @@ export function createToolGatewayService(
       companyId: string;
       tokenId: string;
       userId: string;
-      managementContext?: ConnectionManagementContext;
     }): Promise<ToolMcpGatewayTokenCreated> {
-      await input.managementContext?.reauthorize();
       const [existing] = await db.select().from(toolMcpGatewayTokens).where(and(
         eq(toolMcpGatewayTokens.companyId, input.companyId),
         eq(toolMcpGatewayTokens.id, input.tokenId),
@@ -9482,7 +9480,7 @@ export function createToolGatewayService(
         ))
         .returning();
       if (!row) throw new ToolGatewayHttpError(409, "This token's value was already shown once. Issue a new token to get a new value.", "gateway_token_already_revealed");
-      if (input.managementContext) await logActivity(db, { companyId: input.companyId, ...input.managementContext.audit,
+      await logActivity(db, { companyId: input.companyId, actorType: "user", actorId: input.userId,
         action: "tool_gateway.token_revealed", entityType: "tool_mcp_gateway", entityId: row.gatewayId,
         details: { tokenId: row.id } });
       return { ...toGatewayToken(row), token };
