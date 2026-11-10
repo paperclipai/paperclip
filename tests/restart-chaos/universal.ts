@@ -170,6 +170,14 @@ export function gradeU1(record: TaskRecord, bounds: UniversalBounds): Omit<Unive
   return { verdict: "pass", metrics: { ownerlessMs: worstOrphan, queuedMs: worstQueued }, detail: `longest ownerless ${seconds(worstOrphan)}; longest queued ${seconds(worstQueued)}${worstQueuedRun ? ` (${worstQueuedRun})` : ""}` };
 }
 
+/** The issue status seen between two failures (both finish polls included) was not one value throughout. */
+function issueStatusChanged(record: TaskRecord, before: { finishedSeenAt: number | null; statusWhenFinished: string | null },
+  after: { finishedSeenAt: number | null; statusWhenFinished: string | null }): boolean {
+  if (before.statusWhenFinished !== after.statusWhenFinished) return true;
+  const [from, to] = [before.finishedSeenAt ?? 0, after.finishedSeenAt ?? Number.POSITIVE_INFINITY];
+  return record.samples.some(sample => sample.reachable && sample.at >= from && sample.at <= to && sample.issueStatus !== before.statusWhenFinished);
+}
+
 export function gradeU2(record: TaskRecord, bounds: UniversalBounds): Omit<UniversalResult, "enforced"> {
   // Every finished run in creation order: a succeeded run between two failures is progress and ends the streak.
   const finished = [...finalRuns(record).values()].filter(run => run.finishedSeenAt !== null)
@@ -185,7 +193,7 @@ export function gradeU2(record: TaskRecord, bounds: UniversalBounds): Omit<Unive
       continue;
     }
     const same = previous !== null && `${previous.status}:${previous.errorCode}` === `${current.status}:${current.errorCode}`
-      && previous.statusWhenFinished === current.statusWhenFinished;
+      && !issueStatusChanged(record, previous, current);
     streak = same ? streak + 1 : 1;
     previous = current;
     if (streak > worst) { worst = streak; worstCode = `${current.status}:${current.errorCode ?? "none"}`; }

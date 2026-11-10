@@ -81,6 +81,12 @@ describe("U2 retry loops", () => {
     const samples = [sample(60 * SEC, "in_progress", [failed("r0", 0), succeeded, failed("r1", 10 * SEC), failed("r2", 20 * SEC), failed("r3", 30 * SEC)])];
     expect(gradeU2(record(samples), BOUNDS)).toMatchObject({ verdict: "pass", metrics: { sameFailureRuns: 3 } });
   });
+  it("resets the streak when the issue changed state between failures", () => {
+    const all = [failed("r0", 0), failed("r1", 20 * SEC), failed("r2", 40 * SEC), failed("r3", 60 * SEC)];
+    const samples = [sample(6 * SEC, "in_progress", all.slice(0, 1)), sample(26 * SEC, "in_progress", all.slice(0, 2)),
+      sample(30 * SEC, "blocked", all.slice(0, 2)), sample(46 * SEC, "in_progress", all.slice(0, 3)), sample(66 * SEC, "in_progress", all)];
+    expect(gradeU2(record(samples), BOUNDS)).toMatchObject({ verdict: "pass", metrics: { sameFailureRuns: 2 } });
+  });
   it("passes when the failures differ or stay within the bound", () => {
     const samples = [sample(10 * SEC, "in_progress", [failed("r1", 0), failed("r2", 6 * SEC, "process_lost"), failed("r3", 12 * SEC)])];
     expect(gradeU2(record(samples), BOUNDS).verdict).toBe("pass");
