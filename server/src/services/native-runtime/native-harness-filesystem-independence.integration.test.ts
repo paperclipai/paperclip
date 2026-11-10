@@ -18,6 +18,7 @@ import { preserveRuntimeSkillAssets } from "./runtime-skill-preservation.js";
 import { nativeControllerMigrationDescriptor, scopedRunnerdStateRoot } from "./native-session-executor.js";
 import { hasLocalNativeHarnessObligations } from "./native-harness-backup-migration.js";
 import { preserveNativeHarnessFilesystemIndependence, hasValidNativeHarnessFilesystemIndependence } from "./native-harness-filesystem-independence.js";
+import * as filesystemIndependence from "./native-harness-filesystem-independence.js";
 import { originalHarnessVolumeAnchorPath, verifyOriginalHarnessVolumeSource, type OriginalHarnessVolumeAnchor,
   type ReviewedOriginalHarnessVolumeWitness } from "./native-harness-original-volume.js";
 import { removeRuntimeAssetTree } from "./runtime-asset-retention.js";
@@ -196,6 +197,64 @@ describeEmbeddedPostgres("owner-verified native harness filesystem independence"
       leaseOwner: null, leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, f.runId));
     return { ...f, execution, controllerPath, raw, supervisor, supervisorPath: descriptor.supervisorPath, identity };
   }
+
+  it("validates retained WEB receipts with bounded parallel database proofs", async () => {
+    const fixtures = [];
+    for (let index = 0; index < 5; index++) {
+      const f = await controllerFixture(true, "none");
+      await preserveNativeHarnessFilesystemIndependence(db, { ...f.input, mode: "web_evidence" });
+      fixtures.push(f);
+    }
+    const validate = filesystemIndependence.hasValidNativeHarnessFilesystemIndependence;
+    let active = 0, maximum = 0, completed = 0, release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const reader = vi.spyOn(filesystemIndependence, "hasValidNativeHarnessFilesystemIndependence").mockImplementation(async (...args) => {
+      active++; maximum = Math.max(maximum, active);
+      try { await blocked; const valid = await validate(...args); completed++; return valid; }
+      finally { active--; }
+    });
+    const scan = hasLocalNativeHarnessObligations(db);
+    try {
+      await vi.waitFor(() => expect(active).toBe(4));
+      expect(reader).toHaveBeenCalledTimes(4);
+      release();
+      expect(await scan).toBe(false);
+      expect(maximum).toBe(4); expect(completed).toBe(fixtures.length); expect(active).toBe(0);
+      expect(reader).toHaveBeenCalledTimes(fixtures.length);
+    } finally { release(); await scan; }
+  });
+
+  it.each(["invalid", "error"] as const)("joins started WEB proofs after an %s result without admitting more", async outcome => {
+    for (let index = 0; index < 5; index++) {
+      const f = await controllerFixture(true, "none");
+      await preserveNativeHarnessFilesystemIndependence(db, { ...f.input, mode: "web_evidence" });
+    }
+    const validate = filesystemIndependence.hasValidNativeHarnessFilesystemIndependence;
+    let started = 0, active = 0, settled = false, releaseFirst!: () => void, releasePeers!: () => void, failed!: () => void;
+    const first = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const peers = new Promise<void>(resolve => { releasePeers = resolve; });
+    const failure = new Promise<void>(resolve => { failed = resolve; });
+    const expected = new Error("fixture_independence_reader_failed");
+    vi.spyOn(filesystemIndependence, "hasValidNativeHarnessFilesystemIndependence").mockImplementation(async (...args) => {
+      const index = started++; active++;
+      try {
+        const valid = await validate(...args);
+        if (index === 0) { await first; failed(); if (outcome === "error") throw expected; return false; }
+        await peers; return valid;
+      } finally { active--; }
+    });
+    const scan = hasLocalNativeHarnessObligations(db);
+    void scan.then(() => { settled = true; }, () => { settled = true; });
+    try {
+      await vi.waitFor(() => expect(started).toBe(4));
+      releaseFirst(); await failure; await new Promise<void>(resolve => setImmediate(resolve));
+      expect(settled).toBe(false); expect(started).toBe(4); expect(active).toBe(3);
+      releasePeers();
+      if (outcome === "error") await expect(scan).rejects.toBe(expected);
+      else expect(await scan).toBe(true);
+      expect(active).toBe(0); expect(started).toBe(4);
+    } finally { releaseFirst(); releasePeers(); await scan.catch(() => undefined); }
+  });
 
   it("preserves WEB-only evidence with a succeeded source and unresolved external lease", async () => {
     const f = await controllerFixture(true, "deleted");

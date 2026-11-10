@@ -162,6 +162,10 @@ export function createRunSecretRedactionRegistry(db: Db) {
         return redactRegisteredSecretValues(withoutSqlRunError(run), disclosure?.values ?? [], disclosure?.credentialConnectionName ?? null);
       });
     },
+    redactorForRun: async (companyId: string, runId: string, viewerUserId: string | null = null) => {
+      const disclosure = await valuesForRun(companyId, runId, viewerUserId);
+      return <T>(value: T): T => redactRegisteredSecretValues(withoutSqlRunError(value), disclosure.values, disclosure.credentialConnectionName);
+    },
     redactForRun: async <T>(companyId: string, runId: string, value: T, viewerUserId: string | null = null): Promise<T> => {
       const disclosure = await valuesForRun(companyId, runId, viewerUserId);
       return redactRegisteredSecretValues(withoutSqlRunError(value), disclosure.values, disclosure.credentialConnectionName);

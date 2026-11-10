@@ -348,7 +348,8 @@ async function main(): Promise<number> {
     }
     // The instance root holds the secrets master key and the database: oracle code may not read it.
     const protectedRoots = [os.homedir(), supervisor.paths.temporaryRoot, resultsRoot];
-    board = serverEnvironment.SERVE_UI === "false" ? null : new BoardUi(supervisor.baseUrl);
+    board = serverEnvironment.SERVE_UI === "false" ? null
+      : new BoardUi(supervisor.baseUrl, undefined, path.join(waveDir, "ui-retry-diagnostics"));
     const observers = plan.tasks.map(task => new TaskObserver(task, api, lab, timeline, supervisor, protectedRoots, board));
     const pending = [...observers];
     const launched: TaskObserver[] = [];

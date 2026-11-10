@@ -12,6 +12,8 @@ import { NativeHarnessBackupSourceError, readNativeHarnessBackupSource } from ".
 import { settledNativeHarnessBackupOwner } from "./native-harness-preservation-source.js";
 import { hasValidNativeHarnessFilesystemIndependence } from "./native-harness-filesystem-independence.js";
 
+const MAX_PARALLEL_INDEPENDENCE_CHECKS = 4;
+
 export async function hasLocalNativeHarnessObligations(db: Db): Promise<boolean> {
   let afterSession = "", afterScope = "";
   for (;;) {
@@ -31,9 +33,19 @@ export async function hasLocalNativeHarnessObligations(db: Db): Promise<boolean>
         and b.scope_digest = e.metadata->'nativeHarnessBackup'->>'sessionScopeSha256' and b.status = 'current')
       and (s.id::text, coalesce(e.metadata->'nativeHarnessBackup'->>'sessionScopeSha256', '')) > (${afterSession}, ${afterScope})
     order by selected_session_id, scope_digest limit 100`);
-    for (const row of rows) if (!row.has_receipt || !await hasValidNativeHarnessFilesystemIndependence(db, {
-      companyId: row.company_id, selectedSessionId: row.selected_session_id, scopeDigest: row.scope_digest,
-    })) return true;
+    let next = 0, invalid = false;
+    const checked = await Promise.allSettled(Array.from({ length: Math.min(MAX_PARALLEL_INDEPENDENCE_CHECKS, rows.length) }, async () => {
+      while (!invalid && next < rows.length) {
+        const row = rows[next++]!;
+        try {
+          if (!row.has_receipt || !await hasValidNativeHarnessFilesystemIndependence(db, {
+            companyId: row.company_id, selectedSessionId: row.selected_session_id, scopeDigest: row.scope_digest,
+          })) invalid = true;
+        } catch (error) { invalid = true; throw error; }
+      }
+    }));
+    for (const result of checked) if (result.status === "rejected") throw result.reason;
+    if (invalid) return true;
     if (rows.length < 100) return false;
     afterSession = rows.at(-1)!.selected_session_id; afterScope = rows.at(-1)!.scope_digest;
   }

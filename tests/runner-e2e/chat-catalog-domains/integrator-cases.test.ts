@@ -23,6 +23,10 @@ describe("case browsing and disabled feature controls", () => {
     expect(gradeIntegratorCases(closed).passed).toBe(false);
     expect(gradeIntegratorCases({ ...o, links: [...o.links, "/ACORN/cases/other"] }).passed).toBe(false);
     expect(gradeIntegratorCases({ ...o, reply: `${o.reply} I updated the columns.` }).passed).toBe(false);
+    const excluded = o.state.excludedCases[0]!;
+    expect(gradeIntegratorCases({ ...o, reply: `${o.reply}\n\n${excluded.identifier ?? excluded.title} (${excluded.title}) is closed.` }).passed).toBe(true);
+    expect(gradeIntegratorCases({ ...o, reply: `${o.reply}\n- ${excluded.title} (open)` }).passed).toBe(false);
+    expect(gradeIntegratorCases({ ...o, reply: `${o.reply}\n| ${excluded.identifier ?? "X"} | ${excluded.title} | open |` }).passed).toBe(false);
     expect(gradeIntegratorCases({ ...o, links: ["https://foreign.test/ACORN/cases/open", "/ACORN/cases/review"] }).passed).toBe(false);
   });
   it("rejects silently enabled Cases, a task called a case, and negated unavailable grounding", () => {

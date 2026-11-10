@@ -123,7 +123,7 @@ export async function inspectRemoteWarmSessionRecovery(input: {
   matchesExecution: (previous: NativeExecutionInput) => boolean;
   loadCheckpoint: (previous: NativeExecutionInput) => PersistedNativeSession | null;
   canReuseProcess: (previous: NativeExecutionInput) => boolean;
-}): Promise<RemoteWarmSessionRecovery> {
+}): Promise<RemoteWarmSessionRecovery | null> {
   const deny = (): never => { throw new Error("runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate"); };
   const { binding } = input.execution;
   const { target } = input;
@@ -132,6 +132,13 @@ export async function inspectRemoteWarmSessionRecovery(input: {
     const value = input.identity[key];
     if (typeof value !== "string" || !value) return deny();
     identity[key] = value;
+  }
+  // A Runner lives in the sandbox it started in. A created or replacement
+  // sandbox (for example after a restart or deploy replaced the controller)
+  // holds no Runner to adopt, so live adoption steps aside. Ordinary admission
+  // then retires the finished owner or keeps it held with a named reason.
+  if (target.transport === "sandbox" && ["created", "replacement"].includes(target.sandboxLeaseAcquisition?.outcome ?? "")) {
+    return null;
   }
   if (target.transport !== "sandbox" || !target.leaseId || !target.environmentId ||
       !target.providerKey || !target.sandboxLeaseAcquisition || target.sandboxLeaseAcquisition.outcome !== "resumed" ||
