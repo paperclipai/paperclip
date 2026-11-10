@@ -61,6 +61,20 @@ navigation start to the first Mine row (two frames after mount) over
 a native scenario without request interception and a separate diagnostic scenario that delays
 workspace reads by 3 seconds. The timings are attached evidence, not budgets.
 
+`recent-task-open.spec.ts` covers opening a task from the sidebar's Recents.
+It gives eight fixture tasks twelve saved comments each and seeds them as the
+account's Recents. An idle Projects page must make exactly one
+`issues/chat-bootstrap` request (at most ten tasks) and no per-task reads.
+Clicking a preloaded task must show its latest comment without any of the
+chat's first-frame reads (core issue, recent comments, comment input facts,
+recent activity, recent runs, interactions, attachments, live and active run).
+The full detail read and the task page's other side reads still follow the
+first frame; the spec records them as an annotation. Its timing cases measure
+click to the latest comment on screen over at least 5 fresh browser contexts
+(empty HTTP cache and storage apart from Recents), natively and with 150 ms
+added to every API response. They also record the idle page's API request
+count. The timings are attached evidence, not budgets.
+
 Run these focused browser checks before the full collection suite:
 
 ```sh
