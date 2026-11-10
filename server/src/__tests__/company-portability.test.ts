@@ -1790,13 +1790,14 @@ describe("company portability", () => {
   it.each([undefined, "22222222-2222-4222-8222-222222222222"])("round-trips the preset without private avatar references (%s)", async customAvatarAssetId => {
     const appearance = { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "arctic-blue" };
     const source = await agentSvc.list();
-    agentSvc.list.mockResolvedValue(source.map((agent: Record<string, unknown>) => ({ ...agent, appearance: { ...appearance, ...(customAvatarAssetId ? { customAvatarAssetId } : {}) } })));
+    agentSvc.list.mockResolvedValue(source.map((agent: Record<string, unknown>) => ({ ...agent, appearance: { ...appearance, ...(customAvatarAssetId ? { customAvatarAssetId, avatarFocus: { x: 12.5, y: 80 } } : {}) } })));
     const portability = companyPortabilityService({} as any);
     const include = { company: true, agents: true, projects: false, issues: false, skills: false };
     const exported = await portability.exportBundle("company-1", { include });
     expect(asTextFile(exported.files[".paperclip.yaml"])).toContain("arctic-blue");
     const extensionText = asTextFile(exported.files[".paperclip.yaml"]);
     expect(extensionText).not.toContain("customAvatarAssetId");
+    expect(extensionText).not.toContain("avatarFocus");
     if (customAvatarAssetId) {
       expect(exported.warnings.some(warning => warning.includes("uploaded avatar was omitted"))).toBe(true);
       // Even a hand-edited package must not carry another agent's private asset into import.

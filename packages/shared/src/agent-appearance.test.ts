@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_PALETTE_IDS, agentAppearanceSchema, appearanceForPalette, legacyAgentAppearance, randomAgentAppearance, resolveAgentAppearance, agentAvatarUrl } from "./agent-appearance.js";
+import { AGENT_PALETTE_IDS, agentAppearanceSchema, agentAvatarFocus, agentAvatarObjectPosition, appearanceForPalette, legacyAgentAppearance, normalizeAgentAvatarFocus, randomAgentAppearance, resolveAgentAppearance, agentAvatarUrl } from "./agent-appearance.js";
 import { renderAgentSvg } from "./cliplab/static.js";
 
 describe("agent appearance", () => {
@@ -19,6 +19,16 @@ describe("agent appearance", () => {
     expect(resolveAgentAppearance(appearance)).toEqual(appearance);
     expect(agentAvatarUrl(appearance, 128, 2)).toBe("/api/assets/22222222-2222-4222-8222-222222222222/content");
     expect(agentAppearanceSchema.safeParse({ ...appearance, customAvatarAssetId: "https://example.test/image" }).success).toBe(false);
+  });
+  it("keeps a saved photo center and defaults an omitted center to the middle", () => {
+    const appearance = { ...appearanceForPalette("deep-tide"), customAvatarAssetId: "22222222-2222-4222-8222-222222222222", avatarFocus: { x: 20, y: 80 } };
+    expect(resolveAgentAppearance(appearance).avatarFocus).toEqual({ x: 20, y: 80 });
+    expect(agentAvatarObjectPosition(appearance)).toBe("20% 80%");
+    expect(agentAvatarFocus(appearanceForPalette("deep-tide"))).toEqual({ x: 50, y: 50 });
+    expect(agentAvatarObjectPosition(null)).toBe("50% 50%");
+    expect(normalizeAgentAvatarFocus({ x: 33.34, y: 100 })).toEqual({ x: 33.3, y: 100 });
+    expect(agentAppearanceSchema.safeParse({ ...appearance, avatarFocus: { x: 120, y: 50 } }).success).toBe(false);
+    expect(agentAppearanceSchema.safeParse({ ...appearanceForPalette("deep-tide") }).success).toBe(true);
   });
   it("renders without a browser and preserves logical-size detail at high density", () => {
     const appearance = appearanceForPalette("bubblegum-sky");

@@ -10,7 +10,8 @@ import { readProviderFailure } from "@paperclipai/shared";
 import { AgentConnectionInstructions } from "@/features/connections/ConnectionInstructions";
 import type { AgentInstructionCandidate, AgentInstructionsBundle } from "@paperclipai/shared";
 import { InstructionHistory } from "../components/InstructionHistory";
-import { AgentCharacter } from "../components/AgentCharacter";
+import { AgentPhotoEditor, AgentPhotoFrame } from "../components/AgentPhotoFrame";
+import { AgentPortraitControls } from "../components/AgentPortraitControls";
 import { characterStateForAgent, HEARTBEAT_RUN_LIST_DEFAULT_LIMIT } from "@paperclipai/shared";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, useLocation, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
@@ -884,10 +885,9 @@ export function AgentDetail() {
         </div>
       ) : null}
       {/* Header */}
+      <AgentPhotoEditor agent={currentAgent}>
       <header className="agent-character-header flex items-center gap-2">
-        <div role="img" aria-label={`${agent.name} avatar`} className="shrink-0">
-          <AgentCharacter agent={agent} state={characterStateForAgent(currentAgent.status) === "rest" ? "idle" : characterStateForAgent(currentAgent.status)} size={128} className="agent-header-character" trackingScope="page" followCursor />
-        </div>
+        <AgentPhotoFrame state={characterStateForAgent(currentAgent.status) === "rest" ? "idle" : characterStateForAgent(currentAgent.status)} className="agent-header-character" />
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
             <InlineEditor
@@ -921,6 +921,7 @@ export function AgentDetail() {
               onSave={(name) => saveHeaderField({ name })}
             />
           </div>
+          <AgentPortraitControls agent={currentAgent} />
           <AgentLifecycleStatus agent={currentAgent} refreshError={lifecycle.isError} onRetry={() => agentAction.mutate("retryLifecycle")} retryPending={agentAction.isPending} />
         </div>
         <AgentActionButtons
@@ -970,6 +971,7 @@ export function AgentDetail() {
           )}
         </AgentActionButtons>
       </header>
+      </AgentPhotoEditor>
       <AgentHistoryDialog agent={agent} companyId={resolvedCompanyId ?? undefined} open={historyOpen} onOpenChange={setHistoryOpen} />
       <AlertDialog open={pendingLeave !== null} onOpenChange={(open) => (open ? undefined : setPendingLeave(null))}>
         <AlertDialogContent>

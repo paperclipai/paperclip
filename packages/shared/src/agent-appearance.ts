@@ -10,14 +10,32 @@ export type AgentAvatarBackground = "transparent" | "paperclip-dark";
 export const PAPERCLIP_DARK_AVATAR_BACKGROUND = "#171717";
 export const CHARACTER_STATES = ["rest", "idle", "listening", "thinking", "working", "success", "confused", "sleepy", "loading"] as const;
 export type CharacterState = typeof CHARACTER_STATES[number];
+export const agentAvatarFocusSchema = z.object({
+  x: z.number().finite().min(0).max(100),
+  y: z.number().finite().min(0).max(100),
+}).strict();
+export type AgentAvatarFocus = z.infer<typeof agentAvatarFocusSchema>;
 export const agentAppearanceSchema = z.object({
   schemaVersion: z.literal(1),
   characterVersion: z.literal("cap-v1"),
   paletteId: z.enum(AGENT_PALETTE_IDS),
   /** Company-scoped normalized image, set through the avatar upload service. */
   customAvatarAssetId: z.uuid().optional(),
+  avatarFocus: agentAvatarFocusSchema.optional(),
 }).strict();
 export type AgentAppearance = z.infer<typeof agentAppearanceSchema>;
+
+export function normalizeAgentAvatarFocus(focus: { x: number; y: number }): AgentAvatarFocus {
+  const axis = (value: number) => Math.round(Math.min(100, Math.max(0, value)) * 10) / 10;
+  return agentAvatarFocusSchema.parse({ x: axis(focus.x), y: axis(focus.y) });
+}
+export function agentAvatarFocus(appearance: { avatarFocus?: AgentAvatarFocus | null } | null | undefined): AgentAvatarFocus {
+  return appearance?.avatarFocus ?? { x: 50, y: 50 };
+}
+export function agentAvatarObjectPosition(appearance: { avatarFocus?: AgentAvatarFocus | null } | null | undefined): string {
+  const focus = agentAvatarFocus(appearance);
+  return `${focus.x}% ${focus.y}%`;
+}
 
 export function appearanceForPalette(paletteId: AgentPaletteId): AgentAppearance {
   return { schemaVersion: 1, characterVersion: "cap-v1", paletteId };

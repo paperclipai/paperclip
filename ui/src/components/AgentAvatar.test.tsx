@@ -25,3 +25,22 @@ it("shows the uploaded image in small and animated-character surfaces, then retu
     expect(container.querySelector("img")?.getAttribute("src")).toContain("/api/agent-avatars/cap-v1/deep-tide/");
   } finally { await act(async () => root.unmount()); }
 });
+
+it("crops a custom photo to a circle at the saved center and leaves character art square", async () => {
+  const base = appearanceForPalette("deep-tide");
+  const appearance = { ...base, customAvatarAssetId: "22222222-2222-4222-8222-222222222222", avatarFocus: { x: 20, y: 80 } };
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<AgentAvatar appearance={appearance} />));
+    const photo = container.querySelector("img");
+    expect(photo?.parentElement?.className).toContain("rounded-full");
+    expect(photo?.className).toContain("object-cover");
+    expect(photo?.style.objectPosition).toBe("20% 80%");
+    await act(async () => root.render(<AgentAvatar appearance={base} />));
+    const character = container.querySelector("img");
+    expect(character?.parentElement?.className).not.toContain("rounded-full");
+    expect(character?.className).toContain("object-contain");
+    expect(character?.style.objectPosition).toBe("");
+  } finally { await act(async () => root.unmount()); }
+});

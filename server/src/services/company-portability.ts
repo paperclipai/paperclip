@@ -3105,6 +3105,7 @@ function portableAgentAppearance(value: unknown, warnings: string[], slug: strin
   const appearance = agentAppearanceSchema.parse(value);
   if (appearance.customAvatarAssetId) {
     delete appearance.customAvatarAssetId;
+    delete appearance.avatarFocus;
     warnings.push(`Agent ${slug} uploaded avatar was omitted because image assets are instance-local. Upload it again after import.`);
   }
   return appearance;
