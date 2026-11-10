@@ -1,4 +1,5 @@
 import { notifyStrandedAgentStatus } from "../../../services/live-run-recovery-notifications.js";
+import { assertAgentInteraction } from "../../../services/agent-interaction-policy.js";
 import { notifyExecutionRunWork } from "../../../services/execution-control-notifications.js";
 import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
 import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
@@ -26,6 +27,7 @@ import { parseObject, readNonEmptyString } from "../domain/values.js";
 import { QueuedCommentMutationError } from "../application/queued-comment-use-cases.js";
 import type {
   LockedQueuedCommentState,
+  QueuedCommentActor,
   QueuedCommentActivityLogInput,
   QueuedCommentActivityPublication,
   QueuedCommentIssueLockWriter,
@@ -56,13 +58,18 @@ export type QueuedCommentQueuePostgresAdapterDeps = {
   syncCommentExternalObjectsSafely(commentId: string, tx: Db): Promise<void>;
 };
 
-function buildTransaction(tx: Db, companyId: string, issueId: string, deps: QueuedCommentQueuePostgresAdapterDeps, wakeAgentId: string): QueuedCommentQueueTransaction {
+function buildTransaction(tx: Db, companyId: string, issueId: string, deps: QueuedCommentQueuePostgresAdapterDeps, wakeAgentId: string, actor: QueuedCommentActor): QueuedCommentQueueTransaction {
   // Messages the active run took into its first turn leave the visible queue
   // but stay on the wake until that turn is accepted, so a run that fails
   // before then still leaves them queued. Queue edits keep them.
   let heldByFirstTurn: string[] = [];
   return {
     async updateCommentBody({ issueId, commentId, body, updatedAt }) {
+      const [existing] = await tx.select({ body: issueComments.body }).from(issueComments).where(and(
+        eq(issueComments.id, commentId), eq(issueComments.issueId, issueId), eq(issueComments.companyId, companyId)));
+      if (!existing) return false;
+      await assertAgentInteraction(tx, { companyId, actorAgentId: actor.actorType === "agent" ? actor.actorId : null,
+        operation: "comment", issueId, texts: body === existing.body ? [] : [body], lock: true });
       await notifyStatusCardIssueChange(tx, companyId);
       const updated = await tx
         .update(issueComments)
@@ -334,7 +341,7 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
               .then((rows) => rows[0] ?? null)
           : null;
 
-        const transaction = buildTransaction(tx, companyId, input.issue.id, deps, wakeRow.agentId);
+        const transaction = buildTransaction(tx, companyId, input.issue.id, deps, wakeRow.agentId, input.actor);
         const wake = toWakeRow(wakeRow);
         const queueRun = queueRunRow ? toRunRow(queueRunRow) : null;
         const activeRun = activeRunRow ? toRunRow(activeRunRow) : null;
@@ -349,6 +356,8 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
         });
 
         const locked: LockedQueuedCommentState = { wake, state, queueRun, activeRun, queue };
+        await assertAgentInteraction(tx, { companyId, actorAgentId: input.actor.actorType === "agent" ? input.actor.actorId : null,
+          operation: "comment", issueId: input.issue.id, lock: true });
         return fn(locked, transaction);
       });
     },

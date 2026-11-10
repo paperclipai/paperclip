@@ -30,7 +30,7 @@
  * blocks and rejects the caller's promise, so it only approximates a crash: a
  * test that needs real process death runs the suite instead.
  *
- * This is test instrumentation, not Telemetry or Observability (AGENTS.md §5.7):
+ * This is test instrumentation, not Telemetry or Observability (rules/data-paths.mdc):
  * nothing is recorded or sent anywhere unless a test arms a point.
  */
 import { appendFileSync, existsSync, readFileSync } from "node:fs";

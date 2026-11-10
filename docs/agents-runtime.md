@@ -132,7 +132,7 @@ If the connection drops, the UI reconnects automatically.
 
 1. Disable timer or set a long interval
 2. Keep wake-on-assignment enabled
-3. Use child issues, comments, and on-demand wakeups for handoffs instead of loops that poll agents, sessions, or processes
+3. Use comments and on-demand wakeups for existing handoffs instead of loops that poll agents, sessions, or processes
 
 ## 7.3 Safety-first loop
 

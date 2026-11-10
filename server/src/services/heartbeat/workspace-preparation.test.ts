@@ -265,7 +265,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       driver: "sandbox" as const, config: { provider: "daytona" } };
     await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, input.agent.id));
     input.agent.adapterType = "paperclip_runner";
-    input.environment.selectedEnvironmentForConfig = environment;
+    input.environment.selectedEnvironmentForConfig = await environmentService(db).getById(environment.id);
     input.environment.selectedEnvironmentId = environment.id;
     expect(input.environment.resolvedInstanceSettings.experimental.remoteWorkspaceStorageEnabled).toBe(true);
     input.policy.requestedExecutionWorkspaceMode = "agent_default";
@@ -964,7 +964,13 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const pluginKey = `test.managed-storage-${fromDefault}-${defaultMode}-${fresh}`;
     const [plugin] = await db.insert(plugins).values({ pluginKey, packageName: "test-storage", version: "1.0.0", apiVersion: 1, status: "ready", categories: ["workspace"],
       manifestJson: { id: pluginKey, apiVersion: 1, version: "1.0.0", displayName: "Storage", description: "Storage", author: "Test", categories: ["workspace"],
-        workspaceProvider: { freshWorkspaceVersion: 1, modes: ["isolated_workspace", "operator_branch"], strategies: ["git_worktree"], ...(fromDefault ? { defaultForProjects: { mode: defaultMode, strategy: "git_worktree" as const } } : {}) }, capabilities: ["workspaces.manage", "events.subscribe"], resourceLifecycle: ["project"], entrypoints: { worker: "./worker.js" } } }).returning();
+        workspaceProvider: { freshWorkspaceVersion: 1, modes: ["isolated_workspace", "operator_branch"], strategies: ["git_worktree"], ...(fromDefault ? { defaultForProjects: { mode: defaultMode, strategy: "git_worktree" as const } } : {}) }, capabilities: ["workspaces.manage", "events.subscribe", "environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, configSchema: { type: "object" } }],
+        resourceLifecycle: ["project"], entrypoints: { worker: "./worker.js" } } }).returning();
+    const [environment] = await db.insert(environments).values({ name: `Storage tasks ${pluginKey}`, driver: "plugin", status: "active",
+      config: { pluginKey, driverKey: "tasks", driverConfig: {} } }).returning();
+    input.environment.selectedEnvironmentForConfig = await environmentService(db).getById(environment.id);
+    input.environment.selectedEnvironmentId = environment.id;
     const savedPolicy = fromDefault ? { enabled: true, storageProviderPluginId: plugin.id } : { enabled: true, storageProviderPluginId: plugin.id, defaultMode: "isolated_workspace" as const,
       workspaceStrategy: { type: "git_worktree" as const, baseRef: "main", branchTemplate: "test-{{issue.identifier}}" } };
     await db.update(projects).set({ executionWorkspacePolicy: savedPolicy }).where(eq(projects.id, issue.projectId!));
@@ -989,7 +995,8 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const acquire = input.services.envOrchestrator.acquireForRun;
     vi.spyOn(input.services.envOrchestrator, "acquireForRun").mockImplementation(async args => {
       sequence.push("acquire"); expect(args.persistedExecutionWorkspace).toMatchObject({ providerType: "plugin", cwd: null });
-      return acquire(args);
+      // Acquisition is a transport stub: this boundary test stops at handoff.
+      return acquire({ ...args, selectedEnvironmentId: args.localEnvironmentId });
     });
     vi.spyOn(input.services.envOrchestrator, "realizeForRun").mockImplementation(async args => {
       expect(args.executionWorkspace.providerBinding?.workspaceRef).toBe("provider:checkout");
@@ -1090,7 +1097,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         environmentDrivers: [{ driverKey: "tasks", displayName: "Task VM", configSchema: { type: "object" }, supportsTasks: true, freshWorkspaceVersion: 1 }] } });
     const environment = await environmentService(db).create({ name: `Task computer ${issue.id}`, driver: "plugin", status: "active", envVars: {}, config: { pluginKey, driverKey: "tasks" } });
     input.agent = { ...input.agent, adapterType: "paperclip_runner", defaultEnvironmentId: environment.id };
-    input.environment.selectedEnvironmentForConfig = environment;
+    input.environment.selectedEnvironmentForConfig = await environmentService(db).getById(environment.id);
     input.policy.requestedExecutionWorkspaceMode = input.policy.effectiveExecutionWorkspaceMode = "isolated_workspace";
     input.task.freshWorkspace = { mode: "fresh_isolated_workspace", retryIntentId: input.run.id, sourceRunId: input.run.id, retainedSourceIds: [] };
     const stopped = new Error("Provider directory prepared");

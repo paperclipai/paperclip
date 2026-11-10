@@ -7,8 +7,27 @@ after access is revoked. A subscription is never an authorization grant. Full ev
 rows and log chunks require the current `company_scope:read` permission used by
 HTTP transcript reads, as well as access to the run's task. A restricted agent
 can still receive authorized lifecycle and lightweight activity notifications.
-The check runs for each full delivery on both negotiated and older connections;
-changing a trust policy takes effect without reconnecting.
+The check runs at delivery on both negotiated and older connections; changing a
+trust policy takes effect without reconnecting.
+
+## Shared reads for queued output
+
+Output can arrive faster than one permission check completes. Each event then
+waited for its own sequential database reads, the queue grew, and the connection
+reached its backlog limit. Events that are already queued when a set of reads
+opens now share that set: the membership or key check, the transcript scope
+decision, the run binding, the task read decision, the username-censoring
+setting and the run's registered secret values.
+
+An event never uses a read that began before the event was queued. An event that
+arrives while a read is in flight starts a new set. A set is also replaced after
+250 ms or 100 events, so a large queue or slow per-event work cannot extend it. A failed read is not shared;
+the next event reads again. The set is discarded when the queue empties, so
+decrypted secret values are not retained by an idle connection. An isolated event
+therefore costs the same reads as before, and a revocation applies to the first
+event published after it. Events that were already queued when access was revoked
+can still be delivered until their set is replaced: at most 100 events or 250 ms
+of output produced before the revocation.
 
 ## Additive negotiation
 
@@ -135,6 +154,11 @@ The legacy journey is
 Both use a disposable server and can use an explicitly supplied disposable
 `DATABASE_URL` when local embedded Postgres is unavailable. Browser fixtures
 establish delivery behavior, not native-provider or hosted-upgrade qualification.
+
+`server/src/__tests__/live-events-run-read.test.ts` publishes 200 transcript
+events in one burst against PostgreSQL. It requires every event in order, at most
+40 statements where separate reads issued 1,401, and no delivery after the grant
+is revoked.
 
 `server/src/realtime/live-event-delivery.cost.test.ts` compares identical output
 with zero interests, one viewer, three browser connections, and simulated socket

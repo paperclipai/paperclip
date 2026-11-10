@@ -1,3 +1,4 @@
+import { REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION } from "./remote-workspace-snapshot-archive.js";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { cp, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -319,6 +320,100 @@ describe("retained source fallback", () => {
       expect.arrayContaining([expect.objectContaining({ action: expect.objectContaining({ id: f.actionId }) })]));
   }, 60_000);
 
+  /**
+   * The Nov 10 staging shape: a native run failed before provider work, so its
+   * prepared files sit under a no-replay hold that is recorded resolved but
+   * blocked. Its reusable sandbox history made the source unverifiable
+   * (allocation_ownership_ambiguous) and the task stayed blocked on a Retry
+   * that could never pass. The worker continues it from the last save.
+   */
+  it("continues a resolved-but-blocked native no-replay hold from the last save, discovered by the worker", async () => {
+    const f = await unverifiableRetainedSource();
+    const source = await run(f.runId);
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", resultId: null, recoveryState: "blocked",
+      failureCode: "native_continuation_requires_reconciliation" }).where(eq(nativeRunFinalizations.runId, f.runId));
+    await db.update(heartbeatRuns).set({ errorCode: "native_continuation_requires_reconciliation",
+      error: "native_controller_recovery_missing_evidence:retained_sandbox_binding",
+      resultJson: { ...source.resultJson, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const [task] = await db.update(issues).set({ status: "blocked", lastStatusDecisionId: null })
+      .where(eq(issues.id, f.issueId)).returning();
+    const held = await action(f.actionId);
+    const refused = "Paperclip refused to recover the saved files: Paperclip cannot prove which runs used the sandbox that holds the saved files "
+      + "(allocation_ownership_ambiguous). Automatic recovery does not repeat this check, because the same saved state gives the same result. "
+      + "Retry runs the check again and succeeds only after Paperclip is updated. The agent's result is saved, and the agent will not repeat its work.";
+    // The exact row the Nov 10 release saved: resolved with outcome blocked,
+    // replay blocked, and the task's Blocked status version recorded.
+    await db.update(issueRecoveryActions).set({ kind: "active_run_watchdog", cause: "native_continuation_requires_reconciliation",
+      status: "resolved", outcome: "blocked", resolvedAt: new Date(), ownerType: "board", nextAction: refused,
+      evidence: { ...held.evidence,
+        automaticRecovery: { runId: f.runId, policy: "preserve_without_replay_v1", replay: "blocked",
+          recordedAt: new Date().toISOString(), actionOutcome: "unknown" },
+        nativeFailureBlock: { runId: f.runId, statusVersion: Number(task.statusVersion) },
+        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.lease.id] },
+        workspaceRestoreFailure: "restore_failed", continuationDelivery: "invalidated",
+        workspaceRecovery: { ...(held.evidence.workspaceRecovery as object), message: refused } } })
+      .where(eq(issueRecoveryActions.id, f.actionId));
+
+    expect(await nextWorkspaceRecoveryAt(db)).toBeLessThanOrEqual(Date.now());
+    await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, async () => undefined, true) ?? []);
+
+    const settled = await action(f.actionId);
+    expect(settled).toMatchObject({ status: "resolved", outcome: "restored", ownerType: "system",
+      resolutionNote: RETAINED_SOURCE_FALLBACK_OUTCOME, returnOwnerAgentId: source.agentId });
+    expect(settled.evidence.continuationDelivery).toBe("pending");
+    expect(settled.evidence.automaticRecovery).toBeUndefined();
+    for (const text of [settled.nextAction, readWorkspaceRecovery(settled.evidence)?.message])
+      expect(String(text)).not.toMatch(/succeeds only after|Paperclip is updated/);
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toMatchObject({ writerRunId: null, dirty: false,
+      location: null, snapshotId: f.snapshotId });
+    // The hold owned the Blocked status, so the task is ready again.
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("todo");
+    // Never a second executor: the abandoned source is never replaced.
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(coordinator.failureDetail).toMatchObject({ replacementDenied: RETAINED_SOURCE_FALLBACK_OUTCOME });
+    const wake = vi.fn(async () => ({ id: randomUUID() }));
+    await deliverReconciledExecutions(db, wake as never);
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake.mock.calls.filter(call => (call as unknown[])[0] === source.agentId)).toHaveLength(1);
+    expect((await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id)).not.toContain(f.actionId);
+  }, 60_000);
+
+  it("does not settle a no-replay hold whose task moved on to a newer Blocked decision", async () => {
+    const f = await unverifiableRetainedSource();
+    const [task] = await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.issueId)).returning();
+    const held = await action(f.actionId);
+    await db.update(issueRecoveryActions).set({ kind: "active_run_watchdog", cause: "native_continuation_requires_reconciliation",
+      status: "resolved", outcome: "blocked", resolvedAt: new Date(), evidence: { ...held.evidence,
+        automaticRecovery: { runId: f.runId, policy: "preserve_without_replay_v1", replay: "blocked" },
+        // A newer status decision replaced the Blocked status this run's failure set.
+        nativeFailureBlock: { runId: f.runId, statusVersion: Number(task.statusVersion) - 1 } } })
+      .where(eq(issueRecoveryActions.id, f.actionId));
+    await recoverRetainedWorkspace(f.input);
+    const settled = await action(f.actionId);
+    expect(settled).toMatchObject({ resolutionNote: RETAINED_SOURCE_FALLBACK_OUTCOME });
+    expect(settled.evidence.continuationDelivery).toBe("not_requested");
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("blocked");
+  }, 60_000);
+
+  // The discovery probes find the source run by its primary key. They must
+  // still match only the canonical id text the hold saved, as the text
+  // comparison they replace did: a hold whose saved run id is not canonical
+  // is not discovered through them.
+  it("discovers a hold through its source run only by the canonical run id it saved", async () => {
+    const f = await unverifiableRetainedSource();
+    const ids = async () => (await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id);
+    expect(await nextWorkspaceRecoveryAt(db)).toBeLessThanOrEqual(Date.now());
+    expect(await ids()).toContain(f.actionId);
+    const saved = await action(f.actionId);
+    await db.update(issueRecoveryActions).set({ evidence: { ...saved.evidence, runId: f.runId.toUpperCase() } })
+      .where(eq(issueRecoveryActions.id, f.actionId));
+    expect(await nextWorkspaceRecoveryAt(db)).toBeNull();
+    expect(await ids()).not.toContain(f.actionId);
+    await db.update(issueRecoveryActions).set({ evidence: saved.evidence }).where(eq(issueRecoveryActions.id, f.actionId));
+    expect(await ids()).toContain(f.actionId);
+  }, 60_000);
+
   it("waits until a deferred transient check is due before the worker visits the hold again", async () => {
     const f = await unverifiableRetainedSource();
     const source = await run(f.runId);
@@ -370,10 +465,13 @@ describe("retained source fallback", () => {
     expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
     await db.update(issueRecoveryActions).set({ status: "resolved", resolvedAt: new Date() }).where(eq(issueRecoveryActions.id, f.actionId));
     const staleId = randomUUID(), now = Date.now();
+    // An export hold that names the task's Blocked status leaves the status to
+    // its saved result's finalization; the sibling settlement must not change it.
+    const [task] = await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.issueId)).returning();
     await db.insert(issueRecoveryActions).values({ id: staleId, companyId: f.companyId, sourceIssueId: f.issueId,
       kind: "active_run_watchdog", status: "active", ownerType: "board", cause: "native_workspace_sync_out_retry_exhausted",
       fingerprint: randomUUID(), nextAction: "Automatic recovery of saved work stopped after 6 attempts.",
-      evidence: { runId: f.runId,
+      evidence: { runId: f.runId, nativeFailureBlock: { runId: f.runId, statusVersion: Number(task.statusVersion) },
         systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1, sourceRunId: f.runId, revision: 54,
           generationId: randomUUID(), intentId: null, phase: "preserve_files", state: "exhausted", attemptId: randomUUID(),
           attempts: 6, retriesUsed: 5, firstFailureAt: now - 60_000, nextAttemptAt: null, deadlineAt: now - 1, providerCooldownAt: null,
@@ -393,6 +491,7 @@ describe("retained source fallback", () => {
     const live = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, f.issueId),
       inArray(issueRecoveryActions.status, ["active", "escalated"])));
     expect(live).toHaveLength(0);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]!.status).toBe("blocked");
   }, 60_000);
 
   it("stops discovering a stale hold whose sibling receipt no longer verifies", async () => {
@@ -413,7 +512,8 @@ describe("retained source fallback", () => {
           generationId: randomUUID(), intentId: null, phase: "preserve_files", state: "exhausted", attemptId: randomUUID(),
           attempts: 6, retriesUsed: 5, firstFailureAt: now - 60_000, nextAttemptAt: null, deadlineAt: now - 1, providerCooldownAt: null,
           failure: { code: "export_interrupted", retryClass: "retry_transient", evidenceFingerprint: "c".repeat(64) },
-          preservationOperationIds: [], freshAttemptRunId: null },
+          // Exhausted under the current capture policy, so only the sibling rule applies.
+          preservationOperationIds: [], freshAttemptRunId: null, capturePolicyVersion: REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION },
         workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: f.runId, status: "blocked", stage: "restoring_files",
           attempt: 6, attemptLimit: 6, retryable: true, requestIds: [] } } });
     const ids = async () => (await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id);
