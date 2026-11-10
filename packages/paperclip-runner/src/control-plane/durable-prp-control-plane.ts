@@ -2045,7 +2045,9 @@ export class DurablePrpControlPlane {
   #connectionProcessing = new Map<AuthorityConnection, Promise<void>>();
   #connectionLeaseFailure: DurablePrpConnectionLeaseFailure | null = null;
   #pendingSemanticCalls = new Set<string>();
-  /** Result command ids whose callback this instance dispatched live. */
+  /** Result command ids whose callback this instance dispatched live and has
+   * not journaled a result for. A queued result removes its id, so only
+   * in-flight and failed dispatches remain. */
   #liveDispatchedSemanticCalls = new Set<string>();
   #semanticCallbacksRetired = false;
   #semanticResultPersistenceFailed = false;
@@ -4465,6 +4467,8 @@ export class DurablePrpControlPlane {
               commandId,
               true,
             );
+            // Its journaled result settles it; recovery never asks again.
+            this.#liveDispatchedSemanticCalls.delete(commandId);
           } catch (error) {
             // A result that cannot fit the bounded durable journal cannot be
             // acknowledged as a usable tool response. Force a reconnect so
