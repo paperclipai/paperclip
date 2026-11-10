@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  agents, budgetPolicies, companies, costEvents, createDb, environmentLeases, heartbeatRuns, issues,
+  agents, budgetPolicies, budgetReservations, companies, costEvents, createDb, environmentLeases, heartbeatRuns, issues,
   nativeRunFinalizations, type Db,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { reserveRunBudget } from "../services/budget-reservations.js";
+import { recheckRunBudgetReservationInTransaction, reserveRunBudget } from "../services/budget-reservations.js";
 import { currentNativeControllerIdentity, type NativeControllerIdentity } from "../services/native-runtime/native-restart-recovery.js";
 
 const GENERATION = 2;
@@ -79,6 +79,28 @@ const support = await getEmbeddedPostgresTestSupport();
       .then(result => "admissionBlockReason" in result ? String(result.admissionBlockReason) : null,
         (error: Error) => error.message);
     expect(refusal).toMatch(/budget/i);
+    expect((await f.coordinator()).leaseExpiresAt!.getTime()).toBeLessThan(Date.now());
+  });
+
+  it("takes the lease back at the dispatch gate only when the resume is admitted", async () => {
+    const admitted = await seed();
+    const [reservation] = await db.insert(budgetReservations).values({ companyId: admitted.companyId, runId: admitted.runId,
+      agentId: (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, admitted.runId)))[0]!.agentId,
+      amountCents: "0", state: "held", providerStartedAt: new Date() }).returning();
+    const gate = async (f: Awaited<ReturnType<typeof seed>>, reservationId: string) => db.transaction(async tx => {
+      const [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)).for("update");
+      return recheckRunBudgetReservationInTransaction(tx as unknown as Db, [], run!, reservationId, f.leaseOwner);
+    });
+    expect(await gate(admitted, reservation!.id)).toBeNull();
+    expect((await admitted.coordinator()).leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now() + 15 * 60_000);
+
+    const fenced = await seed({ recoveryState: "awaiting_evidence" });
+    const [fencedReservation] = await db.insert(budgetReservations).values({ companyId: fenced.companyId, runId: fenced.runId,
+      agentId: (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fenced.runId)))[0]!.agentId,
+      amountCents: "0", state: "held", providerStartedAt: new Date() }).returning();
+    const before = await fenced.coordinator();
+    expect(await gate(fenced, fencedReservation!.id)).toBe("Native recovery no longer owns provider dispatch");
+    expect(await fenced.coordinator()).toEqual(before);
   });
 
   it.each<[string, () => Parameters<typeof seed>[0]]>([

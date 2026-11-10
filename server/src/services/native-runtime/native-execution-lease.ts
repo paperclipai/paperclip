@@ -126,38 +126,58 @@ export async function lockNativeExecutionLeaseForReacquire(tx: Pick<Db, "execute
   return false;
 }
 
-export async function holdOwnNativeRecoveryClaimInTransaction(tx: Db, input: {
+type OwnNativeRecoveryClaimInput = {
   companyId: string; runId: string; leaseOwner: string; controller?: NativeControllerIdentity;
-}): Promise<boolean> {
+};
+
+async function ownNativeRecoveryClaimCondition(tx: Db, input: OwnNativeRecoveryClaimInput) {
+  const [row] = await tx.select({ controllerGeneration: nativeRunFinalizations.controllerGeneration })
+    .from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, input.companyId),
+      eq(nativeRunFinalizations.runId, input.runId), eq(nativeRunFinalizations.leaseOwner, input.leaseOwner)));
+  if (!row) return null;
+  const controller = input.controller ?? await currentNativeControllerIdentity();
+  return and(
+    eq(nativeRunFinalizations.companyId, input.companyId),
+    eq(nativeRunFinalizations.runId, input.runId),
+    eq(nativeRunFinalizations.leaseOwner, input.leaseOwner),
+    eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+    eq(nativeRunFinalizations.controllerPid, controller.pid),
+    eq(nativeRunFinalizations.controllerProcessStartedAt, controller.processStartedAt),
+    isNotNull(nativeRunFinalizations.recoveryState),
+    nativeExecutionLeaseHeldCondition({ remote: false, controllerGeneration: row.controllerGeneration }),
+    notExists(tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.heartbeatRunId, input.runId),
+      sql`${environmentLeases.provider} <> 'local'`))),
+  )!;
+}
+
+export async function readOwnNativeRecoveryClaimLease(
+  tx: Db, input: OwnNativeRecoveryClaimInput,
+): Promise<"live" | "lapsed_own_claim" | "lost"> {
   const [row] = await tx.select({
-    issueId: nativeRunFinalizations.issueId,
-    controllerGeneration: nativeRunFinalizations.controllerGeneration,
     live: sql<boolean>`coalesce(${nativeRunFinalizations.leaseExpiresAt} > clock_timestamp(), false)`,
   }).from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, input.companyId),
-    eq(nativeRunFinalizations.runId, input.runId), eq(nativeRunFinalizations.leaseOwner, input.leaseOwner))).for("update");
-  if (!row) return false;
-  if (row.live) return true;
-  await lockNativeExecutionLeaseForReacquire(tx, { runId: input.runId, companyId: input.companyId,
-    issueId: row.issueId, leaseOwner: input.leaseOwner, preResultOnly: true });
-  const controller = input.controller ?? await currentNativeControllerIdentity();
+    eq(nativeRunFinalizations.runId, input.runId), eq(nativeRunFinalizations.leaseOwner, input.leaseOwner)));
+  if (!row) return "lost";
+  if (row.live) return "live";
+  const condition = await ownNativeRecoveryClaimCondition(tx, input);
+  if (!condition) return "lost";
+  const [held] = await tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(condition);
+  return held ? "lapsed_own_claim" : "lost";
+}
+
+export async function extendOwnNativeRecoveryClaimInTransaction(tx: Db, input: OwnNativeRecoveryClaimInput): Promise<boolean> {
+  const state = await readOwnNativeRecoveryClaimLease(tx, input);
+  if (state === "live") return true;
+  if (state === "lost") return false;
+  const condition = await ownNativeRecoveryClaimCondition(tx, input);
+  if (!condition) return false;
   const [held] = await tx.update(nativeRunFinalizations)
     .set({
       leaseExpiresAt: sql`clock_timestamp() + (${NATIVE_SESSION_EXECUTION_LEASE_TTL_MS} * interval '1 millisecond')`,
       updatedAt: sql`clock_timestamp()`,
     })
-    .where(and(
-      eq(nativeRunFinalizations.companyId, input.companyId),
-      eq(nativeRunFinalizations.runId, input.runId),
-      eq(nativeRunFinalizations.leaseOwner, input.leaseOwner),
-      eq(nativeRunFinalizations.controllerBootId, controller.bootId),
-      eq(nativeRunFinalizations.controllerPid, controller.pid),
-      eq(nativeRunFinalizations.controllerProcessStartedAt, controller.processStartedAt),
-      isNotNull(nativeRunFinalizations.recoveryState),
-      nativeExecutionLeaseHeldCondition({ remote: false, controllerGeneration: row.controllerGeneration }),
-      notExists(tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
-        eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.heartbeatRunId, input.runId),
-        sql`${environmentLeases.provider} <> 'local'`))),
-    ))
+    .where(condition)
     .returning({ runId: nativeRunFinalizations.runId });
   return Boolean(held);
 }
