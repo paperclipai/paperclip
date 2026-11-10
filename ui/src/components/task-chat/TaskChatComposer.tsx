@@ -354,7 +354,7 @@ type ComposerAttachment = {
 type QueuedEditBackup = {
   body: string;
   attachments: ComposerAttachment[];
-  pendingModeChoice: { mode: IssueWorkMode } | null;
+  pendingMode: IssueWorkMode | null;
   pendingAssignee: string | null;
 };
 
@@ -451,9 +451,10 @@ export function TaskChatComposer({
     useState<HTMLElement | null>(null);
   const [takeoverControlsSlot, setTakeoverControlsSlot] =
     useState<HTMLElement | null>(null);
-  const [pendingModeChoice, setPendingModeChoice] = useState<{ mode: IssueWorkMode } | null>(null);
-  const uncertainModeChoice = useRef<{ attemptId: string; choice: typeof pendingModeChoice } | null>(null);
-  const pendingMode = creation ? workMode : (pendingModeChoice?.mode ?? workMode);
+  const [pendingModeOverride, setPendingMode] = useState<IssueWorkMode | null>(null);
+  const modeChoiceGeneration = useRef(0);
+  const sentModeChoice = useRef<{ attemptId: string; generation: number } | null>(null);
+  const pendingMode = creation ? workMode : pendingModeOverride ?? workMode;
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
   const coordinator = useCoordinatorPresentation();
   const [localRunSettings, setLocalRunSettings] = useState<ComposerRunSettings | null>(null);
@@ -557,7 +558,7 @@ export function TaskChatComposer({
         queuedEditBackupRef.current = {
           body: bodyRef.current,
           attachments: attachmentsRef.current,
-          pendingModeChoice,
+          pendingMode: pendingModeOverride,
           pendingAssignee: pendingAssigneeRef.current,
         };
         if (draftKey) saveDraft(draftKey, bodyRef.current);
@@ -576,7 +577,7 @@ export function TaskChatComposer({
         bodyRef.current = backup.body;
         setBody(backup.body);
         setAttachments(backup.attachments);
-        setPendingModeChoice(backup.pendingModeChoice);
+        setPendingMode(backup.pendingMode);
         setPendingAssignee(backup.pendingAssignee);
         if (draftKey) saveDraft(draftKey, backup.body);
       }
@@ -585,7 +586,7 @@ export function TaskChatComposer({
     }
 
     previousQueuedEditIdRef.current = nextId;
-  }, [draftKey, pendingModeChoice, queuedEdit]);
+  }, [draftKey, pendingModeOverride, queuedEdit]);
 
   useEffect(() => {
     if (!draftKey || queuedEdit) return;
@@ -705,8 +706,16 @@ export function TaskChatComposer({
   }
 
   function changeMode(mode: IssueWorkMode) {
-    setPendingModeChoice({ mode });
+    modeChoiceGeneration.current += 1;
+    setPendingMode(mode);
     if (creation) void onWorkModeChange?.(mode);
+  }
+
+  function settleSentMode(attemptId: string) {
+    const choice = sentModeChoice.current;
+    if (choice?.attemptId !== attemptId) return;
+    if (modeChoiceGeneration.current === choice.generation) setPendingMode(null);
+    sentModeChoice.current = null;
   }
 
   async function uploadImage(file: File): Promise<string> {
@@ -927,7 +936,7 @@ export function TaskChatComposer({
     const submittedBody = bodyRef.current;
     const submittedAttachments = attachmentsRef.current;
     const submittedAssignee = pendingAssigneeRef.current;
-    const submittedModeChoice = pendingModeChoice;
+    const submittedModeGeneration = modeChoiceGeneration.current;
     const trimmed = submittedBody.trim();
     const goalCommand = queuedEdit
       ? ({ matched: false } as const)
@@ -1090,6 +1099,7 @@ export function TaskChatComposer({
         pendingDraftRef.current = { draftKey, attemptId, submittedBody, submittedAttachmentIds: attachmentIds, request, requestOwner };
         changeBody(bodyRef.current);
       }
+      sentModeChoice.current = { attemptId, generation: submittedModeGeneration };
       if (runSettings) {
         await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, runSettings);
       } else {
@@ -1100,7 +1110,7 @@ export function TaskChatComposer({
       if (draftKey) settleDraftSubmission(draftKey, attemptId,
         mountedTaskKey.current === draftKey ? bodyRef.current : undefined);
       if (mountedTaskKey.current !== draftKey) return;
-      setPendingModeChoice((current) => current === submittedModeChoice ? null : current);
+      settleSentMode(attemptId);
       const submittedIds = new Set(submittedAttachments.map((item) => item.id));
       setAttachments((current) =>
         current.filter((item) => !submittedIds.has(item.id)),
@@ -1122,7 +1132,6 @@ export function TaskChatComposer({
           request,
           requestOwner,
         };
-        uncertainModeChoice.current = { attemptId, choice: submittedModeChoice };
         setUncertainSubmission(uncertain);
         if (draftKey && loadDraftSubmission(draftKey)?.attemptId === attemptId)
           saveDraftSubmission(draftKey, uncertain);
@@ -1153,11 +1162,7 @@ export function TaskChatComposer({
     const settlementKey = JSON.stringify([draftKey, submission.attemptId]);
     if (settledSubmissionIds.current.has(settlementKey)) return;
     settledSubmissionIds.current.add(settlementKey);
-    const modeChoice = uncertainModeChoice.current;
-    if (modeChoice?.attemptId === submission.attemptId) {
-      uncertainModeChoice.current = null;
-      setPendingModeChoice(current => current === modeChoice.choice ? null : current);
-    }
+    settleSentMode(submission.attemptId);
     const nextDraft = submission.nextDraftOffset === undefined
       ? "" : bodyRef.current.slice(submission.nextDraftOffset);
     if (draftKey) settleDraftSubmission(draftKey, submission.attemptId, nextDraft);
@@ -1200,7 +1205,6 @@ export function TaskChatComposer({
         // A definitive answer: the text is already back in the editor.
         if (taskKey) clearDraftSubmission(taskKey, submission.attemptId);
         if (mountedTaskKey.current === taskKey) {
-          if (uncertainModeChoice.current?.attemptId === submission.attemptId) uncertainModeChoice.current = null;
           setUncertainSubmission(null);
           setActionError(describeError(error, { action: "send this message" }).body);
         }
@@ -1222,7 +1226,6 @@ export function TaskChatComposer({
   /** Stop resending; the text stays in the editor to edit or send again. */
   function cancelUncertainSubmission() {
     if (!uncertainSubmission) return;
-    if (uncertainModeChoice.current?.attemptId === uncertainSubmission.attemptId) uncertainModeChoice.current = null;
     settledSubmissionIds.current.add(JSON.stringify([draftKey, uncertainSubmission.attemptId]));
     if (draftKey) clearDraftSubmission(draftKey, uncertainSubmission.attemptId);
     setUncertainSubmission(null);
