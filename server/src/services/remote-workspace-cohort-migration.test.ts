@@ -148,6 +148,60 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
       expect(await git(targetDir, "log", "-1", "--format=%s")).toBe("Original history");
     }
   }, 60_000);
+  it("releases completed parent payload before a held peer while preserving the final child mutation check", async () => {
+    const f = await fixture(), parent = f.leaves[0], cwd = path.join(parent.cwd!, ".paperclip", "worktrees", "nested");
+    await git(f.root, "worktree", "add", "-qb", "nested", cwd);
+    const [childIssue, aliasIssue] = await db.insert(issues).values([
+      { companyId: f.companyId, projectId: f.projectId, title: "Nested child" },
+      { companyId: f.companyId, projectId: f.projectId, title: "Leaf alias" },
+    ]).returning();
+    const [child, alias] = await db.insert(executionWorkspaces).values([
+      { companyId: f.companyId, projectId: f.projectId, sourceIssueId: childIssue.id, name: "nested", mode: "isolated_workspace",
+        strategyType: "git_worktree", providerType: "git_worktree", cwd, providerRef: cwd, repoUrl: parent.repoUrl, branchName: "nested" },
+      { companyId: f.companyId, projectId: f.projectId, sourceIssueId: aliasIssue.id, name: "alias", mode: parent.mode,
+        strategyType: parent.strategyType, providerType: parent.providerType, cwd: parent.cwd, providerRef: parent.providerRef,
+        repoUrl: parent.repoUrl, branchName: parent.branchName },
+    ]).returning();
+    await db.update(issues).set({ executionWorkspaceId: child.id }).where(eq(issues.id, childIssue.id));
+    await db.update(issues).set({ executionWorkspaceId: alias.id }).where(eq(issues.id, aliasIssue.id));
+    await fs.writeFile(path.join(cwd, "untracked.txt"), "nested dirty bytes\n");
+    await migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: child.id, apply: true,
+      signal: AbortSignal.timeout(50_000) });
+    const readOnly = path.join(parent.cwd!, "read-only");
+    await fs.mkdir(readOnly); await fs.writeFile(path.join(readOnly, "saved.txt"), "read-only parent payload\n"); await fs.chmod(readOnly, 0o555);
+    const capture = workspaceArchive.captureRemoteWorkspaceDirectory;
+    let firstScratch = "", waiting = false, release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(workspaceArchive, "captureRemoteWorkspaceDirectory").mockImplementation(async input => {
+      if (input.cwd === parent.cwd && path.basename(input.archivePath) === "workspace.pcws") {
+        if (!firstScratch) firstScratch = path.dirname(input.archivePath);
+        else { waiting = true; await held; }
+      }
+      return capture(input);
+    });
+    const beforeActivity = await db.select().from(activityLog);
+    const pending = run(f, { workspaceIds: [parent.id, alias.id], concurrency: 1 }).then(value => ({ value }), error => ({ error }));
+    let result: Awaited<typeof pending> | undefined;
+    try {
+      await expect.poll(() => waiting, { timeout: 20_000 }).toBe(true);
+      expect((await fs.lstat(firstScratch)).isDirectory()).toBe(true);
+      for (const name of ["workspace.pcws", "verified.pcws", "current.pcws", "restored"])
+        expect.soft(await fs.lstat(path.join(firstScratch, name)).catch(error => { if (error.code === "ENOENT") return null; throw error; })).toBeNull();
+      const covered = (await fs.readdir(firstScratch)).filter(name => name.startsWith("covered-"));
+      expect(covered.length).toBeGreaterThan(0);
+      for (const area of covered) for (const name of ["saved.pcws", "current.pcws", "restored"])
+        expect(await fs.lstat(path.join(firstScratch, area, name))).toBeDefined();
+      expect((await db.select().from(executionWorkspaces).where(inArray(executionWorkspaces.id, [parent.id, alias.id])))
+        .every(row => !readRemoteWorkspaceAuthority(row.metadata))).toBe(true);
+      await fs.writeFile(path.join(cwd, "untracked.txt"), "changed after first payload cleanup\n");
+    } finally { release(); result = await pending; await fs.chmod(readOnly, 0o755); }
+    expect(result).toMatchObject({ error: expect.objectContaining({ message: "nested_workspace_source_changed" }) });
+    expect((await db.select().from(executionWorkspaces).where(inArray(executionWorkspaces.id, [parent.id, alias.id])))
+      .every(row => !readRemoteWorkspaceAuthority(row.metadata))).toBe(true);
+    expect(await db.select().from(activityLog)).toEqual(beforeActivity);
+    expect(await fs.readFile(path.join(cwd, "untracked.txt"), "utf8")).toBe("changed after first payload cleanup\n");
+    await expect(fs.lstat(firstScratch)).rejects.toMatchObject({ code: "ENOENT" });
+  }, 60_000);
   it.each(["unchanged", "changed"] as const)("shares the merged child verifier across parallel aliases under the complete cohort fence (%s child bytes)", async mode => {
     const f = await fixture(), parent = f.leaves[0], cwd = path.join(parent.cwd!, ".paperclip", "worktrees", "nested");
     await git(f.root, "worktree", "add", "-qb", "nested", cwd);

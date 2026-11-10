@@ -880,7 +880,15 @@ export async function migrateRemoteWorkspaceCohort(input: {
     const worker = async () => {
       while (!signal.aborted && next < plans.length) {
         const index = next++, plan = plans[index];
-        try { captures[index] = await captureMigration(plan.input, plan.reserved, plan.onlineSource, childVerifier); }
+        try {
+          const captured = await captureMigration(plan.input, plan.reserved, plan.onlineSource, childVerifier);
+          captures[index] = captured;
+          if (plan.onlineSource && !plan.reserved.archivedRepositoryIntents.length) {
+            for (const name of ["workspace.pcws", "verified.pcws", "current.pcws"])
+              await fs.rm(path.join(captured.scratch, name), { force: true });
+            await removeTaskDirectoryTree(captured.restored);
+          }
+        }
         catch (error) { failure ??= error; stop.abort(error); }
       }
     };
