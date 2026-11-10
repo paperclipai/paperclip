@@ -576,8 +576,7 @@ a restart, since a duplicate holds nothing.
 `--provider-fault-restart` also takes K2 (SIGTERM, a graceful restart whose shutdown drain meets the
 held or missing message) and K4 (kill -9, then the control plane stays down for 120 s, the low end of
 the seeded K4 range). For a restart, `provider_fault_applied` requires that the held message was not
-released or discarded before the old control plane stopped (`stoppedAt`), not only before the fault
-started. A K2 drain took 15–20 s in wave w-20261110T092735-s213, so a PV1 that must straddle a K2 needs a
+released before the old control plane stopped (`stoppedAt`), not only before the fault started. A K2 drain took 15–20 s in wave w-20261110T092735-s213, so a PV1 that must straddle a K2 needs a
 longer delay, for example `--provider-fault-delays 40`. A comma list such as `K1,K2,K4` cycles across the PV1/PV2 tasks in plan order,
 so one wave covers several restart kinds. `--provider-fault-message` takes `WORKLOAD=message` entries
 next to the default, for example `S1=interrupt_ack,terminal`: S1 tasks fault the interrupt
@@ -591,8 +590,9 @@ node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
 
 Such a task passes when:
 
-- `provider_fault_applied`: the fault applied once, the restart started after it, and the held message
-  was neither released nor discarded before the old control plane stopped;
+- `provider_fault_applied`: the fault applied once, the restart started after it, the held message was
+  not released before the old control plane stopped, and it was not discarded before the restart started
+  (a discard during a K2 shutdown is the restart stopping the provider);
 - the ordinary grade passes: R1–R6 for a restart-crossing task and the workload's T-oracle. For Q1
   that means one question, the asking run `succeeded`, no failed run, nothing started before the
   answer, and the brief carries the answer.

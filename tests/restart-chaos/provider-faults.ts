@@ -251,10 +251,12 @@ export async function readProviderFaultEvents(logPath: string, nonce?: string): 
  * exercised (for example the turn ended before any interrupt), and a pass would prove nothing.
  *
  * With `--provider-fault-restart` the fault must also straddle the restart: the restart started after
- * the fault applied, and the held message was neither released nor discarded before the old control plane
- * had stopped (`restartStoppedAt`). A K2 drains gracefully between its start and its stop, so a message
- * released in that drain reached the old process and straddled nothing. The kill takes the held message
- * with the runner, so a PV1 task then needs no release. Whether the task itself recovered
+ * the fault applied, the held message was not released before the old control plane had stopped
+ * (`restartStoppedAt`), and it was not discarded before the restart started. A K2 drains gracefully
+ * between its start and its stop, so a message released in that drain reached the old process and
+ * straddled nothing. A discard after the start is the restart's own cleanup stopping the provider with
+ * the message still held, which is the straddle. The kill takes the held message with the runner, so a
+ * PV1 task then needs no release. Whether the task itself recovered
  * is the ordinary grade (R1–R6 and its T-oracle), which this check never replaces.
  */
 export function withProviderFaultCheck(oracle: OracleResult, plan: TaskPlan, events: readonly ProviderFaultEvent[],
@@ -270,11 +272,12 @@ export function withProviderFaultCheck(oracle: OracleResult, plan: TaskPlan, eve
   let restartDetail = "";
   if (rule.restart) {
     const appliedAt = applied[0]?.at ?? null;
-    // Released or discarded before the old control plane stopped (a K2 drain included): the message was
-    // already gone, so nothing straddled the restart.
+    // Released before the old control plane stopped (a K2 drain included): the old process got the
+    // message, so nothing straddled the restart. Discarded before the restart started: the provider
+    // exited on its own first. A discard after the start is the restart's cleanup and still straddles.
     const stoppedAt = restartStoppedAt ?? restartStartedAt;
     const releasedBeforeRestart = stoppedAt !== null && released.some(event => event.at < stoppedAt);
-    const discardedBeforeRestart = stoppedAt !== null && discarded.some(event => event.at < stoppedAt);
+    const discardedBeforeRestart = restartStartedAt !== null && discarded.some(event => event.at < restartStartedAt);
     exercised = applied.length === 1 && appliedAt !== null && restartStartedAt !== null && restartStartedAt >= appliedAt
       && !releasedBeforeRestart && !discardedBeforeRestart;
     restartDetail = restartStartedAt === null ? " restart=none"
