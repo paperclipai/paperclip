@@ -25,6 +25,15 @@ describe("a run the board shows as waiting for storage (R5)", () => {
     expect(deadRunningRun(sample(mergeLiveStatusEvidence([run()], [stale])), startedAt)).toMatchObject({ id: "9d39550a" });
   });
 
+  it("keeps live activity it already saw when a later live read fails", async () => {
+    const api = { get: vi.fn(async () => [waiting]) };
+    await withLiveStatusEvidence(api as never, "issue-1", [run()]);
+    api.get.mockRejectedValueOnce(new Error("unreachable"));
+    const [later] = await withLiveStatusEvidence(api as never, "issue-1", [run()]);
+    expect(later.lastEvidenceAt).toBe(waiting.currentStatusUpdatedAt);
+    expect(deadRunningRun(sample([later]), startedAt)).toBeNull();
+  });
+
   it("reads live status only while a run is running, and tolerates a failed read", async () => {
     const get = vi.fn(async () => [waiting]);
     expect(await withLiveStatusEvidence({ get } as never, "issue-1", [run({ status: "succeeded" })])).toHaveLength(1);
@@ -32,7 +41,7 @@ describe("a run the board shows as waiting for storage (R5)", () => {
     const [merged] = await withLiveStatusEvidence({ get } as never, "issue-1", [run()]);
     expect(get).toHaveBeenCalledWith("/api/issues/issue-1/live-runs", 5_000);
     expect(merged.lastEvidenceAt).toBe(waiting.currentStatusUpdatedAt);
-    const failing = { get: vi.fn(async () => { throw new Error("unreachable"); }) };
+    const failing = { get: vi.fn(async (): Promise<unknown> => { throw new Error("unreachable"); }) };
     expect(await withLiveStatusEvidence(failing as never, "issue-1", [run()])).toEqual([run()]);
   });
 });

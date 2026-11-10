@@ -21,9 +21,18 @@ export function mergeLiveStatusEvidence(runs: RunSample[], live: ReadonlyArray<L
   });
 }
 
-export async function withLiveStatusEvidence(api: { get<T>(path: string, timeoutMs?: number): Promise<T> }, issueId: string,
-  runs: RunSample[]): Promise<RunSample[]> {
+type LiveApi = { get<T>(path: string, timeoutMs?: number): Promise<T> };
+const seen = new WeakMap<LiveApi, Map<string, string>>();
+
+export async function withLiveStatusEvidence(api: LiveApi, issueId: string, runs: RunSample[]): Promise<RunSample[]> {
   if (!runs.some(run => run.status === "running")) return runs;
   const live = await api.get<LiveRun[]>(`/api/issues/${issueId}/live-runs`, 5_000).catch(() => null);
-  return mergeLiveStatusEvidence(runs, Array.isArray(live) ? live : null);
+  const merged = mergeLiveStatusEvidence(runs, Array.isArray(live) ? live : null);
+  let remembered = seen.get(api);
+  if (!remembered) { remembered = new Map(); seen.set(api, remembered); }
+  return merged.map(run => {
+    const lastEvidenceAt = latest([run.lastEvidenceAt, remembered!.get(run.id)]);
+    if (lastEvidenceAt) remembered!.set(run.id, lastEvidenceAt);
+    return lastEvidenceAt === (run.lastEvidenceAt ?? null) ? run : { ...run, lastEvidenceAt };
+  });
 }
