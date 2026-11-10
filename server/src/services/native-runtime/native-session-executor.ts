@@ -5603,6 +5603,15 @@ function retirementReasonName(kind: keyof typeof RETIREMENT_REASON_NAMES, value:
  * receipt is a claim of one recorded Runner process. Once that process and its
  * recorded provider processes are proven stopped by exact PID and start time,
  * the claim has no owner left and the same retirement applies.
+ *
+ * A warm sandbox owner keeps its Runner `ready` in its own sandbox after the
+ * turn, waiting for live adoption. A restart or deploy that replaces its
+ * controller leaves that Runner without anyone who could adopt it, and when
+ * this run received a different sandbox (created or replacement) it can never
+ * be adopted here. Its terminal state is then as knowable as a per-turn
+ * owner's: the same committed result, released lease, stopped controller and
+ * settled journal prove it finished, so the same retirement applies. A local
+ * warm Runner, or a resumed sandbox that still holds it, keeps the live path.
  */
 async function inspectFinishedPerTurnRunnerdOwner(input: {
   db: Db;
@@ -5618,8 +5627,9 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
   // A resumed sandbox still holds the prior Runner's own lifecycle, which its
   // existing recovery path reads. Plugin tasks own a separate saved checkpoint.
   const refuse = (refused: string) => ({ finished: false as const, refused });
-  if (input.execution.session.lifecyclePolicy.mode !== "per_turn") return refuse("lifecycle_not_per_turn");
+  const lifecycle = input.execution.session.lifecyclePolicy.mode;
   const localRunner = !target || target.kind === "local";
+  if (lifecycle !== "per_turn" && !(lifecycle === "warm" && !localRunner)) return refuse("lifecycle_not_per_turn");
   if (!localRunner) {
     if (target.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.runnerTask) {
       return refuse("target_not_sandbox_runner");
@@ -7028,10 +7038,38 @@ export async function restoreRemoteSuspendedRunnerCheckpoint(input: {
   // controller-fencing and physical-process checks. Only suspension is cached.
   if (!movedAllocation && input.execution.session.lifecyclePolicy.mode === "warm" && state.lifecycle !== "suspended") return;
   if (state.lifecycle !== "suspended" || !Array.isArray(state.outbox) || state.outbox.length !== 0
-    || state.pendingTerminalDelivery != null || state.pendingProviderCleanup != null || state.warmTransition != null) {
+    || (state.pendingTerminalDelivery != null && !isUndeliveredSuspendReceipt(state, root))
+    || state.pendingProviderCleanup != null || state.warmTransition != null) {
     throw new Error("native_controller_recovery_missing_evidence:runner_not_settled");
   }
   savePluginRunnerCheckpoint(root, state, prior);
+}
+
+/** The Runner saves `suspended` and a terminal fence for its suspend result
+ * before it sends that result. When a restart stops the controller first, the
+ * fence stays: the suspension finished, and only its acknowledgement is
+ * missing. A later authorized Runner process reconciles that receipt, so it
+ * does not hold the suspended state. Any other fence (a turn's terminal, a
+ * provider cleanup, unsent events), or a journal that lacks the command,
+ * names it differently or holds a later command still refuses. */
+function isUndeliveredSuspendReceipt(state: Record<string, unknown>, root: string): boolean {
+  const pending = record(state.pendingTerminalDelivery);
+  if (pending.commandType !== "runner.suspend" || pending.lifecycle !== "suspended"
+    || typeof pending.commandId !== "string" || !pending.commandId
+    || !Number.isSafeInteger(pending.controllerSeq) || Number(pending.controllerSeq) <= 0
+    || pending.controllerSeq !== state.lastControllerCommandSeq) return false;
+  try {
+    const control = record(JSON.parse(readBoundedNativeFile(resolve(root, "control-plane", "control-plane-state.json"),
+      NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "runner_durable_identity_too_large").toString("utf8")));
+    const commands = Array.isArray(control.commands) ? control.commands.map(record) : [];
+    const matching = commands.filter(command => command.commandId === pending.commandId);
+    // The suspend must be journaled exactly once and be the controller's last command.
+    return matching.length === 1 && matching[0]!.type === "runner.suspend"
+      && matching[0]!.controllerSeq === pending.controllerSeq
+      && commands.every(command => !(Number(command.controllerSeq) > Number(pending.controllerSeq)));
+  } catch {
+    return false;
+  }
 }
 
 /** Materialize opaque controller state before ordinary warm admission reads it.
@@ -9969,8 +10007,8 @@ async function executePaperclipNativeSessionAttempt(
         canReuseProcess: previous => !needsCoreGitHubAccess(input) && canReuseNativeProcess(input,
           record(JSON.parse(readBoundedNativeFile(nativeSessionCheckpointPath(previous),
             NATIVE_WARM_CHECKPOINT_MAX_BYTES, "native_session_supervisor_checkpoint_too_large").toString("utf8"))).processConfigDigest),
-      });
-      remoteWarmRecovery.releasedSource = releasedSource;
+      }) ?? undefined;
+      if (remoteWarmRecovery) remoteWarmRecovery.releasedSource = releasedSource;
     }
   }
   if (input.useRunnerd) {
