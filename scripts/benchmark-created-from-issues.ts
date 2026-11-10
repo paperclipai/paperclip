@@ -40,21 +40,23 @@ const evidenceDir = arg("evidence-dir");
 // Baseline modules: the created-from condition and the list that embeds it.
 // Every other dependency is held constant at the working tree.
 const modulePaths = ["server/src/services/issues.ts", "server/src/services/issue-creation-origin.ts"];
-const baselineDir = await fs.mkdtemp(path.join(repositoryRoot, "server/scripts/.created-from-baseline-"));
-for (const modulePath of modulePaths) {
-  const source = git(["show", `${baselineRevision}:${modulePath}`]).replace(/from "(\.{1,2}\/[^"]+)"/g, (_m, specifier: string) => {
-    const resolved = fileURLToPath(new URL(specifier, pathToFileURL(path.join(repositoryRoot, modulePath))));
-    return `from ${JSON.stringify(resolved.endsWith("/services/issue-creation-origin.js") ? path.join(baselineDir, "issue-creation-origin.ts") : resolved)}`;
-  });
-  await fs.writeFile(path.join(baselineDir, path.basename(modulePath)), source);
-}
-const baseline = await import(pathToFileURL(path.join(baselineDir, "issues.ts")).href) as typeof import("../server/src/services/issues.js");
-
 type Captured = { sql: string; params: unknown[] };
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
 let db: Db | undefined;
 const keepAlive = setInterval(() => {}, 1000);
+const baselineDir = await fs.mkdtemp(path.join(repositoryRoot, "server/scripts/.created-from-baseline-"));
+// Everything after the copy directory exists runs inside the cleanup scope,
+// so a baseline that cannot be read or loaded leaves no copied sources.
 try {
+  for (const modulePath of modulePaths) {
+    const source = git(["show", `${baselineRevision}:${modulePath}`]).replace(/from "(\.{1,2}\/[^"]+)"/g, (_m, specifier: string) => {
+      const resolved = fileURLToPath(new URL(specifier, pathToFileURL(path.join(repositoryRoot, modulePath))));
+      return `from ${JSON.stringify(resolved.endsWith("/services/issue-creation-origin.js") ? path.join(baselineDir, "issue-creation-origin.ts") : resolved)}`;
+    });
+    await fs.writeFile(path.join(baselineDir, path.basename(modulePath)), source);
+  }
+  const baseline = await import(pathToFileURL(path.join(baselineDir, "issues.ts")).href) as typeof import("../server/src/services/issues.js");
+
   database = await startEmbeddedPostgresTestDatabase("created-from-benchmark-");
   await applyPendingMigrations(database.connectionString);
   db = createDb(database.connectionString, { maxConnections: 8 });
