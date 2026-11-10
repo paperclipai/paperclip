@@ -261,11 +261,17 @@ Initial setup uses the existing reporting environment:
    evaluation after an uncertain request. Initial route verification uses a small
    selection and does not qualify all 244 cases.
 
-Each worker executes one case. Selections of up to three cases allow two cases
-at once. Larger selections allow eight independent cases and one external-input
-case at once. External-input cases remain serial because they can share QA
-resources. A full run can take hours. Its elapsed time depends on setup and fleet
-capacity; the declared case clocks are not a completion-time guarantee.
+Each worker executes one case. Native cases allow two workers at once for any
+selection size. Selections of up to three cases that include external input keep
+the native lane at one worker. The separate external-input lane remains serial
+because those cases can share QA resources. A larger mixed selection can therefore
+run two native cases and one external-input case at once.
+
+This lower-load configuration changes scheduling, not case clocks, model settings
+or zero automatic retries. It does not qualify eight-way native execution or
+establish a cause for earlier noncompletion. A full run can take hours. Its elapsed
+time depends on setup and fleet capacity; declared case clocks are not a
+completion-time guarantee.
 
 Each finished worker starts its own protected reader and safe exporter. A
 separate reporting job uploads that case and verifies its result and two JSON
@@ -335,3 +341,13 @@ The canonical candidate above retains Source5 and adds initial personal-secret a
 The reviewed product overlay from unmerged core PR #18742 at `61996a96dd09e90a5788e8711a94fc5ae631f425` allows a new Ask-first review for a strictly authenticated later same-person human intent following a declined request, including the normal reopened-comment source. Repeating the same intent stays denied; this grants no approval or execution authority. Both PostgreSQL route regressions ran and passed on that core head. The candidate preserves the compatible gateway and actual database row contracts; this is not a core merge or a qualified chat pass. Core PRs #18717, #18734 and #18742 remain unmerged. SDK115 completion remains unknown; the other five SDK cases remain held.
 
 For one selected case, the trusted controller downloads each exact bundle and publication artifact name into an explicit matching child directory. For multiple cases, it keeps separate named artifact directories. The gather command authenticates the frozen selection, every prepared bundle and its hashes before it copies the safe projections. Final coverage still authenticates the original publication receipts and verifies TestOps results without another export or upload. Empty, mixed, foreign and symbolic-link layouts fail closed. The producer's optional once-upload marker has an exact closed schema; it does not replace a verified publication receipt.
+
+
+The optional Company-secret binding approval is declared only by
+`secrets.configure-company-secret` with `optionalCompanySecretBindingApproval: true`.
+Its two base human inputs may be followed by one independently verified UI approval
+(maximum three actual human inputs). Its native bounds are explicitly 2..3 and its
+original 480000ms attempt, model and zero automatic retries remain unchanged.
+The controller copies this static marker from the candidate descriptor and checks
+it against source task metadata; metadata extraction never executes fixture hooks.
+This conditional accounting does not pre-complete approval or qualify a live pass.

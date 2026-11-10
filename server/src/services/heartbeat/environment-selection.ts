@@ -145,10 +145,13 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     existingExecutionWorkspace = await executionWorkspacesSvc.getStoredById(agent.companyId, existingExecutionWorkspace.id);
   }
   const retainedDirectory = input.task.freshWorkspace?.mode === "reuse_current_workspace" ? input.task.freshWorkspace : null;
-  if (retainedDirectory && (issueRef?.executionWorkspaceId !== retainedDirectory.workspaceId ||
-      existingExecutionWorkspace?.id !== retainedDirectory.workspaceId || existingExecutionWorkspace.cwd !== retainedDirectory.cwd)) {
+  const retainedWorkspace = input.task.freshWorkspace?.mode === "resume_stopped_native_workspace"
+    || input.task.freshWorkspace?.mode === "reuse_issue_workspace" ? input.task.freshWorkspace : retainedDirectory;
+  if (retainedWorkspace && (issueRef?.executionWorkspaceId !== retainedWorkspace.workspaceId ||
+      existingExecutionWorkspace?.id !== retainedWorkspace.workspaceId || existingExecutionWorkspace.cwd !== retainedWorkspace.cwd)) {
     throw new WorkspaceValidationFailure("The saved Retry workspace binding changed.", {
-      workspaceValidation: { reason: "isolated_task_directory_binding_mismatch", issueId },
+      workspaceValidation: { reason: retainedDirectory ? "isolated_task_directory_binding_mismatch"
+        : retainedWorkspace.mode === "reuse_issue_workspace" ? "retry_workspace_binding_mismatch" : "stopped_native_workspace_binding_mismatch", issueId },
     });
   }
   const nativeRecoveryExecutionWorkspaceId =
@@ -159,7 +162,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   const workspaceReuseRequest =
     resolveExecutionWorkspaceReuseRequestForIssue({
       issueExecutionWorkspaceId: requestedExecutionWorkspaceId,
-      issueExecutionWorkspacePreference: controllerOnly ? null : nativeRecoveryExecutionWorkspaceId
+      issueExecutionWorkspacePreference: controllerOnly ? null : nativeRecoveryExecutionWorkspaceId || retainedWorkspace
         ? "reuse_existing"
         : (issueRef?.executionWorkspacePreference ?? null),
       existingExecutionWorkspaceStatus:
@@ -491,7 +494,11 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     ...(reusableExistingExecutionWorkspace?.providerType === "adapter_managed" ? [config.workspaceStrategy] : []),
     issueAssigneeOverrides?.adapterConfig?.workspaceStrategy,
     projectExecutionWorkspacePolicy?.workspaceStrategy, issueExecutionWorkspaceSettings?.workspaceStrategy];
-  const boundTaskDirectory = !controllerOnly && !fresh && !nativeRecoveryExecutionWorkspaceId && issueId !== null && issueRef !== null &&
+  // RC-58: a native restart re-prepares its admitted workspace. When that is
+  // the task's own bound directory (for example a fresh Retry attempt), it keeps
+  // its directory strategy; it never becomes the base of a new git worktree.
+  const boundTaskDirectory = !controllerOnly && !fresh && issueId !== null && issueRef !== null &&
+    (!nativeRecoveryExecutionWorkspaceId || nativeRecoveryExecutionWorkspaceId === issueRef.executionWorkspaceId) &&
     requestedShouldReuseExisting && requestedExecutionWorkspaceMode === "isolated_workspace" &&
     !workspaceProjectContext?.hasWorkspace && !issueRef.projectWorkspaceId &&
     taskWorkspaceIntent?.selection.kind !== "configured_source" &&

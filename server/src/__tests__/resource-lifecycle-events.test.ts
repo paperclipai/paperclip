@@ -462,6 +462,91 @@ describePostgres("Resource lifecycle events", () => {
     await expect(inbox.list(companyId, 100, "invalid")).rejects.toMatchObject({ status: 400 });
   });
 
+  it("lists a resource's head without rechecking its acknowledged backlog for every later event", async () => {
+    // A long-lived resource accumulates an acknowledged prefix and then a
+    // backlog behind a deferred head. Checking each backlog event against
+    // every older event costs acknowledged × backlog probes; staging ran this
+    // statement for over 20 minutes per call.
+    const plugin = await createPlugin();
+    const inbox = pluginLifecycleInbox(db, plugin.id);
+    const resourceId = randomUUID();
+    const acknowledged = 2_000;
+    const backlog = 2_000;
+    const rows = await db.insert(resourceLifecycleEvents).values([
+      { companyId, resourceType: "agent" as const, resourceId, action: "create" as const },
+      ...Array.from({ length: acknowledged + backlog }, (_, index) => ({
+        companyId, resourceType: "agent" as const, resourceId, action: index % 2 ? "resume" as const : "pause" as const,
+      })),
+    ]).returning({ id: resourceLifecycleEvents.id });
+    await db.insert(pluginLifecycleAcknowledgments)
+      .values(rows.slice(0, acknowledged + 1).map(row => ({ pluginId: plugin.id, eventId: row.id })));
+    const other = randomUUID();
+    await db.insert(resourceLifecycleEvents).values({ companyId, resourceType: "agent", resourceId: other, action: "create" });
+
+    const started = performance.now();
+    const listed = await inbox.list(companyId, 100);
+    const elapsedMs = performance.now() - started;
+
+    expect(listed.map(event => [event.resourceId, event.id])).toEqual([
+      [resourceId, String(rows[acknowledged + 1].id)],
+      [other, expect.any(String)],
+    ]);
+    // Before: 3.5 s locally. After: under 30 ms. The bound leaves room for a slow runner.
+    expect(elapsedMs).toBeLessThan(2_000);
+
+    // Acknowledgement applies the same head rule that the list used.
+    await expect(inbox.acknowledge(companyId, String(rows[acknowledged + 2].id))).rejects.toMatchObject({ status: 409 });
+    await inbox.acknowledge(companyId, listed[0].id);
+    expect((await inbox.list(companyId, 100))[0]).toMatchObject({ resourceId, id: String(rows[acknowledged + 2].id) });
+  }, 120_000);
+
+  it("lists exactly one head per resource across acknowledged history, late creations, gaps, and pages", async () => {
+    const plugin = await createPlugin();
+    const other = await createPlugin();
+    const inbox = pluginLifecycleInbox(db, plugin.id);
+    const decoyCompanyId = randomUUID();
+    await db.insert(companies).values({ id: decoyCompanyId, name: "Lifecycle decoy", issuePrefix: `D${decoyCompanyId.replaceAll("-", "").slice(0, 6)}` });
+    const agentId = randomUUID(), lateCreateId = randomUUID(), gapId = randomUUID(), doneId = randomUUID(), projectId = randomUUID();
+    type Row = typeof resourceLifecycleEvents.$inferInsert;
+    const insert = async (rows: Row[]) => db.insert(resourceLifecycleEvents).values(rows).returning();
+    const ack = async (ids: number[], pluginId = plugin.id) => {
+      if (ids.length) await db.insert(pluginLifecycleAcknowledgments).values(ids.map(eventId => ({ pluginId, eventId })));
+    };
+    const [agentCreate] = await insert([{ companyId, resourceType: "agent", resourceId: agentId, action: "create" }]);
+    // The same id as a different resource type is an independent stream.
+    const runtime = await insert(Array.from({ length: 12 }, () => ({ companyId, resourceType: "agent_runtime" as const, resourceId: agentId, action: "update" as const })));
+    const [latePause] = await insert([{ companyId, resourceType: "agent", resourceId: lateCreateId, action: "pause" }]);
+    const gap = await insert([0, 1, 2].map(() => ({ companyId, resourceType: "project" as const, resourceId: gapId, action: "update" as const })));
+    const done = await insert([{ companyId, resourceType: "agent", resourceId: doneId, action: "create" }, { companyId, resourceType: "agent", resourceId: doneId, action: "pause" }]);
+    const [lateCreate] = await insert([{ companyId, resourceType: "agent", resourceId: lateCreateId, action: "create" }]);
+    const [projectCreate, projectArchive] = await insert([
+      { companyId, resourceType: "project", resourceId: projectId, action: "create" }, { companyId, resourceType: "project", resourceId: projectId, action: "archive" }]);
+    await insert([{ companyId: decoyCompanyId, resourceType: "agent", resourceId: randomUUID(), action: "create" }]);
+    await ack([agentCreate.id, ...runtime.slice(0, 9).map(e => e.id), gap[1].id, ...done.map(e => e.id), projectCreate.id]);
+    await ack(runtime.map(e => e.id), other.id);
+
+    const all = ["agent", "project", "agent_runtime"] as const;
+    expect((await inbox.list(companyId, 100, undefined, [...all])).map(e => Number(e.id))).toEqual(
+      [runtime[9].id, gap[0].id, lateCreate.id, projectArchive.id].sort((a, b) => a - b));
+    expect((await inbox.list(companyId)).map(e => [e.resourceId, e.action])).toEqual(
+      [[gapId, "update"], [lateCreateId, "create"], [projectId, "archive"]]);
+    expect(await inbox.list(companyId, 2, undefined, [...all])).toEqual((await inbox.list(companyId, 100, undefined, [...all])).slice(0, 2));
+    expect((await inbox.list(companyId, 100, String(gap[0].id), [...all])).map(e => Number(e.id))).toEqual([lateCreate.id, projectArchive.id]);
+    expect(await pluginLifecycleInbox(db, other.id).list(companyId, 100, undefined, ["agent_runtime"])).toEqual([]);
+    expect(await pluginLifecycleInbox(db, other.id).hasPending(companyId, ["agent_runtime"])).toBe(false);
+    expect(await inbox.hasPending(companyId, ["agent_runtime"])).toBe(true);
+    expect(await inbox.hasPending(companyId)).toBe(true);
+    expect(await inbox.list(decoyCompanyId, 100, undefined, [...all])).toEqual([expect.objectContaining({ companyId: decoyCompanyId })]);
+    const [head] = await inbox.list(companyId, 1, undefined, ["project"]);
+    expect(head).toEqual({ id: String(gap[0].id), companyId, resourceType: "project", resourceId: gapId, action: "update", createdAt: gap[0].createdAt.toISOString() });
+
+    // Acknowledging a head exposes that resource's next unacknowledged event, skipping acknowledged gaps.
+    await inbox.acknowledge(companyId, String(gap[0].id));
+    await inbox.acknowledge(companyId, String(lateCreate.id));
+    expect((await inbox.list(companyId)).map(e => Number(e.id))).toEqual([latePause.id, gap[2].id, projectArchive.id].sort((a, b) => a - b));
+    await expect(inbox.acknowledge(companyId, String(runtime[10].id))).rejects.toMatchObject({ status: 409 });
+  });
+
   it("never skips a lower event id that commits after a higher id is acknowledged", async () => {
     const plugin = await createPlugin();
     const inbox = pluginLifecycleInbox(db, plugin.id);

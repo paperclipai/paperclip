@@ -9,6 +9,7 @@ import {
   rememberIssueDetailLocationState,
 } from "@/lib/issueDetailBreadcrumb";
 import { Link } from "@/lib/router";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 export interface TaskDetailRelationItem {
   id: string;
@@ -50,7 +51,7 @@ export function RelationNavigationList({
               title={`${item.identifier ? `${item.identifier} — ` : ""}${item.title}`}
             >
               {item.status ? (
-                <StatusIcon status={item.status} displayStatus={item.displayStatus} className="h-3.5 w-3.5 shrink-0" />
+                <StatusIcon {...taskStatusIconProps({ ...item, status: item.status })} className="h-3.5 w-3.5 shrink-0" />
               ) : null}
               <span className="min-w-0 flex-1 truncate">{item.title}</span>
               {item.identifier ? (

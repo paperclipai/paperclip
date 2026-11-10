@@ -1,3 +1,5 @@
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
+import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyApprovalWork } from "./approval-work-notifications.js";
 import { notifyDecisionTargetIssueRemoval } from "./decision-targets.js";
@@ -156,6 +158,7 @@ async function resolveRoutineResponsibleUserId(db: Db, companyId: string, actorU
 
 type Actor = {
   agentId?: string | null;
+  agentCompanyId?: string;
   userId?: string | null;
   actorResponsibleUserId?: string | null;
   runId?: string | null;
@@ -970,6 +973,10 @@ export function routineService(
       restoredFromRevisionId?: string | null;
     } = {},
   ) {
+    const pluginOrigin = currentPluginInteractionOrigin();
+    if (pluginOrigin) actor = { ...actor, agentId: pluginOrigin.agentId, userId: null, runId: pluginOrigin.runId };
+    await assertAgentInteraction(executor, { companyId: routine.companyId, actorAgentId: actor.agentId, actorCompanyId: actor.agentCompanyId,
+      operation: "assign", targetAgentId: routine.assigneeAgentId, parentIssueId: routine.parentIssueId, lock: true });
     const snapshot = await buildRoutineRevisionSnapshot(executor, routine);
     const nextRevisionNumber = routine.latestRevisionId ? routine.latestRevisionNumber + 1 : 1;
     const now = new Date();
@@ -1792,6 +1799,23 @@ export function routineService(
       await tx.execute(
         sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`,
       );
+      const revisionActor = input.source !== "manual" && input.routine.latestRevisionId
+        ? await tx.select({ agentId: routineRevisions.createdByAgentId, userId: routineRevisions.createdByUserId })
+          .from(routineRevisions).where(and(eq(routineRevisions.companyId, input.routine.companyId),
+            eq(routineRevisions.routineId, input.routine.id), eq(routineRevisions.id, input.routine.latestRevisionId)))
+          .then(rows => rows[0]) : undefined;
+      const sourceRunActor = input.createdByRunId ? await tx.select({ agentId: heartbeatRuns.agentId })
+        .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.routine.companyId), eq(heartbeatRuns.id, input.createdByRunId)))
+        .then(rows => rows[0]?.agentId ?? null) : null;
+      const interactionActorAgentId = currentPluginInteractionOrigin()?.agentId ?? input.actor?.agentId ?? sourceRunActor
+        ?? (input.actor?.userId ? null : revisionActor ? revisionActor.agentId
+          : input.routine.updatedByAgentId ?? (input.routine.updatedByUserId ? null : input.routine.createdByAgentId));
+      const interactionActorCompanyId = interactionActorAgentId ? await tx.select({ companyId: agents.companyId }).from(agents)
+        .where(eq(agents.id, interactionActorAgentId)).then(rows => rows[0]?.companyId) : undefined;
+      await assertAgentInteraction(tx, { companyId: input.routine.companyId, actorAgentId: interactionActorAgentId,
+        actorCompanyId: interactionActorCompanyId,
+        operation: "assign", targetAgentId: assigneeAgentId, parentIssueId: input.routine.parentIssueId,
+        texts: [title, description ?? ""], lock: true });
 
       if (input.trigger && (input.source === "webhook" || input.source === "schedule")) {
         const currentTrigger = await txDb.select().from(routineTriggers).where(eq(routineTriggers.id, input.trigger.id)).then((rows) => rows[0]);
@@ -1911,6 +1935,9 @@ export function routineService(
             projectWorkspaceId,
             goalId: input.routine.goalId,
             parentId: input.routine.parentIssueId,
+            // A routine's parent is configured, not chosen per run. Human-configured
+            // routines keep any depth; agent-authored ones follow the agent limit.
+            parentDepthPolicy: input.routine.createdByAgentId ? "flatten" : "allow_nested",
             title,
             description,
             status: "todo",
@@ -1972,7 +1999,9 @@ export function routineService(
           reason: "issue_assigned",
           mutation: "create",
           contextSource: "routine.dispatch",
-          requestedByActorType: input.source === "schedule" ? "system" : undefined,
+          requestedByActorType: interactionActorAgentId ? "agent" : input.actor?.userId ? "user" : input.source === "schedule" ? "system" : undefined,
+          requestedByActorId: interactionActorAgentId ?? input.actor?.userId ?? null,
+          requestedByActorCompanyId: interactionActorCompanyId,
           rethrowOnError: true,
         });
         const updated = await finalizeRun(createdRun.id, {
@@ -2233,6 +2262,9 @@ export function routineService(
       }
       const createdRoutine = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        await assertAgentInteraction(tx, { companyId, actorAgentId: actor.agentId, actorCompanyId: actor.agentCompanyId, operation: "assign",
+          targetAgentId: input.assigneeAgentId, parentIssueId: input.parentIssueId,
+          texts: [input.title, input.description ?? ""], lock: true });
         await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
         const [created] = await txDb
           .insert(routines)
@@ -2276,7 +2308,7 @@ export function routineService(
       return createdRoutine;
     },
 
-    update: async (id: string, patch: UpdateRoutine, actor: Actor): Promise<Routine | null> => {
+    update: async (id: string, patch: UpdateRoutine, actor: Actor): Promise<(Routine & { previousResponsibleUserId: string | null }) | null> => {
       const existing = await getRoutineById(id);
       if (!existing) return null;
       const nextProjectId = patch.projectId === undefined ? existing.projectId : patch.projectId;
@@ -2327,7 +2359,7 @@ export function routineService(
       if (enabledScheduleTriggers) {
         assertScheduleCompatibleVariables(nextVariables);
       }
-      const responsibleUserId = await resolveRoutineResponsibleUserId(
+      const responsibleUserId = patch.responsibleUserId ?? existing.responsibleUserId ?? await resolveRoutineResponsibleUserId(
         db,
         existing.companyId,
         actor.userId,
@@ -2336,6 +2368,7 @@ export function routineService(
       if (!responsibleUserId) {
         throw unprocessable("Routine requires a responsible user");
       }
+      let previousResponsibleUserId: string | null = null;
       const updatedRoutine = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
         await notifyDeliveryWork(txDb, DELIVERY_QUEUES.routineSchedules);
@@ -2346,11 +2379,33 @@ export function routineService(
           .where(eq(routines.id, id))
           .then((rows) => rows[0] ?? null);
         if (!locked) return null;
+        await assertAgentInteraction(tx, { companyId: locked.companyId, actorAgentId: actor.agentId, actorCompanyId: actor.agentCompanyId, operation: "assign",
+          targetAgentId: patch.assigneeAgentId === undefined ? locked.assigneeAgentId : patch.assigneeAgentId,
+          parentIssueId: patch.parentIssueId === undefined ? locked.parentIssueId : patch.parentIssueId,
+          texts: [
+            ...(patch.title !== undefined && patch.title !== locked.title ? [patch.title] : []),
+            ...(patch.description !== undefined && patch.description !== locked.description ? [patch.description ?? ""] : []),
+          ], lock: true });
+        previousResponsibleUserId = locked.responsibleUserId;
 
         if (patch.baseRevisionId && patch.baseRevisionId !== locked.latestRevisionId) {
           throw conflict("Routine was updated by someone else", {
             currentRevisionId: locked.latestRevisionId,
           });
+        }
+
+        if (patch.responsibleUserId !== undefined) {
+          const member = await txDb.select({ id: companyMemberships.id })
+            .from(companyMemberships)
+            .where(and(
+              eq(companyMemberships.companyId, locked.companyId),
+              eq(companyMemberships.principalType, "user"),
+              eq(companyMemberships.principalId, patch.responsibleUserId),
+              eq(companyMemberships.status, "active"),
+            ))
+            .for("share")
+            .then((rows) => rows[0] ?? null);
+          if (!member) throw unprocessable("Responsible user must be an active company member");
         }
 
         const candidate: RoutineRow = {
@@ -2370,7 +2425,7 @@ export function routineService(
           activityGateScope: patch.activityGateScope ?? locked.activityGateScope,
           variables: nextVariables,
           env: nextEnv,
-          responsibleUserId: locked.responsibleUserId ?? responsibleUserId,
+          responsibleUserId: patch.responsibleUserId ?? locked.responsibleUserId ?? responsibleUserId,
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };
@@ -2456,7 +2511,7 @@ export function routineService(
         }
         return routine;
       });
-      return updatedRoutine;
+      return updatedRoutine ? { ...updatedRoutine, previousResponsibleUserId } : null;
     },
 
     createTrigger: async (

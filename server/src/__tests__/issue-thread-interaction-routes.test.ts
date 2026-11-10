@@ -2753,6 +2753,44 @@ describe("issue thread interaction routes", () => {
     expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
   });
 
+  it("names the addressee as the only resolver when an agent tries another person's human-only card", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-for-riley",
+      kind: "request_confirmation",
+      status: "pending",
+      createdByAgentId: null,
+      createdByUserId: "user-alex",
+      addresseeUserId: "user-riley",
+      sourceRunId: null,
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      payload: { version: 1, prompt: "Riley: approve?" },
+    });
+    const defaultWhere = mockDbSelectWhere.getMockImplementation()!;
+    // The addressee name lookup ends in .limit(1); the other reads keep their defaults.
+    mockDbSelectWhere.mockImplementation((() => ({
+      ...defaultWhere(),
+      limit: () => Promise.resolve([{ name: "Riley" }]),
+    })) as unknown as typeof defaultWhere);
+    const app = await createApp({ type: "agent", agentId: ASSIGNEE_AGENT_ID, companyId: "company-1", runId: RUN_2 });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-for-riley/accept")
+      .send({});
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      code: "interaction_human_only",
+      details: { addresseeUserId: "user-riley", addresseeName: "Riley" },
+    });
+    expect(res.body.error).toContain("addressed to Riley.");
+    expect(res.body.error).toContain("Only Riley can accept or decline it");
+    // /accept carries no verified replying user, so the advice stays neutral.
+    expect(res.body.error).not.toContain("do not ask the person asking");
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+  });
+
   it("keeps a same-requester sibling confirmation human-only", async () => {
     mockReviewTransition.value = {
       actorType: "agent",

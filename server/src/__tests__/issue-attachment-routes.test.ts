@@ -785,6 +785,7 @@ describe("issue attachment routes", () => {
           originalFilename: "clip.mp4",
         },
       }),
+      null,
     );
   });
 
@@ -878,6 +879,7 @@ describe("issue attachment routes", () => {
           originalFilename: "clip.webm",
         },
       }),
+      null,
     );
   });
 });

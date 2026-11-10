@@ -268,9 +268,10 @@ describe("manual everyday workflow catalog", () => {
     );
   });
   it("does not claim unsupported remote crash/hiring coverage", () => {
+    // The explicit reliability group is covered by everyday-reliability.test.ts.
     const remote = runnerMatrix.filter(
       (e) =>
-        e.suite.id === "everyday-workflows" && e.environment.id === "daytona",
+        e.suite.id === "everyday-workflows" && e.environment.id === "daytona" && !e.task.explicitGroup,
     );
     expect(remote).toHaveLength(8);
     expect(new Set(remote.map((e) => e.task.id))).toEqual(

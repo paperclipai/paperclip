@@ -219,7 +219,8 @@ describe("IssueThreadInteractionCard", () => {
     const labels = Array.from(host.querySelectorAll("button")).map((button) => button.textContent?.trim());
     expect(labels).toContain("Connect");
     expect(labels).toContain("Not now");
-    expect(host.textContent).toContain("Access is added only for this agent");
+    expect(host.textContent).toContain("New connections default to all agents");
+    expect(host.textContent).toContain("Reusing an account adds access for this agent");
     const loadButton = Array.from(host.querySelectorAll("button")).find((button) =>
       button.textContent?.trim() === "Connect",
     );
@@ -1310,6 +1311,21 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(host.textContent).toContain("Launch checklist");
   });
 
+  it("keeps an approved connection wait actionable without showing execution or another approval", () => {
+    const interaction = structuredClone(runningToolActionInteraction);
+    interaction.payload.toolAction!.expiresAt = null;
+    interaction.result!.toolAction = { version: 1, status: "approved", updatedAt: new Date().toISOString(),
+      errorCode: "approved_action_connection_required" };
+    const host = renderCard({ interaction });
+    expect(host.textContent).toContain("Your approval is saved");
+    expect(host.textContent).toContain("Sign-in needed");
+    expect(host.textContent).not.toContain("Running");
+    expect(host.textContent).not.toContain("Approve & run");
+    expect(host.textContent).not.toContain("Expires");
+    expect(host.querySelector(`a[href="/apps/${interaction.payload.toolAction!.connectionId}/permissions"]`)?.textContent)
+      .toContain("Reconnect");
+  });
+
   it("renders only the server-redacted proposal as plain text when inspected", async () => {
     const interaction = structuredClone(pendingToolActionWriteInteraction);
     interaction.payload.toolAction!.argumentsSummaryJson = JSON.stringify({ text: '<img src="x" onerror="alert(1)">', apiKey: "[redacted]" });
@@ -1420,6 +1436,28 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(declined.textContent).toContain("Declined");
     expect(declined.textContent).toContain("use the CRM sync instead");
     expect(declined.textContent).not.toContain("Approve & run");
+  });
+
+  it("makes a GitHub access failure actionable without offering a futile retry", () => {
+    const interaction = { ...failedToolActionInteraction,
+      payload: { ...failedToolActionInteraction.payload, toolAction: {
+        ...failedToolActionInteraction.payload.toolAction!, appDisplayName: "GitHub",
+      } },
+      result: { ...failedToolActionInteraction.result!, toolAction: {
+        ...failedToolActionInteraction.result!.toolAction!, errorCode: "github_access_denied",
+        errorMessage: "failed to create repository: POST https://api.github.com/user/repos: 403 Resource not accessible by integration []",
+      } },
+    };
+    const host = renderCard({ interaction });
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("GitHub access needed");
+    expect(host.textContent).toContain(interaction.result.toolAction.errorMessage);
+    expect(host.textContent).toContain("Check the connected account");
+    expect(host.textContent).toContain("ask the agent to continue");
+    expect(host.querySelector("details")?.hasAttribute("open")).toBe(false);
+    const manage = Array.from(host.querySelectorAll("a")).find(link => link.textContent === "Manage GitHub access");
+    expect(manage?.getAttribute("href")).toBe(`/apps/${interaction.payload.toolAction.connectionId}/permissions`);
+    expect(host.textContent).not.toContain("Retry");
+    expect(host.textContent).not.toContain("Approve & run");
   });
 
   it("renders the expired state without decision controls", () => {

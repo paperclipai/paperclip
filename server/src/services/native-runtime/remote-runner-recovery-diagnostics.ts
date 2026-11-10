@@ -9,9 +9,29 @@ const reasons = [
   "state_read_failed", "state_invalid",
 ] as const;
 
+const runnerLifecycles = [
+  "connecting", "ready", "backpressure", "reconnecting", "session_opening", "session_open",
+  "turn_starting", "turn_active", "running", "suspended", "recoverable_failure", "reconciliation_required",
+  "provider_exited", "unrecoverable", "fenced", "failed", "completed", "closed",
+  "other", "unavailable",
+] as const;
+
 export interface RemoteRunnerRecoveryDiagnostic {
   stage: typeof stages[number];
   reason: typeof reasons[number];
+  runnerLifecycle?: typeof runnerLifecycles[number];
+  runnerSettled?: boolean;
+}
+
+export function describeExitedRemoteRunner(state: Record<string, unknown>): Pick<RemoteRunnerRecoveryDiagnostic,
+  "runnerLifecycle" | "runnerSettled"> {
+  const lifecycle = state.lifecycle;
+  return {
+    runnerLifecycle: typeof lifecycle !== "string" ? "unavailable"
+      : runnerLifecycles.find(candidate => candidate === lifecycle && candidate !== "other" && candidate !== "unavailable") ?? "other",
+    runnerSettled: Array.isArray(state.outbox) && state.outbox.length === 0 &&
+      state.pendingTerminalDelivery == null && state.pendingProviderCleanup == null && state.warmTransition == null,
+  };
 }
 
 const transportDiagnostics = new WeakMap<object, RemoteRunnerRecoveryDiagnostic>();
@@ -35,9 +55,13 @@ export class RemoteRunnerRecoveryError extends Error {
 export function readRemoteRunnerRecoveryDiagnostic(value: unknown): RemoteRunnerRecoveryDiagnostic | null {
   if (!value || typeof value !== "object") return null;
   try {
-    const { stage, reason } = value as Record<string, unknown>;
+    const { stage, reason, runnerLifecycle, runnerSettled } = value as Record<string, unknown>;
     if (!stages.some(candidate => candidate === stage) || !reasons.some(candidate => candidate === reason)) return null;
-    return { stage, reason } as RemoteRunnerRecoveryDiagnostic;
+    return {
+      stage, reason,
+      ...(runnerLifecycles.some(candidate => candidate === runnerLifecycle) ? { runnerLifecycle } : {}),
+      ...(typeof runnerSettled === "boolean" ? { runnerSettled } : {}),
+    } as RemoteRunnerRecoveryDiagnostic;
   } catch {
     return null;
   }

@@ -5,13 +5,15 @@ import { randomBytes } from "node:crypto";
 import { acquireGitExpirationLocks } from "./git-workspace-expiration-locks.js";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { executionWorkspaces, issues, heartbeatRuns, nativeRunFinalizations, environmentLeases,
-  workspaceRuntimeServices, issueRecoveryActions, projectWorkspaces, withDedicatedDbConnection, type Db } from "@paperclipai/db";
+  workspaceRuntimeServices, issueRecoveryActions, projectWorkspaces, workspaceOperations, withDedicatedDbConnection, type Db } from "@paperclipai/db";
 import { createIssueGitRemoteAuthProvider } from "./git-credentials.js";
 import type { StorageService } from "../storage/types.js";
 import { TASK_DIRECTORY_RETENTION_KEY } from "./isolated-task-directory-snapshot.js";
 import { currentRestorePointSnapshot, RestorePointSkip, type RestorePointLimits } from "./git-restore-point.js";
 import { abandonGitRestorePoint, abandonGitRestorePointsByKey, activateGitRestorePoints, restorePointHistoryUnchanged, restorePointSnapshotMatches, storeGitRestorePoint } from "./git-restore-point-storage.js";
 import { withIsolatedRepositorySourceLock, verifiedRecordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
+import { retainCurrentWorkspaceSource } from "./workspace-source-lock.js";
+import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
 import { managedProjectCheckoutName } from "./managed-project-checkout-name.js";
 import { nestedRepositoryBaseCandidates } from "./nested-repository-worktrees.js";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
@@ -164,7 +166,7 @@ export async function gitWorkspaceLastActivityAt(db: Db | Tx, workspace: Workspa
 
 export async function isGitWorkspaceExpirationEligible(tx: Tx, workspace: Workspace, now: Date, idleCutoff?: Date,
   options: { closedSiblingsAllowed?: boolean } = {}) {
-  if (workspace.metadata?.reopenPendingConsumption === true) return false;
+  if (workspace.metadata?.reopenPendingConsumption === true || workspace.metadata?.remoteWorkspaceMigration != null) return false;
   const siblingBlocks = options.closedSiblingsAllowed
     ? sql`AND (other.status NOT IN ('archived', 'cleanup_failed') OR other.closed_at IS NULL
         OR other.metadata->${TASK_DIRECTORY_RETENTION_KEY}->>'removed' = 'false')`
@@ -206,6 +208,10 @@ export async function isGitWorkspaceExpirationEligible(tx: Tx, workspace: Worksp
         AND (l.execution_workspace_id = ${workspace.id} OR l.heartbeat_run_id IN (SELECT id FROM relevant_runs))
         AND (l.status = 'pending_cleanup' OR l.cleanup_status = 'failed' OR l.metadata ? 'nativeWorkspaceExportResume'
           OR (l.released_at IS NULL AND NOT coalesce(l.status = 'retained' AND l.lease_policy = 'reuse_by_environment' AND l.cleanup_status = 'success', false))))
+      AND NOT EXISTS (SELECT 1 FROM ${workspaceOperations} o WHERE o.company_id = ${workspace.companyId}
+        AND o.execution_workspace_id = ${workspace.id} AND o.phase = 'remote_workspace_migration'
+        AND (o.status IN ('running', 'pending') OR o.metadata->>'uncertain' = 'true'
+          OR (o.status = 'failed' AND o.metadata ? 'lastFailure' AND o.metadata->'retiredSave' IS NULL)))
       AND NOT EXISTS (SELECT 1 FROM ${workspaceRuntimeServices} WHERE company_id = ${workspace.companyId}
         AND (execution_workspace_id = ${workspace.id} OR cwd = ${workspace.cwd}
           OR left(cwd, length(${workspace.cwd}) + 1) = ${workspace.cwd} || '/') AND status <> 'stopped')
@@ -292,8 +298,11 @@ export async function expireReconstructableGitWorkspace(db: Db, snapshot: Worksp
   let pendingRestorePoints: string[] = [];
   if (!snapshot.sourceIssueId) return { ...result, skipReason: "missing_source_issue" };
   try {
-    return await withIsolatedRepositorySourceLock(db, snapshot.companyId, snapshot.sourceIssueId, () =>
-      withDedicatedDbConnection(db, connection => connection.transaction(async tx => {
+    return await withIsolatedRepositorySourceLock(db, snapshot.companyId, snapshot.sourceIssueId, async () => {
+      for (const cwd of localWorkspaceSourcePaths(snapshot)) await retainCurrentWorkspaceSource(cwd);
+      const retainedSource = readGitCacheRestoration(snapshot)?.sourcePath;
+      if (retainedSource) await retainCurrentWorkspaceSource(retainedSource);
+      return withDedicatedDbConnection(db, connection => connection.transaction(async tx => {
         const acquired = await tx.execute<{ locked: boolean }>(sql`select pg_try_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${snapshot.id}`}, 0)) as locked`);
         if (!acquired[0]?.locked) throw new Error("lifecycle_busy");
         let workspace = (await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, snapshot.id), eq(executionWorkspaces.companyId, snapshot.companyId))))[0];
@@ -487,7 +496,8 @@ export async function expireReconstructableGitWorkspace(db: Db, snapshot: Worksp
         state.completed = recipe.sourceKind !== "isolated_remote" || !options.expireBase || (result.baseExpired || !await exists(recipe.sourcePath)) && (!state.baseTrash || !await exists(state.baseTrash));
         await persist();
         return result;
-      })), true);
+      }));
+    }, true);
   } catch (error) {
     for (const ledgerId of pendingRestorePoints) await abandonGitRestorePoint(db, ledgerId).catch(() => undefined);
     options.signal?.throwIfAborted();

@@ -120,7 +120,7 @@ test('full catalog source admission is independent from the old three-case workf
 });
 
 test('native and external partitions preserve exact selections, bounded overlapping small runs and the GitHub output bound', () => {
-  for (const rows of [selected, selected.slice(0, 3), selected.filter(row => row.externalInput), [selected[0], selected.find(row => row.externalInput)]]) {
+  for (const rows of [selected, selected.filter(row => !row.externalInput).slice(0, 10), selected.slice(0, 3), selected.filter(row => row.externalInput), [selected[0], selected.find(row => row.externalInput)]]) {
     const input = { ...selection, cases: rows }, partition = executionPartition(input, context, '77');
     const merged = [...partition.native.include, ...partition.external.include].map(row => row.executionId);
     assert.equal(new Set(merged).size, rows.length);
@@ -129,7 +129,7 @@ test('native and external partitions preserve exact selections, bounded overlapp
       assert.equal(partition.parallelism, rows.some(row => row.externalInput) ? '1' : '2');
       assert.equal(partition.external.include.length, rows.filter(row => row.externalInput).length);
     } else {
-      assert.equal(partition.parallelism, '8'); assert.ok(partition.external.include.every(row => row.external));
+      assert.equal(partition.parallelism, '2'); assert.ok(partition.external.include.every(row => row.external));
     }
     assert.ok([partition.matrix, partition.native, partition.external, rows.map(row => row.executionId)]
       .reduce((sum, value) => sum + JSON.stringify(value).length * 2, 0) < 1_000_000);

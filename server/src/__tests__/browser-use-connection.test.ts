@@ -532,12 +532,16 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
     });
     it("delivers Browser Use through the pinned native and CLI runtime gateway", async () => {
       const f = await fixture();
-      await db.insert(toolConnectionInstalls).values({
+      // Finishing setup now saves runtime installation and access together.
+      // Exercise that installation instead of manufacturing another one.
+      const installs = await db.select().from(toolConnectionInstalls)
+        .where(eq(toolConnectionInstalls.connectionId, f.connection.connectionId));
+      expect(installs).toEqual([expect.objectContaining({
         companyId: f.company.id,
         connectionId: f.connection.connectionId,
         targetType: "agent",
         targetId: f.agent.id,
-      });
+      })]);
       const snapshot = await resolveNativeRuntimeMcpSnapshot({
         db,
         agent: f.agent,

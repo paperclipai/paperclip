@@ -208,9 +208,9 @@ test("a document edit stays visible and saves after a 20-second outage", async (
     await page.addInitScript(() => localStorage.setItem("paperclip:panel-visible", "true"));
     await page.goto(data.route);
     await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Show properties", exact: true }).click();
     const panel = page.locator("aside").filter({ has: page.getByRole("button", { name: "Open a new tab", exact: true }) });
-    await panel.getByRole("tab", { name: "Artifacts", exact: true })
-      .or(panel.getByRole("button", { name: "Artifacts", exact: true })).click();
+    await panel.getByRole("option", { name: "Artifacts", exact: true }).click();
     const document = panel.locator("#document-handoff");
     await expect(document.getByText(original, { exact: true })).toBeVisible();
     await document.getByRole("button", { name: "Document actions", exact: true }).click();

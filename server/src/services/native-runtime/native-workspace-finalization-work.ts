@@ -2,6 +2,7 @@ import { and, asc, eq, gt, ne, notExists } from "drizzle-orm";
 import { heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { logger } from "../../middleware/logger.js";
 import { onNativeWorkspaceFinalizationRelease, type NativeWorkspaceFinalizationScope } from "../native-workspace-finalization-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { measureRunPhase, withRunWorkspaceFinalizationTiming } from "../execution-preparation-timing.js";
@@ -81,8 +82,15 @@ export function nativeWorkspaceFinalizationWork(db: Db, options: {
     }));
     if (outcome.kind === "retry") return { ...due, dueAt: outcome.retryAt.getTime() };
     if (outcome.kind === "waiting") {
-      return outcome.reason === "busy" || outcome.reason === "platform_stop_pending"
-        ? { ...due, dueAt: Date.now() + OWNERSHIP_RECHECK_MS } : null;
+      // A pending stop proof rechecks on its own; the board action stays visible meanwhile.
+      if (outcome.reason === "busy" || outcome.reason === "platform_stop_pending" || outcome.reason === "local_stop_pending") {
+        return { ...due, dueAt: Date.now() + OWNERSHIP_RECHECK_MS };
+      }
+      // This run is revisited only after a restart or a release notification.
+      if (outcome.reason !== "owner_active") {
+        logger.info({ runId: current.id, reason: outcome.reason }, "native workspace finalization paused until the run is notified again");
+      }
+      return null;
     }
     if (outcome.kind !== "completed" || outcome.operation.status === "succeeded") return null;
     const failure = await recordNativeWorkspaceFinalizationFailure(db, current.id, outcome.operation);

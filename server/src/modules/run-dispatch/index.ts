@@ -14,6 +14,8 @@ export {
   WORKSPACE_BUSY_RETRY_REASON,
   AI_CONNECTION_BUSY_RETRY_REASON,
   AI_CONNECTION_POOL_WAIT_RETRY_REASON,
+  RUNNER_REVISION_WAIT_RETRY_REASON,
+  STORAGE_UNAVAILABLE_WAIT_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   WAKE_COMMENT_IDS_KEY,
@@ -29,6 +31,7 @@ export {
   extractWakeCommentIds,
   deriveCommentId,
   allowsIssueInteractionWake,
+  allowsDependencyBlockedWake,
   isResolvedInteractionContinuationWakeContext,
 } from "./domain/wake-context.js";
 export type {

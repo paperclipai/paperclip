@@ -3,7 +3,11 @@
 import { act, forwardRef, useImperativeHandle, useState, type ForwardedRef } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
+  useCoordinatorWorkspaceEnabled: () => ({ enabled: false, loaded: true }),
+}));
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { IssueDocument } from "@paperclipai/shared";
 import type {
@@ -144,7 +148,8 @@ describe("TaskChatInteractionCard", () => {
     expect(container.querySelector("pre")?.textContent).toBe(interaction.payload.toolAction!.argumentsSummaryJson);
     expect(details.textContent).toContain("November 8, 2030");
     expect(details.textContent).toContain("[redacted]");
-    expect(details.textContent).toContain(interaction.payload.toolAction!.argumentsHash);
+    expect(details.textContent).not.toContain(interaction.payload.toolAction!.argumentsHash);
+    expect(details.textContent).toContain("Copy audit hash");
     await act(async () => details.querySelector("summary")!.click());
     expect(details.open).toBe(true);
     expect(accept).not.toHaveBeenCalled();
@@ -154,6 +159,64 @@ describe("TaskChatInteractionCard", () => {
     });
     expect(accept).toHaveBeenCalledExactlyOnceWith(interaction, undefined, undefined, false);
     expect(reject).not.toHaveBeenCalled();
+  });
+
+  it("keeps raw tool ids and the audit hash out of the tool approval card text", async () => {
+    // Shape of the GitHub create_repository approval from the Nov 5 staging run.
+    const rawToolName = "mcp.app-gallery-github-42e51e3f-9377-447b-ad45-333beda8a50a-b873f178:create-repository";
+    const argumentsHash = "8ca5312877235a4c0f6e9b1d2a7c3e5f9081b2c4d6e8fa1b3c5d7e9f0a2b4c6d";
+    const base = structuredClone(pendingToolActionLongProposalInteraction);
+    const interaction: RequestConfirmationInteraction = {
+      ...base,
+      title: "Approve tool action",
+      summary: "This action needs your approval before it runs.",
+      payload: {
+        ...base.payload,
+        prompt: "Approve create_repository?",
+        detailsMarkdown: `Tool: \`${rawToolName}\`\nRisk: \`write\``,
+        target: { type: "custom", key: "tool-action:2f92393c-c044-4367-8b6e-b81e2e732165", revisionId: argumentsHash, label: rawToolName },
+        toolAction: {
+          ...base.payload.toolAction!,
+          toolName: rawToolName,
+          toolDisplayName: "create_repository",
+          appDisplayName: "GitHub",
+          previewMarkdown: "create_repository · Name: brainrot-storefront-prototype · Private: true",
+          argumentsSummaryJson: JSON.stringify({ name: "brainrot-storefront-prototype", private: true }),
+          argumentsHash,
+        },
+      },
+    };
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    onTestFinished(() => {
+      if (originalClipboard) Object.defineProperty(navigator, "clipboard", originalClipboard);
+      else delete (navigator as { clipboard?: unknown }).clipboard;
+    });
+    function ReviewSurface() {
+      const [reviewing, setReviewing] = useState(false);
+      return <TaskChatInteractionCard item={interactionItem(interaction)}
+        presentation={reviewing ? "takeover" : "timeline"}
+        onReviewRequest={() => setReviewing(true)}
+        onAcceptInteraction={vi.fn()} onRejectInteraction={vi.fn()} />;
+    }
+    flushSync(() => root.render(<TooltipProvider><ThemeProvider><ReviewSurface /></ThemeProvider></TooltipProvider>));
+    const hashLike = /[0-9a-f]{12,}/i;
+    expect(container.textContent).not.toMatch(hashLike);
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Review request")!.click();
+    });
+    const details = container.querySelector("details")!;
+    await act(async () => details.querySelector("summary")!.click());
+    expect(details.open).toBe(true);
+    expect(container.textContent).toContain("brainrot-storefront-prototype");
+    expect(container.textContent).not.toMatch(hashLike);
+    expect(container.textContent).not.toContain("app-gallery");
+    // The audit hash stays reachable for anyone who needs it, through a copy action.
+    const copy = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Copy audit hash");
+    expect(copy).toBeDefined();
+    await act(async () => copy!.click());
+    expect(writeText).toHaveBeenCalledWith(argumentsHash);
   });
 
   it("does not render a pending confirmation in the timeline", () => {
@@ -175,6 +238,28 @@ describe("TaskChatInteractionCard", () => {
     expect(container.textContent).not.toContain("Requested confirmation");
     expect(container.textContent).not.toContain("waiting for response");
     expect(container.textContent).not.toContain("Approve the plan?");
+  });
+
+  it("shows the collapsed pending-request preview as plain text, not raw markdown", () => {
+    const summary = "The `creative-brief` document is saved on this task. It covers:\n\n- **Brand voice and audience:** Gen Z core buyers and holiday gift buyers.\n- __Style rules:__ see [the brief](#document-creative-brief) and ~~old~~ *new* notes.";
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <TaskChatInteractionCard
+              item={interactionItem(createRequestConfirmation({ title: "Review the creative brief (v1)", summary }))}
+              showPendingRequest
+              onReviewRequest={() => {}}
+            />
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+    const row = container.querySelector('[data-testid="task-chat-pending-request"]');
+    expect(row).not.toBeNull();
+    const preview = row!.textContent ?? "";
+    expect(preview).toContain("The creative-brief document is saved on this task. It covers: Brand voice and audience: Gen Z core buyers and holiday gift buyers. Style rules: see the brief and old new notes.");
+    expect(preview).not.toMatch(/[`*_~[\]]|(^|\s)- /);
   });
 
   it("renders a plan confirmation as a linked document preview", () => {

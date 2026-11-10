@@ -86,7 +86,7 @@ export function AgentSettingsPreview({
   const [fixtures] = useState(() => {
     const fixtures = createSettingsFixtures(adapterType, testOutcome, saveFails);
     if (adapterType === "codex_local" || adapterType === "paperclip_runner") {
-      fixtures.agent.adapterConfig = { ...fixtures.agent.adapterConfig, model: "gpt-5.6-sol", modelReasoningEffort: "high", ...(adapterType === "paperclip_runner" ? { provider: "codex" } : {}) };
+      fixtures.agent.adapterConfig = { ...fixtures.agent.adapterConfig, model: "gpt-6.1-sol", modelReasoningEffort: "high", ...(adapterType === "paperclip_runner" ? { provider: "codex" } : {}) };
     }
     return fixtures;
   });

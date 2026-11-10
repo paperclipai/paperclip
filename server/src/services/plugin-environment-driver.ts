@@ -56,18 +56,24 @@ export async function pluginForAgentEnvironment(db: Db, environment: AgentEnviro
   return plugin && pluginServesAgentEnvironment(plugin, environment) ? plugin : null;
 }
 
-/** Throws when a saved environment would give active agents a plugin that has not prepared them. */
-export async function assertAgentsReadyForEnvironmentChange(db: Db, before: AgentEnvironmentRef | null | undefined,
+/** Whether a saved environment change would give active agents a plugin that has not prepared them. */
+export async function agentsNeedSetupForEnvironmentChange(db: Db, before: AgentEnvironmentRef | null | undefined,
   after: AgentEnvironmentRef | null | undefined, users: { environmentId?: string; inheritsDefault: boolean }) {
   const plugin = after ? await pluginForAgentEnvironment(db, after) : null;
-  if (!plugin || (before && (await pluginForAgentEnvironment(db, before))?.id === plugin.id)) return;
+  if (!plugin || (before && (await pluginForAgentEnvironment(db, before))?.id === plugin.id)) return false;
   const usesEnvironment = or(users.environmentId ? eq(agents.defaultEnvironmentId, users.environmentId) : undefined,
     users.inheritsDefault ? isNull(agents.defaultEnvironmentId) : undefined);
-  if (!usesEnvironment) return;
+  if (!usesEnvironment) return false;
   const [waiting] = await db.select({ id: agents.id }).from(agents).where(and(usesEnvironment,
     inArray(agents.lifecycleState, ["ready", "verifying"]),
     sql`not coalesce(${agents.lifecycleRequiredPluginIds}, '[]'::jsonb) @> ${JSON.stringify([plugin.id])}::jsonb`)).limit(1);
-  if (waiting) {
+  return Boolean(waiting);
+}
+
+/** Throws when a saved environment would give active agents a plugin that has not prepared them. */
+export async function assertAgentsReadyForEnvironmentChange(db: Db, before: AgentEnvironmentRef | null | undefined,
+  after: AgentEnvironmentRef | null | undefined, users: { environmentId?: string; inheritsDefault: boolean }) {
+  if (await agentsNeedSetupForEnvironmentChange(db, before, after, users)) {
     throw conflict("Agents that use this environment need setup first. Pause those agents, save this change, and then resume them.",
       { code: "environment_requires_agent_setup" });
   }
