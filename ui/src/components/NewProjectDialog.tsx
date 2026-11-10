@@ -10,6 +10,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { trackRecentProject } from "../lib/recent-projects";
 import { ProjectTile } from "./ProjectTile";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
+import { QueryErrorState, useQueryView } from "./QueryView";
 import { NativeSelect } from "./ui/select";
 import { Button } from "./ui/button";
 import { ProjectRepositoryInput, repositoryOptionsKey } from "./ProjectRepositoryInput";
@@ -31,10 +32,11 @@ export function NewProjectForm({ companyId, onClose }: { companyId: string; onCl
   const input = useRef<HTMLInputElement>(null);
   const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<string | null>(null);
   const environments = useQuery({ queryKey: queryKeys.projects.environments(companyId), queryFn: () => projectsApi.environmentOptions(companyId), gcTime: 0 });
-  const options = environments.data;
+  const environmentView = useQueryView(environments);
+  const options = environmentView.data;
   const environmentId = selectedEnvironmentId ?? options?.defaultEnvironmentId;
   const selectedGroup = options?.groups.find(group => group.environments.some(environment => environment.id === environmentId));
-  const environmentReady = Boolean(environments.isSuccess && options && (!options.error || selectedGroup) && (!options.groups.length || selectedGroup));
+  const environmentReady = Boolean(environmentView.kind !== "error" && options && (!options.error || selectedGroup) && (!options.groups.length || selectedGroup));
 
   const create = useMutation({
     mutationFn: () => projectsApi.create(companyId, { name: name.trim(), color, status: "planned", repositoryIds: repos.map((repo) => repo.id), ...(selectedGroup ? { environmentId, expectedStorageProviderPluginId: selectedGroup.storageProviderPluginId } : {}) }),
@@ -78,10 +80,9 @@ export function NewProjectForm({ companyId, onClose }: { companyId: string; onCl
             </NativeSelect>
             <p className="text-xs text-muted-foreground">These environments can share this project's working files. The storage choice stays with the project.</p>
           </div>}
-          {environments.isPending && <p role="status" className="mb-3 text-sm text-muted-foreground">Loading environments…</p>}
-          {environments.isError && <p role="alert" className="mb-3 text-sm text-destructive">{describeError(environments.error).body}
-            <Button type="button" variant="ghost" size="sm" onClick={() => void environments.refetch()}>Retry</Button>
-          </p>}
+          {(environmentView.kind === "loading" || environmentView.kind === "reconnecting") && <p role="status" className="mb-3 text-sm text-muted-foreground">Loading environments…</p>}
+          {environmentView.kind === "error" && <QueryErrorState error={environmentView.error} size="inline" action="load project environments"
+            className="mb-3" onRetry={environmentView.retry} retrying={environmentView.isFetching} />}
           {options?.error && !selectedGroup && <p role="alert" className="mb-3 text-sm text-destructive">{options.error}</p>}
           <ProjectRepositoryInput companyId={companyId} selected={repos} onChange={setRepos} onConnect={() => setConnecting(true)} disabled={create.isPending} />
         </div>

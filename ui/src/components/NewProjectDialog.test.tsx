@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PROJECT_COLORS } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { projectsApi } from "../api/projects";
+import { queryKeys } from "../lib/queryKeys";
 import { getLastProjectId } from "../lib/recent-projects";
 import { NewProjectForm } from "./NewProjectDialog";
 
@@ -79,7 +80,8 @@ const groups = [
 ];
 
 async function renderForm() {
-  act(() => root.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}>
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  act(() => root.render(<QueryClientProvider client={client}>
     <NewProjectForm companyId="company-1" onClose={vi.fn()} />
   </QueryClientProvider>));
   await settle();
@@ -88,6 +90,7 @@ async function renderForm() {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Environment project");
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
+  return client;
 }
 
 describe("project environment selection", () => {
@@ -150,6 +153,17 @@ describe("project environment selection", () => {
     const retry = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Retry")!;
     act(() => retry.click());
     await settle();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
+  });
+
+  it("keeps cached environment choices during a transient refetch failure", async () => {
+    vi.mocked(projectsApi.environmentOptions).mockResolvedValueOnce({ groups, defaultEnvironmentId: "sandbox", error: null })
+      .mockRejectedValue(new TypeError("Failed to fetch"));
+    const client = await renderForm();
+    await act(async () => { await client.refetchQueries({ queryKey: queryKeys.projects.environments("company-1") }); });
+    await settle();
+    expect(container.querySelector<HTMLSelectElement>("select")?.value).toBe("sandbox");
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
   });
