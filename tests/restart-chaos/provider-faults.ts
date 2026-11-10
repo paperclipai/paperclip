@@ -12,8 +12,8 @@
  * stdio, applying the rule armed for the task's nonce. No product code changes,
  * so the same harness runs against older product commits.
  *
- * Codex only: Claude runs through the ACPX sidecar with a hash-verified provider
- * pack, so the same seam would need a different shim (see README).
+ * Claude runs through the ACPX sidecar with a hash-verified provider pack: its
+ * seam is acpx-provider-faults.ts, which shares this file's rules, log and check.
  */
 import { chmod, copyFile, mkdir, readFile, rename, symlink, writeFile } from "node:fs/promises";
 import { readFileSync, realpathSync } from "node:fs";
@@ -39,7 +39,15 @@ export interface ProviderFaultRule {
   message: ProviderMessage;
   /** PV1 only. */
   delayMs?: number;
+  /**
+   * `--provider-fault-restart K1` (PV1, PV2): kill -9 the control plane this long after the fault
+   * applied, so the held or dropped message straddles a restart.
+   */
+  restart?: { kind: "K1"; afterAppliedMs: number };
 }
+
+/** Default gap between a provider fault applying and its K1: well inside the default 18 s PV1 hold. */
+export const DEFAULT_PROVIDER_FAULT_RESTART_AFTER_MS = 3_000;
 
 /** One shim log line (JSONL, `provider-faults.jsonl` in the wave directory). */
 export interface ProviderFaultEvent {
@@ -85,19 +93,23 @@ export function parseProviderMessage(raw: string | undefined): ProviderMessage |
 }
 
 /** Attach each provider-fault task's rule. Restart-fault tasks are unchanged. */
-export function withProviderFaultRules(tasks: TaskPlan[], options: Pick<WaveOptions, "providerFaultMessage" | "providerFaultDelaysMs">): TaskPlan[] {
+export function withProviderFaultRules(tasks: TaskPlan[], options: Pick<WaveOptions, "providerFaultMessage" | "providerFaultDelaysMs"
+  | "providerFaultRestart" | "providerFaultRestartAfterMs">): TaskPlan[] {
   const delays = options.providerFaultDelaysMs?.length ? options.providerFaultDelaysMs : [DEFAULT_PROVIDER_DELAY_MS];
   let pv1 = 0;
   return tasks.map(task => {
     if (!isProviderFault(task.fault)) return task;
     const rule: ProviderFaultRule = { kind: task.fault, message: options.providerFaultMessage ?? "terminal",
-      ...(task.fault === "PV1" ? { delayMs: delays[pv1++ % delays.length]! } : {}) };
+      ...(task.fault === "PV1" ? { delayMs: delays[pv1++ % delays.length]! } : {}),
+      ...(options.providerFaultRestart && task.fault !== "PV3"
+        ? { restart: { kind: options.providerFaultRestart, afterAppliedMs: options.providerFaultRestartAfterMs ?? DEFAULT_PROVIDER_FAULT_RESTART_AFTER_MS } } : {}) };
     return { ...task, providerFault: rule, fireAfterMs: 0, holdMs: 0 };
   });
 }
 
 export function describeProviderFault(rule: ProviderFaultRule): string {
-  return `${rule.kind} ${PROVIDER_FAULT_ACTIONS[rule.kind]} ${rule.message}${rule.delayMs !== undefined ? ` ${rule.delayMs}ms` : ""}`;
+  return `${rule.kind} ${PROVIDER_FAULT_ACTIONS[rule.kind]} ${rule.message}${rule.delayMs !== undefined ? ` ${rule.delayMs}ms` : ""}`
+    + (rule.restart ? ` +${rule.restart.kind}@${rule.restart.afterAppliedMs}ms` : "");
 }
 
 /** The Codex executable product code would resolve for this checkout (mirrors codex-command.ts). */
@@ -127,6 +139,8 @@ export interface ProviderFaultSeam {
   serverEnvironment: Record<string, string>;
   controlPath: string;
   logPath: string;
+  /** Once-per-task markers, shared with the ACPX tap. */
+  stateDirectory: string;
   realCommand: string;
   /** Arm the rules of these tasks (idempotent; replaces the armed set). */
   arm(tasks: readonly TaskPlan[]): Promise<void>;
@@ -176,7 +190,7 @@ export async function installProviderFaultSeam(input: { root: string; logPath: s
   const nodeOptions = [input.inheritedNodeOptions, `--import=${RESOLVE_HOOK}`].filter(Boolean).join(" ");
   return {
     serverEnvironment: { NODE_OPTIONS: nodeOptions, RESTART_CHAOS_CODEX_PACKAGE_JSON: path.join(packageRoot, "package.json") },
-    controlPath, logPath: input.logPath, realCommand: input.realCommand,
+    controlPath, logPath: input.logPath, stateDirectory, realCommand: input.realCommand,
     async arm(tasks) {
       const rules = tasks.flatMap(task => task.providerFault ? [{ nonce: task.nonce, ...task.providerFault }] : []);
       const temporary = `${controlPath}.${process.pid}.tmp`;
@@ -196,8 +210,14 @@ export async function readProviderFaultEvents(logPath: string, nonce?: string): 
 /**
  * A provider-fault task passes only if its fault really happened: otherwise the scenario was not
  * exercised (for example the turn ended before any interrupt), and a pass would prove nothing.
+ *
+ * With `--provider-fault-restart K1` the fault must also straddle the restart: the K1 started after
+ * the fault applied and, for PV1, before the held message was released. The K1 kills the runner
+ * with the held message, so a PV1 task then needs no release. Whether the task itself recovered
+ * is the ordinary grade (R1–R6 and its T-oracle), which this check never replaces.
  */
-export function withProviderFaultCheck(oracle: OracleResult, plan: TaskPlan, events: readonly ProviderFaultEvent[]): OracleResult {
+export function withProviderFaultCheck(oracle: OracleResult, plan: TaskPlan, events: readonly ProviderFaultEvent[],
+  restartStartedAt: number | null = null): OracleResult {
   if (!plan.providerFault) return oracle;
   const rule = plan.providerFault;
   const applied = events.filter(event => event.event === "applied" && event.kind === rule.kind && event.message === rule.message);
@@ -205,9 +225,19 @@ export function withProviderFaultCheck(oracle: OracleResult, plan: TaskPlan, eve
   // A held message the provider took with it when it exited never reached the runner: that tested a
   // drop (PV2), not a late message. It stays in the detail for diagnosis but does not count.
   const discarded = events.filter(event => event.event === "held_message_discarded" && event.kind === rule.kind);
-  const exercised = applied.length === 1 && (rule.kind !== "PV1" || released.length === 1);
+  let exercised: boolean;
+  let restartDetail = "";
+  if (rule.restart) {
+    const appliedAt = applied[0]?.at ?? null;
+    const releasedBeforeRestart = restartStartedAt !== null && released.some(event => event.at < restartStartedAt);
+    exercised = applied.length === 1 && appliedAt !== null && restartStartedAt !== null && restartStartedAt >= appliedAt && !releasedBeforeRestart;
+    restartDetail = restartStartedAt === null ? " restart=none"
+      : ` restartAfterAppliedMs=${appliedAt === null ? "n/a" : restartStartedAt - appliedAt}${releasedBeforeRestart ? " releasedBeforeRestart" : ""}`;
+  } else {
+    exercised = applied.length === 1 && (rule.kind !== "PV1" || released.length === 1);
+  }
   const checks = [...oracle.checks, { name: "provider_fault_applied", ok: exercised,
     detail: `${describeProviderFault(rule)}: applied=${applied.length}${rule.kind === "PV1" ? ` released=${released.length} discarded=${discarded.length}` : ""}`
-      + (applied[0]?.turnStatus ? ` turnStatus=${applied[0].turnStatus}` : "") }];
+      + (applied[0]?.turnStatus ? ` turnStatus=${applied[0].turnStatus}` : "") + restartDetail }];
   return { verdict: checks.every(check => check.ok) ? "pass" : "fail", checks };
 }

@@ -363,6 +363,7 @@ export class TaskObserver {
         return queued && !started ? first.at : "missed";
       }
       case "tool": return this.record.benchFirstSeenAt ?? null;
+      case "provider": return this.record.providerFaultAppliedAt ?? null;
       case "approval": return this.record.governance?.approvalSeenAt ?? null;
       case "paused": return this.record.governance?.budgetPausedAt ?? null;
       // Q1 keeps its own record (question-handoff.ts); Q2 and Q3 use the journey driver.

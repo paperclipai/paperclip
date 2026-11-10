@@ -481,6 +481,12 @@ node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
 # The saved question's terminal never arrives during shutdown (PR #20336's boundary).
 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
   --adapters codex --workloads Q1 --faults PV2 --concurrency 1 --tasks 1 --seed 103
+# The same for Claude (ACPX): its interrupted prompt's response is held 18 s.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters claude --workloads Q1 --faults PV1 --concurrency 1 --tasks 1 --seed 104
+# A dropped terminal straddles a control-plane kill -9: K1 fires 3 s after the drop.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads Q1 --faults PV2 --provider-fault-restart K1 --concurrency 1 --tasks 1 --seed 105
 ```
 
 The third fault family: the provider stays alive, but one protocol message between the runner and the
@@ -492,13 +498,31 @@ Codex app-server is late, missing or repeated. `--faults` takes them next to res
 | PV2 | is dropped |
 | PV3 | is sent twice |
 
-`--provider-fault-message terminal` (default) picks the `turn/completed` notification that follows a
-`turn/interrupt`, which a governed wait (a saved question or approval) or a board Stop sends.
-`interrupt_ack` picks the response to that `turn/interrupt`. Each rule applies once per task, to the
-first matching message. A PV task fires no restart. Provider faults run only with `--env local --adapters
-codex`, only with workloads that interrupt a turn (Q1, S1, G1), and not yet in the same wave as restart
-faults: a restart kills the shim with any held message. A PV1 task passes `provider_fault_applied` only when
-the held message was released; a provider that exited first turned the delay into a drop.
+`--provider-fault-message terminal` (default) picks the turn's end after an interruption, which a
+governed wait (a saved question or approval) or a board Stop sends. `interrupt_ack` picks the
+acknowledgement of that interruption. Each rule applies once per task, to the first matching message.
+Provider faults run only with `--env local --adapters codex,claude` (either or both) and only with
+workloads that interrupt a turn (Q1, S1, G1). A PV1 task passes `provider_fault_applied` only when the
+held message was released; a provider that exited first turned the delay into a drop.
+
+| Adapter | `terminal` | `interrupt_ack` |
+| --- | --- | --- |
+| Codex | the `turn/completed` after a `turn/interrupt` | the response to that `turn/interrupt` |
+| Claude (ACPX) | the provider's ACP `session/prompt` response after a `session/cancel` | the sidecar's response to the runner's `turn.cancel` (ACP's `session/cancel` is a notification with no acknowledgement) |
+
+**Across a restart.** A PV task fires no restart unless `--provider-fault-restart K1` is given. Then each
+PV1 or PV2 task also kills -9 the control plane `--provider-fault-restart-after-seconds` (default 3)
+after its fault applied, through the `provider` trigger. That delay must be shorter than every PV1 delay,
+so the message is still held. K1 kills the runner with its provider and the held message, so the late
+or missing terminal straddles the restart: the replacement control plane must settle the saved wait
+without it. Planned restart faults (`--faults K1,PV2`) are still rejected, and PV3 does not combine with
+a restart, since a duplicate holds nothing. Such a task passes when:
+
+- `provider_fault_applied`: the fault applied once, the K1 started after it, and for PV1 no release
+  came before the K1;
+- the ordinary grade passes: R1–R6 for a restart-crossing task and the workload's T-oracle. For Q1
+  that means one question, the asking run `succeeded`, no failed run, nothing started before the
+  answer, and the brief carries the answer.
 
 **Seam.** Product code finds the local Codex by resolving the installed `@openai/codex/package.json`.
 The harness starts the server with `NODE_OPTIONS=--import provider-shim/codex-resolve-hook.mjs`. That
@@ -513,9 +537,21 @@ into a worktree at that commit. Every shim decision is logged in `<wave>/provide
 task also fails `provider_fault_applied` when its fault never happened. A pass where nothing was
 injected proves nothing.
 
-Claude is not covered. It runs through the ACPX sidecar against a hash-verified provider pack, and it
-speaks ACP, where a cancel has no acknowledgement and the prompt response is the terminal. The
-same resolve-hook idea would need a different shim and an integrity exception.
+**Claude seam** (`acpx-provider-faults.ts`, `provider-shim/acpx-sidecar-hook.mjs`,
+`provider-shim/acpx-fault-tap.cjs`). Claude runs through the ACPX sidecar. Its provider package and
+runtime are digest-verified and run from private snapshots with a scrubbed environment, so the Codex
+approach of replacing the executable cannot work. The sidecar itself is the build-owned
+`dist/cli/acpx-runtime-sidecar.cjs`, which product code hashes and the runner verifies at launch. The
+harness builds a stand-in runner package under `<repo>/node_modules/.restart-chaos-<wave>/`. It is all
+symlinks to the real package, except that `dist/cli/acpx-runtime-sidecar.cjs` is a generated stand-in.
+It lives under the workspace `node_modules`, so the provider package root that product code derives from
+it is the same workspace root. A server hook loads only `dist/live/runnerd-codex-transport.js`, the
+module that computes the local sidecar path from its own URL, from the stand-in package. That module's
+imports still resolve to the real package. The runner then verifies and launches the stand-in. The
+stand-in installs the tap and runs the real sidecar bundle in the same process, as the runner's
+verified CommonJS loader does. The tap wraps the stdio of the provider child that product code spawns
+and admits, and the sidecar's own frames to the runner. Product code is unchanged. The stand-in
+package is removed at the end of the wave.
 
 **Q1** asks the agent to save one single-select question with `request_human_input`, end its turn,
 and, once answered, write a `brief` containing the board's answer. The harness answers through
@@ -754,6 +790,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `evidence.ts`, `ledger.ts` | Evidence bundle for each failure and the JSONL ledger plus `SUMMARY.md`. |
 | `daytona-image.ts` | Docker-free extraction of the image's runnerd and provider pack, cached per digest, and the controller/image content-ID check. |
 | `provider-faults.ts`, `provider-shim/` | PV1–PV3: the resolve hook, the Codex stdio shim, per-task rules and the `provider_fault_applied` check. |
+| `acpx-provider-faults.ts`, `provider-shim/acpx-*` | PV1–PV3 for Claude (ACPX): the stand-in runner package, the server hook, the sidecar/provider tap, and `--provider-fault-restart`. |
 | `question-handoff.ts` | Q1 saved question: the board's answer step and its oracle. |
 | `time-faults.ts`, `time-faults-config.ts` | TM1–TM3: process freezing, database aging with recorded rows, and the time-corrected API the grader reads through. |
 | `daytona-sweep.ts` | Daytona R6: read-only reconciliation of this wave's labelled sandboxes with leases; cleanup only through Paperclip. |
