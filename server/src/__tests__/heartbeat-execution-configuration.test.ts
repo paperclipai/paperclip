@@ -20,6 +20,7 @@ import { secretService } from "../services/secrets.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as aiRuntime from "../services/ai-connection-runtime.js";
+import * as connectionIntents from "../services/connection-intents.js";
 import * as connectorRuntime from "../services/connector-runtime.js";
 import * as assignedMcp from "../services/native-runtime/assigned-mcp-tools.js";
 import * as sentry from "../sentry.js";
@@ -227,6 +228,40 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
       expect(prepare).not.toHaveBeenCalled();
     }
     if (managed && saved === "isolated") expect(prepare).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { name: "a busy account", error: new HttpError(422, "AI credentials are being updated. Retry shortly.", { code: "ai_connection_busy" }), requested: false },
+    { name: "a missing login", error: new Error("saved managed login required"), requested: true },
+  ])("requests an AI connection on native recovery only when the account is not busy: $name", async ({ error, requested }) => {
+    const f = await seed(true);
+    const [agent] = await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol" } })
+      .where(eq(agents.id, f.agentId)).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      status: "running", runtimeMode: "native", contextSnapshot: { issueId: f.issueId },
+    }).returning();
+    vi.spyOn(aiRuntime, "prepareManagedAiRuntime").mockRejectedValue(error);
+    const request = vi.fn(async () => ({}));
+    vi.spyOn(connectionIntents, "connectionIntentService").mockReturnValue({ request } as unknown as ReturnType<typeof connectionIntents.connectionIntentService>);
+    const finalizeAiConnectionBusyDeferral = vi.fn();
+    const localEnvironment = await environmentService(db).ensureLocalEnvironment();
+    const opening = prepareHeartbeatExecutionConfiguration(db, {
+      run, agent, task: { issueId: f.issueId, context: {}, responsibleUserId: f.userId,
+        acceptedPlanContinuationWake: false, acceptedPlanWakeRoutingDecision: null, taskProjectContext: null,
+        routineEnvContext: { routineId: null, env: null, responsibleUserId: null } },
+      config: { sourceWorkspaceConfig: agent.adapterConfig, aiBinding: aiConnectionBindingSchema.parse(agent.runtimeConfig!.aiConnection) },
+      policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} },
+        useIsolatedTaskDirectory: false, explicitTaskDirectory: false, requestedExecutionWorkspaceMode: "shared_workspace" },
+      environment: { selectedEnvironmentId: localEnvironment.id, selectedEnvironmentForConfig: localEnvironment,
+        resolvedInstanceSettings: await instanceSettingsService(db).get(),
+        persistedNativeExecutionInput: { schema: "paperclip.native-execution-input.v5" } as unknown as HeartbeatExecutionConfigurationInput["environment"]["persistedNativeExecutionInput"] },
+      services: { secretsSvc: secretService(db), companySkills: companySkillService(db), appendRunEvent: vi.fn(), finalizeAiConnectionBusyDeferral },
+      onFailureSecretsResolved: vi.fn(), onManagedAiRuntimeAcquired: vi.fn(), onIdentityRedactorPrepared: vi.fn(),
+    });
+    await expect(opening).rejects.toMatchObject({ name: "ConfigurationIncompleteFailure",
+      resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable" } } });
+    expect(finalizeAiConnectionBusyDeferral).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(requested ? 1 : 0);
   });
 
   it.each(["agent", "stored task override"] as const)("uses operator preconfigured mode despite %s configuration", async source => {
