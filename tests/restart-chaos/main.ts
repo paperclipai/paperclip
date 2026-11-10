@@ -365,6 +365,7 @@ async function main(): Promise<number> {
       }));
     };
 
+    let launching: Promise<void> | null = null;
     if (storageProxy && plan.options.storageTrigger) {
       storageTrigger = new StorageTrigger(plan.options.storageTrigger, {
         canFire: () => !interrupted && !faultsQueued && !supervisor.faultInProgress && supervisor.serverReady,
@@ -373,7 +374,8 @@ async function main(): Promise<number> {
         fire: armed => {
           faultsQueued += 1;
           const work = (async () => {
-            const exposed = active.filter(candidate => !candidate.done);
+            await launching;
+            const exposed = launched.filter(candidate => !candidate.done);
             await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
             const queued = faultWork.length;
             fireFault(armed.kind, armed.holdMs, armed.taskId, exposed);
@@ -462,7 +464,8 @@ async function main(): Promise<number> {
         && (!plan.options.matrix || matrixMayLaunch(pending[0]!.plan, active.filter(observer => !observer.done).map(observer => observer.plan)))) {
         const next = pending.shift()!;
         launched.push(next);
-        await next.launch();
+        launching = next.launch().finally(() => { launching = null; });
+        await launching;
         if (plan.options.storageWindows && storageChaos && launched.length === 1) storageChaos.start();
         if (!next.done) active.push(next);
       }
