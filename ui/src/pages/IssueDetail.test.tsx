@@ -1,6 +1,7 @@
 import { TaskChatPausedTakeover, type TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 // @vitest-environment jsdom
 
+import { IDLE_READY_TIMEOUT_MS } from "@/hooks/useIdleReady";
 import type { Breadcrumb } from "../context/BreadcrumbContext";
 
 import { DispositionRecoveryNotice, type DispositionRecoverySnapshot } from "../components/DispositionRecoveryNotice";
@@ -6750,6 +6751,10 @@ describe("IssueDetail", () => {
     });
     await flushReact();
     await flushReact();
+    // The mention pool never gates the first frame, so it loads once idle.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, IDLE_READY_TIMEOUT_MS + 50));
+    });
 
     await waitForAssertion(() => {
       expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].mentions).toEqual(

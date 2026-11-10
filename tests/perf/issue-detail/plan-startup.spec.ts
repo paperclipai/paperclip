@@ -19,6 +19,14 @@ for (const hasPlan of [false, true]) {
         expect(planResponse.ok()).toBe(true);
       }
       let planRequests = 0;
+      // Reads before the live socket connects; its catch-up refresh is not a first-frame read.
+      const taskReads: string[] = [];
+      let socketConnected = false;
+      page.on("websocket", (socket) => socket.on("framereceived", () => { socketConnected = true; }));
+      page.on("request", (req) => {
+        const url = new URL(req.url());
+        if (!socketConnected && url.pathname.startsWith(`/api/issues/${issue.identifier}`) || url.pathname.startsWith(`/api/issues/${issue.id}`)) taskReads.push(`${url.pathname.replace(issue.id, ":id").replace(issue.identifier, ":ref")}${url.search}`);
+      });
       let release!: () => void;
       const held = new Promise<void>(resolve => { release = resolve; });
       await page.route("**/api/issues/*/documents/plan", async (route) => {
@@ -37,7 +45,13 @@ for (const hasPlan of [false, true]) {
         await expect(thread.locator(':scope > [aria-busy="false"]')).toBeVisible({ timeout: 10_000 });
         await expect(thread.getByText("This saved reply must be readable without a redundant plan request.", { exact: true })).toBeVisible();
         if (hasPlan) await expect(thread.getByTestId("task-chat-plan-preview")).toBeVisible();
-        await info.attach("plan-reads.json", { body: JSON.stringify({ planRequests }), contentType: "application/json" });
+        const readsAtReveal = [...taskReads];
+        if (entry === "direct") {
+          // A hard load reads the core projection, plan included, from the chat bootstrap.
+          expect(readsAtReveal.filter((path) => path === "/api/issues/:ref/chat-bootstrap")).toHaveLength(1);
+          expect(readsAtReveal.filter((path) => path.endsWith("?view=core"))).toEqual([]);
+        }
+        await info.attach("plan-reads.json", { body: JSON.stringify({ planRequests, readsAtReveal }), contentType: "application/json" });
       } finally { release(); }
     });
   }

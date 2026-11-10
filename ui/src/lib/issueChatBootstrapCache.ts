@@ -2,6 +2,7 @@ import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import type { IssueChatBootstrap, IssueRecentComments } from "@paperclipai/shared";
 import type { RunForIssue } from "@/api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "@/api/heartbeats";
+import { readTaskChatBootstrapPreload } from "@/api/task-chat-bootstrap-preload";
 import { seedIssueIdBatch } from "@/hooks/useIssueIdBatches";
 import { seedIssueDetailProjections } from "./issueDetailCache";
 import {
@@ -132,4 +133,33 @@ export function seedIssueChatBootstrap(
   // Plan document and work-product projections, filled only where empty.
   seedIssueDetailProjections(queryClient, item.issue, item.ref);
   return true;
+}
+
+/**
+ * Seed the chat bootstrap that `ui/index.html` started on a hard load of a
+ * task URL, once it arrives.
+ *
+ * The page's company is not known yet, so the item seeds under its own
+ * company, but only while the browser is still on the task URL the request
+ * was made for and the URL's company prefix names the task's company (its
+ * identifier prefix). The server authorized the read for this browser's
+ * session; an account change before arrival discards the preload.
+ */
+export function primeTaskChatBootstrapPreload(
+  queryClient: QueryClient,
+  options: { location?: Pick<Location, "pathname"> } = {},
+) {
+  const preload = readTaskChatBootstrapPreload();
+  if (!preload) return Promise.resolve(false);
+  return preload.item.then((item) => {
+    const location = options.location ?? (typeof window === "undefined" ? null : window.location);
+    if (!item || readTaskChatBootstrapPreload() !== preload || location?.pathname !== preload.pathname) return false;
+    const urlPrefix = preload.pathname.split("/")[1]?.toUpperCase();
+    const identifierPrefix = item.issue.identifier?.split("-")[0]?.toUpperCase();
+    if (!urlPrefix || !identifierPrefix || urlPrefix !== identifierPrefix) return false;
+    return seedIssueChatBootstrap(queryClient, item as unknown as IssueChatBootstrapEntry, {
+      companyId: item.issue.companyId,
+      requestedAt: preload.requestedAt,
+    });
+  });
 }

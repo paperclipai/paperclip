@@ -2,7 +2,13 @@ import { QueryClient } from "@tanstack/react-query";
 import type { ActivityEvent, Issue, IssueComment } from "@paperclipai/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RunForIssue } from "@/api/activity";
-import { hasFreshIssueChatFirstFrame, seedIssueChatBootstrap, type IssueChatBootstrapEntry } from "./issueChatBootstrapCache";
+import { discardTaskChatBootstrapPreload, resetTaskChatBootstrapPreloadForTests } from "@/api/task-chat-bootstrap-preload";
+import {
+  hasFreshIssueChatFirstFrame,
+  primeTaskChatBootstrapPreload,
+  seedIssueChatBootstrap,
+  type IssueChatBootstrapEntry,
+} from "./issueChatBootstrapCache";
 import {
   issueCommentInputFactsQueryKey,
   recentIssueActivityQueryKey,
@@ -153,5 +159,76 @@ describe("hasFreshIssueChatFirstFrame", () => {
     const factsKey = issueCommentInputFactsQueryKey(IDENTIFIER);
     qc.removeQueries({ queryKey: [...factsKey, "batch", ["c1", "c2"]], exact: true });
     expect(hasFreshIssueChatFirstFrame(qc, [IDENTIFIER], REQUESTED_AT + 1)).toBe(false);
+  });
+});
+
+describe("primeTaskChatBootstrapPreload", () => {
+  const PATH = `/PAP/issues/${IDENTIFIER}`;
+  function install(response: Promise<unknown>, pathname = PATH) {
+    resetTaskChatBootstrapPreloadForTests();
+    (globalThis as unknown as Record<string, unknown>).__PAPERCLIP_TASK_CHAT_BOOTSTRAP__ = {
+      ref: IDENTIFIER, pathname, requestedAt: REQUESTED_AT, response,
+    };
+  }
+  afterEach(() => {
+    delete (globalThis as unknown as Record<string, unknown>).__PAPERCLIP_TASK_CHAT_BOOTSTRAP__;
+    resetTaskChatBootstrapPreloadForTests();
+  });
+
+  it("seeds the hard-loaded task's first frame under its URL ref, id and identifier", async () => {
+    const qc = client();
+    install(Promise.resolve({ ...item(), ref: IDENTIFIER }));
+    await expect(primeTaskChatBootstrapPreload(qc, { location: { pathname: PATH } })).resolves.toBe(true);
+    for (const ref of [ID, IDENTIFIER]) {
+      expect(qc.getQueryData(coreKey(ref))).toEqual(issue());
+      expect(qc.getQueryState(coreKey(ref))?.dataUpdatedAt).toBe(REQUESTED_AT);
+      expect(qc.getQueryData(queryKeys.issues.interactions(ref))).toEqual([]);
+      expect(qc.getQueryData(queryKeys.issues.activeRun(ref))).toBeNull();
+    }
+    expect(hasFreshIssueChatFirstFrame(qc, [IDENTIFIER], REQUESTED_AT + 1)).toBe(true);
+  });
+
+  it("seeds nothing when the bootstrap failed", async () => {
+    const qc = client();
+    install(Promise.resolve(null));
+    await expect(primeTaskChatBootstrapPreload(qc, { location: { pathname: PATH } })).resolves.toBe(false);
+    expect(qc.getQueryCache().getAll()).toHaveLength(0);
+  });
+
+  it("seeds nothing after the browser left the task URL", async () => {
+    const qc = client();
+    install(Promise.resolve(item()));
+    await expect(primeTaskChatBootstrapPreload(qc, { location: { pathname: "/PAP/issues" } })).resolves.toBe(false);
+    expect(qc.getQueryCache().getAll()).toHaveLength(0);
+  });
+
+  it("seeds nothing when the URL's company prefix is not the task's company", async () => {
+    const qc = client();
+    install(Promise.resolve(item()), `/OTHER/issues/${IDENTIFIER}`);
+    await expect(primeTaskChatBootstrapPreload(qc, { location: { pathname: `/OTHER/issues/${IDENTIFIER}` } })).resolves.toBe(false);
+    expect(qc.getQueryCache().getAll()).toHaveLength(0);
+  });
+
+  it("seeds nothing after an account change", async () => {
+    const qc = client();
+    let resolve!: (value: unknown) => void;
+    install(new Promise((res) => { resolve = res; }));
+    const primed = primeTaskChatBootstrapPreload(qc, { location: { pathname: PATH } });
+    discardTaskChatBootstrapPreload();
+    resolve(item());
+    await expect(primed).resolves.toBe(false);
+    expect(qc.getQueryCache().getAll()).toHaveLength(0);
+  });
+
+  it("keeps newer cached data, such as a restored or live-updated read", async () => {
+    const qc = client();
+    const newer = issue({ title: "Renamed after the bootstrap was read" });
+    qc.setQueryData(coreKey(IDENTIFIER), newer, { updatedAt: REQUESTED_AT + 5 });
+    qc.setQueryData(commentsKey(IDENTIFIER), { comments: [comment("c3")], hasMore: false }, { updatedAt: REQUESTED_AT - 5 });
+    install(Promise.resolve({ ...item(), ref: IDENTIFIER }));
+    await primeTaskChatBootstrapPreload(qc, { location: { pathname: PATH } });
+    expect(qc.getQueryData(coreKey(IDENTIFIER))).toBe(newer);
+    // Merged endpoints keep what the page already observed.
+    expect(qc.getQueryData<{ comments: IssueComment[] }>(commentsKey(IDENTIFIER))?.comments.map((c) => c.id)).toEqual(["c3"]);
   });
 });

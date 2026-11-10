@@ -162,10 +162,17 @@ test("explicit comment links resolve older pages before revealing at the target"
   }).toBeLessThanOrEqual(2);
 });
 
+// A hard load answers the first frame from the chat bootstrap. Tests of the
+// per-read loading, failure and retry paths make it fail, so those reads run.
+async function failChatBootstrap(page: Page) {
+  await page.route("**/api/issues/*/chat-bootstrap", (route) => route.fulfill({ status: 503, contentType: "application/json", body: '{"error":"unavailable"}' }));
+}
+
 test("a loaded comment target positions after the reveal deadline when live-run metadata stalls", async ({ page }) => {
   let release!: () => void;
   let metadataReads = 0;
   const held = new Promise<void>(resolve => { release = resolve; });
+  await failChatBootstrap(page);
   await page.route("**/api/issues/*/live-runs", async route => { metadataReads++; await held; await route.continue().catch(() => {}); });
   try {
     await page.goto(`/${prefix}/issues/${issue.identifier}#comment-${oldestCommentId}`);
@@ -248,6 +255,7 @@ test("a draft survives background task refresh, reload, and one persisted reply"
 });
 
 test("failed initial comments expose retry, then recover without an indefinite skeleton", async ({ page }) => {
+  await failChatBootstrap(page);
   await page.route("**/api/issues/*/recent-comments", (route) => route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"Comment read failed"}' }));
   await page.goto(`/${prefix}/issues/${issue.identifier}`);
   await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeVisible({ timeout: 30_000 });
@@ -257,6 +265,43 @@ test("failed initial comments expose retry, then recover without an indefinite s
   await expect(page.getByText("Historical message 159", { exact: true })).toBeAttached();
   await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeHidden();
 });
+
+for (const mode of ["failed", "stalled"] as const) {
+  test(`a ${mode} chat bootstrap falls back to the per-read first frame in order`, async ({ page }) => {
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let bootstrapReads = 0;
+    const firstFrameReads: string[] = [];
+    await page.route("**/api/issues/*/chat-bootstrap", async (route) => {
+      bootstrapReads++;
+      if (mode === "failed") return route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"failed"}' });
+      await held;
+      await route.continue().catch(() => {});
+    });
+    page.on("request", (req) => {
+      const path = new URL(req.url()).pathname;
+      if (/\/api\/issues\/[^/]+\/(recent-comments|interactions|live-runs)$/.test(path)) firstFrameReads.push(path);
+    });
+    await installMeasurements(page);
+    try {
+      await page.goto(`/${prefix}/issues/${issue.identifier}`);
+      await ready(page);
+      expect(bootstrapReads).toBe(1);
+      expect(firstFrameReads.length).toBeGreaterThanOrEqual(3);
+      await expect(page.getByText("Historical message 159", { exact: true })).toBeVisible();
+      const editor = page.getByTestId("task-chat-composer-stack").locator('[contenteditable="true"]');
+      await editor.fill("Draft typed before the late bootstrap answer.");
+      release();
+      await page.waitForTimeout(500);
+      // A late bootstrap answer neither reorders, hides nor replaces the open chat.
+      await expect(page.getByTestId("task-chat-history-loading")).toHaveCount(0);
+      await expect(editor).toHaveText("Draft typed before the late bootstrap answer.");
+      const anchors = await page.locator("[data-thread-anchor]").evaluateAll((els) => els.map((el) => el.textContent ?? ""));
+      const numbers = anchors.map((text) => /Historical message (\d+)/.exec(text)?.[1]).filter(Boolean).map(Number);
+      expect(numbers).toEqual([...numbers].sort((a, b) => a - b));
+    } finally { release(); }
+  });
+}
 
 test("mobile reduced-motion cold open and rapid task switching", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -311,6 +356,7 @@ for (const mobile of [false, true]) {
 test("stalled native and log history reveal loaded content with Retry after the request deadline", async ({ page }) => {
   const runId = "20000000-0000-4000-8000-000000000001";
   const at = new Date().toISOString();
+  await failChatBootstrap(page);
   await page.route(/\/api\/issues\/[^/]+\/runs(?:\?|$)/, (route) => route.fulfill({ json: [{ runId, runtimeMode: "native", status: "succeeded", agentId: "20000000-0000-4000-8000-000000000002", adapterType: "paperclip_runner", createdAt: at, startedAt: at, finishedAt: at }] }));
   let stalled = true;
   let release!: () => void;

@@ -1,6 +1,7 @@
 import { getPageVisibility, getVisibilityHeaderValue } from "@/lib/page-visibility";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
 import { ApiError, apiErrorFromResponse } from "./api-error";
+import { discardTaskChatBootstrapPreload, takePreloadedGet } from "./task-chat-bootstrap-preload";
 import { errorCopy } from "./errors";
 export { ApiError, apiErrorFromResponse, type ApiErrorOptions } from "./api-error";
 import { readApiJson } from "./response";
@@ -180,11 +181,22 @@ function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
   let entry = inflightGets.get(key);
   if (!entry) {
     const controller = new AbortController();
-    const promise = request<T>(path, {
+    const send = () => request<T>(path, {
       method: "GET",
       signal: controller.signal,
       ...(options?.cache ? { cache: options.cache } : {}),
     });
+    // A first-frame read of the task this page was hard-loaded on waits for the
+    // chat bootstrap the page started before the app loaded, and falls back to
+    // its own request when the bootstrap cannot answer.
+    const preloaded = options?.fresh ? null : takePreloadedGet(path);
+    const promise: Promise<T> = preloaded
+      ? preloaded.then((answer) => {
+          if (answer.hit) return answer.value as T;
+          if (controller.signal.aborted) throw abortError();
+          return send();
+        })
+      : send();
     const created: InflightGet = { promise, controller, refs: new Set() };
     // Clear the shared entry once settled so later calls issue a fresh request.
     promise.then(
@@ -265,6 +277,7 @@ export function detachInflightGet(path: string): void {
 /** End the sharing scope when identity changes; existing callers still settle. */
 export function detachInflightGets(): void {
   inflightGets.clear();
+  discardTaskChatBootstrapPreload();
 }
 
 function isRequestOptions(value: unknown): value is RequestOptions {

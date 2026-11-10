@@ -302,6 +302,7 @@ import {
   PopoverContent,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { useIdleReady } from "@/hooks/useIdleReady";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { describeError, isTransientError } from "@/api/errors";
 import {
@@ -3692,7 +3693,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     enabled: !!selectedCompanyId,
   });
   // Bounded pool of recently-updated issues to back the `@task` reference picker.
-  // The picker filters this list client-side by identifier/title.
+  // The picker filters this list client-side by identifier/title. It is a large
+  // read that never affects the first chat frame, so it starts once idle.
+  const mentionPoolReady = useIdleReady();
   const { data: mentionIssues = EMPTY_ISSUES } = useQuery({
     queryKey: resolvedCompanyId
       ? queryKeys.issues.mentionPool(resolvedCompanyId)
@@ -3703,7 +3706,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         sortField: "updated",
         sortDir: "desc",
       }),
-    enabled: !!resolvedCompanyId,
+    enabled: !!resolvedCompanyId && mentionPoolReady,
     staleTime: 60_000,
     placeholderData: keepPreviousDataForSameQueryTail<Issue[]>(
       resolvedCompanyId ?? "pending",

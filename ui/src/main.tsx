@@ -31,6 +31,7 @@ import { connectivity } from "./lib/connectivity";
 import { bindConnectivity, createAppQueryClient } from "./lib/query-client";
 import { captureBrowserException } from "./lib/sentry";
 import { startPersistedQueryCache } from "./lib/persisted-query-cache";
+import { primeTaskChatBootstrapPreload } from "./lib/issueChatBootstrapCache";
 import { hasPendingWrites, subscribePendingWrites } from "./lib/reload-safety";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
@@ -88,6 +89,8 @@ bindConnectivity(queryClient, connectivity);
 startPersistedQueryCache(queryClient, {
   buildId: typeof __PAPERCLIP_BUILD_COMMIT__ === "string" ? __PAPERCLIP_BUILD_COMMIT__ : null,
 });
+// After the persisted cache, so restored reads that are newer win.
+void primeTaskChatBootstrapPreload(queryClient);
 window.addEventListener("load", () => {
   startServiceWorkerUpdates({
     canReload: () => connectivity.getSnapshot().status === "online"

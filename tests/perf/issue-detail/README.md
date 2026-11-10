@@ -50,6 +50,40 @@ harness validates the task identity before measuring. Network spans in the trace
 use recorded request start/end timestamps relative to task navigation; they
 include completed requests observed during the sample, even after content paint.
 
+## Cold direct task load (chat bootstrap)
+
+A hard load of a task URL starts `GET /api/issues/:ref/chat-bootstrap` from an
+inline script in `ui/index.html`, before the app's JavaScript loads. The app
+seeds the first-frame caches from it (`primeTaskChatBootstrapPreload`), and a
+first-frame GET that starts while it is in flight waits for it instead of
+making its own request (`ui/src/api/task-chat-bootstrap-preload.ts`). A failed
+bootstrap, a missing field, or no answer within 8 seconds falls back to the
+per-endpoint reads.
+
+`cold-bootstrap.perf.spec.ts` delays every API response (300 ms by default)
+so serial request stages show up as wall-clock time, opens the task by URL in
+a fresh browser context with the app's JavaScript in the HTTP cache and no app
+storage, and waits for the revealed history, the latest saved message and an
+editable composer. Its request-shape test always runs: one bootstrap request
+and no per-endpoint first-frame read before the frame, except the live
+socket's catch-up refresh after it connects. The benchmark is opt-in:
+
+```sh
+PAPERCLIP_ISSUE_PERF_BASE_URL=http://127.0.0.1:3287 \
+PAPERCLIP_ISSUE_PERF_COLD_RUNS=7 PAPERCLIP_ISSUE_PERF_LABEL=candidate \
+  pnpm exec playwright test --config tests/perf/issue-detail/playwright.config.ts cold-bootstrap -g benchmark
+```
+
+It writes `cold-bootstrap-<label>.{json,md}` with the median, spread, request
+count before the frame, the requests that finished last before it, and the
+first run's request timeline. `PAPERCLIP_ISSUE_PERF_API_DELAY_MS` changes the
+delay; `PAPERCLIP_ISSUE_PERF_COLD_HTTP_CACHE=1` downloads the JavaScript on
+every run. Serve a production build (`PAPERCLIP_UI_DEV_MIDDLEWARE=false`).
+
+Layout tests that stall or fail a per-endpoint first-frame read on a direct
+load also fail the bootstrap (`failChatBootstrap`), so the read they target
+still runs. Separate cases cover a failed and a stalled bootstrap.
+
 ## Real-instance click harness
 
 Local fixtures cannot reproduce staging's network round trips, server contention

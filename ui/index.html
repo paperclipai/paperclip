@@ -41,6 +41,26 @@
         }
       })();
     </script>
+    <script>
+      // A hard load of a task URL starts the task's chat bootstrap here, before
+      // the app's JavaScript loads, so the first chat frame waits for one task
+      // round trip. ui/src/api/task-chat-bootstrap-preload.ts consumes it; keep
+      // the path patterns in sync with it.
+      (() => {
+        try {
+          const match = /^\/[^/]+\/issues\/([A-Za-z][A-Za-z0-9]*-\d+|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\/?$/.exec(window.location.pathname);
+          if (!match || typeof fetch !== "function") return;
+          const ref = match[1];
+          const requestedAt = Date.now();
+          const response = fetch("/api/issues/" + encodeURIComponent(ref) + "/chat-bootstrap", {
+            credentials: "include",
+            cache: "no-store",
+            headers: { Accept: "application/json" },
+          }).then((res) => (res.ok ? res.json() : null)).catch(() => null);
+          window.__PAPERCLIP_TASK_CHAT_BOOTSTRAP__ = { ref, pathname: window.location.pathname, requestedAt, response };
+        } catch {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
