@@ -608,16 +608,16 @@ impl AcpxSidecarTransport {
         params: Value,
         deadline: Instant,
     ) -> Result<Option<Value>, LocalRunnerError> {
-        if self.abandoned_cancellation.is_some() {
-            // Retain at most one unanswered cancellation; a second waits normally.
-            return self
-                .request(GeneratedAcpxSidecarCommand::TurnCancel, params)
-                .map(Some);
-        }
         if self.poisoned {
             return Err(LocalRunnerError::invalid(
                 "ACPX sidecar transport is unavailable after a protocol failure",
             ));
+        }
+        if self.abandoned_cancellation.is_some() {
+            // The earlier cancel is still delivered and unanswered. Its runtime
+            // was retired, so no later turn exists; another cancel adds nothing
+            // and must not block the runner again.
+            return Ok(None);
         }
         let command = GeneratedAcpxSidecarCommand::TurnCancel;
         let deadline = self

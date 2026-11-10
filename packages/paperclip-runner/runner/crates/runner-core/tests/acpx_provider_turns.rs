@@ -813,6 +813,12 @@ fn lost_cancellation_reply_keeps_the_turn_terminal_and_the_transport() {
             .unwrap_or_else(|error| panic!("{mode}: {error}"));
         assert!(started.elapsed() < Duration::from_secs(3), "{mode}");
         assert!(session.runtime_retired(), "{mode}");
+        // A repeated Stop while the first cancel is unanswered must not block.
+        let repeated = Instant::now();
+        session
+            .interrupt_turn("turn-1", "Paperclip interruption again")
+            .unwrap_or_else(|error| panic!("{mode} repeat: {error}"));
+        assert!(repeated.elapsed() < Duration::from_millis(200), "{mode}");
         let mut terminal = None;
         while terminal.is_none() {
             let events = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
