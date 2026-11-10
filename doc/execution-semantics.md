@@ -1726,6 +1726,18 @@ Projectless runs use their run ID as a transient workspace placeholder. That
 placeholder cannot authorize managed workspace reuse; those successors keep the
 existing fresh-workspace preparation path while retaining the old directory.
 
+The cleanup gate (`native_session_cleanup_quarantined`) never asks a person to
+act. Release of the run's environment settles it: remote lease termination
+receipts, or the local stop proof above, retire the quarantined owner. When the
+run's own saved checkpoint records a completed provider turn (for example, a
+same-run disposition recovery that the gate refused), the work is saved. If the
+task waits on unresolved blocker tasks, the task view shows that wait and no
+failure banner. Otherwise the missing task disposition stays visible with plain
+wording. Every quarantined run keeps Retry hidden, because the retry route refuses
+it; a new message continues once the previous session has stopped. These rules
+read only `errorCode` and `runnerProfileJson.sessionCheckpoint`, so runs that
+earlier releases quarantined are shown the same way without a migration.
+
 A continuation cancelled by the queued-run gate while waiting for review did not start a provider. Its matching dispatch-gate receipt and unclaimed execution fields keep this deliberate wait out of unknown-action reconciliation. Pending review and decision gates still apply. If an older server already created a recovery hold for this exact state, Retry or a new user message can request one fresh turn after the server verifies there is no provider, coordinator, or unfinished cleanup. Saved user input is reconsidered through the same admission path; the cancelled turn is not replayed.
 
 Other legacy queued-run gate cancellations also stay out of unknown-action reconciliation when the terminal run has no retained execution authority, session, workspace recovery, resources, or execution events. The same proof removes the effect of an old false recovery hold only for its exact company, task, and run; the audit row remains. Started or conflicting work retains its hold. Review waits retain their guarded Retry path. New work still passes the current approval, dependency, budget, pause, and ownership gates.
@@ -2711,6 +2723,21 @@ While a re-arm remains, the hold names the wait and says that Paperclip tries
 again automatically; after that it names Retry. Holds exhausted by earlier
 releases carry no marker and are re-armed on the worker's first pass after
 deploy, with no migration.
+
+An exhausted save whose last failure happened while preserving files
+(`export_interrupted`) under an older workspace capture
+policy is retried once under the current policy. The capture policy has a
+version (`REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION`); each recovery generation
+records the version it saves with, and generations written before the field
+existed count as version 1. A release that makes the capture accept workspaces
+an earlier release refused bumps the version. The recovery worker then re-arms
+each such hold with one new bounded generation, under the same run-over checks
+as the stop-proof re-arm, records the `capturePolicyRecovery` marker and
+`issue.workspace_recovery_rearmed` activity with reason
+`capture_policy_changed`, and settles the hold like any completed recovery.
+The new generation carries the current version, so the rule never re-arms it
+again; a later failure follows the normal exhausted handoff. Holds saved by
+earlier releases need no migration.
 
 An exhausted workspace export records the exact Blocked status version it
 creates, bound to its source run, result, contract and identity. Recovery may
@@ -4919,6 +4946,29 @@ that an agent turn is running. Task and inbox surfaces show recovery in progress
 only while its recorded retry is still due or its matching retry run is verified
 live. An expired or missing retry, exhausted budget, or board-owned failure shows
 recovery needed rather than “Observing active run.”
+
+Finalization of a saved result has its own budget of three failed attempts,
+counted in `heartbeat_runs.result_json.finalizationFailureCount`. When the
+budget runs out on an accepted result of a provider-succeeded run and the cause
+was contention (`status_cas_exhausted` or `side_effect_planning_failed`), the
+finalizer tries the same saved result again after 2 minutes, then after 10
+minutes, each with a fresh budget, before it hands the task to the board. Each
+delay is recorded once in the coordinator's `recoveryHistory`
+(`automatic_finalization_backoff`). No provider work runs.
+
+When the coordinator still rests `terminal_failure` with
+`native_finalization_retry_exhausted` for an accepted result of a succeeded
+run, the task offers Retry. That Retry re-finalizes the saved result: it reopens
+the same coordinator with a fresh finalization budget, records
+`exhausted_finalization_retry` in its `recoveryHistory`, resolves the board
+card, writes a coalesced `task_retry` receipt with strategy `finalize_result`,
+and runs the finalizer for the same run. It starts no provider run and keeps
+the provider attempt count. Later clicks join that Retry. Until the result
+commits or the budget runs out again, the task shows work in progress
+("Finishing recovery of saved work"). If that finalization fails, the normal bounded
+finalization retries and recovery card apply, and Retry is offered again once
+they run out. Coordinators that older builds left in this state qualify with or
+without `finalizationFailureCount`; no migration is needed.
 
 Native recovery reads include a read-only `nativeRunActivity` projection, bound
 to the company, source issue, and exact `resume_native_run.runId`. It reports a

@@ -422,6 +422,39 @@ local fixture:
 pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-budget-cancellation-scan.ts --runs=20000 --payload-kib=16
 ```
 
+Workspace activity and cleanup checks (`expirationScope` in
+`server/src/services/git-workspace-expiration.ts`) find a workspace's runs with
+one index probe per binding: `issue_id`, `native_issue_id`, the bound issues'
+checkout and execution runs, and the legacy context keys `issueId`, `taskId`
+and `executionWorkspaceId`. Migration 0460 builds
+`heartbeat_runs_company_ctx_execution_workspace_idx` concurrently for the last
+key. The index is partial (`context_snapshot ? 'executionWorkspaceId'`), so it
+serves only queries that repeat that predicate and does not compete with other
+company-scoped indexes. The context expressions and the predicate must stay
+textually equal to the index definitions; a regression test checks that no
+binding scans `heartbeat_runs`.
+To compare both plans on a disposable local fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-workspace-activity.ts --baseline-ref=<pre-fix commit> --runs-per-workspace=3000
+```
+
+The task page's created-from list (`createdFromIssueCondition` in
+`server/src/services/issue-creation-origin.ts`) reads created tasks through
+three index probes: the recorded origin task (`issues_company_origin_issue_idx`),
+the source task's runs (`heartbeat_runs_company_origin_issue_idx`) and then the
+tasks whose only origin is one of those runs, and the creation activity of those
+runs (`activity_log_run_id_idx`). Migration 0461 builds the partial index
+`issues_company_legacy_origin_run_idx` concurrently for the run step. It keys
+tasks by company and `origin_run_id`, only where `origin_issue_id` is null and
+`origin_run_id` is not null. The run branch must repeat that predicate textually.
+A recorded origin task still wins over a run, and a run over activity. To compare
+both plans on a disposable local fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-created-from-issues.ts --baseline-ref=<pre-fix commit>
+```
+
 GitHub review lookups use four indexes from migration 0456, which builds them
 concurrently. `chat_message_links_company_comment_idx` finds a source comment's
 link for inherited review waits and run-origin checks.
@@ -459,6 +492,21 @@ reads the full `chat_actions` table. The check SQL is unchanged. Local proof:
 ```sh
 pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-chat-admission-index.ts
 pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-chat-admission-index-migration.ts
+```
+
+Native harness backup expiration finds the leases that reference one backup root
+by run, by `metadata.nativeHarnessBackup.sessionScopeSha256`, and by the
+identity's own lease ID, in one `OR` query. The partial expression index
+`environment_leases_native_backup_scope_idx` from migration 0459 keys leases by
+that scope digest. With it, every arm of the `OR` has an index, so PostgreSQL
+combines three index probes instead of reading every lease of the company and its
+metadata. The expression must stay identical to the one in
+`server/src/services/native-runtime/native-harness-backup-expiration.ts`; a
+regression test checks that the planner uses the index. The migration builds the
+index concurrently. To compare both plans on a disposable local fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-environment-lease-backup-lookup.ts
 ```
 
 The chat wake-notice sweep compares UUID columns directly against guarded,
@@ -1750,16 +1798,36 @@ Lifecycle polls can page past failed resources using the last returned event id 
 cursor, never a persisted high-water mark. This retries failures and includes
 transactions that commit later with lower ids.
 
-A lifecycle page reads the company's unacknowledged events for the requested
-types once. It keeps one head for each resource: the unacknowledged creation,
-else the oldest unacknowledged event. Then it applies `afterId`, id order and
-the limit. Cost grows with the company's journal size, not with pending events
-times acknowledged history. The idle-sleep check only asks whether any
-unacknowledged event exists, because each such resource has a head. No index
-or migration is needed.
+`plugin_lifecycle_resource_cursors` keeps one row for each plugin and resource
+stream. Its `acknowledged_through_id` says that every event of that resource at
+or below the value is acknowledged. Acknowledgments above the cursor use
+`plugin_lifecycle_acknowledgments`. Acknowledgment writes both records, so an
+earlier release reads the same progress after a rollback. The cursor moves only
+over a contiguous acknowledged prefix. A creation recorded after transitions
+that are still pending does not move it. Writers record a resource's events
+while they hold that resource's row lock. Thus an event that commits later for
+the same resource always has a higher id than the cursor. A lower id from a
+different resource still stays deliverable.
+
+A lifecycle page visits each resource stream of the requested types once with a
+backward loose index scan, which also gives the stream's latest event id. A
+stream whose latest event is at or below its cursor is settled and is not read
+again. For each other stream the page reads one head: the unacknowledged
+creation, else the first unacknowledged transition above the cursor. Then it
+applies `afterId`, id order and the limit. Cost grows with the number of
+resource streams and pending events, not with the journal size. Acknowledgment
+reads only the events between the cursor and the acknowledged event. The
+idle-sleep check asks whether any stream has a head.
+
+Migration `0462` creates the cursor table and carries existing acknowledgments
+forward. For each plugin and resource it stores the end of the contiguous
+acknowledged prefix of events. A cursor never passes an unacknowledged event, so
+a gap is still delivered. Acknowledged events after the gap are still skipped
+through their acknowledgment rows. An earlier release that runs during
+a rolling deploy writes only acknowledgment rows, and the new reads honor them.
 
 ```sh
-pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-plugin-lifecycle-inbox.ts --baseline-ref=02bfe71a6b
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-plugin-lifecycle-inbox.ts --baseline-ref=8d2bf78323 --agents=400 --per-agent=2500 --acked=2000
 ```
 
 ## Legacy controller ownership
@@ -2091,6 +2159,26 @@ pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-comment-wake-che
 
 This disposable fixture compares the complete check result, the complete
 positional SQL rows, plans, and timings with and without nested-loop joins.
+
+The stale-continuation check for dropped user comments uses the same per-binding
+run probes. It first keeps the comments that a stale-continuation cancellation
+dropped and that no open wake carries, and only those comments reach the run
+probes.
+
+The workspace recovery worker's next deadline (`nextWorkspaceRecoveryAt`) and
+its discovery conditions find the source run, its finalizer and its leases by
+`id = canonical uuid of evidence->>'runId'`. The value is null unless the saved
+text is the canonical lowercase form, so the probe matches exactly the rows the
+former `id::text = evidence->>'runId'` comparison matched. The text comparison
+could not use a key, so each exhausted hold read every run, finalizer and lease
+of its company.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-recovery-status-checks.ts --baseline-ref=8d2bf78323
+```
+
+This fixture compares every changed discovery condition for every recovery
+action, the complete check results and the positional SQL rows before timing.
 
 ### Agent runtime synchronization journal
 

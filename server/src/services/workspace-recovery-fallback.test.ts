@@ -1,3 +1,4 @@
+import { REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION } from "./remote-workspace-snapshot-archive.js";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { cp, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -395,6 +396,24 @@ describe("retained source fallback", () => {
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("blocked");
   }, 60_000);
 
+  // The discovery probes find the source run by its primary key. They must
+  // still match only the canonical id text the hold saved, as the text
+  // comparison they replace did: a hold whose saved run id is not canonical
+  // is not discovered through them.
+  it("discovers a hold through its source run only by the canonical run id it saved", async () => {
+    const f = await unverifiableRetainedSource();
+    const ids = async () => (await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id);
+    expect(await nextWorkspaceRecoveryAt(db)).toBeLessThanOrEqual(Date.now());
+    expect(await ids()).toContain(f.actionId);
+    const saved = await action(f.actionId);
+    await db.update(issueRecoveryActions).set({ evidence: { ...saved.evidence, runId: f.runId.toUpperCase() } })
+      .where(eq(issueRecoveryActions.id, f.actionId));
+    expect(await nextWorkspaceRecoveryAt(db)).toBeNull();
+    expect(await ids()).not.toContain(f.actionId);
+    await db.update(issueRecoveryActions).set({ evidence: saved.evidence }).where(eq(issueRecoveryActions.id, f.actionId));
+    expect(await ids()).toContain(f.actionId);
+  }, 60_000);
+
   it("waits until a deferred transient check is due before the worker visits the hold again", async () => {
     const f = await unverifiableRetainedSource();
     const source = await run(f.runId);
@@ -489,7 +508,8 @@ describe("retained source fallback", () => {
           generationId: randomUUID(), intentId: null, phase: "preserve_files", state: "exhausted", attemptId: randomUUID(),
           attempts: 6, retriesUsed: 5, firstFailureAt: now - 60_000, nextAttemptAt: null, deadlineAt: now - 1, providerCooldownAt: null,
           failure: { code: "export_interrupted", retryClass: "retry_transient", evidenceFingerprint: "c".repeat(64) },
-          preservationOperationIds: [], freshAttemptRunId: null },
+          // Exhausted under the current capture policy, so only the sibling rule applies.
+          preservationOperationIds: [], freshAttemptRunId: null, capturePolicyVersion: REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION },
         workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: f.runId, status: "blocked", stage: "restoring_files",
           attempt: 6, attemptLimit: 6, retryable: true, requestIds: [] } } });
     const ids = async () => (await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id);
