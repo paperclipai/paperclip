@@ -13,7 +13,7 @@ import { parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
 import { ComposerAddMenu } from "./ComposerAddMenu";
 import { QuestionForm } from "./QuestionForm";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent, HeartbeatRun } from "@paperclipai/shared";
+import type { Agent, HeartbeatRun, IssueWorkMode } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
 import { instanceSettingsApi } from "@/api/instanceSettings";
 import { CoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
@@ -1237,7 +1237,7 @@ describe("TaskChatComposer", () => {
     const onAdd = vi.fn();
     let rejectSave!: () => void;
     function OptimisticModeHarness() {
-      const [workMode, setWorkMode] = useState<"standard" | "ask" | "planning">("standard");
+      const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
       return <TaskChatComposer onAdd={onAdd} workMode={workMode} onWorkModeChange={(mode) => {
         setWorkMode(mode);
         return new Promise<void>((_resolve, reject) => {
@@ -1269,7 +1269,7 @@ describe("TaskChatComposer", () => {
     let resolveSend!: () => void;
     const onAdd = vi.fn().mockReturnValue(new Promise<void>((resolve) => { resolveSend = resolve; }));
     function PendingSendHarness() {
-      const [workMode, setWorkMode] = useState<"standard" | "ask" | "planning">(savedMode);
+      const [workMode, setWorkMode] = useState<IssueWorkMode>(savedMode);
       return <TaskChatComposer onAdd={onAdd} workMode={workMode}
         onWorkModeChange={async (mode) => { setWorkMode(mode); }} />;
     }
