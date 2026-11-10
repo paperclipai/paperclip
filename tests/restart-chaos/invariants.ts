@@ -180,3 +180,29 @@ export async function checkPlanInvariants(input: {
     await db.$client.end({ timeout: 5 }).catch(() => undefined);
   }
 }
+
+/**
+ * U3 evidence from the wave database (universal.ts): every failed run's error
+ * text and every recovery action's cause, so a bare "Error" or an empty
+ * message is caught even where the board's run list hides the text. Read once
+ * at wave end, before the instance is removed; grouped by issue.
+ */
+export async function readUniversalDbEvidence(db: Db, companyId: string): Promise<Map<string, import("./universal.js").UniversalDbEvidence>> {
+  const runs = await db.$client.unsafe(
+    `select id::text as id, coalesce(context_snapshot->>'issueId', '') as "issueId", left(error, 400) as error
+       from heartbeat_runs where company_id::text = $1 and status in ('failed', 'timed_out')`, [companyId]) as Row[];
+  const actions = await db.$client.unsafe(
+    `select id::text as id, source_issue_id::text as "issueId", kind, left(cause, 400) as cause, left(next_action, 400) as "nextAction"
+       from issue_recovery_actions where company_id::text = $1`, [companyId]) as Row[];
+  const byIssue = new Map<string, { runMessages: Map<string, string | null>; recoveryActions: Array<{ id: string; kind: string; cause: string | null; nextAction: string | null }> }>();
+  const entry = (issueId: string) => {
+    let value = byIssue.get(issueId);
+    if (!value) byIssue.set(issueId, value = { runMessages: new Map(), recoveryActions: [] });
+    return value;
+  };
+  // A run is matched to its task by id in the grader, so runs without an issue id are kept under "".
+  for (const run of runs) entry(text(run.issueId)).runMessages.set(text(run.id), typeof run.error === "string" ? run.error : null);
+  for (const action of actions) entry(text(action.issueId)).recoveryActions.push({ id: text(action.id), kind: text(action.kind),
+    cause: typeof action.cause === "string" ? action.cause : null, nextAction: typeof action.nextAction === "string" ? action.nextAction : null });
+  return byIssue;
+}
