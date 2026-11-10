@@ -897,7 +897,6 @@ paused. Agent execution is outside this visual sandbox.
 - Token layer is the single source (`ui/src/index.css`, per above) consumed via CSS variables / Tailwind theme — never values copied into components.
 - Lint/grep gates pass: zero hardcoded hex values, zero arbitrary spacing values, zero raw font-size declarations in `ui/src/components/**` and `ui/src/pages/**` outside the token layer and a documented allowlist (third-party overrides, intentional opt-outs commented inline).
 - `pnpm build`, `pnpm typecheck`, and `pnpm build-storybook` pass.
-- Run `pnpm check:token-gates` (`scripts/check-token-gates.mjs`) before committing UI changes. It fails on any violation not covered by the documented allowlist in `ui/src/index.css`.
 - AGENTS.md links here for the token-only rule.
 
 Aspirational (NOT gating this run): no duplicate components; every component has exactly one story covering its variants; all UI copy says "task".
