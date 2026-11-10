@@ -68,6 +68,8 @@ describe("native provider failure observation", () => {
       [real.replace(model, "other-model"), undefined, false],
       [real, { httpConnectionFailed: { httpStatusCode: 500 } }, false],
       [real, "other", false],
+      // Codex reports its retried 404s with this kind and willRetry; they never end the turn.
+      [real, { responseStreamDisconnected: { httpStatusCode: 404 } }, false],
       [real, undefined, true],
     ] as const) {
       const other = observation();

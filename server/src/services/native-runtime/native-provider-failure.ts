@@ -266,8 +266,8 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
       // terminal text (codex 0.160.0). Bind it to the configured model; store neither name nor text.
       const info = record(failure.codexErrorInfo);
       const infoKinds = Object.keys(info);
-      if (infoKinds.length === 1 && ["httpConnectionFailed", "responseStreamDisconnected"].includes(infoKinds[0]!) &&
-          record(info[infoKinds[0]!]).httpStatusCode === 404 &&
+      // Its retried 404s arrive as responseStreamDisconnected with willRetry; only the terminal kind counts.
+      if (infoKinds.length === 1 && infoKinds[0] === "httpConnectionFailed" && record(info.httpConnectionFailed).httpStatusCode === 404 &&
           failure.message.startsWith(`unexpected status 404 Not Found: The model \`${provider.model}\` does not exist or you do not have access to it.`)) {
         missingModelTurnId = event.turnId;
         return;
