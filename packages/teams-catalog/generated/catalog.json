@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/teams-catalog",
   "packageVersion": "0.1.0",
-  "generatedAt": "2026-10-08T10:35:56.448Z",
+  "generatedAt": "2026-11-09T20:56:53.242Z",
   "teams": [
     {
       "id": "paperclipai:bundled:company-defaults:core-exec-team",
@@ -212,8 +212,8 @@
         {
           "path": "TEAM.md",
           "kind": "team",
-          "sizeBytes": 2025,
-          "sha256": "f950f4f77a26afa458ca0696994b51353a6bcfac81471fdc00c05f63950fcac5"
+          "sizeBytes": 2024,
+          "sha256": "358e1039e2ced32e8b40ecdb91e8be922451eac1283a81546030fdae1f0ac22c"
         },
         {
           "path": "agents/ux-designer/AGENTS.md",
@@ -236,7 +236,7 @@
       ],
       "trustLevel": "markdown_only",
       "compatibility": "compatible",
-      "contentHash": "sha256:67b041c3adc20583f844fd2415e1c67859a8342b59e46ec32b038b70b7af0108"
+      "contentHash": "sha256:ce0c76ace4fe19fca6a1b3b59e63ea6717366e90d1c437f3a7215d5c1da1bcf1"
     },
     {
       "id": "paperclipai:bundled:software-development:product-engineering",
@@ -331,8 +331,8 @@
         {
           "path": "TEAM.md",
           "kind": "team",
-          "sizeBytes": 2583,
-          "sha256": "7204eeef78a48714dd3f82b82e171a4039adc6325e91a6bdf51a442105ee33b0"
+          "sizeBytes": 2570,
+          "sha256": "36da9b22db9087340a5cf30c5bdf5072ea68bf14fd4d2a2ddd0486b4725f78fe"
         },
         {
           "path": ".paperclip.yaml",
@@ -361,8 +361,8 @@
         {
           "path": "projects/product-engineering/PROJECT.md",
           "kind": "project",
-          "sizeBytes": 358,
-          "sha256": "225d01c5b5b77f5d4dafedc083899c9368c9b079db1d3b7b67cfebd4677fc527"
+          "sizeBytes": 353,
+          "sha256": "2570ca611c78da876759458167706981777fa7b4e4efd8d0db57c7412976f376"
         },
         {
           "path": "projects/product-engineering/tasks/weekly-engineering-sync/TASK.md",
@@ -373,7 +373,7 @@
       ],
       "trustLevel": "assets",
       "compatibility": "compatible",
-      "contentHash": "sha256:b9076b17a551b704a97df2e0204cefb83edfda4d36e909889071bb02d251e5ea"
+      "contentHash": "sha256:78aeac52e7052b74dd8a3770a0f3c8f3c19bf6e5201cf87e56428ad51d59af66"
     },
     {
       "id": "paperclipai:optional:communications:speko-company-phone-agent",
@@ -427,8 +427,8 @@
         {
           "path": "agents/speko-company-phone-agent/AGENTS.md",
           "kind": "agent",
-          "sizeBytes": 3199,
-          "sha256": "922d60cfae8a469876390b3434a513f0b3eff09c8263b51c3f222d388417ac1d"
+          "sizeBytes": 3202,
+          "sha256": "76953ef1ab541a219d9835bd0a3461845e92a1861e90675a167734854f2647f2"
         },
         {
           "path": "LICENSE",
@@ -445,7 +445,7 @@
       ],
       "trustLevel": "assets",
       "compatibility": "compatible",
-      "contentHash": "sha256:e723a036948dcb292382fbcb116c68500c2247b004d0a8d8ef818b6725f91215"
+      "contentHash": "sha256:4a38efe38a407db87a6872880aa9c575f39b34dbb8c0c65dbac0d28aec69116c"
     },
     {
       "id": "paperclipai:optional:content:content-machine",

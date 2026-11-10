@@ -257,7 +257,7 @@ export function buildPaperclipTaskMarkdown(input: {
       }
       if (acceptedPlanContinuation) {
         directive =
-          "Implement the accepted plan on this issue when the work is small and cohesive. Use the paperclip-converting-plans-to-tasks skill to decide whether decomposition is justified. Create the minimum child issue graph only for qualifying ownership, parallelism, dependency, review, or lifecycle boundaries. Do not create a child merely because a plan was accepted.";
+          "Implement the accepted plan on this issue. Follow any task assignments explicitly included in the approved plan. Plan acceptance alone does not require subtasks.";
       }
       lines.push(
         `- Work mode: ${quoteTaskScalar("planning")}`,
@@ -276,7 +276,7 @@ export function buildPaperclipTaskMarkdown(input: {
       lines.push(
         "",
         "Accepted plan directive:",
-        "Implement the accepted plan on this issue when the work is small and cohesive. Use the paperclip-converting-plans-to-tasks skill to decide whether decomposition is justified. Create the minimum child issue graph only for qualifying ownership, parallelism, dependency, review, or lifecycle boundaries. Do not create a child merely because a plan was accepted.",
+        "Implement the accepted plan on this issue. Follow any task assignments explicitly included in the approved plan. Plan acceptance alone does not require subtasks.",
       );
     }
     if (rejectedPlan) {
