@@ -236,7 +236,7 @@ describe("provider faults across a restart", () => {
   });
 
   it("cycles K1, K2 and K4 restarts across PV tasks and gives each workload its own message", () => {
-    const command = parseCommand(["--adapters", "codex", "--workloads", "S1,G1", "--faults", "PV1,PV2", "--provider-fault-restart", "K2,K4,K1",
+    const command = parseCommand(["--adapters", "codex", "--workloads", "S1,Q1", "--faults", "PV1,PV2", "--provider-fault-restart", "K2,K4,K1",
       "--provider-fault-message", "S1=interrupt_ack,terminal", "--tasks", "4", "--concurrency", "1", "--seed", "9"]);
     if (command.mode !== "wave") throw new Error("expected a wave");
     expect(command.options).toMatchObject({ providerFaultRestart: "K2", providerFaultRestartKinds: ["K2", "K4", "K1"],
@@ -258,8 +258,8 @@ describe("provider faults across a restart", () => {
       "--provider-fault-restart", "K1", "--provider-fault-restart-after-seconds", "6"])).toThrow(/shorter than every PV1 delay/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV2", "--provider-fault-restart", "K6"])).toThrow(/K1, K2, K4/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "K1", "--provider-fault-restart", "K1"])).toThrow(/provider fault/);
-    expect(() => parseCommand(["--adapters", "codex", "--workloads", "G1", "--faults", "PV2"])).toThrow(/G1 grades the board decision after a restart/);
-    expect(parseCommand(["--adapters", "codex", "--workloads", "G1", "--faults", "PV2", "--provider-fault-restart", "K1", "--concurrency", "1"]).mode).toBe("wave");
+    // G1's agent ends its own turn after asking for approval: no interrupt, so no provider rule can apply.
+    expect(() => parseCommand(["--adapters", "codex", "--workloads", "G1", "--faults", "PV2", "--provider-fault-restart", "K1", "--concurrency", "1"])).toThrow(/remove G1/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV2", "--provider-fault-restart", "K1", "--concurrency", "2"])).toThrow(/--concurrency 1/);
     expect(parseProviderFaultRestart(undefined, undefined, ["PV2"], undefined)).toEqual({});
     expect(() => parseProviderFaultRestart(undefined, "3", ["PV2"], undefined)).toThrow(/needs --provider-fault-restart/);

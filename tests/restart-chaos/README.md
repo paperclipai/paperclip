@@ -538,7 +538,9 @@ Codex app-server is late, missing or repeated. `--faults` takes them next to res
 governed wait (a saved question or approval) or a board Stop sends. `interrupt_ack` picks the
 acknowledgement of that interruption. Each rule applies once per task, to the first matching message.
 Provider faults run only with `--env local --adapters codex,claude` (either or both) and only with
-workloads that interrupt a turn (Q1, S1, G1). A PV1 task passes `provider_fault_applied` only when the
+workloads that interrupt a turn (Q1, S1). G1 does not: its agent asks for approval through `call_api`
+and ends its own turn, so no rule ever applied there (waves w-20261110T050407-s206, w-20261110T063253-s208,
+w-20261110T085554-s211) and the board waited for a restart that never came. A PV1 task passes `provider_fault_applied` only when the
 held message was released; a provider that exited first turned the delay into a drop.
 For Claude, the runner settles a cancelled turn about 3–4 s after the cancel without waiting for the
 provider's prompt response, and it later closes the sidecar with the provider. A Claude PV1 delay
@@ -546,8 +548,7 @@ longer than that is therefore a drop (wave w-20261110T040202-s202: 18 s held, ne
 still passed its Q1 oracle). Sweep Claude PV1 below that window, for example
 `--provider-fault-delays 1,3`.
 
-G1 grades the board decision after a restart, so G1 with a provider fault needs
-`--provider-fault-restart K1`. On a board Stop (S1) the runner ends Codex without waiting for its terminal:
+On a board Stop (S1) the runner ends Codex without waiting for its terminal:
 in wave w-20261110T050407-s206 Codex exited 1.5 s after `turn/interrupt` with no `turn/completed`, so a
 `terminal` rule never applies there and the task fails `provider_fault_applied`. Use `interrupt_ack` for S1.
 An S1 task with a provider fault clicks Stop on the first poll that shows a live provider turn
@@ -577,11 +578,11 @@ held or missing message) and K4 (kill -9, then the control plane stays down for 
 the seeded K4 range). A comma list such as `K1,K2,K4` cycles across the PV1/PV2 tasks in plan order,
 so one wave covers several restart kinds. `--provider-fault-message` takes `WORKLOAD=message` entries
 next to the default, for example `S1=interrupt_ack,terminal`: S1 tasks fault the interrupt
-acknowledgement (Codex ends a Stop without its terminal) while Q1 and G1 tasks fault the terminal.
+acknowledgement (Codex ends a Stop without its terminal) while Q1 tasks fault the terminal.
 
 ```sh
 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
-  --adapters codex --workloads S1,G1 --faults PV1,PV2 --provider-fault-restart K1,K2,K4,K2 \
+  --adapters codex --workloads Q1,S1 --faults PV1,PV2 --provider-fault-restart K2,K4 \
   --provider-fault-message S1=interrupt_ack,terminal --concurrency 1 --tasks 4 --seed 211
 ```
 

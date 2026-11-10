@@ -69,8 +69,13 @@ export interface ProviderFaultEvent {
   [key: string]: unknown;
 }
 
-/** Workloads whose run sends turn/interrupt: a saved question (Q1), a board Stop (S1), an approval wait (G1). */
-export const PROVIDER_FAULT_WORKLOADS: readonly WorkloadId[] = ["Q1", "S1", "G1"];
+/**
+ * Workloads whose run sends turn/interrupt: a saved question (Q1) and a board Stop (S1). Not G1: its agent
+ * asks for approval through `call_api` and ends its own turn, so nothing interrupts the provider and no
+ * rule ever applies (waves w-20261110T050407-s206, w-20261110T063253-s208 and w-20261110T085554-s211:
+ * applied=0 for Codex and Claude, and the board then waits for a restart that never comes).
+ */
+export const PROVIDER_FAULT_WORKLOADS: readonly WorkloadId[] = ["Q1", "S1"];
 
 export function isProviderFault(value: string): value is ProviderFaultKind {
   return (PROVIDER_FAULT_KINDS as readonly string[]).includes(value);
@@ -99,7 +104,7 @@ export function parseProviderMessage(raw: string | undefined): ProviderMessage |
 /**
  * `--provider-fault-message terminal` or `--provider-fault-message S1=interrupt_ack,terminal`: a bare
  * message is the wave default; `WORKLOAD=message` overrides it for that workload's tasks (Codex ends a
- * Stop without its terminal, so S1 needs `interrupt_ack` while Q1 and G1 keep `terminal`).
+ * Stop without its terminal, so S1 needs `interrupt_ack` while Q1 keeps `terminal`).
  */
 export function parseProviderMessages(raw: string | undefined): { message?: ProviderMessage; byWorkload?: Partial<Record<WorkloadId, ProviderMessage>> } {
   if (raw === undefined) return {};
