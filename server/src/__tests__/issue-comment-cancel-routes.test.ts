@@ -699,7 +699,7 @@ describe("issue comment cancel routes", () => {
       .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Only the comment author can cancel queued comments");
+    expect(res.body.error).toBe(finalDenial);
     expect(mockIssueService.tombstoneComment).not.toHaveBeenCalled();
   });
 
