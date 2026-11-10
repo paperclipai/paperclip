@@ -32,6 +32,7 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "issue_status_change_live_run",
   "cross_issue_influence_cap_exceeded",
   "cross_issue_influence_run_context_required",
+  "unassigned_smoke_checkout_rejected",
   "issue_write_attribution_spoof_rejected",
 ] as const;
 
@@ -289,6 +290,25 @@ export function describeIssueWriteDenial(
           `Send the \`X-Paperclip-Run-Id\` header with your current run (\`$PAPERCLIP_RUN_ID\`) ` +
           `and retry.`,
 
+      };
+
+    case "unassigned_smoke_checkout_rejected":
+      return {
+        code,
+        status: 403,
+        tone: "boundary",
+        boundary: "Unassigned diagnostic smoke",
+        title: "This run cannot check out a task",
+        description:
+          `${actor} is running an unassigned diagnostic smoke, so checkout of ${issue} was ` +
+          `refused before any assignment, execution lock, or workspace change. A run id ` +
+          `header does not create a task binding, and checkout would claim write ownership ` +
+          `this run does not have. Connection setup stays unavailable.`,
+        whoCanAct:
+          `${actor} on a heartbeat dispatched with this task's id, or a board user.`,
+        sanctionedPath:
+          `Do not retry checkout. Record the diagnostic in this run's log. To work ` +
+          `${issue}, dispatch a task-bound heartbeat that includes its id.`,
       };
 
     case "issue_write_attribution_spoof_rejected":

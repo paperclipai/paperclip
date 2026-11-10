@@ -1083,6 +1083,18 @@ describe("runChildProcess", () => {
 });
 
 describe("renderPaperclipWakePrompt", () => {
+  it("warns an unassigned diagnostic smoke before it can claim checkout", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "claude_reauth_smoke",
+      diagnosticsOnlyCapability:
+        "This run is an unassigned diagnostic smoke. Do not retry checkout.",
+    });
+    expect(prompt).toContain("## Unassigned diagnostic smoke");
+    expect(prompt).toContain("Do not retry checkout");
+    expect(prompt).toContain("Do not call issue checkout");
+    expect(prompt).not.toContain("X-Paperclip-Run-Id");
+  });
+
   it.each([false, true])("renders the runtime checkout flag for ordinary task wakes (resume=%s)", resumedSession => {
     const payload = { reason: "issue_assigned", issue: { id: "issue-1", status: "in_progress" },
       comments: [], commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },

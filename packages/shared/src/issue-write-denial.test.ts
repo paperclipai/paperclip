@@ -86,6 +86,20 @@ describe("describeIssueWriteDenial", () => {
     expect(copy.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
   });
 
+  it("tells an unassigned diagnostic smoke not to retry checkout", () => {
+    const copy = describeIssueWriteDenial("unassigned_smoke_checkout_rejected", {
+      actorLabel: "Marcus",
+      issueIdentifier: "GRE-156",
+    });
+    expect(copy.status).toBe(403);
+    expect(copy.tone).toBe("boundary");
+    expect(copy.description).toContain("Marcus");
+    expect(copy.description).toContain("GRE-156");
+    expect(copy.description).toContain("before any assignment");
+    expect(copy.sanctionedPath).toContain("Do not retry checkout");
+    expect(copy.sanctionedPath).not.toContain("X-Paperclip-Run-Id");
+  });
+
   it("tells a spoof attempt that the write itself was fine", () => {
     const copy = describeIssueWriteDenial("issue_write_attribution_spoof_rejected", {
       actorLabel: "Fable",
