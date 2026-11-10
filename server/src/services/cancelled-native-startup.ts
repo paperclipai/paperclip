@@ -1,11 +1,10 @@
 import { isRetainedWorkspaceWorkerStopProof } from "./native-runtime/native-workspace-platform-proof.js";
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
 import { createHash } from "node:crypto";
-import { and, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueTreeHolds, issueTreeHoldMembers, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 import { claimedAdapterType } from "./conversation-continuation.js";
-import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
@@ -13,7 +12,7 @@ import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
 import { hasVerifiedPreparationLog } from "./verified-preparation-log.js";
-import { executionStartedEventPredicate, noRetainedExecutionPredicate } from "./pre-dispatch-execution-evidence.js";
+import { executionStartedEventPredicate, isPreDispatchResourceWait, noRetainedExecutionPredicate } from "./pre-dispatch-execution-evidence.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "status" | "startedAt" | "finishedAt" | "runtimeMode" |
@@ -261,9 +260,14 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
     (run.resultJson === null || cancellation?.beforeNativeSelection === true) &&
     Boolean(run.controllerBootId && run.controllerBootId !== legacyControllerBootId &&
       run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt <= new Date());
-  const beforeReviewDispatch = isPreDispatchReviewWait(run) && !coordinator;
+  const beforeDispatch = !coordinator && (isPreDispatchReviewWait(run) ||
+    isPreDispatchResourceWait(run) && !run.runtimeModeResolvedAt && !run.nativeIssueId && !run.nativeSessionId &&
+    ["preparing", "settled"].includes(run.executionStage ?? "") &&
+    run.runnerProfileJson?.nativeExecutionInput == null && run.runnerProfileJson?.nativeWorkspaceSync == null &&
+    run.runnerProfileJson?.remoteWorkspace == null && run.resultJson?.workspaceRestoreFailure == null &&
+    !hasRequiredWorkspaceRecovery(run.resultJson));
   const unclaimedWorkspaceRetry = !coordinator && await isCancelledUnclaimedWorkspaceWaitRetry(db, run);
-  const beforeSelection = beforeReviewDispatch || unclaimedWorkspaceRetry || historicalBeforeSelection || run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
+  const beforeSelection = beforeDispatch || unclaimedWorkspaceRetry || historicalBeforeSelection || run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
     !run.nativeSessionId && !coordinator && claimedAdapterType(run) === "paperclip_runner" &&
     cancellation?.beforeNativeSelection === true;
   const neverClaimed = run.runtimeMode === "native" && coordinator &&
@@ -272,16 +276,16 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
     !coordinator.controllerPid && !coordinator.leaseOwner && !coordinator.leaseExpiresAt &&
     !coordinator.resultId && !coordinator.failureDetail?.successorRunId;
   if (!beforeSelection && !neverClaimed) return false;
-  const settled = beforeReviewDispatch || unclaimedWorkspaceRetry || typeof run.resultJson?.startupPreparationSettledAt === "string";
+  const settled = beforeDispatch || unclaimedWorkspaceRetry || typeof run.resultJson?.startupPreparationSettledAt === "string";
   // The old preparer can still be unwinding even though the run is terminal.
-  if (!settled && run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return false;
+  if (run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()) return false;
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
   ));
   if ((!settled && leases.length === 0 && !historicalBeforeSelection) || leases.some(lease =>
-    lease.provider === "local"
+    lease.metadata?.pendingCleanupInFlight === true || (lease.provider === "local"
       ? !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed"
-      : !hasRemoteTerminationReceipt(lease))) return false;
+      : !hasRemoteTerminationReceipt(lease)))) return false;
   // Reject contradictory retained evidence, including a crash after a launch
   // request but before the PID callback. Provider events never certify a stop.
   return !await nativeStartupHasExecutionEvidence(db, run);
@@ -290,10 +294,7 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
 async function nativeStartupHasExecutionEvidence(db: Db, run: Run) {
   const [execution] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-    or(isNotNull(heartbeatRunEvents.sourceEventId),
-      inArray(heartbeatRunEvents.eventType, ["adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED,
-        "harness.ready", "session.started", "session.resumed", "session.updated", "turn.started",
-        "provider.event", "provider.rpc_result", "tool.execution.started"])),
+    executionStartedEventPredicate(),
   )).limit(1);
   return Boolean(execution);
 }

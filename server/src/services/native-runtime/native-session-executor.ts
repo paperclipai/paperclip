@@ -9533,9 +9533,10 @@ export async function executePaperclipNativeSession(input: {
       }
       return preparedInput;
     };
+    const stageAttachments = () => createRunPreparationTiming(runId, "native.controller")("attachment_staging", prepareAttachments);
     return needsWarmRetirement
-      ? await executePaperclipNativeSessionWithinScope(input, prepareAttachments, false, ownDiagnosticLease)
-      : await executePaperclipNativeSessionWithinScope(await prepareAttachments(), undefined, false, ownDiagnosticLease);
+      ? await executePaperclipNativeSessionWithinScope(input, stageAttachments, false, ownDiagnosticLease)
+      : await executePaperclipNativeSessionWithinScope(await stageAttachments(), undefined, false, ownDiagnosticLease);
   } catch (error) {
     executionFailure = error;
     if (error instanceof NativeControllerRecoveryWaitingError) {
@@ -9692,7 +9693,8 @@ async function executePaperclipNativeSessionAttempt(
     : null;
   const stagedRestart = input.restartRecovery?.kind === "reattach_remote_runner"
     ? await verifyStagedAttachmentRestart(input) : null;
-  if (input.useRunnerd) await restoreWarmRunnerdController(input);
+  const timeController = createRunPreparationTiming(input.execution.binding.runId, "native.controller");
+  if (input.useRunnerd) await timeController("warm_restore", () => restoreWarmRunnerdController(input));
   const identityRedactor = createAgentIdentityRedactor(input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY);
   const redactIdentityText = (text: string) => redactSensitiveText(
     identityRedactor.chunk("diagnostic", text) + identityRedactor.finish("diagnostic"),
@@ -9718,7 +9720,6 @@ async function executePaperclipNativeSessionAttempt(
       "paperclip_runner_provider_unsupported: ACPX candidate requires exact host qualification authorization",
     );
   }
-  const timeController = createRunPreparationTiming(input.execution.binding.runId, "native.controller");
   const preparationSpans = input.preparationSpans ?? [];
   const preparationStarts = nativeRunPreparationStarts(
     preparationSpans,
@@ -9772,20 +9773,24 @@ async function executePaperclipNativeSessionAttempt(
           startedAtMs: environmentStartedAtMs,
         })
       : null;
-  for (const span of preparationSpans) {
-    const rootMilestone = isNativeRunRootHistoricalSpan(span.name);
-    await trace.record({
-      ...span,
-      parentName: rootMilestone
-        ? "task.provider_session"
-        : environmentSpans.includes(span)
-          ? "environment.startup"
-          : "task.prepare",
-    });
-  }
-  if (environmentScope) {
-    await trace.end(environmentScope, { endedAtMs: environmentEndedAtMs });
-  }
+  // The spans are recorded now; their run-log rows are written in the
+  // background so the provider start does not wait for one insert per span.
+  await timeController("span_persistence", async () => {
+    for (const span of preparationSpans) {
+      const rootMilestone = isNativeRunRootHistoricalSpan(span.name);
+      await trace.record({
+        ...span,
+        parentName: rootMilestone
+          ? "task.provider_session"
+          : environmentSpans.includes(span)
+            ? "environment.startup"
+            : "task.prepare",
+      }, { deferRunLog: true });
+    }
+    if (environmentScope) {
+      await trace.end(environmentScope, { endedAtMs: environmentEndedAtMs, deferRunLog: true });
+    }
+  });
   let retainedTransition: VerifiedWarmTransitionBinding | undefined;
   let remoteWarmRecovery: RemoteWarmSessionRecovery | undefined;
   const cachedReleasedOwner = warmNativeSessions.get(nativeSessionScopeKey(input.execution));
@@ -9870,7 +9875,7 @@ async function executePaperclipNativeSessionAttempt(
     }
   }
   if (input.useRunnerd) {
-    retainedTransition = await migrateRunnerdStateRootForExecution({
+    retainedTransition = await timeController("state_migration", () => migrateRunnerdStateRootForExecution({
       db: input.db,
       execution: input.execution,
       preparedExecutionAdmission: input.preparedExecutionAdmission,
@@ -9881,7 +9886,7 @@ async function executePaperclipNativeSessionAttempt(
       restartRecovery: input.restartRecovery,
       runnerExecutionTarget: input.runnerExecutionTarget,
       bootstrapRetryLeaseOwner: input.leaseOwner,
-    });
+    }));
   }
   const durableRunnerBinding = input.useRunnerd
     ? loadRunnerdDurableBinding(input.execution, retainedTransition)

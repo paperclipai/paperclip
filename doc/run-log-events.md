@@ -68,6 +68,10 @@ Every `run.performance.span` payload also carries `wallStartedAtMs`, the span's 
 start time in epoch milliseconds (since 2026-11-09). Span rows can be written late
 through deferred diagnostics, so readers take a span's start from this field (or
 from the trace start plus `startOffsetMs`), never from the row's write time.
+The preparation spans of a native run (`heartbeat.queue`, `heartbeat.prepare_*`,
+`environment.*`) are always written this way: in the order they ended, while the
+provider starts, and before the run's trace finishes. They can appear after the
+first Runner events of the run.
 
 `run.performance.span` also records `task.time_to_first_token` once per native
 dispatch at the first newly committed deliverable text: assistant or reasoning
@@ -983,3 +987,18 @@ references in Postgres. Local-disk instances remain local. Raw provider
 traces have their own restricted, encrypted object path. See
 [run evidence storage](run-evidence-storage.md) for batching, durability,
 configuration, migration, retention, and qualification boundaries.
+
+### Event commit stall diagnostics
+
+A Runner event commit stall records the first safe error code in the error and
+up to three nested `cause` objects. This retains database and transport codes
+when an adapter wraps the original error. Each code has the existing 80-character
+identifier limit. If no safe code exists, the diagnostic uses the outer error's
+safe name. It never copies exception messages, SQL, or query arguments. Cyclic or
+long cause chains stop at the same four-object limit.
+
+This only improves the recorded cause. Event acknowledgement, replay integrity,
+the bounded stall policy, and operator recovery requirements stay unchanged.
+
+A later successful continuation does not establish the cause of an earlier
+failure that recorded only `Error`.

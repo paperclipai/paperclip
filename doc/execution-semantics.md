@@ -649,6 +649,34 @@ stall, including resource-wait retries of its wake, are retried after ten
 minutes, then twenty, and not after the third failed run. The stall stays
 listed on the waiting task, and a new stall wakes it again.
 
+An unstarted queued turn names an agent setup or verification wait. A failed
+setup that requires explicit Retry shows **Agent setup needs attention**, while
+its saved turn remains queued. Temporary errors with automatic retries still show
+**Waiting for agent setup**.
+Queued setup failures also create the existing inline AI connection card on the
+task, addressed to the person whose account host verification checks (the saved
+lifecycle responsible user or company default). A queued turn can have a different
+responsible user; neither its authority nor its saved identity is rewritten.
+Runtime tokens remain unavailable for
+queued runs. Completing the card rechecks verification through the lifecycle
+worker and retains the original queued turn; it does not enqueue another model
+turn. Decline, Stop, reassignment and other lifecycle holds remain effective.
+Setup cards stay bound to their queued source turn. A replacement turn supersedes
+the prior setup card instead of reusing a stopped turn's delivery.
+New cards also name the lifecycle operation, so a stale completion cannot recheck
+a newer configuration. Owned AI selection failures park during resume as well as
+initial verification. For a routed agent, repair uses the account already pinned
+to that lifecycle operation; it never allocates a task route, advances the pool
+cursor, or replaces the agent's pool. Legacy direct-account setup cards remain
+readable without an operation ID.
+AI account selection failures use the selector's owned configuration evidence:
+missing defaults, unavailable or incompatible connections, missing responsible
+users, and credential sharing refusals park automatic host verification until
+configuration repair or explicit Retry. They retain fixed, redacted guidance.
+Provider and infrastructure failures keep their existing retry policy. Readiness
+must commit before normal queue dispatch; this display grants no execution or
+credential authority and does not change the task's lifecycle status.
+
 An instance admission drain keeps accepted new turns queued and displays
 **Waiting for maintenance**. Ending the audited drain requests admission for
 these existing runs immediately. The shared delivery coordinator owns the drain's
@@ -3830,6 +3858,17 @@ cancellation fence qualify. No native identity, coordinator, adapter invocation,
 provider event, or process-launch evidence may exist. Environment cleanup still
 requires the same receipts. This historical proof permits explicit Retry or a
 newer saved user message; it does not replay the cancelled input.
+
+Workspace and AI-capacity waits use the same pre-dispatch classification for
+recovery and stop proof. A cancelled legacy run must retain its matching
+`workspace_wait` or `ai_connection_wait` receipt with `providerWorkStarted: false`.
+The runtime must remain unresolved, and the stage must be `preparing` or
+`settled`. Native execution references, workspace recovery obligations, a live
+controller lease, retained resources, or dispatch events still reject the proof.
+Remote cleanup requires the exact termination receipt. This rule also covers
+historical waits without a process ID; neither an old timestamp nor a different
+server boot proves that a run stopped. Pause and terminate can then finish,
+while a subsequent run still requires ordinary admission and new authorization.
 
 The existing bounded saved-message worker rechecks this proof after restart.
 Admission atomically settles an unclaimed coordinator and admits one fresh turn,
