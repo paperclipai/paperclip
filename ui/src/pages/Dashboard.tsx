@@ -2,7 +2,7 @@ import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { AgentIdentity } from "../components/AgentIdentity";
 import { TaskSummaryList } from "../components/TaskSummaryList";
 import { useDesignSandbox } from "../context/DesignSandboxContext";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "@/lib/router";
 import { shouldRouteAgentlessCompanyToOnboarding } from "../lib/onboarding-route";
 import { claimOnboardingOffer, dashboardOnboardingOptions } from "../lib/onboarding-auto-open";
@@ -37,10 +37,13 @@ import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { InlineBanner } from "../components/InlineBanner";
-import type { Agent, Issue } from "@paperclipai/shared";
+import type { Agent, DashboardSummary, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
+import { useExperimentalFlag } from "../hooks/useExperimentalFlag";
+
+const DashboardGrid = lazy(() => import("../features/dashboard-grid/DashboardGrid").then((module) => ({ default: module.DashboardGrid })));
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
 
@@ -73,8 +76,31 @@ export function derivePausedAgentBanner(agents: Agent[] | undefined): PausedAgen
   return null;
 }
 
+function DashboardBudgetIncidentBanner({ budgets }: { budgets: DashboardSummary["budgets"] }) {
+  if (budgets.activeIncidents <= 0) return null;
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-xl border border-red-500/20 bg-(image:--gradient-extract-1) px-4 py-3">
+      <div className="flex items-start gap-2.5">
+        <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-300" />
+        <div>
+          <p className="text-sm font-medium text-red-950 dark:text-red-50">
+            {budgets.activeIncidents} active budget incident{budgets.activeIncidents === 1 ? "" : "s"}
+          </p>
+          <p className="text-xs text-red-900/70 dark:text-red-100/70">
+            {budgets.pausedAgents} agents paused · {budgets.pausedProjects} projects paused · {budgets.pendingApprovals} pending budget approvals
+          </p>
+        </div>
+      </div>
+      <Link to="/costs" className="text-sm underline underline-offset-2 text-red-900 dark:text-red-100">
+        Open budgets
+      </Link>
+    </div>
+  );
+}
+
 export function Dashboard() {
   const designSandbox = useDesignSandbox();
+  const customizableDashboard = useExperimentalFlag("enableCustomizableDashboard");
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialogActions();
   const location = useLocation();
@@ -393,28 +419,28 @@ export function Dashboard() {
         </div>
       )}
 
-      <ActiveAgentsPanel companyId={selectedCompanyId!} dedupeLinkedTasks />
+      {!customizableDashboard.enabled && <ActiveAgentsPanel companyId={selectedCompanyId!} dedupeLinkedTasks />}
 
-      {data && (
+      {data && customizableDashboard.enabled && (
         <>
-          {data.budgets.activeIncidents > 0 ? (
-            <div className="flex items-start justify-between gap-3 rounded-xl border border-red-500/20 bg-(image:--gradient-extract-1) px-4 py-3">
-              <div className="flex items-start gap-2.5">
-                <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-300" />
-                <div>
-                  <p className="text-sm font-medium text-red-950 dark:text-red-50">
-                    {data.budgets.activeIncidents} active budget incident{data.budgets.activeIncidents === 1 ? "" : "s"}
-                  </p>
-                  <p className="text-xs text-red-900/70 dark:text-red-100/70">
-                    {data.budgets.pausedAgents} agents paused · {data.budgets.pausedProjects} projects paused · {data.budgets.pendingApprovals} pending budget approvals
-                  </p>
-                </div>
-              </div>
-              <Link to="/costs" className="text-sm underline underline-offset-2 text-red-900 dark:text-red-100">
-                Open budgets
-              </Link>
-            </div>
-          ) : null}
+          <DashboardBudgetIncidentBanner budgets={data.budgets} />
+          <SmokeLabDashboardCard companyId={selectedCompanyId!} />
+          <Suspense fallback={<PageSkeleton variant="dashboard" />}>
+            <DashboardGrid key={selectedCompanyId} companyId={selectedCompanyId!} />
+          </Suspense>
+          <PluginSlotOutlet
+            slotTypes={["dashboardWidget"]}
+            context={{ companyId: selectedCompanyId }}
+            className="grid gap-4 md:grid-cols-2"
+            // design-allow(card-pattern): class-string prop consumed by the plugin outlet; a component can't be passed here (C5a Run 3)
+            itemClassName="rounded-lg border bg-card p-4 shadow-sm"
+          />
+        </>
+      )}
+
+      {data && !customizableDashboard.enabled && (
+        <>
+          <DashboardBudgetIncidentBanner budgets={data.budgets} />
 
           <div className={cn("grid grid-cols-2 xl:grid-cols-4", designSandbox ? "gap-4" : "gap-1 sm:gap-2")}>
             <MetricCard

@@ -267,6 +267,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableCustomizableDashboard: {
+    title: "Customizable Dashboard",
+    description:
+      "Replace the fixed dashboard with a widget grid that each user can rearrange, resize and extend.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableStatusCards: {
     title: "Status Cards",
     description:

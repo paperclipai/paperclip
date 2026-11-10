@@ -231,6 +231,7 @@ export function InstanceExperimentalSettings() {
   const enableExperimentalFileViewer =
     experimentalQuery.data?.enableExperimentalFileViewer === true;
   const enableAgentGraph = experimentalQuery.data?.enableAgentGraph === true;
+  const enableCustomizableDashboard = experimentalQuery.data?.enableCustomizableDashboard === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
   const enableBuiltInAgents = experimentalQuery.data?.enableBuiltInAgents === true;
   const enableBetaSkills = experimentalQuery.data?.enableBetaSkills === true;
@@ -413,6 +414,17 @@ export function InstanceExperimentalSettings() {
           settingKey="enableLegacyComposerSubmit"
           managed={managedKeys.enableLegacyComposerSubmit}
           ariaLabel="Toggle Command/Ctrl+Enter to submit"
+        />
+
+        <ExperimentalToggleCard
+          title="Customizable Dashboard"
+          description="Replace the fixed dashboard with a widget grid that each user can rearrange, resize and extend."
+          checked={enableCustomizableDashboard}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableCustomizableDashboard: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableCustomizableDashboard"
+          managed={managedKeys.enableCustomizableDashboard}
+          ariaLabel="Toggle customizable dashboard experimental setting"
         />
 
         <ExperimentalToggleCard
