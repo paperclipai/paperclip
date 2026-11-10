@@ -1,3 +1,4 @@
+import type { ChatPublicationPreparationWait } from "./preparation.js";
 import { notifyChatResponseAvailability } from "../../chat-response-availability.js";
 import { notifyVoicePublication } from "../../voice/voice-reply-notifications.js";
 import { createGitHubPublicationPolicy } from "../github/publication-policy.js";
@@ -426,6 +427,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
         error: unknown,
         credentialLease?: CredentialMutationLeaseGuard,
         providerInvocation: "possible" | "not_started" = "possible",
+        preparationWait?: ChatPublicationPreparationWait,
       ) => {
         try {
           await finalizePublicationFailure(
@@ -435,6 +437,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
             publicationRuntimeContext,
             credentialLease ?? publicationLease,
             providerInvocation,
+            preparationWait,
           );
         } catch (finalizationError) {
           // If the provider accepted the message, a failed receipt write
@@ -785,9 +788,15 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
                       runtimeContext: currentPublicationRuntimeContext,
                     })
                   : null;
-              let stageSlackForm: Awaited<ReturnType<NonNullable<PublicationWorkerOptions["prepareSlackFormPublication"]>>> | undefined;
+              let stageSlackForm: Exclude<Awaited<ReturnType<NonNullable<PublicationWorkerOptions["prepareSlackFormPublication"]>>>, ChatPublicationPreparationWait> | undefined;
               try {
-                stageSlackForm = await options.prepareSlackFormPublication?.(authorizationClaim.endpoint, publication);
+                const preparation = await options.prepareSlackFormPublication?.(authorizationClaim.endpoint, publication);
+                if (preparation == null || typeof preparation === "function") {
+                  stageSlackForm = preparation;
+                } else {
+                  await settlePublicationFailure(new Error(preparation.reason), credentialLease, "not_started", preparation);
+                  return;
+                }
               } catch (error) {
                 await settlePublicationFailure(error, credentialLease, "not_started");
                 return;

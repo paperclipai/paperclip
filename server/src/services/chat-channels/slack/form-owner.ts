@@ -1,3 +1,4 @@
+import { notifyChatPublicationWork } from "../../chat-work-notifications.js";
 import { slackFormEnrollmentActionId, slackFormEnrollmentCompatibleActionIds } from "./form-enrollment-identity.js";
 import { acceptSlackFormRetirementLocally, transferSlackFormRetirement } from "./form-retirement-work.js";
 import { reconcileSlackFormNormalAck } from "./form-ack-work.js";
@@ -96,7 +97,10 @@ export async function reconcileSlackFormEnrollment(db: Db, input: { actionId: st
       && currentSetup?.slackCloudInstanceId === enrollment.instanceId && currentSetup?.slackCloudSubject === subject && isDeepStrictEqual(projectSlackFormPublicEnrollment(current), enrollment);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.connectionEvents);
     await tx.update(chatActions).set({ payload: { ...intent.payload, binding }, result: { phase: currentLive ? "enrolled" : "retired_cleanup", nextAttemptAt: currentLive ? null : new Date().toISOString() }, updatedAt: new Date() }).where(eq(chatActions.id, intent.id));
-    if (currentLive) await tx.update(chatEndpoints).set({ setup: sql`jsonb_set(${chatEndpoints.setup}, '{slackCloudForms}', ${JSON.stringify(binding)}::jsonb)` }).where(and(eq(chatEndpoints.id, current.id), eq(chatEndpoints.companyId, current.companyId)));
+    if (currentLive) {
+      await tx.update(chatEndpoints).set({ setup: sql`jsonb_set(${chatEndpoints.setup}, '{slackCloudForms}', ${JSON.stringify(binding)}::jsonb)` }).where(and(eq(chatEndpoints.id, current.id), eq(chatEndpoints.companyId, current.companyId)));
+      await notifyChatPublicationWork(tx);
+    }
     });
     return;
   }

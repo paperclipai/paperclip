@@ -873,6 +873,24 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   });
 
   it.each([
+    ["not_started", false, "retry", 4],
+    ["possible", false, "delivery_unknown", 5],
+    ["not_started", true, "delivery_unknown", 5],
+  ] as const)("typed readiness at attempt five respects invocation=%s accepted=%s", async (providerInvocation, providerAccepted, state, attempts) => {
+    const failures = createChatPublicationFailures(db, { FailedChatRetryPublicationReadError: class extends Error {},
+      MAX_ERROR_TEXT: 1000, getTaskBaseUrl: () => null, invalidateRuntime: async () => false, runtimeCallbackEndpoint: async () => null });
+    const [row] = await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: f.conversationId, issueId: f.issueId, idempotencyKey: `typed-preparation:${randomUUID()}`,
+      payload: { text: "Original publication" }, state: "streaming", attempts: 5 }).returning();
+    await expect(failures.finalizePublicationFailure({ ...row, attempts: 4 }, new Error("form_publication_enrollment_pending"),
+      providerAccepted, null, undefined, providerInvocation,
+      { kind: "wait", reason: "form_publication_enrollment_pending", retryAfterMs: 2000 })).resolves.toBe(true);
+    const [settled] = await db.select().from(chatPublications).where(eq(chatPublications.id, row.id));
+    expect(settled).toMatchObject({ state, attempts, providerMessageId: null, payload: row.payload });
+    if (state !== "retry") expect(settled.nextAttemptAt).toBeNull();
+  });
+
+  it.each([
     ["not_started", false, "retry"],
     ["possible", false, "delivery_unknown"],
     ["not_started", true, "delivery_unknown"],
