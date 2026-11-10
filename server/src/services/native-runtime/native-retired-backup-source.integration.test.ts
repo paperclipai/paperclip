@@ -18,12 +18,14 @@ describeDb("retired native backup source authority", () => {
   afterAll(async () => { await database?.cleanup(); });
 
   const manifestSha256 = `sha256:${"b".repeat(64)}`;
+  let lastSourceLeaseId = "";
   const completedAt = new Date("2026-11-05T05:02:50.000Z");
 
   async function fixture(options: { termination?: "destroyed" | "stopped" | null; status?: string; stampSha?: string;
     providerEventAt?: Date; secondLease?: boolean; handoffs?: number;
     handoffFault?: "missing_receipt" | "changed_receipt" | "active_predecessor" | "missing_predecessor";
-    restoreHold?: "settled" | "no_marker" | "foreign_marker" | "reusable_policy" | "no_stop_receipt" | "dirty_writer" } = {}) {
+    restoreHold?: "settled" | "no_marker" | "foreign_marker" | "reusable_policy" | "no_stop_receipt" | "dirty_writer";
+    idleWarm?: "retained" | "released" | "run_active" | "export_pending" | "same_target" | "cleanup_in_flight" } = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), sessionId = randomUUID(), runnerInstanceId = randomUUID();
     const sourceRunId = randomUUID(), currentRunId = randomUUID(), leaseId = randomUUID(), providerLeaseId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Retired source", issuePrefix: `R${companyId.slice(0, 5)}` });
@@ -60,6 +62,22 @@ describeDb("retired native backup source authority", () => {
         remoteCwd: "/work", resourceDisposition: "keep_running", descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64),
         finalHostSha256: null } } }).where(eq(heartbeatRuns.id, sourceRunId));
     }
+    if (options.idleWarm) {
+      // The staging row: the previous run succeeded and kept its warm sandbox
+      // running for reuse. No termination receipt, no hold, reuse scope intact.
+      const idle = options.idleWarm;
+      Object.assign(sourceLease, { status: idle === "released" ? "released" : "retained", leasePolicy: "reuse_by_environment",
+        releasedAt: idle === "released" ? new Date() : null });
+      const { remoteExecutionTermination: _termination, ...metadata } = sourceLease.metadata;
+      sourceLease.metadata = { ...metadata, sandboxState: "started", reusableSandboxLease: { version: 1, provider: "daytona" },
+        ...(idle === "cleanup_in_flight" ? { pendingCleanupInFlight: true } : {}) } as typeof sourceLease.metadata;
+      if (idle === "run_active") await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, sourceRunId));
+      if (idle === "export_pending") await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceSync: {
+        schema: "paperclip.native-workspace-sync/v3", state: "prepared", leaseId, providerLeaseId, workspaceId: randomUUID(),
+        remoteCwd: "/work", resourceDisposition: "keep_running", descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64),
+        finalHostSha256: null } } }).where(eq(heartbeatRuns.id, sourceRunId));
+    }
+    lastSourceLeaseId = leaseId;
     if (options.handoffs) {
       const environmentId = randomUUID(), issueId = randomUUID(), workspaceId = randomUUID();
       await db.insert(environments).values({ id: environmentId, name: environmentId, driver: "sandbox" });
@@ -107,7 +125,8 @@ describeDb("retired native backup source authority", () => {
         nativeSessionId: sessionId, invocationSource: "automation", triggerDetail: "system" }).returning())[0]!.id,
       agentId, seq: 1, eventType: "session.resumed", createdAt: options.providerEventAt });
     return retiredSourceAuthorizesNativeBackupRestore(db, { companyId, currentRunId, normalizedSessionId: sessionId,
-      manifest: { sourceProviderLeaseId: providerLeaseId, runnerInstanceId, normalizedSessionId: sessionId }, manifestSha256 });
+      manifest: { sourceProviderLeaseId: providerLeaseId, runnerInstanceId, normalizedSessionId: sessionId }, manifestSha256,
+      targetProviderLeaseId: options.idleWarm === "same_target" ? providerLeaseId : randomUUID() });
   }
 
   it("authorizes a destroyed source lease whose stamp names the backup", async () => {
@@ -161,6 +180,34 @@ describeDb("retired native backup source authority", () => {
     ["one allocation maps to two host leases", { restoreHold: "settled" as const, secondLease: true }],
   ])("keeps a restore-hold backup held when %s", async (_label, options) => {
     await expect(fixture({ termination: "stopped", ...options })).resolves.toBe(false);
+  });
+
+  // Regression: reuse skipped the previous run's warm sandbox
+  // while its workspace export was saving, so the next run got a created lease.
+  // Once the export settled, that sandbox was idle and held exactly the backup.
+  it.each(["retained", "released"] as const)("authorizes an idle %s warm source and claims it as superseded", async (idleWarm) => {
+    await expect(fixture({ idleWarm })).resolves.toBe(true);
+    const [source] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lastSourceLeaseId));
+    // Reuse never resumes the source with the older state again; the next
+    // acquisition treats it as obsolete and destroys it.
+    expect(source!.status).toBe(idleWarm);
+    expect(source!.metadata).not.toHaveProperty("reusableSandboxLease");
+    expect(source!.metadata?.reusableSandboxLeaseSuperseded).toMatchObject({
+      schema: "paperclip.reusable-sandbox-lease-superseded.v1", reusableSandboxLease: { version: 1, provider: "daytona" } });
+  });
+
+  it.each([
+    ["its run is still running", { idleWarm: "run_active" as const }],
+    ["its workspace export is still pending", { idleWarm: "export_pending" as const }],
+    ["its cleanup is in flight", { idleWarm: "cleanup_in_flight" as const }],
+    ["the backup would restore into its own allocation", { idleWarm: "same_target" as const }],
+    ["the stamp names another checkpoint", { idleWarm: "retained" as const, stampSha: `sha256:${"c".repeat(64)}` }],
+    ["provider work followed the checkpoint", { idleWarm: "retained" as const, providerEventAt: new Date(completedAt.getTime() + 60_000) }],
+    ["one allocation maps to two host leases", { idleWarm: "retained" as const, secondLease: true }],
+  ])("keeps an idle warm source's backup held when %s", async (_label, options) => {
+    await expect(fixture(options)).resolves.toBe(false);
+    const [source] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lastSourceLeaseId));
+    expect(source!.metadata).toHaveProperty("reusableSandboxLease");
   });
 
   it("ignores provider work that finished before the checkpoint", async () => {
