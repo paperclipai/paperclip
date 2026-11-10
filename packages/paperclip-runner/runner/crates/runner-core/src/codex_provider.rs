@@ -2521,6 +2521,38 @@ impl CodexProvider {
         Ok(())
     }
 
+    /// Provider evidence for a `turn/start` whose outcome a process loss hid.
+    /// Returns `true` only when this resumed Codex thread has no active turn
+    /// and its newest recorded turn is absent or one Paperclip already settled:
+    /// Codex records a turn in the thread before it runs anything, so the
+    /// ambiguous start never created one. Any other history, an incomplete
+    /// page, or another provider returns `false` and keeps the start ambiguous.
+    pub(crate) fn ambiguous_turn_start_never_created_a_turn(
+        &mut self,
+        settled_provider_turn_ids: &BTreeSet<String>,
+    ) -> Result<bool, LocalRunnerError> {
+        if self.config.provider != "codex" || self.active_provider_turn_id.is_some() {
+            return Ok(false);
+        }
+        let page = self.request("thread/turns/list", self.newest_turn_page_params())?;
+        Ok(newest_turn_page_proves_no_new_turn(
+            &page,
+            settled_provider_turn_ids,
+        ))
+    }
+
+    /// The first `thread/turns/list` page `read_thread` requests, narrowed to
+    /// the newest turn's metadata.
+    fn newest_turn_page_params(&self) -> Value {
+        let mut params = serde_json::Map::new();
+        params.insert("threadId".to_owned(), Value::String(self.thread_id.clone()));
+        params.insert("cursor".to_owned(), Value::Null);
+        params.insert("limit".to_owned(), Value::from(1));
+        params.insert("sortDirection".to_owned(), Value::from("desc"));
+        params.insert("itemsView".to_owned(), Value::from("notLoaded"));
+        Value::Object(params)
+    }
+
     pub(crate) fn read_thread_after_recovery_goal(
         &mut self,
         goal_is_dormant: fn(&Value) -> bool,
@@ -5027,6 +5059,35 @@ fn codex_question_response(
     Ok(json!({"answers": native}))
 }
 
+/// Codex turn statuses that mean the turn is over. `read_thread` accepts the
+/// same set plus `inProgress`.
+const ENDED_TURN_STATUSES: [&str; 4] = ["completed", "failed", "interrupted", "cancelled"];
+
+/// Whether the newest page of a thread's turn history proves that no turn
+/// exists beyond the ones Paperclip settled: the page is empty and complete,
+/// or its newest turn is a settled one with an explicit ended status. Any
+/// missing, malformed or unknown field proves nothing.
+fn newest_turn_page_proves_no_new_turn(
+    page: &Value,
+    settled_provider_turn_ids: &BTreeSet<String>,
+) -> bool {
+    let Some(turns) = page.pointer("/data").and_then(Value::as_array) else {
+        return false;
+    };
+    let Some(newest) = turns.first() else {
+        // An empty first page is the whole history only without a cursor.
+        return page.pointer("/nextCursor").is_none_or(Value::is_null);
+    };
+    newest
+        .pointer("/id")
+        .and_then(Value::as_str)
+        .is_some_and(|turn_id| settled_provider_turn_ids.contains(turn_id))
+        && newest
+            .pointer("/status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| ENDED_TURN_STATUSES.contains(&status))
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -5077,6 +5138,45 @@ mod tests {
         );
     }
     use super::*;
+
+    #[test]
+    fn only_a_complete_settled_ended_history_proves_no_new_turn() {
+        let settled = BTreeSet::from(["turn-1".to_owned()]);
+        let page = |turns: Value, cursor: Value| json!({"data": turns, "nextCursor": cursor});
+        let proves = |value: Value| newest_turn_page_proves_no_new_turn(&value, &settled);
+        assert!(proves(page(json!([]), Value::Null)));
+        assert!(proves(json!({"data": []})));
+        assert!(proves(page(
+            json!([{"id": "turn-1", "status": "completed"}]),
+            Value::Null
+        )));
+        assert!(proves(page(
+            json!([{"id": "turn-1", "status": "interrupted"}]),
+            Value::Null
+        )));
+        // An incomplete page, an unsettled or in-progress turn, or a missing,
+        // null or unknown field keeps the start ambiguous.
+        assert!(!proves(page(json!([]), json!("next-page"))));
+        assert!(!proves(json!({"nextCursor": null})));
+        assert!(!proves(page(
+            json!([{"id": "turn-2", "status": "completed"}]),
+            Value::Null
+        )));
+        assert!(!proves(page(
+            json!([{"id": "turn-1", "status": "inProgress"}]),
+            Value::Null
+        )));
+        assert!(!proves(page(json!([{"id": "turn-1"}]), Value::Null)));
+        assert!(!proves(page(
+            json!([{"id": "turn-1", "status": null}]),
+            Value::Null
+        )));
+        assert!(!proves(page(
+            json!([{"id": "turn-1", "status": "paused"}]),
+            Value::Null
+        )));
+        assert!(!proves(page(json!([{"status": "completed"}]), Value::Null)));
+    }
 
     #[test]
     #[cfg(unix)]

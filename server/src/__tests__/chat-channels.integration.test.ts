@@ -78659,7 +78659,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       kind: "request_confirmation",
       status: "pending",
       effectiveResolverPolicy: "human_only",
-      createdByAgentId: null,
+      createdByAgentId: fixture.assignedAgentId,
       createdByUserId: null,
     });
     await db

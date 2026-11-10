@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { BaselineRun } from "./ttft-baseline-stats.js";
 import type { ChaosApi } from "./api.js";
 import type { FaultReceipt } from "./types.js";
-import { bootWithoutProvisionMs, breachesOf, budgetFor, collectWaveSpeed, faultBeforeFirstActivity, faultRuns, firstActivityMs, gradeWaveSpeed, outageWindows, speedMarkdown, traceStartMs, withoutOutage } from "./wave-speed.js";
+import { bootWithoutProvisionMs, breachesOf, budgetFor, collectWaveSpeed, faultBeforeFirstActivity, faultRuns, firstActivityMs, gradeWaveSpeed, outageFreeClock, outageWindows, speedMarkdown, storageFaultWindows, traceStartMs, withoutOutage } from "./wave-speed.js";
 import { runMetrics } from "./ttft-baseline-stats.js";
 
 const span = (name: string, startOffsetMs: number, durationMs: number, extra: Record<string, unknown> = {}) =>
@@ -88,6 +88,40 @@ describe("wave speed grade", () => {
     const speed = gradeWaveSpeed("local", [recovered], [{ kind: "K1", readyAt: 10_000, runIds: ["r"] }], 0, [],
       { adjusted: 0, removedMs: 0, windows });
     expect(speed.rows.find(row => row.metric === "restart_recovery_control_plane")).toMatchObject({ measured: { p50: 2_000 }, breaches: [] });
+  });
+
+  it("removes storage fault window time from restart recovery and reports it apart from restart outage", () => {
+    const recovered: BaselineRun = { runId: "r", adapter: "claude", environment: "local", phase: "cold",
+      events: [{ eventType: "session.resumed", createdAt: new Date(10_000 + 62_000).toISOString() }] };
+    const restart = outageWindows([{ startedAt: 1_000, readyAt: 10_000 } as FaultReceipt]);
+    const storage = storageFaultWindows([{ kind: "ST5R", startedAt: 5_000, endedAt: 70_000, rules: [] },
+      { kind: "ST1", startedAt: 90_000, endedAt: null, rules: [] }], 95_000);
+    expect(storage).toEqual([{ startedAt: 5_000, readyAt: 70_000 }, { startedAt: 90_000, readyAt: 95_000 }]);
+    const faults = [{ kind: "K1", startedAt: 1_000, readyAt: 10_000, runIds: ["r"] }];
+    const unadjusted = gradeWaveSpeed("local", [recovered], faults, 0, [], { adjusted: 0, removedMs: 0, windows: restart });
+    expect(unadjusted).toMatchObject({ singleRunBreaches: 1, breaches: 1 });
+    const speed = gradeWaveSpeed("local", [recovered], faults, 0, [], { adjusted: 0, removedMs: 0, windows: restart, storageWindows: storage });
+    expect(speed.rows.find(row => row.metric === "restart_recovery_control_plane")).toMatchObject({ measured: { p50: 2_000 }, breaches: [] });
+    expect(speed).toMatchObject({ breaches: 0, storageFaultWindows: 2, storageFaultRemovedMs: 60_000 });
+    expect(speedMarkdown(speed)).toContain("Storage fault time removed: 60.0 s across 2 windows");
+  });
+
+  it("removes overlapping restart and storage fault time once", () => {
+    const clock = outageFreeClock([{ startedAt: 10_000, readyAt: 50_000 }, { startedAt: 30_000, readyAt: 70_000 }]);
+    expect(clock(100_000)).toBe(40_000);
+    expect(clock(40_000)).toBe(10_000);
+  });
+
+  it("removes storage fault time from spans in a collected wave and counts it apart", async () => {
+    const run = traced(1_000_000, [["heartbeat.queue", 0, 100], ["task.time_to_first_agent_activity", 0, 70_000]]);
+    const api = { get: async (route: string) => route.includes("workspace-operations") ? []
+      : run.events.map((event, seq) => ({ ...event, seq })) } as unknown as ChaosApi;
+    const sample = { runs: [{ id: "t", status: "succeeded", createdAt: new Date(1_000_000).toISOString(),
+      finishedAt: new Date(1_080_000).toISOString() }] } as never;
+    const speed = await collectWaveSpeed(api, "local", [{ issueId: "i", adapter: "claude", samples: [sample] }], [],
+      [{ kind: "ST1", startedAt: 1_005_000, endedAt: 1_065_000, rules: [] }]);
+    expect(speed.rows.find(row => row.metric === "time_to_first_activity")).toMatchObject({ measured: { p50: 10_000 } });
+    expect(speed).toMatchObject({ storageFaultWindows: 1, storageFaultRemovedMs: 60_000, outageRemovedMs: 0, outageAdjustedSpans: 0 });
   });
 
   it("has no budget for remote environments or unbudgeted adapters", () => {

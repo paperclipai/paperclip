@@ -3327,6 +3327,103 @@ fn completed_ambiguous_replacement_fails_closed_after_process_loss() {
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
 }
 
+/// The durable state a process loss leaves when it lands after the runner
+/// journaled a second `turn.start` and marked it ambiguous, but before Codex
+/// answered. `created` says whether Codex had already recorded that turn.
+fn cut_off_second_turn_start(label: &str, created: bool) -> PathBuf {
+    let directory = temporary_directory(label);
+    let config = provider_config(&directory, &["--durable-turn-ids"]);
+    let mut executor = CodexCommandExecutor::new(&directory);
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config}),
+        ))
+        .expect("prepare Codex provider");
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open Codex session");
+    executor
+        .execute(&command(
+            "first-turn",
+            3,
+            "turn.start",
+            json!({"text": "Complete the first turn."}),
+        ))
+        .expect("start first provider turn");
+    wait_for_executor_event(&mut executor, "turn.completed");
+    executor.shutdown().expect("stop first provider process");
+    drop(executor);
+    let provider_path = directory.join("codex-provider-state.json");
+    let mut provider: Value =
+        serde_json::from_slice(&fs::read(&provider_path).expect("read provider state"))
+            .expect("parse provider state");
+    provider["ambiguousTurnStartPending"] = json!(true);
+    fs::write(&provider_path, serde_json::to_vec(&provider).unwrap())
+        .expect("write the cut-off provider state");
+    if created {
+        // Codex recorded the second turn in its thread before it died.
+        use std::io::Write as _;
+        let mut history = fs::OpenOptions::new()
+            .append(true)
+            .open(directory.join("fake-state.json.turns"))
+            .expect("open fake turn history");
+        writeln!(history, "provider-turn-2").expect("record the cut-off turn");
+    }
+    directory
+}
+
+#[test]
+fn ambiguous_turn_start_that_never_created_a_turn_recovers_and_starts_once() {
+    let directory = cut_off_second_turn_start("durable-ambiguous-not-created", false);
+    let mut recovered = CodexCommandExecutor::new(&directory);
+    let snapshot = recovered
+        .execute(&command("snapshot", 5, "session.snapshot", json!({})))
+        .expect("history proves the cut-off start never created a turn");
+    assert_eq!(snapshot.result["status"], "session_open");
+    assert!(snapshot.result["activeProviderTurnId"].is_null());
+    let persisted: Value = serde_json::from_slice(
+        &fs::read(directory.join("codex-provider-state.json")).expect("read recovered state"),
+    )
+    .expect("parse recovered state");
+    assert_eq!(persisted["ambiguousTurnStartPending"], false);
+    assert_eq!(call_count(&directory, "thread/turns/list"), 1);
+    let started = recovered
+        .execute(&command(
+            "second-turn",
+            6,
+            "turn.start",
+            json!({"text": "Start once."}),
+        ))
+        .expect("start the turn the cut-off start never created");
+    assert_eq!(started.result["providerTurnId"], "provider-turn-2");
+    wait_for_executor_event(&mut recovered, "turn.completed");
+    assert_eq!(call_count(&directory, "turn/start"), 2);
+    recovered
+        .shutdown()
+        .expect("stop recovered provider process");
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
+#[test]
+fn ambiguous_turn_start_that_created_an_unsettled_turn_still_fails_closed() {
+    let directory = cut_off_second_turn_start("durable-ambiguous-created", true);
+    let mut recovered = CodexCommandExecutor::new(&directory);
+    let error = recovered
+        .execute(&command("snapshot", 5, "session.snapshot", json!({})))
+        .expect_err("a recorded turn Paperclip never settled may have done work");
+    assert!(
+        error
+            .to_string()
+            .contains("cannot safely recover an ambiguous Codex turn start"),
+        "unexpected ambiguous recovery error: {error}"
+    );
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+    fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
+}
+
 #[test]
 fn ambiguous_replacement_completion_replaces_durable_turn_authority() {
     let directory = temporary_directory("durable-ambiguous-turn-completion");

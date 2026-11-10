@@ -4,6 +4,7 @@ import {
   baselineRows, distribution, recoverySamples, runMetrics, runSpans, runWarmth, stampProviderLoadStarts,
   type BaselineEvent, type BaselineFault, type BaselineRun, type Distribution,
 } from "./ttft-baseline-stats.js";
+import type { StorageFaultReceipt } from "./storage-chaos.js";
 import type { AdapterId, EnvironmentKind, FaultReceipt, RunSample } from "./types.js";
 
 type Json = Record<string, unknown>;
@@ -21,6 +22,8 @@ export interface WaveSpeed {
   rows: SpeedRow[];
   outageAdjustedSpans: number;
   outageRemovedMs: number;
+  storageFaultWindows: number;
+  storageFaultRemovedMs: number;
   recoveryWithoutProviderEvent: number;
   /** Recovery samples a later fault interrupted before their next provider event (not graded). */
   recoveryInterruptedByFault: number;
@@ -68,6 +71,23 @@ export function outageWindows(faults: readonly FaultReceipt[]): OutageWindow[] {
   return faults.filter(fault => fault.readyAt !== null).map(fault => ({ startedAt: fault.startedAt, readyAt: fault.readyAt! }));
 }
 
+export function storageFaultWindows(receipts: readonly StorageFaultReceipt[], now: number): OutageWindow[] {
+  return receipts.flatMap(receipt => {
+    const readyAt = receipt.endedAt ?? now;
+    return readyAt > receipt.startedAt ? [{ startedAt: receipt.startedAt, readyAt }] : [];
+  });
+}
+
+export function mergeWindows(windows: readonly OutageWindow[]): OutageWindow[] {
+  const merged: OutageWindow[] = [];
+  for (const window of [...windows].sort((a, b) => a.startedAt - b.startedAt)) {
+    const last = merged.at(-1);
+    if (last && window.startedAt <= last.readyAt) last.readyAt = Math.max(last.readyAt, window.readyAt);
+    else merged.push({ ...window });
+  }
+  return merged;
+}
+
 export function traceStartMs(run: BaselineRun): number | null {
   let earliest: number | null = null;
   for (const event of run.events) {
@@ -82,7 +102,8 @@ export function traceStartMs(run: BaselineRun): number | null {
 }
 
 export function outageFreeClock(windows: readonly OutageWindow[]): (at: number) => number {
-  return at => at - windows.reduce((total, window) =>
+  const merged = mergeWindows(windows);
+  return at => at - merged.reduce((total, window) =>
     total + Math.max(0, Math.min(at, window.readyAt) - window.startedAt), 0);
 }
 
@@ -172,7 +193,8 @@ function firstActivityByGroup(runs: readonly BaselineRun[]): Map<string, number[
 
 export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly BaselineRun[], faults: readonly BaselineFault[],
   runBudgetExceeded: number, errors: string[] = [],
-  outage: { adjusted: number; removedMs: number; windows?: readonly OutageWindow[] } = { adjusted: 0, removedMs: 0 }): WaveSpeed {
+  outage: { adjusted: number; removedMs: number; windows?: readonly OutageWindow[]; storageWindows?: readonly OutageWindow[];
+    storageRemovedMs?: number } = { adjusted: 0, removedMs: 0 }): WaveSpeed {
   const rows: SpeedRow[] = [];
   const activity = firstActivityByGroup(runs);
   const boots = byGroup(runs, bootWithoutProvisionMs), provisions = byGroup(runs, provisionMs);
@@ -186,9 +208,18 @@ export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly Base
       rows.push({ adapter: row.adapter, metric, start: row.warmth, measured, budget, breaches: breachesOf(measured, budget) });
     }
   }
-  const clock = outageFreeClock(outage.windows ?? []);
+  const storageWindows = outage.storageWindows ?? [];
+  const clock = outageFreeClock([...(outage.windows ?? []), ...storageWindows]);
+  const restartClock = outageFreeClock(outage.windows ?? []);
   const outageFree = (readyAt: number, ms: number | null) => ms === null ? null : Math.max(0, clock(readyAt + ms) - clock(readyAt));
-  const samples = recoverySamples(runs, faults).map(sample => sample.latencyMs === null ? sample : {
+  let storageRemovedMs = outage.storageRemovedMs ?? 0;
+  const samples = recoverySamples(runs, faults).map(sample => {
+    if (sample.latencyMs !== null) {
+      const end = sample.readyAt + sample.latencyMs;
+      storageRemovedMs += (restartClock(end) - restartClock(sample.readyAt)) - (clock(end) - clock(sample.readyAt));
+    }
+    return sample;
+  }).map(sample => sample.latencyMs === null ? sample : {
     ...sample, latencyMs: outageFree(sample.readyAt, sample.latencyMs),
     controlPlaneMs: outageFree(sample.readyAt, sample.controlPlaneMs),
     providerLoadMs: sample.providerLoadMs === null || sample.controlPlaneMs === null ? sample.providerLoadMs
@@ -221,7 +252,8 @@ export function gradeWaveSpeed(environment: EnvironmentKind, runs: readonly Base
   return { environment, rows,
     recoveryWithoutProviderEvent: samples.filter(sample => sample.latencyMs === null && !sample.interruptedByFault).length,
     recoveryInterruptedByFault: samples.filter(sample => sample.interruptedByFault).length,
-    runBudgetExceeded, singleRunBreaches, breaches, errors, outageAdjustedSpans: outage.adjusted, outageRemovedMs: outage.removedMs };
+    runBudgetExceeded, singleRunBreaches, breaches, errors, outageAdjustedSpans: outage.adjusted, outageRemovedMs: outage.removedMs,
+    storageFaultWindows: storageWindows.length, storageFaultRemovedMs: storageRemovedMs };
 }
 
 async function runEventsWithRetry(api: ChaosApi, runId: string, attempts = 3): Promise<BaselineEvent[]> {
@@ -249,12 +281,13 @@ async function runEvents(api: ChaosApi, runId: string): Promise<BaselineEvent[]>
 }
 
 export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKind, tasks: readonly WaveSpeedTask[],
-  faults: readonly FaultReceipt[]): Promise<WaveSpeed> {
+  faults: readonly FaultReceipt[], storageReceipts: readonly StorageFaultReceipt[] = [], now = Date.now()): Promise<WaveSpeed> {
   const runs: BaselineRun[] = [];
   const timing: Array<{ id: string; createdAt: number; finishedAt: number | null }> = [];
   const errors: string[] = [];
   const windows = outageWindows(faults);
-  const outage = { adjusted: 0, removedMs: 0, windows };
+  const storageWindows = storageFaultWindows(storageReceipts, now);
+  const outage = { adjusted: 0, removedMs: 0, windows, storageWindows, storageRemovedMs: 0 };
   const perTask = tasks.map(task => {
     const seen = new Map<string, RunSample>();
     for (const sample of task.samples) for (const run of sample.runs ?? []) if (run.createdAt) seen.set(run.id, run);
@@ -275,8 +308,11 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
         if (run.retryOfRunId && faultHit.has(run.retryOfRunId)) raw.phase = "restart";
         if (faultBeforeFirstActivity(raw, windows, Date.parse(run.createdAt!))) raw.phase = "restart";
         // Stamp provider load starts from raw offsets before outage removal rewrites them.
-        const trimmed = withoutOutage(stampProviderLoadStarts(raw), windows);
-        outage.adjusted += trimmed.adjusted; outage.removedMs += trimmed.removedMs;
+        const stamped = stampProviderLoadStarts(raw);
+        const restartOnly = withoutOutage(stamped, windows);
+        const trimmed = withoutOutage(stamped, [...windows, ...storageWindows]);
+        outage.adjusted += restartOnly.adjusted; outage.removedMs += restartOnly.removedMs;
+        outage.storageRemovedMs += trimmed.removedMs - restartOnly.removedMs;
         runs.push(trimmed.run);
         timing.push({ id: run.id, createdAt: Date.parse(run.createdAt!), finishedAt: run.finishedAt ? Date.parse(run.finishedAt) : null });
       } catch (error) {
@@ -299,7 +335,8 @@ export function speedMarkdown(speed: WaveSpeed): string {
   const lines = [`## Speed (${speed.environment})`, "",
     `Breaches: ${speed.breaches} (aggregate p50/p95 rows with at least ${MIN_AGGREGATE_SAMPLES} samples plus ${speed.singleRunBreaches} runs or restart recoveries over the p95 budget after outage removal; the server logged ${speed.runBudgetExceeded} budget_exceeded events before removal).`,
     `Restart samples with no provider event after ready: ${speed.recoveryWithoutProviderEvent}. Interrupted by a later fault (not graded): ${speed.recoveryInterruptedByFault}.`,
-    `Outage time removed from ${speed.outageAdjustedSpans} spans: ${s(speed.outageRemovedMs)} (fault start to server ready; budgets judge the rest).`, "",
+    `Outage time removed from ${speed.outageAdjustedSpans} spans: ${s(speed.outageRemovedMs)} (fault start to server ready; budgets judge the rest).`,
+    ...(speed.storageFaultWindows ? [`Storage fault time removed: ${s(speed.storageFaultRemovedMs)} across ${speed.storageFaultWindows} windows (storage fault start to end, from storage-faults.json; overlap with restart outage counted once).`] : []), "",
     "| Adapter | Metric | Start | n | p50 | p95 | Budget p50 / p95 | Breach |", "|---|---|---|---|---|---|---|---|"];
   for (const row of speed.rows) {
     lines.push(`| ${row.adapter} | ${row.metric} | ${row.start} | ${row.measured.n} | ${s(row.measured.p50)} | ${s(row.measured.p95)} | `

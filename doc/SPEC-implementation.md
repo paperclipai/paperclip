@@ -881,6 +881,18 @@ Agent-authenticated changes cannot set or restore host-executed process adapter
 configuration, including commands and environment values. Agent-authenticated
 rollbacks cannot restore host-executed workspace commands either.
 
+### Individual agent interaction restrictions
+
+The optional `agents.permissions.interactions` object holds independent incoming
+and outgoing controls for assignments, mentions, comments, task edits and peer
+configuration, plus a separate outgoing assignment-to-humans control. Absence
+adds no restriction; explicit false cannot be bypassed by grants or agent roles.
+Human permission managers alone write the subtree through the dedicated API/CLI.
+No migration, default write, grant backfill or UI is introduced. Mutation and
+pending-delivery authorization use current settings while preserving history and
+running work. See [the interaction permission contract](agent-interaction-permissions.md)
+for the settings, ownership rules, atomic updates and compatibility boundaries.
+
 ### 9.3.1 Shared default-open issue writes
 
 For standard-trust agents, issue comments, issue field/status updates, child
@@ -2821,18 +2833,36 @@ cherry-pick, revert, merge, and bisect. The source files remain protected. Finis
 or abort the Git operation before saving. V1 does not claim a complete saved
 copy while these continuation records cannot be restored safely.
 
-Saved-copy browsing restores and verifies the complete archive for each request.
-Availability batches share one verified access per execution workspace within
-the request and allow at most eight remote workspace accesses. Each path still
-checks current authority. V1 has no extraction cache across requests. Large saved workspaces can therefore need
-substantial transfer time and temporary disk space for each browse request.
-Saved Files access admits at most two open extractions per process. It limits an
-encrypted archive to 512 MiB, its manifest to 4 MiB, and extraction to 10,000
-entries. It reserves at most 2 GiB of temporary space across those accesses and
-checks free disk space with a 256 MiB margin. Capacity failures stop before an
-object download. Cleanup releases capacity after it removes the owned files.
-These limits apply to saved-copy file access. Agent workspace saves and restores
-retain their existing archive limits.
+Saved-copy browsing reads the committed archive in place. It range-reads and
+decrypts the archive header and manifest, and verifies the manifest against the
+snapshot's recorded manifest digest. Listing and file details come from that
+verified manifest. Reading or downloading one file range-reads and decrypts only
+that file's bytes into a private temporary file, verifies them against the
+file's manifest SHA-256, and only then serves them. No browse request downloads or
+extracts the whole archive, so archive size does not limit saved Files access.
+A preview decrypts and verifies the file in memory, within its preview size limit.
+A download reserves the file's size against a 4 GiB per-process budget and checks
+free temporary disk with a 256 MiB margin before writing. Cleanup releases the
+reservation. A file larger than the budget reports `too_large`. A storage read
+that sends no bytes for five minutes is closed. The process keeps parsed
+manifests of recent snapshots, charged by manifest size plus their entries, up
+to 256 MiB. Concurrent opens of one snapshot share one manifest read, and at most
+two manifests are read and parsed at once per process. Manifests are limited to 64 MiB, the archive format's limit, and
+500,000 entries; a larger saved copy reports `too_large`.
+Saved files carry no modification times, so the recent view of a saved copy is
+ordered by path. Availability batches share one verified access per execution
+workspace within the request and allow at most eight remote workspace accesses.
+Each path still checks current authority.
+The changed-files view needs the repository status, so it still restores the
+complete archive for that request. That extraction admits at most two open
+extractions per process. It limits an encrypted archive to 512 MiB, its manifest
+to 4 MiB, and extraction to 10,000 entries. It reserves at most 2 GiB of
+temporary space across those accesses and checks free disk space with a 256 MiB
+margin. A saved copy beyond those limits reports changed files as unavailable;
+its other views stay available. Capacity failures stop before an object download.
+Cleanup releases capacity after it removes the owned files. These limits apply to
+saved-copy file access. Agent workspace saves and restores retain their existing
+archive limits.
 Each managed repository preparation also saves a complete workspace archive.
 These saves preserve each preparation boundary; V1 does not combine them or use
 incremental uploads.

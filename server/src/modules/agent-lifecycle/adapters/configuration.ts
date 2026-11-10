@@ -12,6 +12,7 @@ import type { LifecycleEffects } from "./effects.js";
 export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects, id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions, publications: ActivityPublication[] = []) {
   if (!("nestedIndex" in tx)) throw new AgentLifecycleConflict("Configuration integration requires a database transaction");
   assertConfigurationFields(data);
+  options = await effects.lockConfigurationInteractions(tx, id, data, options);
   const [current] = await tx.select().from(agents).where(eq(agents.id, id)).for("no key update");
   if (!current) return null;
   if (options?.expectedConfigurationRevision && options.expectedConfigurationRevision !== agentConfigurationRevision(current)) {
