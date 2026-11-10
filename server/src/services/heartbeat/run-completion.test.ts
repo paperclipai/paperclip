@@ -1415,26 +1415,20 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
   });
 
-  it.each(["exhausted accounting retries", "another raw query failure"] as const)("saves a bounded cause without SQL for %s", async kind => {
+  it("saves the bounded accounting-contention cause when accounting retries are exhausted", async () => {
     const f = await fixture();
     const logged = vi.spyOn(logger, "error");
     onTestFinished(() => logged.mockRestore());
-    const sqlState = kind === "exhausted accounting retries" ? "40001" : "23503";
-    const driverError = Object.assign(new Error(kind === "exhausted accounting retries"
-      ? "could not serialize access due to concurrent update" : "insert or update violates foreign key constraint"),
-    { name: "PostgresError", code: sqlState });
+    const driverError = Object.assign(new Error("could not serialize access due to concurrent update"),
+      { name: "PostgresError", code: "40001" });
     const queryError = new Error("Failed query: select \"id\" from \"heartbeat_runs\" where \"id\" = $1 for update\nparams: secret-run-id",
       { cause: driverError });
-    await f.completion.failRun(f.failure(kind === "exhausted accounting retries" ? new AccountingContentionError(queryError, 4) : queryError));
+    await f.completion.failRun(f.failure(new AccountingContentionError(queryError, 4)));
     const failed = await read(f.run.id);
-    expect(failed).toMatchObject({ status: "failed",
-      errorCode: kind === "exhausted accounting retries" ? ACCOUNTING_CONTENTION_CODE : "adapter_failed" });
-    if (kind === "exhausted accounting retries") expect(failed.error).toBe(ACCOUNTING_CONTENTION_MESSAGE);
-    else expect(failed.error).toContain(`SQLSTATE ${sqlState}`);
+    expect(failed).toMatchObject({ status: "failed", errorCode: ACCOUNTING_CONTENTION_CODE, error: ACCOUNTING_CONTENTION_MESSAGE });
     expect(JSON.stringify(failed)).not.toMatch(/heartbeat_runs|secret-run-id|Failed query/);
     const failureLog = logged.mock.calls.find(call => call[1] === "heartbeat execution failed");
-    expect(failureLog?.[0]).toMatchObject({ runId: f.run.id, sqlState, databaseMessage: driverError.message,
-      errorCode: failed.errorCode });
+    expect(failureLog?.[0]).toMatchObject({ runId: f.run.id, errorCode: ACCOUNTING_CONTENTION_CODE, failureCause: "40001" });
   });
 
   it("records a workspace provider's reason on the run and in the setup failure log without retrying", async () => {

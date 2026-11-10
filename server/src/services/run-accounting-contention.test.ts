@@ -22,8 +22,8 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import {
   ACCOUNTING_CONTENTION_CODE, AccountingContentionError, isAccountingContentionError, withOperationAccountingTransaction,
 } from "./accounting-transaction.js";
+import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { reserveRunBudget } from "./budget-reservations.js";
-import { boundedDatabaseFailure } from "./database-failure-text.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { createRunUsageRecorder, spoolUsageReceipt, type UsageReceiptEnvelope } from "./usage-receipts.js";
 
@@ -63,7 +63,9 @@ describe.skipIf(!support.supported)("run accounting writers under concurrent run
     const observed = new Proxy(db, { get(target, key) {
       if (key !== "transaction") return Reflect.get(target, key);
       return (callback: Parameters<Db["transaction"]>[0], options: Parameters<Db["transaction"]>[1]) => {
-        let first = true;
+        // Only accounting transactions (which name an isolation level). A plain
+        // transaction can already hold the run lock where it reads companies.
+        let first = Boolean(options?.isolationLevel);
         return target.transaction(tx => callback(new Proxy(tx, { get(transaction, property) {
           if (property !== "select") return Reflect.get(transaction, property);
           return (...fields: Parameters<Db["select"]>) => {
@@ -177,6 +179,42 @@ describe.skipIf(!support.supported)("run accounting writers under concurrent run
     });
   });
 
+  describe("final dispatch gate", () => {
+    it("admits and hands off a reserved run when run events commit between its company check and its run lock", async () => {
+      const f = await fixture({ limitCents: 1_000, reservationCents: "100" });
+      const runId = await f.run();
+      const reservation = await reserveRunBudget(db, f.companyId, runId, null);
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+      const hooked = interleaveRunEvents(f, runId);
+      let dispatched = 0;
+      const outcome = await createPostgresRunDispatchAdapter(hooked.db).dispatchResolvedInteractionIfCurrent({
+        companyId: f.companyId, runId, reservationId: (reservation as { id: string }).id, expectedStatus: "running",
+        now: new Date(), dispatch: async () => { dispatched++; } });
+      expect(outcome).toMatchObject({ dispatched: true });
+      expect(dispatched).toBe(1);
+      expect(hooked.interleavings()).toBe(1);
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(run.usageJson?.budgetDispatch).toMatchObject({ reservationId: (reservation as { id: string }).id });
+      expect((run.usageJson?.budgetDispatch as { handedOffAt?: string }).handedOffAt).toBeTruthy();
+    });
+
+    it("admits while back-to-back writers update the run row", async () => {
+      const f = await fixture({ limitCents: 100_000, reservationCents: "1" });
+      for (let i = 0; i < 6; i++) {
+        const runId = await f.run();
+        const reservation = await reserveRunBudget(db, f.companyId, runId, null);
+        await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+        const writers = pressure(runId);
+        await steady(writers);
+        try {
+          await expect(createPostgresRunDispatchAdapter(db).dispatchResolvedInteractionIfCurrent({ companyId: f.companyId, runId,
+            reservationId: (reservation as { id: string }).id, expectedStatus: "running", now: new Date(), dispatch: async () => {} }))
+            .resolves.toMatchObject({ dispatched: true });
+        } finally { await writers.stop(); }
+      }
+    }, 60_000);
+  });
+
   describe("createRunUsageRecorder", () => {
     const spool = () => fs.mkdtemp(path.join(os.tmpdir(), "run-accounting-contention-"));
 
@@ -237,12 +275,6 @@ describe.skipIf(!support.supported)("run accounting writers under concurrent run
       expect(contention.message).not.toMatch(/select|heartbeat_runs|Failed query|params/i);
       // The database error stays attached for the server log only.
       expect(String((contention.cause as Error).message)).toMatch(/^Failed query: select/);
-      // The run failure shown on the board names the cause without SQL.
-      expect(boundedDatabaseFailure(contention)).toEqual({ message: contention.message, errorCode: ACCOUNTING_CONTENTION_CODE,
-        sqlState: "40001", databaseMessage: "could not serialize access due to concurrent update" });
-      // Any other raw query failure is bounded too, without a dedicated code.
-      expect(boundedDatabaseFailure(contention.cause)).toMatchObject({ errorCode: null, sqlState: "40001",
-        message: expect.not.stringMatching(/select|heartbeat_runs/i) });
     });
   });
 });

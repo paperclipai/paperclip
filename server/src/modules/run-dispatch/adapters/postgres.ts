@@ -281,8 +281,13 @@ export function createPostgresRunDispatchAdapter(
         if (lockedIssueId !== hintedIssueId) return { kind: "retry" as const };
         return { kind: "value" as const, value: await operation(typedTx, run, publications) };
       };
+      // READ COMMITTED, like the ownership phase below: every mutable read
+      // follows the admission fences and the issue/run row locks, and budget
+      // exposure is one statement. Run-log appends and output progress update
+      // the run row while it waits; a repeatable-read snapshot taken before
+      // the run lock went stale on each and could exhaust every retry.
       const result: { kind: "missing" | "retry" } | { kind: "value"; value: T } = mode === "accounting"
-        ? await withOperationAccountingTransaction(db, input.companyId, locked)
+        ? await withOperationAccountingTransaction(db, input.companyId, locked, { isolationLevel: "read committed" })
         : await db.transaction(tx => locked(tx as unknown as Db, []));
 
       if (result.kind === "missing") return onMissing();

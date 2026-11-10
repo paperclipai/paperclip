@@ -2166,8 +2166,10 @@ keeps the normal late-receipt reconciliation path. Other independent accounting
 operations retain their repeatable-read snapshot. Receipt identity, replay
 conflicts, company scoping and budget-work publication remain transactional.
 
-Run budget admission (`reserveRunBudget`), the usage recorder's receipt-source
-handoff and its capture-failure fence use the same pattern. Admission reads all
+Run budget admission (`reserveRunBudget`), the final dispatch gate's accounting
+phase, the usage recorder's receipt-source handoff and its capture-failure fence
+use the same pattern. The dispatch gate's ownership phase already ran at READ
+COMMITTED under the same issue and run locks. Admission reads all
 mutable state after the shared admission fences, the agent share lock and the
 run-row lock. Its exposure is one statement, and the per-run reservation index
 plus the run lock prevent a second hold. Run-log appends and output progress that
