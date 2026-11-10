@@ -4,6 +4,22 @@ import { CHAT_BOOTSTRAP_PRELOAD_LIMIT, loadIssueChatBootstraps } from "@/lib/iss
 import { whenPageSettles } from "@/lib/when-page-settles";
 
 /**
+ * The route refs of the first tasks in `items`, in order, up to the preload
+ * limit. `taskOf` returns the task an item shows, or null for other items.
+ * The walk stops at the limit, whatever the size of the list.
+ */
+export function topTaskRefs<T>(items: Iterable<T>, taskOf: (item: T) => { id: string; identifier: string | null } | null) {
+  const refs: string[] = [];
+  for (const item of items) {
+    const task = taskOf(item);
+    if (!task) continue;
+    refs.push(task.identifier ?? task.id);
+    if (refs.length >= CHAT_BOOTSTRAP_PRELOAD_LIMIT) break;
+  }
+  return refs;
+}
+
+/**
  * The route refs of the first rendered task rows of a list's flattened
  * display order, up to the preload limit. Rows past the render budget are
  * skipped; the walk stops at the limit.
