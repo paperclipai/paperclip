@@ -559,6 +559,23 @@ fn apply_oom_score_adj(args: &[String]) -> Result<(), LocalRunnerError> {
     Ok(())
 }
 
+/// `--trusted-launch-root <dir>`: the host asserts that `<dir>` is an
+/// immutable, digest-pinned image (the agent computer's Runner ROM). Launch
+/// artifacts the root admits run in place instead of from a sealed copy. A root
+/// that fails its startup checks only loses that speedup, never protection.
+fn apply_trusted_launch_root(args: &[String]) -> Result<(), LocalRunnerError> {
+    let Some(path) = optional_value(args, "--trusted-launch-root")? else {
+        return Ok(());
+    };
+    match paperclip_runner_core::qualified_launch::TrustedLaunchRoot::open(Path::new(&path)) {
+        Ok(root) => paperclip_runner_core::qualified_launch::set_trusted_launch_root(root),
+        Err(reason) => eprintln!(
+            "paperclip-runnerd: ignoring --trusted-launch-root {path}: {reason}; launch artifacts keep sealed snapshots"
+        ),
+    }
+    Ok(())
+}
+
 fn apply_task_memory_cgroup(args: &[String]) -> Result<(), LocalRunnerError> {
     if let Some(path) = optional_value(args, "--task-memory-cgroup")? {
         paperclip_runner_core::task_memory::set_task_cgroup(PathBuf::from(path));
@@ -640,6 +657,7 @@ fn run(args: &[String]) -> Result<(), LocalRunnerError> {
     }
     apply_oom_score_adj(args)?;
     apply_task_memory_cgroup(args)?;
+    apply_trusted_launch_root(args)?;
     if args.iter().any(|argument| argument == "--connect-url")
         || args.iter().any(|argument| argument == "--listen-address")
         || args.iter().any(|argument| argument == "--listen-port")

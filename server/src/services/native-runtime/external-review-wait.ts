@@ -78,3 +78,27 @@ export async function listExternalReviewWaits(db: Db, companyId: string, issueId
   }));
   return waits.filter((wait): wait is NonNullable<typeof wait> => wait !== null);
 }
+
+export type ExternalReviewWait = Awaited<ReturnType<typeof listExternalReviewWaits>>[number];
+export type ExternalReviewWaitReader = (issueIds: string[]) => Promise<ExternalReviewWait[]>;
+
+/** Share one company's wait reads between callers that serve one request.
+ * Each issue's wait is independent of the other requested issues, so an issue
+ * is read at most once. Do not keep a reader beyond its request. */
+export function createExternalReviewWaitReader(db: Db, companyId: string,
+  list: typeof listExternalReviewWaits = listExternalReviewWaits): ExternalReviewWaitReader {
+  const byIssueId = new Map<string, Promise<ExternalReviewWait | null>>();
+  return async (issueIds) => {
+    const requested = [...new Set(issueIds)];
+    const missing = requested.filter(issueId => !byIssueId.has(issueId));
+    if (missing.length) {
+      const read = list(db, companyId, missing)
+        .then(waits => new Map(waits.map(wait => [wait.issueId, wait])));
+      for (const issueId of missing) {
+        byIssueId.set(issueId, read.then(waits => waits.get(issueId) ?? null));
+      }
+    }
+    const waits = await Promise.all(requested.map(issueId => byIssueId.get(issueId)!));
+    return waits.filter((wait): wait is ExternalReviewWait => wait !== null);
+  };
+}

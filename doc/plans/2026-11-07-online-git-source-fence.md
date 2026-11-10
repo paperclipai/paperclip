@@ -105,6 +105,13 @@ original source, restore uncommitted/staged work, and run fsck. No hosted import
 hold, cancellation, provider call, or shared-cache Git command is part of these
 local tests.
 
+A cohort shares its initial nested-source verification only within its held
+source and finalizer fences, keyed by physical root, Git roots and the exact
+recorded child set (or discovery). After every capture joins, a separate fresh
+verification checks each physical root and child set before publication. A
+changed child still rejects the whole cohort. Singleton imports keep their
+per-import checks. No local-byte proof survives the invocation.
+
 The online migration owner can checkpoint completed immutable nested-snapshot
 verification in the child snapshot ledger. This optional versioned proof binds
 the complete encrypted reference, child lineage, source operation and a known

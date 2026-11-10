@@ -531,6 +531,8 @@ export function createNativeRunTrace(input: {
       endedAtMs?: number;
       outcome?: NativeRunSpanOutcome;
       attributes?: Record<string, string | number | boolean>;
+      /** Write the run-log row after the caller continues; `finish` settles it. */
+      deferRunLog?: boolean;
     } = {},
   ): Promise<void> => {
     const state = scopeState(scope);
@@ -550,14 +552,18 @@ export function createNativeRunTrace(input: {
     });
     if (outcome === "failed") { try { state.span.setStatus({ code: 2 }); } catch {} }
     try { state.span.end(endedAtMs); } catch {}
-    if (state.persistRunLog) await emitCompletedSpanEvent({
-      name: state.name,
-      parentName: state.parentName,
-      startedAtMs: state.startedAtMs,
-      endedAtMs,
-      outcome,
-      attributes: state.attributes,
-    });
+    if (state.persistRunLog) {
+      const completed: NativeRunHistoricalSpan = {
+        name: state.name,
+        parentName: state.parentName,
+        startedAtMs: state.startedAtMs,
+        endedAtMs,
+        outcome,
+        attributes: state.attributes,
+      };
+      if (options.deferRunLog) deferRunLogRow(completed);
+      else await emitCompletedSpanEvent(completed);
+    }
     checkSpanBudget(state.name, state.startedAtMs, endedAtMs);
   };
 
@@ -596,7 +602,7 @@ export function createNativeRunTrace(input: {
     );
   };
 
-  const record = async (span: NativeRunHistoricalSpan, options: { persistRunLog?: boolean } = {}): Promise<void> => {
+  const record = async (span: NativeRunHistoricalSpan, options: { persistRunLog?: boolean; deferRunLog?: boolean } = {}): Promise<void> => {
     const scope = start(span.name, {
       parentName: span.parentName,
       startedAtMs: span.startedAtMs,
@@ -606,6 +612,7 @@ export function createNativeRunTrace(input: {
     await end(scope, {
       endedAtMs: span.endedAtMs,
       outcome: span.outcome,
+      deferRunLog: options.deferRunLog,
     });
   };
 
@@ -646,6 +653,16 @@ export function createNativeRunTrace(input: {
         pendingDiagnostics.delete(pending);
       });
     pendingDiagnostics.add(pending);
+  };
+
+  // Deferred run-log rows are written one at a time, in the order their spans
+  // ended, so the sink sees the same sequence as the awaited path.
+  let runLogRows: Promise<void> = Promise.resolve();
+  const deferRunLogRow = (span: NativeRunHistoricalSpan): void => {
+    if (ended) return;
+    const written = runLogRows.then(() => emitCompletedSpanEvent(span));
+    runLogRows = written;
+    defer(() => written);
   };
 
   const finish = async (outcome: NativeRunSpanOutcome): Promise<void> => {

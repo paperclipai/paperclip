@@ -595,6 +595,44 @@ describe("deferred diagnostics", () => {
     expect(names.indexOf("task.time_to_first_token")).toBeLessThan(names.indexOf("task.provider_session.measured"));
   });
 
+  it("records spans without waiting on deferred run-log rows, then writes them in order before finish", async () => {
+    const { traceContext, spans } = createRecordingTraceContext();
+    const written: unknown[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const write = vi.fn(async (event: AdapterRuntimeEvent) => {
+      await gate;
+      written.push((event.payload as Record<string, unknown>)?.span);
+    });
+    const trace = createNativeRunTrace({ runId: "deferred-rows", startedAtMs: 1_000, traceContext, onEvent: write });
+    trace.start("task.prepare", { parentName: "task.provider_session", startedAtMs: 1_000 });
+    const names = ["heartbeat.queue", "heartbeat.prepare_before_environment", "heartbeat.prepare_after_environment"];
+    for (const [index, name] of names.entries()) {
+      await trace.record({ name, parentName: "task.prepare", startedAtMs: 1_000 + index, endedAtMs: 1_100 + index }, { deferRunLog: true });
+    }
+    // The spans exist under their parent while every row write is still blocked.
+    expect(spans.filter((span) => span.parentName === "task.prepare").map((span) => span.name)).toEqual(names);
+    expect(spans.filter((span) => names.includes(span.name)).every((span) => span.endedAtMs !== null)).toBe(true);
+    expect(written).toEqual([]);
+    expect(write.mock.calls.length).toBeLessThanOrEqual(1);
+    const finished = trace.finish("ok");
+    release();
+    await finished;
+    // Rows keep the order their spans ended in and land before the root span closes.
+    expect(written.slice(0, 3)).toEqual(names);
+    expect(written.indexOf("task.provider_session.measured")).toBeGreaterThan(2);
+  });
+
+  it("drops deferred run-log rows requested after the trace finished", async () => {
+    const write = vi.fn(async () => {});
+    const trace = createNativeRunTrace({ runId: "deferred-rows-late", traceContext: createRecordingTraceContext().traceContext, onEvent: write });
+    await trace.finish("ok");
+    write.mockClear();
+    await trace.record({ name: "heartbeat.queue", startedAtMs: 1_000, endedAtMs: 1_100 }, { deferRunLog: true });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it("ignores a failed deferred diagnostic and work deferred after finish", async () => {
     const trace = createNativeRunTrace({ runId: "deferred-fail", traceContext: createRecordingTraceContext().traceContext });
     trace.defer(async () => { throw new Error("diagnostic failed"); });

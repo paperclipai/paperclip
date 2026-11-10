@@ -68,6 +68,10 @@ Every `run.performance.span` payload also carries `wallStartedAtMs`, the span's 
 start time in epoch milliseconds (since 2026-11-09). Span rows can be written late
 through deferred diagnostics, so readers take a span's start from this field (or
 from the trace start plus `startOffsetMs`), never from the row's write time.
+The preparation spans of a native run (`heartbeat.queue`, `heartbeat.prepare_*`,
+`environment.*`) are always written this way: in the order they ended, while the
+provider starts, and before the run's trace finishes. They can appear after the
+first Runner events of the run.
 
 `run.performance.span` also records `task.time_to_first_token` once per native
 dispatch at the first newly committed deliverable text: assistant or reasoning

@@ -160,7 +160,8 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
     sql`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' in ('prepared', 'finalized')`,
   ));
   const legacyRecoverySources: LegacyWorkspaceRecoverySource[] = [];
-  const onlineRecoveryAllowed = Boolean(input.onlineSource) && !input.writersStopped;
+  const onlineRecoveryAllowed = !input.writersStopped
+    && Boolean(input.onlineSource || workspace.status === "archived" && archivedGitSource);
   for (const run of referencedRuns.filter(run => object(run.reference).state === "prepared").sort((a, b) => a.id.localeCompare(b.id))) {
     if (onlineRecoveryAllowed) {
       const source = await inspectOnlineLegacyWorkspaceRecoverySource(db, { workspace, runId: run.id });
@@ -414,11 +415,12 @@ type ReservedMigration = Awaited<ReturnType<typeof reserveMigration>>;
 type MigrationPlan = { input: MigrationInput; onlineSource?: OnlineWorkspaceSource; reserved: ReservedMigration };
 
 async function lockMigrationRecovery(lock: MigrationTransaction, plans: MigrationPlan[], cohort?: WorkspaceMigrationCohort) {
-  const online = plans.filter(plan => plan.onlineSource);
+  const online = plans.filter(plan => !plan.input.writersStopped
+    && (plan.onlineSource || plan.reserved.workspace.status === "archived" && plan.reserved.archivedGitSource));
   if (!online.length) return;
   if (!await lockOnlineLegacyWorkspaceRecoverySources(lock as unknown as Db, { companyId: online[0].input.companyId,
-    sources: online.flatMap(({ reserved, onlineSource }) => [...reserved.legacyRecoverySources, ...onlineSource!.companions.flatMap(proof => proof.sources)]),
-    holds: online.flatMap(({ reserved, onlineSource }) => [...reserved.onlineRecoveryHolds, ...onlineSource!.companions.flatMap(proof => proof.holds)]) }))
+    sources: online.flatMap(({ reserved, onlineSource }) => [...reserved.legacyRecoverySources, ...(onlineSource?.companions.flatMap(proof => proof.sources) ?? [])]),
+    holds: online.flatMap(({ reserved, onlineSource }) => [...reserved.onlineRecoveryHolds, ...(onlineSource?.companions.flatMap(proof => proof.holds) ?? [])]) }))
     throw new Error("remote_workspace_migration_blocked:remote_copyback_owned");
   const readers = await Promise.allSettled(online.map(async ({ input, onlineSource, reserved }) => {
     const current = await inspect(input.db, { ...input, onlineSource, operationId: reserved.operation!.id }, cohort);
@@ -429,17 +431,32 @@ async function lockMigrationRecovery(lock: MigrationTransaction, plans: Migratio
   for (const reader of readers) if (reader.status === "rejected") throw reader.reason;
 }
 
-function createMigrationChildVerifier(input: MigrationInput, onlineSource: OnlineWorkspaceSource | undefined, sourceLock: MigrationTransaction) {
+function createMigrationChildVerifier(input: MigrationInput, onlineSource: OnlineWorkspaceSource | undefined, sourceLock: MigrationTransaction, cohort = false) {
   if (onlineSource?.kind !== "git") return undefined;
   const verifier = createNestedWorkspaceImportVerifier({ db: input.db, storage: input.storage, companyId: input.companyId,
     sourceLock, projectIds: onlineSource.projectIds, issueIds: onlineSource.issueIds, signal: input.signal, persistVerification: true });
+  type Options = Parameters<typeof prepareNestedWorkspaceImports>[0];
+  const initial = new Map<string, ReturnType<typeof prepareNestedWorkspaceImports>>(), final = new Map<string, ReturnType<typeof prepareNestedWorkspaceImports>>();
   let pending = Promise.resolve();
+  const prepare = (options: Options) => {
+    const work = pending.then(() => verifier.prepare(options));
+    pending = work.then(() => undefined, () => undefined);
+    return work;
+  };
+  const shared = async (options: Options, cache: typeof initial) => {
+    await verifier.assertOwner();
+    const root = options.workspace.cwd ?? options.workspace.providerRef;
+    const key = canonical([root ? await fs.realpath(root) : null, [...(options.gitSourceRoots ?? [])].sort(), options.recordedChildren ?? null]);
+    let work = cache.get(key);
+    if (!work) { work = prepare(options); cache.set(key, work); }
+    const result = await work;
+    await verifier.assertOwner();
+    return result;
+  };
   return {
-    prepare(options: Parameters<typeof prepareNestedWorkspaceImports>[0]) {
-      const work = pending.then(() => verifier.prepare(options));
-      pending = work.then(() => undefined, () => undefined);
-      return work;
-    },
+    prepare: (options: Options) => cohort ? shared(options, initial) : prepare(options),
+    finalize: (options: Options) => shared(options, final),
+    deferFinal: cohort,
     async close() { await pending; await verifier.close(); },
   };
 }
@@ -509,7 +526,7 @@ async function captureMigration(input: MigrationInput, reserved: ReservedMigrati
       const current = await captureRemoteWorkspaceDirectory({ cwd: sourceRoot!, archivePath: currentArchive, exclude, requireNoGit: onlineSource?.kind === "ordinary", gitSourceRoots: onlineSource?.gitSourceRoots, signal: input.signal });
       if (current.manifestDigest !== captured.manifestDigest) throw new Error("remote_workspace_migration_source_changed");
     }
-    if (nested.length) {
+    if (nested.length && !childVerifier?.deferFinal) {
       const verifyScratch = path.join(scratch, "verify-nested"); await fs.mkdir(verifyScratch);
       const verified = await (childVerifier?.prepare ?? prepareNestedWorkspaceImports)({ ...input, workspace: reserved.workspace,
         scratch: verifyScratch, recordedChildren: nested, gitSourceRoots: onlineSource?.gitSourceRoots });
@@ -531,9 +548,9 @@ async function validateMigrationPublication(tx: MigrationTransaction, input: Mig
       || journal.issueId !== operation.issueId || journal.cwd !== operation.cwd
       || canonical(journal.metadata) !== canonical(operation.metadata)) throw new Error("workspace_cohort_journal_changed");
   }
-  await lockMigrationParents(tx, input.companyId, reserved.workspace.sourceIssueId, onlineSource ? [
+  await lockMigrationParents(tx, input.companyId, reserved.workspace.sourceIssueId, onlineSource || reserved.archivedGitSource ? [
     ...reserved.legacyRecoverySources.map(source => source.issueId),
-    ...onlineSource.companions.flatMap(proof => proof.sources.map(source => source.issueId)),
+    ...(onlineSource?.companions.flatMap(proof => proof.sources.map(source => source.issueId)) ?? []),
   ] : []);
   for (const actionId of [...new Set([...reserved.finalizedRecoveryHolds, ...reserved.onlineRecoveryHolds].map(held => held.actionId))].sort()) {
     await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
@@ -741,6 +758,7 @@ export async function migrateRemoteWorkspaceCohort(input: {
   const sourceProof = createHash("sha256").update(canonical({ scope: scopeIdentity(members[0].onlineSource),
     members: initial.map(workspace => ({ workspaceId: workspace.id, fingerprint: fingerprint(workspace) })) })).digest("hex");
   const pending = [];
+  let unchangedMembers = true;
   for (const workspace of initial) {
     const marker = object(workspace.metadata?.remoteWorkspaceMigration);
     if (marker.schema !== SCHEMA || typeof marker.operationId !== "string") continue;
@@ -749,11 +767,14 @@ export async function migrateRemoteWorkspaceCohort(input: {
       eq(workspaceOperations.id, marker.operationId), eq(workspaceOperations.phase, "remote_workspace_migration")));
     if (!operation?.metadata?.cohortMigration) throw new Error("workspace_cohort_foreign_journal");
     if (operation.status !== "running" || operation.finishedAt !== null) throw new Error("workspace_cohort_journal_changed");
+    unchangedMembers &&= marker.sourceFingerprint === fingerprint(workspace)
+      && operation.metadata.sourceFingerprint === marker.sourceFingerprint;
     pending.push(cohortSchema.parse(operation.metadata.cohortMigration));
   }
-  const cohort: WorkspaceMigrationCohort = pending[0] ?? { schema: "paperclip.remote-workspace-cohort.v1", id: randomUUID(), companyId,
+  let cohort: WorkspaceMigrationCohort = pending[0] ?? { schema: "paperclip.remote-workspace-cohort.v1", id: randomUUID(), companyId,
     sourceProof, members: workspaceIds.map(workspaceId => ({ workspaceId, operationId: randomUUID() })) };
-  if (cohort.companyId !== companyId || cohort.sourceProof !== sourceProof
+  const refreshSourceProof = cohort.sourceProof !== sourceProof;
+  if (cohort.companyId !== companyId || refreshSourceProof && (pending.length !== workspaceIds.length || !unchangedMembers)
     || canonical(cohort.members.map(member => member.workspaceId)) !== canonical(workspaceIds)
     || new Set(cohort.members.map(member => member.operationId)).size !== workspaceIds.length
     || pending.some(marker => canonical(marker) !== canonical(cohort))) throw new Error("workspace_cohort_membership_changed");
@@ -785,8 +806,44 @@ export async function migrateRemoteWorkspaceCohort(input: {
       return reservation.value;
     });
     await lockMigrationRecovery(lock, plans, cohort);
+    if (refreshSourceProof) {
+      const refreshedCohort = { ...cohort, sourceProof };
+      const operations = await input.db.transaction(async tx => {
+        await lockMigrationParents(tx, companyId, null, plans.flatMap(plan => [plan.reserved.workspace.sourceIssueId!,
+          ...plan.reserved.legacyRecoverySources.map(source => source.issueId),
+          ...plan.onlineSource!.companions.flatMap(proof => proof.sources.map(source => source.issueId))]));
+        const locked = await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, companyId),
+          inArray(executionWorkspaces.id, workspaceIds))).orderBy(executionWorkspaces.id).for("update");
+        if (locked.length !== plans.length || plans.some(plan => {
+          const workspace = locked.find(row => row.id === plan.input.workspaceId)!;
+          return fingerprint(workspace) !== plan.reserved.sourceFingerprint
+            || canonical(workspace.metadata?.remoteWorkspaceMigration) !== canonical(plan.reserved.workspace.metadata?.remoteWorkspaceMigration);
+        })) throw new Error("workspace_cohort_source_changed");
+        await preflight(tx);
+        const updated = [];
+        for (const plan of plans) {
+          signal.throwIfAborted();
+          const operation = plan.reserved.operation!;
+          const [current] = await tx.update(workspaceOperations).set({ metadata: { ...operation.metadata,
+            cohortMigration: refreshedCohort }, updatedAt: new Date() }).where(and(
+            eq(workspaceOperations.companyId, companyId), eq(workspaceOperations.executionWorkspaceId, plan.input.workspaceId),
+            eq(workspaceOperations.id, operation.id), eq(workspaceOperations.phase, "remote_workspace_migration"),
+            eq(workspaceOperations.status, "running"), sql`${workspaceOperations.finishedAt} is null`,
+            sql`${workspaceOperations.issueId} is not distinct from ${operation.issueId}::uuid`,
+            sql`${workspaceOperations.cwd} is not distinct from ${operation.cwd}`,
+            eq(workspaceOperations.metadata, operation.metadata!))).returning();
+          if (!current) throw new Error("workspace_cohort_journal_changed");
+          updated.push(current);
+        }
+        await lock.execute(sql`select 1`);
+        signal.throwIfAborted();
+        return updated;
+      });
+      for (const [index, plan] of plans.entries()) plan.reserved.operation = operations[index];
+      cohort = refreshedCohort;
+    }
     const captures: Array<CapturedMigration | undefined> = Array(plans.length);
-    const childVerifier = createMigrationChildVerifier(plans[0].input, plans[0].onlineSource, lock);
+    const childVerifier = createMigrationChildVerifier(plans[0].input, plans[0].onlineSource, lock, true);
     let next = 0, failure: unknown;
     const worker = async () => {
       while (!signal.aborted && next < plans.length) {
@@ -800,6 +857,15 @@ export async function migrateRemoteWorkspaceCohort(input: {
       for (const peer of peers) if (peer.status === "rejected") failure ??= peer.reason;
       if (failure) throw failure;
       signal.throwIfAborted();
+      const nestedReaders = await Promise.allSettled(plans.map(async (plan, index) => {
+        const captured = captures[index]!;
+        if (!captured.nested.length) return;
+        const scratch = path.join(captured.scratch, "verify-nested"); await fs.mkdir(scratch);
+        const verified = await (childVerifier?.finalize ?? prepareNestedWorkspaceImports)({ ...plan.input, workspace: plan.reserved.workspace,
+          scratch, recordedChildren: captured.nested, gitSourceRoots: plan.onlineSource?.gitSourceRoots });
+        if (canonical(verified) !== canonical(captured.nested)) throw new Error("nested_workspace_source_changed");
+      }));
+      for (const reader of nestedReaders) if (reader.status === "rejected") throw reader.reason;
       await lock.execute(sql`select 1`);
       await lock.transaction(async tx => {
         await lockMigrationParents(tx, companyId, null, plans.flatMap(plan => [

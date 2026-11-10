@@ -170,6 +170,12 @@ export const heartbeatRuns = pgTable(
     legacyControllerLeaseIdx: index("heartbeat_runs_legacy_controller_lease_idx")
       .on(table.controllerLeaseExpiresAt)
       .where(sql`${table.runtimeMode} = 'legacy' AND ${table.status} = 'running' AND ${table.controllerBootId} is not null`),
+    // Runs woken by one chat comment. Not partial: the planner ignores the
+    // expression statistics of a partial index and would then walk the run
+    // history by creation time to satisfy `order by created_at limit 1`.
+    companyWakeCommentIdx: index("heartbeat_runs_company_wake_comment_idx")
+      .on(table.companyId, sql`(${table.contextSnapshot}->>'wakeCommentId')`)
+      .concurrently(),
     costAccountingPendingIdx: index("heartbeat_runs_cost_accounting_pending_idx").on(table.updatedAt, table.id).where(sql`${table.costAccountingPending} = true`),
     costDataQualityIdx: index("heartbeat_runs_cost_data_quality_idx")
       .on(table.companyId, sql`coalesce(${table.finishedAt}, ${table.createdAt}) desc`, table.id)

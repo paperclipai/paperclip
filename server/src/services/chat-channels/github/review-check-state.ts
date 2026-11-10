@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { chatActions, chatDeliveries, chatEndpoints, chatEndpointResources,
   chatGitHubConfigurations, chatGitHubReviews, chatMessageLinks, companies,
   heartbeatRuns, type Db } from "@paperclipai/db";
@@ -66,30 +66,37 @@ export async function githubReviewCheckState(db: Db, action: typeof chatActions.
       )[0]
     : undefined;
   if (review && !run) {
-    const [sourceRun] = await db
-      .select({ run: { id: heartbeatRuns.id, status: heartbeatRuns.status } })
+    // Read the delivery's few comments first. A join lets the planner walk
+    // the agent's whole run history by creation time; a known comment list
+    // uses the wake-comment index, and no comment means no run to find.
+    const commentIds = [...new Set((await db
+      .select({ commentId: chatMessageLinks.commentId })
       .from(chatDeliveries)
       .innerJoin(
         chatMessageLinks,
         eq(chatMessageLinks.deliveryId, chatDeliveries.id),
       )
-      .innerJoin(
-        heartbeatRuns,
-        and(
-          eq(heartbeatRuns.companyId, action.companyId),
-          eq(heartbeatRuns.agentId, source.endpoint.assignedAgentId),
-          sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${chatMessageLinks.commentId}::text`,
-        ),
-      )
       .where(
         and(
           eq(chatDeliveries.endpointId, action.endpointId),
           sql`${chatDeliveries.normalizedEvent}->'githubAutomatic'->'context'->>'deliveryId' = ${event.deliveryId}`,
+          isNotNull(chatMessageLinks.commentId),
         ),
-      )
-      .orderBy(desc(heartbeatRuns.createdAt))
-      .limit(1);
-    run = sourceRun?.run;
+      )).map(link => link.commentId!))];
+    if (commentIds.length) {
+      [run] = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, action.companyId),
+            eq(heartbeatRuns.agentId, source.endpoint.assignedAgentId),
+            inArray(sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId'`, commentIds),
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(1);
+    }
   }
   const [delivery] = await db
     .select({ state: chatDeliveries.state })

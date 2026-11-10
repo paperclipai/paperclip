@@ -145,6 +145,18 @@ Receipt validation adds bounded per-scope database reads to startup eligibility.
 It does not add a recurring scan or network work. Qualification must measure the
 selected cohort's startup latency on the serving revision before enrollment.
 
+### Workspace cohort admission proofs
+
+A saved cohort keeps its exact members, operations and snapshots on resume.
+Independent companion imports can change the current source-scope proof without
+changing those members. When every member has a running journal and its current
+fingerprint matches both saved fingerprints, the importer can reprove the current
+scope under fresh source, lifecycle and finalizer locks. After current source and
+recovery checks, one transaction compares every journal and refreshes only the
+cohort proof for all members. Cancellation or a changed journal rolls back the
+whole refresh. Partial reservations still require the original aggregate proof.
+Archives, recovery obligations and publication checks retain their existing owners.
+
 ### Original local Git sources for archived workspaces
 
 When an archived runtime branch has an exact successful deletion receipt, its
@@ -378,6 +390,22 @@ local fixture:
 ```sh
 pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-budget-cancellation-scan.ts --runs=20000 --payload-kib=16
 ```
+
+GitHub review lookups use four indexes from migration 0456, which builds them
+concurrently. `chat_message_links_company_comment_idx` finds a source comment's
+link for inherited review waits and run-origin checks.
+`chat_message_links_delivery_idx` finds a delivery's links.
+`chat_deliveries_github_automatic_delivery_idx` finds a delivery by its GitHub
+webhook delivery ID on one endpoint. These three are partial.
+`heartbeat_runs_company_wake_comment_idx` keys runs by company and
+`context_snapshot.wakeCommentId`. It is not partial, because the planner does not
+use expression statistics from a partial index; without them it estimates many
+matches and walks the run history by creation time instead. The review check
+reads the delivery's comment IDs first and then the newest same-agent run woken
+by one of them, so it no longer walks the agent's run history. The two link
+indexes also serve the comment and delivery `on delete set null` actions. Issue
+lists share one external review-wait read per issue between the review and
+blocked-inbox attention maps.
 
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads

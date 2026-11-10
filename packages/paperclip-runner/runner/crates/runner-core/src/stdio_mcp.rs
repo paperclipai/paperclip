@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use crate::durable::QualifiedLaunchArtifact;
 use crate::local_runner::LocalRunnerError;
 use crate::process_supervisor::{VerifiedProcessArgument, VerifiedProcessLaunch};
-use crate::qualified_launch::verify_executable_launch_artifact;
+use crate::qualified_launch::verify_assigned_executable_launch_artifact;
 
 pub const BINDINGS_ENV: &str = "PAPERCLIP_NATIVE_MCP_STDIO";
 pub const PROXY_ENV: &str = "PAPERCLIP_NATIVE_MCP_PROXY";
@@ -67,7 +67,7 @@ impl StdioMcpBinding {
         {
             return Err(invalid("invalid assigned stdio MCP binding"));
         }
-        verify_executable_launch_artifact(
+        verify_assigned_executable_launch_artifact(
             &QualifiedLaunchArtifact {
                 path: self.command.clone(),
                 sha256: self.sha256.clone(),
@@ -271,7 +271,7 @@ pub fn run_proxy(path: &Path, content_images: bool) -> McpResult<()> {
         .map_err(|_| invalid("invalid stdio MCP configuration"))?;
     binding.validate()?;
     let (mut lock, resource_identity) = resource_lock(&binding.serial_resource)?;
-    let program = verify_executable_launch_artifact(
+    let program = verify_assigned_executable_launch_artifact(
         &QualifiedLaunchArtifact {
             path: binding.command.clone(),
             sha256: binding.sha256.clone(),

@@ -12,6 +12,8 @@
  * by hand-rolled fetches (health, uploads) classify the same way.
  */
 
+import { CancelledError } from "@tanstack/react-query";
+
 export type ErrorKind =
   | "transient"
   | "auth"
@@ -181,8 +183,9 @@ function readableServerMessage(err: unknown): string | null {
 // --- Classification ---------------------------------------------------------------
 
 function isAbortError(err: unknown): boolean {
-  const name = record(err)?.name;
-  return name === "AbortError" || name === "CancelledError";
+  // React Query's `CancelledError` keeps the default `name` ("Error"), so it
+  // can only be recognized by class.
+  return record(err)?.name === "AbortError" || err instanceof CancelledError;
 }
 
 function isNetworkTypeError(err: unknown): boolean {

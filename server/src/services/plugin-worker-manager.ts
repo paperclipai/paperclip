@@ -590,6 +590,7 @@ export type ExecuteLogSink = (
  * carries no command string, so a caller cannot select the command.
  */
 export interface LoginPtyOpenInput {
+  expiresAt?: string;
   /** The environment driver key. It routes the worker; it confers no command authority. */
   driverKey: string;
   companyId: string;
@@ -1564,7 +1565,9 @@ export function createPluginWorkerHandle(
   type LoginPtyPreBindRecord = LoginPtyPreBindOutputRecord | LoginPtyPreBindExitRecord;
 
   interface LoginPtyRoute {
+    companyId: string;
     hostRouteId: string;
+    closePromise: Promise<void> | null;
     state: LoginPtyRouteState;
     workerSessionId: string | null;
     listener: ((chunk: string) => void) | null;
@@ -1626,11 +1629,11 @@ export function createPluginWorkerHandle(
   // that carries the exact host route identifier. An absent, malformed,
   // mismatched, or timed-out acknowledgement returns false, so the caller fails
   // closed.
-  async function closeLoginPtyTerminal(hostRouteId: string): Promise<boolean> {
+  async function closeLoginPtyTerminal(hostRouteId: string, companyId: string): Promise<boolean> {
     try {
       const ack = await callInternal(
         "loginPtyClose",
-        { hostRouteId },
+        { hostRouteId, companyId },
         loginPtyCloseTimeoutMs,
       );
       return isRecord(ack) && readNonEmptyString(ack.hostRouteId) === hostRouteId;
@@ -1647,6 +1650,9 @@ export function createPluginWorkerHandle(
   // every other route this worker still holds settles through the worker-exit
   // path that follows.
   async function terminalizeLoginPtyRoute(route: LoginPtyRoute): Promise<void> {
+    // A notification may already have started close. Every later disposer must
+    // join that acknowledgement before its owner can release the allocation.
+    if (route.closePromise) return route.closePromise;
     if (route.terminalized) return;
     route.terminalized = true;
     route.state = "closed";
@@ -1660,20 +1666,22 @@ export function createPluginWorkerHandle(
       loginPtyRoutesByWorkerSessionId.delete(route.workerSessionId);
     }
     releaseLoginPtyRouteSlot(route);
-    // A terminalized route reports a null exit code, which the runner treats as a
-    // failure.
+    route.closePromise = (async () => {
+      const confirmed = await closeLoginPtyTerminal(route.hostRouteId, route.companyId);
+      if (!confirmed) {
+        // The worker did not acknowledge the close, so the host cannot prove the
+        // terminal is gone. Retire the worker before any reuse.
+        log.error(
+          { pluginId },
+          "login pseudo-terminal close not acknowledged; retiring worker",
+        );
+        retireWorkerProcess();
+      }
+    })();
+    // Report failure promptly, but retain the shared close barrier so the
+    // runner's following dispose waits for confirmed stop (or worker retirement).
     settleRouteWait(route, { exitCode: null });
-    const confirmed = await closeLoginPtyTerminal(route.hostRouteId);
-    if (!confirmed) {
-      // The worker did not acknowledge the close, so the host cannot prove the
-      // terminal is gone. Fail closed: retire the worker before any reuse. This
-      // also settles and clears every other route the worker still holds.
-      log.error(
-        { pluginId },
-        "login pseudo-terminal close not acknowledged; retiring worker",
-      );
-      retireWorkerProcess();
-    }
+    return route.closePromise;
   }
 
   // Resolve one login pseudo-terminal notification to its route. Return null
@@ -1920,7 +1928,9 @@ export function createPluginWorkerHandle(
       settleWait = resolve;
     });
     const route: LoginPtyRoute = {
+      companyId: input.companyId,
       hostRouteId,
+      closePromise: null,
       state: "reserved",
       workerSessionId: null,
       listener: null,
@@ -1957,6 +1967,7 @@ export function createPluginWorkerHandle(
           providerLeaseId: input.providerLeaseId,
           loginCommandKey: input.loginCommandKey,
           sessionHome: input.sessionHome,
+          ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
         },
         loginPtyOpenTimeoutMs,
       );
@@ -2001,9 +2012,9 @@ export function createPluginWorkerHandle(
         if (route.state !== "open" || !sid) return;
         void callInternal(
           "loginPtyInput",
-          { workerSessionId: sid, data },
+          { companyId: route.companyId, workerSessionId: sid, data, inputId: randomUUID() },
           loginPtyOpenTimeoutMs,
-        ).catch(() => {});
+        ).catch(() => terminalizeLoginPtyRoute(route));
       },
       wait(): Promise<{ exitCode: number | null }> {
         return waitPromise;
@@ -2013,7 +2024,7 @@ export function createPluginWorkerHandle(
         if (!sid) return;
         void callInternal(
           "loginPtyStop",
-          { workerSessionId: sid },
+          { companyId: route.companyId, workerSessionId: sid },
           loginPtyOpenTimeoutMs,
         ).catch(() => {});
       },

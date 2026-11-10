@@ -487,6 +487,11 @@ export const chatDeliveries = pgTable(
       table.endpointId,
       table.deduplicationKey,
     ),
+    // Review checks find their delivery by the GitHub webhook delivery id.
+    index("chat_deliveries_github_automatic_delivery_idx")
+      .on(table.endpointId, sql`(${table.normalizedEvent}->'githubAutomatic'->'context'->>'deliveryId')`)
+      .where(sql`(${table.normalizedEvent}->'githubAutomatic'->'context'->>'deliveryId') is not null`)
+      .concurrently(),
     foreignKey({
       columns: [table.companyId, table.endpointId],
       foreignColumns: [chatEndpoints.companyId, chatEndpoints.id],
@@ -638,6 +643,16 @@ export const chatMessageLinks = pgTable(
       table.conversationId,
       table.providerMessageId,
     ),
+    // Source-comment and delivery lookups (GitHub review waits and checks).
+    // These also serve the comment and delivery `on delete set null` actions.
+    index("chat_message_links_company_comment_idx")
+      .on(table.companyId, table.commentId)
+      .where(sql`${table.commentId} is not null`)
+      .concurrently(),
+    index("chat_message_links_delivery_idx")
+      .on(table.deliveryId)
+      .where(sql`${table.deliveryId} is not null`)
+      .concurrently(),
     foreignKey({
       columns: [table.companyId, table.conversationId],
       foreignColumns: [chatConversations.companyId, chatConversations.id],

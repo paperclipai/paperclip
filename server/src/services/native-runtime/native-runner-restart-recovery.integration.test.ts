@@ -2510,7 +2510,9 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       backend: { descriptor, openSession },
       preparationSpans: [{ name: "heartbeat.prepare_after_environment", startedAtMs: Date.now(), endedAtMs: Date.now() }],
       onEvent: async event => {
-        if (event.payload?.span === "heartbeat.prepare_after_environment") {
+        // Preparation span rows are written in the background, so hold the
+        // controller on the awaited environment receipt that precedes them.
+        if (event.eventType === "run.startup.reuse" && event.payload?.layer === "environment") {
           prepared();
           await continuePreparation;
         }

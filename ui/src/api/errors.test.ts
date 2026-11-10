@@ -1,3 +1,4 @@
+import { CancelledError } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import { ApiError } from "./api-error";
 import {
@@ -37,6 +38,7 @@ describe("classifyError", () => {
     ["422", apiError(422), "invalid"],
     ["500", apiError(500, { error: "boom" }), "unknown"],
     ["an abort", new DOMException("Aborted", "AbortError"), "aborted"],
+    ["a React Query cancellation", new CancelledError({ revert: false }), "aborted"],
     ["a programming TypeError", new TypeError("Cannot read properties of undefined"), "unknown"],
     ["a plain Error", new Error("nope"), "unknown"],
     ["undefined", undefined, "unknown"],
