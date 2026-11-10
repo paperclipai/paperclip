@@ -135,6 +135,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       vi.mocked(ghFetch).mockResolvedValueOnce(new Response(null, { status: 404 }))
         .mockResolvedValueOnce(Response.json({ full_name: "fixture/project", private: true, permissions: { pull: true } }));
       expect(await f.service.resolve(f.request, f.scope)).toBe("test-token-A");
+      await db.update(projectWorkspaces).set({ metadata: { githubRepositoryUrl: "https://github.com/fixture/project", githubRepositoryPrivate: false } }).where(eq(projectWorkspaces.id, f.workspace.id));
+      vi.mocked(ghFetch).mockResolvedValueOnce(Response.json({ id: 1, full_name: "fixture/project", private: false, permissions: { pull: true } }));
+      expect(await f.service.resolve({ ...f.request, expectedRepositoryId: "1", requireConnected: true }, f.scope)).toBe("test-token-A");
       await db.update(projectWorkspaces).set({ metadata: { githubRepositoryUrl: "https://github.com/fixture/project", githubRepositoryPrivate: true } }).where(eq(projectWorkspaces.id, f.workspace.id));
       vi.mocked(ghFetch).mockResolvedValueOnce(new Response(null, { status: 404 }));
       await expect(f.service.resolve(f.request, f.scope)).rejects.toThrow("does not include this repository");

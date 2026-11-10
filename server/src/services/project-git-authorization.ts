@@ -143,7 +143,7 @@ export function projectGitAuthorizationService(db: Db) {
       return read(companyId, projectId, userId);
     },
     async resolve(
-      input: { companyId: string; projectId: string; workspaceId: string; expectedRepository?: string; expectedRepositoryId?: string },
+      input: { companyId: string; projectId: string; workspaceId: string; expectedRepository?: string; expectedRepositoryId?: string; requireConnected?: boolean },
       scope?: {
         projectId: string;
         workspaceId?: string;
@@ -224,7 +224,7 @@ export function projectGitAuthorizationService(db: Db) {
         }, input.companyId, {
           issueId, workspaceId: issue.executionWorkspaceId, projectWorkspaceId: workspace.id,
         });
-        if (!isPrivate) return null;
+        if (!isPrivate && !input.requireConnected) return null;
         const result = await resolveGitHubOperationCredentials(db, {
           companyId: input.companyId,
           runId: scope.runId,
@@ -233,7 +233,7 @@ export function projectGitAuthorizationService(db: Db) {
         if (result.status !== "available") throw forbidden(result.reason ?? "Run GitHub authorization unavailable");
         return transientGitToken(result.env.PAPERCLIP_GIT_TOKEN);
       }
-      if (!isPrivate) return null;
+      if (!isPrivate && !input.requireConnected) return null;
       if (!row.gitAuthorizationGrantId)
         throw forbidden("Authorize this project's GitHub connection before provisioning private repositories");
       const selected =
@@ -273,14 +273,15 @@ export function projectGitAuthorizationService(db: Db) {
         if (repository.full_name?.toLowerCase() !== repo.fullName.toLowerCase() || repository.permissions?.pull !== true ||
           (input.expectedRepositoryId !== undefined && String(repository.id) !== input.expectedRepositoryId))
           throw forbidden("Project GitHub authorization does not include this repository");
-        if (repository.private === false) return null;
-        if (repository.private !== true) throw forbidden("Repository visibility is unavailable");
+        if (repository.private === false && !input.requireConnected) return null;
+        if (typeof repository.private !== "boolean") throw forbidden("Repository visibility is unavailable");
         return token;
       }
       // Project consent follows this connection's repository access, including future project sources.
       if (
         !selected.grant.providerTenant?.github?.repositories?.some(
-          (r) => r.fullName.toLowerCase() === repo.fullName.toLowerCase(),
+          (r) => r.fullName.toLowerCase() === repo.fullName.toLowerCase() &&
+            (input.expectedRepositoryId === undefined || r.id === input.expectedRepositoryId),
         )
       ) {
         throw forbidden("Project GitHub authorization does not include this repository; refresh Connector access");
