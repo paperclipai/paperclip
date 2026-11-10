@@ -236,6 +236,18 @@ export function mapTerminalTurn(
       state.dispositionOnlyRecoveryTurnId = null;
       state.terminal = false;
       state.dispositionOnlyRecoveryAvailable = true;
+    } else if (eventType === "turn.completed" && state.result === null && state.conversationMode === "task" &&
+        state.currentGoal?.status !== "active" && state.restartContinuationTurnId === turnId &&
+        state.dispositionOnlyRecoveryConsumed && state.dispositionOnlyRecoveryTurnId === turnId) {
+      // The restart continuation only borrowed the marker. It ended without a
+      // result (for example, the agent said it would wait for a background
+      // command), so the one disposition request it displaced is still owed.
+      // That request is not a continuation and consumes the marker for good.
+      state.restartContinuationTurnId = null;
+      state.dispositionOnlyRecoveryConsumed = false;
+      state.dispositionOnlyRecoveryTurnId = null;
+      state.terminal = false;
+      state.dispositionOnlyRecoveryAvailable = true;
     }
   }
 

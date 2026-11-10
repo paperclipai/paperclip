@@ -1311,6 +1311,21 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(host.textContent).toContain("Launch checklist");
   });
 
+  it("keeps an approved connection wait actionable without showing execution or another approval", () => {
+    const interaction = structuredClone(runningToolActionInteraction);
+    interaction.payload.toolAction!.expiresAt = null;
+    interaction.result!.toolAction = { version: 1, status: "approved", updatedAt: new Date().toISOString(),
+      errorCode: "approved_action_connection_required" };
+    const host = renderCard({ interaction });
+    expect(host.textContent).toContain("Your approval is saved");
+    expect(host.textContent).toContain("Sign-in needed");
+    expect(host.textContent).not.toContain("Running");
+    expect(host.textContent).not.toContain("Approve & run");
+    expect(host.textContent).not.toContain("Expires");
+    expect(host.querySelector(`a[href="/apps/${interaction.payload.toolAction!.connectionId}/permissions"]`)?.textContent)
+      .toContain("Reconnect");
+  });
+
   it("renders only the server-redacted proposal as plain text when inspected", async () => {
     const interaction = structuredClone(pendingToolActionWriteInteraction);
     interaction.payload.toolAction!.argumentsSummaryJson = JSON.stringify({ text: '<img src="x" onerror="alert(1)">', apiKey: "[redacted]" });

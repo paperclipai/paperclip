@@ -278,6 +278,67 @@ describe("Daytona idle eligibility", () => {
     expect(await plugin.definition.onIdleDrain!(signal)).toBe("none");
   });
 
+  describe("a sandbox in a state change during workspace realize", () => {
+    beforeEach(() => { vi.stubEnv("DAYTONA_API_KEY", "host-key"); });
+    const realize = (timeoutMs = 300_000) => plugin.definition.onEnvironmentRealizeWorkspace!({
+      driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+      config: { timeoutMs, reuseLease: false },
+      lease: { providerLeaseId: "sandbox-transition", metadata: { remoteCwd: "/home/daytona/paperclip-workspace" } },
+      workspace: { localPath: "/tmp/workspace" },
+    } as never);
+    const stateChangeInProgress = () => Object.assign(new Error("Sandbox state change in progress"), { statusCode: 409 });
+
+    it("waits for a stopping sandbox to settle, then starts it", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.refreshData.mockImplementation(async () => { sandbox.state = "stopped"; });
+      sandbox.start.mockImplementation(async () => {
+        if (sandbox.state !== "stopped") throw stateChangeInProgress();
+        sandbox.state = "started";
+      });
+      await expect(realize()).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+      expect(sandbox.fs.createFolder).toHaveBeenCalledWith("/home/daytona/paperclip-workspace", "755");
+    });
+
+    it("retries a start the provider rejected while its state was changing", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopped" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.start.mockRejectedValueOnce(stateChangeInProgress())
+        .mockImplementationOnce(async () => { sandbox.state = "started"; });
+      await expect(realize()).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      expect(sandbox.start).toHaveBeenCalledTimes(2);
+    });
+
+    it("gives up when the state change outlasts the start deadline", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.start.mockRejectedValue(stateChangeInProgress());
+      await expect(realize(1_000)).rejects.toThrow("is still stopping at its start deadline");
+      expect(sandbox.start).not.toHaveBeenCalled();
+      expect(sandbox.fs.createFolder).not.toHaveBeenCalled();
+    });
+
+    it("gives the start only the budget the wait left", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      let reads = 0;
+      sandbox.refreshData.mockImplementation(async () => { if (++reads === 2) sandbox.state = "stopped"; });
+      sandbox.start.mockImplementation(async () => { sandbox.state = "started"; });
+      await expect(realize(4_000)).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      expect(reads).toBe(2);
+      expect(sandbox.start.mock.calls[0]![0]).toBeLessThanOrEqual(2);
+    });
+
+    it("fails other start errors at once", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopped" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.start.mockRejectedValue(new Error("quota exceeded"));
+      await expect(realize()).rejects.toThrow("quota exceeded");
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("keeps a stale stopped reply from clearing a start that finished during the read", async () => {
     const sandbox = createMockSandbox({ state: "stopped" });
     mockGet.mockResolvedValue(sandbox);
@@ -1043,6 +1104,57 @@ describe("Daytona sandbox provider plugin", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    // RC-54: a per-turn, non-reusable sandbox running a remote runner must not
+    // auto-stop during a controller outage the host still treats as
+    // reattachable. The host forwards its reconnect grace for runner leases.
+    it.each([
+      [{ reuseLease: false, runnerLifecycleMode: "per_turn", autoStopInterval: 5 }],
+      [{ reuseLease: false, autoStopInterval: 2 }],
+      [{ reuseLease: true, runnerLifecycleMode: "per_turn", autoStopInterval: 5 }],
+      [{ reuseLease: false }],
+    ])("keeps a runner sandbox alive through the host reconnect grace plus a margin (%o)", async (config) => {
+      const autoStopMs = (await acquire({ ...config, runnerReconnectGraceMs: 420_000 })) * 60_000;
+      expect(autoStopMs).toBeGreaterThanOrEqual(420_000 + marginMs);
+    });
+
+    it("combines the reconnect grace floor with the warm floor and explicit settings", async () => {
+      expect(await acquire({ reuseLease: true, warmRunnerIdleTimeoutMs: 900_000, runnerReconnectGraceMs: 420_000 }))
+        .toBe(Math.ceil(900_000 / 60_000) + WARM_IDLE_AUTO_STOP_MARGIN_MINUTES);
+      expect(await acquire({ reuseLease: false, runnerReconnectGraceMs: 420_000, autoStopInterval: 60 })).toBe(60);
+      expect(await acquire({ reuseLease: false, runnerReconnectGraceMs: 420_000, autoStopInterval: 0 })).toBe(0);
+      // Without a host-forwarded grace (not a runner lease), the configured value stands.
+      expect(await acquire({ reuseLease: false, autoStopInterval: 5 })).toBe(5);
+    });
+
+    it("raises the auto-stop of an existing runner sandbox on recovery resume", async () => {
+      // The stopped sandbox from the outage restarts on resume and keeps its
+      // original 5-minute auto-stop unless the provider raises it.
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "sandbox-runner", state: "stopped" });
+      (sandbox as { autoStopInterval: number }).autoStopInterval = 5;
+      sandbox.process.executeCommand.mockImplementation(async (command: string) => ({ exitCode: 0,
+        result: command.startsWith("cat ") ? JSON.stringify({ token: "sentinel-token" }) : "bash" }));
+      mockGet.mockResolvedValue(sandbox);
+      await plugin.definition.onEnvironmentResumeLease!({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1", providerLeaseId: sandbox.id,
+        config: { reuseLease: false, runnerLifecycleMode: "per_turn", autoStopInterval: 5, runnerReconnectGraceMs: 420_000 },
+        leaseMetadata: { workspaceSentinel: {
+          path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+          token: "sentinel-token", result: "written" } },
+      });
+      expect(sandbox.setAutostopInterval).toHaveBeenCalledTimes(1);
+      const [minutes] = sandbox.setAutostopInterval.mock.calls[0] as [number];
+      expect(minutes * 60_000).toBeGreaterThanOrEqual(420_000 + marginMs);
+    });
+
+    it("keeps the host reconnect grace out of the saved provider config", async () => {
+      const result = await plugin.definition.onEnvironmentValidateConfig!({ driverKey: "daytona",
+        config: { apiKey: "key", image: "node:20", runnerReconnectGraceMs: 420_000, warmRunnerIdleTimeoutMs: 900_000, reuseLease: true } });
+      expect(result.ok).toBe(true);
+      expect(result.normalizedConfig).not.toHaveProperty("runnerReconnectGraceMs");
+      expect(result.normalizedConfig).not.toHaveProperty("warmIdleTimeoutMs");
     });
 
     it("does not change auto-stop on resume of a per-turn reusable sandbox", async () => {
@@ -3336,6 +3448,26 @@ describe("Daytona sandbox provider plugin", () => {
       expect(freshSessionId).not.toBe(staleSessionId);
       const lastExec = sandbox.process.executeSessionCommand.mock.calls.at(-1)!;
       expect(lastExec[0]).toBe(freshSessionId);
+    });
+
+    it("opens a fresh session after a restart outside the plugin that realize waited out", async () => {
+      vi.stubEnv("DAYTONA_API_KEY", "host-key");
+      const sandbox = autoStoppedSandbox();
+      mockGet.mockResolvedValue(sandbox);
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      const staleSessionId = sandbox.process.createSession.mock.calls[0]![0] as string;
+      sandbox.state = "starting";
+      sandbox.refreshData.mockImplementationOnce(async () => { sandbox.state = "started"; });
+      await plugin.definition.onEnvironmentRealizeWorkspace?.({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: { providerLeaseId: "sandbox-123", metadata: { remoteCwd: "/home/daytona/paperclip-workspace" } },
+        workspace: { localPath: "/tmp/workspace" },
+      } as never);
+      expect(sandbox.start).not.toHaveBeenCalled();
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(2);
+      expect(sandbox.process.createSession.mock.calls[1]![0]).not.toBe(staleSessionId);
     });
 
     it("opens a fresh session after sync-in restarts an auto-stopped sandbox", async () => {

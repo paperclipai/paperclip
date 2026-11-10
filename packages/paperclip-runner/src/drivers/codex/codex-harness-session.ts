@@ -110,7 +110,12 @@ export class CodexHarnessSession
     };
   }
 
-  async attachRun(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void> {
+  beginRunAttachment(input: { runId: string }): boolean {
+    if (this.protocolIntegrityFailure !== null || this.turnStartPending || this.pendingRunAttachment !== null || !input.runId) return false;
+    return this.transport.beginRunAttachment?.(input) ?? false;
+  }
+
+  async attachRun(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant; completionContract?: { revision: string; criterionIds: readonly string[] } }): Promise<void> {
     this.assertProtocolIntegrity();
     const transportOwnsQuiescence = this.transport.attachRun !== undefined;
     if (
@@ -129,6 +134,7 @@ export class CodexHarnessSession
         turnId: `turn_attachment_${randomUUID().replaceAll("-", "")}`,
         itemId: `item_attachment_${randomUUID().replaceAll("-", "")}`,
         ...(input.currentRunGrant ? { currentRunGrant: structuredClone(input.currentRunGrant) } : {}),
+        ...(input.completionContract ? { completionContract: structuredClone(input.completionContract) } : {}),
       });
       this.assertProtocolIntegrity();
       if (transportOwnsQuiescence) {
@@ -152,6 +158,7 @@ export class CodexHarnessSession
       this.resultTurnId = null;
       this.dispositionOnlyRecoveryConsumed = false;
       this.dispositionOnlyRecoveryTurnId = null;
+      this.restartContinuationTurnId = null;
       this.terminal = false;
       this.terminalTurns.clear();
       this.turnStarted = false;
@@ -368,6 +375,7 @@ export class CodexHarnessSession
     if (dispositionOnlyRecovery) {
       this.dispositionOnlyRecoveryTurnId = turnId;
     }
+    this.restartContinuationTurnId = dispositionOnlyRecovery && continuationTurn ? turnId : null;
     this.emit("turn.accepted", { turnId }, { turnId });
     if (this.interruptQueued) {
       this.interruptQueued = false;
@@ -376,6 +384,7 @@ export class CodexHarnessSession
     return {
       turnId,
       effectiveCollaborationMode,
+      ...(this.restartContinuationTurnId === turnId ? { borrowedDispositionMarker: true as const } : {}),
     };
   }
 
@@ -908,6 +917,19 @@ export class CodexHarnessSession
       lineage: this.lineage(),
       lastSourceSequence: this.sourceSequence,
     };
+  }
+
+  async settleCancelledTurn(input: { turnId: string; reason: string }) {
+    this.assertProtocolIntegrity();
+    if (this.activeTurnId !== null && this.activeTurnId !== input.turnId) return null;
+    const receipt = await this.transport.settleCancelledTurn?.(input) ?? null;
+    this.assertProtocolIntegrity();
+    if (receipt) {
+      this.cancelPendingRequests("session_closed");
+      this.activeTurnId = null;
+      this.eventQueue.close();
+    }
+    return receipt;
   }
 
   // `force` is part of the contract. Codex closes the same way with or without it.

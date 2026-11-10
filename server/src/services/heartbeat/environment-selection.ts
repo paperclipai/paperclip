@@ -494,7 +494,11 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     ...(reusableExistingExecutionWorkspace?.providerType === "adapter_managed" ? [config.workspaceStrategy] : []),
     issueAssigneeOverrides?.adapterConfig?.workspaceStrategy,
     projectExecutionWorkspacePolicy?.workspaceStrategy, issueExecutionWorkspaceSettings?.workspaceStrategy];
-  const boundTaskDirectory = !controllerOnly && !fresh && !nativeRecoveryExecutionWorkspaceId && issueId !== null && issueRef !== null &&
+  // RC-58: a native restart re-prepares its admitted workspace. When that is
+  // the task's own bound directory (for example a fresh Retry attempt), it keeps
+  // its directory strategy; it never becomes the base of a new git worktree.
+  const boundTaskDirectory = !controllerOnly && !fresh && issueId !== null && issueRef !== null &&
+    (!nativeRecoveryExecutionWorkspaceId || nativeRecoveryExecutionWorkspaceId === issueRef.executionWorkspaceId) &&
     requestedShouldReuseExisting && requestedExecutionWorkspaceMode === "isolated_workspace" &&
     !workspaceProjectContext?.hasWorkspace && !issueRef.projectWorkspaceId &&
     taskWorkspaceIntent?.selection.kind !== "configured_source" &&

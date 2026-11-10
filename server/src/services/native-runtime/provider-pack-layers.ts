@@ -28,7 +28,8 @@ const validArchive = (value: unknown): value is Archive => {
 export const invalidArchive = (reason: string, cause?: unknown) =>
   new Error(`runner_remote_provider_archive_invalid: ${reason}`, cause === undefined ? undefined : { cause });
 
-export async function verifyArchive(path: string, expected: Archive) {
+export async function verifyArchive(path: string, expected: Archive, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   let file;
   try { file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
   catch (error) { throw invalidArchive("archive_unreadable", error); }
@@ -37,12 +38,13 @@ export async function verifyArchive(path: string, expected: Archive) {
     if (!metadata.isFile()) throw invalidArchive("archive_not_file");
     if (metadata.size !== expected.bytes) throw invalidArchive("size_mismatch");
     const hash = createHash("sha256");
-    for await (const chunk of file.createReadStream({ autoClose: false })) hash.update(chunk);
+    for await (const chunk of file.createReadStream({ autoClose: false, signal })) hash.update(chunk);
+    signal?.throwIfAborted();
     if (hash.digest("hex") !== expected.sha256) throw invalidArchive("sha256_mismatch");
   } finally { await file.close(); }
 }
 
-export async function readProviderPackLayers(root: string, expectedDigest: string, value: unknown): Promise<ProviderPackLayers> {
+export async function readProviderPackLayers(root: string, expectedDigest: string, value: unknown, signal?: AbortSignal): Promise<ProviderPackLayers> {
   const receipt = value as { encoding: string; providerPackDigest: string; overlay: Archive; files: FileLayer[] };
   if (receipt.providerPackDigest !== expectedDigest) throw invalidArchive("receipt_identity_mismatch");
   if (receipt.encoding !== "tar+zstd"
@@ -70,7 +72,7 @@ export async function readProviderPackLayers(root: string, expectedDigest: strin
   const sourceRoot = `${root}.archives`;
   const layers = await lstat(sourceRoot).catch(error => { throw invalidArchive("layers_unreadable", error); });
   if (!layers.isDirectory()) throw invalidArchive("layers_unreadable");
-  await verifyArchive(`${sourceRoot}/overlay.tar.zst`, receipt.overlay);
+  await verifyArchive(`${sourceRoot}/overlay.tar.zst`, receipt.overlay, signal);
   return { kind: "layers", sourceRoot, overlay: receipt.overlay, files: receipt.files };
 }
 
@@ -110,6 +112,11 @@ const reuseScript = `
 })().catch(()=>process.exitCode=1);
 `;
 
+export function providerPackLayersArgument(archive: ProviderPackLayers, targetPath: string, reuseRoots: readonly string[]) {
+  const spec = Buffer.from(JSON.stringify({ target: targetPath, roots: reuseRoots, files: archive.files })).toString("base64");
+  return Buffer.byteLength(spec) > 120_000 ? null : spec;
+}
+
 export async function stageProviderPackLayers(input: {
   archive: ProviderPackLayers;
   runner: CommandManagedRuntimeRunner;
@@ -120,9 +127,9 @@ export async function stageProviderPackLayers(input: {
   const { archive, runner } = input;
   if (!runner.syncIn) throw Error("runner_remote_provider_archive_transport_unavailable");
   const measure = <T>(name: string, fn: () => Promise<T>) => input.trace ? input.trace.measure(name, fn) : fn();
-  const spec = Buffer.from(JSON.stringify({ target: input.targetPath, roots: input.reuseRoots, files: archive.files })).toString("base64");
+  const spec = providerPackLayersArgument(archive, input.targetPath, input.reuseRoots);
   // Respect the per-argument Linux limit; unusual packs retain directory staging.
-  if (Buffer.byteLength(spec) > 120_000) return false;
+  if (spec === null) return false;
   const capability = await measure("provider_pack.archive.probe", () => runner.execute({
     command: "sh", args: ["-c", `${providerPackExtractionProbe} && node -e 'process.exit(Number(process.versions.node.split(".")[0])>=18?0:1)'`],
     bypassSession: true, timeoutMs: 10_000,

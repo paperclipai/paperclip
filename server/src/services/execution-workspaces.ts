@@ -29,6 +29,7 @@ import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
 import { CONTROLLER_PROVISION_COPY_ONLY, workspaceRequiresCopyOnlyProvisioning } from "./workspace-host-provision.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { taskWorkspaceSelectableCondition } from "./task-workspace-selection.js";
+import { bindsRelativesExecutionWorkspace, buildIndependentTaskWorkspaceSettings } from "./task-workspace-lineage.js";
 import { executionWorkspaceRepositoryService, canonicalRepositoryRoot } from "./execution-workspace-repositories.js";
 import { assertSelectedWorkspaceTrust, type TaskWorkspaceCreationTrustContext } from "./task-repository-acquisition.js";
 import { forbidden } from "../errors.js";
@@ -38,7 +39,11 @@ import { authorizationService, executionWorkspaceReadSqlCondition, projectReadSq
 import type { SQL } from "drizzle-orm";
 import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
-import { notifyTerminalWorkspaceWork, TERMINAL_WORKSPACE_RETRY_MS } from "./terminal-workspace-work.js";
+import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
+import {
+  clearTerminalWorkspaceRetry, readTerminalWorkspaceRetry, recordTerminalWorkspaceFailure, terminalWorkspaceFailure,
+  TERMINAL_WORKSPACE_RETRY_KEY, type TerminalWorkspaceFailure,
+} from "./terminal-workspace-retry.js";
 import {
   deleteWorkspaceCompactionTrash,
   findRegenerableWorkspaceDirs,
@@ -295,10 +300,10 @@ function preserveWorkspaceMetadataForPatch(
       }
     }
   }
-  const freshIntentKeys = ["workspaceProviderFresh", "runnerTaskFreshWorkspace", "runnerTaskWorkspaceOwner"] as const;
-  if (patch.metadata !== undefined && (patch.metadata !== null || freshIntentKeys.some(key => current.metadata?.[key] !== undefined))) {
+  const coreOwnedKeys = ["workspaceProviderFresh", "runnerTaskFreshWorkspace", "runnerTaskWorkspaceOwner", TERMINAL_WORKSPACE_RETRY_KEY] as const;
+  if (patch.metadata !== undefined && (patch.metadata !== null || coreOwnedKeys.some(key => current.metadata?.[key] !== undefined))) {
     nextPatch.metadata = { ...(nextPatch.metadata ?? patch.metadata) };
-    for (const key of freshIntentKeys) {
+    for (const key of coreOwnedKeys) {
       if (current.metadata?.[key] !== undefined) nextPatch.metadata[key] = current.metadata[key];
       else delete nextPatch.metadata[key];
     }
@@ -1496,6 +1501,45 @@ async function hasPendingTaskWorkspaceRecovery(tx: DbTransaction, input: {
   });
 }
 
+/**
+ * Clears a task's binding to a relative's execution workspace that an older
+ * release created, so its next run realizes its own workspace from the project
+ * base. The relative and the shared workspace are never changed. Does nothing
+ * while another run of the task (other than `runId`) is running or its earlier
+ * run still owns workspace finalization or recovery. Runs inside the caller's
+ * transaction; returns whether the binding was released.
+ */
+export async function releaseAncestorWorkspaceBinding(tx: DbTransaction, input: { companyId: string; issueId: string; runId?: string }) {
+  const [task] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).for("update");
+  if (!task?.executionWorkspaceId || task.workspacePendingSelection) return false;
+  if (!await bindsRelativesExecutionWorkspace(tx, { companyId: input.companyId, executionWorkspaceId: task.executionWorkspaceId, task })) {
+    return false;
+  }
+  const [holder] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), input.runId ? ne(heartbeatRuns.id, input.runId) : undefined,
+    or(eq(heartbeatRuns.nativeIssueId, input.issueId),
+      sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${input.issueId}`),
+    eq(heartbeatRuns.status, "running"),
+  )).limit(1);
+  if (holder) return false;
+  if (await hasPendingTaskWorkspaceRecovery(tx, { companyId: input.companyId, issueId: input.issueId, excludeRunId: input.runId })) return false;
+  const selection = task.workspaceSelection;
+  await notifyStatusCardIssueChange(tx, task.companyId);
+  await tx.update(issues).set({
+    executionWorkspaceId: null,
+    executionWorkspacePreference: null,
+    // Without a project workspace the old settings described the relative's
+    // task files; the project's defaults apply instead, as for a top-level task.
+    executionWorkspaceSettings: task.projectWorkspaceId
+      ? buildIndependentTaskWorkspaceSettings(task.executionWorkspaceSettings)
+      : null,
+    ...(selection?.selection.kind === "existing" ? { workspaceSelection: null } : {}),
+    workspaceBindingRevision: task.workspaceBindingRevision + 1,
+    updatedAt: new Date(),
+  }).where(eq(issues.id, task.id));
+  return true;
+}
+
 // Compaction trash older than this belongs to no compaction in progress: the
 // move and the guard finish in one short transaction.
 const WORKSPACE_COMPACTION_TRASH_STALE_MS = 60 * 60 * 1000;
@@ -1515,7 +1559,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     if (!row) throw notFound("Workspace is unavailable");
     let state;
     try { state = await inspectPluginWorkspace(db, opts.pluginWorkerManager, row, recoveryPullRequest); }
-    catch { return { statusInspectionSucceeded: false, warnings: ["Workspace storage inspection is unavailable; data was retained."], git: null }; }
+    catch (error) {
+      const failure = terminalWorkspaceFailure(error);
+      return { statusInspectionSucceeded: false, warnings: [`Workspace storage inspection is unavailable; data was retained. ${failure.message}`], git: null, failure };
+    }
     return { statusInspectionSucceeded: true, warnings: [], git: {
       repoRoot: `/workspaces/${workspace.id}`, workspacePath: `/workspaces/${workspace.id}`,
       branchName: state.branchName, baseRef: workspace.baseRef,
@@ -1719,6 +1766,26 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         workspaceBindingRevision: task.workspaceBindingRevision + 1, updatedAt: new Date() }).where(eq(issues.id, task.id));
       return true;
     });
+  }
+
+  /**
+   * Releases a subtask from a workspace it shares with an ancestor (the shape
+   * older releases created by default) so this admission realizes the
+   * subtask's own workspace from the project base. The task that created the
+   * workspace keeps it and its files; a relative bound to it (an ancestor that
+   * selected a descendant's workspace included) is the one released. While an earlier run of this subtask is still
+   * running, finalizing, or under recovery, the binding is kept so that writer
+   * can save its files first; a later admission releases it. Never throws for
+   * that wait: the run proceeds on its current binding and nobody is asked to act.
+   */
+  async function releaseAncestorWorkspaceBindingAtAdmission(input: { companyId: string; issueId: string; runId: string }) {
+    // Cheap unlocked pre-check: a task bound to a workspace it created keeps it.
+    // When a relative selected that workspace, the relative is the one that moves.
+    const [candidate] = await db.select({ sourceIssueId: executionWorkspaces.sourceIssueId })
+      .from(issues).innerJoin(executionWorkspaces, eq(executionWorkspaces.id, issues.executionWorkspaceId))
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId))).limit(1);
+    if (!candidate || candidate.sourceIssueId === input.issueId) return false;
+    return db.transaction(tx => releaseAncestorWorkspaceBinding(tx, input));
   }
 
   async function bindTaskWorkspace(companyId: string, issueId: string, workspaceId: string, patch: TaskWorkspaceBindingPatch = {}) {
@@ -2697,10 +2764,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       reuseEligible?: boolean;
       selectableForTask?: boolean;
       readCondition?: SQL<boolean>;
+      ids?: string[];
     },
   ) {
     const conditions = [eq(executionWorkspaces.companyId, companyId)];
     if (filters?.readCondition) conditions.push(filters.readCondition);
+    if (filters?.ids) conditions.push(inArray(executionWorkspaces.id, filters.ids));
     if (filters?.projectId) conditions.push(eq(executionWorkspaces.projectId, filters.projectId));
     if (filters?.projectWorkspaceId) {
       conditions.push(eq(executionWorkspaces.projectWorkspaceId, filters.projectWorkspaceId));
@@ -2739,7 +2808,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     assertTaskRepositoryPublicationAllowed: executionWorkspaceRepositoryService(db).assertPublicationAllowed,
     prepareConfiguredRepositoryCopy: executionWorkspaceRepositoryService(db).prepareConfiguredRepositoryCopy,
     assertTaskRepositoryRecoveryBinding: executionWorkspaceRepositoryService(db).assertRecoveryBinding,
-    resolveSourceWorkspaceStrategy, validateSelection, validateStoredSelectionForRun, inspectTaskWorkspace, selectTaskWorkspace, applyPendingTaskWorkspaceSelection, bindTaskWorkspace, prepareTaskWorkspaceUpdate, assertTaskWorkspaceUpdateAccess,
+    resolveSourceWorkspaceStrategy, validateSelection, validateStoredSelectionForRun, inspectTaskWorkspace, selectTaskWorkspace, applyPendingTaskWorkspaceSelection, releaseAncestorWorkspaceBindingAtAdmission, bindTaskWorkspace, prepareTaskWorkspaceUpdate, assertTaskWorkspaceUpdateAccess,
     listOverview: async (
       companyId: string,
       filters: WorkspaceOverviewQuery,
@@ -2987,6 +3056,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       reuseEligible?: boolean;
       selectableForTask?: boolean;
       readCondition?: SQL<boolean>;
+      ids?: string[];
     }, pagination?: { limit: number; cursor?: string }) => {
       const conditions = buildListConditions(companyId, filters);
       if (pagination?.cursor) conditions.push(gt(executionWorkspaces.id, pagination.cursor));
@@ -3564,7 +3634,21 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         compacted: 0,
         compactionFailed: 0,
       };
-      const readinessByWorkingTree = new Map<string, ReturnType<typeof inspectGitCloseReadiness>>();
+      const readinessByWorkingTree = new Map<string, ReturnType<typeof inspectWorkspace>>();
+      const backOffTerminalWorkspace = async (snapshot: ExecutionWorkspaceRow, failure: TerminalWorkspaceFailure) => {
+        const [target] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, snapshot.id));
+        if (!target) return;
+        const generation = readExecutionWorkspaceLifecycleGeneration(target.metadata);
+        const removalFence = (target.metadata?.workspaceProviderRemoval as { generation?: unknown } | null | undefined)?.generation === generation;
+        if (generation !== readExecutionWorkspaceLifecycleGeneration(snapshot.metadata) && !removalFence) return;
+        const retry = await recordTerminalWorkspaceFailure(db, target, generation, failure, now());
+        terminalWorkspaceDeadlines.set(target.id, Date.parse(retry.retryAt));
+        logger.warn({ event: "execution_workspace.terminal_cleanup_retry", executionWorkspaceId: target.id, sourceIssueId: target.sourceIssueId,
+          failures: retry.failures, retryAt: retry.retryAt, failure: retry.failure }, "terminal workspace cleanup failed; a later sweep retries");
+      };
+      const settleTerminalWorkspaceRetry = async (target: ExecutionWorkspaceRow) => {
+        if (target.metadata?.[TERMINAL_WORKSPACE_RETRY_KEY] !== undefined) await clearTerminalWorkspaceRetry(db, target.id);
+      };
       let taskDirectoryBudget = opts.taskDirectoryRetention?.perSweep ?? 8;
       const expireTaskDirectory = async (workspace: ExecutionWorkspaceRow, notBefore: Date) => {
         const settings = opts.taskDirectoryRetention!;
@@ -3795,6 +3879,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedCooldown += 1;
           continue;
         }
+        const terminalRetry = readTerminalWorkspaceRetry(workspace.metadata, readExecutionWorkspaceLifecycleGeneration(workspace.metadata));
+        if (terminalRetry && Date.parse(terminalRetry.retryAt) > now().getTime()) {
+          terminalWorkspaceDeadlines.set(workspace.id, Date.parse(terminalRetry.retryAt));
+          result.skippedBackoff += 1;
+          continue;
+        }
         if (await workspaceHasActiveRun(workspace)) {
           if (reopenPending) result.skippedReopened += 1;
           else result.skippedActiveRun += 1;
@@ -3806,10 +3896,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             const cleanup = await cleanupTerminalWorkspace(workspace, null, generation);
             if (cleanup.skippedReopened) result.skippedReopened += 1;
             else if (!cleanup.cleaned) result.cleanupFailed += 1;
-            else { result.archived += 1; terminalWorkspaceDeadlines.delete(workspace.id); }
+            else { result.archived += 1; terminalWorkspaceDeadlines.delete(workspace.id); await settleTerminalWorkspaceRetry(workspace); }
           } catch (error) {
             result.cleanupFailed += 1;
-            terminalWorkspaceDeadlines.set(workspace.id, now().getTime() + TERMINAL_WORKSPACE_RETRY_MS);
+            await backOffTerminalWorkspace(workspace, terminalWorkspaceFailure(error));
             await markTerminalCleanupFailedFenced({ workspaceId: workspace.id, capturedGeneration: generation,
               cleanupReason: `${ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON} | ${error instanceof Error ? error.message : String(error)}` });
           }
@@ -3916,11 +4006,19 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           inspection = inspectWorkspace(toExecutionWorkspace(workspace), recoveryPullRequest);
           readinessByWorkingTree.set(readinessKey, inspection);
         }
-        const { git, statusInspectionSucceeded } = await inspection;
+        const inspected = await inspection;
+        const { git, statusInspectionSucceeded } = inspected;
         if (!statusInspectionSucceeded) {
           if (remoteWorkspace) terminalWorkspaceDeadlines.delete(workspace.id);
+          if ("failure" in inspected) await backOffTerminalWorkspace(workspace, inspected.failure);
           result.skippedUndelivered += 1;
           continue;
+        }
+        if (workspace.metadata?.[TERMINAL_WORKSPACE_RETRY_KEY] !== undefined) {
+          await settleTerminalWorkspaceRetry(workspace);
+          const metadata = { ...workspace.metadata };
+          delete metadata[TERMINAL_WORKSPACE_RETRY_KEY];
+          workspace = { ...workspace, metadata };
         }
         if (deliveryCandidate && (git?.headSha !== deliveryCandidate.headSha || git.branchName !== workspace.branchName
           || (await workspaceDeliveryCandidate(workspace))?.operationId !== deliveryCandidate.operationId)) {
@@ -4039,10 +4137,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             const cleanup = await cleanupTerminalWorkspace(workspace, assessment.workspaceHeadSha, generation, recoveryPullRequest, verifyDeliveryBeforeRemove);
             if (cleanup.skippedReopened) result.skippedReopened += 1;
             else if (!cleanup.cleaned) result.cleanupFailed += 1;
-            else { result.archived += 1; terminalWorkspaceDeadlines.delete(workspace.id); }
+            else { result.archived += 1; terminalWorkspaceDeadlines.delete(workspace.id); await settleTerminalWorkspaceRetry(workspace); }
           } catch (error) {
             result.cleanupFailed += 1;
-            terminalWorkspaceDeadlines.set(workspace.id, now().getTime() + TERMINAL_WORKSPACE_RETRY_MS);
+            await backOffTerminalWorkspace(workspace, terminalWorkspaceFailure(error));
             await markTerminalCleanupFailedFenced({ workspaceId: workspace.id, capturedGeneration: generation,
               cleanupReason: `${ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON} | ${error instanceof Error ? error.message : String(error)}` });
             logger.warn({ err: error, executionWorkspaceId: workspace.id }, "workspace storage cleanup remains pending");
@@ -4175,10 +4273,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           const cleanup = await cleanupTerminalWorkspace(archived, assessment.workspaceHeadSha, capturedGeneration, recoveryPullRequest, verifyDeliveryBeforeRemove);
           if (cleanup.skippedReopened) result.skippedReopened += 1;
           else if (!cleanup.cleaned) result.cleanupFailed += 1;
-          else result.archived += 1;
+          else { result.archived += 1; await settleTerminalWorkspaceRetry(archived); }
         } catch (error) {
           result.cleanupFailed += 1;
-          if (archived.providerType === "plugin" || remoteWorkspace) terminalWorkspaceDeadlines.set(archived.id, now().getTime() + TERMINAL_WORKSPACE_RETRY_MS);
+          if (archived.providerType === "plugin" || remoteWorkspace) await backOffTerminalWorkspace(archived, terminalWorkspaceFailure(error));
           const failure = error instanceof Error ? error.message : String(error);
           // Mark cleanup_failed only while the row is still closed at the
           // generation this sweep captured. A reopen that raced after the failure

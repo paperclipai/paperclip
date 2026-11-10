@@ -55,7 +55,39 @@ function deliveredInteractionRunExists(companyId: string, issueId: string) {
       AND delivered_run.status IN ('running', 'succeeded'))`;
 }
 
+/**
+ * The explicit steering message for a resolved interaction. It preserves the
+ * question labels, selected options, custom answers, approval target and exact
+ * revision.
+ */
+export function queuedInteractionSteeringBody(interaction: {
+  id: string; kind: string; status: string; title?: string | null; payload?: unknown; result?: unknown;
+}): string {
+  return `${queuedInteractionSummary(interaction)}\n\n${JSON.stringify({
+    interactionId: interaction.id, kind: interaction.kind, status: interaction.status,
+    payload: interaction.payload, result: record(interaction.result),
+  }, null, 2)}`;
+}
+
 export type QueuedInteractionResponse = NonNullable<Awaited<ReturnType<typeof readQueuedInteractionResponse>>>;
+
+/** A stored human answer can reach its assignee while dependency work stays blocked. */
+export async function isVerifiedDependencyInteractionResponse(db: Pick<Db, "select">, input: {
+  companyId: string; issueId: string; agentId: string; context: unknown;
+}): Promise<boolean> {
+  const id = queuedInteractionId(input.context);
+  if (!id) return false;
+  const context = record(input.context);
+  const [interaction] = await db.select({ status: issueThreadInteractions.status, kind: issueThreadInteractions.kind,
+    resolvedByUserId: issueThreadInteractions.resolvedByUserId, resolvedAt: issueThreadInteractions.resolvedAt })
+    .from(issueThreadInteractions).where(and(
+      eq(issueThreadInteractions.id, id), eq(issueThreadInteractions.companyId, input.companyId),
+      eq(issueThreadInteractions.issueId, input.issueId), eq(issueThreadInteractions.createdByAgentId, input.agentId),
+    )).limit(1);
+  return Boolean(interaction?.resolvedByUserId && interaction.resolvedAt
+    && interaction.status === context.interactionStatus
+    && (context.interactionKind === undefined || interaction.kind === context.interactionKind));
+}
 
 export async function readQueuedInteractionResponse(db: Db, companyId: string, issueId: string, payload: unknown) {
   const id = queuedInteractionId(payload);
@@ -70,15 +102,8 @@ export async function readQueuedInteractionResponse(db: Db, companyId: string, i
   ));
   const interaction = row?.interaction;
   if (!interaction || interaction.status !== record(payload).interactionStatus || row.delivered) return null;
-  const p = record(interaction.payload);
-  const result = record(interaction.result);
   const heading = queuedInteractionSummary(interaction);
-  // Preserve the question labels, selected options, custom answers, approval
-  // target and exact revision. This is also the explicit steering message.
-  const body = `${heading}\n\n${JSON.stringify({
-    interactionId: interaction.id, kind: interaction.kind, status: interaction.status,
-    payload: interaction.payload, result,
-  }, null, 2)}`;
+  const body = queuedInteractionSteeringBody(interaction);
   const comment: IssueComment = {
     id: interaction.id, companyId, issueId, authorType: interaction.resolvedByUserId ? "user" : "agent",
     authorUserId: interaction.resolvedByUserId, authorAgentId: interaction.resolvedByAgentId,

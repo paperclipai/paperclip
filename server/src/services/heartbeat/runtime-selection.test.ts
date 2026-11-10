@@ -4,7 +4,8 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activityLog, agents, authUsers, companyMemberships, companySkillRepositorySnapshots, principalPermissionGrants, environments, environmentLeases, companies, completionContracts, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
+import { activityLog, agents, authUsers, companyMemberships, companySkillRepositorySnapshots, principalPermissionGrants, environments, environmentLeases, companies, completionContracts, costEvents, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
+import { accountRunCost } from "../run-cost-accounting.js";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -94,6 +95,53 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
   const coordinators = (id: string) => db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, id));
   const sandbox = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", reusableLeaseConfigured: false };
+
+  it("rejects invalid local Runner configuration before native authority and retains the preparation owner", async () => {
+    const f = await fixture();
+    await claimPreparation(f);
+    vi.stubEnv("PAPERCLIP_RUNNER_BINARY", "relative-invalid-dot-retry-controller");
+    f.input.runtimeEnv = { PAPERCLIP_RUNNER_BINARY: join(tmpdir(), "ignored-injected-runnerd") };
+    const before = await read(f.run.id);
+    await expect(selectHeartbeatRuntime(db, f.input)).rejects.toThrow("PAPERCLIP_RUNNER_BINARY must be an absolute path");
+    expect(await read(f.run.id)).toEqual(before);
+    expect(await coordinators(f.run.id)).toEqual([]);
+    expect(await db.select().from(completionContracts)).toHaveLength(0);
+    expect(f.input.stopControllerLease).not.toHaveBeenCalled();
+    expect(buildNativeRuntimeContext).not.toHaveBeenCalled();
+  });
+
+  it("ignores an injected runtime Runner value that the local backend does not consume", async () => {
+    const f = await fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_BINARY", join(tmpdir(), "configuration-only-controller-runnerd"));
+    f.input.runtimeEnv = { PAPERCLIP_RUNNER_BINARY: "relative-ignored-injected-runnerd" };
+    expect((await selectHeartbeatRuntime(db, f.input)).selected).toBe(true);
+    expect((await read(f.run.id)).runtimeMode).toBe("native");
+    expect(await coordinators(f.run.id)).toHaveLength(1);
+  });
+
+  it("does not apply local Runner configuration to remote native selection", async () => {
+    const f = await fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_BINARY", "relative-unused-remote-controller");
+    f.input.workspace.executionTarget = sandbox;
+    expect((await selectHeartbeatRuntime(db, f.input)).selected).toBe(true);
+    expect((await read(f.run.id)).runtimeMode).toBe("native");
+    expect(await coordinators(f.run.id)).toHaveLength(1);
+  });
+
+  it("preserves immutable native recovery when current local Runner configuration is invalid", async () => {
+    const f = await fixture();
+    const selected = await selectHeartbeatRuntime(db, f.input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+    const saved = await read(f.run.id);
+    f.input.run = saved;
+    f.input.session.persistedRunnerProfile = saved.runnerProfileJson ?? {};
+    f.input.session.persistedNativeExecutionInput = selected.nativeExecution;
+    vi.stubEnv("PAPERCLIP_RUNNER_BINARY", "relative-unused-recovery-controller");
+    const resumed = await selectHeartbeatRuntime(db, f.input);
+    expect(resumed).toMatchObject({ selected: true, nativeExecution: selected.nativeExecution, nativeRunnerInstanceId: selected.nativeRunnerInstanceId });
+    expect((await read(f.run.id)).runnerProfileJson).toEqual(saved.runnerProfileJson);
+    expect(await coordinators(f.run.id)).toHaveLength(1);
+  });
 
   async function connectorFixture(durable = true) {
     const f = await fixture(), { input } = f;
@@ -283,6 +331,53 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     if (changed) expect(await readFile(join(canonical, "memory.txt"), "utf8")).toBe("Synthetic changed memory.\n");
   }, 45_000);
 
+  it.each([true, false])("records which earlier run a follow-up's process identity came from (prior identity: %s)", async priorIdentity => {
+    const { input, run, agent, issue } = await fixture();
+    const sessionId = randomUUID();
+    const prior = await selectHeartbeatRuntime(db, input);
+    if (!prior.selected || !prior.nativeExecution) throw new Error("Expected prior native selection");
+    const priorInput = { ...prior.nativeExecution, session: { ...prior.nativeExecution.session, normalizedSessionId: sessionId } };
+    const priorProfile = (await read(run.id)).runnerProfileJson;
+    const processStartedAt = new Date(Date.now() - 60_000);
+    await db.update(heartbeatRuns).set({ status: "succeeded", nativeSessionId: sessionId,
+      ...(priorIdentity ? { processPid: 11_356, processGroupId: 11_356, processStartedAt } : {}),
+      runnerProfileJson: { ...priorProfile, nativeExecutionInput: priorInput, sessionCheckpoint: {
+        backendKind: "runner", driverKind: "codex_app_server", sessionId: "retained-provider-thread",
+        providerSessionId: "retained-provider-thread", identity: { ...priorInput.binding, sessionId },
+      } },
+    }).where(eq(heartbeatRuns.id, run.id));
+    const [nextRun] = await db.insert(heartbeatRuns).values({ companyId: agent.companyId, agentId: agent.id,
+      issueId: issue.id, scopeKind: "issue", status: "running", nativeSessionId: sessionId,
+      createdAt: new Date(run.createdAt.getTime() + 1000),
+    }).returning();
+    input.run = nextRun!;
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected) throw new Error("Expected follow-up native selection");
+    const saved = await read(nextRun!.id);
+    if (priorIdentity) {
+      expect(saved).toMatchObject({ processPid: 11_356, processGroupId: 11_356 });
+      expect(saved.runnerProfileJson?.inheritedProcessIdentityRunId).toBe(run.id);
+      // Settled-process cleanup clears the predecessor before the follow-up's
+      // accounting runs; the follow-up was refused before it launched.
+      await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, processStartedAt: null })
+        .where(eq(heartbeatRuns.id, run.id));
+      const sourceId = randomUUID();
+      await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(), costAccountingPending: true,
+        errorCode: "native_session_cleanup_quarantined",
+        usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0, accountingReceiptReady: false,
+          accountingReceiptUnavailable: true, accountingReceiptSourceFences: {},
+          ledgerScope: { issueId: issue.id, projectId: null, billingCode: null } } })
+        .where(eq(heartbeatRuns.id, nextRun!.id));
+      await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", failureCode: "native_session_cleanup_quarantined" })
+        .where(eq(nativeRunFinalizations.runId, nextRun!.id));
+      expect(await accountRunCost(db, nextRun!.id)).toBe(true);
+      expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, nextRun!.id))).toEqual([]);
+    } else {
+      expect(saved.processPid).toBeNull();
+      expect(saved.runnerProfileJson?.inheritedProcessIdentityRunId).toBeUndefined();
+    }
+  });
+
   it.each(["matching", "different-session", "absent"])("persists the migrated logical cwd only for the receipt's exact session: %s", async receipt => {
     const sameSession = receipt === "matching";
     const { input, run, agent, issue } = await fixture();
@@ -334,6 +429,7 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   it.each([false, true])("persists the Cursor provider API placement and completion authority without a Computer lease (ephemeral: %s)", async ephemeral => {
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", String(ephemeral));
     const { input, run, issue } = await fixture();
+    vi.stubEnv("PAPERCLIP_RUNNER_BINARY", "relative-unused-api-controller");
     input.agent = { ...input.agent, adapterConfig: { provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/example/qualification" } };
     await db.update(agents).set({ adapterConfig: input.agent.adapterConfig }).where(eq(agents.id, input.agent.id));
     input.workspace.activeEnvironmentLease = null;

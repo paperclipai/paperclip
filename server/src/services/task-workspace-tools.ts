@@ -31,6 +31,12 @@ function repositoryView(repo: Record<string, unknown>) {
     state: repo.state, pinnedCommit: repo.pinnedCommit, branchName: repo.branchName };
 }
 
+/** The workspace detail page exists only while isolated workspaces are enabled,
+ * so callers pass the company prefix only then; a missing href means no page. */
+function workspaceHref(prefix: string | null | undefined, id: unknown) {
+  return prefix && typeof id === "string" ? { href: `/${encodeURIComponent(prefix)}/execution-workspaces/${encodeURIComponent(id)}` } : {};
+}
+
 function workspacePage(rows: Array<Record<string, unknown>>, limit: number) {
   const workspaces: Array<Record<string, unknown>> = [];
   const result = () => ({ workspaces, limit, returnedCount: workspaces.length,
@@ -57,7 +63,7 @@ function workspacePage(rows: Array<Record<string, unknown>>, limit: number) {
   return result();
 }
 
-export async function callTaskWorkspaceTool(input: { name: string; arguments: Record<string, unknown>; apiUrl: string; token: string; companyId: string; issueId: string; workspaceRoot?: string }) {
+export async function callTaskWorkspaceTool(input: { name: string; arguments: Record<string, unknown>; apiUrl: string; token: string; companyId: string; issueId: string; workspaceRoot?: string; workspacePagePrefix?: string | null }) {
   let route = `/issues/${input.issueId}/workspace`;
   let method = "GET";
   let body: unknown;
@@ -78,7 +84,7 @@ export async function callTaskWorkspaceTool(input: { name: string; arguments: Re
   const result = await response.json();
   if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Workspace tool failed (${response.status})`);
   if (page) {
-    return workspacePage(result, page.limit);
+    return workspacePage(result.map((row: Record<string, unknown>) => ({ ...row, ...workspaceHref(input.workspacePagePrefix, row.id) })), page.limit);
   }
   if (input.name === "prepare_repository") {
     const { operationId, ...rest } = result;
@@ -90,7 +96,8 @@ export async function callTaskWorkspaceTool(input: { name: string; arguments: Re
     const workspace = result.workspace;
     return { issueId: result.issueId, bindingRevision: result.bindingRevision, selection: result.selection,
       pendingSelection: result.pendingSelection, cwd: input.workspaceRoot ?? null,
-      workspace: workspace ? { id: workspace.id, projectId: workspace.projectId, mode: workspace.mode, status: workspace.status } : null,
+      workspace: workspace ? { id: workspace.id, projectId: workspace.projectId, mode: workspace.mode, status: workspace.status,
+        ...workspaceHref(input.workspacePagePrefix, workspace.id) } : null,
       repositories: (result.repositories ?? []).map(repositoryView),
       capabilities: result.capabilities, fileLocations: result.fileLocations };
   }

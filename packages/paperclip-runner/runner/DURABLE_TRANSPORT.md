@@ -74,6 +74,14 @@ the process dies inside the effect window, recovery records an indeterminate
 result and refuses to execute that command again. Recent results are bounded;
 commands older than the compacted controller cursor fail closed.
 
+A controller can die after it sends `turn.start` but before it checkpoints the
+accepted turn. The provider keeps running that turn. On reattach, the host
+driver adopts the single active turn only when the latest completed
+`turn.start` result for this run accepted that exact turn id, and no run
+attachment came after it. The driver then emits the missing `turn.accepted`
+and waits for that turn instead of starting another. Any other active turn
+still fails closed as an unexpected turn.
+
 State written before complete-command fingerprints existed is migrated by
 compacting its legacy command journal through the last recorded controller
 sequence. The runner can recover, but it rejects redelivery of those older
@@ -91,6 +99,25 @@ accepted durable prefix. The ACPX sidecar separately caps queued stdout at
 4 MiB; exceeding that bound requests owned provider shutdown and records a
 failure rather than allowing unbounded process memory while the Runner cannot
 read.
+
+## Event generations and stale events
+
+Every runner event payload carries `generation`: the runner process generation
+that emitted it. A runner process that recovers existing durable state starts
+the next generation. The counter is saved with the next state write, so
+recovery adds no write before the first turn. Events that are still in the
+outbox keep the generation that emitted them. State saved before this field
+existed loads as generation 0.
+
+Consumers apply one rule to provider events. An event that names a turn which
+is not the active turn, and which an earlier generation accepted or this
+generation already settled, is history. The consumer records it and it never
+fails the current turn. This covers late usage, items, workspace changes, and
+terminals for a turn lost on restore. An event for a turn the consumer never
+saw is not history and still fails closed. A terminal that contradicts a turn
+the same generation settled is still a conflict. The ACPX provider state and
+the Codex driver (which Runnerd also uses for OpenCode) apply this rule, and a
+pending `turn.start` ignores a held failure that names another turn.
 
 ## Recovering Codex between turns
 

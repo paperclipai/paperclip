@@ -460,6 +460,31 @@ import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
     } finally { await worker.stop(); }
   });
 
+  it("hands the workspace on at its saved version when the stopped writer never started provider work", async () => {
+    const f = await seed();
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    await db.update(executionWorkspaces).set({ metadata: { ...workspace.metadata, remoteWorkspaceUnchangedBaseline: {
+      schema: "paperclip.remote-workspace-unchanged-baseline.v1", epoch: 2, runId: f.runId, snapshotId: f.reference.snapshotId,
+    } } }).where(eq(executionWorkspaces.id, f.workspaceId));
+    const worker = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    try {
+      await registerCancelledWorkspacePreservationWork(db, worker, () => true, async () => true).ready;
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      expect(run.resultJson).not.toHaveProperty("workspaceRestoreRecovery");
+      expect(run.runnerProfileJson?.remoteWorkspace).toMatchObject({ state: "saved", snapshotId: f.reference.snapshotId });
+      const [released] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+      const authority = readRemoteWorkspaceAuthority(released.metadata)!;
+      expect(authority).toMatchObject({ epoch: 2, snapshotId: f.reference.snapshotId, writerRunId: null, dirty: false });
+      expect(await readRemoteWorkspaceWriterHold(db, { companyId: f.companyId, authority })).toEqual({ kind: "free" });
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId)))[0])
+        .toMatchObject({ status: "active", leasePolicy: "ephemeral" });
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId))).toHaveLength(0);
+      // A later pass finds nothing left to keep.
+      await preserveCancelledNativeWorkspaces(db);
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId))).toHaveLength(0);
+    } finally { await worker.stop(); }
+  });
+
   it("rolls preservation back with its outer transaction", async () => {
     const f = await seed();
     await expect(db.transaction(async tx => {

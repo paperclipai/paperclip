@@ -7,16 +7,18 @@ import { providerPackExtractionProbe } from "./provider-pack-extraction.js";
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
-export async function readProviderPackArchive(root: string, expectedDigest: string) {
+export async function readProviderPackArchive(root: string, expectedDigest: string, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   let receipt: { schema?: string; encoding?: string; providerPackDigest?: string; sha256?: string; bytes?: number };
   try {
-    receipt = JSON.parse(await readFile(`${root}.archive.json`, "utf8"));
+    receipt = JSON.parse(await readFile(`${root}.archive.json`, { encoding: "utf8", signal }));
   } catch (error) {
+    signal?.throwIfAborted();
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw invalidArchive("receipt_unreadable", error);
   }
   if (receipt.schema === "paperclip-runner/provider-pack-archive/v2") {
-    return readProviderPackLayers(root, expectedDigest, receipt);
+    return readProviderPackLayers(root, expectedDigest, receipt, signal);
   }
   if (receipt.schema !== "paperclip-runner/provider-pack-archive/v1"
     || receipt.encoding !== "tar+zstd"
@@ -26,7 +28,7 @@ export async function readProviderPackArchive(root: string, expectedDigest: stri
     throw invalidArchive(receipt.providerPackDigest !== expectedDigest ? "receipt_identity_mismatch" : "receipt_invalid");
   }
   const sourcePath = `${root}.tar.zst`;
-  await verifyArchive(sourcePath, { sha256: receipt.sha256!, bytes: receipt.bytes! });
+  await verifyArchive(sourcePath, { sha256: receipt.sha256!, bytes: receipt.bytes! }, signal);
   return { sourcePath, sha256: receipt.sha256!, bytes: receipt.bytes! };
 }
 

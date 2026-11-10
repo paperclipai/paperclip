@@ -555,6 +555,12 @@ export function runnerRecoveryFailureClass(
   return runnerRecoveryFailureClass(value.cause, depth + 1);
 }
 
+export interface CancelledTurnSettlement {
+  runId: string;
+  normalizedSessionId: string;
+  turnId: string;
+}
+
 export interface HarnessSession {
   supportsTurnReasoning?(): boolean;
   turnControlCapabilities?(): NativeTurnControlCapabilities | null;
@@ -564,7 +570,8 @@ export interface HarnessSession {
     displayId?: string | null;
   };
   events(): AsyncIterable<PrpEvent>;
-  attachRun?(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void> | void;
+  beginRunAttachment?(input: { runId: string }): boolean;
+  attachRun?(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant; completionContract?: { revision: string; criterionIds: readonly string[] } }): Promise<void> | void;
   startTurn(input: {
     message: NativeUserMessage;
     /** Set by orchestration only after successful provider-session recovery. */
@@ -582,6 +589,12 @@ export interface HarnessSession {
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode?: "default" | "plan";
+    /**
+     * This restart continuation borrowed the driver's one-shot disposition
+     * marker. If it completes without a result the driver returns the marker,
+     * and orchestration may send one disposition request in the same attempt.
+     */
+    borrowedDispositionMarker?: true;
   }>;
   steer?(input: {
     /** Queued follow-ups remain distinct from active-turn steering. */
@@ -595,6 +608,7 @@ export interface HarnessSession {
     reason?: string;
     signal?: AbortSignal;
   }): Promise<void>;
+  settleCancelledTurn?(input: { turnId: string; reason: string }): Promise<CancelledTurnSettlement | null>;
   pendingRuntimeRequests?(): HarnessRuntimeRequest[];
   resolveRuntimeRequest?(input: {
     /** Durable controller command identity, distinct from the native request identity. */

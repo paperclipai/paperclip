@@ -236,6 +236,12 @@ Early context preparation also records `agent_read`, `chat_completion`,
 `conversation`, `runtime_state`, `issue_context`, `run_identity`, `trust_preset`,
 and `task_context` beneath `heartbeat.prepare`. These time the existing awaited
 operations before environment selection; they do not add reads or record content.
+The work between those phases is named too: `chat_retry_admission`,
+`workspace_selection`, `dependency_readiness`, `issue_checkout`,
+`instance_settings`, `workspace_context`, `project_context`,
+`plan_wake_routing`, `routine_environment` and `responsible_user`.
+`execution_start` times the run and agent status writes and the "run started"
+event before run output starts. A repeated read or write has its own span.
 
 Execution configuration also records separate phases for mentioned skills,
 GitHub identity selection, secret resolution, managed AI runtime preparation,
@@ -297,7 +303,9 @@ The `paperclip.native-controller` tracer records
 backend construction, connector assignments, assigned MCP discovery, tool
 authority, companion selection and Runner binary resolution. It also records
 GitHub shutdown, coordinator release, instruction checkpoints and collection,
-and warm-session release. These intervals can occur between the existing native
+and warm-session release. Before the coordinator claim it also records
+attachment staging, warm controller restore, persistence of the preparation
+spans to the run log, and Runner state migration. These intervals can occur between the existing native
 preparation, execution and settlement spans. They are controller work, not model
 turn time, and carry only the existing run hash. Nested phases overlap their
 containing backend or lifecycle intervals; do not add both durations.
@@ -746,10 +754,17 @@ accepted ingress → queue → task.prepare → Runner startup → provider work
 └────────────────────── task.time_to_first_token ──────────────────────────────────┘
 ```
 
-The span starts at the native run trace's historical start:
-the accepted comment or attested question response when present, otherwise run
-creation from the queue span. Callers without preparation history start at native
-dispatch. The interval includes queueing, Core preparation, workspace preparation,
+The span starts at the earliest accepted input. The accepted comment or attested
+question response is the start only when its span is the earliest preparation span.
+A comment coalesced into an already-queued run starts after run creation, so that
+run starts at run creation from the queue span and reports `run_created`. The
+durable wake request's acceptance time replaces the start when it is earlier
+(deferred, coalesced and retried wakes). The `anchor` attribute (`comment`, `question_response`,
+`wake_request`, `run_created`) names which one. The wake request time is read
+after the first text in detached diagnostic work bounded to 2 s (PostgreSQL
+cancels a stalled read through a transaction-local `statement_timeout`), so it never adds a
+wait before `turn.start` and never delays event delivery. Callers without
+preparation history start at native dispatch and report `run_created`. The interval includes queueing, Core preparation, workspace preparation,
 Runner startup, provider latency, transport, and durable event ingestion. It ends
 in Core's commit callback, when the text is readable through the run-events API,
 using the Core clock rather than the provider event timestamp. Browser delivery
@@ -764,6 +779,18 @@ only for newly committed output; it does not reconstruct prior first-token timin
 queueing, preparation and execution; do not add its duration to those phases.
 No text or provider event identifiers are exported. The existing duration attribute
 is `paperclip.native.span.duration_ms`.
+
+`task.time_to_first_agent_activity` uses the same start and `anchor` as
+`task.time_to_first_token`, and ends when Core commits the first event that
+`provider.time_to_first_agent_event` counts: a text delta, a tool-call start, or
+a reasoning item, whichever comes first. That is when the user sees the agent
+respond, so the native speed budgets judge this span (metric
+`time_to_first_activity`, measured from run creation). Its `eventKind` is
+`agentMessage`, `reasoning`, `toolCall` or `dynamicToolCall`. Time to first text
+stays a reported metric without a budget: tool-first adapters (for example
+Claude) often call tools before they write any text, so first text includes
+model tool work rather than control-plane latency. Like TTFT, it is a cumulative
+child of `task.provider_session`; do not add it to the phases it overlaps.
 
 `tool.request.input_stream` measures the observed request-input window: from
 an ACP tool announcement to its last input update before the provider reports
@@ -1019,7 +1046,16 @@ receives a successful HTTP delivery response. The process retains the latest
 processing backpressure, network errors and rate limits can discard the event.
 Unconfirmed captures wait 60 seconds before a later task read can try again;
 this pending cache also holds at most 1,000 entries and starts no background
-timer. A server restart or cache eviction can report an old failure again.
+timer. Because these caches are process-local, a read reports only a state
+change from the last hour: the run's finish time, a saved recovery transition,
+a native resume's due or failure time, a scheduled retry time, a saved-message
+or Retry request, or a Retry preparation's deadline or terminal update. Failed
+or cancelled Retry preparations use their saved update time, so a new failure
+is still reported after a long wait. Reading a task does not refresh these times.
+A server restart, another replica or cache eviction therefore does not resend
+every retained failure that a task list shows. A failed state that no task read observes within that hour is not
+reported by this path. A valid run error code is added as the `run_error_code`
+tag; it does not change the fingerprint.
 This task-state event can accompany a separate terminal run-failure report;
 the `failure_source` tag distinguishes them.
 

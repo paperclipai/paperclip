@@ -1,3 +1,5 @@
+import { idleMcpWorkQuery } from "./public-mcp/idle-work-query.js";
+import type { McpWakeAdmission } from "./public-mcp/wake-admission.js";
 import { pendingBudgetEvaluationWorkQuery } from "./budget-evaluation-work.js";
 import { createIdleDeadlineInspectionBudget, readIdleDeadlineOwners, deadlineOwnerWorkReplacement, readIdleDeadlineProof, deadlineWorkReplacement, type IdleDeadlineProof } from "./idle-deadline-proof.js";
 import type { IdleDeadlineOwners, DomainScheduledWake, IdleDeadlineReceipt } from "./idle-deadline-types.js";
@@ -15,7 +17,7 @@ import { sql, type SQLWrapper } from "drizzle-orm";
 import { createIdleSleepDiagnostics, type IdleSleepDiagnosticSink, type IdleSleepDiagnostics } from "./idle-sleep-diagnostics.js";
 import { verifiedResourceCleanup } from "./cleanup-verification-proof.js";
 import { companyHoldMismatch } from "../modules/agent-lifecycle/index.js";
-import { pendingBudgetRunCancellationPredicate } from "./heartbeat/budget-cancellation.js";
+import { pendingBudgetRunCancellationExistsQuery } from "./heartbeat/budget-cancellation.js";
 import { nativeResponsePresentationPendingQuery } from "./native-runtime/native-response-presentation-query.js";
 import { passiveIdleConversation } from "./conversation-idle-proof.js";
 import { idleChatHistoryChecks } from "./chat-channels/idle-history-proof.js";
@@ -52,6 +54,7 @@ export interface IdleSleepSafety {
   incomingWake?: IdleIncomingWakeCapability;
   deadlineProof?: IdleDeadlineReceipt;
   apiWakeAdmission?: ApiWakeAdmission;
+  mcpWakeAdmission?: McpWakeAdmission;
 }
 
 export type InspectIdlePlugins = (hold: { ownerId: string; expiresAt: number }) => Promise<{
@@ -320,7 +323,8 @@ export async function readIdleSleepSafety(
     const wake = deadlineProof ? deadlineProof.scheduledWake : scheduledWake;
     return { version: backgroundWork === "none" && (incomingProof || deadlineProof) ? 3 : backgroundWork === "none" && wake ? 2 : 1, backgroundWork,
       ...(backgroundWork === "none" && incomingProof ? { incomingWake: incomingProof.capability,
-        ...(incomingProof.apiWakeAdmission ? { apiWakeAdmission: incomingProof.apiWakeAdmission } : {}) } : {}),
+        ...(incomingProof.apiWakeAdmission ? { apiWakeAdmission: incomingProof.apiWakeAdmission } : {}),
+        ...(incomingProof.mcp ? { mcpWakeAdmission: incomingProof.mcp.ingress.admission } : {}) } : {}),
       ...(backgroundWork === "none" && deadlineProof?.generation ? { deadlineProof: {
         catalog: "domain_deadlines_v1" as const, generation: deadlineProof.generation } } : {}),
       ...(backgroundWork === "none" && wake ? { scheduledWake: wake } : {}),
@@ -396,7 +400,7 @@ export async function readIdleSleepSafety(
       await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
       if (options.incomingWake?.incomingWake) {
         if (!ownerId || ownerId !== before.ownerId) return undefined;
-        incomingProof = await readIdleIncomingWakeProof(tx, { capabilities: options.incomingWake, ownerId, receiverOwner: db });
+        incomingProof = await readIdleIncomingWakeProof(tx, { capabilities: options.incomingWake, ownerId, receiverOwner: db, inspectionNow: now() });
       }
       if (deadlines) {
         if (!owned() || !scheduledRoutines || !scheduledIssueMonitors) return undefined;
@@ -419,7 +423,7 @@ export async function readIdleSleepSafety(
           deadlineProof = await readIdleDeadlineProof(tx, { ownerId: ownerId!, expiresAt: before.expiresAt!.getTime() }, {
             now: now(), verifiedCapability: options.deadlineCapability,
             quietPluginIds: quietPlugins, quietPluginGeneration, quietPluginCatalog,
-            scheduledWake, passiveGeneration: issue.generation, owners, inspectionBudget,
+            scheduledWake, passiveGeneration: issue.generation, owners, inspectionBudget, mcp: incomingProof?.mcp?.schedule,
           });
         }
         diagnostic?.record("deadlines.catalog", deadlineProof.blocked ? "present" : "none");
@@ -431,12 +435,15 @@ export async function readIdleSleepSafety(
         && (!scheduledIssueMonitors || check.reason !== "issues"))
         .map(check => {
           const replacement = deadlineProof?.blocked === false ? deadlineWorkReplacement(check.reason) : undefined;
-          return { ...check, query: incomingWakeWorkQuery(check.reason, incomingProof,
+          const mcp = incomingProof?.mcp;
+          const mcpRetryQuery = mcp && deadlineProof?.blocked === false && deadlineProof.mcp === mcp.schedule
+            ? idleMcpWorkQuery(check.reason, { ingress: mcp.ingress, subscriptions: mcp.subscriptions, retries: mcp.retries }) : undefined;
+          return { ...check, query: mcpRetryQuery ?? incomingWakeWorkQuery(check.reason, incomingProof,
             deadlineProof?.githubContinuity?.connectionIds) ?? deadlineOwnerWorkReplacement(deadlineProof, check.reason) ?? (replacement ? sql.raw(replacement) : check.query) };
         });
       checks.push(workCheck("agents.company_hold", sql`SELECT 1 FROM agents JOIN companies ON companies.id = agents.company_id
         WHERE ${companyHoldMismatch()}`));
-      checks.push(workCheck("heartbeat_runs.budget_cancellation", sql`SELECT 1 FROM heartbeat_runs WHERE ${pendingBudgetRunCancellationPredicate()}`));
+      checks.push(workCheck("heartbeat_runs.budget_cancellation", pendingBudgetRunCancellationExistsQuery()));
       checks.push(workCheck("native_response_presentation", nativeResponsePresentationPendingQuery()));
       // Only the current worker's owned runtime drain can exempt a plugin.
       // Missing workers, old SDKs, and newly installed plugins still block.

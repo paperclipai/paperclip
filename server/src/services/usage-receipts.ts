@@ -22,6 +22,7 @@ import { applyCostCorrectionInTransaction } from "./accounting-corrections.js";
 import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { createCostEventInTransaction } from "./costs.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
+import { crashPoint } from "@paperclipai/shared/crash-points";
 
 const token = z.number().int().nonnegative().max(2_147_483_647);
 const price = z.number().finite().nonnegative().nullable().optional();
@@ -447,8 +448,11 @@ export async function persistUsageReceipt(db: Db, raw: UsageReceiptEnvelope) {
   const envelope = envelopeSchema.parse(raw);
   // Late evidence is committed as run-level debt that accounting resolves or
   // surfaces. It never fails the delivering session or an unrelated later run.
+  // The run row lock protects every mutable receipt/accounting read below.
+  // READ COMMITTED sees the current row when the lock is acquired, even if a
+  // run-log append changed it after the transaction checked the company.
   await withOperationAccountingTransaction(db, envelope.companyId,
-    tx => persistUsageReceiptInTransaction(tx, envelope));
+    tx => persistUsageReceiptInTransaction(tx, envelope), { isolationLevel: "read committed" });
 }
 
 export async function replayUsageReceipts(db: Db, directory = usageReceiptSpoolPath(), limit = 100) {
@@ -564,6 +568,9 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     state?.accountingReceiptSourceId, state?.accountingReceiptSequence, state?.accountingReceiptId,
   ]);
   const pending = await readPendingRunUsageReceipts(input, directory);
+  // READ COMMITTED under the run-row lock, like persistUsageReceipt: every
+  // mutable read below follows that lock, so a run-log append committed after
+  // the company check cannot make the handoff's snapshot stale.
   const bound = await withOperationAccountingTransaction(db, input.companyId, async tx => {
     const [run] = await tx.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId,
       usageJson: heartbeatRuns.usageJson, costAccountedAt: heartbeatRuns.costAccountedAt }).from(heartbeatRuns)
@@ -583,7 +590,7 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     return tx.update(heartbeatRuns).set({ usageJson: { ...old, accountingReceiptSourceFences: fences,
       accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0, accountingReceiptReady: false } })
       .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId), isNull(heartbeatRuns.costAccountedAt))).returning({ id: heartbeatRuns.id, runtimeMode: heartbeatRuns.runtimeMode, usageJson: heartbeatRuns.usageJson });
-  });
+  }, { isolationLevel: "read committed" });
   for (const item of pending) await fs.rm(item.file, { force: true });
   if (bound.length !== 1) throw conflict("Run cannot accept a new usage recorder");
   let sequence = 0;
@@ -626,7 +633,7 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
       }).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
         isNull(heartbeatRuns.costAccountedAt), sql`${heartbeatRuns.usageJson}->>'accountingReceiptSourceId' = ${sourceId}`)).returning({ id: heartbeatRuns.id });
       return rows.length === 1;
-    });
+    }, { isolationLevel: "read committed" }); // Run-row lock first, as above.
     if (persisted) { finishFailedCapture?.(); finishFailedCapture = undefined; }
   }
   function enqueue(action: () => Promise<AdapterUsageCheckpoint>) {
@@ -694,7 +701,12 @@ export async function createRunUsageRecorder(db: Db, input: { companyId: string;
     }
     const envelope: UsageReceiptEnvelope = { schema: "paperclip/accounting-receipt/v1", id: randomUUID(), ...input, sourceId, sequence: ++sequence, receivedAt: new Date().toISOString(), receipt, liveCostCents };
     const file = await spoolUsageReceipt(envelope, directory);
-    try { await persistUsageReceipt(db, envelope); await fs.rm(file, { force: true }); }
+    crashPoint("accounting.usage_receipt.after_spool_before_db");
+    try {
+      await persistUsageReceipt(db, envelope);
+      crashPoint("accounting.usage_receipt.after_db_before_unlink");
+      await fs.rm(file, { force: true });
+    }
     catch (error) {
       // The fsynced receipt is durable even when the DB transaction failed.
       // Wake the owned spool recovery path; never certify that failed write as free.

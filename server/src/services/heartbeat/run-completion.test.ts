@@ -16,7 +16,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { createNativeRunLogCoverageVerifier, formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, agentWakeupRequests, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueComments, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, approvals, issueApprovals, budgetReservations, caseHandoffs, cases, companies, completionContracts, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, heartbeatRunEvents, issueComments, issueQuestionResponseDeliveries, issueRecoveryActions, issues, issueThreadInteractions, nativeRunFinalizations } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -30,11 +30,15 @@ import { RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, Re
 import { EnvironmentRunError, environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import { ReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { PluginWorkerUnavailableError } from "../plugin-worker-unavailable-error.js";
+import { ReviewedChatBindingDeniedError, ReviewedChatBindingNotReadyError } from "../reviewed-chat-binding-diagnostics.js";
 import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
 import { RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
+import { STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY } from "../../storage/storage-unavailable.js";
+import { withS3FailureDiagnostics } from "../../storage/s3-failure.js";
 import { workspaceProviderCallFailure } from "../workspace-provider-failure.js";
 import { logger } from "../../middleware/logger.js";
 import { unprocessable } from "../../errors.js";
+import { ACCOUNTING_CONTENTION_MESSAGE, AccountingContentionError } from "../accounting-transaction.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure, classifyManagedProjectAuthFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
@@ -46,6 +50,9 @@ import { buildNativeCompletionContract } from "../native-runtime/completion-cont
 import { readPendingNativeRunStop } from "../native-runtime/native-cancellation-request.js";
 import { reserveRunBudget } from "../budget-reservations.js";
 import { hasAcknowledgedNativeReassignmentStopIntent } from "../acknowledged-native-stop.js";
+import { questionResponseDeliveryService } from "../question-response-delivery.js";
+import { issueThreadInteractionService } from "../issue-thread-interactions.js";
+import { heartbeatService } from "../heartbeat.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
@@ -93,7 +100,7 @@ function callbacks(db: Db) {
     budgets: { getInvocationBlock: vi.fn(async () => null) },
     treeControlSvc: { getActivePauseHoldGate: vi.fn(async () => null) },
     enqueueWakeup: vi.fn(),
-    getCurrentUserRedactionOptions: vi.fn(async () => ({ enabled: false })),
+    getCurrentUserRedactionOptions: vi.fn<HeartbeatLifecycleDependencies["getCurrentUserRedactionOptions"]>(async () => ({ enabled: false })),
     getAgentInvokability: vi.fn<HeartbeatLifecycleDependencies["getAgentInvokability"]>(async () => ({ invokable: true })),
     emitTerminalAgentTaskRun: vi.fn(), budgetHooks: {},
   } satisfies HeartbeatLifecycleDependencies;
@@ -465,6 +472,90 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledWith(f.agent.id, "succeeded", null, expect.any(Object));
   });
 
+  // A chat turn can finish while its task keeps waiting: a resubmitted hire
+  // approval, an execution stage or a dependency blocker holds the status.
+  // The accepted final answer must still reach the conversation. Only a card
+  // the run itself left pending in the thread presents the turn instead.
+  it.each([
+    { hold: "pending approval", reasonCode: "governed_response_waiting", replies: true },
+    { hold: "approval sent back for revision", reasonCode: "governed_response_waiting", replies: true },
+    { hold: "execution stage", reasonCode: "governed_response_waiting", replies: true },
+    { hold: "dependency blocker", reasonCode: "durable_dependency_blocker_bound", replies: true },
+    { hold: "finished turn", reasonCode: "conversation_turn_finished", replies: true },
+    { hold: "own question card", reasonCode: "governed_response_waiting", replies: false },
+    { hold: "execution stage and own question card", reasonCode: "governed_response_waiting", replies: false },
+    // A card the board addressed to someone else holds the task, but this run
+    // did not create it, so it cannot be the turn's response.
+    { hold: "someone else's confirmation card", reasonCode: "governed_response_waiting", replies: true },
+    { hold: "earlier turn's question card", reasonCode: "governed_response_waiting", replies: true },
+  ] as const)("posts a waiting conversation turn's accepted answer: $hold", async ({ hold, reasonCode, replies }) => {
+    const f = await fixture({ runtimeMode: "native" }, `CNV${randomUUID().slice(0, 6)}`);
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Chat with CEO",
+      status: "in_progress", assigneeAgentId: f.agent.id, responsibleUserId: "local-board",
+      conversationAgentId: f.agent.id, conversationUserId: "local-board", conversationState: "active",
+      ...(hold.startsWith("execution stage") ? { executionState: { status: "pending" } } : {}),
+    }).returning();
+    await db.update(heartbeatRuns).set({ nativeIssueId: issue.id, responsibleUserId: "local-board",
+      contextSnapshot: { issueId: issue.id, conversationSessionGeneration: 0 } }).where(eq(heartbeatRuns.id, f.run.id));
+    if (hold.includes("approval")) {
+      const [approval] = await db.insert(approvals).values({ companyId: f.run.companyId, type: "hire_agent",
+        status: hold === "pending approval" ? "pending" : "revision_requested", payload: { name: "Researcher" } }).returning();
+      await db.insert(issueApprovals).values({ companyId: f.run.companyId, issueId: issue.id, approvalId: approval.id });
+    }
+    if (hold.endsWith("own question card")) {
+      await issueThreadInteractionService(db).create(issue, { kind: "ask_user_questions", sourceRunId: f.run.id,
+        continuationPolicy: "wake_assignee", payload: { version: 1, questions: [{ id: "model", prompt: "Which model?",
+          selectionMode: "single", required: true, options: [{ id: "flash", label: "Flash" }] }] } },
+        { agentId: f.agent.id, runId: f.run.id });
+    }
+    if (hold === "someone else's confirmation card") {
+      // Saved as the board's create route saves it: no source run.
+      await db.insert(issueThreadInteractions).values({ companyId: f.run.companyId, issueId: issue.id,
+        kind: "request_confirmation", status: "pending", continuationPolicy: "none", title: "Riley's website proposal",
+        requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only", resolverPolicyProvenance: "explicit",
+        addresseeUserId: "riley", createdByUserId: "local-board",
+        payload: { version: 1, prompt: "Riley: approve creating the website implementation task?" } });
+    }
+    if (hold === "earlier turn's question card") {
+      const [earlier] = await db.insert(heartbeatRuns).values({ companyId: f.run.companyId, agentId: f.agent.id,
+        status: "succeeded", runtimeMode: "native", responsibleUserId: "local-board" }).returning();
+      await issueThreadInteractionService(db).create(issue, { kind: "request_confirmation", sourceRunId: earlier.id,
+        resolverPolicy: "human_only", continuationPolicy: "wake_assignee",
+        payload: { version: 1, prompt: "Create the website implementation task?" } },
+        { agentId: f.agent.id, runId: earlier.id });
+    }
+    const answer = "Resubmitted the hire with the cheaper model. [Review the pending approval](/CNV/approvals/a1).";
+    f.input.issueId = issue.id;
+    f.input.issueRef = issue;
+    f.input.issueContext = await createHeartbeatRunPreparation(db).getIssueExecutionContext(f.run.companyId, issue.id);
+    // The finalizer's saved shape, unchanged from the previous release.
+    f.input.adapterResult.resultJson = {
+      nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded",
+        summary: "Waiting for the approval decision.",
+        continuation: { kind: "response_wake", summary: "Wait for the decision.", idempotencyKey: "hire-wait" } },
+      finalizationPhase: "committed", finalizationReasonCode: reasonCode,
+    };
+    f.deps.findLatestCompletedFinalAgentMessage.mockResolvedValue({ seq: 1, text: answer, sourceEventId: "final-event", channel: "final",
+      reasonCode: "latest_non_empty_completed_final_agent_message" });
+    f.deps.issuesSvc.addComment.mockImplementation(async (issueId, body) => {
+      const [comment] = await db.insert(issueComments).values({ companyId: f.run.companyId, issueId,
+        authorAgentId: f.agent.id, authorType: "agent", createdByRunId: f.run.id, body }).returning();
+      return { ...comment, authorType: "agent" as const };
+    });
+
+    await f.completion.completeRun(f.input);
+
+    const posted = (await db.select().from(issueComments).where(eq(issueComments.issueId, issue.id)))
+      .filter(comment => comment.createdByRunId === f.run.id);
+    expect(posted.map(comment => comment.body)).toEqual(replies ? [answer] : []);
+    expect((await read(f.run.id)).resultJson).toMatchObject({ presentationDecision: replies
+      ? { chosenSource: "final_agent_message", commentAction: "create", commentId: posted[0]?.id }
+      : { chosenSource: "none", commentAction: "none" } });
+    // The posted answer (or the run's own card) is the turn's response: the
+    // conversation waits for the person.
+    expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0].conversationState).toBe("waiting");
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("settles the accepted native exact rate-card price without replacing it with zero", async () => {
     const f = await fixture({ runtimeMode: "native" });
     const runnerInstanceId = randomUUID();
@@ -647,6 +738,39 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.input.onProviderTraceFinalized).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { runtimeMode: "native" as const, conversation: true, createsFinal: true },
+    { runtimeMode: "native" as const, conversation: false, createsFinal: false },
+    { runtimeMode: "legacy" as const, conversation: true, createsFinal: false },
+  ])("scopes final-response precedence to native standing conversations: %j", async ({ runtimeMode, conversation, createsFinal }) => {
+    const f = await fixture({ runtimeMode });
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Conversation reply",
+      ...(conversation ? { assigneeAgentId: f.agent.id, conversationAgentId: f.agent.id,
+        conversationUserId: "board-person", conversationState: "active" } : {}),
+    }).returning();
+    const [earlier] = await db.insert(issueComments).values({ companyId: f.run.companyId, issueId: issue.id,
+      authorAgentId: f.agent.id, createdByRunId: f.run.id, body: "Checking the request.",
+    }).returning();
+    f.input.issueId = issue.id;
+    f.input.issueRef = issue;
+    f.input.issueContext = await createHeartbeatRunPreparation(db).getIssueExecutionContext(f.run.companyId, issue.id);
+    f.input.adapterResult.resultJson = { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "The complete answer" } };
+    f.deps.findRunIssueComment.mockResolvedValue(earlier);
+    f.deps.issuesSvc.addComment.mockImplementation(async (issueId, body) => {
+      const [comment] = await db.insert(issueComments).values({ companyId: f.run.companyId, issueId,
+        authorAgentId: f.agent.id, authorType: "agent", createdByRunId: f.run.id, body }).returning();
+      return { ...comment, authorType: "agent" as const };
+    });
+    await f.completion.completeRun(f.input);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issue.id));
+    expect(comments.some(comment => comment.id === earlier.id && comment.body === earlier.body)).toBe(true);
+    expect(comments.filter(comment => comment.body === "The complete answer")).toHaveLength(createsFinal ? 1 : 0);
+    expect((await read(f.run.id)).resultJson).toMatchObject({ presentationDecision: {
+      chosenSource: createsFinal ? "semantic_result_summary" : "existing_issue_comment",
+      commentAction: createsFinal ? "create" : "reuse",
+    } });
+  });
+
   it("keeps completion and session persistence moving after a response comment fails", async () => {
     const f = await fixture();
     f.input.adapterResult.resultJson = { finalResponseDisposition: "final", finalResponse: "Completed the work." };
@@ -698,6 +822,100 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       resultJson: { providerFailure } });
   });
 
+  it.each(["run", "setup", "restore"] as const)("waits a minute and suppresses rapid recovery when %s fails because storage is unavailable (storage chaos ST1)", async phase => {
+    const f = await fixture();
+    const outage = await withS3FailureDiagnostics("put_object", async () => {
+      throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable",
+        $fault: "server", $metadata: { httpStatusCode: 503, attempts: 3 } });
+    }).catch(error => error as Error);
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "scheduled", run: { id: "wait" } } as never);
+    if (phase === "restore") await f.completion.failRunSetup(f.setup(new RemoteWorkspaceRestoreError("snapshot_download", true, outage)));
+    else if (phase === "setup") await f.completion.failRunSetup(f.setup(outage));
+    else await f.completion.failRun(f.failure(outage));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: STORAGE_UNAVAILABLE_CODE, error: STORAGE_UNAVAILABLE_MESSAGE });
+    expect(failed.error).not.toContain("Injected storage outage");
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, STORAGE_UNAVAILABLE_RETRY);
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }),
+      expect.objectContaining({ suppressImmediateRecovery: true }));
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+  });
+
+  it.each(["run", "setup"] as const)("ends the task's automatic recovery once its storage wait is exhausted (%s)", async phase => {
+    const f = await fixture();
+    const outage = await withS3FailureDiagnostics("put_object", async () => {
+      throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
+    }).catch(error => error as Error);
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "retry_exhausted", attempt: 11, maxAttempts: 10 } as never);
+    if (phase === "setup") await f.completion.failRunSetup(f.setup(outage));
+    else await f.completion.failRun(f.failure(outage));
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, STORAGE_UNAVAILABLE_RETRY);
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }),
+      expect.objectContaining({ suppressImmediateRecovery: true }));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: STORAGE_UNAVAILABLE_CODE,
+      error: STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE });
+  });
+
+  it.each(["execution", "setup"] as const)("names the nested cause of a generic %s failure and keeps SQL text off the board", async phase => {
+    const f = await fixture();
+    const logged = vi.spyOn(logger, "error");
+    onTestFinished(() => logged.mockRestore());
+    const driver = Object.assign(new Error("could not serialize access due to concurrent update"), { code: "40001" });
+    const query = new Error('Failed query: update "heartbeat_runs" set "usage_json" = $1 where "id" = $2\nparams: {"apiKey":"sk-live-secret"},run-1',
+      { cause: new Error("transaction aborted", { cause: driver }) });
+    const error = new Error(`Usage write failed: ${query.message}`, { cause: query });
+    if (phase === "setup") await f.completion.failRunSetup(f.setup(error));
+    else await f.completion.failRun(f.failure(error));
+    const run = await read(f.run.id);
+    expect(run).toMatchObject({ status: "failed", errorCode: phase === "setup" ? "setup_failed" : "adapter_failed",
+      error: "Usage write failed: Database query failed (40001)", resultJson: { failureCause: "40001" } });
+    expect(JSON.stringify(run.resultJson)).not.toMatch(/heartbeat_runs|sk-live-secret|params/);
+    expect(logged).toHaveBeenCalledWith(expect.objectContaining({ runId: f.run.id, failureCause: "40001" }), expect.any(String));
+  });
+
+  it("bounds the failure cause to a closed-shape token and falls back to the error class", async () => {
+    const f = await fixture();
+    class QueryTimeoutError extends Error { override name = "QueryTimeoutError"; }
+    const unsafe = Object.assign(new QueryTimeoutError("timed out"), { code: `${"X".repeat(81)}` },
+      { cause: { code: "select * from users" } });
+    await f.completion.failRun(f.failure(unsafe));
+    expect((await read(f.run.id)).resultJson).toMatchObject({ failureCause: "QueryTimeoutError" });
+  });
+
+  it("names why an adapter result failed without a code", async () => {
+    const f = await fixture();
+    await f.completion.completeRun({ ...f.input, adapterResult: { ...f.input.adapterResult, exitCode: 137, signal: null, errorMessage: null } });
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "adapter_failed", error: "Adapter failed",
+      resultJson: { stopReason: "adapter_failed", failureCause: "exit_code_137" } });
+  });
+
+  it("keeps SQL text out of a cancelled adapter result's error", async () => {
+    const f = await fixture();
+    await f.completion.completeRun({ ...f.input, adapterResult: { ...f.input.adapterResult, exitCode: 1,
+      errorMessage: 'Failed query: select "secret_value" from x where id = $1\nparams: sk-secret', resultJson: { status: "cancelled" } } });
+    const run = await read(f.run.id);
+    expect(run.status).toBe("cancelled");
+    expect(run.error).toBe("Database query failed");
+  });
+
+  it("records no failure cause when the failure already has a named code", async () => {
+    const f = await fixture();
+    await f.completion.completeRun({ ...f.input, adapterResult: { ...f.input.adapterResult, exitCode: 1, errorCode: "provider_quota", errorMessage: "quota" } });
+    const run = await read(f.run.id);
+    expect(run.errorCode).toBe("provider_quota");
+    expect(run.resultJson).not.toHaveProperty("failureCause");
+  });
+
+  it("keeps an ordinary adapter failure on the normal recovery path", async () => {
+    const f = await fixture();
+    await f.completion.failRun(f.failure(new Error("adapter crashed")));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "adapter_failed" });
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }),
+      expect.objectContaining({ suppressImmediateRecovery: false }));
+  });
+
   it("still records failure and releases issue ownership when log finalization and progress flushing fail", async () => {
     const f = await fixture();
     f.deps.runLogStore.finalize.mockRejectedValueOnce(new Error("log unavailable"));
@@ -716,6 +934,85 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     await f.completion.failRun(f.failure(new Error("transport ended")));
     expect((await read(f.run.id)).errorCode).toBe("native_result_missing");
     expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), { suppressImmediateRecovery: true });
+  });
+
+  describe("a same-run exact-checkpoint resume refused before its provider claim", () => {
+    const originalMessage = "PRP command turn.start failed: ACPX turn start failed closed: classification=session_resume_required";
+    const refusal = "Plugin Runner retained session is not authorized";
+    async function resumeClaim(recoveryHistory: Array<Record<string, unknown>>, attempt = 1) {
+      const f = await fixture({ runtimeMode: "native" });
+      const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Native resume" }).returning();
+      await db.update(heartbeatRuns).set({ nativeIssueId: issue.id }).where(eq(heartbeatRuns.id, f.run.id));
+      const leaseOwner = `runner:resume:${randomUUID()}`;
+      await db.insert(nativeRunFinalizations).values({ runId: f.run.id, companyId: f.run.companyId, issueId: issue.id,
+        phase: "observed", attempt, leaseOwner, leaseExpiresAt: new Date(Date.now() + 20 * 60_000), recoveryHistory });
+      return { f, issue, leaseOwner, attempt };
+    }
+    const interruption = { at: "2099-01-01T00:00:00.000Z", disposition: "retryable_failure", reason: "native_session_interrupted",
+      providerAttempt: 1, stderrTail: originalMessage, providerSessionEstablished: true, checkpointExists: true };
+
+    it("reports the interrupted first attempt in the terminal error, result and coordinator detail", async () => {
+      const { f, leaseOwner, attempt } = await resumeClaim([interruption]);
+      await f.completion.failRun(f.failure(new Error(refusal)));
+      const expected = `native_session_interrupted: ${originalMessage}; exact checkpoint resume refused: ${refusal}`;
+      const failed = await read(f.run.id);
+      expect(failed).toMatchObject({ status: "failed", errorCode: "adapter_failed", error: expected });
+      expect(failed.resultJson).toMatchObject({ nativeExactResumeRefusal: {
+        originalFailureCode: "native_session_interrupted", originalMessage, interruptedAttempt: 1, refusal } });
+      const [errorEvent] = await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.run.id),
+        eq(heartbeatRunEvents.eventType, "error")));
+      expect(errorEvent?.message).toBe(expected);
+
+      // The dispatcher then releases its unstarted claim; the coordinator keeps
+      // the same named cause and its unchanged eligibility fields.
+      const { settleUnstartedNativeSessionResume } = await import("../native-runtime/native-failed-run-owner-release.js");
+      await expect(settleUnstartedNativeSessionResume(db, { runId: f.run.id, leaseOwner, attempt })).resolves.toBe(true);
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id));
+      expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: "adapter_failed",
+        failureDetail: { message: expected, originalFailureCode: "adapter_failed" } });
+    });
+
+    it("masks usernames in both texts before their length budgets cut them", async () => {
+      // Each username crosses a cut: 1,500 characters for the original message
+      // and 480 for the refusal. A cut before masking would keep "casp".
+      const userName = "casperhost";
+      const original = `${"x".repeat(1_495)} ${userName} could not resume`;
+      const longRefusal = `${"r".repeat(475)} ${userName} retained session is not authorized`;
+      const { f } = await resumeClaim([{ ...interruption, stderrTail: original }]);
+      f.deps.getCurrentUserRedactionOptions.mockResolvedValue({ enabled: true, userNames: [userName], homeDirs: [] });
+      await f.completion.failRun(f.failure(new Error(longRefusal)));
+      const failed = await read(f.run.id);
+      const recorded = (failed.resultJson as { nativeExactResumeRefusal: Record<string, string> }).nativeExactResumeRefusal;
+      expect(failed.error).toHaveLength(2_000);
+      expect(failed.error!.startsWith("native_session_interrupted: xxx")).toBe(true);
+      expect(failed.error!.endsWith(`; exact checkpoint resume refused: ${"r".repeat(475)} c***`)).toBe(true);
+      expect(recorded.originalMessage).toBe(`${"x".repeat(1_495)} c***`);
+      expect(recorded.refusal).toBe(`${"r".repeat(475)} c********* retained session is not authorized`);
+      for (const text of [failed.error!, recorded.originalMessage, recorded.refusal]) expect(text).not.toContain("casp");
+    });
+
+    it("saves the failure when an emoji crosses each cut", async () => {
+      const emoji = "\u{1F642}";
+      const { f } = await resumeClaim([{ ...interruption, stderrTail: `${"x".repeat(1_499)}${emoji} could not resume` }]);
+      await f.completion.failRun(f.failure(new Error(`${"r".repeat(479)}${emoji} retained session is not authorized`)));
+      const failed = await read(f.run.id);
+      expect(failed.status).toBe("failed");
+      const recorded = (failed.resultJson as { nativeExactResumeRefusal: Record<string, string> }).nativeExactResumeRefusal;
+      expect(recorded.originalMessage).toBe("x".repeat(1_499));
+      expect(failed.error!.endsWith(`; exact checkpoint resume refused: ${"r".repeat(479)}`)).toBe(true);
+    });
+
+    it.each([
+      ["has no prior interruption", [], 0],
+      ["follows a bootstrap retry", [{ ...interruption, checkpointExists: false, providerSessionEstablished: false }], 1],
+      ["already claimed a later provider attempt", [interruption], 2],
+    ])("keeps the thrown error unchanged when the run %s", async (_name, history, attempt) => {
+      const { f } = await resumeClaim(history, attempt);
+      await f.completion.failRun(f.failure(new Error(refusal)));
+      const failed = await read(f.run.id);
+      expect(failed).toMatchObject({ status: "failed", errorCode: "adapter_failed", error: refusal });
+      expect(failed.resultJson).not.toHaveProperty("nativeExactResumeRefusal");
+    });
   });
 
   it("persists a project denial without provider work or an automatic retry", async () => {
@@ -1044,6 +1341,82 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
   });
 
+  it.each(["fresh", "started", "untrusted", "denied", "retained", "session", "runner"] as const)("bounds only an owned pre-dispatch chat binding wait: %s", async scenario => {
+    const f = await fixture({ runtimeMode: scenario === "retained" ? "native" : "legacy",
+      ...(scenario === "session" ? { nativeSessionId: randomUUID() } : {}),
+      ...(scenario === "runner" ? { runnerInstanceId: randomUUID() } : {}) });
+    const error = scenario === "untrusted" ? new Error("reviewed_chat_execution_binding_not_ready")
+      : scenario === "denied" ? new ReviewedChatBindingDeniedError("principal_denied")
+      : new ReviewedChatBindingNotReadyError();
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "scheduled" } as never);
+    await f.completion.failRunSetup(f.setup(error, scenario === "started"));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: scenario === "fresh" ? "reviewed_chat_execution_binding_not_ready" : "setup_failed" });
+    if (scenario === "fresh") {
+      expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps an answered chat interaction on its own bounded continuation retry", async () => {
+    const f = await fixture({ contextSnapshot: { source: "issue.interaction.respond", externalChatContinuation: true,
+      interactionId: "interaction-1", interactionStatus: "answered", interactionKind: "ask_user_questions",
+      mutation: "interaction", wakeReason: "issue_commented" } });
+    await f.completion.failRunSetup(f.setup(new ReviewedChatBindingNotReadyError()));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "reviewed_chat_execution_binding_not_ready" });
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible)
+      .toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("selects the answer retry from the real delivery producer and heartbeat queue (legacy context=%s)", async legacy => {
+    const f = await fixture();
+    await db.update(agents).set({ adapterType: "paperclip_runner", status: "idle",
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, f.agent.id));
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Answer delivery retry",
+      status: "in_progress", assigneeAgentId: f.agent.id, responsibleUserId: "local-board" }).returning();
+    const [questionRun] = await db.insert(heartbeatRuns).values({ companyId: f.run.companyId, agentId: f.agent.id,
+      issueId: issue.id, nativeIssueId: issue.id, runtimeMode: "native", status: "succeeded", finishedAt: new Date(),
+      contextSnapshot: { issueId: issue.id, source: "chat:telegram" } }).returning();
+    const interactions = issueThreadInteractionService(db);
+    const interaction = await interactions.create(issue, { kind: "ask_user_questions", sourceRunId: questionRun.id,
+      continuationPolicy: "wake_assignee", payload: { version: 1, questions: [{ id: "choice", prompt: "Choose",
+        selectionMode: "single", required: true, options: [{ id: "yes", label: "Yes" }] }] } },
+      { agentId: f.agent.id, runId: questionRun.id });
+    await interactions.answerQuestions(issue, interaction.id, { answers: [{ questionId: "choice", optionIds: ["yes"] }] },
+      { userId: "local-board" });
+    const heartbeat = heartbeatService(db);
+    const answerHeartbeat = legacy ? { ...heartbeat, wakeup: (...[agentId, options]: Parameters<typeof heartbeat.wakeup>) => {
+      const contextSnapshot = { ...options?.contextSnapshot };
+      delete contextSnapshot.mutation;
+      return heartbeat.wakeup(agentId, { ...options, contextSnapshot });
+    } } : heartbeat;
+    await questionResponseDeliveryService(db, { heartbeat: answerHeartbeat }).deliver(interaction.id);
+    const [delivery] = await db.select().from(issueQuestionResponseDeliveries)
+      .where(eq(issueQuestionResponseDeliveries.interactionId, interaction.id));
+    expect(delivery).toMatchObject({ status: "fallback_queued", deliveryMode: "wake_fallback" });
+    expect(delivery.targetRunId).toBeTruthy();
+    const [admitted] = await db.update(heartbeatRuns).set({ status: "running", executionStage: "preparing", startedAt: new Date() })
+      .where(eq(heartbeatRuns.id, delivery.targetRunId!)).returning();
+    f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible.mockImplementation(async run => {
+      await heartbeat.scheduleBoundedRetry(run.id, { now: new Date(), random: () => 0,
+        retryReason: "interaction_continuation_infra_retry", wakeReason: "interaction_continuation_infra_retry", maxAttempts: 2 });
+      return null;
+    });
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValue({ outcome: "not_scheduled",
+      reason: "Wrong retry owner fixture", issueId: issue.id });
+    await f.completion.failRunSetup({ ...f.setup(new ReviewedChatBindingNotReadyError()), run: admitted, runId: admitted.id });
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible)
+      .toHaveBeenCalledWith(expect.objectContaining({ id: admitted.id }), expect.anything());
+    const children = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, admitted.id));
+    expect(children).toHaveLength(1);
+    expect(children[0]).toMatchObject({ scheduledRetryReason: "interaction_continuation_infra_retry",
+      contextSnapshot: { interactionId: interaction.id, interactionStatus: "answered", mutation: "interaction" } });
+    expect((await db.select().from(issueQuestionResponseDeliveries)
+      .where(eq(issueQuestionResponseDeliveries.id, delivery.id)))[0]).toEqual(delivery);
+  }, 30_000);
+
   const runnerMismatch = () => new JsonRpcCallError({ code: -32002, message: "The installed Runner does not match the expected revision",
     data: environmentTaskErrorCodeData(new PluginEnvironmentTaskError("runner_revision_mismatch")) });
 
@@ -1073,6 +1446,24 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "runner_revision_mismatch" });
     expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, RUNNER_REVISION_MISMATCH_RETRY);
     expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+  });
+
+  it("saves a bounded cause and keeps the retryable generic code when accounting retries are exhausted", async () => {
+    const f = await fixture();
+    const logged = vi.spyOn(logger, "error");
+    onTestFinished(() => logged.mockRestore());
+    const driverError = Object.assign(new Error("could not serialize access due to concurrent update"),
+      { name: "PostgresError", code: "40001" });
+    const queryError = new Error("Failed query: select \"id\" from \"heartbeat_runs\" where \"id\" = $1 for update\nparams: secret-run-id",
+      { cause: driverError });
+    await f.completion.failRun(f.failure(new AccountingContentionError(queryError, 4)));
+    const failed = await read(f.run.id);
+    // adapter_failed keeps chat and recovery retry paths that key on it.
+    expect(failed).toMatchObject({ status: "failed", errorCode: "adapter_failed", error: ACCOUNTING_CONTENTION_MESSAGE,
+      resultJson: { failureCause: "40001" } });
+    expect(JSON.stringify(failed)).not.toMatch(/heartbeat_runs|secret-run-id|Failed query/);
+    const failureLog = logged.mock.calls.find(call => call[1] === "heartbeat execution failed");
+    expect(failureLog?.[0]).toMatchObject({ runId: f.run.id, errorCode: "adapter_failed", failureCause: "40001" });
   });
 
   it("records a workspace provider's reason on the run and in the setup failure log without retrying", async () => {

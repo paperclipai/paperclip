@@ -12,6 +12,8 @@ import { getStartupRecoveryState } from "../startup-recovery-state.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import * as idleLocalWork from "../services/idle-local-work.js";
+import * as workspaceRecovery from "../services/workspace-recovery.js";
+import * as workspaceRecoveryWork from "../services/workspace-recovery-work.js";
 import { idleBackupWakeMarker, markIdleBackupWakeRequired } from "../services/idle-database-backup.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { decisionService, decisionRetentionService, toolAccessService, githubConnectionEventService, reconcileBuiltInAgentsOnStartup, reconcileCodexLocalManagedHomesOnStartup, reconcilePersistedRuntimeServicesOnStartup } from "../services/index.js";
@@ -1703,6 +1705,71 @@ describe("startServer feedback export wiring", () => {
       await vi.waitFor(() => expect(issueThreadInteractionServiceMock.mergedPullRequestConfirmationPage).toHaveBeenCalled());
       await settleStartupHousekeeping(); expect(started).toBe(true); expect(getStartupRecoveryState().phase).toBe("ready");
     } finally { release(); await starting; timer.mockRestore(); }
+  });
+
+  it.each([false, true])("joins timed-out workspace repairs before teardown with hot-restart skipDrain=%s", async skipDrain => {
+    loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    const first = new Promise<void>(resolve => { releaseFirst = resolve; });
+    const second = new Promise<void>(resolve => { releaseSecond = resolve; });
+    const scan = vi.spyOn(workspaceRecovery, "reconcileRetainedWorkspaces").mockResolvedValue([first, second]);
+    const register = vi.spyOn(workspaceRecoveryWork, "registerWorkspaceRecoveryWork");
+    const drain = vi.fn(async () => undefined);
+    const heartbeat = { ...heartbeatServiceMock,
+      drainRunningRunsForShutdown: drain,
+      prepareHotRestartShutdown: vi.fn(async () => ({ skipDrain })),
+    };
+    heartbeatServiceFactoryMock.mockReturnValueOnce(heartbeat);
+    const interval = vi.spyOn(globalThis, "setInterval").mockImplementation(() => 1 as unknown as ReturnType<typeof setInterval>);
+    let stopping: Promise<void> | undefined;
+    let stop: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      const server = await startServer();
+      await settleStartupHousekeeping();
+      expect(scan).toHaveBeenCalledOnce();
+      stop = vi.spyOn(register.mock.results[0]!.value, "stop");
+      const app = await createAppMock.mock.results.at(-1)!.value as {
+        locals: { paperclipShutdown?: () => Promise<void>; paperclipDatabaseClosing?: boolean };
+      };
+      const appShutdown = vi.fn(async () => undefined);
+      app.locals.paperclipShutdown = appShutdown;
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      let stopped = false;
+      stopping = server.shutdown().then(() => { stopped = true; });
+      await settleStartupHousekeeping();
+      expect(stop).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(20_000);
+      await settleStartupHousekeeping();
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ step: "workspace_recovery_stop" }),
+        "shutdown step timed out; continuing shutdown without it",
+      );
+      expect(drain).toHaveBeenCalledTimes(skipDrain ? 0 : 1);
+      expect(heartbeatServiceMock.drainActiveRunExecutions).toHaveBeenCalledTimes(skipDrain ? 0 : 1);
+      expect(appShutdown).not.toHaveBeenCalled();
+      expect(app.locals.paperclipDatabaseClosing).toBeUndefined();
+      expect(stopped).toBe(false);
+      releaseFirst();
+      await settleStartupHousekeeping();
+      expect(appShutdown).not.toHaveBeenCalled();
+      expect(stopped).toBe(false);
+      releaseSecond();
+      await stopping;
+      expect(appShutdown).toHaveBeenCalledOnce();
+      expect(app.locals.paperclipDatabaseClosing).toBe(true);
+      expect(stopped).toBe(true);
+      expect(stop).toHaveBeenCalledOnce();
+    } finally {
+      releaseFirst();
+      releaseSecond();
+      await stopping;
+      vi.useRealTimers();
+      stop?.mockRestore();
+      interval.mockRestore();
+      register.mockRestore();
+      scan.mockRestore();
+    }
   });
 
   it.each(["retained cleanup", "workspace finalization", "environment settlement", "native run projection", "native result commit", "native recovery notices", "external conversation settlement", "native response presentation"] as const)("becomes ready while %s is held but joins it at shutdown", async owner => {
