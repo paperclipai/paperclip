@@ -765,6 +765,22 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect(await coordinators(run.id)).toHaveLength(1);
   });
 
+  // The remote-sandbox warm default follows the acquired lease: it never turns a
+  // run that works per-turn into a refused warm run.
+  it.each([
+    ["a reusable lease", { reusableLeaseConfigured: true, effectiveCapabilities: { reusableLeases: true } }, "warm", "keep_running"],
+    ["reuse configured on a provider without reusable leases", { reusableLeaseConfigured: true, effectiveCapabilities: { reusableLeases: false } }, "per_turn", "destroy_after_turn"],
+    ["an ephemeral lease", {}, "per_turn", "destroy_after_turn"],
+  ] as const)("defaults an agent without a lifecycle on %s", async (_name, lease, lifecycleMode, sandboxResource) => {
+    const { input } = await fixture();
+    const { lifecycleMode: _unset, ...adapterConfig } = (input.agent.adapterConfig ?? {}) as Record<string, unknown>;
+    input.agent.adapterConfig = adapterConfig;
+    input.workspace.executionTarget = { ...sandbox, ...lease } as never;
+    input.beforeNativeRuntimeSelection = async () => { throw new Error("selection interrupted"); };
+    await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("selection interrupted");
+    expect(input.onNativeLifecycleSelected).toHaveBeenCalledWith({ provider: "codex", harness: "codex_app_server", lifecycleMode, sandboxResource });
+  });
+
   it("rejects a warm native sandbox that cannot reuse its lease", async () => {
     const { input, run } = await fixture();
     input.workspace.executionTarget = { ...sandbox, runnerLifecyclePolicy: { mode: "warm", idleTimeoutMs: 300_000 } };

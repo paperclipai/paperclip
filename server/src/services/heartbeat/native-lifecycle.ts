@@ -1,28 +1,10 @@
 import { PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS, resolvePaperclipRunnerIdleTimeoutMs } from "@paperclipai/adapter-utils";
 import type { NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
-import { supportsManagedNativeWarmSession } from "../native-runtime/native-warm-capability.js";
+import {
+  defaultsRemoteSandboxRunToWarm, defaultsToWarmFollowUp, supportsManagedNativeWarmSession,
+} from "../native-runtime/native-warm-capability.js";
 
 export type NativeLifecyclePolicy = NonNullable<NativeExecutionInput["session"]["lifecyclePolicy"]>;
-
-/**
- * Harnesses measured to start a follow-up turn faster on a live runner
- * (doc/plans/2026-11-07-warm-follow-up-ttft.md). An agent that never chose a
- * lifecycle gets warm for these on a local target. ACPX harnesses (Claude)
- * relaunch their provider process on every follow-up turn by design, so warm
- * does not shorten their follow-up and they stay per-turn.
- */
-function defaultsToWarmLocally(backend: string): boolean {
-  return backend === "codex_app_server" || backend === "opencode_server";
-}
-
-/**
- * On a remote sandbox the follow-up's dominant cost is a new sandbox and a full
- * workspace upload (doc/plans/2026-11-08-large-workspace-speed.md), so Claude
- * gains from warm there too: its provider relaunch is small next to the upload.
- */
-export function defaultsToWarmOnRemoteSandbox(backend: string, acpxAgent: unknown): boolean {
-  return defaultsToWarmLocally(backend) || (backend === "acpx_runtime" && acpxAgent === "claude");
-}
 
 export function resolveHeartbeatNativeLifecyclePolicy(input: {
   adapterType: string;
@@ -37,22 +19,34 @@ export function resolveHeartbeatNativeLifecyclePolicy(input: {
   taskOwned: boolean;
   /** The run executes on this controller's host (no remote transport). */
   localTarget?: boolean;
-  /** The run executes in a remote sandbox (not a plugin task). */
-  remoteSandboxTarget?: boolean;
+  /**
+   * The run executes in a remote sandbox (not a plugin task). `reusableLease`
+   * is true only when the acquired lease is reusable: configured, and
+   * supported by the sandbox provider.
+   */
+  remoteSandboxTarget?: { reusableLease: boolean };
 }): NativeLifecyclePolicy {
-  // An explicit choice wins. With none, a local measured harness keeps its
-  // runner and provider session for the default idle window so a follow-up
-  // turn skips the launch and session load.
-  const agentMode = input.agentMode === "warm" || input.agentMode === "per_turn" ? input.agentMode
-    : input.adapterType === "paperclip_runner" && ((input.localTarget === true && defaultsToWarmLocally(input.backend))
-      || (input.remoteSandboxTarget === true && defaultsToWarmOnRemoteSandbox(input.backend, input.acpxAgent)))
-      ? "warm" : "per_turn";
+  // An explicit choice wins. With none, a measured harness keeps its runner and
+  // provider session between turns: on a local target, and on a remote sandbox
+  // whose provider keeps the lease (the rule the run's environment view uses).
+  const profile = { backend: input.backend, acpxAgent: input.acpxAgent };
+  const explicit = input.agentMode === "warm" || input.agentMode === "per_turn";
+  const localDefault = input.localTarget === true && defaultsToWarmFollowUp(profile, "local");
+  const remoteDefault = input.remoteSandboxTarget !== undefined && defaultsRemoteSandboxRunToWarm({
+    profile,
+    reusableLeaseSupported: input.remoteSandboxTarget.reusableLease,
+    managedAi: input.managedAiSelected ? { attribution: input.managedAiAttribution } : null,
+  });
+  const agentMode = explicit ? input.agentMode
+    : input.adapterType === "paperclip_runner" && (localDefault || remoteDefault) ? "warm" : "per_turn";
+  // An explicit warm choice and the remote default honor the agent's idle
+  // window, the same window the environment view forwards to the provider.
   const agentPolicy: NativeLifecyclePolicy = agentMode === "warm"
-    ? { mode: "warm", idleTimeoutMs: input.agentMode === "warm"
+    ? { mode: "warm", idleTimeoutMs: explicit || remoteDefault
       ? resolvePaperclipRunnerIdleTimeoutMs(input.agentIdleTimeoutMs) : PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS }
     : { mode: "per_turn", idleTimeoutMs: null };
   const supportsManagedWarm = input.adapterType === "paperclip_runner" && (input.taskOwned ||
-    supportsManagedNativeWarmSession({ backend: input.backend, acpxAgent: input.acpxAgent }, input.managedAiAttribution));
+    supportsManagedNativeWarmSession(profile, input.managedAiAttribution));
   return input.persistedPolicy ??
     (["openai_dot_mcp", "grok_bot_mcp", "muse_external", "cursor_cloud_api"].includes(input.backend) || input.managedAiSelected && !supportsManagedWarm
       ? { mode: "per_turn", idleTimeoutMs: null }
