@@ -1388,6 +1388,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(delay) = argument(&args, "--thread-resume-delay-ms") {
                     thread::sleep(Duration::from_millis(delay.parse()?));
                 }
+                // A provider that stalls without replying once (host stall or
+                // freeze), then answers normally after a relaunch.
+                if let Some(delay) = argument(&args, "--stall-first-thread-resume-ms") {
+                    let marker = state_path.with_file_name("fake-thread-resume-stalled");
+                    if !marker.exists() {
+                        fs::write(&marker, b"stalled")?;
+                        thread::sleep(Duration::from_millis(delay.parse()?));
+                    }
+                }
                 if reject_missing_resume_state {
                     send(json!({"id": id, "error": {
                         "code": -32600,

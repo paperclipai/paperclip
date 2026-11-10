@@ -134,6 +134,85 @@ fn restart_relaunches_a_provider_whose_runner_died_before_admitting_it() {
     fs::remove_dir_all(directory).unwrap();
 }
 
+/// A provider relaunch whose reply never came within the runner's 30 s request
+/// deadline (a stalled or frozen host: restart-chaos TM2 freezes the runner
+/// and the provider while the monotonic clock keeps running). The runner
+/// retires that provider and records the failed startup. A later runner must
+/// relaunch it instead of refusing every restore until the user clicks Retry.
+#[cfg(unix)]
+#[test]
+fn restart_relaunches_a_provider_whose_relaunch_timed_out_without_a_reply() {
+    let directory = temporary_directory("timed-out-provider-startup");
+    let runner_config = durable_config(&directory);
+    let mut first = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": provider_config(
+                &directory,
+                &["--hold-turn", "--stall-first-thread-resume-ms", "33000"],
+            )}),
+        ))
+        .unwrap();
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    first
+        .execute(&command(
+            "start",
+            3,
+            "turn.start",
+            json!({"text": "Survive a stalled provider relaunch."}),
+        ))
+        .unwrap();
+    first.shutdown().unwrap();
+    drop(first);
+
+    // The next runner relaunches the provider; thread/resume gets no reply.
+    let mut stalled = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    let error = stalled
+        .execute(&command(
+            "command_resume_probe_1",
+            9,
+            "runner.drain",
+            json!({}),
+        ))
+        .unwrap_err();
+    assert!(error.to_string().contains("timed out"), "{error}");
+    drop(stalled);
+    let state_path = directory.join("codex-provider-state.json");
+    let saved: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    let fact = &saved["startupAttempt"];
+    assert_eq!(fact["phase"], "initialization_failed");
+    assert_eq!(fact["failedStage"], "thread_open");
+    assert_eq!(fact["noReply"], true);
+    assert_eq!(fact["directChildExitObserved"], true);
+
+    let resumes_before = call_count(&directory, "thread/resume");
+    let mut recovered = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    recovered
+        .execute(&command(
+            "command_resume_probe_2",
+            10,
+            "runner.drain",
+            json!({}),
+        ))
+        .expect("a provider launch that timed out without a reply no longer blocks recovery");
+    assert_eq!(call_count(&directory, "thread/resume"), resumes_before + 1);
+    let events = recovered.retained_events().unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "harness.diagnostic"
+            && event.payload["code"] == "provider_startup_retired"
+            && event.payload["startup"]["phase"] == "initialization_failed"));
+    let saved: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert!(saved["startupAttempt"].is_null());
+    recovered.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
 fn temporary_directory(label: &str) -> PathBuf {
     let directory = std::env::temp_dir().join(format!(
         "paperclip-runner-codex-{label}-{}-{}",
