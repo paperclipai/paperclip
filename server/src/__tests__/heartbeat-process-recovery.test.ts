@@ -4891,18 +4891,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it.each([
-    { stage: "preparing", resumes: true },
-    { stage: "dispatching", resumes: false },
-  ])("resumes a legacy run that a graceful shutdown stopped before adapter dispatch (stage=$stage)", async ({ stage, resumes }) => {
+    { name: "still preparing", resumes: true },
+    { name: "admitted to dispatch", stage: "dispatching", resumes: false },
+    { name: "with a dispatch handoff receipt", handoff: true, resumes: false },
+    { name: "with a process identity", processStarted: true, resumes: false },
+    { name: "with an adapter.invoke event", invoked: true, resumes: false },
+    { name: "with a workspace restore failure", restoreFailure: true, resumes: false },
+  ] as Array<{ name: string; resumes: boolean; stage?: string; handoff?: boolean; processStarted?: boolean;
+    invoked?: boolean; restoreFailure?: boolean }>)("resumes a legacy run that a graceful shutdown stopped before adapter dispatch ($name)", async (variant) => {
+    const { resumes } = variant;
     const { agentId, runId, issueId } = await seedRunFixture({ adapterType: "process", agentStatus: "running" });
     await db.update(heartbeatRuns).set({
       controllerBootId: controllerLeases.legacyControllerBootId,
       controllerLeaseExpiresAt: new Date(Date.now() + 60_000),
-      executionStage: stage,
+      executionStage: variant.stage ?? "preparing",
       startedAt: new Date(),
+      ...(variant.handoff ? { usageJson: { budgetDispatch: { reservationId: randomUUID(), recoveryLeaseOwner: null,
+        admittedAt: new Date().toISOString(), handedOffAt: new Date().toISOString() } } } : {}),
+      ...(variant.processStarted ? { processStartedAt: new Date() } : {}),
+      ...(variant.restoreFailure ? { resultJson: { workspaceRestoreFailure: "restore_unsafe_archive" } } : {}),
     }).where(eq(heartbeatRuns.id, runId));
     // Setup had not reached the adapter: no adapter.invoke was recorded.
-    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+    if (!variant.invoked) await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
 
     const result = await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM");
 
@@ -4923,10 +4933,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(await selectRecoveryActionsForIssue(issueId)).toEqual([
         expect.objectContaining({ cause: "legacy_execution_requires_reconciliation" }),
       ]);
+      expect(await getExecutionBlocker(db, interrupted!.companyId, issueId)).toMatchObject({ runId });
     }
   });
 
-  it("lets Retry start a run for a pre-dispatch shutdown hold saved by an older server", async () => {
+  it.each([
+    { name: "before dispatch", startedWork: false },
+    { name: "after an adapter.invoke event", startedWork: true },
+  ])("lets Retry start a run only for a pre-dispatch shutdown hold saved by an older server ($name)", async ({ startedWork }) => {
     const { companyId, agentId, runId, issueId } = await seedRunFixture({ adapterType: "process", agentStatus: "idle" });
     // The older server committed the interruption and its no-replay hold
     // without the bootstrap certificate.
@@ -4936,7 +4950,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       controllerBootId: randomUUID(), controllerLeaseExpiresAt: null, executionStage: "preparing",
       resultJson: { stopReason: "interrupted", timeoutFired: false, timeoutSource: "default", timeoutConfigured: false, effectiveTimeoutSec: 0 },
     }).where(eq(heartbeatRuns.id, runId));
-    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+    if (!startedWork) await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
     await db.update(issues).set({ status: "blocked", executionRunId: null, checkoutRunId: null }).where(eq(issues.id, issueId));
     await db.insert(issueRecoveryActions).values({
       companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: agentId,
@@ -4946,6 +4960,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       attemptCount: 1, maxAttempts: 3,
     });
 
+    if (startedWork) {
+      // The adapter may have acted: the hold stays and no replay is admitted.
+      expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ runId });
+      return;
+    }
     expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
     const heartbeat = heartbeatService(db);
     const receipt = await requestTaskRetry({ db, companyId, issueId, actorId: "responsible-user",
