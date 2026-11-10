@@ -119,6 +119,7 @@ import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
 import { prepareVerifiedRemoteProviderPack, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
+import { scheduledResumeContinuationAllowed } from "./scheduled-resume-continuation.js";
 import { readNativeLocalProcessStop, recordedLocalExecutionStopped, PRIOR_OWNER_FENCE_REFUSED, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, withReleasedNativeRunProcess } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
 import { connectorToolDefinitionsForSkills } from "../connector-runtime.js";
@@ -10021,6 +10022,7 @@ async function executePaperclipNativeSessionAttempt(
   let confirmedLeaseDeadline = 0;
   let claimedStartupContext: NativeExecutionContext | undefined;
   let freshClaimAttempt: number | undefined;
+  let scheduledResumeContinuation = false;
   try {
     attempt = await trace.measure(
       "native.coordinator.claim",
@@ -10170,6 +10172,15 @@ async function executePaperclipNativeSessionAttempt(
           );
           if (nextAttempt > 3)
             throw new Error("native_session_retry_exhausted");
+          scheduledResumeContinuation = (await scheduledResumeContinuationAllowed(tx as unknown as Db, {
+            companyId: input.execution.binding.companyId,
+            runId: input.execution.binding.runId,
+            restartRecovery: Boolean(recovering),
+            targetKind: input.runnerExecutionTarget?.kind === "remote" ? "remote" : "local",
+            coordinatorPhase: coordinator.phase,
+            failureDetail: coordinator.failureDetail,
+            admittedAttempt: nextAttempt,
+          })).allowed;
           const nextControllerGeneration = recovering
             ? recovering.controllerGeneration
             : coordinator.controllerBootId === controller.bootId
@@ -11260,7 +11271,7 @@ async function executePaperclipNativeSessionAttempt(
         trace.activate(runnerSessionStartupScope);
         const runExecution = () =>
           executeNativeSession({
-            resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner",
+            resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner" || scheduledResumeContinuation,
             getFreshSessionHandoff: input.getFreshSessionHandoff,
             // A failed seal commits nothing: the messages stay queued for the
             // turn boundary instead of failing this run before its turn.
