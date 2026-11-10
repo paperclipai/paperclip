@@ -24,6 +24,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   getTreeControlState: vi.fn(),
   createTreeHold: vi.fn(),
   releaseTreeHold: vi.fn(),
+  chatBootstrap: vi.fn(async () => ({ items: [] })),
 }));
 
 vi.mock("@/api/agents", () => ({ agentsApi: mockAgentsApi }));
@@ -158,7 +159,7 @@ describe("SidebarRecentTasks", () => {
       }
     });
 
-    const link = container.querySelector('a[href="/issues/issue-1"]');
+    const link = container.querySelector('a[href="/issues/PAP-1"]');
     expect(mockIssuesApi.get).not.toHaveBeenCalled();
     expect(mockIssuesApi.summaries).toHaveBeenCalledTimes(1);
     expect(queryClient.getQueryData(["issues", "detail", "issue-1"])).toBeUndefined();
@@ -190,7 +191,8 @@ describe("SidebarRecentTasks", () => {
     mockIssuesApi.get.mockImplementation(async (id: string) => tasks.find((task) => task.id === id));
     const queryClient = await render();
     const order = () => Array.from(container.querySelectorAll("a")).map((link) => link.getAttribute("href"));
-    const originalOrder = ["/issues/issue-3", "/issues/issue-2", "/issues/issue-1"];
+    // Links open the identifier route the task page settles on.
+    const originalOrder = ["/issues/PAP-3", "/issues/PAP-2", "/issues/PAP-1"];
     expect(order()).toEqual(originalOrder);
     vi.useFakeTimers();
 
@@ -210,7 +212,7 @@ describe("SidebarRecentTasks", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(499); });
     expect(order()).toEqual(originalOrder);
     await act(async () => { await vi.advanceTimersByTimeAsync(1); });
-    expect(order()).toEqual(["/issues/issue-2", "/issues/issue-1", "/issues/issue-3"]);
+    expect(order()).toEqual(["/issues/PAP-2", "/issues/PAP-1", "/issues/PAP-3"]);
     expect(mockIssuesApi.get).not.toHaveBeenCalled();
     expect(mockIssuesApi.summaries).toHaveBeenCalledTimes(1);
     queryClient.clear();
@@ -309,7 +311,7 @@ describe("SidebarRecentTasks", () => {
     expect(mockIssuesApi.archiveFromInbox).toHaveBeenCalledWith("issue-1");
     expect(mockIssuesApi.update).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Recent Tasks");
-    expect(container.querySelector('a[href="/issues/issue-1"]')?.textContent).toContain(
+    expect(container.querySelector('a[href="/issues/PAP-1"]')?.textContent).toContain(
       "Archive me",
     );
     expect(readRecentTasks(
@@ -507,7 +509,7 @@ describe("SidebarRecentTasks", () => {
       await Promise.resolve();
     });
 
-    expect(container.querySelector('a[href="/issues/issue-2"]')?.textContent).toContain("Cross-tab task");
+    expect(container.querySelector('a[href="/issues/PAP-2"]')?.textContent).toContain("Cross-tab task");
   });
 
   it("preserves pending restart wake retries from before the snapshot storage migration", async () => {
@@ -562,7 +564,7 @@ describe("SidebarRecentTasks", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
 
-    expect(container.querySelector('a[href="/issues/issue-hidden"]')).toBeNull();
+    expect(container.querySelector('a[href="/issues/PAP-3"]')).toBeNull();
     expect(readRecentTasks(
       getRecentTasksStorageKey("company-1", "user-1"),
       "company-1",
