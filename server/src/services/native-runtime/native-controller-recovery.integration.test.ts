@@ -317,7 +317,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId] })).toEqual([]);
     await db.update(nativeRunFinalizations).set({ phase: "committed", leaseOwner: null, leaseExpiresAt: null })
       .where(eq(nativeRunFinalizations.runId, fixture.scope.runId));
-    await expect(readSandbox()).resolves.toBeUndefined();
+    await expect(readSandbox()).resolves.toEqual({ remoteCwd: "/workspace" });
     await expect(inspect({ readControlState: () => ({ identity, commands: [{ status: "pending" }],
       committedEvents: [{ eventType: "run.terminal", envelope: identity }] }) })).rejects.toThrow(denied);
     const recovered = await inspect();
@@ -327,6 +327,37 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     const claims = await claimNativeSessionResumptions({ db, runnerInstanceId: "successor", runIds: [runId], now: deadline });
     expect(claims).toHaveLength(1);
     expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "duplicate", runIds: [runId], now: deadline })).toEqual([]);
+  });
+
+  // Staging PAP-3881 (Nov 10): a preparation-only run's epoch was abandoned, so
+  // the warm follow-up restored the last save into a new allocation of the same
+  // sandbox. The committed source's Runner state stays in its own directory.
+  it("binds a retained Runner read to the source's directory after the workspace moved within the same sandbox", async () => {
+    const fixture = await seed(), environmentId = randomUUID(), workspaceId = randomUUID();
+    const sourceLeaseId = randomUUID(), currentLeaseId = randomUUID(), providerLeaseId = randomUUID();
+    const allocations = "/home/daytona/paperclip-workspace/.paperclip-workspaces";
+    const sourceCwd = `${allocations}/${workspaceId}-1-${randomUUID()}`;
+    const movedCwd = `${allocations}/${workspaceId}-6-${currentLeaseId}`;
+    await db.insert(environments).values({ id: environmentId, name: `Moved ${environmentId}`, driver: "sandbox" });
+    // Saved by the source run (status expired after its reusable handoff).
+    await db.insert(environmentLeases).values({ id: sourceLeaseId, companyId, environmentId, issueId: fixture.scope.issueId,
+      heartbeatRunId: fixture.scope.runId, provider: "daytona", providerLeaseId, status: "expired",
+      leasePolicy: "reuse_by_environment", metadata: { remoteCwd: sourceCwd } });
+    const target = { kind: "remote", transport: "sandbox", environmentId, leaseId: currentLeaseId, providerKey: "daytona",
+      remoteCwd: movedCwd, sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId } } as const;
+    const readSandbox = (override: Record<string, unknown> = {}) => assertNativeRetainedSandboxBinding(db,
+      { ...fixture.scope, target: { ...target, ...override } as never });
+
+    await expect(readSandbox()).resolves.toEqual({ remoteCwd: sourceCwd });
+    await expect(readSandbox({ remoteCwd: sourceCwd })).resolves.toEqual({ remoteCwd: sourceCwd });
+    // Strict checks stay strict: another workspace's allocation, another
+    // parent, a non-canonical path, or another sandbox never bind.
+    for (const remoteCwd of [`${allocations}/${randomUUID()}-6-${currentLeaseId}`, `/elsewhere/${workspaceId}-6-${currentLeaseId}`,
+      `${allocations}/../.paperclip-workspaces/${workspaceId}-6-${currentLeaseId}`, "/unrelated"]) {
+      await expect(readSandbox({ remoteCwd })).rejects.toThrow("retained_sandbox_binding");
+    }
+    await expect(readSandbox({ sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: randomUUID() } }))
+      .rejects.toThrow("retained_sandbox_binding");
   });
 
   it.each(["live-owner", "expired-owner", "provider-attempt", "stopped", "operator-stop"])("does not publish an admission wait after authority changes: %s", async scenario => {

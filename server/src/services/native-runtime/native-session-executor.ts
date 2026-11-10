@@ -6986,6 +6986,9 @@ async function restoreRemoteSuspendedRunnerCheckpoint(input: {
     || !durableIdentityMatchesSession(prior, input.execution) || prior.runId === input.execution.binding.runId
     || runnerdAuthorityLifecycle(root, prior) !== "absent") return;
   let state: Record<string, unknown>;
+  // A Runner left in an abandoned allocation is never adopted live: the new
+  // execution restored the last save into its own root of the same sandbox.
+  let movedAllocation = false;
   if (target.runnerTask) {
     // The admitted task owner binds this read to the surviving physical task;
     // its suspended identity still belongs to the previous business turn.
@@ -6994,14 +6997,16 @@ async function restoreRemoteSuspendedRunnerCheckpoint(input: {
     state = result.state;
   } else {
     if (!target.runner) throw new Error("native_controller_recovery_dependency_unavailable:runner_state_reader");
-    await assertNativeRetainedSandboxBinding(input.db, { ...input.execution.binding, runId: prior.runId, target });
-    const stateDirectory = posix.join(target.remoteCwd, ".paperclip-runtime", "paperclip-runner", "sessions",
-      createHash("sha256").update(nativeSessionKey(input.execution)).digest("hex"), "runner");
-    state = await readRemoteRunnerState({ runner: target.runner, stateDirectory });
+    // The retained Runner wrote under its own lease's directory, which differs
+    // from this target when the workspace moved within the same sandbox.
+    const retained = await assertNativeRetainedSandboxBinding(input.db, { ...input.execution.binding, runId: prior.runId, target });
+    movedAllocation = retained.remoteCwd !== target.remoteCwd;
+    state = await readRemoteRunnerState({ runner: target.runner,
+      stateDirectory: remoteRunnerStateDirectory(retained.remoteCwd, nativeSessionKey(input.execution)) });
   }
   // A running warm source keeps the existing live-adoption identity, idle,
   // controller-fencing and physical-process checks. Only suspension is cached.
-  if (input.execution.session.lifecyclePolicy.mode === "warm" && state.lifecycle !== "suspended") return;
+  if (!movedAllocation && input.execution.session.lifecyclePolicy.mode === "warm" && state.lifecycle !== "suspended") return;
   if (state.lifecycle !== "suspended" || !Array.isArray(state.outbox) || state.outbox.length !== 0
     || state.pendingTerminalDelivery != null || state.pendingProviderCleanup != null || state.warmTransition != null) {
     throw new Error("native_controller_recovery_missing_evidence:runner_not_settled");

@@ -170,9 +170,13 @@ export function exhaustedSystemRecoveryAction(state: SystemRecoveryState, eviden
   const cause = state.failure?.cause ? `, cause: ${state.failure.cause.label}` : "";
   if (isDeterministicRecoveryRefusal(state)) {
     const code = state.failure!.code;
+    // An unverifiable source falls back automatically (workspace-recovery-fallback):
+    // the task continues from the last saved version. Nobody has to wait for a fix.
+    const fallback = unverifiableSourceRefusals.includes(code)
+      ? "Paperclip continues the task from the last saved version of the files instead. " : "";
     return `Paperclip refused to recover the saved files: ${recoveryRefusalReasons[code] ?? "a safety check on the saved files did not pass"} `
       + `(${code}${cause}). Automatic recovery does not repeat this check, because the same saved state gives the same result. `
-      + "Retry runs the check again and succeeds only after Paperclip is updated. The agent's result is saved, and the agent will not repeat its work.";
+      + `${fallback}Retry runs the check again. The agent's result is saved, and the agent will not repeat its work.`;
   }
   const reason = state.failure?.code ? ` (last failure: ${state.failure.code}${cause})` : "";
   const outcome = state.attempts > 1 ? `stopped after ${state.attempts} attempts` : "failed";
@@ -183,6 +187,9 @@ export function exhaustedSystemRecoveryAction(state: SystemRecoveryState, eviden
 export function isDeterministicRecoveryRefusal(state: Pick<SystemRecoveryState, "state" | "failure"> | null | undefined) {
   return state?.state === "exhausted" && state.failure?.retryClass === "service_required";
 }
+
+/** Permanent source refusals the retained-source fallback settles (UNVERIFIABLE_SOURCE_CODES). */
+const unverifiableSourceRefusals: readonly string[] = ["allocation_ownership_ambiguous", "source_binding_invalid", "source_unavailable"];
 
 const recoveryRefusalReasons: Partial<Record<RecoveryFailureCode, string>> = {
   allocation_ownership_ambiguous: "Paperclip cannot prove which runs used the sandbox that holds the saved files",

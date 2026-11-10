@@ -7,6 +7,36 @@ import { isExhaustedStopProofWait, STOP_PROOF_MAX_REARMS, STOP_PROOF_RECOVERY_KE
 export const UNVERIFIABLE_SOURCE_CODES = ["allocation_ownership_ambiguous", "source_binding_invalid", "source_unavailable", "historical_source_missing"] as const;
 export const PERMANENT_SOURCE_RETRY_CLASSES = ["service_required", "use_alternative_strategy"] as const;
 export const RETAINED_SOURCE_FALLBACK_CHECK_KEY = "retainedSourceFallbackCheck";
+/** Holds of an accepted result whose copy-back could not finish. */
+export const EXPORT_HOLD_CAUSES = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"] as const;
+/** A native run that failed before provider work keeps its files under a
+ * no-replay hold. It is recorded resolved-but-blocked: replay stays blocked
+ * until its files are recovered, or the task continues from the last save. */
+export const NATIVE_NO_REPLAY_HOLD_CAUSE = "native_continuation_requires_reconciliation";
+
+type HoldAction = { cause: string; status: string; outcome: string | null; evidence: Record<string, unknown> };
+const field = (value: unknown, key: string) => value && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined;
+
+/** Whether this recovery action is a retained-file hold the fallback may settle. */
+export function isRetainedFileHold(action: HoldAction) {
+  if ((EXPORT_HOLD_CAUSES as readonly string[]).includes(action.cause)) return ["active", "escalated"].includes(action.status);
+  const automatic = action.evidence.automaticRecovery;
+  return action.cause === NATIVE_NO_REPLAY_HOLD_CAUSE
+    && (["active", "escalated"].includes(action.status) || (action.status === "resolved" && action.outcome === "blocked"))
+    && field(automatic, "policy") === "preserve_without_replay_v1" && field(automatic, "replay") === "blocked"
+    && typeof action.evidence.runId === "string" && field(automatic, "runId") === action.evidence.runId;
+}
+
+/** SQL form of isRetainedFileHold. */
+function retainedFileHoldCondition() {
+  return sql`((${issueRecoveryActions.cause} in (${list(EXPORT_HOLD_CAUSES)}) and ${issueRecoveryActions.status} in ('active', 'escalated'))
+    or (${issueRecoveryActions.cause} = ${NATIVE_NO_REPLAY_HOLD_CAUSE}
+      and (${issueRecoveryActions.status} in ('active', 'escalated')
+        or (${issueRecoveryActions.status} = 'resolved' and ${issueRecoveryActions.outcome} = 'blocked'))
+      and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,policy}' = 'preserve_without_replay_v1'
+      and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'blocked'
+      and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,runId}' = ${issueRecoveryActions.evidence}->>'runId'))`;
+}
 
 /** Whether an exhausted hold may continue from the last save: its source is
  * refused permanently, or its stop stayed unproven through every re-arm. */
@@ -77,25 +107,24 @@ const leaseChangedSinceCheck = sql`(jsonb_typeof(${check}->'checkedAt') = 'numbe
  * Retry or a new generation reconsiders it).
  */
 export function retainedSourceFallbackPendingCondition() {
-  return sql`(${issueRecoveryActions.status} in ('active', 'escalated')
+  return sql`((${issueRecoveryActions.status} in ('active', 'escalated') or ${retainedFileHoldCondition()})
     and ${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'exhausted'
     and ${issueRecoveryActions.evidence}->'retainedSourceFallback' is null
-    and ((${issueRecoveryActions.cause} in ('native_workspace_sync_out_unrecoverable', 'native_workspace_sync_out_retry_exhausted')
+    and ((${retainedFileHoldCondition()}
         and ${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,code}' in (${list(UNVERIFIABLE_SOURCE_CODES)})
         and ${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,retryClass}' in (${list(PERMANENT_SOURCE_RETRY_CLASSES)})
         and exists (select 1 from heartbeat_runs source where source.company_id = ${issueRecoveryActions.companyId}
           and source.id::text = ${issueRecoveryActions.evidence}->>'runId'
           and source.runner_profile_json#>>'{remoteWorkspace,state}' = 'prepared'))
-      or (${issueRecoveryActions.cause} in ('native_workspace_sync_out_unrecoverable', 'native_workspace_sync_out_retry_exhausted')
-        and ${exhaustedStopProofWait} and ${stopProofRearms} >= ${STOP_PROOF_MAX_REARMS}
+      or (${retainedFileHoldCondition()} and ${exhaustedStopProofWait} and ${stopProofRearms} >= ${STOP_PROOF_MAX_REARMS}
         and exists (select 1 from heartbeat_runs source where source.company_id = ${issueRecoveryActions.companyId}
           and source.id::text = ${issueRecoveryActions.evidence}->>'runId'
           and source.runner_profile_json#>>'{remoteWorkspace,state}' = 'prepared'))
-      or exists (select 1 from issue_recovery_actions sibling
+      or (${issueRecoveryActions.status} in ('active', 'escalated') and exists (select 1 from issue_recovery_actions sibling
         where sibling.company_id = ${issueRecoveryActions.companyId} and sibling.source_issue_id = ${issueRecoveryActions.sourceIssueId}
           and sibling.id <> ${issueRecoveryActions.id} and sibling.evidence->>'runId' = ${issueRecoveryActions.evidence}->>'runId'
           and sibling.evidence#>>'{systemRecovery,state}' = 'complete'
-          and sibling.evidence#>>'{workspaceRecovery,status}' = 'recovered'))
+          and sibling.evidence#>>'{workspaceRecovery,status}' = 'recovered')))
     and (${check} is null
       or ${check}->>'generationId' is distinct from ${issueRecoveryActions.evidence}#>>'{systemRecovery,generationId}'
       or ${leaseChangedSinceCheck}
