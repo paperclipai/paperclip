@@ -95,6 +95,13 @@ impl CommandExecutor for SelectedExecutor {
         }
     }
 
+    fn provider_poll_is_live(&self) -> bool {
+        match self {
+            Self::LocalFacade(executor) => executor.provider_poll_is_live(),
+            _ => false,
+        }
+    }
+
     fn acknowledge_events(&mut self, count: usize) -> Result<(), DurableRunnerError> {
         match self {
             Self::LocalFacade(executor) => executor.acknowledge_events(count),
@@ -345,9 +352,22 @@ impl CommandExecutor for NativeProviderCommandExecutor {
     }
 
     fn prepare_next_turn(&mut self) -> Result<(), DurableRunnerError> {
+        // A per-turn Runner exits with its run. Restarting the provider after
+        // its turn would only spawn a generation for teardown; a later turn of
+        // the same run still restarts lazily at its start.
+        if self.config.turn_scoped {
+            return Ok(());
+        }
         match self.selected.as_mut() {
             Some(SelectedExecutor::Acpx(executor)) => executor.prepare_next_turn(),
             _ => Ok(()),
+        }
+    }
+
+    fn take_turn_end_restart_failure(&mut self) -> Option<String> {
+        match self.selected.as_mut() {
+            Some(SelectedExecutor::Acpx(executor)) => executor.take_turn_end_restart_failure(),
+            _ => None,
         }
     }
 
@@ -439,6 +459,12 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         self.selected
             .as_mut()
             .map_or(Ok(None), CommandExecutor::maintain_disconnected_provider)
+    }
+
+    fn provider_poll_is_live(&self) -> bool {
+        self.selected
+            .as_ref()
+            .is_some_and(CommandExecutor::provider_poll_is_live)
     }
 
     fn maintain_backpressured_provider(&mut self) -> Result<(), DurableRunnerError> {

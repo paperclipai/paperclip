@@ -8,6 +8,7 @@ import type { RemoteWorkspaceSource } from "@paperclipai/shared";
 import { captureRemoteWorkspaceDirectory, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, remoteWorkspaceFailureDetail } from "./remote-workspace-snapshot-archive.js";
 import { readWorkspaceInventory, readonlyWorkspaceInventoryScript } from "./remote-workspace-readonly-inventory.js";
 import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
+import { measureRunPhase } from "./execution-preparation-timing.js";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
 import { classifyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { MAX_SANDBOX_SYNC_TIMEOUT_MS, type SandboxSyncOperation } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
@@ -633,9 +634,9 @@ export async function restoreRemoteWorkspaceDirectory(input: {
   // Stage outside the destination; the restore validator requires an empty target.
   const parent = path.posix.dirname(input.remoteCwd);
   const staged = await installArchiveHelper(input.target, parent, operationId);
-  await stat(input.archivePath).then(archive => transferArchive(input.target, "syncIn", [{ operationId,
+  await measureRunPhase("workspace.snapshot.sandbox_upload", () => stat(input.archivePath).then(archive => transferArchive(input.target, "syncIn", [{ operationId,
     files: [{ kind: "file", sourcePath: input.archivePath, targetPath: staged.archive }],
-  }], archive.size)).catch((error: unknown) => { noteProviderRefusal("upload", error); throw error; });
+  }], archive.size))).catch((error: unknown) => { noteProviderRefusal("upload", error); throw error; });
   // Publish the restored folder and its identity together. A lost successful
   // reply can then adopt the same files without repeating a destructive restore.
   const restore = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process'),crypto=require('node:crypto');
@@ -802,9 +803,9 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    }finally{await fs.rm(staged,{recursive:true,force:true});}
    }finally{lock.close();}
   })().catch(error=>{process.stderr.write(setupFailure('remote_workspace_restore_failed',stage,error));process.exitCode=1});`;
-  await command(input.target, "restore", ["-e", restore, staged.helper, staged.archive, input.remoteCwd,
+  await measureRunPhase("workspace.snapshot.sandbox_extract", () => command(input.target, "restore", ["-e", restore, staged.helper, staged.archive, input.remoteCwd,
     input.manifestDigest, input.restorationIdentity, String(input.allowEmptyRoot === true), JSON.stringify(input.allocationFiles ?? []),
-    String(input.replaceRetiredRoot === true), input.restorationEpoch === undefined ? "" : String(input.restorationEpoch)]);
+    String(input.replaceRetiredRoot === true), input.restorationEpoch === undefined ? "" : String(input.restorationEpoch)]));
   // Publish the restored location before cleanup can fail, stall, or lose its
   // reply. The owner journals this receipt and then reclaims disposable staging.
   return { operationId, stagingRoot: parent, cleanupPending: true };

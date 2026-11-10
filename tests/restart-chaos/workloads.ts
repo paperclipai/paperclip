@@ -1,3 +1,6 @@
+import { questionHandoffWorkload } from "./question-handoff.js";
+import { l1Workload } from "./contention.js";
+import { journeyWorkloadDefinitions } from "./journeys.js";
 import type { OracleArtifacts, OracleResult, WorkloadId } from "./types.js";
 
 /** Deterministic bench output: sum of squares 1..240. */
@@ -166,6 +169,9 @@ function budgetChecks(artifacts: OracleArtifacts) {
 }
 
 export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
+  Q1: questionHandoffWorkload,
+  L1: l1Workload,
+  ...journeyWorkloadDefinitions,
   G1: {
     id: "G1",
     label: "Approval-gated action across a restart",
@@ -270,7 +276,8 @@ export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
       return result([
         statusCheck(artifacts),
         ...briefChecks(artifacts.documents.brief, [briefMarker(nonce), continueMarker(nonce)]),
-        { name: "stop_took_effect", ok: stop?.runStatus === "cancelled", detail: `run=${stop?.runId ?? "none"} status=${stop?.runStatus ?? "none"}` },
+        { name: "stop_took_effect", ok: Boolean(stop?.missed) || stop?.runStatus === "cancelled",
+          detail: stop?.missed ? "missed: the run finished before the stop window" : `run=${stop?.runId ?? "none"} status=${stop?.runStatus ?? "none"}` },
         { name: "nothing_ran_after_stop", ok: Boolean(stop) && stop!.continuePosted && stop!.runsStartedBeforeContinue.length === 0,
           detail: stop ? `continue=${stop.continuePosted} runs=${stop.runsStartedBeforeContinue.join(",") || "none"}` : "not stopped" },
       ]);

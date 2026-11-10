@@ -1,5 +1,6 @@
-import type { FaultReceipt, OracleResult, RuleId, RuleResult, TaskGrade, TaskRecord, TaskSample } from "./types.js";
+import { UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST, type FaultReceipt, type OracleResult, type RuleId, type RuleResult, type TaskGrade, type TaskRecord, type TaskSample } from "./types.js";
 import { g1Decision } from "./workloads.js";
+import { enforcedUniversalFailures, gradeUniversal, type UniversalDbEvidence } from "./universal.js";
 
 /** Pure R1–R6 grading over observer samples (plan §2). No I/O. */
 
@@ -61,8 +62,9 @@ export function gradeR1(record: TaskRecord, budgetMs: number, faults: readonly F
   if (record.launchError) return { verdict: "fail", detail: `launch_failed: ${record.launchError}` };
   if (record.retry) return { verdict: "n/a", detail: "task rested needing Retry; graded under R3" };
   const expected = expectedFinalStatus(record);
+  if (record.timedOut) return { verdict: "fail", detail: `no_rest_within_budget (last status ${record.finalStatus ?? "unknown"})` };
   if (record.finalStatus !== expected) {
-    return { verdict: "fail", detail: record.timedOut ? `no_rest_within_budget (last status ${record.finalStatus ?? "unknown"})` : `rested_not_done (status ${record.finalStatus ?? "unknown"}, no Retry offered)` };
+    return { verdict: "fail", detail: `rested_not_done (status ${record.finalStatus ?? "unknown"}, no Retry offered)` };
   }
   const allowed = budgetMs + outageOverlapMs(record, faults);
   const took = (record.restAt ?? Number.POSITIVE_INFINITY) - record.createdAt!;
@@ -88,6 +90,9 @@ export function gradeR2(record: TaskRecord, oracle: OracleResult): RuleResult {
   if (fileChecks.length && record.finalStatus === "done") {
     return { verdict: "fail", detail: `workspace_files_missing_after_done: ${fileChecks.map(check => check.name).join(",")}` };
   }
+  if (record.remoteWorkspace && !record.preFaultFiles) {
+    return { verdict: "n/a", detail: "remote workspace: files before and after the fault are not compared from this host" };
+  }
   const transient = record.samples.some(sample => sample.interruption?.workspaceFailure);
   return { verdict: "pass", detail: transient ? "workspace failure appeared during recovery and cleared" : "no workspace failure at rest" };
 }
@@ -106,6 +111,9 @@ function gradeOwnRetry(record: TaskRecord): RuleResult {
       return { verdict: "fail", detail: `missing_retry: rested ${record.finalStatus ?? "unknown"} with canRetry=${String(last?.interruption?.canRetry ?? false)}` };
     }
     return { verdict: "n/a", detail: "no Retry needed" };
+  }
+  if (record.retry.via === "ui" && (record.retry.error === UI_RETRY_BUTTON_MISSING || record.retry.error === UI_RETRY_NO_REQUEST)) {
+    return { verdict: "fail", detail: `${record.retry.error}${record.retry.bannerText ? ` (user saw: ${record.retry.bannerText})` : ""}` };
   }
   if (record.retry.error || record.retry.accepted !== true) {
     return { verdict: "fail", detail: `retry_rejected: http=${record.retry.httpStatus ?? "none"} accepted=${String(record.retry.accepted)} ${record.retry.error ?? ""}`.trim() };
@@ -238,7 +246,8 @@ export function gradeR6(record: TaskRecord): RuleResult {
   return leaks.length ? { verdict: "fail", detail: `leak: ${leaks.join("; ")}` } : { verdict: "pass", detail: "clean rest" };
 }
 
-export function gradeTask(record: TaskRecord, faults: readonly FaultReceipt[], budgetMs: number, oracle: OracleResult): TaskGrade {
+export function gradeTask(record: TaskRecord, faults: readonly FaultReceipt[], budgetMs: number, oracle: OracleResult,
+  universalDb?: UniversalDbEvidence): TaskGrade {
   const crossing = crossingFaults(record, faults);
   const rules: Record<RuleId, RuleResult> = {
     R1: gradeR1(record, budgetMs, faults),
@@ -249,9 +258,13 @@ export function gradeTask(record: TaskRecord, faults: readonly FaultReceipt[], b
     R6: gradeR6(record),
   };
   const failed = (Object.entries(rules) as Array<[RuleId, RuleResult]>).find(([, rule]) => rule.verdict === "fail");
-  const pass = !failed && oracle.verdict === "pass";
+  // Universal checks run on every task whatever its workload; only enforced ones fail it (universal.ts).
+  const universal = gradeUniversal(record, universalDb ? { db: universalDb } : {});
+  const [universalFailure] = enforcedUniversalFailures(universal);
+  const pass = !failed && oracle.verdict === "pass" && !universalFailure;
   let signature: string | null = null;
   if (failed) signature = `${failed[0]}:${failed[1].detail.split(/[\s:(]/)[0]}:${record.plan.workload}:${record.plan.fault}`;
   else if (oracle.verdict === "fail") signature = `T:${oracle.checks.find(check => !check.ok)?.name ?? "unknown"}:${record.plan.workload}:${record.plan.fault}`;
-  return { crossed: crossing.length > 0, crossingFaults: crossing, rules, T: oracle, pass, signature };
+  else if (universalFailure) signature = `${universalFailure[0]}:${universalFailure[1].detail.split(/[\s:(]/)[0]}:${record.plan.workload}:${record.plan.fault}`;
+  return { crossed: crossing.length > 0, crossingFaults: crossing, rules, T: oracle, universal, pass, signature };
 }

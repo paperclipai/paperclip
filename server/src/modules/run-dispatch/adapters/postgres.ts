@@ -42,6 +42,7 @@ import { budgetService, budgetServiceInTransaction, recheckAdmittedRunBudgetRead
 import { lockRunBudgetRecoveryOwnerInTransaction, recheckRunBudgetReservationInTransaction } from "../../../services/budget-reservations.js";
 import { isCompletedOnboardingHandoffWake } from "../../../services/chat-completion-delivery.js";
 import { isUnstartedTaskQuestionAnswer } from "../../../services/unstarted-task-question-answer.js";
+import { isVerifiedDependencyInteractionResponse } from "../../../services/queued-interaction-response.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../../../services/heartbeat-policy.js";
 import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
@@ -226,6 +227,7 @@ export function createPostgresRunDispatchAdapter(
     onMissing: () => T,
     operation: (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => Promise<T>,
     mode: "accounting" | "ownership",
+    isolation: "snapshot" | "read committed" = "snapshot",
   ): Promise<T> {
     // Queue editing and claiming already use issue -> wake -> run. Read the
     // immutable issue reference without a lock first, then acquire issue ->
@@ -281,7 +283,8 @@ export function createPostgresRunDispatchAdapter(
         return { kind: "value" as const, value: await operation(typedTx, run, publications) };
       };
       const result: { kind: "missing" | "retry" } | { kind: "value"; value: T } = mode === "accounting"
-        ? await withOperationAccountingTransaction(db, input.companyId, locked)
+        ? await withOperationAccountingTransaction(db, input.companyId, locked,
+          isolation === "read committed" ? { isolationLevel: "read committed" } : {})
         : await db.transaction(tx => locked(tx as unknown as Db, []));
 
       if (result.kind === "missing") return onMissing();
@@ -293,12 +296,21 @@ export function createPostgresRunDispatchAdapter(
     );
   }
 
+  /** Accounting phase under issue -> run locks. Gate decisions that combine
+   * many facts (retry promotion, stale-run cancellation) keep one repeatable-
+   * read snapshot. The final dispatch gate passes READ COMMITTED: run-log
+   * appends and output progress update a running row while it waits, and a
+   * snapshot taken before the run lock went stale on each one until every
+   * retry was spent. Its mutable reads all follow the admission fences and the
+   * issue/run locks, budget exposure is one statement, and its ownership phase
+   * re-reads the staleness facts at READ COMMITTED under the same locks. */
   function withIssueThenRunLocks<T>(
     input: { runId: string; companyId: string; recoveryLeaseOwner?: string; enforceContinuationOwnership?: boolean },
     onMissing: () => T,
     operation: (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => Promise<T>,
+    isolation: "snapshot" | "read committed" = "snapshot",
   ) {
-    return withRunOwnershipLocks(input, onMissing, operation, "accounting");
+    return withRunOwnershipLocks(input, onMissing, operation, "accounting", isolation);
   }
 
   async function loadGateFacts(
@@ -488,8 +500,12 @@ export function createPostgresRunDispatchAdapter(
             .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, input.companyId),
               eq(agentWakeupRequests.id, input.wakeupRequestId))).then(rows => rows[0]?.actor ?? null) : null })
       : false;
+    const responseAdmitted = readiness && !readiness.isDependencyReady
+      && input.contextSnapshot.dependencyBlockedInteraction === true
+      && await isVerifiedDependencyInteractionResponse(dbOrTx, { companyId: input.companyId,
+        issueId, agentId: input.agentId, context: input.contextSnapshot });
     facts.dependenciesBlocked =
-      readiness && !readiness.isDependencyReady && !stallAdmitted
+      readiness && !readiness.isDependencyReady && !stallAdmitted && !responseAdmitted
         ? {
             unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
             unresolvedBlockerCount: readiness.unresolvedBlockerCount,
@@ -680,6 +696,10 @@ export function createPostgresRunDispatchAdapter(
       issueExecutionRunId: issue?.executionRunId ?? null,
       issueCheckoutRunId: issue?.checkoutRunId ?? null,
       isResolvedInteractionContinuation,
+      isDependencyBlockedInteractionResponse: Boolean(isResolvedInteractionContinuation && issue?.status === "blocked"
+        && context.dependencyBlockedInteraction === true
+        && await isVerifiedDependencyInteractionResponse(dbOrTx, { companyId: input.companyId, issueId,
+          agentId: input.agentId, context })),
       isUnstartedTaskQuestionAnswer: Boolean(isResolvedInteractionContinuation && issue?.status === "todo" &&
         await isUnstartedTaskQuestionAnswer(dbOrTx, { companyId: input.companyId, issueId, interactionId: context.interactionId })),
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
@@ -1465,6 +1485,7 @@ export function createPostgresRunDispatchAdapter(
         );
       },
       dispatchLockedRun,
+      "read committed",
     );
     if (!admission.dispatched) return admission;
     // Accounting has committed. Close the separate issue/run ownership race

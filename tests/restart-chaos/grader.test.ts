@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { crossingFaults, gradeR3, gradeR4, gradeR5, gradeTask, STALL_LIMIT_MS } from "./grader.js";
+import { crossingFaults, gradeR2, gradeR3, gradeR4, gradeR5, gradeTask, STALL_LIMIT_MS } from "./grader.js";
 import { isResting } from "./observer.js";
 import type { FaultReceipt, OracleArtifacts, RunSample, TaskRecord, TaskSample } from "./types.js";
 import { BENCH_EXPECTED, parseBenchRecord, r1TestChecksSlug, stallWakeChecks, workloadDefinitions } from "./workloads.js";
@@ -238,6 +238,21 @@ describe("T-oracles", () => {
     expect(stallWakeChecks({ ...stalled, childStalls: [] } as never)).toEqual([]);
   });
 
+  it("grades a Retry the user could not click in the board UI under its own R3 signature", () => {
+    const record = { plan: { workload: "A1" }, launchError: null, finalStatus: "blocked", timedOut: false, createdAt: 0, restAt: 1,
+      samples: [{ at: 1, reachable: true, serverReady: true, issueStatus: "blocked", interruption: { state: "failed", canRetry: true } }],
+      retry: { at: 2, observedRunId: "r1", httpStatus: null, accepted: null, error: "ui_retry_button_missing", via: "ui", bannerText: "Saving files" } } as unknown as TaskRecord;
+    expect(gradeR3(record)).toEqual({ verdict: "fail", detail: "ui_retry_button_missing (user saw: Saving files)" });
+    expect(gradeR3({ ...record, retry: { ...record.retry!, clicked: true, error: "ui_retry_no_request" } } as TaskRecord).detail).toMatch(/^ui_retry_no_request/);
+  });
+
+  it("reports R2 as not checked for a sandbox-only workspace instead of passing it", () => {
+    const record = { plan: { workload: "R1" }, launchError: null, finalStatus: "done", timedOut: false, createdAt: 0, restAt: 1,
+      remoteWorkspace: true, preFaultFiles: null, samples: [{ at: 1, reachable: true, serverReady: true, issueStatus: "done", interruption: null }] } as unknown as TaskRecord;
+    expect(gradeR2(record, { verdict: "pass", checks: [] })).toEqual({ verdict: "n/a",
+      detail: "remote workspace: files before and after the fault are not compared from this host" });
+  });
+
   it("grades S1: stopped run cancelled, nothing ran before the continue comment, brief has both markers", () => {
     const base: OracleArtifacts = { issueStatus: "done", documents: { brief: "CHAOS-abcd1234\nCONTINUE-abcd1234\n- one\n- two\n- three\n" },
       agentComments: [], files: {}, commands: {}, workspacePath: null,
@@ -247,6 +262,11 @@ describe("T-oracles", () => {
     expect(restarted.checks.find(check => check.name === "nothing_ran_after_stop")).toMatchObject({ ok: false, detail: "continue=true runs=r2" });
     expect(workloadDefinitions.S1.grade("abcd1234", { ...base, stop: { ...base.stop!, runStatus: "succeeded" } }).verdict).toBe("fail");
     expect(workloadDefinitions.S1.grade("abcd1234", { ...base, stop: undefined }).verdict).toBe("fail");
+    const missed = workloadDefinitions.S1.grade("abcd1234", { ...base, stop: { runId: null, runStatus: null, runsStartedBeforeContinue: [], continuePosted: true, missed: true } });
+    expect(missed.verdict).toBe("pass");
+    expect(missed.checks.find(check => check.name === "stop_took_effect")).toMatchObject({ ok: true, detail: "missed: the run finished before the stop window" });
+    expect(workloadDefinitions.S1.grade("abcd1234", { ...base, documents: { brief: "CHAOS-abcd1234\n- one\n- two\n- three\n" },
+      stop: { runId: null, runStatus: null, runsStartedBeforeContinue: [], continuePosted: true, missed: true } }).verdict).toBe("fail");
   });
 
   it("grades B1 by running the tests and the CLI", () => {

@@ -10,6 +10,10 @@ import { legacyExecutionNeedsReconciliation } from "../legacy-execution-recovery
 import { isConfigurationIncompleteFailedRun } from "../../modules/wake-queue/domain/values.js";
 
 describe("classifyAdapterFailureForRecovery", () => {
+  it("does not retry a permanently refused agent interaction delivery", () => {
+    expect(classifyContinuationFailure({ errorCode: "agent_interaction_delivery_denied", resultJson: null } as never))
+      .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
   it("does not automatically replay a project access denial", () => {
     expect(classifyContinuationFailure({ errorCode: "project_access_denied", resultJson: null } as never))
       .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });

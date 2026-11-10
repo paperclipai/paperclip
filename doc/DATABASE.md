@@ -122,9 +122,71 @@ original-volume anchor or filesystem read. These validations add bounded
 per-retained-scope database reads during startup. They do not add a worker or a
 poll. Missing or invalid byte evidence remains an enrollment blocker.
 
+The original-volume owner can refresh a WEB or full native receipt whose database
+facts digest has become stale only when fresh source inspection, current-key checkpoint
+validation and ciphertext hash/size readback prove the preserved bindings unchanged.
+It reuses the same archive and takes the existing finalizer, task and run fences before
+comparing the prior receipt digest and replacing it. The company activity log
+retains the prior database and local facts digests, source witness fingerprint,
+observation time and receipt digest. Those four changed fields must reconstruct
+the exact prior proof from the unchanged current bindings before publication. No source paths
+enter the audit delta; normal activity redaction remains enabled. Changed
+evidence, concurrent invalid receipts and active sources remain blocked; remote
+recovery obligations are unchanged.
+Full native reproof still requires canonical destroyed-provider receipts. A
+database-only legacy workspace migration marker can stale the facts digest while
+the preserved controller, skill assets and local byte proof remain unchanged;
+refresh authenticates that same object and does not upload a replacement archive.
+
+Local inode and timestamp observations may change between preservation attempts
+without changing byte coverage. Valid receipts remain idempotent after those
+changes; stale database facts can refresh with the same archive and fresh local
+observations. During one attempt, the local metadata digest must remain stable
+from capture through the locked publication check. Changed bytes, paths or modes
+still invalidate preservation evidence.
+
 Receipt validation adds bounded per-scope database reads to startup eligibility.
 It does not add a recurring scan or network work. Qualification must measure the
 selected cohort's startup latency on the serving revision before enrollment.
+
+### Workspace cohort admission proofs
+
+A saved cohort keeps its exact members, operations and snapshots on resume.
+Independent companion imports can change the current source-scope proof without
+changing those members. When every member has a running journal and its current
+fingerprint matches both saved fingerprints, the importer can reprove the current
+scope under fresh source, lifecycle and finalizer locks. After current source and
+recovery checks, one transaction compares every journal and refreshes only the
+cohort proof for all members. Cancellation or a changed journal rolls back the
+whole refresh. Partial reservations still require the original aggregate proof.
+Archives, recovery obligations and publication checks retain their existing owners.
+
+Git cache expiration treats a saved migration marker or unfinished migration
+journal as a durable consumer. It checks this under the lifecycle lock. A failed
+migration with `lastFailure` and no `retiredSave` also keeps its source and
+snapshot retention hold after process loss.
+
+If an older server already expired members of an unpublished cohort,
+`supersedeExpiredRemoteWorkspaceMigrationCohort` accepts the exact saved cohort
+and the exact expired member IDs. This is an internal service API for a privileged
+operator with a real database handle and reviewed company/cohort inputs. It does
+not add a CLI mode or an HTTP route. An operator calls the exported owner directly;
+its test and the reviewed one-time administrative qualification use that path.
+It requires completed Git expiration and an
+unexpired restore-point recipe for each missing member. Other members must retain
+their saved source fingerprints. Fresh source, lifecycle, finalizer and row locks
+protect one transaction that fails every old journal and removes only its matched
+active marker. It does not report migration success or change task state. The
+old cohort proof, operations, snapshots and object references remain unchanged.
+The failure receipt retains those objects through the existing failed-save hold.
+The optional `sourceLockWaitMs` uses the existing bounded source-lock queue.
+The default still refuses a busy source immediately. Cancellation targets this
+waiter only. All source and recovery checks run again after lock admission.
+
+New canonical imports use the current archived recipe or current online source.
+They record the old operation and supersession IDs and reserve a snapshot
+generation above the existing ledger maximum. A successful new import does not
+retire the old hold. Release of those historical objects requires separate review.
 
 ### Original local Git sources for archived workspaces
 
@@ -333,10 +395,119 @@ by company and normalized session. Migration 0432 builds both indexes
 concurrently. A poll therefore reads a few index entries, not a run's full event
 history.
 
+The attention feed finds retry-exhausted runs through the partial index
+`heartbeat_run_events_retry_exhausted_idx`. The index covers only `lifecycle`
+events whose message starts with `Bounded retry exhausted`, keyed by company,
+run, and newest event first. The query predicate must stay textually equal to
+the index predicate, or the scan reads every company event again. Migration
+0454 builds the index concurrently.
+
 A subtree pause release finds the runs that a dispatch gate refused for that pause
 through the partial index `heartbeat_runs_tree_hold_suppression_idx`. The index
 covers only cancelled runs with a `treeHoldSuppression` marker, keyed by company and
 hold. Migration 0436 builds it concurrently.
+
+The budget worker finds committed budget Stops that are not delivered yet
+through the partial index `heartbeat_runs_pending_budget_cancellation_idx`. The
+index covers only runs whose `result_json.startupCancellation.budgetEnforcement`
+is an object without `deliveredAt`, keyed by company. Its predicate must stay
+identical to `pendingBudgetRunCancellationPredicate` in
+`server/src/services/heartbeat/budget-cancellation.ts`; a regression test checks
+that the planner uses it. The worker check, run control, and the idle-sleep
+check therefore read a few index entries, not every run's result JSON. The
+migration builds the index concurrently. To compare both plans on a disposable
+local fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-budget-cancellation-scan.ts --runs=20000 --payload-kib=16
+```
+
+Workspace activity and cleanup checks (`expirationScope` in
+`server/src/services/git-workspace-expiration.ts`) find a workspace's runs with
+one index probe per binding: `issue_id`, `native_issue_id`, the bound issues'
+checkout and execution runs, and the legacy context keys `issueId`, `taskId`
+and `executionWorkspaceId`. Migration 0460 builds
+`heartbeat_runs_company_ctx_execution_workspace_idx` concurrently for the last
+key. The index is partial (`context_snapshot ? 'executionWorkspaceId'`), so it
+serves only queries that repeat that predicate and does not compete with other
+company-scoped indexes. The context expressions and the predicate must stay
+textually equal to the index definitions; a regression test checks that no
+binding scans `heartbeat_runs`.
+To compare both plans on a disposable local fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-workspace-activity.ts --baseline-ref=<pre-fix commit> --runs-per-workspace=3000
+```
+
+The task page's created-from list (`createdFromIssueCondition` in
+`server/src/services/issue-creation-origin.ts`) reads created tasks through
+three index probes: the recorded origin task (`issues_company_origin_issue_idx`),
+the source task's runs (`heartbeat_runs_company_origin_issue_idx`) and then the
+tasks whose only origin is one of those runs, and the creation activity of those
+runs (`activity_log_run_id_idx`). Migration 0461 builds the partial index
+`issues_company_legacy_origin_run_idx` concurrently for the run step. It keys
+tasks by company and `origin_run_id`, only where `origin_issue_id` is null and
+`origin_run_id` is not null. The run branch must repeat that predicate textually.
+A recorded origin task still wins over a run, and a run over activity. To compare
+both plans on a disposable local fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-created-from-issues.ts --baseline-ref=<pre-fix commit>
+```
+
+GitHub review lookups use four indexes from migration 0456, which builds them
+concurrently. `chat_message_links_company_comment_idx` finds a source comment's
+link for inherited review waits and run-origin checks.
+`chat_message_links_delivery_idx` finds a delivery's links.
+`chat_deliveries_github_automatic_delivery_idx` finds a delivery by its GitHub
+webhook delivery ID on one endpoint. These three are partial.
+`heartbeat_runs_company_wake_comment_idx` keys runs by company and
+`context_snapshot.wakeCommentId`. It is not partial, because the planner does not
+use expression statistics from a partial index; without them it estimates many
+matches and walks the run history by creation time instead. The review check
+reads the delivery's comment IDs first and then the newest same-agent run woken
+by one of them, so it no longer walks the agent's run history. The two link
+indexes also serve the comment and delivery `on delete set null` actions. Issue
+lists share one external review-wait read per issue between the review and
+blocked-inbox attention maps.
+
+Migration 0457 builds `heartbeat_runs_company_native_session_idx` concurrently.
+It keys runs by company and `native_session_id`, partial on a non-null session.
+Native retention, recovery, resume and archive reads find a session's runs
+through it instead of reading the agent's whole run history. To measure it:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-native-session-run-index.ts
+```
+
+Chat-admission checks use `chat_actions_company_issue_kind_idx` from migration
+0458, which builds it concurrently. The check decides whether an issue holds
+external chat input that was never admitted: recovery skips such an issue and
+manual task start refuses it. The index keys `inbound_wakeup` and
+`failed_run_retry` actions by company, `payload->>'issueId'`, kind and status.
+It serves the outer input lookup and the nested retry and later-input lookups,
+which all match on the same company and payload issue ID. Without it, each check
+reads the full `chat_actions` table. The check SQL is unchanged. Local proof:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-chat-admission-index.ts
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-chat-admission-index-migration.ts
+```
+
+Native harness backup expiration finds the leases that reference one backup root
+by run, by `metadata.nativeHarnessBackup.sessionScopeSha256`, and by the
+identity's own lease ID, in one `OR` query. The partial expression index
+`environment_leases_native_backup_scope_idx` from migration 0459 keys leases by
+that scope digest. With it, every arm of the `OR` has an index, so PostgreSQL
+combines three index probes instead of reading every lease of the company and its
+metadata. The expression must stay identical to the one in
+`server/src/services/native-runtime/native-harness-backup-expiration.ts`; a
+regression test checks that the planner uses the index. The migration builds the
+index concurrently. To compare both plans on a disposable local fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-environment-lease-backup-lookup.ts
+```
 
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
@@ -353,6 +524,18 @@ Use a revision before these fixes for `--baseline-ref` after they merge. The
 benchmark loads that revision's chat query, uses synthetic data only, compares
 complete returned rows, and prints timings and `EXPLAIN (ANALYZE, BUFFERS)` plans.
 Local results measure query execution, not staging request latency.
+
+The inbound conversation head reads one endpoint's open delivery IDs first. These
+are received, retry and processing deliveries (from `chat_deliveries_work_idx`)
+and processed deliveries that the endpoint's issued or processing `inbound_wakeup`
+actions still own. Only those rows are fetched, filtered by thread and sorted. The
+query does not scan the endpoint's processed history or read its
+`normalized_event` values. To compare it with a pre-change revision on a busy
+endpoint fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-inbound-queue-discovery.ts --baseline-ref=<commit> --endpoint-history=20000 --only=endpoint-history --require-work-budget
+```
 
 Run history defaults to 200 rows and permits at most 1,000 rows, including
 direct service calls. The UI client requests 200 rows when its caller omits a
@@ -397,8 +580,11 @@ retain the existing refresh fallback. Run transitions, activity events, and
 reconnect recovery still refresh their affected data.
 
 Task run queries stop interval polling only after a successful empty response
-and an open shared live connection for the current company and session. Initial
-reads, active work, errors, connection setup, and disconnections retain their
+and an open shared live connection for the current company and session. With
+that connection open, a successful active response (a run list or one run)
+polls only every 15 seconds. Lifecycle and progress events keep it current; the
+slow read only bounds drift in fields that have no event. Initial reads,
+unrecognized data, errors, connection setup, and disconnections retain their
 existing polling cadence. Company or session changes require a new connection.
 Views without an assigned agent retain polling. Matching run lifecycle events
 refresh the displayed task's run queries independently of route and window
@@ -410,6 +596,18 @@ request settles. Connection readiness also reconciles the displayed run
 queries after any older request. Follow-up reads belong to the current mounted
 scope and stop when it changes or unmounts. The first open and reconnect still
 reconcile missed events.
+
+Live events refresh company-wide lists and projections through a slower
+invalidation lane. These are task lists and summaries, the agent list, run
+lists, badges, the dashboard, costs and the company activity feed. The lane
+flushes at most once every 5 seconds. After 5 quiet seconds, an event refreshes
+them after the normal batch interval. An event inside the 5-second window waits
+until the window ends. Task detail, comments, runs, browsers and other
+per-entity queries keep the fast lane. A task's browser list stops interval
+polling while the live connection is open and no browser can still change
+state. Browser lifecycle activity on that task refreshes it. If a browser read
+is in flight, one shared follow-up read runs after it settles. A list that no
+view observes becomes stale, so the next view reads it.
 
 Bundled skill release checks read the current stored version ID and a SHA-256
 fingerprint of its file inventory. A per-database memo keeps at most 64 verified
@@ -1064,6 +1262,29 @@ The database mode is controlled by `DATABASE_URL`:
 
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
 
+## Schema change workflow
+
+When you change the data model:
+
+1. Edit `packages/db/src/schema/*.ts`.
+2. Export each new table from `packages/db/src/schema/index.ts`.
+3. Generate the migration from the repository root:
+
+   ```sh
+   pnpm db:generate
+   ```
+
+4. Validate that everything compiles:
+
+   ```sh
+   pnpm -r typecheck
+   ```
+
+`pnpm db:generate` compiles `packages/db` first, because
+`packages/db/drizzle.config.ts` reads the compiled schema from `dist/schema/*.js`.
+Then update every layer that the change affects: `packages/shared` types and
+validators, `server` routes and services, and `ui` API clients and pages.
+
 ## Migration authoring checklist
 
 Older embedded databases can use `SQL_ASCII`. Test encoding-sensitive SQL on
@@ -1577,6 +1798,38 @@ Lifecycle polls can page past failed resources using the last returned event id 
 cursor, never a persisted high-water mark. This retries failures and includes
 transactions that commit later with lower ids.
 
+`plugin_lifecycle_resource_cursors` keeps one row for each plugin and resource
+stream. Its `acknowledged_through_id` says that every event of that resource at
+or below the value is acknowledged. Acknowledgments above the cursor use
+`plugin_lifecycle_acknowledgments`. Acknowledgment writes both records, so an
+earlier release reads the same progress after a rollback. The cursor moves only
+over a contiguous acknowledged prefix. A creation recorded after transitions
+that are still pending does not move it. Writers record a resource's events
+while they hold that resource's row lock. Thus an event that commits later for
+the same resource always has a higher id than the cursor. A lower id from a
+different resource still stays deliverable.
+
+A lifecycle page visits each resource stream of the requested types once with a
+backward loose index scan, which also gives the stream's latest event id. A
+stream whose latest event is at or below its cursor is settled and is not read
+again. For each other stream the page reads one head: the unacknowledged
+creation, else the first unacknowledged transition above the cursor. Then it
+applies `afterId`, id order and the limit. Cost grows with the number of
+resource streams and pending events, not with the journal size. Acknowledgment
+reads only the events between the cursor and the acknowledged event. The
+idle-sleep check asks whether any stream has a head.
+
+Migration `0462` creates the cursor table and carries existing acknowledgments
+forward. For each plugin and resource it stores the end of the contiguous
+acknowledged prefix of events. A cursor never passes an unacknowledged event, so
+a gap is still delivered. Acknowledged events after the gap are still skipped
+through their acknowledgment rows. An earlier release that runs during
+a rolling deploy writes only acknowledgment rows, and the new reads honor them.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-plugin-lifecycle-inbox.ts --baseline-ref=8d2bf78323 --agents=400 --per-agent=2500 --acked=2000
+```
+
 ## Legacy controller ownership
 
 Legacy run claims atomically record `controller_boot_id`, a database-clock
@@ -1891,6 +2144,42 @@ delivery queries, including complete positional results and database plans.
 All data is synthetic. Query timings exclude process liveness probes, HTTP and
 provider work.
 
+The reconciler's lost-wake check for user comments reads in three stages.
+The first stage keeps recent user comments that no wake request carries. The
+second stage removes comments with a live or later run, and it requires an
+earlier run. Each stage probes native and legacy run bindings separately with
+existing indexes. Only the remaining comments reach the steer check, which
+reads run event payloads. An OR across both bindings let PostgreSQL hash the
+runs by company only and test each comment against every run of its company.
+No new index or migration is needed.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-comment-wake-check.ts --baseline-ref=02bfe71a6b
+```
+
+This disposable fixture compares the complete check result, the complete
+positional SQL rows, plans, and timings with and without nested-loop joins.
+
+The stale-continuation check for dropped user comments uses the same per-binding
+run probes. It first keeps the comments that a stale-continuation cancellation
+dropped and that no open wake carries, and only those comments reach the run
+probes.
+
+The workspace recovery worker's next deadline (`nextWorkspaceRecoveryAt`) and
+its discovery conditions find the source run, its finalizer and its leases by
+`id = canonical uuid of evidence->>'runId'`. The value is null unless the saved
+text is the canonical lowercase form, so the probe matches exactly the rows the
+former `id::text = evidence->>'runId'` comparison matched. The text comparison
+could not use a key, so each exhausted hold read every run, finalizer and lease
+of its company.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-recovery-status-checks.ts --baseline-ref=8d2bf78323
+```
+
+This fixture compares every changed discovery condition for every recovery
+action, the complete check results and the positional SQL rows before timing.
+
 ### Agent runtime synchronization journal
 
 Migration 0347 adds the opt-in `agent_runtime` resource stream. Database triggers
@@ -2029,6 +2318,31 @@ verified late receipt updates effective token/request fields; each adjustment
 retains its previous usage in `previous_usage_json`.
 Unknown late run receipts remain durable per-receipt debt; resolving one receipt
 cannot clear another unresolved receipt.
+
+Live usage receipt writes use READ COMMITTED and the existing run-row lock. All
+mutable receipt and accounting reads occur under that lock. A streamed run-log
+append between company validation and lock acquisition therefore cannot exhaust
+serialization retries. A concurrent finalization is read under the lock and
+keeps the normal late-receipt reconciliation path. Other independent accounting
+operations retain their repeatable-read snapshot. Receipt identity, replay
+conflicts, company scoping and budget-work publication remain transactional.
+
+Run budget admission (`reserveRunBudget`), the final dispatch gate's accounting
+phase (resolved-interaction dispatch only), the usage recorder's receipt-source handoff and its capture-failure fence
+use the same pattern. The dispatch gate's ownership phase already ran at READ
+COMMITTED under the same issue and run locks. Retry promotion and stale-run
+cancellation keep their repeatable-read snapshot because they combine many facts
+in one decision. Admission reads all
+mutable state after the shared admission fences, the agent share lock and the
+run-row lock. Its exposure is one statement, and the per-run reservation index
+plus the run lock prevent a second hold. Run-log appends and output progress that
+update a preparing run therefore cannot exhaust admission retries. Concurrent
+admissions of different runs remain best-effort, as before. When any operation
+transaction still exhausts its retries, it raises `AccountingContentionError`. The
+error carries a bounded message, keeps the SQLSTATE in `code` and the database
+error in `cause`, and is logged with both. A run that fails this way keeps the
+generic `adapter_failed` code, so existing retry paths apply, and records that
+bounded message with the SQLSTATE as its failure cause.
 
 Upgrade all controllers/workers to this accounting contract and drain incompatible
 pre-upgrade database transactions before enabling independent writers. Do not run

@@ -85,7 +85,7 @@ import { sentryReady, shutdownSentry, captureException } from "./sentry.js";
 import { setSentryRunLinkResolver } from "./sentry-links.js";
 import { createSentryRunLinkResolver } from "./services/sentry-run-links.js";
 import { waitForPendingRunFailureReports } from "./services/run-failure-report.js";
-import { verifyStoppedNativeSessionForReplacement } from "./services/native-runtime/native-session-executor.js";
+import { verifyStoppedNativeSessionForAutomaticReplacement } from "./services/native-runtime/native-session-executor.js";
 import { registerNativeCleanupReleaseWake } from "./services/native-runtime/native-cleanup-release-wake.js";
 import { logNativeCleanupQuarantines } from "./services/native-runtime/native-cleanup-quarantine-log.js";
 import { embeddedPostgresOwnerPort } from "./embedded-postgres-owner.js";
@@ -195,6 +195,7 @@ import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl, resolveLocalR
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
+import { abortInFlightMultipartUploads } from "./storage/s3-multipart.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
@@ -203,6 +204,7 @@ import { conflict } from "./errors.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import {
+  afterStalledShutdownStep,
   closeHttpListenerForShutdown,
   coordinateHeartbeatSchedulerShutdown,
   createPreDrainShutdownBudget,
@@ -1396,7 +1398,7 @@ async function startServerWithDatabaseTeardown(
     { queue: DELIVERY_QUEUES.executionStatus, run: () => deliverExecutionStatuses(db), next: executionSchedule.status },
     { queue: DELIVERY_QUEUES.executionDisposition, run: () => settleUnrecoverableExecutions(db), next: executionSchedule.disposition },
     ...(heartbeat ? [
-      { queue: DELIVERY_QUEUES.executionReplacement, run: () => reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForReplacement(db, run) }), next: executionSchedule.replacement, onSettled: () => invalidateNativeReplacementDiscovery(db), settleEmptyWhilePaused: true },
+      { queue: DELIVERY_QUEUES.executionReplacement, run: () => reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: run => verifyStoppedNativeSessionForAutomaticReplacement(db, run) }), next: executionSchedule.replacement, onSettled: () => invalidateNativeReplacementDiscovery(db), settleEmptyWhilePaused: true },
       { queue: DELIVERY_QUEUES.executionContinuation, run: async () => {
         await deliverReconciledExecutions(db, heartbeat.wakeup);
         await deliverPendingPauseResumes(db, heartbeat.wakeup);
@@ -2044,6 +2046,11 @@ async function startServerWithDatabaseTeardown(
     );
   }
   
+  const abortStuckMultipartUploads = async (signal: "SIGINT" | "SIGTERM", graceMs = 0) => {
+    const abortedUploads = await abortInFlightMultipartUploads(new Error("server_shutdown"), { graceMs });
+    if (abortedUploads) logger.info({ signal, abortedUploads }, "aborted in-flight multipart uploads before exit");
+  };
+
   const performShutdown = async (
     signal: "SIGINT" | "SIGTERM",
     exitProcess: boolean,
@@ -2071,10 +2078,11 @@ async function startServerWithDatabaseTeardown(
     unsubscribeRetainedNativeSessionCleanup?.();
     // B can accept Stop/answers while A still owns an execution. Preserve the
     // owner command workers and their transport until the handoff below ends.
-    await preDrain.run("delivery_work_stop", () => deliveryWork.stop(deploymentHints ? new Set([
+    const deliveryWorkStop = await preDrain.run("delivery_work_stop", () => deliveryWork.stop(deploymentHints ? new Set([
       DELIVERY_QUEUES.nativeCancellation, DELIVERY_QUEUES.nativeRuntimeResponses, DELIVERY_QUEUES.question,
       DELIVERY_QUEUES.deploymentNotifications, DELIVERY_QUEUES.liveInvalidations,
     ]) : undefined));
+    await afterStalledShutdownStep(deliveryWorkStop, () => abortStuckMultipartUploads(signal));
     await preDrain.run("run_evidence_migration_stop", async () => {
       await runEvidenceMigrationWork?.stop();
     });
@@ -2083,7 +2091,8 @@ async function startServerWithDatabaseTeardown(
       await skillVersionRetentionWorker?.dispose();
     });
     const workspaceRecoveryStop = workspaceRecoveryWork.stop();
-    await preDrain.run("workspace_recovery_stop", () => workspaceRecoveryStop);
+    await afterStalledShutdownStep(await preDrain.run("workspace_recovery_stop", () => workspaceRecoveryStop),
+      () => abortStuckMultipartUploads(signal));
     unregisterTerminalWorkspaceProbe?.();
     unsubscribeNativeWorkspaceSyncRetention?.();
 
@@ -2133,6 +2142,8 @@ async function startServerWithDatabaseTeardown(
         logger.error({ err, signal }, "graceful heartbeat run drain failed");
       }
     }
+
+    await abortStuckMultipartUploads(signal, 5_000);
 
     if (!skipHeartbeatDrain) {
       await drainRunExecutionFinalizersForShutdown({

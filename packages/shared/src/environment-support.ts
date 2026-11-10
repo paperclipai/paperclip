@@ -59,6 +59,8 @@ export interface EnvironmentProviderCapability {
 }
 
 export interface EnvironmentCapabilities {
+  /** Namespaced plugin driver keys that can host a login on a saved agent. */
+  loginPtyDrivers?: Record<string, { supportsLoginPty: boolean; supportsCodexLogin?: boolean }>;
   adapters: AdapterEnvironmentSupport[];
   drivers: Record<EnvironmentDriver, EnvironmentSupportStatus>;
   sandboxProviders: Record<SandboxEnvironmentProvider, EnvironmentProviderCapability>;
@@ -199,4 +201,16 @@ export function getEnvironmentCapabilities(
     },
     sandboxProviders,
   };
+}
+
+/** Shared presentation rule for both temporary sandboxes and existing computers. */
+export function environmentSupportsLoginPty(environment: { driver: string; config: Record<string, unknown> } | null | undefined, capabilities: EnvironmentCapabilities | null | undefined, adapterType?: string): boolean {
+  if (!environment || !capabilities) return false;
+  if (environment.driver === "sandbox") return typeof environment.config.provider === "string" && capabilities.sandboxProviders[environment.config.provider]?.supportsLoginPty === true;
+  if (environment.driver === "plugin") {
+    const driver = capabilities.loginPtyDrivers?.[`${environment.config.pluginKey}:${environment.config.driverKey}`];
+    return driver?.supportsLoginPty === true
+      && (adapterType === undefined || adapterType === "claude_local" || (adapterType === "codex_local" && driver.supportsCodexLogin === true));
+  }
+  return false;
 }

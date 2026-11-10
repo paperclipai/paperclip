@@ -5,9 +5,12 @@ import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import type { StorageService } from "../storage/types.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { STORAGE_FAILURE_CLEANUP_MS } from "../storage/failure-cleanup.js";
+import { logger } from "../middleware/logger.js";
 
 export const REMOTE_WORKSPACE_SNAPSHOT_GRACE_MS = 7 * 86400_000;
 export const REMOTE_WORKSPACE_SNAPSHOT_RETRY_MS = 15 * 60_000;
+const SNAPSHOT_ABORT_CONCURRENCY = 8;
 type Snapshot = typeof executionWorkspaceSnapshots.$inferSelect;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type ReadDb = Pick<Db, "select"> | Pick<Tx, "select">;
@@ -15,6 +18,44 @@ const date = (value: unknown) => typeof value === "string" && Number.isFinite(Da
 
 export function notifyRemoteWorkspaceSnapshots(transaction: object, hint?: string) {
   return notifyDeliveryWork(transaction, DELIVERY_QUEUES.remoteWorkspaceSnapshots, hint);
+}
+
+export function snapshotAttemptKeys(row: Snapshot) {
+  const uploads = Array.isArray(row.metadata?.uploads) ? row.metadata.uploads as Array<{ objectKey?: unknown }> : [];
+  const prefix = `${row.companyId}/workspace-snapshots/${row.executionWorkspaceId}/${row.id}/`;
+  return [...new Set(uploads.flatMap(upload => typeof upload?.objectKey === "string" && upload.objectKey !== row.objectKey
+    && upload.objectKey.startsWith(prefix) && !upload.objectKey.includes("..") ? [upload.objectKey] : []))];
+}
+
+export async function abortSnapshotAttemptUploads(storage: StorageService, companyId: string, keys: Iterable<string>, signal?: AbortSignal) {
+  const abort = storage.abortIncompleteUploads?.bind(storage);
+  const pending = [...keys];
+  if (!abort || !pending.length) return 0;
+  signal?.throwIfAborted();
+  const bounded = AbortSignal.timeout(STORAGE_FAILURE_CLEANUP_MS);
+  const deadline = signal ? AbortSignal.any([signal, bounded]) : bounded;
+  let aborted = 0;
+  const worker = async () => {
+    for (let key = pending.shift(); key !== undefined && !deadline.aborted; key = pending.shift()) {
+      try {
+        const count = await abort(companyId, key, { signal: deadline });
+        aborted += count;
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        logger.warn({ err: error, companyId, objectKey: key }, "workspace snapshot multipart upload abort failed");
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(SNAPSHOT_ABORT_CONCURRENCY, pending.length) }, worker));
+  signal?.throwIfAborted();
+  if (pending.length) logger.warn({ companyId, remaining: pending.length }, "workspace snapshot multipart upload abort ran out of time");
+  return aborted;
+}
+
+function abandonedUploadOperationId(row: Snapshot) {
+  if (row.status !== "delete_requested") return null;
+  const abandoned = row.metadata?.abandonedUpload as { operationId?: unknown } | undefined;
+  return typeof abandoned?.operationId === "string" && abandoned.operationId === row.sourceOperationId ? abandoned.operationId : null;
 }
 
 async function pinned(db: ReadDb, row: Snapshot) {
@@ -37,7 +78,8 @@ async function pinned(db: ReadDb, row: Snapshot) {
       // A failed save keeps its snapshot pinned for its retry, as while it ran,
       // until the final save retires it.
       sql`(${workspaceOperations.status} = 'failed' and ${workspaceOperations.metadata} ? 'lastFailure'
-        and ${workspaceOperations.metadata}->'retiredSave' is null)`,
+        and ${workspaceOperations.metadata}->'retiredSave' is null
+        and ${workspaceOperations.id}::text is distinct from ${abandonedUploadOperationId(row)})`,
       sql`(${workspaceOperations.metadata}->'saveWork'->>'schema' = 'paperclip.remote-workspace-save-work.v1'
         and (${workspaceOperations.metadata}#>'{saveWork,unknown}' is distinct from 'false'::jsonb
           or case when jsonb_typeof(${workspaceOperations.metadata}#>'{saveWork,activeIds}') = 'array'
@@ -141,6 +183,7 @@ export function remoteWorkspaceSnapshotRetentionService(db: Db, options: {
         for (const key of keys) {
           if (!key.startsWith(prefix) || key.includes("..") || key.includes("\\")) throw new Error("snapshot_upload_scope_invalid");
         }
+        await abortSnapshotAttemptUploads(options.storage, claimed.companyId, keys, signal);
         for (const key of keys) {
           signal?.throwIfAborted();
           await options.storage.deleteObject(claimed.companyId, key, { signal, allVersions: true });

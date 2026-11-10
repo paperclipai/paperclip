@@ -4,7 +4,8 @@ import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activityLog, agents, authUsers, companyMemberships, companySkillRepositorySnapshots, principalPermissionGrants, environments, environmentLeases, companies, completionContracts, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
+import { activityLog, agents, authUsers, companyMemberships, companySkillRepositorySnapshots, principalPermissionGrants, environments, environmentLeases, companies, completionContracts, costEvents, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
+import { accountRunCost } from "../run-cost-accounting.js";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -25,6 +26,7 @@ import { resolveHeartbeatNativeRuntimeMode } from "../native-runtime/runtime-mod
 import { claimNativeRestartRecoveries } from "../native-runtime/native-restart-recovery.js";
 import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 import { prepareAndSelectHeartbeatRuntime, selectHeartbeatRuntime, type HeartbeatRuntimeSelectionInput } from "./runtime-selection.js";
+import { resolveRunnerEnvironmentForRun, resolveWarmRunnerIdleTimeoutMsForRun } from "../runner-environment-lifecycle.js";
 import { reserveRunBudget } from "../budget-reservations.js";
 import { legacyControllerClaim } from "../legacy-controller-lease.js";
 import { agentInstructionWorkingCopyService } from "../agent-instruction-working-copies.js";
@@ -329,6 +331,53 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
       payload: expect.objectContaining({ state: changed ? "saved" : "unchanged", contract: "agent_files", errorCode: null }) }));
     if (changed) expect(await readFile(join(canonical, "memory.txt"), "utf8")).toBe("Synthetic changed memory.\n");
   }, 45_000);
+
+  it.each([true, false])("records which earlier run a follow-up's process identity came from (prior identity: %s)", async priorIdentity => {
+    const { input, run, agent, issue } = await fixture();
+    const sessionId = randomUUID();
+    const prior = await selectHeartbeatRuntime(db, input);
+    if (!prior.selected || !prior.nativeExecution) throw new Error("Expected prior native selection");
+    const priorInput = { ...prior.nativeExecution, session: { ...prior.nativeExecution.session, normalizedSessionId: sessionId } };
+    const priorProfile = (await read(run.id)).runnerProfileJson;
+    const processStartedAt = new Date(Date.now() - 60_000);
+    await db.update(heartbeatRuns).set({ status: "succeeded", nativeSessionId: sessionId,
+      ...(priorIdentity ? { processPid: 11_356, processGroupId: 11_356, processStartedAt } : {}),
+      runnerProfileJson: { ...priorProfile, nativeExecutionInput: priorInput, sessionCheckpoint: {
+        backendKind: "runner", driverKind: "codex_app_server", sessionId: "retained-provider-thread",
+        providerSessionId: "retained-provider-thread", identity: { ...priorInput.binding, sessionId },
+      } },
+    }).where(eq(heartbeatRuns.id, run.id));
+    const [nextRun] = await db.insert(heartbeatRuns).values({ companyId: agent.companyId, agentId: agent.id,
+      issueId: issue.id, scopeKind: "issue", status: "running", nativeSessionId: sessionId,
+      createdAt: new Date(run.createdAt.getTime() + 1000),
+    }).returning();
+    input.run = nextRun!;
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected) throw new Error("Expected follow-up native selection");
+    const saved = await read(nextRun!.id);
+    if (priorIdentity) {
+      expect(saved).toMatchObject({ processPid: 11_356, processGroupId: 11_356 });
+      expect(saved.runnerProfileJson?.inheritedProcessIdentityRunId).toBe(run.id);
+      // Settled-process cleanup clears the predecessor before the follow-up's
+      // accounting runs; the follow-up was refused before it launched.
+      await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, processStartedAt: null })
+        .where(eq(heartbeatRuns.id, run.id));
+      const sourceId = randomUUID();
+      await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(), costAccountingPending: true,
+        errorCode: "native_session_cleanup_quarantined",
+        usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0, accountingReceiptReady: false,
+          accountingReceiptUnavailable: true, accountingReceiptSourceFences: {},
+          ledgerScope: { issueId: issue.id, projectId: null, billingCode: null } } })
+        .where(eq(heartbeatRuns.id, nextRun!.id));
+      await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", failureCode: "native_session_cleanup_quarantined" })
+        .where(eq(nativeRunFinalizations.runId, nextRun!.id));
+      expect(await accountRunCost(db, nextRun!.id)).toBe(true);
+      expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, nextRun!.id))).toEqual([]);
+    } else {
+      expect(saved.processPid).toBeNull();
+      expect(saved.runnerProfileJson?.inheritedProcessIdentityRunId).toBeUndefined();
+    }
+  });
 
   it.each(["matching", "different-session", "absent"])("persists the migrated logical cwd only for the receipt's exact session: %s", async receipt => {
     const sameSession = receipt === "matching";
@@ -715,6 +764,67 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect(input.stopControllerLease).toHaveBeenCalledOnce();
     expect((await read(run.id)).runtimeMode).toBe("native");
     expect(await coordinators(run.id)).toHaveLength(1);
+  });
+
+  // The remote-sandbox warm default follows the acquired lease: it never turns a
+  // run that works per-turn into a refused warm run.
+  it.each([
+    ["a reusable lease", { reusableLeaseConfigured: true, effectiveCapabilities: { reusableLeases: true } }, "warm", "keep_running"],
+    ["reuse configured on a provider without reusable leases", { reusableLeaseConfigured: true, effectiveCapabilities: { reusableLeases: false } }, "per_turn", "destroy_after_turn"],
+    ["an ephemeral lease", {}, "per_turn", "destroy_after_turn"],
+  ] as const)("defaults an agent without a lifecycle on %s", async (_name, lease, lifecycleMode, sandboxResource) => {
+    const { input } = await fixture();
+    const { lifecycleMode: _unset, ...adapterConfig } = (input.agent.adapterConfig ?? {}) as Record<string, unknown>;
+    input.agent.adapterConfig = adapterConfig;
+    input.workspace.executionTarget = { ...sandbox, ...lease } as never;
+    input.beforeNativeRuntimeSelection = async () => { throw new Error("selection interrupted"); };
+    await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("selection interrupted");
+    expect(input.onNativeLifecycleSelected).toHaveBeenCalledWith({ provider: "codex", harness: "codex_app_server", lifecycleMode, sandboxResource });
+  });
+
+  // The environment view (lease) and the native policy (runner) must make the
+  // same remote-sandbox decision for every harness, including a provider-less
+  // Codex agent and ACPX without an agent (Claude).
+  it.each([
+    [{ provider: "codex", model: "gpt-5.6-luna" }, "warm"],
+    [{ model: "gpt-5.6-luna" }, "warm"],
+    [{ provider: "opencode", model: "openai/gpt-5" }, "warm"],
+    [{ provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-4-6" }, "warm"],
+    [{ provider: "acpx", model: "claude-sonnet-4-6" }, "warm"],
+    [{ provider: "acpx", acpxAgent: "copilot", model: "gpt-5" }, "per_turn"],
+  ] as const)("agrees with the environment view's lease for %j", async (adapterConfig, mode) => {
+    const { input, run, agent, issue } = await fixture();
+    input.agent.adapterConfig = adapterConfig;
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({ persisted: run, enabled: true, runtimeConfig: {}, adapterConfig, agent, issue, target: null, workspaceId: null });
+    // An inheriting environment with its own idle window: the provider and the runner must use the same one.
+    const environment = { driver: "sandbox" as const, config: { provider: "daytona", runnerIdleTimeoutMs: 900_000 } as Record<string, unknown> };
+    const view = resolveRunnerEnvironmentForRun(environment, "paperclip_runner", adapterConfig, undefined, undefined, { reusableLeaseSupported: true });
+    expect(view.config.reuseLease === true).toBe(mode === "warm");
+    const forwardedIdleMs = resolveWarmRunnerIdleTimeoutMsForRun(environment, "paperclip_runner", adapterConfig, undefined, { reusableLeaseSupported: true });
+    input.workspace.executionTarget = { ...sandbox, reusableLeaseConfigured: view.config.reuseLease === true, effectiveCapabilities: { reusableLeases: true },
+      runnerIdleTimeoutMs: 900_000 } as never;
+    const stop = new Error("policy captured");
+    const policies: unknown[] = [];
+    await expect(prepareAndSelectHeartbeatRuntime(db, input, {
+      measure: async (_phase, work) => work(),
+      prepareInstructions: async (policy) => { policies.push(policy); throw stop; },
+    })).rejects.toBe(stop);
+    expect(policies).toEqual([mode === "warm" ? { mode, idleTimeoutMs: forwardedIdleMs } : { mode, idleTimeoutMs: null }]);
+    expect(forwardedIdleMs).toBe(mode === "warm" ? 900_000 : undefined);
+  });
+
+  it("keeps a plugin task's sandbox target out of the remote default", async () => {
+    const { input } = await fixture();
+    const { lifecycleMode: _unset, ...adapterConfig } = (input.agent.adapterConfig ?? {}) as Record<string, unknown>;
+    input.agent.adapterConfig = adapterConfig;
+    input.workspace.executionTarget = { ...sandbox, reusableLeaseConfigured: true, effectiveCapabilities: { reusableLeases: true }, runnerTask: vi.fn() } as never;
+    const stop = new Error("policy captured");
+    const policies: unknown[] = [];
+    await expect(prepareAndSelectHeartbeatRuntime(db, input, {
+      measure: async (_phase, work) => work(),
+      prepareInstructions: async (policy) => { policies.push(policy?.mode); throw stop; },
+    })).rejects.toBe(stop);
+    expect(policies).toEqual(["per_turn"]);
   });
 
   it("rejects a warm native sandbox that cannot reuse its lease", async () => {

@@ -2,7 +2,7 @@ import { filterConnectionManagementRows, connectionManagementGuard, connectionRe
 import { Router, type Request, type Response } from "express";
 import { and, desc, eq, gte, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, toolApplications, toolCallEvents, toolConnections, toolInvocations, toolRuntimeSlots } from "@paperclipai/db";
+import { agents, companies, toolApplications, toolCallEvents, toolConnections, toolInvocations, toolRuntimeSlots } from "@paperclipai/db";
 import {
   humanizeConnectionDisplayName,
   type PermissionKey,
@@ -437,6 +437,19 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         return;
       }
       await assertBoardPermission(req, companyId, "tools:admin");
+      if (req.actor.type === "agent") {
+        // The plaintext is shown exactly once. An agent caller would receive it
+        // in its tool result and could repeat it in chat, so only a person
+        // creates client tokens, from the gateway's Tokens page.
+        const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId)).limit(1);
+        const tokensPath = company ? `/${company.issuePrefix}/apps/gateways/${req.params.gatewayId as string}/tokens` : null;
+        throw new ToolGatewayHttpError(403,
+          "Final: agents cannot create gateway client tokens, because the token is shown only once to whoever creates it. "
+            + `A person with gateway access must create the replacement on the gateway's Tokens page${tokensPath ? ` (${tokensPath})` : ""}, give it to the client, and revoke the old token after the client works. `
+            + "Do not ask for or repeat token values in chat.",
+          "gateway_token_requires_person",
+          tokensPath ? { tokensPath } : {});
+      }
       const parsed = createToolMcpGatewayTokenSchema.safeParse(req.body ?? {});
       if (!parsed.success) {
         res.status(422).json({ error: "Invalid gateway token payload", issues: parsed.error.issues });

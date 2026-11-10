@@ -604,6 +604,18 @@ test("release verification builds native test binaries in a required Rust-cached
   assert.doesNotMatch(cloud, /continue-on-error|always\(\)/);
 });
 
+test("chaos verification prepares native Runner binaries before fault suites", () => {
+  const workflow = readWorkflow("runner-chaos-evals.yml");
+  const steps = workflow.split(/\n(?=      - )/);
+  const install = steps.find(step => /run:\s*pnpm install\b/.test(step));
+  const prepare = steps.find(step => /run:\s*pnpm --filter @paperclipai\/paperclip-runner build:rust\b/.test(step));
+  const faults = steps.find(step => /src\/native-session-runtime\.test\.ts/.test(step));
+  assert.ok(install && prepare && faults, "the real Runner fault suite needs its native build prerequisite");
+  assert.ok(steps.indexOf(install) < steps.indexOf(prepare));
+  assert.ok(steps.indexOf(prepare) < steps.indexOf(faults));
+  assert.doesNotMatch(prepare, /^\s+(?:if|continue-on-error):/m);
+});
+
 test("Runner eval workflows pin actions and gate paid live execution", () => {
   const actionPinWorkflows = [
     readWorkflow("release-verify.yml"),

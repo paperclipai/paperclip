@@ -858,6 +858,9 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
 
   it("records the finalization error code when provider-scope retries fail an unsucceeded run", async () => {
     const fixture = await seedNativeRun();
+    // Two earlier finalizations of this result failed; this is the third.
+    await db.update(heartbeatRuns).set({ resultJson: { finalizationFailureCount: 2 } })
+      .where(eq(heartbeatRuns.id, fixture.runId));
     await db.insert(nativeRunFinalizations).values({
       runId: fixture.runId, companyId, issueId: fixture.issueId, phase: "observed", attempt: 3,
     });
@@ -867,6 +870,20 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     const run = await readRunError(fixture.runId);
     expect(run).toMatchObject({ status: "failed", errorCode: "native_finalization_retry_exhausted" });
     expect(run?.error).toBeTruthy();
+  });
+
+  it("keeps a provider-succeeded run's first finalization failure retryable after three provider attempts", async () => {
+    const fixture = await seedNativeRun();
+    await db.update(heartbeatRuns).set({ resultJson: { prpRunTerminalState: "succeeded" } })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    await db.insert(nativeRunFinalizations).values({
+      runId: fixture.runId, companyId, issueId: fixture.issueId, phase: "observed", attempt: 3,
+    });
+    const failure = await recordNativeFinalizationFailure({
+      db, runId: fixture.runId, error: new Error("native_finalization_invalid"), projectRunStatus: true,
+    });
+    expect(failure).toMatchObject({ phase: "retryable_failure", failureCode: "native_finalization_invalid" });
+    await expect(readRunError(fixture.runId)).resolves.toEqual({ status: "running", errorCode: null, error: null });
   });
 
   it("fails a provider-succeeded run with an error code when workspace retries are exhausted", async () => {
@@ -887,7 +904,7 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
 
   it("does not attach a finalization error to a provider-succeeded run when provider retries are exhausted", async () => {
     const fixture = await seedNativeRun();
-    await db.update(heartbeatRuns).set({ resultJson: { prpRunTerminalState: "succeeded" } })
+    await db.update(heartbeatRuns).set({ resultJson: { prpRunTerminalState: "succeeded", finalizationFailureCount: 2 } })
       .where(eq(heartbeatRuns.id, fixture.runId));
     await db.insert(nativeRunFinalizations).values({
       runId: fixture.runId, companyId, issueId: fixture.issueId, phase: "observed", attempt: 3,

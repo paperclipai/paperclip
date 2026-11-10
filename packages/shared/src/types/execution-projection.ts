@@ -68,6 +68,7 @@ export const EXECUTION_RECONCILIATION_CAUSES = [
   "provider_failure_meaning_unverified",
   "provider_ownership_unverified",
   "native_provider_terminal_failed",
+  "native_governed_wait_settlement_pending",
   "native_event_replay_conflict",
   "native_session_cleanup_quarantined",
   "native_session_retry_exhausted",
@@ -85,6 +86,9 @@ export function requiresExecutionReconciliation(
 export interface ExecutionReconciliation {
   runId: string;
   providerStopped: true;
+  /** Only the exact namespace-unverified Native ownership hold accepts these. */
+  controllerStopped?: true;
+  controllerAuthorityDigest?: string;
   actionOutcome: "completed" | "not_performed" | "mixed";
   outcomeEvidence: string;
   /** Operator evidence bound to this failed run; required after workspace restore failure. */
@@ -120,6 +124,20 @@ export interface ExecutionReconciliation {
 export interface TaskInterruptionPresentation {
   providerFailure?: import("../provider-failure.generated.js").ProviderFailure;
   workspaceFailure?: { message: string };
+  /**
+   * A configured workspace setup command exited non-zero before the agent
+   * started (`setup_failed`). Bounded and redacted: the step, the configured
+   * command, its exit status and a short tail of its output.
+   */
+  setupFailure?: {
+    step: "workspace_provision" | "workspace_seed" | "workspace_runtime_provision";
+    command: string;
+    exitCode: number | null;
+    output: string | null;
+    message: string;
+  };
+  /** With `userAction: "choose_model"`: the configured model id the provider rejected. */
+  rejectedModel?: string;
   /** A persisted Retry admission wait, normalized to public text by the server. */
   retryWait?: { reason: string; message: string };
   intentId: string | null;
@@ -129,7 +147,9 @@ export interface TaskInterruptionPresentation {
   canRetry: boolean;
   userAction: "approval" | "reconnect" | "assign_agent" | "choose_model" | "resume" | "budget" | "project_access"
     /** Board confirms that a previous server, which can no longer report, stopped its workspace copyback. */
-    | "confirm_owner_stop" | null;
+    | "confirm_owner_stop"
+    /** Board confirms that a run whose server restarted before it recorded the agent's process has stopped. */
+    | "confirm_run_stopped" | null;
   /** Only the task's own project id is exposed. Other source projects stay unnamed. */
   projectAccess?: { agentId: string; projectId: string | null; ready: boolean };
   sourceRunIds: string[];

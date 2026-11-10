@@ -1,5 +1,6 @@
 import { PrimaryAgentIndicator } from "@/components/primary-agent/PrimaryAgentPresentation";
 import { AgentBulkRoster } from "@/components/agents/AgentBulkRoster";
+import { AgentRosterFilters, useAgentRosterFilters } from "@/components/agents/AgentRosterFilters";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { AgentChatPin, useAgentChatPins } from "@/components/AgentChatPin";
 import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
@@ -239,6 +240,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     enabled: !!selectedCompanyId,
   });
   const { data: agents, isLoading } = agentsQuery;
+  const rosterFilters = useAgentRosterFilters(selectedCompanyId, agents);
   const agentsView = useQueryView(agentsQuery);
 
   const { data: orgTree } = useQuery({
@@ -346,8 +348,8 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     );
   }
 
-  const filtered = filterAgents(agents ?? [], tab, builtInAgentIds, query);
-  const filteredOrg = filterOrgTree(orgTree ?? [], tab, builtInAgentIds, query.trim() ? new Set(filtered.map(agent => agent.id)) : undefined);
+  const filtered = filterAgents(agents ?? [], tab, builtInAgentIds, query).filter(rosterFilters.matches);
+  const filteredOrg = filterOrgTree(orgTree ?? [], tab, builtInAgentIds, query.trim() || rosterFilters.activeCount ? new Set(filtered.map(agent => agent.id)) : undefined);
   const environmentDataLoading = environmentsEnabled && environments === undefined;
   const showEnvironmentColumn = environmentsEnabled && (environments === undefined || environments.length > 1);
   const resolveRenderedEnvironment = (agentId: string) => (
@@ -436,6 +438,8 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
       <AgentsToolbar query={query} onQueryChange={setQuery} view={effectiveView} onViewChange={setView}
         hideViewToggle={forceListView} onNewAgent={openNewAgent} />
 
+      <AgentRosterFilters {...rosterFilters} count={filtered.length} />
+
       <div className={cn("min-h-0 space-y-4", effectiveView === "org" && "flex flex-1 flex-col")}>
 
       {agents && agents.length === 0 && (
@@ -450,7 +454,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
       {/* List view */}
       {effectiveView === "list" && agents && agents.length > 0 && (
         <AgentBulkRoster key={selectedCompanyId} companyId={selectedCompanyId}
-          agents={agents.filter(agent => !HIDDEN_AGENT_STATUSES.has(agent.status))}
+          agents={agents}
           visibleAgents={filtered} renderAgent={renderAgentRow} renderStatus={renderAgentStatus}
           renderChat={agentChat.enabled ? agent => (
             // Use Radix's standard hover delay, isolated from the app's instant provider.
@@ -482,7 +486,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
 
       {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (
         <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match your search and selected status.
+          No agents match your search and filters.
         </p>
       )}
 

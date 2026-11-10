@@ -1,3 +1,4 @@
+import { hasCommittedNativeControllerContainment } from "../native-runtime/native-failed-run-owner-release.js";
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
 import { notifyDeferredExecutionWork, notifyTaskRetrySettlement } from "../deferred-execution-notifications.js";
 import { notifyNativeResponsePresentation } from "../native-response-presentation-notifications.js";
@@ -243,7 +244,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
       Object.keys(recovery).every(key => ["kind", "providerWorkStarted"].includes(key)) &&
       run.resultJson?.stopReason === "adapter_failed" &&
       Object.keys(run.resultJson).every(key => ["executionRecovery", ...(workspaceValidation ? ["workspaceValidation"] : []), "stopReason",
-        "effectiveTimeoutSec", "timeoutConfigured", "timeoutFired", "timeoutSource"].includes(key));
+        "effectiveTimeoutSec", "timeoutConfigured", "timeoutFired", "timeoutSource", "failureCause"].includes(key));
     const diagnostic = failedRetry ? retryDiagnostic : workspacePreparation ? run.error : "reviewed_chat_execution_binding_not_authorized";
     const dispatchOnlyProfile = failedRetry || workspacePreparation;
     if (
@@ -382,6 +383,9 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
         ),
       )
       .for("share", { noWait: true });
+    if (coordinator && await hasCommittedNativeControllerContainment(tx, run, issueId)) {
+      return { coordinator, leases: [], retiredOwner: null, operatorContained: true };
+    }
     // A queued request can fail before its first provider event because the
     // predecessor's exact retained checkpoint has not yet been suspended.
     // A later authenticated cleanup receipt can authorize retrying that
@@ -690,8 +694,9 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
       if (run.runtimeMode !== "native") throw failedChatRetryDenied();
     }
     if (run.runtimeMode !== "native") return;
-    const { coordinator, leases, retiredOwner } =
-      await failedNativeRetryCoordinator(tx, run, source.issueId);
+    const state = await failedNativeRetryCoordinator(tx, run, source.issueId);
+    if ("operatorContained" in state && state.operatorContained) return;
+    const { coordinator, leases, retiredOwner } = state;
     if (retiredOwner) {
       if (
         !nativePreProviderRetryAfterCleanupStateIsSafe({
