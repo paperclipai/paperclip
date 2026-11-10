@@ -9,6 +9,7 @@ import { budgetServiceInTransaction } from "./budgets.js";
 import { withBudgetSpan } from "./budget-tracing.js";
 import type { ActivityPublication } from "./activity-log.js";
 import { readClaimedNativeStopRecovery } from "./native-runtime/native-cancellation-request.js";
+import { holdOwnNativeRecoveryClaimInTransaction } from "./native-runtime/native-execution-lease.js";
 
 /** Native finalization takes its coordinator before issue/run locks. Recovery
  * admission uses the same order after the company accounting lock, so its
@@ -19,7 +20,9 @@ export async function lockRunBudgetRecoveryOwnerInTransaction(
   if (!recoveryLeaseOwner) return;
   const [coordinator] = await tx.select({ leaseOwner: nativeRunFinalizations.leaseOwner, leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt }).from(nativeRunFinalizations)
     .where(and(eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, runId))).for("update");
-  if (!coordinator || coordinator.leaseOwner !== recoveryLeaseOwner || !coordinator.leaseExpiresAt || coordinator.leaseExpiresAt.getTime() <= Date.now())
+  if (!coordinator || coordinator.leaseOwner !== recoveryLeaseOwner) throw conflict("Native recovery no longer owns provider dispatch");
+  if (coordinator.leaseExpiresAt && coordinator.leaseExpiresAt.getTime() > Date.now()) return;
+  if (!await holdOwnNativeRecoveryClaimInTransaction(tx, { companyId, runId, leaseOwner: recoveryLeaseOwner }))
     throw conflict("Native recovery no longer owns provider dispatch");
 }
 
