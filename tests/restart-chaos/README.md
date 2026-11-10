@@ -879,6 +879,59 @@ not click Retry and no other fault fires until the last replacement is ready. A 
 task restarts again after the same gaps. A replacement that exits on its own during a gap fails the
 fault as a harness error, with the stops so far recorded.
 
+## Two servers, one database (MS1–MS3)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads B5,Q1 --faults MS1,MS2 --concurrency 1 --tasks 3 --seed 301
+```
+
+Every other fault runs one server per wave, so no wave can reach a race between two servers. #20508 fixed
+one such race with a database test only: server B's orphan sweep failed a run whose owner, server A, had
+taken its lease back.
+
+**Why this shape.** Hosted Cloud deploys by rolling overlap on one Neon database. The new server B starts
+while the old server A still serves, then A drains. The defaults are a 5 s overlap and up to 90 s of
+drain (`doc/plans/2026-10-31-zero-downtime-web-deploys.md`). B's startup recovery and periodic sweeps
+therefore run beside A's live runs. The plan's K12 names the same overlap
+(`doc/plans/2026-11-06-control-plane-restart-chaos.md`). This repository has no replica count or deploy
+strategy of its own (`docker/ecs-task-definition.json` describes one task), and the self-hosting docs do
+not describe several servers on one database.
+
+| Fault | What happens | Seeded hold |
+| --- | --- | --- |
+| MS1 | B boots on the same database and stays up beside a live A for the hold, then gets SIGTERM. A is not touched. | 60–150 s of overlap |
+| MS2 | B boots. A and its process tree are frozen (SIGSTOP, TM2's freeze without aging) past the 90 s controller lease, then thawed. B stays up 30 s more, while A takes its leases back, then stops. | 100–150 s frozen |
+| MS3 | Rolling-upgrade shape. B boots, then A gets K2 (SIGTERM) and a replacement on A's port. B is the only live server until the replacement is ready, then stops after the hold. | 20–45 s tail |
+
+B shares A's database, instance directory, local storage and secrets. It listens on its own loopback port
+and writes `<wave>/server-b.log`. The harness and the agents keep using A's port. While a fault is in
+progress the observers hold board actions (Stop, answers, follow-ups) until it ends, as for every fault.
+
+Limits:
+
+- B runs on the same host and PID namespace as A. It can check A's PIDs directly, which a Railway
+  replica cannot, so these faults are a lower bound on cross-server exposure.
+- The native executor lease is 20 minutes. MS2 outlasts the 90 s controller lease, not that one.
+- Local only: a remote runner is under neither server. No storm, crash point, K14, TM2 or TM3 in the same wave (aging would move the database times the invariant compares with real process windows).
+- B must live through its whole window. If it exits on its own, the fault fails (its tree is still cleaned up).
+
+**Cross-server invariant** (`multi-server.ts`, `<wave>/cross-server.json`). It is checked once per wave
+that fired an MS fault, over the wave database and the process windows the supervisor recorded (each
+server's pid, start, exit and freezes). A violation fails the wave.
+
+- `MS_foreign_failure`: a run failed with `process_lost` or `native_execution_ownership_unverified` while
+  its owning server was alive and not frozen. The owner comes from the run's controller boot id and
+  `controller_instances.pid`. The time is the run's `finished_at`. A freeze before the write does not
+  excuse it: that is #20508's shape. A run still `running` with
+  that code (how #20508's marker is stored) counts at its `updated_at`. The owner's own
+  `controller_lease_lost` counts only when no freeze past the lease came before it.
+- `MS_double_executor`: a run recorded a second local runner identity
+  (`native.process_identity_recorded`) before the first was shown stopped (`native.local_process_stopped`).
+- Ownership failures whose owner is not a wave server (or is unknown) are listed as `unattributed`.
+
+The usual R1–R6, U1–U4 and T checks grade every task as before.
+
 ## Fault timing (`--triggers`)
 
 Each task samples one trigger with its cell. `time` (default) fires at the
@@ -923,6 +976,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `acpx-provider-faults.ts`, `provider-shim/acpx-*` | PV1–PV3 for Claude (ACPX): the stand-in runner package, the server hook, the sidecar/provider tap, and `--provider-fault-restart`. |
 | `question-handoff.ts` | Q1 saved question: the board's answer step and its oracle. |
 | `time-faults.ts`, `time-faults-config.ts` | TM1–TM3: process freezing, database aging with recorded rows, and the time-corrected API the grader reads through. |
+| `multi-server.ts` | MS1–MS3: the second server's steps, the seeded holds, and the cross-server invariant over the wave database. |
 | `repeated-restarts.ts` | RR1–RR3: seeded restart steps, `--rr-gap-seconds`, and the stop-and-replace loop the supervisor runs. |
 | `daytona-sweep.ts` | Daytona R6: read-only reconciliation of this wave's labelled sandboxes with leases; cleanup only through Paperclip. |
 
