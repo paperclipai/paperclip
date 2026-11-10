@@ -8,8 +8,8 @@ import { createIssueDetailPath, withIssueDetailHeaderSeed } from "@/lib/issueDet
 import {
   getIssueDetailQueryOptions,
   ISSUE_DETAIL_STALE_TIME_MS,
-  prefetchIssueDetailForNavigation,
 } from "@/lib/issueDetailCache";
+import { ISSUE_HISTORY_HOVER_PREFETCH_DELAY_MS, useIssueNavigationPrefetch } from "@/hooks/useIssueNavigationPrefetch";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -219,8 +219,7 @@ export function IssueQuicklookCard({
   );
 }
 
-/** How long a hover rests on a task link before its full chat history is warmed. */
-export const ISSUE_HISTORY_HOVER_PREFETCH_DELAY_MS = 120;
+export { ISSUE_HISTORY_HOVER_PREFETCH_DELAY_MS };
 
 export const IssueLinkQuicklook = React.forwardRef<
   HTMLAnchorElement,
@@ -366,26 +365,7 @@ export const IssueLinkQuicklook = React.forwardRef<
   });
 
   const detailPath = createIssueDetailPath(issuePathId);
-  // A pointer, a touch or keyboard focus that passes over a row warms only the
-  // issue and its recent comments. A hover or focus that rests on the link, a
-  // mouse or pen press, or a click also warms the rest of the chat's first
-  // frame, so the open renders from cache. A touch can start a scroll, so it
-  // warms the full set only on the click.
-  const historyPrefetchTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const cancelHistoryPrefetch = React.useCallback(() => {
-    if (historyPrefetchTimerRef.current) clearTimeout(historyPrefetchTimerRef.current);
-    historyPrefetchTimerRef.current = null;
-  }, []);
-  React.useEffect(() => cancelHistoryPrefetch, [cancelHistoryPrefetch]);
-  const handlePrefetch = React.useCallback((history = true) => {
-    if (history) cancelHistoryPrefetch();
-    void prefetchIssueDetailForNavigation(queryClient, issuePathId, { issue: issuePrefetch, history });
-  }, [cancelHistoryPrefetch, issuePathId, issuePrefetch, queryClient]);
-  const handleDwellPrefetch = React.useCallback(() => {
-    handlePrefetch(false);
-    cancelHistoryPrefetch();
-    historyPrefetchTimerRef.current = setTimeout(() => handlePrefetch(true), ISSUE_HISTORY_HOVER_PREFETCH_DELAY_MS);
-  }, [cancelHistoryPrefetch, handlePrefetch]);
+  const prefetchHandlers = useIssueNavigationPrefetch(issuePathId, issuePrefetch);
   const link = (
     <RouterDom.Link
       ref={setTriggerRef}
@@ -393,34 +373,34 @@ export const IssueLinkQuicklook = React.forwardRef<
       state={prefetchedState}
       className={className}
       onMouseEnter={(event) => {
-        handleDwellPrefetch();
+        prefetchHandlers.onMouseEnter(event);
         onMouseEnter?.(event);
       }}
       onMouseLeave={(event) => {
-        cancelHistoryPrefetch();
+        prefetchHandlers.onMouseLeave(event);
         onMouseLeave?.(event);
       }}
       onPointerDown={(event) => {
-        handlePrefetch(event.pointerType !== "touch" && event.button === 0);
+        prefetchHandlers.onPointerDown(event);
         onPointerDown?.(event);
       }}
       onFocus={(event) => {
-        handleDwellPrefetch();
+        prefetchHandlers.onFocus(event);
         openNow();
         onFocus?.(event);
       }}
       onBlur={(event) => {
-        cancelHistoryPrefetch();
+        prefetchHandlers.onBlur(event);
         // Let clicks inside the portaled quicklook content finish before closing.
         setTimeout(() => close(), 0);
         onBlur?.(event);
       }}
       onTouchStart={(event) => {
-        handlePrefetch(false);
+        prefetchHandlers.onTouchStart(event);
         onTouchStart?.(event);
       }}
       onClickCapture={(event) => {
-        handlePrefetch();
+        prefetchHandlers.onClickCapture(event);
         onClickCapture?.(event);
       }}
       onClick={(event) => {

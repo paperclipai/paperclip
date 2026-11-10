@@ -163,6 +163,13 @@ struct ProviderStartupAttempt {
     /// that predates it rejects it as unknown, which also fails closed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     before_spawn: bool,
+    /// Initialization failed because the provider never replied within the
+    /// request deadline (a stalled or frozen host), not because it rejected
+    /// the request or exited. Omitted when false, so state saved without a
+    /// timed-out fence stays readable by runners that predate the field; a
+    /// runner that predates it rejects a fact that carries it (fails closed).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    no_reply: bool,
 }
 
 impl ProviderStartupAttempt {
@@ -213,6 +220,18 @@ impl ProviderStartupAttempt {
                 None => false,
             },
         };
+        // Only a provider that was running and silent through its request
+        // deadline, during initialization, can have given no reply.
+        let no_reply_valid = !self.no_reply
+            || (self.phase == ProviderStartupPhase::InitializationFailed
+                && matches!(
+                    self.failed_stage,
+                    Some(
+                        ProviderStartupStage::Initialize
+                            | ProviderStartupStage::ThreadOpen
+                            | ProviderStartupStage::ThreadRead
+                    )
+                ));
         // Only an intent, or a launch whose checks failed before the spawn,
         // can still be before the spawn.
         let before_spawn_valid = !self.before_spawn
@@ -221,6 +240,7 @@ impl ProviderStartupAttempt {
                 && self.failed_stage == Some(ProviderStartupStage::Spawn));
         if self.schema != "paperclip.provider_startup.v1"
             || !before_spawn_valid
+            || !no_reply_valid
             || uuid::Uuid::parse_str(&self.launch_id).is_err()
             || self.attempted_process_generation == 0
             || self.authenticated_thread_id.is_some()
@@ -2233,6 +2253,7 @@ impl CodexCommandExecutor {
             signal: None,
             process_tree_retired: false,
             before_spawn: true,
+            no_reply: false,
         });
         self.save_startup_fact()
     }
@@ -2265,9 +2286,14 @@ impl CodexCommandExecutor {
                 attempt.process_id = Some(process_id);
                 attempt.process_group_id = Some(process_group_id);
             }
-            ProviderStartupObservation::Failed { stage, child_exit } => {
+            ProviderStartupObservation::Failed {
+                stage,
+                child_exit,
+                no_reply,
+            } => {
                 attempt.phase = ProviderStartupPhase::InitializationFailed;
                 attempt.failed_stage = Some(stage);
+                attempt.no_reply = no_reply;
                 attempt.direct_child_exit_observed = child_exit.is_some();
                 attempt.exit_code = child_exit.as_ref().and_then(|fact| fact.exit_code);
                 attempt.signal = child_exit.as_ref().and_then(|fact| fact.signal);
@@ -2355,6 +2381,7 @@ impl CodexCommandExecutor {
         let _ = self.observe_startup(ProviderStartupObservation::Failed {
             stage: ProviderStartupStage::Admission,
             child_exit,
+            no_reply: false,
         });
     }
 
@@ -2396,13 +2423,16 @@ impl CodexCommandExecutor {
     /// - an intent still marked before the spawn (the runner died while
     ///   checking the launch, so no process was ever started); or
     /// - a `spawned` launch whose recorded process and process group have
-    ///   both exited.
+    ///   both exited; or
+    /// - an initialization that failed only because the provider gave no
+    ///   reply within the request deadline (`noReply`), whose recorded process
+    ///   and process group have both exited.
     ///
     /// Restore then relaunches the provider through the normal resume path.
     /// Every other fence stays closed: an intent that reached the spawn or
     /// predates the before-spawn mark, a provider whose process or group may
-    /// still run, a startup that failed initialization or spawn (a real
-    /// provider failure that needs reconciliation), and a session that
+    /// still run, a startup that failed spawn or was rejected by the provider
+    /// (a real provider failure that needs reconciliation), and a session that
     /// recovery deliberately closed.
     fn retire_orphaned_startup_attempt(
         &mut self,
@@ -2434,6 +2464,17 @@ impl CodexCommandExecutor {
                 (Some(pid), Some(group)) => process_gone(pid) && group_gone(group),
                 _ => false,
             },
+            // A provider that never replied within the deadline (a stalled or
+            // frozen host) is not a provider failure; once it is provably gone
+            // it is relaunched like a cut-off launch. A provider that rejected
+            // its startup or exited, and every fact saved before `noReply`
+            // existed, stays fenced.
+            ProviderStartupPhase::InitializationFailed if attempt.no_reply => {
+                match (attempt.process_id, attempt.process_group_id) {
+                    (Some(pid), Some(group)) => process_gone(pid) && group_gone(group),
+                    _ => false,
+                }
+            }
             ProviderStartupPhase::InitializationFailed => false,
         };
         if !restorable || !orphaned {
@@ -6188,8 +6229,13 @@ mod tests {
             signal: None,
             process_tree_retired: false,
             before_spawn: false,
+            no_reply: false,
         };
         attempt.validate().unwrap();
+        // `noReply` belongs only to an initialization that failed silently.
+        attempt.no_reply = true;
+        assert!(attempt.validate().is_err());
+        attempt.no_reply = false;
         attempt.before_spawn = true;
         attempt.validate().unwrap();
         attempt.before_spawn = false;
@@ -6442,6 +6488,7 @@ mod tests {
                             .observe_startup(ProviderStartupObservation::Failed {
                                 stage,
                                 child_exit: None,
+                                no_reply: false,
                             })
                             .unwrap();
                     });
@@ -6449,6 +6496,83 @@ mod tests {
                 assert!(restarted.assert_startup_admitted().is_err());
                 fs::remove_dir_all(directory).unwrap();
             }
+        }
+
+        fn failed_without_reply(
+            pid: u32,
+            stage: ProviderStartupStage,
+            no_reply: bool,
+        ) -> impl FnOnce(&mut CodexCommandExecutor) {
+            move |executor| {
+                spawned(pid)(executor);
+                executor
+                    .observe_startup(ProviderStartupObservation::Failed {
+                        stage,
+                        child_exit: None,
+                        no_reply,
+                    })
+                    .unwrap();
+            }
+        }
+
+        #[test]
+        fn restart_retires_an_initialization_that_got_no_reply_once_its_provider_exited() {
+            for stage in [
+                ProviderStartupStage::Initialize,
+                ProviderStartupStage::ThreadOpen,
+                ProviderStartupStage::ThreadRead,
+            ] {
+                let pid = exited_process_group();
+                let directory = orphaned_startup_fixture(
+                    "no-reply-startup-exited",
+                    "turn_active",
+                    failed_without_reply(pid, stage, true),
+                );
+                let mut restarted = reload_and_retire(&directory);
+                assert!(restarted.assert_startup_admitted().is_ok());
+                assert!(restarted.retained_events().unwrap().iter().any(|event| {
+                    event.payload["code"] == "provider_startup_retired"
+                        && event.payload["startup"]["noReply"] == true
+                }));
+                fs::remove_dir_all(directory).unwrap();
+            }
+        }
+
+        #[test]
+        fn restart_keeps_a_no_reply_fence_while_its_provider_may_run() {
+            let mut live = process_group_leader();
+            let directory = orphaned_startup_fixture(
+                "no-reply-startup-live",
+                "turn_active",
+                failed_without_reply(live.id(), ProviderStartupStage::ThreadOpen, true),
+            );
+            assert!(reload_and_retire(&directory)
+                .assert_startup_admitted()
+                .is_err());
+            let _ = live.kill();
+            let _ = live.wait();
+            fs::remove_dir_all(directory).unwrap();
+        }
+
+        #[test]
+        fn restart_keeps_a_rejected_or_previously_saved_initialization_fence() {
+            // A provider that answered with a rejection (no `noReply`), and a
+            // fact saved by a runner that predates the field, stay fenced.
+            let pid = exited_process_group();
+            let directory = orphaned_startup_fixture(
+                "rejected-startup",
+                "turn_active",
+                failed_without_reply(pid, ProviderStartupStage::ThreadOpen, false),
+            );
+            let saved: Value = serde_json::from_slice(
+                &fs::read(directory.join(CODEX_PROVIDER_STATE_FILE)).unwrap(),
+            )
+            .unwrap();
+            assert!(saved["startupAttempt"].get("noReply").is_none());
+            assert!(reload_and_retire(&directory)
+                .assert_startup_admitted()
+                .is_err());
+            fs::remove_dir_all(directory).unwrap();
         }
 
         #[test]

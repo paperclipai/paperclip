@@ -35,6 +35,30 @@ import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordin
 import { reconcileNativeFinalizations, registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 import { currentProcessProbe, proveOwnerGone } from "../services/owner-proof.js";
+import { createRunLogWriterAuthority } from "../services/heartbeat/run-log-authority.js";
+import { resolveHotRestartIntentPath, writeHotRestartIntent } from "../services/hot-restart.js";
+import fs from "node:fs/promises";
+import { detachNativeSessionsForRestart } from "../services/native-runtime/native-session-executor.js";
+
+const preparationFault = vi.hoisted(() => ({
+  current: null as null | { runId: string; phase: string; act: () => Promise<void> },
+}));
+vi.mock("../services/heartbeat/preparation-timing.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/heartbeat/preparation-timing.js")>();
+  return {
+    createHeartbeatPreparationTiming: (runId: string) => {
+      const timing = actual.createHeartbeatPreparationTiming(runId);
+      return (async (phase, work) => {
+        const fault = preparationFault.current;
+        if (fault?.runId === runId && fault.phase === phase) {
+          preparationFault.current = null;
+          await fault.act();
+        }
+        return timing(phase, work);
+      }) as typeof timing;
+    },
+  };
+});
 
 
 describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shutdown", () => {
@@ -239,6 +263,79 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     expect({ status: run.status, errorCode: run.errorCode, finishedAt: run.finishedAt }).toEqual({
       status: "running", errorCode: null, finishedAt: null });
     expect(owner).toMatchObject({ phase: "observed", resultId: null, recoveryState: "awaiting_runner_reattach" });
+
+    await f.db.update(nativeRunFinalizations).set({ controllerPid: 2_000_000_001 })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    const resumed = vi.fn(() => { throw new Error("next boot reached provider dispatch"); });
+    const next = heartbeatService(f.db, { nativeSessionBackendFactory: resumed });
+    try {
+      const { claims } = await next.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
+      expect(claims).toEqual([expect.objectContaining({ runId: f.runId })]);
+    } finally { await next.drainActiveRunExecutions(); }
+    expect(resumed).toHaveBeenCalledOnce();
+  }, 90_000);
+
+  it.each([
+    { mode: "drain", stage: "run_output" },
+    { mode: "drain", stage: "task_context" },
+    { mode: "hot_restart", stage: "run_output" },
+    { mode: "lease_expired", stage: "run_output" },
+    { mode: "restart_detach_only", stage: "run_output" },
+    { mode: "begin_failed", stage: "run_output" },
+  ] as const)("leaves a preparing recovery that lost run-log writer authority to the next controller only after a drain ($mode, $stage)", async ({ mode, stage }) => {
+    const f = await seedRecoverableRun(`PREPARING-AUTHORITY-${mode}-${stage}`);
+    const dying = vi.fn(() => { throw new Error("A preparing recovery must not open a provider session"); });
+    let drained: unknown;
+    const loseAuthority = async () => {
+      if (mode === "drain") drained = await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [f.runId]);
+      else if (mode === "hot_restart") {
+        await writeHotRestartIntent({ previousServerPid: process.pid, previousServerVersion: "previous" });
+        try {
+          expect(await heartbeat.prepareHotRestartShutdown("SIGTERM")).toMatchObject({ mode: "hot_restart", skipDrain: true });
+        } finally { await fs.rm(resolveHotRestartIntentPath(), { force: true }); }
+        await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) })
+          .where(eq(nativeRunFinalizations.runId, f.runId));
+      } else if (mode === "restart_detach_only") {
+        await detachNativeSessionsForRestart([f.runId]);
+        await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) })
+          .where(eq(nativeRunFinalizations.runId, f.runId));
+      } else await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      const [admitted] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      await createRunLogWriterAuthority(f.db, admitted)();
+    };
+    if (stage === "task_context") preparationFault.current = { runId: f.runId, phase: stage, act: loseAuthority };
+    if (mode === "begin_failed") preparationFault.current = { runId: f.runId, phase: "run_output",
+      act: async () => { throw new Error("Object storage is unavailable"); } };
+    const heartbeat = heartbeatService(f.db, {
+      nativeSessionBackendFactory: dying,
+      ...(stage === "run_output" && mode !== "begin_failed" ? { beforeNativeRuntimeSelection: loseAuthority } : {}),
+    });
+    try {
+      const { claims } = await heartbeat.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
+      expect(claims).toEqual([expect.objectContaining({ runId: f.runId })]);
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+      preparationFault.current = null;
+    }
+    expect(dying).not.toHaveBeenCalled();
+    const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    const handoffEvents = await f.db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.runId),
+      eq(heartbeatRunEvents.eventType, "lifecycle"), sql`${heartbeatRunEvents.payload}->>'disposition' = 'left_to_next_controller'`));
+    if (mode !== "drain" && mode !== "hot_restart") {
+      expect(run.status).toBe("failed");
+      expect(handoffEvents).toEqual([]);
+      return;
+    }
+    expect({ status: run.status, errorCode: run.errorCode, finishedAt: run.finishedAt }).toEqual({
+      status: "running", errorCode: null, finishedAt: null });
+    expect(handoffEvents).toHaveLength(1);
+    if (mode === "hot_restart") return;
+    expect(drained).toMatchObject({ restartSuspendedRunIds: [f.runId] });
+    expect(owner).toMatchObject({ phase: "observed", resultId: null, recoveryState: "awaiting_runner_reattach" });
+    expect(handoffEvents).toEqual([expect.objectContaining({ payload: expect.objectContaining({
+      errorCode: "run_log_writer_authority_lost", processPid: process.pid }) })]);
 
     await f.db.update(nativeRunFinalizations).set({ controllerPid: 2_000_000_001 })
       .where(eq(nativeRunFinalizations.runId, f.runId));
