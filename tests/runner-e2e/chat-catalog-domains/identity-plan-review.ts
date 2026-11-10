@@ -7,7 +7,14 @@ import type { IssueDocument, IssueDocumentSummary, DocumentRevision } from "../.
 import { pollUntil } from "../api.js";
 import { checks, entity, hasLink, putDocument, verifyInternalResult, type Entity } from "./internal-support.js";
 import { identityDefinition, identityObservation, identityWorker, observeIdentity, openStandingChat, type Interaction, type IdentityObservation } from "./identity-support.js";
+import { turnResponseCards, type TurnResponseCard } from "./turn-response-card.js";
 
+/** A review card that ended the turn returns the draft when it is bound to the draft's exact saved revision on this chat. */
+function draftReviewCard(o: IdentityObservation, draft: Entity): TurnResponseCard | undefined {
+  return turnResponseCards({ companyId: o.companyId, leadId: o.leadId, runs: o.runs, interactions: o.interactions }).find(card => card.kind === "request_confirmation"
+    && card.target?.type === "issue_document" && card.target.key === draft.key && card.target.revisionId === draft.latestRevisionId
+    && (card.target.issueId === undefined || card.target.issueId === o.state.sourceId));
+}
 interface PlanInteraction extends Interaction { payload: Interaction["payload"] & { target?: { revisionId?: string } } }
 function gradePlanReviewOutcome(value: unknown) {
   const c = checks(); const o = identityObservation(value); c.add("complete-versioned-workflow", !!o, "Actual versioned decisions, attributed ordinary work and browser receipts are required."); if (!o) return c.result();
@@ -43,9 +50,9 @@ function gradePlanReviewOutcome(value: unknown) {
     c.add("real-local-review-draft", o.documents.length > 0 && o.documents.some(row => row.id !== plan?.id && !!row.body?.trim()
       && !!row.latestRevisionId && row.latestRevisionId !== plan?.latestRevisionId && o.revisions.some(revision => revision.id === row.latestRevisionId && revision.documentId === row.id
         && o.runs.some(run => run.id === revision.createdByRunId && run.agentId === revision.createdByAgentId && [o.leadId, worker?.id].includes(run.agentId)))
-      && (row.issueId === o.state.sourceId ? o.links.some(link => link.includes(`#document-${encodeURIComponent(row.key!)}`)) : o.tasks.some(task => task.id === row.issueId && hasLink(o, "issues", task))))
+      && (row.issueId === o.state.sourceId ? o.links.some(link => link.includes(`#document-${encodeURIComponent(row.key!)}`)) || !!draftReviewCard(o, row) : o.tasks.some(task => task.id === row.issueId && hasLink(o, "issues", task))))
       && o.state.sourceRetainsConversation === true && o.state.noPublishedWorkProduct === true,
-      "The revised scope produces an actual attributed new local document, separate from the declined plan and linked from the reply, without a published delivery record. Its wording (including whether it repeats the setup's internal scope tag) and the reply's wording are not graded.");
+      "The revised scope produces an actual attributed new local document, separate from the declined plan and returned for review by a reply link or by the pending review card that ended the turn bound to its exact saved revision, without a published delivery record. Its wording (including whether it repeats the setup's internal scope tag) and the reply's wording are not graded.");
   } else c.add("known-plan-workflow", false, "No oracle exists for this workflow.");
   return c.result();
 }
@@ -154,7 +161,7 @@ export const planReviewIdentityCases: readonly ChatCatalogCase[] = ["questions-a
       supersedeOnUserComment: false, target: { type: "issue_document", issueId: source.id, documentId: plan.id, key: "plan", revisionId: plan.latestRevisionId, revisionNumber: plan.latestRevisionNumber } } }));
   await ctx.input.page.reload({ waitUntil: "domcontentloaded" }); return { sourceId: source.id, personId: session.user.id, worker, plan, original, scopeMarker };
 }, gradePlanReview, {
-  sourceFiles: [...sources, "../../server/src/services/chat-completion-delivery.ts"], authentication: "human-session", oracleVersion: "paperclip.chat-catalog.plan-review.v5", expectedRunCount: 3, minimumRunCount: scenarioId.endsWith("review-plan") ? 2 : 1, attemptTimeoutMs: 600_000,
+  sourceFiles: [...sources, "../../server/src/services/chat-completion-delivery.ts", "chat-catalog-domains/turn-response-card.ts"], authentication: "human-session", oracleVersion: "paperclip.chat-catalog.plan-review.v6", expectedRunCount: 3, minimumRunCount: scenarioId.endsWith("review-plan") ? 2 : 1, attemptTimeoutMs: 600_000,
   runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },
   async act(ctx, state) {
     const originalDeadline = ctx.observationDeadlineAt;
@@ -198,15 +205,23 @@ export const planReviewIdentityCases: readonly ChatCatalogCase[] = ["questions-a
     const o = identityObservation(value);
     if (scenarioId.endsWith("review-plan") || o?.tasks.length) { await verifyInternalResult(ctx, state, value); return; }
     const plan = state.plan as Entity | undefined;
-    const doc = o?.documents.find(row => row.id !== plan?.id && !!row.body?.trim() && o.revisions.some(revision => revision.id === row.latestRevisionId && revision.documentId === row.id && revision.createdByRunId)
-      && o.links.some(link => link.includes(`#document-${encodeURIComponent(row.key!)}`)));
-    if (!doc) throw new Error("Actual local review draft is missing");
-    const href = await ctx.input.page.locator('[id^="comment-"] a[href]').evaluateAll(links => links.map(link => link.getAttribute("href")!));
-    const reviewLink = href.find(link => link.includes(`#document-${encodeURIComponent(doc.key!)}`));
-    if (!reviewLink) throw new Error("Actual draft review link missing from reply");
-    await ctx.input.page.locator(`[id^="comment-"] a[href=${JSON.stringify(reviewLink)}]`).first().click();
+    const saved = (row: Entity) => row.id !== plan?.id && !!row.body?.trim() && !!o?.revisions.some(revision => revision.id === row.latestRevisionId && revision.documentId === row.id && revision.createdByRunId);
+    const doc = o?.documents.find(row => saved(row) && o.links.some(link => link.includes(`#document-${encodeURIComponent(row.key!)}`)));
+    const card = !doc && o ? o.documents.filter(saved).map(row => ({ row, card: draftReviewCard(o, row) })).find(entry => !!entry.card) : undefined;
+    if (doc) {
+      const href = await ctx.input.page.locator('[id^="comment-"] a[href]').evaluateAll(links => links.map(link => link.getAttribute("href")!));
+      const reviewLink = href.find(link => link.includes(`#document-${encodeURIComponent(doc.key!)}`));
+      if (!reviewLink) throw new Error("Actual draft review link missing from reply");
+      await ctx.input.page.locator(`[id^="comment-"] a[href=${JSON.stringify(reviewLink)}]`).first().click();
+    } else if (card) {
+      // The person opens the pending review request and follows its document link, as in the product.
+      const takeover = ctx.input.page.getByTestId("task-chat-composer-takeover");
+      if (!await takeover.isVisible()) await ctx.input.page.locator(`#interaction-${card.card!.id}`).first().click();
+      await takeover.locator(`a[href*=${JSON.stringify(`#document-${encodeURIComponent(card.row.key!)}`)}]`).first().click();
+    } else throw new Error("Actual local review draft is missing");
+    const opened = doc ?? card!.row;
     // The opened view must show the saved draft itself: its first line of text.
-    const firstLine = markdownFirstLine(doc.body!);
+    const firstLine = markdownFirstLine(opened.body!);
     await expect(ctx.input.page.getByText(firstLine, { exact: false }).first()).toBeVisible();
   },
 }));

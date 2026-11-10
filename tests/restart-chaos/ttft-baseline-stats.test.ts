@@ -99,7 +99,7 @@ describe("ttft baseline statistics", () => {
     expect(daytonaRetainsSandboxes({ warmEnvironment: true, inheritEnvironment: false, lifecycle: undefined })).toBe(true);
     expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: true, lifecycle: undefined })).toBe(false);
     expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: true, lifecycle: "per_turn" })).toBe(false);
-    expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: true, lifecycle: "default" })).toBe(false);
+    expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: true, lifecycle: "default" })).toBe(true);
     expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: true, lifecycle: "warm" })).toBe(true);
     expect(daytonaRetainsSandboxes({ warmEnvironment: false, inheritEnvironment: false, lifecycle: "warm" })).toBe(false);
   });

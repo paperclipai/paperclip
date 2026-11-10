@@ -1,3 +1,4 @@
+import type { NativeSession } from "../../vendor/paperclip-runner/index.js";
 import { currentControllerProcess } from "../controller-process-identity.js";
 import { activeNativeExecutionRunIds } from "./native-active-runs.js";
 import { onRetainedNativeSessionCleanupRelease } from "../retained-native-session-cleanup-notifications.js";
@@ -125,6 +126,10 @@ import { canonicalProviderPackJson } from "./remote-provider-pack-verification.j
 import * as providerPackAdmission from "./native-provider-pack-admission.js";
 import * as providerArtifactStorage from "./native-provider-artifacts.js";
 import * as providerArtifactCapture from "./native-provider-artifact-capture.js";
+import * as nativeCredentialEvents from "./native-credential-updates.js";
+import * as nativeCredentialStores from "./native-credential-store.js";
+import * as managedCredentialWriteback from "../managed-ai-credential-writeback.js";
+import { completeManagedNativeCredentialTurn } from "./managed-native-credentials.js";
 import * as nativeExecutionDriver from "./native-runner-execution-driver.js";
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -180,6 +185,7 @@ type BackendFactoryOptions = {
 type RunnerTransportOptions = {
   authorityRunId?: string;
   onAccountingEvent?: (event: PrpEvent) => Promise<void>;
+  onCredentialsUpdated?: (event: PrpEvent) => Promise<void>;
   onRecoveryAccountingEvent?: (event: PrpEvent, identity: import("../../vendor/paperclip-runner/index.js").DurableRecoveryIdentity) => Promise<void>;
   environment?: NodeJS.ProcessEnv;
   acpxRuntimeDirectory?: string;
@@ -2430,6 +2436,7 @@ describe("remote provider pack manifest", () => {
         runnerArtifact?: { version: string; digest: string };
       };
       expect(transport.runnerBinary).toBe(state.bundledRunnerBinary);
+      expect(transport.onCredentialsUpdated).toBeUndefined();
       if (opencode) {
         expect(state.createAssignedMcpTools).toHaveBeenCalledWith(expect.objectContaining({ gatewayPublicId: "assigned-fixture", bearerToken: "private-fixture", delivery: "on_demand" }));
         for (const name of ["PAPERCLIP_NATIVE_MCP_NAME", "PAPERCLIP_NATIVE_MCP_URL", "PAPERCLIP_NATIVE_MCP_TOKEN"]) expect(transport.environment?.[name]).toBeUndefined();
@@ -3156,6 +3163,8 @@ describe("native harness persistence profiles", () => {
         ".tmp",
         "auth.json",
         "config.toml",
+        "auth-refresh.json",
+        "auth-refresh.json.tmp",
         ".remote-plugin-install-staging",
         "cache/remote_plugin_catalog",
         "plugins/.remote-plugin-install-staging",
@@ -3202,6 +3211,8 @@ describe("native harness persistence profiles", () => {
         `acpx/${sessionDirectory}/codex-home/.tmp`,
         `acpx/${sessionDirectory}/codex-home/auth.json`,
         `acpx/${sessionDirectory}/codex-home/config.toml`,
+        `acpx/${sessionDirectory}/codex-home/auth-refresh.json`,
+        `acpx/${sessionDirectory}/codex-home/auth-refresh.json.tmp`,
         `acpx/${sessionDirectory}/codex-home/.remote-plugin-install-staging`,
         `acpx/${sessionDirectory}/codex-home/cache/remote_plugin_catalog`,
         `acpx/${sessionDirectory}/codex-home/plugins/.remote-plugin-install-staging`,
@@ -3913,22 +3924,23 @@ describe("split durable provider checkpoint identity", () => {
 });
 
 describe("remote provider checkpoint snapshots", () => {
-  it("excludes Grok credentials and diagnostic logs from real checkpoint copies while retaining sessions", async () => {
-    const root = await mkdtemp(join(tmpdir(), "grok-checkpoint-"));
+  it.each(["codex", "grok"] as const)("excludes %s credentials and handoffs from real checkpoint copies while retaining sessions", async provider => {
+    const root = await mkdtemp(join(tmpdir(), `${provider}-checkpoint-`));
     try {
       const source = join(root, "source");
       const target = join(root, "backup");
       const sessionDirectory = acpxRuntimeSessionDirectoryName("session");
-      const relativeHome = join("acpx", sessionDirectory, "grok-home");
+      const relativeHome = join("acpx", sessionDirectory, `${provider}-home`);
       const home = join(source, relativeHome);
       await mkdir(join(home, "logs"), { recursive: true });
       await mkdir(join(home, "sessions"));
       await writeFile(join(home, "logs", "unified.jsonl"), "AUTH_SENTINEL");
       await writeFile(join(home, "auth.json"), "AUTH_SENTINEL");
       await writeFile(join(home, "auth-refresh.json"), "AUTH_SENTINEL");
+      await writeFile(join(home, "auth-refresh.json.tmp"), "AUTH_SENTINEL");
       await writeFile(join(home, "sessions", "session.json"), "resume-state");
       const profile = resolveNativeHarnessPersistenceProfile({
-        provider: { kind: "acpx", agent: "grok" },
+        provider: { kind: "acpx", agent: provider },
         session: { normalizedSessionId: "session", driverKind: "acpx_runtime" },
       } as unknown as NativeExecutionInputV1);
       const execute = async ({ command, args }: { command: string; args: string[] }) => ({
@@ -3941,7 +3953,7 @@ describe("remote provider checkpoint snapshots", () => {
       await syncRemoteRunnerDirectoryOut({ runner: { execute, syncOut } as never,
         sourcePath: source, targetPath: target, mode: 0o700,
         excludeEntries: profile.directories.find(directory => directory.name === "acpx")!.excludeEntries });
-      for (const entry of ["auth.json", "auth-refresh.json", "logs"])
+      for (const entry of ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp", ...(provider === "grok" ? ["logs"] : [])])
         await expect(access(join(target, relativeHome, entry))).rejects.toMatchObject({ code: "ENOENT" });
       expect(await readFile(join(target, relativeHome, "sessions", "session.json"), "utf8")).toBe("resume-state");
       expect(await readFile(join(home, "logs", "unified.jsonl"), "utf8")).toBe("AUTH_SENTINEL");
@@ -4047,6 +4059,8 @@ describe("remote provider checkpoint snapshots", () => {
       const source = join(root, "codex-home");
       const target = join(root, "backup");
       const files: Record<string, string> = {
+        "auth-refresh.json": "AUTH_SENTINEL",
+        "auth-refresh.json.tmp": "AUTH_SENTINEL",
         "sessions/2026/10/20/rollout.jsonl": "resume-state",
         "state_5.sqlite": "state",
         "cache/codex_apps_tools/tools.json": "apps",
@@ -4079,7 +4093,7 @@ describe("remote provider checkpoint snapshots", () => {
       for (const kept of ["sessions/2026/10/20/rollout.jsonl", "state_5.sqlite", "cache/codex_apps_tools/tools.json",
         "plugins/data/sites/data.json", "plugins/cache/openai-bundled/browser/1.0.0/plugin.json"])
         expect(await readFile(join(target, kept), "utf8")).toBe(files[kept]);
-      for (const omitted of ["cache/remote_plugin_catalog", "plugins/cache/openai-curated-remote",
+      for (const omitted of ["auth-refresh.json", "auth-refresh.json.tmp", "cache/remote_plugin_catalog", "plugins/cache/openai-curated-remote",
         "plugins/cache/workspace-shared-with-me", "plugins/.remote-plugin-install-staging", ".remote-plugin-install-staging"])
         await expect(access(join(target, omitted))).rejects.toMatchObject({ code: "ENOENT" });
       expect(await readFile(join(source, "plugins/cache/openai-curated-remote/sites/1.0.2/plugin.json"), "utf8")).toBe("remote");
@@ -16824,6 +16838,74 @@ describe("runnerd provider runtime wiring", () => {
     expect(task.mock.calls.some(([op]) => ["prepare", "submit", "stop"].includes(op.kind))).toBe(false);
   });
 
+  it.each(["codex", "acpx-codex", "grok"] as const)("writes managed %s events through the current warm exporter without per-turn reads", async provider => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "native-managed-refresh-")));
+    const previousRoot = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = join(root, "runner");
+    const firstHome = join(root, "first"), nextHome = join(root, "next");
+    await mkdir(firstHome); await mkdir(nextHome);
+    for (const home of [firstHome, nextHome]) await writeFile(join(home, "auth.json"), "{}", { mode: 0o600 });
+    const current = scopedNativeExecution(`managed-refresh-${provider}`);
+    current.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 60_000 };
+    if (provider !== "codex") {
+      current.provider = { kind: "acpx", agent: provider === "grok" ? "grok" : "codex", model: null, permissionMode: "deny-all" } as never;
+      current.session.driverKind = "acpx_runtime";
+    }
+    const firstStore = { read: vi.fn(async () => "first-refresh"), remove: vi.fn(async () => {}) };
+    const nextStore = { read: vi.fn(async () => "next-refresh"), remove: vi.fn(async () => {}) };
+    const stores = vi.spyOn(nativeCredentialStores, "createNativeCredentialStore").mockReturnValueOnce(firstStore).mockReturnValueOnce(nextStore);
+    const persist = vi.spyOn(managedCredentialWriteback, "syncManagedAiCredentials").mockImplementation(async (_db, _company, _binding, _provider, read) => {
+      await read(); return "rotated";
+    });
+    const append = vi.spyOn(nativeCredentialEvents, "appendNativeCredentialUpdate").mockImplementation(async (_db, input) => { await input.synchronizeCredentials?.(); });
+    const binding = { grantId: "10000000-0000-4000-8000-000000000001", secretId: "10000000-0000-4000-8000-000000000002", sessionEpoch: 1, versionSelector: "latest" as const };
+    const session = { close: vi.fn(async () => {}) } as unknown as NativeSession;
+    try {
+      const backend = await createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: "managed-runner",
+        managedAiCredentialHome: firstHome, managedAiCredentialWriteback: binding });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const retainedHook = state.createTransport.mock.calls.at(-1)![0].onCredentialsUpdated!;
+      backend.bindManagedSession(session);
+      await completeManagedNativeCredentialTurn(session);
+      expect(persist).not.toHaveBeenCalled(); expect(firstStore.read).not.toHaveBeenCalled();
+      await rm(firstHome, { recursive: true, force: true });
+      const notification: PrpEvent = {
+        schema: "paperclip.prp.event.v3", schemaVersion: 3, eventType: "auth.credentials.updated", sourceKind: "runner",
+        sourceInstanceId: "managed-runner", sourceEventId: "refresh", sourceSeq: 1, runId: current.binding.runId,
+        normalizedSessionId: current.session.normalizedSessionId!, priority: 0, emittedAt: "2020-01-01T00:00:00Z",
+        payload: { schema: "paperclip.auth.credentials.updated.v1", bindingId: "harness-auth", revision: 1,
+          detection: "credential_store", provider: provider === "grok" ? "grok" : "codex" },
+      };
+      await retainedHook(notification);
+      expect(firstStore.read).toHaveBeenCalledOnce();
+      // The mocked transport does not publish a durable Runner identity.
+      await rm(state.createTransport.mock.calls.at(-1)![0].stateDirectory!, { recursive: true, force: true });
+      const next = { ...current, binding: { ...current.binding, runId: `${current.binding.runId}-next` } };
+      const nextBinding = { ...binding };
+      const successor = await createRunnerdBackend({ db: leaseDb(next), execution: next, runnerInstanceId: "managed-runner",
+        managedAiCredentialHome: nextHome, managedAiCredentialWriteback: nextBinding });
+      successor.bindManagedSession(session);
+      await completeManagedNativeCredentialTurn(session);
+      await rm(nextHome, { recursive: true, force: true });
+      await retainedHook(notification);
+      expect(persist).toHaveBeenLastCalledWith(expect.anything(), current.binding.companyId, nextBinding,
+        provider === "grok" ? "grok" : "codex", nextStore.read);
+      expect(persist.mock.calls.at(-1)![2]).toBe(nextBinding);
+      await session.close({ reason: "idle retirement" });
+      expect(nextStore.read).toHaveBeenCalledTimes(2);
+      expect(firstStore.remove).not.toHaveBeenCalled(); expect(nextStore.remove).toHaveBeenCalledOnce();
+      expect(stores.mock.calls[0]![0].localHome).toContain(provider === "grok" ? "grok-home" : "codex-home");
+      persist.mockClear();
+      await expect(retainedHook({ ...notification, payload: { provider: "unexpected" } })).rejects.toThrow("provider_mismatch");
+      expect(persist).not.toHaveBeenCalled();
+    } finally {
+      stores.mockRestore(); persist.mockRestore(); append.mockRestore();
+      if (previousRoot === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previousRoot;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(["codex", "opencode", "acpx"] as const)("uses a task-only %s driver without exposing Core paths or transferring the agent home", async (kind) => {
     const taskExecution = { ...execution, provider: kind === "codex" ? execution.provider
       : kind === "opencode" ? { kind, model: "openai/test", permissionMode: "deny" }
@@ -16836,7 +16918,7 @@ describe("runnerd provider runtime wiring", () => {
     state.toolAuthorityDefinitions.mockImplementation(async binding => binding.readRemoteTaskFile ? [{ name: "register_deliverable" }] as never : []);
     const readWorkspaceFile = vi.fn(async () => Buffer.from("proof"));
     const release = vi.fn(async () => {}), resume = vi.fn(async () => "resumed" as const);
-    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, retiredBeforeClaim: () => false, rebind:vi.fn() });
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, retiredBeforeClaim: () => false, credentialsUpdated: vi.fn(), rebind:vi.fn() });
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
       return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, releaseResumeVersion: 1, ...(kind === "codex" ? { workspaceFileReadVersion: 1 } : {}), taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
@@ -16863,6 +16945,9 @@ describe("runnerd provider runtime wiring", () => {
       const expectedTools = kind === "codex" ? [{ name: "register_deliverable" }] : [];
       expect(state.createBackend.mock.calls.at(-1)![1]).toMatchObject({ dynamicTools: expectedTools });
       expect(options).toMatchObject({ resumeDynamicTools: expectedTools });
+      const notification = { eventType: "auth.credentials.updated" } as never;
+      await options.onCredentialsUpdated!(notification);
+      expect(owner.mock.results.at(-1)!.value.credentialsUpdated).toHaveBeenCalledWith(notification);
       expect(options).toMatchObject({ ...driver, runnerArtifact: { version: "fixture" },
         prpIdentity: { environmentLeaseId: "plugin-task-lease" } });
       if (kind === "acpx") expect(options).toMatchObject({ acpxAgent: "claude", claudeEffort: "high" });
