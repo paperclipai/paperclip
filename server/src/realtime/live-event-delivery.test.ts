@@ -235,14 +235,14 @@ it("shares one permission read among events queued behind it, never with an even
   expect(read).toHaveBeenCalledTimes(4);
   f.delivery.dispose();
 });
-it("stops sharing a read after one second and never reuses a failed read", async () => {
+it("stops sharing a read after 250 ms or 100 events and never reuses a failed read", async () => {
   let now = 1_000_000;
   const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
   try {
     const read = vi.fn(async () => true);
     const f = fixture(vi.fn(async (value: LiveEvent, reads?: LiveDeliveryReads) => {
       const allowed = await sharedDeliveryRead(reads, "permission", read);
-      now += 400;
+      now += 100;
       return allowed ? value : null;
     }));
     f.subscribe(["run-1"]);
@@ -251,6 +251,16 @@ it("stops sharing a read after one second and never reuses a failed read", async
     expect(f.frames.filter(frame => frame.type === "heartbeat.run.log")).toHaveLength(7);
     expect(read).toHaveBeenCalledTimes(3);
     f.delivery.dispose();
+
+    const counted = vi.fn(async () => true);
+    const h = fixture(vi.fn(async (value: LiveEvent, reads?: LiveDeliveryReads) =>
+      await sharedDeliveryRead(reads, "permission", counted) ? value : null));
+    h.subscribe(["run-1"]);
+    for (let seq = 1; seq <= 251; seq++) h.delivery.enqueue(event(seq));
+    await flush(); await flush();
+    expect(h.frames.filter(frame => frame.type === "heartbeat.run.log")).toHaveLength(251);
+    expect(counted).toHaveBeenCalledTimes(4);
+    h.delivery.dispose();
 
     const failing = vi.fn(async () => true).mockResolvedValueOnce(true).mockRejectedValueOnce(new Error("permission database unavailable"));
     const g = fixture(vi.fn(async (value: LiveEvent, reads?: LiveDeliveryReads) =>
