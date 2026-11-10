@@ -7457,6 +7457,61 @@ describe("IssueDetail", () => {
     });
   });
 
+  it.each(["success", "dispatch", "forbidden", "network"] as const)(
+    "discards a saved message before queue acknowledgement (%s)",
+    async (outcome) => {
+      const queue = createQueuedCommentQueue({ queueId: null, state: null });
+      const comment = queue.entries[0].comment;
+      mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1" }));
+      mockAgentsApi.list.mockResolvedValue([createAgent({ adapterType: "paperclip_runner" })]);
+      mockIssuesApi.getQueuedComments.mockResolvedValue(queue);
+      mockIssuesApi.recentComments.mockResolvedValue({ comments: [comment], latestCommentId: comment.id, hasMore: false });
+      mockIssuesApi.listComments.mockResolvedValue([comment]);
+      const failure = outcome === "dispatch"
+        ? new ApiError("The queued message is already being dispatched", 409, {
+            details: { code: "queued_comment_already_dispatching" },
+          })
+        : outcome === "forbidden"
+          ? new ApiError("Only the queued message author can discard it", 403, {})
+          : new Error("Connection lost");
+      if (outcome === "success") mockIssuesApi.cancelComment.mockResolvedValue(comment);
+      else mockIssuesApi.cancelComment.mockRejectedValue(failure);
+
+      await act(async () => { renderIssueView(); });
+      const props = () => mockIssueChatThreadRender.mock.calls.at(-1)![0] as {
+        queuedCommentQueue: IssueQueuedCommentQueue | null;
+        comments: IssueComment[];
+        onDiscardQueuedComment: (commentId: string, revision: string) => Promise<void>;
+      };
+      await waitForAssertion(() => {
+        expect(props().queuedCommentQueue).toMatchObject({
+          queueId: null,
+          entries: [{ comment: { id: comment.id } }],
+        });
+      });
+      let result: unknown;
+      await act(async () => {
+        result = await props().onDiscardQueuedComment(comment.id, queue.revision).catch((error: unknown) => error);
+      });
+      expect(mockIssuesApi.cancelComment).toHaveBeenCalledWith("issue-1", comment.id);
+      expect(mockIssuesApi.discardQueuedComment).not.toHaveBeenCalled();
+      if (outcome === "success") {
+        expect(result).toBeUndefined();
+        await waitForAssertion(() => {
+          expect(props().queuedCommentQueue).toBeNull();
+          expect(props().comments.some((value) => value.id === comment.id)).toBe(false);
+        });
+      } else {
+        expect(result).toBe(failure);
+        expect(props().queuedCommentQueue?.entries[0].comment.id).toBe(comment.id);
+        expect(props().comments.some((value) => value.id === comment.id)).toBe(true);
+        if (outcome === "dispatch") {
+          expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Message is already being sent" }));
+        }
+      }
+    },
+  );
+
   it.each([true, false])("keeps a discarded queued comment out of the thread (expanded=%s)", async (expanded) => {
     queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], expanded);
     const queue = createQueuedCommentQueue();
@@ -7535,8 +7590,8 @@ describe("IssueDetail", () => {
     });
   });
 
-  it.each(["discard", "cancel", "delete"] as const)("keeps %s responses in both comment caches after reopening by either task ref", async (action) => {
-    const queue = createQueuedCommentQueue();
+  it.each(["discard", "discard-unacknowledged", "cancel", "delete"] as const)("keeps %s responses in both comment caches after reopening by either task ref", async (action) => {
+    const queue = createQueuedCommentQueue(action === "discard-unacknowledged" ? { queueId: null, state: null } : {});
     const comment = queue.entries[0].comment;
     const earlier = createIssueComment({ id: "earlier-comment", createdAt: new Date("2026-04-21T00:00:01.000Z") });
     const deleted = { ...comment, body: "", deletedAt: new Date() };
@@ -7574,7 +7629,7 @@ describe("IssueDetail", () => {
       queryFn: () => new Promise<IssueRecentComments>((resolve) => { finishStaleRead = resolve; }),
     }).catch(() => undefined);
     await act(async () => {
-      if (action === "discard") await props().onDiscardQueuedComment(comment.id, queue.revision);
+      if (action === "discard" || action === "discard-unacknowledged") await props().onDiscardQueuedComment(comment.id, queue.revision);
       if (action === "cancel") props().onCancelQueued(comment.id);
       if (action === "delete") await props().onDeleteComment(comment.id);
     });

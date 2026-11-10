@@ -2464,20 +2464,25 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const discardQueuedComment = useCallback(
     async (commentId: string, revision: string) => {
       const queueId = effectiveQueuedCommentQueue?.queueId;
-      if (!queueId)
-        throw new Error(
-          "The queued message is awaiting server acknowledgement.",
-        );
       try {
-        storeQueuedCommentQueue(
-          await issuesApi.discardQueuedComment(issueId, commentId, {
-            queueId,
-            revision,
-          }),
-        );
+        if (queueId) {
+          storeQueuedCommentQueue(
+            await issuesApi.discardQueuedComment(issueId, commentId, {
+              queueId,
+              revision,
+            }),
+          );
+        } else {
+          await issuesApi.cancelComment(issueId, commentId);
+        }
         setDiscardedQueuedCommentIds((current) =>
           new Set(current).add(commentId),
         );
+        if (!queueId) {
+          void queryClient.invalidateQueries({
+            queryKey: queryKeys.issues.queuedComments(issueId),
+          });
+        }
         // Discard deletes the persisted comment. Update both history caches
         // and task aliases so the row stays removed after this view unmounts.
         await onRemoveCommentFromCache(commentId);
