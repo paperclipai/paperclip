@@ -3793,7 +3793,12 @@ export function heartbeatService(
           }
           return;
         }
-        if (!(await preserveNativeWorkspaceOnFailure())) return;
+        if (!(await preserveNativeWorkspaceOnFailure())) {
+          logger.warn({ runId: run.id, err: identityRedactor.redact({ message: err instanceof Error ? err.message : String(err),
+            stack: err instanceof Error ? err.stack : undefined }), restartClaim: runOptions.nativeRestartRecovery?.kind ?? null },
+            "native run failure left to the workspace owner that holds the run");
+          return;
+        }
         await runCompletion.failRun({
           run, agent, issueId, issueRef, signal: executionControl.controller.signal,
           output: runOutput,

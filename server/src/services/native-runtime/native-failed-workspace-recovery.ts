@@ -99,7 +99,6 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
     const ownsClaim = Boolean(options.allowPreterminal && coordinator?.phase === "observed" && claim
       && claim.runId === selected.id && claim.leaseOwner === coordinator.leaseOwner
       && claim.controllerGeneration === coordinator.controllerGeneration && claim.providerAttempt === coordinator.attempt
-      && coordinator.leaseExpiresAt && coordinator.leaseExpiresAt.getTime() > Date.now()
       && (claim.kind !== "reattach_remote_runner" || (claim.remote.kind !== "plugin_task" && claim.remote.providerLeaseId === reference.providerLeaseId
         && claim.remote.remoteCwd === reference.remoteCwd)));
     if ((coordinator?.leaseOwner || (claim && coordinator?.phase === "observed")) && !ownsClaim) throw new NativeWorkspaceFinalizationBusyError();
@@ -163,8 +162,8 @@ export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeo
       }).where(and(eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, run.companyId),
         eq(nativeRunFinalizations.issueId, issueId), eq(nativeRunFinalizations.phase, "observed"), isNull(nativeRunFinalizations.resultId),
         ownsClaim && claim ? and(eq(nativeRunFinalizations.leaseOwner, claim.leaseOwner),
-          eq(nativeRunFinalizations.controllerGeneration, claim.controllerGeneration), eq(nativeRunFinalizations.attempt, claim.providerAttempt),
-          gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`)) : isNull(nativeRunFinalizations.leaseOwner),
+          eq(nativeRunFinalizations.controllerGeneration, claim.controllerGeneration), eq(nativeRunFinalizations.attempt, claim.providerAttempt))
+          : isNull(nativeRunFinalizations.leaseOwner),
       )).returning({ id: nativeRunFinalizations.runId });
       if (!settled) throw new NativeWorkspaceFinalizationBusyError();
       [retained] = await tx.update(heartbeatRuns).set({ nativePhase: "terminal_failure", nativePhaseUpdatedAt: new Date() })
