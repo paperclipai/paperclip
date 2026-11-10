@@ -4473,6 +4473,15 @@ describe("IssueAssigneePausedNotice", () => {
     act(() => root.unmount());
   });
 
+  it.each(["preparing", "verifying", "resuming"])("leaves %s recovery to the task setup status and inline connection card", lifecycleState => {
+    const root = createRoot(container);
+    const agent = { ...pausedAgent(""), pauseReason: null, lifecycleState, lifecycleError: "Connect an account" } as Agent;
+    act(() => root.render(<IssueAssigneePausedNotice agent={agent} issueStatus="todo" onResume={vi.fn()} />));
+    expect(container.querySelector('[data-testid="issue-assignee-paused-resume"]')).toBeNull();
+    expect(container.textContent).not.toContain("is paused");
+    act(() => root.unmount());
+  });
+
   it.each([
     ["preparing", "computer is being prepared"],
     ["verifying", "setup isn't finished"],
