@@ -146,7 +146,7 @@ export class ChaosSupervisor {
   /** Every server process this wave started, with its lifetime and freezes (MS cross-server invariant). */
   readonly serverWindows: ServerProcessWindow[] = [];
   /** MS1–MS3: the second server, while one is running. */
-  private secondary: { child: ChildProcess; port: number; log: WriteStream } | null = null;
+  private secondary: { child: ChildProcess; port: number; log: WriteStream; exit: string | null } | null = null;
   /** Every aging shift so far, in order; the grader's API reads times through them (time-faults.ts). */
   readonly agingShifts: AgingShift[] = [];
   private readonly createdAt = Date.now();
@@ -568,6 +568,7 @@ export class ChaosSupervisor {
       now: () => Date.now(),
       sleep: ms => delay(ms),
       cancelled: () => this.shuttingDown,
+      secondaryFailure: () => this.secondary?.exit ?? null,
       startSecondary: async current => {
         const child = await this.spawnSecondary(current);
         current.secondary!.readyAt = await this.waitForSecondaryReady(child, current.secondary!.port);
@@ -576,7 +577,8 @@ export class ChaosSupervisor {
       stopSecondary: async current => {
         const secondary = this.secondary;
         if (!secondary) return;
-        try { await this.stopper(secondary.child, "SIGTERM"); }
+        // An exited B still has its owned tree cleaned up; a live one gets the graceful stop.
+        try { await (secondary.exit ? this.stopper.crashForRestart(secondary.child) : this.stopper(secondary.child, "SIGTERM")); }
         finally {
           this.secondary = null;
           await new Promise<void>(resolve => secondary.log.end(resolve));
@@ -634,14 +636,18 @@ export class ChaosSupervisor {
       { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], detached: runnerE2EServerDetached });
     const window = this.trackWindow(child, "secondary");
     record.secondary = { pid: child.pid ?? null, port, spawnedAt: Date.now(), readyAt: null, stoppedAt: null };
-    this.secondary = { child, port, log };
+    const secondary = { child, port, log, exit: null as string | null };
+    this.secondary = secondary;
     child.stdout?.on("data", chunk => log.write(chunk));
     child.stderr?.on("data", chunk => log.write(chunk));
     child.once("error", error => { this.spawnErrors.set(child, error); });
     child.once("exit", (code, signal) => {
       if (window) window.exitedAt = Date.now();
       log.write(`\n[restart-chaos] second server pid=${child.pid} exited code=${code} signal=${signal}\n`);
-      if (!this.expectedStops.has(child) && !this.shuttingDown) this.timeline.add("multi_server_secondary_exited", { pid: child.pid, code, signal });
+      if (!this.expectedStops.has(child) && !this.shuttingDown) {
+        secondary.exit = `code=${code} signal=${signal}`;
+        this.timeline.add("multi_server_secondary_exited", { pid: child.pid, code, signal });
+      }
     });
     await this.stopper.watch(child);
     this.timeline.add("multi_server_secondary_spawned", { pid: child.pid, port });

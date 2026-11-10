@@ -62,6 +62,8 @@ export function validateMultiServerOptions(options: { env: string; faults: reado
   if (options.stormMinutes) throw new Error("Two-server faults (MS*) are planned per task; do not combine them with --storm-minutes");
   if (options.crashPoint) throw new Error("Two-server faults (MS*) do not combine with --crash-point");
   if (options.faults.includes("K14")) throw new Error("Two-server faults (MS*) do not combine with K14; both servers run the current build");
+  // Aging moves database times; the cross-server invariant compares them with real process windows.
+  if (options.faults.some(kind => kind === "TM2" || kind === "TM3")) throw new Error("Two-server faults (MS*) do not combine with TM2 or TM3; age the database in its own wave");
 }
 
 /** One server process the wave started, for attributing a run's owner at a moment in time. */
@@ -88,6 +90,8 @@ export interface MultiServerHooks {
   now(): number;
   sleep(ms: number): Promise<void>;
   cancelled(): boolean;
+  /** Why B stopped on its own (its exit code or signal), or null while it runs as planned. */
+  secondaryFailure(): string | null;
   /** Spawns B on its own port and waits until it reports ready. */
   startSecondary(record: MultiServerRecord): Promise<void>;
   /** SIGTERM B and wait for it to exit; always called once B was spawned. */
@@ -102,6 +106,8 @@ async function hold(hooks: MultiServerHooks, ms: number): Promise<void> {
   const until = hooks.now() + ms;
   while (hooks.now() < until) {
     if (hooks.cancelled()) throw new Error("Harness shutdown interrupted the two-server fault");
+    const exited = hooks.secondaryFailure();
+    if (exited) throw new Error(`The second server exited before its planned stop: ${exited}`);
     await hooks.sleep(Math.min(1_000, until - hooks.now()));
   }
 }
@@ -129,6 +135,9 @@ export async function runMultiServerFault(kind: MultiServerKind, holdMs: number,
       step("primary_ready");
       await hold(hooks, holdMs);
     }
+    // B must have lived through the whole window, including a freeze or restart without a hold check.
+    const exited = hooks.secondaryFailure();
+    if (exited) throw new Error(`The second server exited before its planned stop: ${exited}`);
   } catch (error) {
     failure = error;
   }

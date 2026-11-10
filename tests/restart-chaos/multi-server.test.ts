@@ -28,16 +28,18 @@ describe("two-server fault options", () => {
     expect(() => parseCommand(["--faults", "MS1", "--env", "daytona", "--daytona-image", `r/i@sha256:${"a".repeat(64)}`])).toThrow(/--env local/);
     expect(() => parseCommand(["--faults", "MS2", "--storm-minutes", "10"])).toThrow(/storm/);
     expect(() => parseCommand(["--faults", "MS3,K14", "--upgrade-from", "/tmp/x"])).toThrow(/K14/);
+    expect(() => parseCommand(["--faults", "MS1,TM2", "--workloads", "B5"])).toThrow(/TM2 or TM3/);
   });
 });
 
-function fakeHooks(options: { failOn?: "start" | "freeze" | "restart" } = {}) {
+function fakeHooks(options: { failOn?: "start" | "freeze" | "restart"; exitAt?: number } = {}) {
   let clock = 0;
   const calls: string[] = [];
   const hooks: MultiServerHooks = {
     now: () => clock,
     sleep: async ms => { clock += ms; },
     cancelled: () => false,
+    secondaryFailure: () => (options.exitAt !== undefined && clock >= options.exitAt ? "code=1 signal=null" : null),
     startSecondary: async () => { calls.push("start"); if (options.failOn === "start") throw new Error("B did not start"); },
     stopSecondary: async () => { calls.push("stop"); },
     freezePrimary: async holdMs => { calls.push(`freeze:${holdMs}`); clock += holdMs; if (options.failOn === "freeze") throw new Error("A could not be shown stopped"); },
@@ -72,6 +74,18 @@ describe("runMultiServerFault", () => {
     await runMultiServerFault("MS3", 30_000, record("MS3"), fake.hooks);
     expect(fake.calls).toEqual(["start", "restart", "stop"]);
     expect(fake.clock()).toBe(35_000);
+  });
+
+  it("fails the fault when B exits on its own during the overlap or a freeze, and still stops it", async () => {
+    const overlap = fakeHooks({ exitAt: 30_000 });
+    await expect(runMultiServerFault("MS1", 90_000, record("MS1"), overlap.hooks)).rejects.toThrow(/exited before its planned stop/);
+    expect(overlap.calls).toEqual(["start", "stop"]);
+    expect(overlap.clock()).toBeLessThan(90_000);
+    const frozen = fakeHooks({ exitAt: 50_000 });
+    await expect(runMultiServerFault("MS2", 120_000, record("MS2"), frozen.hooks)).rejects.toThrow(/exited before its planned stop/);
+    expect(frozen.calls.at(-1)).toBe("stop");
+    const restarted = fakeHooks({ exitAt: 1_000 });
+    await expect(runMultiServerFault("MS3", 0, record("MS3"), restarted.hooks)).rejects.toThrow(/exited before its planned stop/);
   });
 
   it.each(["start", "freeze", "restart"] as const)("stops B and fails the fault when %s fails", async failOn => {

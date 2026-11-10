@@ -894,7 +894,8 @@ Limits:
 - B runs on the same host and PID namespace as A. It can check A's PIDs directly, which a Railway
   replica cannot, so these faults are a lower bound on cross-server exposure.
 - The native executor lease is 20 minutes. MS2 outlasts the 90 s controller lease, not that one.
-- Local only: a remote runner is under neither server. No storm, crash point or K14 in the same wave.
+- Local only: a remote runner is under neither server. No storm, crash point, K14, TM2 or TM3 in the same wave (aging would move the database times the invariant compares with real process windows).
+- B must live through its whole window. If it exits on its own, the fault fails (its tree is still cleaned up).
 
 **Cross-server invariant** (`multi-server.ts`, `<wave>/cross-server.json`). It is checked once per wave
 that fired an MS fault, over the wave database and the process windows the supervisor recorded (each
