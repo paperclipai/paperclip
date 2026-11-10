@@ -4,16 +4,17 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, createDb, environmentLeases, environments, heartbeatRuns, nativeRunFinalizations, executionWorkspaceSnapshots, executionWorkspaces, issues, projects, projectWorkspaces, workspaceOperations, type Db } from "@paperclipai/db";
+import { activityLog, agents, companies, createDb, environmentLeases, environments, heartbeatRuns, nativeRunFinalizations, executionWorkspaceSnapshots, executionWorkspaceRestorePoints, executionWorkspaces, issues, projects, projectWorkspaces, workspaceOperations, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
 import type { StorageService } from "../storage/types.js";
-import { migrateRemoteWorkspace, migrateRemoteWorkspaceCohort } from "./remote-workspace-migration.js";
+import { migrateRemoteWorkspace, migrateRemoteWorkspaceCohort, supersedeExpiredRemoteWorkspaceMigrationCohort } from "./remote-workspace-migration.js";
 import { inspectOnlineWorkspaceSource } from "./online-workspace-source.js";
 import { IsolatedRepositorySourceBusy, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
 import { getWorkspaceSnapshot, loadWorkspaceSnapshotArchive } from "./remote-workspace-snapshot-storage.js";
@@ -22,6 +23,8 @@ import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import * as workspaceArchive from "./remote-workspace-snapshot-archive.js";
 import * as onlineWorkspaceSource from "./online-workspace-source.js";
+import { expireReconstructableGitWorkspace } from "./git-workspace-expiration.js";
+import { remoteWorkspaceSnapshotRetentionService } from "./remote-workspace-snapshot-retention.js";
 
 const support = await getEmbeddedPostgresTestSupport(), execute = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-c", `core.hooksPath=${os.devNull}`, "-C", cwd, ...args], {
@@ -40,7 +43,7 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
   });
   afterEach(async () => {
     vi.restoreAllMocks();
-    await db.delete(activityLog); await db.delete(workspaceOperations); await db.delete(executionWorkspaceSnapshots);
+    await db.delete(activityLog); await db.delete(workspaceOperations); await db.delete(executionWorkspaceSnapshots); await db.delete(executionWorkspaceRestorePoints);
     await db.execute(sql`drop trigger if exists cohort_publish_probe on execution_workspaces`);
     await db.execute(sql`drop function if exists cohort_publish_probe()`); await db.execute(sql`drop sequence if exists cohort_publish_attempts`);
     await db.execute(sql`drop trigger if exists cohort_commit_fault on workspace_operations`); await db.execute(sql`drop function if exists cohort_commit_fault()`);
@@ -49,7 +52,7 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     await db.delete(issues); await db.delete(agents); await db.delete(executionWorkspaces); await db.delete(projectWorkspaces); await db.delete(projects); await db.delete(companies);
     vi.unstubAllEnvs(); await fs.rm(home, { recursive: true, force: true });
   });
-  async function fixture(repoName?: string) {
+  async function fixture(repoName?: string, leafCount = 2) {
     const companyId = randomUUID(), projectId = randomUUID(), root = resolveManagedProjectWorkspaceDir({ companyId, projectId, repoName });
     await db.insert(companies).values({ id: companyId, name: "Cohort", issuePrefix: `C${companyId.slice(0, 6)}` });
     await db.insert(projects).values({ id: projectId, companyId, name: "Shared Git" });
@@ -57,7 +60,7 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     await git(root, "init", "-qb", "main"); await git(root, "add", "."); await git(root, "commit", "-qm", "Original history");
     const repoUrl = "https://example.invalid/cohort.git"; await git(root, "remote", "add", "origin", repoUrl);
     const members = [];
-    for (const name of ["base", "one", "two"]) {
+    for (const name of ["base", "one", "two", ...Array.from({ length: leafCount - 2 }, (_, index) => `leaf-${index}`)]) {
       const cwd = name === "base" ? root : path.join(root, ".paperclip", "worktrees", name);
       if (name !== "base") await git(root, "worktree", "add", "-qb", name, cwd);
       const [issue] = await db.insert(issues).values({ companyId, projectId, title: name }).returning();
@@ -214,6 +217,103 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     await assertLocal(f);
     expect(await db.select().from(workspaceOperations)).toHaveLength(mode === "foreign" ? 3 : 2);
   });
+  it("compensates an exact unpublished cohort after Git expiration without losing its data or history", async () => {
+    const f = await fixture("cohort", 8), bare = path.join(home, "upstream", "cohort.git"), old = new Date(Date.now() - 4 * 86_400_000);
+    await fs.mkdir(path.dirname(bare), { recursive: true }); await git(f.root, "clone", "--bare", f.root, bare);
+    const repoUrl = pathToFileURL(bare).href; await git(f.root, "remote", "set-url", "origin", repoUrl);
+    await db.update(executionWorkspaces).set({ repoUrl, metadata: { createdByRuntime: true, gitBranchOwnershipVersion: 1 } });
+    await db.update(issues).set({ status: "done", completedAt: old, updatedAt: old });
+    const held = await recoverable({ ...f, leaves: [f.leaves[3]] }), put = storage.putFile.bind(storage); let uploads = 0;
+    const interrupted = vi.spyOn(storage, "putFile").mockImplementation(async input => {
+      if (++uploads === 5) throw new Error("cohort_after_four_uploads"); return put(input);
+    });
+    await expect(run(f, { concurrency: 1 })).rejects.toThrow("cohort_after_four_uploads"); interrupted.mockRestore();
+    const initialOperations = (await db.select().from(workspaceOperations)).filter(row => row.phase === "remote_workspace_migration");
+    expect(initialOperations).toHaveLength(8);
+    const cohort = initialOperations[0].metadata!.cohortMigration as { id: string; members: Array<{ workspaceId: string; operationId: string }> };
+    const expirable = cohort.members.filter(member => member.workspaceId !== f.leaves[3].id);
+    const expiredWorkspaceIds = [expirable[0].workspaceId, expirable.at(-1)!.workspaceId], now = new Date(Date.now() + 3 * 86_400_000);
+    const expireOptions = { now, expireBase: false, dryRun: false, signal: AbortSignal.timeout(60_000),
+      restorePoint: { storage, notBefore: old, keyDurable: true } };
+    const [protectedRow] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, expiredWorkspaceIds[0]));
+    const restarted = createDb(database.connectionString, { maxConnections: 1 });
+    try { expect(await expireReconstructableGitWorkspace(restarted, protectedRow, expireOptions))
+      .toMatchObject({ expired: false, skipReason: "live_or_unresolved_consumer" }); }
+    finally { await restarted.$client.end({ timeout: 1 }); }
+    for (const workspaceId of expiredWorkspaceIds) {
+      const [before] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
+      const marker = before.metadata!.remoteWorkspaceMigration, metadata = { ...before.metadata }; delete metadata.remoteWorkspaceMigration;
+      const operation = initialOperations.find(row => row.executionWorkspaceId === workspaceId)!;
+      await db.update(workspaceOperations).set({ status: "failed" }).where(eq(workspaceOperations.id, operation.id));
+      const [unprotected] = await db.update(executionWorkspaces).set({ metadata }).where(eq(executionWorkspaces.id, workspaceId)).returning();
+      const expired = await expireReconstructableGitWorkspace(db, unprotected, expireOptions);
+      expect(expired.skipReason).toBe(null); expect(expired).toMatchObject({ expired: true, restorePoint: true });
+      const [archived] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
+      await db.update(executionWorkspaces).set({ metadata: { ...archived.metadata, remoteWorkspaceMigration: marker } }).where(eq(executionWorkspaces.id, workspaceId));
+      await db.update(workspaceOperations).set({ status: "running" }).where(eq(workspaceOperations.id, operation.id));
+      await expect(fs.access(before.cwd!)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    await expect(run(f)).rejects.toThrow("workspace_cohort_online_source_required");
+    const oldOperations = await db.select().from(workspaceOperations), oldSnapshots = await db.select().from(executionWorkspaceSnapshots);
+    expect(oldSnapshots.filter(row => row.status === "uploaded")).toHaveLength(4);
+    const tasks = await db.select().from(issues), runs = await db.select().from(heartbeatRuns), leases = await db.select().from(environmentLeases);
+    const finalizers = await db.select().from(nativeRunFinalizations);
+    const compensate = () => supersedeExpiredRemoteWorkspaceMigrationCohort({ db, companyId: f.companyId, cohort,
+      expiredWorkspaceIds, signal: AbortSignal.timeout(60_000) });
+    const [authorityRow] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, cohort.members[2].workspaceId));
+    await db.update(executionWorkspaces).set({ metadata: { ...authorityRow.metadata, remoteWorkspace: {
+      schema: "paperclip.remote-workspace.v1", epoch: 1, source: initialOperations[0].metadata!.source,
+      snapshotId: oldSnapshots.find(row => row.status === "uploaded")!.id, writerRunId: null, location: null, dirty: false } } })
+      .where(eq(executionWorkspaces.id, authorityRow.id));
+    await expect(compensate()).rejects.toThrow("online_workspace_source_scope_unproven");
+    await db.update(executionWorkspaces).set({ metadata: authorityRow.metadata }).where(eq(executionWorkspaces.id, authorityRow.id));
+    const beforeRows = await rows(f), last = cohort.members.at(-1)!;
+    await db.execute(sql.raw(`create function cohort_commit_fault() returns trigger language plpgsql as $$ begin if new.id='${last.operationId}'::uuid and new.status='failed' then raise exception 'cohort_compensation_fault'; end if; return new; end $$`));
+    await db.execute(sql`create trigger cohort_commit_fault before update on workspace_operations for each row execute function cohort_commit_fault()`);
+    await expect(compensate()).rejects.toThrow();
+    expect(await db.select().from(workspaceOperations)).toEqual(oldOperations); expect(await rows(f)).toEqual(beforeRows);
+    await db.execute(sql`drop trigger cohort_commit_fault on workspace_operations`); await db.execute(sql`drop function cohort_commit_fault()`);
+    const other = createDb(database.connectionString, { maxConnections: 1 });
+    try { await other.transaction(async tx => {
+      expect(await tryLockNativeWorkspaceFinalization(tx as unknown as Db, { companyId: f.companyId, runId: held.runId })).toBe(true);
+      await expect(compensate()).rejects.toThrow("remote_copyback_owned");
+    }); } finally { await other.$client.end({ timeout: 1 }); }
+    const receipt = await compensate(); expect(receipt).toMatchObject({ superseded: true, migrationCompleted: false, replayed: false });
+    await expect(compensate()).resolves.toMatchObject({ ...receipt, replayed: true });
+    const failed = await db.select().from(workspaceOperations);
+    for (const operation of failed) expect(operation).toMatchObject({ status: "failed", metadata: {
+      ...oldOperations.find(row => row.id === operation.id)!.metadata, lastFailure: { schema: "paperclip.remote-workspace-migration-supersession.v1",
+        code: "source_expired_during_import", cohortId: cohort.id, supersessionId: receipt.supersessionId } } });
+    expect(await db.select().from(executionWorkspaceSnapshots)).toEqual(oldSnapshots);
+    expect(await db.select().from(issues)).toEqual(tasks); expect(await db.select().from(heartbeatRuns)).toEqual(runs);
+    expect(await db.select().from(environmentLeases)).toEqual(leases); expect(await db.select().from(nativeRunFinalizations)).toEqual(finalizers);
+    for (const workspaceId of expiredWorkspaceIds) await migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId,
+      apply: true, signal: AbortSignal.timeout(60_000) });
+    await expect(run(f, { workspaceIds: cohort.members.map(member => member.workspaceId).filter(id => !expiredWorkspaceIds.includes(id)) }))
+      .resolves.toMatchObject({ applied: true });
+    const currentOperations = await db.select().from(workspaceOperations);
+    for (const member of cohort.members) {
+      const successor = currentOperations.find(row => row.executionWorkspaceId === member.workspaceId && row.status === "succeeded")!;
+      expect(successor.id).not.toBe(member.operationId);
+      expect(successor.metadata?.migrationSupersession).toMatchObject({ operationId: member.operationId, cohortId: cohort.id,
+        supersessionId: receipt.supersessionId, generation: oldSnapshots.some(row => row.executionWorkspaceId === member.workspaceId) ? 2 : 1 });
+    }
+    const deleted = vi.spyOn(storage, "deleteObject");
+    const retention = await remoteWorkspaceSnapshotRetentionService(db, { storage, now: () => new Date(Date.now() + 30 * 86_400_000) }).tick();
+    expect(retention.pinned).toBeGreaterThanOrEqual(oldSnapshots.length); expect(deleted).not.toHaveBeenCalled();
+    expect((await db.select().from(workspaceOperations)).filter(row => oldOperations.some(old => old.id === row.id))).toEqual(failed);
+    await fs.rename(f.root, f.root + "-original");
+    for (const workspace of f.leaves) {
+      const [saved] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+      const ref = (await getWorkspaceSnapshot(db, { companyId: f.companyId, workspaceId: saved.id,
+        snapshotId: readRemoteWorkspaceAuthority(saved.metadata)!.snapshotId! }))!;
+      const archivePath = path.join(home, `${saved.id}.pcws`), targetDir = path.join(home, `${saved.id}-restored`);
+      await loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath: archivePath });
+      await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref.manifestDigest });
+      expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe(`${workspace.name} dirty tracked work\n`);
+      expect(await fs.readFile(path.join(targetDir, "untracked.txt"), "utf8")).toBe(`${workspace.name} untracked work\n`);
+    }
+  }, 120_000);
   it("resumes the same uploaded cohort after an archived companion is independently migrated", async () => {
     const f = await fixture("cohort"), held = await recoverable(f), cwd = path.join(f.root, ".paperclip", "worktrees", "retired"), closedAt = new Date();
     await git(f.root, "worktree", "add", "-qb", "retired", cwd);
