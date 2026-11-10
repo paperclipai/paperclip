@@ -1,16 +1,17 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TaskBrowser } from "@paperclipai/shared";
 import { browserUseApi } from "@/api/browser-use";
 import { retryTransientOnly } from "@/lib/query-client";
-import { useHasCompanyLiveConnection } from "@/context/LiveUpdatesProvider";
+import { useCompanyLiveEvent, useHasCompanyLiveConnection } from "@/context/LiveUpdatesProvider";
 export const TASK_BROWSERS_REFETCH_MS = 3000;
 
 /**
  * Poll while the company live connection is closed, and while any browser can
  * still change state. With the connection open, every browser lifecycle step
  * (`browser.started`, `browser.ready`, `browser.run_finished`, `browser.closed`
- * and controls) logs task activity, which invalidates this query.
+ * and controls) logs task activity. `useTaskBrowsers` reads the list again on
+ * that activity and on each new connection.
  */
 export function taskBrowsersRefetchInterval(
   connected: boolean,
@@ -26,12 +27,50 @@ export function taskBrowsersQueryKey(issueId: string | undefined) {
   return ["task-browsers", issueId] as const;
 }
 
+/**
+ * Read the browser list again after any read already in flight. A refresh that
+ * only joined an older read could keep a list from before the browser started,
+ * and an empty list stops polling while connected.
+ */
+function refreshTaskBrowsers(queryClient: QueryClient, issueId: string, owner: { active: boolean }) {
+  const queryKey = taskBrowsersQueryKey(issueId);
+  const query = queryClient.getQueryCache().find({ queryKey, exact: true });
+  const pending = query?.state.fetchStatus === "fetching" ? query.promise : undefined;
+  const refresh = () => owner.active
+    ? queryClient.invalidateQueries({ queryKey, exact: true }, { cancelRefetch: false })
+    : undefined;
+  void (pending ? pending.catch(() => undefined).then(refresh) : refresh());
+}
+
 export function useTaskBrowsers(issueId?: string, companyId?: string | null) {
   const connected = useHasCompanyLiveConnection(companyId);
+  const queryClient = useQueryClient();
+  const enabled = Boolean(issueId) && !issueId?.startsWith("chat:");
+  const owner = useRef({ active: true });
+  useEffect(() => {
+    const current = { active: true };
+    owner.current = current;
+    return () => { current.active = false; };
+  }, [issueId]);
+  // Events while the connection was closed are not replayed. Polling stops on
+  // an empty list once connected, so reconcile on each new connection.
+  const wasConnected = useRef(connected);
+  useEffect(() => {
+    const opened = connected && !wasConnected.current;
+    wasConnected.current = connected;
+    if (opened && enabled && issueId) refreshTaskBrowsers(queryClient, issueId, owner.current);
+  }, [connected, enabled, issueId, queryClient]);
+  useCompanyLiveEvent((event) => {
+    if (!enabled || !issueId || event.type !== "activity.logged") return;
+    const payload = event.payload ?? {};
+    if (payload.entityType !== "issue" || payload.entityId !== issueId) return;
+    if (typeof payload.action !== "string" || !payload.action.startsWith("browser.")) return;
+    refreshTaskBrowsers(queryClient, issueId, owner.current);
+  });
   return useQuery({
     queryKey: taskBrowsersQueryKey(issueId),
     queryFn: () => browserUseApi.list(issueId!),
-    enabled: Boolean(issueId) && !issueId?.startsWith("chat:"),
+    enabled,
     refetchInterval: (query) => taskBrowsersRefetchInterval(connected, query.state),
     // The 3s poll cadence already retries reads; stacking the shared backoff
     // inside a tick only adds duplicate requests. The next tick refetches anyway.

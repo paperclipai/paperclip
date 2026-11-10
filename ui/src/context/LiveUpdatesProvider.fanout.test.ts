@@ -143,26 +143,6 @@ describe("open-task request fan-out", () => {
     live.dispose();
     client.clear();
   });
-
-  it("refreshes the task's browsers on its browser activity while polling is stopped", async () => {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const live = liveWiring(client);
-    const task = mountOpenTask(client, true);
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(task.counters.taskBrowsers).toHaveBeenCalledTimes(1);
-    __liveUpdatesTestUtils.invalidateActivityQueries(live.client, COMPANY,
-      { entityType: "issue", entityId: TASK_UUID, action: "browser.started", actorType: "system", actorId: "browser-use-cloud" }, ACTOR);
-    await vi.advanceTimersByTimeAsync(400);
-    expect(task.counters.taskBrowsers).toHaveBeenCalledTimes(2);
-    // Another task's browser does not refresh this one.
-    __liveUpdatesTestUtils.invalidateActivityQueries(live.client, COMPANY,
-      { entityType: "issue", entityId: "other-1", action: "browser.started", actorType: "system", actorId: "browser-use-cloud" }, ACTOR);
-    await vi.advanceTimersByTimeAsync(400);
-    expect(task.counters.taskBrowsers).toHaveBeenCalledTimes(2);
-    task.unmount();
-    live.dispose();
-    client.clear();
-  });
 });
 
 describe("ambient invalidation lane", () => {

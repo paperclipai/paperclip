@@ -1582,11 +1582,6 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
-    if (entityId && action?.startsWith("browser.")) {
-      // Task browsers stop polling while connected; their lifecycle activity
-      // is the refresh signal. The browser query is keyed by the task UUID.
-      queryClient.invalidateQueries({ queryKey: ["task-browsers", entityId] });
-    }
     const chatListKey = queryKeys.agentChats.list(companyId, currentActor.userId);
     const knownChat = entityId && queryClient.getQueryData<Issue[]>(chatListKey)?.some(chat => chat.id === entityId);
     const ownChatDelivery = readString(details?.conversationUserId) === (currentActor.userId ?? "local-board");
