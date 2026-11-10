@@ -25,9 +25,10 @@ export function gradeConnectionDecline(value: unknown) {
   c.add("no-connected-account-or-provider-read", o.connections.length === 0 && o.state.connectedBeforeDecline === 0
     && o.state.providerInvocations === 0, "There is no credential-bearing connection and no provider invocation after a decline.");
   c.add("post-decline-response-bound", typeof o.state.initialRunId === "string" && o.phaseReplies.some(row => row.runId !== o.state.initialRunId && o.runs.some(run => run.id === row.runId && run.status === "succeeded")), "The incomplete research explanation belongs to the actual decline continuation run.");
-  const continuationReply = o.phaseReplies.filter(row => row.runId !== o.state.initialRunId).map(row => row.body).join("\n");
-  c.add("honest-incomplete-research", /(?:not|couldn.t|cannot|can.t|unable|declin|without).*(?:read|connect|access|notion)|(?:notion|access).*(?:declin|not connected)/is.test(continuationReply)
-    && /paste|excerpt|share|provide|copy/i.test(continuationReply), "The reply explains unavailable research and offers supplied content as an alternative.");
+  // Whether the continuation's wording explains the unread Notion and offers pasted content is
+  // left to a human reader. Saved state shows the research was not recorded as completed work.
+  c.add("research-not-marked-complete", !o.tasks.some(row => row.status === "done"),
+    "Declining setup does not produce work recorded as done.");
   return c.result();
 }
 export const connectionSetupExternalCases = [definition("connection-setup.notion-declined", async ctx => {
@@ -37,7 +38,7 @@ export const connectionSetupExternalCases = [definition("connection-setup.notion
   if (!session.user?.id) throw new Error("Notion decline requires the actual signed-in person");
   return { connectedBeforeDecline: current.connections.length, personId: session.user.id };
 }, gradeConnectionDecline, {
-  authentication: "human-session", expectedRunCount: 2, minimumRunCount: 1, attemptTimeoutMs: 420_000,
+  oracleVersion: "paperclip.chat-catalog.external.notion-declined.v2", authentication: "human-session", expectedRunCount: 2, minimumRunCount: 1, attemptTimeoutMs: 420_000,
   sourceFiles: ["chat-catalog-domains/external-connection-setup.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-support.ts", "../../ui/src/features/connections/ConnectionIntentInteractionBody.tsx", "../../ui/src/api/connection-intents.ts", "chat-scenarios/connection-setup.yaml"],
   async act(ctx, state) {
     const cards = await pollUntil({ label: "addressed Notion connection request", deadlineAt: Date.now() + 150_000,

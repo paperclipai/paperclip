@@ -2301,7 +2301,7 @@
       "chat-scenarios/connection-setup.yaml",
       "chat-catalog-domains/identity-support.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.external.notion-declined.v2",
     "expectedRunCount": 2,
     "minimumRunCount": 1,
     "turnTimeoutMs": 120000,

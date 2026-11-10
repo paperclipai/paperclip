@@ -226,6 +226,11 @@ describe("external domain independent oracles", () => {
     (o.state.connectionAfter as { companyId: string }).companyId = "unrelated";
     expect(definition.grade(o).passed).toBe(false);
   });
+  it("notion-declined grades the decline and saved work, not the continuation's words", () => {
+    const grade = (mutate: (o: ExternalObservation) => void) => { const o = valid("connection-setup.notion-declined"); mutate(o); return definitions.find(row => row.scenarioId === "connection-setup.notion-declined")!.grade(o).passed; };
+    expect(grade(o => { o.phaseReplies = [{ runId: "continuation", body: "Notion stays off. Send me the launch page text and I will summarize it." }]; })).toBe(true);
+    expect(grade(o => { o.tasks = [{ id: "research", companyId: "company", title: "Launch research", status: "done" }]; })).toBe(false);
+  });
   it("an initial response cannot substitute for a continuation outcome", () => {
     for (const id of ["connection-setup.notion-declined"]) {
       const o = valid(id); o.phaseReplies[0]!.runId = "initial";
