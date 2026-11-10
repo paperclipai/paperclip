@@ -208,6 +208,12 @@ export const heartbeatRuns = pgTable(
     companyNativeWorkspaceIdx: index("heartbeat_runs_company_native_workspace_idx")
       .on(table.companyId, sql`(${table.runnerProfileJson}->'nativeWorkspaceSync'->>'workspaceId')`)
       .concurrently(),
+    // Runs of one native session. Retention, recovery and resume reads filter
+    // by company and session; without this they walk the agent's run history.
+    companyNativeSessionIdx: index("heartbeat_runs_company_native_session_idx")
+      .on(table.companyId, table.nativeSessionId)
+      .where(sql`${table.nativeSessionId} is not null`)
+      .concurrently(),
     companyIssueCreatedIdx: index("heartbeat_runs_company_issue_created_idx").on(
       table.companyId,
       table.issueId,
@@ -252,6 +258,14 @@ export const heartbeatRuns = pgTable(
       sql`(${table.contextSnapshot} ->> 'taskKey')`,
       table.createdAt.desc(),
     ),
+    // Runs that recorded an execution workspace in their legacy context. Workspace
+    // activity and cleanup checks probe it instead of decoding every run context.
+    // Partial, so it serves only queries that repeat the predicate and never
+    // competes with other company-scoped indexes.
+    companyCtxExecutionWorkspaceIdx: index("heartbeat_runs_company_ctx_execution_workspace_idx")
+      .on(table.companyId, sql`(${table.contextSnapshot} ->> 'executionWorkspaceId')`)
+      .where(sql`${table.contextSnapshot} ? 'executionWorkspaceId'`)
+      .concurrently(),
     companyCtxPaperclipIssueCreatedIdx: index("heartbeat_runs_company_ctx_paperclip_issue_created_idx")
       .on(table.companyId, sql`(${table.contextSnapshot} -> 'paperclipIssue' ->> 'id')`, table.createdAt.desc())
       .concurrently(),

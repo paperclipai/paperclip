@@ -151,7 +151,7 @@ describe("report-only ownership reconciliation", () => {
     expect(new Set(names).size).toBe(names.length);
     expect(names.length).toBeGreaterThanOrEqual(40);
     expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id))
-      .toEqual(["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "sandbox_creation_intent", "environment_run_lease_active", "environment_teardown_claim", "environment_retained_orphan_sandbox", "environment_login_probe_lease", "workspace_runtime_control_operation", "native_workspace_finalize_attempt", "workspace_command_operation", "remote_snapshot_save", "execution_workspace_runtime_lease", "remote_workspace_unsaved_files", "legacy_shutdown_settlement_fence", "copyback_owner_hold", "observed_workspace_preservation_fence", "wake_request_claimed", "legacy_controller_lease", "legacy_interrupted_preparation_hold", "issue_execution_lock", "issue_checkout_lock", "agent_lifecycle_lease"]);
+      .toEqual(["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "sandbox_creation_intent", "environment_run_lease_active", "environment_teardown_claim", "environment_retained_orphan_sandbox", "environment_login_probe_lease", "workspace_runtime_control_operation", "native_workspace_finalize_attempt", "workspace_command_operation", "remote_snapshot_save", "execution_workspace_runtime_lease", "remote_workspace_unsaved_files", "remote_snapshot_ledger", "legacy_shutdown_settlement_fence", "copyback_owner_hold", "observed_workspace_preservation_fence", "wake_request_claimed", "legacy_controller_lease", "legacy_interrupted_preparation_hold", "native_completed_turn_cleanup_hold", "issue_execution_lock", "issue_checkout_lock", "agent_lifecycle_lease"]);
     expect(OWNABLE_KINDS.filter(kind => !kind.listInProgress).every(kind => kind.coverageGap)).toBe(true);
   });
 
@@ -779,6 +779,61 @@ describe("report-only ownership reconciliation", () => {
     // Oldest first, as the check orders them.
     expect(report.violations.filter(row => row.reason === "user_comment_without_wake").map(row => row.recordId))
       .toEqual([lostNative.commentId, lostContext.commentId, earlyAck.commentId, logOnly.commentId, otherRunAck.commentId]);
+  });
+
+  // The stale-continuation check reads a task's runs through the same two
+  // bindings. The closing run and a live run must each count through either
+  // binding alone, and only in the comment's company and for the assignee.
+  it("binds each task run by its legacy context or its native column in the stale-continuation check", async () => {
+    const otherCompanyId = randomUUID(), otherAgentId = randomUUID(), peerAgentId = randomUUID();
+    await db.insert(companies).values({ id: otherCompanyId, name: "Other company", issuePrefix: "OTH" });
+    await db.insert(agents).values([
+      { id: otherAgentId, companyId: otherCompanyId, name: "Other", role: "engineer", adapterType: "codex_local" },
+      { id: peerAgentId, companyId, name: "Peer", role: "engineer", adapterType: "codex_local" }]);
+    type Run = { binding: "context" | "native"; status?: string; startedAt: Date; finishedAt?: Date | null; companyId?: string; agentId?: string };
+    const task = async (title: string, runs: Run[], commentAt: Date, options: { closedBy?: string; wake?: "commentId" | "list" | "open" } = {}) => {
+      const issueId = randomUUID();
+      await db.insert(issues).values({ id: issueId, companyId, title, status: "done", assigneeAgentId: agentId });
+      for (const run of runs) {
+        const runCompanyId = run.companyId ?? companyId;
+        await db.insert(heartbeatRuns).values({ companyId: runCompanyId, agentId: run.agentId ?? (runCompanyId === companyId ? agentId : otherAgentId),
+          status: run.status ?? "succeeded", invocationSource: "manual",
+          contextSnapshot: run.binding === "native" ? {} : { issueId }, nativeIssueId: run.binding === "context" ? null : issueId,
+          startedAt: run.startedAt, createdAt: run.startedAt, finishedAt: run.finishedAt === undefined ? minutesAgo(2) : run.finishedAt });
+      }
+      const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorUserId: "user-1", body: title,
+        createdAt: commentAt }).returning();
+      const commentId = comment!.id;
+      const payload = options.wake === "list" ? { issueId, _paperclipWakeContext: { wakeCommentIds: [commentId] } } : { issueId, commentId };
+      await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation", status: "cancelled",
+        error: "continuation_task_ownership_changed", payload });
+      if (options.wake === "open") await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "automation",
+        status: "deferred_issue_execution", payload: { issueId, commentId } });
+      await db.insert(activityLog).values({ companyId, actorType: options.closedBy ?? "agent", actorId: "actor", action: "issue.updated",
+        entityType: "issue", entityId: issueId, details: { toStatus: "done" }, createdAt: minutesAgo(1) });
+      return commentId;
+    };
+    const closing = (binding: Run["binding"], extra: Partial<Run> = {}): Run => ({ binding, startedAt: minutesAgo(10), ...extra });
+    const nativeClosing = await task("closed by a native run", [closing("native")], minutesAgo(8));
+    const contextClosing = await task("closed by a legacy run", [closing("context")], minutesAgo(7));
+    const listWake = await task("carried by a wake list", [closing("native")], minutesAgo(6), { wake: "list" });
+    await task("no closing run", [], minutesAgo(8));
+    await task("closing run in another company", [closing("native", { companyId: otherCompanyId }), closing("context", { companyId: otherCompanyId })], minutesAgo(8));
+    await task("closing run of another agent", [closing("native", { agentId: peerAgentId }), closing("context", { agentId: peerAgentId })], minutesAgo(8));
+    await task("closing run failed", [closing("native", { status: "failed" })], minutesAgo(8));
+    await task("closing run ended before the comment", [closing("context", { finishedAt: minutesAgo(9) })], minutesAgo(8));
+    await task("closing run started after the comment", [closing("native", { startedAt: minutesAgo(7) })], minutesAgo(8));
+    await task("native live run", [closing("context"), closing("native", { status: "running", startedAt: minutesAgo(3), finishedAt: null })], minutesAgo(8));
+    await task("legacy live run", [closing("native"), closing("context", { status: "queued", startedAt: minutesAgo(3), finishedAt: null })], minutesAgo(8));
+    const otherCompanyLive = await task("live run in another company only", [closing("native"),
+      closing("context", { status: "running", companyId: otherCompanyId, finishedAt: null })], minutesAgo(5));
+    await task("closed by a person", [closing("native")], minutesAgo(8), { closedBy: "user" });
+    await task("an open wake carries it", [closing("context")], minutesAgo(8), { wake: "open" });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    const dropped = report.violations.filter(row => row.reason === "user_comment_dropped_by_stale_continuation");
+    // Oldest first, as the check orders them. The other company's live run does not hold the last one.
+    expect(dropped.map(row => row.recordId)).toEqual([nativeClosing, contextClosing, listWake, otherCompanyLive]);
+    expect(dropped.every(row => row.companyId === companyId)).toBe(true);
   });
 
   it("keeps a backstop deadline for a lifted pause still inside its grace window", async () => {

@@ -1,3 +1,5 @@
+import { assertAgentInteraction } from "../services/agent-interaction-policy.js";
+import { assertQueuedCommentInteractionDelivery, recheckQueuedCommentInteractionDelivery } from "../services/agent-interaction-delivery.js";
 import { listStalledDependencies } from "../services/recovery/blocker-stall-wakeups.js";
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
@@ -312,7 +314,6 @@ import { retainBacklogHumanAssignment } from "../services/human-directed-work.js
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
-import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
 import {
   renderOnboardingGreeting,
   ONBOARDING_GREETING_AUTHORIZATION_REASON,
@@ -5269,7 +5270,8 @@ export function issueRoutes(
   function issueWriteDenialCodeForDecision(
     decision: Awaited<ReturnType<typeof decideIssueAccess>>,
   ): IssueWriteDenialCode {
-    if (decision.code)
+    if (decision.interactionDenial) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    if (decision.code === "RESPONSIBLE_USER_UNAUTHORIZED" || decision.code === "RESPONSIBLE_USER_UNAVAILABLE")
       return issueWriteDenialCodeForResponsibleUserDenial(decision.code);
     if (
       decision.reason === "deny_low_trust_boundary" ||
@@ -5680,6 +5682,9 @@ export function issueRoutes(
   ) {
     if (!(await assertIssueReadAllowed(req, res, issue))) return false;
     if (req.actor.type !== "agent") return true;
+    await assertAgentInteraction(db, { companyId: issue.companyId, actorAgentId: req.actor.agentId,
+      operation: "comment", issueId: issue.id,
+      texts: [typeof req.body?.body === "string" ? req.body.body : "", typeof req.body?.comment === "string" ? req.body.comment : ""] });
     if (req.actor.runId) await assertNoCaseHandoffMutation(db, req.actor.runId, issue.id);
     const actorAgentId = req.actor.agentId;
     if (!actorAgentId) {
@@ -5817,7 +5822,7 @@ export function issueRoutes(
     // watched subtree. This must be evaluated before the base assignee-ownership
     // boundary below: that boundary denies an agent mutating an issue owned by a
     // different agent, which is exactly the watchdog's primary job
-    // (SPEC-implementation §9.9 — comment, transition, reassign within the
+    // (`doc/TASK-WATCHDOG.md`, "Authority contract" — comment, transition, reassign within the
     // watched subtree). The watchdog scope can only widen access to the watched
     // subtree; downstream status-transition, assignment, recovery, and budget
     // guards in the route handlers still apply.
@@ -6242,9 +6247,10 @@ export function issueRoutes(
       });
     }
     // Resolving an interaction on another run's issue is a cross-issue mutation
-    // like a comment or a PATCH, so it consumes the same per-run budget (§9.3,
-    // §9.8.1). This runs last: company/resource access, run attribution,
-    // containment, and the audience decision have all already passed, and the
+    // like a comment or a PATCH, so it consumes the same per-run budget (see
+    // `doc/agent-permission-defaults.md`). This runs last: company/resource
+    // access, run attribution, containment, and the audience decision have all
+    // already passed, and the
     // terminal interaction mutation plus every child-task, continuation,
     // activity, tool, and wake side effect is still downstream. Same-issue
     // resolutions short-circuit inside the counter transaction and are not
@@ -10237,7 +10243,14 @@ export function issueRoutes(
     // The receipt commits before dispatch. Maintenance redelivers it after a
     // crash or a lost response; this nudge only reduces perceived latency.
     const chatActionId = "chatActionId" in receipt ? receipt.chatActionId : undefined;
-    if (chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(chatActionId).catch(err =>
+    const finalizeRunId = "finalizeRunId" in receipt ? receipt.finalizeRunId : undefined;
+    if (finalizeRunId) {
+      // The saved result is applied again; no provider run starts. The
+      // result-commit worker repeats this if the process stops first.
+      const { refinalizeSavedNativeResult } = await import("../services/native-runtime/exhausted-finalization-retry.js");
+      void refinalizeSavedNativeResult(db, { companyId: issue.companyId, runId: finalizeRunId }).catch(err =>
+        logger.warn({ err, issueId: issue.id, runId: finalizeRunId }, "Saved result finalization remains queued"));
+    } else if (chatActionId) void opts.chatRunRetries?.processFailedChatRunRetry(chatActionId).catch(err =>
       logger.warn({ err, issueId: issue.id }, "Connected task Retry remains queued"));
     else if (receipt.accepted && receipt.requestId) void heartbeat.resumeTaskRetry(issue.companyId, receipt.requestId).catch(err =>
       logger.warn({ err, issueId: issue.id }, "Task Retry remains queued"));
@@ -12207,11 +12220,13 @@ export function issueRoutes(
         ? await workProductsSvc.update(
             existingRunAttachmentProduct.id,
             createInput,
+            actor.agentId,
           )
         : await workProductsSvc.createForIssue(
             issue.id,
             issue.companyId,
             createInput,
+            actor.agentId,
           );
       if (!product) {
         res.status(422).json({ error: "Invalid work product payload" });
@@ -12605,7 +12620,7 @@ export function issueRoutes(
       const product = await workProductsSvc.update(id, {
         ...patch,
         ...(sourceTrust ? { sourceTrust } : {}),
-      });
+      }, actor.agentId);
       if (!product) {
         res.status(404).json({ error: "Work product not found" });
         return;
@@ -12666,7 +12681,7 @@ export function issueRoutes(
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue)))
       return;
-    const removed = await workProductsSvc.remove(id);
+    const removed = await workProductsSvc.remove(id, req.actor.type === "agent" ? req.actor.agentId : null);
     if (!removed) {
       res.status(404).json({ error: "Work product not found" });
       return;
@@ -14751,7 +14766,9 @@ export function issueRoutes(
         );
         return;
       }
-      const issueMutationAccess = await assertAgentIssueMutationAllowed(
+      const commentOnlyUpdate = Boolean(req.body.comment) && Object.keys(req.body).every(key =>
+        ["comment", "commentClientRequestId", "attachmentIds", "onBehalfOfUserId"].includes(key));
+      const issueMutationAccess = commentOnlyUpdate ? await assertAgentIssueCommentAllowed(req, res, existing) : await assertAgentIssueMutationAllowed(
         req,
         res,
         existing,
@@ -14763,7 +14780,7 @@ export function issueRoutes(
         req.actor.type === "agent"
           ? issueWriteAuthorizationReason(
               req,
-              await decideIssueAccess(req, existing, "issue:mutate"),
+              await decideIssueAccess(req, existing, commentOnlyUpdate ? "issue:comment" : "issue:mutate"),
             )
           : issueWriteAuthorizationReason(req, true);
 
@@ -14797,6 +14814,17 @@ export function issueRoutes(
         onBehalfOfUserId: _requestedOnBehalfOfUserId,
         ...updateFields
       } = req.body;
+      if (commentBody && req.actor.type === "agent") {
+        await assertAgentInteraction(db, { companyId: existing.companyId, actorAgentId: req.actor.agentId,
+          operation: "comment", issueId: existing.id, texts: [commentBody] });
+      }
+      await assertAgentInteraction(db, { companyId: existing.companyId,
+        actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null, operation: "mention", issueId: existing.id,
+        texts: [
+          ...(updateFields.title !== undefined && updateFields.title !== existing.title ? [updateFields.title] : []),
+          ...(updateFields.description !== undefined && updateFields.description !== existing.description ? [updateFields.description ?? ""] : []),
+        ],
+      });
       // Board users move tasks to any depth. An agent move into a child is
       // placed beside it, and an agent move of a task with children is skipped,
       // both with a notice instead of an error.
@@ -15802,11 +15830,13 @@ export function issueRoutes(
       const commentWithAdapterOverrides = Boolean(
         commentBody && updateFields.assigneeAdapterOverrides !== undefined,
       );
-      const transactionalCommentSourceTrust = commentAttachmentIds?.length || commentWithAdapterOverrides
+      const agentCommentUpdate = Boolean(commentBody && actor.actorType === "agent");
+      const transactionalCommentSourceTrust = commentAttachmentIds?.length || commentWithAdapterOverrides || agentCommentUpdate
         ? await sourceTrustForActorWrite(existing, actor)
         : undefined;
       const shouldUseTransactionalIssueUpdate =
         Boolean(commentAttachmentIds?.length) ||
+        agentCommentUpdate ||
         commentWithAdapterOverrides ||
         Boolean(decision) ||
         shouldRelayStop ||
@@ -15815,6 +15845,10 @@ export function issueRoutes(
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
+            if (agentCommentUpdate) await assertAgentInteraction(tx, {
+              companyId: existing.companyId, actorAgentId: actor.agentId,
+              operation: "comment", issueId: id, texts: [commentBody], lock: true,
+            });
             if (
               reviewPolicySensitiveMutationRequested &&
               !(await assertLockedReviewPolicyAllowsMutation(tx))
@@ -15822,7 +15856,7 @@ export function issueRoutes(
               return null;
             const updated = await updateIssue(tx);
             if (!updated) return null;
-            if (commentAttachmentIds?.length || commentWithAdapterOverrides) {
+            if (commentAttachmentIds?.length || commentWithAdapterOverrides || agentCommentUpdate) {
               // Adapter settings, reassignment, comment and upload binding commit together.
               // A failed comment or invalid receipt rolls back the issue update.
               transactionalComment = await svc.addComment(
@@ -17120,7 +17154,7 @@ export function issueRoutes(
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     const attachments = await svc.listAttachments(id);
 
-    const issue = await svc.remove(id);
+    const issue = await svc.remove(id, req.actor.type === "agent" ? req.actor.agentId : null);
     if (!issue) {
       res.status(404).json({ error: "Issue not found" });
       return;
@@ -17728,6 +17762,10 @@ export function issueRoutes(
         eq(agentWakeupRequests.id, req.body.queueId), eq(agentWakeupRequests.companyId, issue.companyId),
       )).then(rows => rows[0]);
       const response = responseWake ? await readQueuedInteractionResponse(db, issue.companyId, issue.id, responseWake.payload) : null;
+      if (responseWake) await recheckQueuedCommentInteractionDelivery(db, {
+        companyId: issue.companyId, issueId: issue.id, agentId: responseWake.agentId,
+        commentId, queueId: responseWake.id,
+      });
       const steeringIdentity = await reserveSteeredIdentity(db, {
         companyId: issue.companyId,
         runId: req.body.targetRunId,
@@ -17872,6 +17910,10 @@ export function issueRoutes(
               code: "queued_response_requires_fresh_session",
             });
           }
+          await assertQueuedCommentInteractionDelivery(tx, {
+            companyId: issue.companyId, issueId: issue.id, agentId: locked.activeRun.agentId,
+            commentId, lock: true,
+          });
           steeringDeliveryAttempted = true;
           const acknowledgement =
             (await storedSteeringAcknowledgement(tx, steeringIdentity ?? {
@@ -18471,13 +18513,6 @@ export function issueRoutes(
                   companyId: issue.companyId,
                   proposal: lockedProposal,
                 }),
-            });
-            await notifySecretProposalResolution({
-              proposal,
-              status: "approved",
-              userId: resolvedByUserId,
-              issues: svc,
-              heartbeat,
             });
           }
           continuationInteraction =
@@ -21095,7 +21130,7 @@ export function issueRoutes(
       );
     }
 
-    const removed = await svc.removeAttachment(attachmentId, { mcpCleanup });
+    const removed = await svc.removeAttachment(attachmentId, { mcpCleanup, actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null });
     if (!removed) {
       res.status(404).json({ error: "Attachment not found" });
       return;

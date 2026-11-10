@@ -93,6 +93,7 @@ export const CURSOR_CLOUD_DEFAULT_TIMEOUT_MS = runner.CURSOR_CLOUD_DEFAULT_TIMEO
 export const RUNNER_TOOL_SCOPE_TOKEN_HEADER = runner.RUNNER_TOOL_SCOPE_TOKEN_HEADER;
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
 export const providerFailureFromError = runner.providerFailureFromError;
+export const safeErrorCauseCode = runner.safeErrorCauseCode;
 export const decodeDurablePrpCheckpoint = runner.decodeDurablePrpCheckpoint;
 export const captureLegacyDurablePrpCheckpoint = runner.captureLegacyDurablePrpCheckpoint;
 export const inspectDurablePrpCheckpointHeader = runner.inspectDurablePrpCheckpointHeader;
@@ -116,6 +117,9 @@ export const NativeSessionProtocolIntegrityError =
   runner.NativeSessionProtocolIntegrityError;
 export const NativeEnvironmentProbeCleanupError = runner.NativeEnvironmentProbeCleanupError;
 export const SemanticToolOutcomeUnknownError = runner.SemanticToolOutcomeUnknownError;
+export const dispatchToolCallback = runner.dispatchToolCallback;
+export const recoverToolCallback = runner.recoverToolCallback;
+export type SemanticInputAdmission = import("@paperclipai/paperclip-runner").SemanticInputAdmission;
 export const PaperclipSemanticDispatcher = runner.PaperclipSemanticDispatcher;
 export const CAPABILITY_SEMANTIC_TOOL_CATALOG =
   runner.CAPABILITY_SEMANTIC_TOOL_CATALOG;

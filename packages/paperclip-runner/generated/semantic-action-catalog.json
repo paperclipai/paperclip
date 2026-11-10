@@ -271,7 +271,7 @@
       "planning",
       "skill_test"
     ],
-    "description": "Read bounded comments on the active task.",
+    "description": "Read bounded comments on the active task only. Calling get_task does not change the active task. This is not a status or assignment audit. For progress chronology and handoff actors, use search_api to discover the company timeline or issue activity, then call_api.",
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
@@ -3342,7 +3342,7 @@
       "standard",
       "skill_test"
     ],
-    "description": "Create a project task from a conversation, or a child from an ordinary task. When the user names an existing teammate or project, resolve their IDs with list_agents or list_projects and set assigneeActorId or projectId in this creation call. A todo task can start its assignee immediately; creating it for yourself and reassigning later can start the wrong agent. Persist initialPlan before execution. Use backlog to save or plan without starting work; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include required inputs and constraints in self-contained child instructions.",
+    "description": "Create a task. When the user names an existing teammate or project, resolve their IDs with list_agents or list_projects and set assigneeActorId or projectId in this creation call. A todo task can start its assignee immediately; creating it for yourself and reassigning later can start the wrong agent. Persist initialPlan before execution. Use backlog to save or plan without starting work; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include required inputs and constraints in self-contained task instructions.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -3374,7 +3374,7 @@
           "uniqueItems": true
         },
         "description": {
-          "description": "Child task description.",
+          "description": "Task description.",
           "maxLength": 20000,
           "type": [
             "string",
@@ -3874,7 +3874,7 @@
               "type": "string"
             },
             "notes": {
-              "description": "What to check on the next run; do not include secrets.",
+              "description": "What to check on the next run. Maximum 500 characters; do not include secrets.",
               "maxLength": 500,
               "minLength": 1,
               "type": "string"

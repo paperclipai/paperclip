@@ -57,7 +57,9 @@ export async function attachPreservedRemoteWorkspaceSnapshots(input: {
     if (remote.workspaceId === input.workspaceId || remote.state !== "saved" || !remote.snapshotId) continue;
     const proof = await immutableRemoteWorkspaceRecoveryAttachment(input.db, source);
     if (!proof) {
-      if (hasRequiredWorkspaceRecovery(source.resultJson)) throw new Error("remote_workspace_recovery_receipt_invalid");
+      if (hasRequiredWorkspaceRecovery(source.resultJson) && !await savedOnlyItsRestoredSnapshot(input.db, source, remote)) {
+        throw new Error("remote_workspace_recovery_receipt_invalid");
+      }
       continue;
     }
     const operationId = proof.operationId;
@@ -99,6 +101,29 @@ export async function attachPreservedRemoteWorkspaceSnapshots(input: {
     result.push({ operationId, path: destination, sourceRunId: source.id });
   }
   return result;
+}
+
+/** A run that restored a committed save and then failed (for example before
+ * provider work, after a restart) can keep a restore hold that never received a
+ * recovery receipt. When its saved reference names the very snapshot that its
+ * own succeeded restore loaded, at the same epoch, it saved nothing else: no
+ * unsaved file exists to attach, and the last save already holds its files.
+ * Any other saved snapshot still needs the canonical receipt. */
+async function savedOnlyItsRestoredSnapshot(db: Db, source: typeof heartbeatRuns.$inferSelect,
+  remote: { workspaceId: string; snapshotId?: string | null; epoch: number }): Promise<boolean> {
+  if (!remote.snapshotId) return false;
+  const [restore] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+    eq(workspaceOperations.companyId, source.companyId), eq(workspaceOperations.heartbeatRunId, source.id),
+    eq(workspaceOperations.phase, "remote_workspace_restore"), eq(workspaceOperations.status, "succeeded"),
+    sql`${workspaceOperations.metadata}->>'snapshotId' = ${remote.snapshotId}`,
+    sql`${workspaceOperations.metadata}->>'epoch' = ${String(remote.epoch)}`,
+  )).limit(1);
+  if (!restore) return false;
+  const [snapshot] = await db.select({ id: executionWorkspaceSnapshots.id }).from(executionWorkspaceSnapshots).where(and(
+    eq(executionWorkspaceSnapshots.companyId, source.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, remote.workspaceId),
+    eq(executionWorkspaceSnapshots.id, remote.snapshotId), inArray(executionWorkspaceSnapshots.status, ["committed", "superseded"]),
+  )).limit(1);
+  return Boolean(snapshot);
 }
 
 /** Verify a sidecar already inside an authorized shared workspace. This only

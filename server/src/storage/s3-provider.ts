@@ -6,6 +6,8 @@ import {
   PutObjectCommand,
   ListObjectsV2Command,
   ListObjectVersionsCommand,
+  ListMultipartUploadsCommand,
+  AbortMultipartUploadCommand,
 } from "@aws-sdk/client-s3";
 import { assertSourceFileSize, fileRangeMd5, putS3Multipart, putS3MultipartFile, sendFileRequestWithRetry } from "./s3-multipart.js";
 import { createReadStream } from "node:fs";
@@ -14,6 +16,7 @@ import { recordS3BodyFailure, withS3FailureDiagnostics } from "./s3-failure.js";
 import { sendThroughStorageOutage } from "./storage-unavailable.js";
 import { addAbortSignal, Readable } from "node:stream";
 import { retryS3RequestTimeouts } from "./s3-request-timeout-retry.js";
+import { refreshS3CredentialsOnRejection } from "./s3-credential-refresh.js";
 import type { StorageProvider, GetObjectResult, HeadObjectResult } from "./types.js";
 import { notFound, unprocessable } from "../errors.js";
 
@@ -137,6 +140,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     forcePathStyle: Boolean(config.forcePathStyle),
   });
   retryS3RequestTimeouts(client);
+  refreshS3CredentialsOnRejection(client);
   // File sources carry Content-MD5 as their integrity check. Send plain bodies
   // so the backend verifies that digest directly; the default client wraps
   // bodies in aws-chunked framing with its own trailing checksum.
@@ -147,6 +151,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     requestChecksumCalculation: "WHEN_REQUIRED",
   });
   retryS3RequestTimeouts(fileClient);
+  refreshS3CredentialsOnRejection(fileClient);
 
   async function listExactVersions(key: string, signal?: AbortSignal) {
     const versions = new Set<string>(), cursors = new Set<string>();
@@ -193,6 +198,33 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
       const output = Buffer.isBuffer(input.body) ? await sendThroughStorageOutage(send, input.signal) : await send();
       if (!output.ETag) throw new Error("Object storage did not return a publication ETag");
       return { etag: output.ETag };
+    },
+
+    async abortIncompleteUploads(input) {
+      const key = buildKey(prefix, input.objectKey);
+      const uploads: string[] = [];
+      let keyMarker: string | undefined, uploadIdMarker: string | undefined;
+      for (let pages = 0; ; pages++) {
+        input.signal?.throwIfAborted();
+        if (pages >= 100) throw new Error("s3_multipart_listing_cursor_invalid");
+        const output = await client.send(new ListMultipartUploadsCommand({ Bucket: bucket, Prefix: key,
+          KeyMarker: keyMarker, UploadIdMarker: uploadIdMarker, MaxUploads: 1000 }), { abortSignal: input.signal });
+        for (const upload of output.Uploads ?? []) if (upload.Key === key && upload.UploadId) uploads.push(upload.UploadId);
+        if (!output.IsTruncated) break;
+        if (!output.NextKeyMarker && !output.NextUploadIdMarker) throw new Error("s3_multipart_listing_cursor_invalid");
+        keyMarker = output.NextKeyMarker; uploadIdMarker = output.NextUploadIdMarker;
+      }
+      let aborted = 0;
+      for (const uploadId of uploads) {
+        input.signal?.throwIfAborted();
+        try {
+          await client.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId }), { abortSignal: input.signal });
+          aborted++;
+        } catch (error) {
+          if ((error as { name?: string }).name !== "NoSuchUpload") throw error;
+        }
+      }
+      return aborted;
     },
 
     async listObjects(input) {

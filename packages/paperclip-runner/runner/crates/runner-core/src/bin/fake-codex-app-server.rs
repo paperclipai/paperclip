@@ -21,6 +21,41 @@ struct FakeState {
     goal: Option<Value>,
 }
 
+/// Every turn this thread accepted, oldest first, one per line, like the turn
+/// history a real Codex thread keeps across process loss. It sits beside the
+/// state file so existing state files and their shape stay unchanged.
+fn turn_history_path(state_path: &Path) -> PathBuf {
+    let mut name = state_path.as_os_str().to_owned();
+    name.push(".turns");
+    PathBuf::from(name)
+}
+
+fn load_turn_history(state_path: &Path) -> Vec<String> {
+    fs::read_to_string(turn_history_path(state_path))
+        .map(|text| {
+            text.lines()
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn record_turn(state_path: &Path, turn_id: &str) -> io::Result<()> {
+    if load_turn_history(state_path)
+        .iter()
+        .any(|known| known == turn_id)
+    {
+        return Ok(());
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(turn_history_path(state_path))?;
+    writeln!(file, "{turn_id}")?;
+    file.sync_all()
+}
+
 fn argument(args: &[String], name: &str) -> Option<String> {
     args.iter()
         .position(|value| value == name)
@@ -1353,6 +1388,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(delay) = argument(&args, "--thread-resume-delay-ms") {
                     thread::sleep(Duration::from_millis(delay.parse()?));
                 }
+                // A provider that closes its stdout without replying once and
+                // stays alive: a provider failure, not a silent stall.
+                #[cfg(unix)]
+                if args
+                    .iter()
+                    .any(|arg| arg == "--close-stdout-on-first-thread-resume")
+                {
+                    let marker = state_path.with_file_name("fake-thread-resume-closed");
+                    if !marker.exists() {
+                        fs::write(&marker, b"closed")?;
+                        use std::os::fd::FromRawFd;
+                        // SAFETY: fd 1 is this process's stdout; nothing writes to it after this.
+                        drop(unsafe { std::os::fd::OwnedFd::from_raw_fd(1) });
+                        thread::sleep(Duration::from_secs(120));
+                    }
+                }
+                // A provider that stalls without replying once (host stall or
+                // freeze), then answers normally after a relaunch.
+                if let Some(delay) = argument(&args, "--stall-first-thread-resume-ms") {
+                    let marker = state_path.with_file_name("fake-thread-resume-stalled");
+                    if !marker.exists() {
+                        fs::write(&marker, b"stalled")?;
+                        thread::sleep(Duration::from_millis(delay.parse()?));
+                    }
+                }
                 if reject_missing_resume_state {
                     send(json!({"id": id, "error": {
                         "code": -32600,
@@ -1443,9 +1503,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     send(json!({"id": id, "result": {"data": [], "nextCursor": "next-page"}}))?;
                     continue;
                 }
-                let turns = state.active_turn_id.as_ref()
-                    .map(|turn_id| vec![json!({"id": turn_id, "status": "inProgress", "items": [], "itemsView": "notLoaded"})])
-                    .unwrap_or_default();
+                // Newest first. The thread keeps every accepted turn; only
+                // the active one is in progress.
+                let mut history = load_turn_history(&state_path);
+                if let Some(active) = state.active_turn_id.as_ref() {
+                    history.retain(|turn_id| turn_id != active);
+                    history.push(active.clone());
+                }
+                let limit = message
+                    .pointer("/params/limit")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(100) as usize;
+                let turns = history
+                    .iter()
+                    .rev()
+                    .take(limit)
+                    .map(|turn_id| {
+                        let status = if state.active_turn_id.as_ref() == Some(turn_id) {
+                            "inProgress"
+                        } else {
+                            "completed"
+                        };
+                        json!({"id": turn_id, "status": status, "items": [], "itemsView": "notLoaded"})
+                    })
+                    .collect::<Vec<_>>();
                 send(json!({"id": id, "result": {"data": turns, "nextCursor": null}}))?;
             }
             "thread/read" => {
@@ -1654,6 +1735,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }))?;
             }
             "turn/start" => {
+                // Models a provider killed while turn/start was in flight. The
+                // file names where it stops: "before" the turn exists, or
+                // "after" the thread recorded it but before the response.
+                let hang_turn_start = argument(&args, "--hang-turn-start")
+                    .and_then(|path| fs::read_to_string(path).ok())
+                    .map(|stage| stage.trim().to_owned());
+                if hang_turn_start.as_deref() == Some("before") {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(60));
+                    }
+                }
                 if require_external_sandbox
                     && (message.pointer("/params/sandboxPolicy")
                         != Some(&json!({
@@ -1730,7 +1822,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )
                 };
                 state.active_turn_id = Some(provider_turn_id.clone());
+                record_turn(&state_path, &provider_turn_id)?;
                 save_state(&state_path, &state)?;
+                if hang_turn_start.as_deref() == Some("after") {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_secs(60));
+                    }
+                }
                 if ambiguous_older_reused_turn && turn_start_count == 3 {
                     send(json!({
                         "method": "turn/started",

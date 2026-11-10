@@ -209,6 +209,7 @@
 }
 
 :root {
+  --breadcrumb-parent-max-width: 40%;
   color-scheme: light;
   --font-paper-mono: "Paper Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --file-tree-indent-base: calc(var(--spacing) * 2);
@@ -2661,6 +2662,38 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 .paperclip-markdown-external-ref {
   display: inline;
   white-space: nowrap;
+}
+
+/* Optional link enrichment uses the same semantic status vocabulary in each theme. */
+:root {
+  --link-preview-open: var(--status-task-icon-done);
+  --link-preview-merged: var(--status-task-icon-in_review);
+  --link-preview-conflicts: var(--color-orange-600);
+  --link-preview-width: 22rem;
+  --link-preview-viewport-inset: 1rem;
+  --link-preview-offset: 0.5rem;
+}
+.dark { --link-preview-conflicts: var(--color-orange-400); }
+.link-preview-status[data-state="open"] { color: var(--link-preview-open); }
+.link-preview-status[data-state="merged"] { color: var(--link-preview-merged); }
+.link-preview-status[data-state="conflicts"] { color: var(--link-preview-conflicts); }
+.link-preview-status:is([data-state="unknown"], [data-state="draft"], [data-state="closed"]) { color: var(--muted-foreground); }
+.paperclip-markdown a.link-preview-status:is([data-state="unknown"], [data-state="draft"], [data-state="closed"]) { color: var(--muted-foreground); }
+.paperclip-markdown a.link-preview-status[data-state="open"] { color: var(--link-preview-open); }
+.paperclip-markdown a.link-preview-status[data-state="merged"] { color: var(--link-preview-merged); }
+.paperclip-markdown a.link-preview-status[data-state="conflicts"] { color: var(--link-preview-conflicts); }
+.link-preview-card {
+  z-index: 50;
+  width: var(--link-preview-width);
+  max-width: calc(100vw - var(--link-preview-viewport-inset) * 2);
+  padding: calc(var(--spacing) * 4);
+  margin-block: var(--link-preview-offset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-md);
+  overflow-wrap: anywhere;
 }
 
 .dark .paperclip-markdown a {
