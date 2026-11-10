@@ -1938,6 +1938,7 @@ export function mergeCoalescedContextSnapshot(
   ) {
     clearInteractionContinuationWakeContext(merged);
   }
+  annotateDiagnosticSmokeSnapshot(merged);
   return merged;
 }
 
@@ -2346,11 +2347,15 @@ export async function buildPaperclipWakePayload(input: {
           )
           .then((rows) => rows[0] ?? null)
       : null);
+  const diagnosticsOnlyCapability = readNonEmptyString(
+    input.contextSnapshot.diagnosticsOnlyCapability,
+  );
   if (
     commentIds.length === 0 &&
     Object.keys(executionStage).length === 0 &&
     !issueSummary &&
-    !agentMessageText
+    !agentMessageText &&
+    !diagnosticsOnlyCapability
   )
     return null;
 
@@ -2854,7 +2859,7 @@ export async function buildPaperclipWakePayload(input: {
     },
     truncated: payloadTruncated,
     fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0,
-    diagnosticsOnlyCapability: readNonEmptyString(input.contextSnapshot.diagnosticsOnlyCapability),
+    diagnosticsOnlyCapability,
   };
   return issueId
     ? createRunSecretRedactionRegistry(input.db).redactForIssue(

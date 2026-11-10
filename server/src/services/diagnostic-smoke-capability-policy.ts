@@ -44,3 +44,11 @@ export function diagnosticSmokeCheckoutBlock(snapshot: unknown): string | null {
     ? context.diagnosticsOnlyCapability.trim()
     : DIAGNOSTIC_SMOKE_CAPABILITY_WARNING;
 }
+
+/**
+ * Unbound diagnostic smokes and ordinary wakes both have a null task scope.
+ * Folding them into one run either blocks the timer or clears the smoke restriction.
+ */
+export function diagnosticSmokeCoalesceConflict(existing: unknown, incoming: unknown): boolean {
+  return (diagnosticSmokeCheckoutBlock(existing) !== null) !== (diagnosticSmokeCheckoutBlock(incoming) !== null);
+}

@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { enrichWakeContextSnapshot } from "./heartbeat/run-preparation.js";
+import { buildPaperclipWakePayload, enrichWakeContextSnapshot, mergeCoalescedContextSnapshot } from "./heartbeat/run-preparation.js";
 import {
   DIAGNOSTIC_SMOKE_CAPABILITY_WARNING,
   annotateDiagnosticSmokeSnapshot,
   diagnosticSmokeCheckoutBlock,
+  diagnosticSmokeCoalesceConflict,
   isDiagnosticSmokeWake,
   readSnapshotTaskBinding,
 } from "./diagnostic-smoke-capability-policy.js";
@@ -83,5 +84,48 @@ describe("diagnostic smoke capability", () => {
     expect(enriched.contextSnapshot.taskId).toBe("issue-1");
     expect(enriched.contextSnapshot.diagnosticsOnly).toBeUndefined();
     expect(diagnosticSmokeCheckoutBlock(enriched.contextSnapshot)).toBeNull();
+  });
+
+  it("keeps an unbound timer from sharing a run with an unbound smoke", () => {
+    const smoke: Record<string, unknown> = { wakeReason: "claude_reauth_smoke" };
+    const timer: Record<string, unknown> = { wakeReason: "heartbeat_timer" };
+    annotateDiagnosticSmokeSnapshot(smoke);
+    annotateDiagnosticSmokeSnapshot(timer);
+    expect(diagnosticSmokeCoalesceConflict(smoke, timer)).toBe(true);
+    expect(diagnosticSmokeCoalesceConflict(timer, smoke)).toBe(true);
+    expect(diagnosticSmokeCoalesceConflict(smoke, { wakeReason: "post_restore_smoke", diagnosticsOnly: true })).toBe(false);
+    expect(diagnosticSmokeCoalesceConflict(timer, { wakeReason: "issue_assigned" })).toBe(false);
+
+    const merged = mergeCoalescedContextSnapshot(smoke, timer);
+    expect(merged.wakeReason).toBe("heartbeat_timer");
+    expect(merged.diagnosticsOnly).toBeUndefined();
+    expect(diagnosticSmokeCheckoutBlock(merged)).toBeNull();
+
+    const kept = mergeCoalescedContextSnapshot(smoke, { wakeReason: "post_restore_smoke" });
+    expect(diagnosticSmokeCheckoutBlock(kept)).toBe(DIAGNOSTIC_SMOKE_CAPABILITY_WARNING);
+  });
+
+  it("puts the capability warning on a smoke wake that has no issue or comments", async () => {
+    const payload = await buildPaperclipWakePayload({
+      db: {} as never,
+      companyId: "company-1",
+      contextSnapshot: {
+        wakeReason: "claude_reauth_smoke",
+        diagnosticsOnly: true,
+        diagnosticsOnlyCapability: DIAGNOSTIC_SMOKE_CAPABILITY_WARNING,
+      },
+      wakeCommentRows: [],
+    });
+    expect(payload).toMatchObject({
+      reason: "claude_reauth_smoke",
+      diagnosticsOnlyCapability: DIAGNOSTIC_SMOKE_CAPABILITY_WARNING,
+      issue: null,
+    });
+    expect(await buildPaperclipWakePayload({
+      db: {} as never,
+      companyId: "company-1",
+      contextSnapshot: { wakeReason: "heartbeat_timer" },
+      wakeCommentRows: [],
+    })).toBeNull();
   });
 });

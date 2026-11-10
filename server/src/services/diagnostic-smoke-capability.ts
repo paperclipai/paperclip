@@ -11,6 +11,7 @@ export {
   DIAGNOSTIC_SMOKE_CAPABILITY_WARNING,
   annotateDiagnosticSmokeSnapshot,
   diagnosticSmokeCheckoutBlock,
+  diagnosticSmokeCoalesceConflict,
   isDiagnosticSmokeWake,
   readSnapshotTaskBinding,
 } from "./diagnostic-smoke-capability-policy.js";

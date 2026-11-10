@@ -711,6 +711,19 @@ control channels keep their authoritative failure messages. These diagnostics
 stay in the instance's run records and configured run-log storage. They add no
 Paperclip Telemetry or OpenTelemetry export.
 
+## Unassigned diagnostic smoke checkout rejection
+
+Checkout of a task by an unbound diagnostic smoke writes one run-log row before the write is denied. The producer is `recordDiagnosticSmokeCheckoutRejection` in `server/src/services/diagnostic-smoke-capability.ts`. The row uses `eventType: "lifecycle"` and `level: "warn"`. Its `message` is the capability warning shown to the run.
+
+| Payload field | Meaning |
+| --- | --- |
+| `code` | Always `unassigned_smoke_checkout_rejected`. |
+| `targetIssueId` | The task the run tried to check out. |
+| `capability` | Always `diagnostics_only`. |
+| `durable` | Always `true`. The activity log stores a second copy of the same refusal. |
+
+A failure to write this row, or the matching activity row, is logged and does not allow checkout. The request still returns `unassigned_smoke_checkout_rejected`. The event stays in the instance run log and adds no Paperclip Telemetry or OpenTelemetry export.
+
 ## Related instrumentation
 
 The sandbox duplex transport also writes one run-log event as one of its three

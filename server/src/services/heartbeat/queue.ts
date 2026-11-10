@@ -178,6 +178,7 @@ import {
 } from "../execution-workspace-policy.js";
 import { readContinuationAttempt } from "../recovery/index.js";
 import { allowsDependencyBlockedWake, wakeChatConversationsConflict } from "../../modules/run-dispatch/index.js";
+import { annotateDiagnosticSmokeSnapshot, diagnosticSmokeCoalesceConflict } from "../diagnostic-smoke-capability-policy.js";
 import { withAgentStartLock } from "../agent-start-lock.js";
 import {
   evaluateAgentInvokability,
@@ -2830,6 +2831,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       }
       issueId = readNonEmptyString(enrichedContextSnapshot.issueId) ?? issueId;
     }
+    annotateDiagnosticSmokeSnapshot(enrichedContextSnapshot);
     const effectiveTaskKey =
       readNonEmptyString(enrichedContextSnapshot.taskKey) ?? taskKey;
     const genericTimerWake =
@@ -4864,7 +4866,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // conversation's reply into it; that reply queues its own run instead.
     const coalescedTargetRun = rawCoalescedTarget &&
       (hasRetainedExternalChatRetry(rawCoalescedTarget.contextSnapshot) ||
-        wakeChatConversationsConflict(rawCoalescedTarget.contextSnapshot, enrichedContextSnapshot))
+        wakeChatConversationsConflict(rawCoalescedTarget.contextSnapshot, enrichedContextSnapshot) ||
+        diagnosticSmokeCoalesceConflict(rawCoalescedTarget.contextSnapshot, enrichedContextSnapshot))
       ? null
       : filterZombieCoalesceTarget(rawCoalescedTarget, liveRunExecutions);
 
