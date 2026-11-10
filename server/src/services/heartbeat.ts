@@ -3816,15 +3816,18 @@ export function heartbeatService(
         if (await leaveToNextController(err)) return;
         if (!(await preserveNativeWorkspaceOnFailure())) {
           const claim = runOptions.nativeRestartRecovery;
+          let releaseFailed = false;
           restartClaimLapsed = claim !== undefined && await releaseLapsedNativeRestartClaim({ db, companyId: run.companyId, runId: run.id,
             leaseOwner: claim.leaseOwner, controllerGeneration: claim.controllerGeneration, providerAttempt: claim.providerAttempt })
             .catch(releaseError => {
               logger.warn({ err: releaseError, runId: run.id }, "lapsed native restart claim could not be released; restart recovery will reclaim it after expiry");
+              releaseFailed = true;
               return false;
             });
           logger.warn({ runId: run.id, err: identityRedactor.redact({ message: err instanceof Error ? err.message : String(err),
             stack: err instanceof Error ? err.stack : undefined }), restartClaim: claim?.kind ?? null, restartClaimLapsed },
             restartClaimLapsed ? "native restart claim lapsed during a failed preparation; released it for restart recovery"
+              : releaseFailed ? "native run failure left to restart recovery after its claim release failed"
               : "native run failure left to the workspace owner that holds the run");
           return;
         }
