@@ -641,6 +641,38 @@ describe("resolveRuntimeProvisionCommand", () => {
 });
 
 describe("refreshRemoteTrackingBaseRef git auth", () => {
+  it.each([
+    ["a missing resolver", undefined],
+    ["a resolver that returns null", async (): Promise<null> => null],
+    ["an auth result without provider binding", async () => ({
+      configArgs: [],
+      env: { GIT_TERMINAL_PROMPT: "0" },
+      source: "server_env",
+      secretName: null,
+    })],
+    ["a resolver that throws", async () => { throw new Error("credential lookup failed"); }],
+  ] as const)("does not fetch an Azure DevOps remote with %s", async (_description, resolveGitAuth) => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    await runGit(repoRoot, ["remote", "set-url", "origin", "https://dev.azure.com/example/project/_git/repo"]);
+    // Keep the RED path local too: if the guard is missing, Git can only reach
+    // this immediately refused proxy rather than the real Azure DevOps host.
+    await runGit(repoRoot, ["config", "http.proxy", "http://127.0.0.1:1"]);
+
+    await expect(refreshRemoteTrackingBaseRef(repoRoot, "origin/master",
+      resolveGitAuth as Parameters<typeof refreshRemoteTrackingBaseRef>[2]))
+      .rejects.toThrow(/Azure DevOps/i);
+  });
+
+  it("continues fetching a non-Azure remote without an auth resolver", async () => {
+    const { sourceRepo, remotePath, repoRoot } = await createClonedRepoWithRemote();
+    const expectedHead = await advanceRemoteMaster(sourceRepo, remotePath, "non-azure-fetch.txt");
+
+    const warnings = await refreshRemoteTrackingBaseRef(repoRoot, "origin/master");
+
+    expect(warnings).toEqual([]);
+    await expect(readGit(repoRoot, ["rev-parse", "origin/master"])).resolves.toBe(expectedHead);
+  });
+
   it("does not diagnose a missing remote branch as a rejected credential", async () => {
     const { repoRoot } = await createClonedRepoWithRemote();
     const warnings = await refreshRemoteTrackingBaseRef(repoRoot, "origin/main", async () => ({

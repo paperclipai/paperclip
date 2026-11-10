@@ -42,7 +42,7 @@ describe("Azure DevOps REST connector", () => {
     expect(isAzureDevOpsConnection({ ...connection(), config: { ...connection().config, url: `${AZURE_DEVOPS_API_URL}/attacker` } })).toBe(false);
     expect(isAzureDevOpsConnection({ ...connection(), config: { ...connection().config, url: `${AZURE_DEVOPS_API_URL}/?redirect=evil` } })).toBe(false);
     expect(isAzureDevOpsConnection(connection("entra"))).toBe(true);
-    expect(isAzureDevOpsConnection(connection("entra-write"))).toBe(false);
+    expect(isAzureDevOpsConnection(connection("entra-write"))).toBe(true);
     expect(isAzureDevOpsConnection({ ...connection("entra-write"), authKind: "api_key" })).toBe(false);
     expect(isAzureDevOpsConnection({ ...connection("entra-write"), config: { ...connection("entra-write").config,
       connectionMethodKey: "entra-unreviewed" } })).toBe(false);
@@ -64,7 +64,7 @@ describe("Azure DevOps REST connector", () => {
   it("registers only valid Azure connection methods with the governed REST gateway", () => {
     expect(restConnectorFor(connection("pat"))?.sourceTemplateKey).toBe("azure-devops");
     expect(restConnectorFor(connection("entra"))?.sourceTemplateKey).toBe("azure-devops");
-    expect(restConnectorFor(connection("entra-write"))).toBeUndefined();
+    expect(restConnectorFor(connection("entra-write"))?.sourceTemplateKey).toBe("azure-devops");
     expect(restConnectorFor({ ...connection("pat"), authKind: "none" })).toBeUndefined();
     expect(connectorToolPolicy("azure-devops", connection("pat")).quarantineNewEntries).toBe(true);
   });
@@ -72,6 +72,7 @@ describe("Azure DevOps REST connector", () => {
   it.each([
     ["pat", `Bearer ${pat}`],
     ["entra", `Bearer ${entra}`],
+    ["entra-write", `Bearer ${entra}`],
   ] as const)("uses %s credentials through the fixed repository endpoint", async (kind, authorization) => {
     const outgoingAuthorization = kind === "pat" ? azureDevOpsAuthorization({ kind, token: pat }) : authorization;
     const request = vi.fn(async (url: string, init: RequestInit) => {

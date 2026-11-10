@@ -3,6 +3,7 @@ import { descriptorHash, stableHash } from "../../tool-catalog-hash.js";
 
 export const AZURE_DEVOPS_API_URL = "https://dev.azure.com";
 export const AZURE_DEVOPS_ENTRA_METHOD = "entra";
+export const AZURE_DEVOPS_ENTRA_WRITE_METHOD = "entra-write";
 export const AZURE_DEVOPS_PAT_METHOD = "pat";
 export const AZURE_DEVOPS_TOOLS = [{
   name: "azure_devops_list_repositories",

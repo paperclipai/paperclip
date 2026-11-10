@@ -97,7 +97,7 @@ test("Tavily curated MCP methods opt into initialized sessions", (t) => {
   assert.equal(emitted.methods[0].defaults.mcpSessionRequired, true);
 });
 
-test("Azure DevOps exposes read-only Entra consent", (t) => {
+test("Azure DevOps keeps default Entra read consent separate from explicit Git write consent", (t) => {
   const root = makeFixture();
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
@@ -108,12 +108,22 @@ test("Azure DevOps exposes read-only Entra consent", (t) => {
     "utf8",
   ));
   const entra = definition.methods.find((method) => method.key === "entra");
-  assert.equal(definition.methods.find((method) => method.key === "entra-write"), undefined);
+  const entraWrite = definition.methods.find((method) => method.key === "entra-write");
   const pat = definition.methods.find((method) => method.key === "pat");
-  for (const method of [entra, pat]) assert.deepEqual(method.grantKinds, ["user", "agent", "organization"]);
+  for (const method of [entra, entraWrite, pat]) assert.deepEqual(method.grantKinds, ["user", "agent", "organization"]);
   assert.deepEqual(entra.defaults.scopesHint, [
     "499b84ac-1321-427f-aa17-267ca6975798/vso.code",
     "offline_access",
   ]);
   assert.match(entra.guidanceMd, /only lists repository metadata/);
+  assert.match(entra.guidanceMd, /Git push.*Code \(Read & Write\)/);
+  assert.deepEqual(entraWrite.defaults.scopesHint, [
+    "499b84ac-1321-427f-aa17-267ca6975798/vso.code_write",
+    "offline_access",
+  ]);
+  assert.match(entraWrite.guidanceMd, /read, update, and delete repository source code/);
+  assert.match(entraWrite.guidanceMd, /Paperclip's Azure REST catalog exposes no such actions/);
+  const review = JSON.parse(fs.readFileSync(path.join(root, "doc/connections/tool-method-permission-reviews.json"), "utf8"));
+  assert.deepEqual(review.methods.find((method) => method.app === "azure-devops" && method.method === "entra-write").requestedScopes,
+    entraWrite.defaults.scopesHint);
 });

@@ -85,6 +85,7 @@ import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-c
 import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
 import { classifyGitCloneFailure } from "./git-connection-failure.js";
 import { readWorkspaceBaseRefDiagnostic, type WorkspaceBaseRefDiagnostic } from "./workspace-base-ref-diagnostics.js";
+import { isAzureDevOpsRemote, withAnonymousGitFallback } from "./git-credential-policy.js";
 import {
   MANAGED_GIT_WORKTREE_REASON_CODES,
   readManagedGitInspectionDiagnostic,
@@ -167,6 +168,7 @@ export type GitRemoteAuthInvocation = {
   env: Record<string, string>;
   source?: string;
   secretName?: string | null;
+  repositoryAuthority?: { provider: string; url: string };
 };
 
 export type GitRemoteAuthProvider = (remoteUrl: string) => Promise<GitRemoteAuthInvocation | null>;
@@ -1052,10 +1054,15 @@ async function refreshRemoteTrackingBaseRefWithDiagnostic(
     .catch(() => { diagnostic.remoteLookup = "failed"; return null; });
   if (!remoteUrl) return { warnings: [], diagnostic };
 
-  const auth = resolveGitAuth ? await resolveGitAuth(remoteUrl).then((value) => {
-    diagnostic.authLookup = value ? "resolved" : "unavailable";
-    return value;
-  }).catch(() => { diagnostic.authLookup = "failed"; return null; }) : null;
+  const auth = isAzureDevOpsRemote(remoteUrl)
+    ? await withAnonymousGitFallback(resolveGitAuth ?? (async () => null))(remoteUrl).then((value) => {
+      diagnostic.authLookup = "resolved";
+      return value;
+    })
+    : resolveGitAuth ? await resolveGitAuth(remoteUrl).then((value) => {
+      diagnostic.authLookup = value ? "resolved" : "unavailable";
+      return value;
+    }).catch(() => { diagnostic.authLookup = "failed"; return null; }) : null;
   try {
     await runGit([
       ...(auth?.configArgs ?? []),

@@ -286,7 +286,7 @@ import {
   type NativeAuthoritativeIssueStatus,
   type NativeStatusDecision,
 } from "./status-arbiter.js";
-import { conflict, HttpError } from "../../errors.js";
+import { conflict, forbidden, HttpError } from "../../errors.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { resolvePaperclipRunnerBinary, resolveRemotePaperclipRunnerBinary } from "./native-codex-runner.js";
 import {
@@ -9332,6 +9332,12 @@ export async function executePaperclipNativeSession(input: {
   preparationSpans?: NativeRunHistoricalSpan[];
   /** Use a session-owned GitHub broker, rebound only after run ownership is acquired. */
   managedGitHub?: boolean;
+  /** Preserve explicitly selected host GitHub behavior alongside managed Azure Git. */
+  hostGitHub?: boolean;
+  requireGitHubConnection?: boolean;
+  githubProjectRepositories?: string[];
+  githubProjectBindings?: Array<{ projectId: string; repositoryUrl: string }>;
+  azureProjectRepositories?: Array<{ projectId: string; repositoryUrl: string }>;
   /** Resolved adapter env; the runner transport applies a provider allowlist before spawn. */
   dotWorkspaceRoot?: string;
   observability?: ProviderObservabilityLaunch;
@@ -10853,6 +10859,10 @@ async function executePaperclipNativeSessionAttempt(
         !canReuseNativeProcess(input, entry.processConfigDigest) ||
         Boolean(entry.githubAccess) !== needsCoreGitHubAccess(input) ||
         entry.githubAccess?.ready === false ||
+        (entry.githubAccess !== undefined && (entry.githubAccess.requireGitHubConnection !== Boolean(input.requireGitHubConnection) ||
+          entry.githubAccess.githubProjectRepositoriesKey !== JSON.stringify(input.githubProjectRepositories ?? []) ||
+          entry.githubAccess.githubProjectBindingsKey !== JSON.stringify(input.githubProjectBindings ?? null) ||
+          entry.githubAccess.azureProjectRepositoriesKey !== JSON.stringify(input.azureProjectRepositories ?? null))) ||
         (entry.githubAccess !== undefined && entry.githubAccess.duplexRequested !== adapterExecutionTargetEnablesSandboxDuplexBridge(input.runnerExecutionTarget))
       ) {
         await finishStartupContextForFallback();
@@ -11033,7 +11043,27 @@ async function executePaperclipNativeSessionAttempt(
           target: input.runnerExecutionTarget,
           cwd: input.execution.workspace.cwd!,
           env: resolveNativeProviderEnvironment(input.execution.provider, input.runnerEnvironment),
-          resolveCredentials: (binding) => resolveGitHubOperationCredentials(input.db, binding),
+          hostGitHub: input.hostGitHub,
+          requireGitHubConnection: input.requireGitHubConnection,
+          githubProjectRepositories: input.githubProjectRepositories,
+          githubProjectBindings: input.githubProjectBindings,
+          azureProjectRepositories: input.azureProjectRepositories,
+          resolveCredentials: async (binding) => {
+            if (input.requireGitHubConnection) {
+              const { resolveBoundProjectGitHubCredentials } = await import("../project-run-github-access.js");
+              const authorized = await resolveBoundProjectGitHubCredentials(input.db, { ...binding, bindings: input.githubProjectBindings ?? [] });
+              if (!authorized) throw forbidden("Project GitHub authorization is unavailable");
+              return authorized;
+            }
+            return resolveGitHubOperationCredentials(input.db, binding);
+          },
+          resolveGitCredentials: async (binding, repositoryUrl) => {
+            const { resolveAzureDevOpsRunGitCredentials } = await import("../azure-devops-run-git-credentials.js");
+            const { projectForAzureRepository } = await import("../azure-project-repository-bindings.js");
+            const result = await resolveAzureDevOpsRunGitCredentials(input.db, { ...binding, repoUrl: repositoryUrl,
+              projectId: projectForAzureRepository(repositoryUrl, input.azureProjectRepositories) });
+            return { status: "available", env: result.env };
+          },
           onLog: input.onLog,
         }));
         executionContext?.assertOpen();

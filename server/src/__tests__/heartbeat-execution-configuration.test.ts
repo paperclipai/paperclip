@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, companySkills, companySkillTestRuns, createDb, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, projects, plugins, environments } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, companySkills, companySkillTestRuns, createDb, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues, projects, plugins, environments, toolApplications, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
 import { companySkillService } from "../services/company-skills.js";
 import { withSkillVersionCacheLock } from "../services/skill-version-cache.js";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
@@ -352,6 +352,42 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
       onFailureSecretsResolved: () => {}, onManagedAiRuntimeAcquired: () => {}, onIdentityRedactorPrepared: () => {},
     }) };
   }
+
+  async function installAzureConnector(f: Awaited<ReturnType<typeof seed>>, input: {
+    targetType?: "company" | "agent";
+    targetId?: string;
+    enabled?: boolean;
+    status?: "active" | "disabled" | "draft" | "archived";
+    sourceTemplateKey?: string;
+  } = {}) {
+    const [application] = await db.insert(toolApplications).values({ companyId: f.companyId, name: `Azure connector ${randomUUID()}`,
+      type: "rest_api", status: "active" }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: f.companyId, applicationId: application!.id,
+      name: "Azure DevOps", uid: randomUUID(), transport: "rest_api", authKind: "api_key", status: input.status ?? "active",
+      enabled: input.enabled ?? true, config: { sourceTemplateKey: input.sourceTemplateKey ?? "azure-devops" } }).returning();
+    if (input.targetType) await db.insert(toolConnectionInstalls).values({ companyId: f.companyId, connectionId: connection!.id,
+      targetType: input.targetType, targetId: input.targetId ?? (input.targetType === "company" ? f.companyId : f.agentId) });
+  }
+
+  it.each([
+    ["active company install", { targetType: "company" as const }, true],
+    ["active agent install", { targetType: "agent" as const }, true],
+    ["uninstalled connection", {}, false],
+    ["connection installed for another agent", { targetType: "agent" as const, targetId: randomUUID() }, false],
+    ["disabled connection", { targetType: "company" as const, enabled: false }, false],
+    ["disabled connection", { targetType: "company" as const, status: "disabled" as const }, false],
+    ["different connector", { targetType: "company" as const, sourceTemplateKey: "github" }, false],
+  ])("enables Azure host-mode eligibility only for an active installed Azure connector (%s)", async (_label, connector, expected) => {
+    const f = await seed();
+    await installAzureConnector(f, connector);
+    const configured = await configuration(f, { provider: "codex", model: "fixture-model" }, {}, "codex_local");
+    const result = await configured.prepare();
+    expect(result.prepared).toBe(true);
+    if (!result.prepared) throw new Error("Execution configuration did not finish");
+    expect(result.azureGitConfigured).toBe(expected);
+    // Heartbeat only stages the host-mode launcher when this conjunction is true.
+    expect(result.useHostGitHub && result.azureGitConfigured).toBe(expected);
+  });
 
   it("delivers the Studio pin instead of ordinary assignments and recovers that exact native selection", async () => {
     const f = await seed(), skills = companySkillService(db);

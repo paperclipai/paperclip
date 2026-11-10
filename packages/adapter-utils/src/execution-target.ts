@@ -1801,6 +1801,8 @@ printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
 /** Stage token-free launchers next to the execution, not in shared global Git config. */
 export async function prepareGitHubOperationLaunchers(input: {
   runId: string; target: AdapterExecutionTarget | null | undefined; cwd: string; env: Record<string, string>;
+  hostGitHub?: boolean;
+  requireGitHubConnection?: boolean;
 }): Promise<Record<string, string>> {
   const remote = input.target?.kind === "remote" ? input.target : null;
   const directory = githubOperationLauncherDirectory(input);
@@ -1820,7 +1822,7 @@ export async function prepareGitHubOperationLaunchers(input: {
     // Remote launchers live beneath the checkout. Pin their own package scope
     // so an enclosing project's "type": "module" cannot reinterpret require().
     ["package.json", '{"type":"commonjs"}\n'],
-    ...["git", "gh"].map((name) => [name, githubLauncherSource()] as const),
+    ...["git", "gh"].map((name) => [name, githubLauncherSource({ hostGitHub: input.hostGitHub, requireGitHubConnection: input.requireGitHubConnection })] as const),
     ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
   ]);
   if (remote) {
@@ -1842,7 +1844,8 @@ export async function prepareGitHubOperationLaunchers(input: {
     for (const [program, body] of Object.entries(files)) await fs.writeFile(path.join(directory, program), body, { mode: 0o700 });
   }
   return { ...input.env, PATH: managedPath, ZDOTDIR: directory, BASH_ENV: `${directory}/.bashrc`,
-    GH_CONFIG_DIR: configDirectory, PAPERCLIP_GITHUB_LAUNCHER_DIR: directory };
+    GH_CONFIG_DIR: input.hostGitHub ? (input.env.GH_CONFIG_DIR ?? configDirectory) : configDirectory,
+    PAPERCLIP_GITHUB_LAUNCHER_DIR: directory };
 }
 
 function buildBridgeResponseHeaders(response: Response): Record<string, string> {

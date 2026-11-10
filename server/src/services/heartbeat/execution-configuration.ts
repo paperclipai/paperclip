@@ -4,8 +4,8 @@ import { agentObservabilityService, unavailableAgentObservability, type Resolved
 import { agentObservabilityLaunch } from "../agent-observability-launch.js";
 import { withSkillActor } from "../skill-access.js";
 import type { AuthorizationActor } from "../authorization.js";
-import { eq, sql } from "drizzle-orm";
-import { heartbeatRuns, type Db, type agents, type projects } from "@paperclipai/db";
+import { and, eq, or, sql } from "drizzle-orm";
+import { heartbeatRuns, toolConnections, toolConnectionInstalls, type Db, type agents, type projects } from "@paperclipai/db";
 import type { AiConnectionBinding } from "@paperclipai/shared";
 import { readPaperclipSkillSyncPreference, resolvePaperclipDesiredSkillNames, resolveLegacyPaperclipDesiredSkillNames,
   writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
@@ -154,7 +154,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
   const skillActor: AuthorizationActor = { type: "agent", agentId: agent.id, companyId: agent.companyId,
     runId: run.id, source: "agent_jwt", onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId };
-  const [mentionedSkills, githubIdentity] = await Promise.allSettled([
+  const [mentionedSkills, githubIdentity, azureConnection] = await Promise.allSettled([
     preconfiguredHome || pinnedSkillTest ? Promise.resolve([]) : time("configuration_mentions", () => resolveRunScopedMentionedSkillKeys({
       db,
       companyId: agent.companyId,
@@ -165,9 +165,17 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     time("configuration_github_identity", () => resolveManagedGitHubIdentitySelection(db, agent.companyId, {
       agentId: agent.id, responsibleUserId, allowStandingDelegation: false,
     })),
+    db.select({ id: toolConnections.id }).from(toolConnections).innerJoin(toolConnectionInstalls, and(
+      eq(toolConnectionInstalls.companyId, agent.companyId), eq(toolConnectionInstalls.connectionId, toolConnections.id),
+      or(and(eq(toolConnectionInstalls.targetType, "company"), eq(toolConnectionInstalls.targetId, agent.companyId)),
+        and(eq(toolConnectionInstalls.targetType, "agent"), eq(toolConnectionInstalls.targetId, agent.id))),
+    )).where(and(eq(toolConnections.companyId, agent.companyId), eq(toolConnections.enabled, true),
+      eq(toolConnections.status, "active"), sql`${toolConnections.config}->>'sourceTemplateKey' = 'azure-devops'`)).limit(1),
   ]);
   if (mentionedSkills.status === "rejected") throw mentionedSkills.reason;
   if (githubIdentity.status === "rejected") throw githubIdentity.reason;
+  if (azureConnection.status === "rejected") throw azureConnection.reason;
+  const azureGitConfigured = azureConnection.value.length > 0;
   const runScopedMentionedSkillKeys = mentionedSkills.value;
   const runScopedSkillKeys =
     !pinnedSkillTest && acceptedPlanContinuationWake &&
@@ -415,7 +423,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   if (agentIdentity) secretKeys.add("PAPERCLIP_AGENT_PRIVATE_KEY");
   return {
     prepared: true as const,
-    mergedConfig, configSnapshot, runScopedMentionedSkillKeys, githubSelection, useHostGitHub,
+    mergedConfig, configSnapshot, runScopedMentionedSkillKeys, githubSelection, azureGitConfigured, useHostGitHub,
     resolvedConfig, configuredTaskEnvironment, secretKeys, secretManifest,
     runtimeSkillEntries, nativeRunnerPreparationSpans, runtimeConfig, agentIdentity, observability,
   };

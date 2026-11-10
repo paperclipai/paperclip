@@ -18,6 +18,10 @@ import { accessService } from "../services/access.js";
 import type { heartbeatService } from "../services/heartbeat.js";
 import { assertBoard, assertCompanyAccess } from "./authz.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
+import { captureRunIdentity } from "../services/run-identity.js";
+import { resolveBoundProjectGitHubCredentials } from "../services/project-run-github-access.js";
+import { resolveAzureDevOpsRunGitCredentials } from "../services/azure-devops-run-git-credentials.js";
+import { projectForAzureRepository } from "../services/azure-project-repository-bindings.js";
 
 function bearer(req: Request) {
   const value = req.header("authorization") ?? "";
@@ -49,13 +53,44 @@ export function runtimeConnectionIntentRoutes(db: Db) {
     // This capability is never accepted as board/session authentication.
     // Node fetch sends Sec-Fetch-Mode too; browsers additionally send Origin or Sec-Fetch-Site.
     if (req.headers.origin || req.headers.cookie || req.headers["sec-fetch-site"]) throw forbidden("GitHub credentials require runtime authentication");
-    const claims = verifyRuntimeToolsToken(typeof req.headers["x-paperclip-github-capability"] === "string"
-      ? req.headers["x-paperclip-github-capability"] : bearer(req), "github_credentials");
-    if (!claims) throw unauthorized("Invalid GitHub runtime capability");
+    const capability = typeof req.headers["x-paperclip-github-capability"] === "string"
+      ? req.headers["x-paperclip-github-capability"] : bearer(req);
+    const claims = verifyRuntimeToolsToken(capability, "github_credentials") ?? verifyRuntimeToolsToken(capability, "git_credentials");
+    if (!claims || (claims.scope === "git_credentials" && claims.allow_github !== true)) throw unauthorized("Invalid GitHub runtime capability");
+    const binding = { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id };
+    if (claims.scope === "github_credentials" && !claims.github_project_repositories) {
+      // Existing company-scoped capabilities remain compatible. A legacy task
+      // token cannot establish its project-repository scope; restart that run
+      // so the controller issues a capability with the current repository list.
+      const identity = await captureRunIdentity(db, binding, { readScope: "github_credentials" });
+      const context = identity.run.contextSnapshot ?? {};
+      if (identity.run.scopeKind !== "company" || identity.run.issueId || identity.run.nativeIssueId ||
+          context.issueId || context.taskId || context.projectId || context.projectWorkspaceId || context.executionWorkspaceId || context.paperclipIssue)
+        throw forbidden("Restart this run to refresh its project GitHub authorization");
+    }
+    const credentials = claims.github_project_repositories
+      ? await resolveBoundProjectGitHubCredentials(db, { ...binding, bindings: claims.github_project_bindings ?? [] })
+      : await resolveGitHubOperationCredentials(db, binding);
+    if (!credentials) throw forbidden("Project GitHub authorization is unavailable");
     res.setHeader("Cache-Control", "no-store");
-    res.json(await resolveGitHubOperationCredentials(db, {
-      companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id,
-    }));
+    res.json(credentials);
+  });
+
+  router.post("/runtime-tools/git/credentials", async (req, res) => {
+    if (req.headers.origin || req.headers.cookie || req.headers["sec-fetch-site"]) throw forbidden("Git credentials require runtime authentication");
+    const capability = typeof req.headers["x-paperclip-github-capability"] === "string"
+      ? req.headers["x-paperclip-github-capability"] : bearer(req);
+    const claims = verifyRuntimeToolsToken(capability, "git_credentials");
+    if (!claims) throw unauthorized("Invalid Git runtime capability");
+    const body = req.body as { repositoryUrl?: unknown } | null;
+    if (!body || typeof body.repositoryUrl !== "string" || body.repositoryUrl.length > 2048 || Object.keys(body).some(key => key !== "repositoryUrl"))
+      throw forbidden("Git repository authorization is unavailable");
+    const result = await resolveAzureDevOpsRunGitCredentials(db, {
+      companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id, repoUrl: body.repositoryUrl,
+      projectId: projectForAzureRepository(body.repositoryUrl, claims.azure_project_repositories),
+    });
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ status: "available", env: result.env });
   });
 
   router.get("/mcp/runtime-tools", async (req, res) => {

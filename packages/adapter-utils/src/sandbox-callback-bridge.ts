@@ -127,6 +127,7 @@ export interface SandboxCallbackBridgeRouteRule {
 export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCallbackBridgeRouteRule[] = [
   // Runtime capability authentication is independently checked by the controller.
   { method: "POST", path: /^\/runtime-tools\/github\/credentials$/ },
+  { method: "POST", path: /^\/runtime-tools\/git\/credentials$/ },
   // Identity, inbox, agent self-management
   { method: "GET", path: /^\/api\/agents\/me$/ },
   { method: "POST", path: /^\/api\/companies\/[^/]+\/agent-commentary$/ },
