@@ -424,6 +424,20 @@ function isTurnTerminal(event: PrpEvent): boolean {
  * parked turn. The drain discards every other numbered event, so the saved
  * replay has sequence gaps exactly where those discarded events were.
  */
+/**
+ * A parked turn's terminal proves the provider stopped its work. An interrupted
+ * or cancelled terminal does unless the provider never confirmed it. A failed
+ * terminal does only when Runnerd reports the turn lost on restore: it emits
+ * that cause after proving the old provider lifetime ended and restoring the
+ * conversation (ACPX reports a restart-killed turn this way; Codex reports it
+ * interrupted). That event carries `providerTerminalObserved: false`, because
+ * the provider itself sent no terminal; the restart proof stands in for it.
+ */
+function governedWaitTerminalProven(event: PrpEvent): boolean {
+  if (event.eventType === "turn.failed") return isNativeRestartInterruption(event.payload.error);
+  return event.payload.providerTerminalObserved !== false;
+}
+
 function isGovernedDrainRetainedEvent(event: PrpEvent, turnId: string | undefined): boolean {
   if (event.turnId !== turnId) return false;
   return isTurnTerminal(event)
@@ -1235,7 +1249,7 @@ async function consumeTurn(
             eventCount += receipt.disposition === "committed" ? 1 : 0;
             highestContiguousSourceSeq = Math.max(highestContiguousSourceSeq, receipt.highestContiguousSourceSeq);
             if (terminal) {
-              if (trailing.eventType === "turn.failed" || trailing.payload.providerTerminalObserved === false) {
+              if (!governedWaitTerminalProven(trailing)) {
                 throw new NativeProviderTerminalFailure("governed_wait_provider_terminal_unproven", false);
               }
               governedProviderTerminalObserved = true;
@@ -2870,7 +2884,7 @@ export async function executeNativeSession(
 
     const governedTerminal = governedWait ? governedReplay.find(event =>
       event.turnId === governedWait!.sourceEvent.turnId && isTurnTerminal(event)) : undefined;
-    if (governedTerminal?.eventType === "turn.failed" || governedTerminal?.payload.providerTerminalObserved === false) {
+    if (governedTerminal && !governedWaitTerminalProven(governedTerminal)) {
       throw new NativeProviderTerminalFailure("governed_wait_provider_terminal_unproven", false);
     }
     if (governedWait && recoveredActiveTurnId && recoveredActiveTurnId !== governedWait.sourceEvent.turnId) {
