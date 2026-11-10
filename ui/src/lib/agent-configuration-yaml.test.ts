@@ -29,6 +29,22 @@ describe("agent configuration YAML", () => {
     });
   });
 
+  it("tombstones an access binding removed from the saved document", () => {
+    const saved = {
+      ...configuration,
+      adapterConfig: {
+        ...configuration.adapterConfig,
+        "access.synthetic": { type: "secret_ref", secretId: "00000000-0000-4000-8000-000000000001", version: "latest" },
+      },
+    };
+    const doc = parseAgentConfigurationYaml(serializeAgentConfiguration(saved));
+    delete doc.spec.adapterConfig!["access.synthetic"];
+    expect(agentConfigurationPatch(doc, saved).adapterConfig).toMatchObject({
+      model: "gpt-5",
+      "access.synthetic": null,
+    });
+  });
+
   it("treats formatting, comments and reordered maps as a no-op", () => {
     const text = serializeAgentConfiguration({ ...configuration, adapterConfig: { extra: { enabled: true }, env: configuration.adapterConfig.env, model: "gpt-5" } });
     expect(agentConfigurationPatch(parseAgentConfigurationYaml(`# comment\n${text}`), configuration)).toEqual({});

@@ -150,6 +150,58 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 
+  it("preserves access and env secret bindings when changing adapter types", () => {
+    const agent = makeAgent();
+    const envRef = { type: "secret_ref" as const, secretId: "00000000-0000-4000-8000-000000000002", version: "latest" as const };
+    const accessRef = { type: "secret_ref" as const, secretId: "00000000-0000-4000-8000-000000000001", version: "latest" as const };
+    agent.adapterConfig = {
+      ...agent.adapterConfig,
+      env: { SYNTHETIC: envRef },
+      "access.synthetic": accessRef,
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        adapterType: "codex_local",
+        adapterConfig: {
+          model: "gpt-5.4",
+          dangerouslyBypassApprovalsAndSandbox: true,
+        },
+      }),
+    );
+
+    expect(patch.adapterConfig).toMatchObject({
+      env: { SYNTHETIC: envRef },
+      "access.synthetic": accessRef,
+      model: "gpt-5.4",
+      dangerouslyBypassApprovalsAndSandbox: true,
+    });
+  });
+
+  it("sends null when an access binding is explicitly cleared during an adapter change", () => {
+    const agent = makeAgent();
+    agent.adapterConfig = {
+      ...agent.adapterConfig,
+      "access.synthetic": { type: "secret_ref", secretId: "00000000-0000-4000-8000-000000000001", version: "latest" },
+      "access.keep": { type: "secret_ref", secretId: "00000000-0000-4000-8000-000000000003", version: "latest" },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        adapterType: "codex_local",
+        adapterConfig: {
+          model: "gpt-5.4",
+          "access.synthetic": undefined,
+        },
+      }),
+    );
+    const config = patch.adapterConfig as Record<string, unknown>;
+    expect(config["access.synthetic"]).toBeNull();
+    expect(config["access.keep"]).toEqual(agent.adapterConfig["access.keep"]);
+  });
+
   it("preserves paperclip skill-sync selections when changing adapter types", () => {
     // Desired skills are adapter-agnostic (company-level selections) but are
     // persisted inside the per-adapter config under `paperclipSkillSync`. A

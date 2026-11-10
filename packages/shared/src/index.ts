@@ -710,6 +710,13 @@ export {
   type PluginEventType,
   type PluginBridgeErrorCode,
 } from "./constants.js";
+export {
+  explicitSecretBindingRemovals,
+  finalizeAccessBindingConfig,
+  isAccessSecretBindingKey,
+  preserveOmittedAccessBindings,
+  tombstoneOmittedAccessBindings,
+} from "./access-binding-preservation.js";
 
 export {
   generateSummarySlotSchema,

@@ -1,4 +1,4 @@
-import { ADAPTER_AGNOSTIC_KEYS, type Agent } from "@paperclipai/shared";
+import { ADAPTER_AGNOSTIC_KEYS, preserveOmittedAccessBindings, type Agent } from "@paperclipai/shared";
 
 export interface AgentConfigOverlay {
   runner?: import("@paperclipai/shared").AgentRunnerChoice;
@@ -30,20 +30,27 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
 
   if (overlay.adapterType !== undefined || Object.keys(overlay.adapterConfig).length > 0) {
     const existing = (agent.adapterConfig ?? {}) as Record<string, unknown>;
-    const nextAdapterConfig =
-      overlay.adapterType !== undefined
-        ? {
-            ...Object.fromEntries(
-              ADAPTER_AGNOSTIC_KEYS
-                .filter((key) => existing[key] !== undefined)
-                .map((key) => [key, existing[key]]),
-            ),
-            ...overlay.adapterConfig,
-          }
-        : {
-            ...existing,
-            ...overlay.adapterConfig,
-          };
+    const rebuildingForAdapterField = overlay.adapterType !== undefined;
+    const baseAdapterConfig = rebuildingForAdapterField
+      ? {
+          ...Object.fromEntries(
+            ADAPTER_AGNOSTIC_KEYS
+              .filter((key) => existing[key] !== undefined)
+              .map((key) => [key, existing[key]]),
+          ),
+          ...overlay.adapterConfig,
+        }
+      : {
+          ...existing,
+          ...overlay.adapterConfig,
+        };
+    // Adapter-field rebuilds keep env via ADAPTER_AGNOSTIC_KEYS but used to drop
+    // dynamic access.* bindings. Omission keeps them. Null or undefined revokes.
+    const nextAdapterConfig = preserveOmittedAccessBindings(
+      existing,
+      baseAdapterConfig,
+      rebuildingForAdapterField,
+    );
 
     patch.adapterConfig = omitUndefinedEntries(nextAdapterConfig);
     patch.replaceAdapterConfig = true;

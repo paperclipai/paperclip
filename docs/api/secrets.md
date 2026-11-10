@@ -118,6 +118,12 @@ expected secret metadata and delivery before using the new binding. Acceptance
 is not execution; a failed wake or missing metadata means the alias must be
 treated as unavailable until a fresh proposal executes successfully.
 
+An agent config update that omits an `access.*` binding keeps that binding.
+Set the key to `null` to remove it. The removal is recorded as a config path
+only, with no secret value. `env` remains an adapter-agnostic object: include
+the env map you want to keep, and omit or null an env key to remove that one
+binding. A failed binding card does not make the alias active.
+
 ## List Secrets
 
 ```

@@ -74,6 +74,7 @@ import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
   ADAPTER_AGNOSTIC_KEYS,
+  explicitSecretBindingRemovals,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   createAgentKeySchema,
   createAgentHireSchema,
@@ -5669,6 +5670,8 @@ export function agentRoutes(
         // Preserve adapter-agnostic keys (env, cwd, etc.) from the existing config
         // when the adapter type changes. Without this, a PATCH that includes
         // adapterConfig but omits these keys would silently drop them.
+        // Dynamic access.* bindings are not in this fixed list. The locked update
+        // keeps omitted access bindings and treats null as an explicit revoke.
         for (const key of ADAPTER_AGNOSTIC_KEYS) {
           if (KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET.has(key)) continue;
           if (rawEffectiveAdapterConfig[key] === undefined && existingAdapterConfig[key] !== undefined) {
@@ -5819,6 +5822,14 @@ export function agentRoutes(
       await assertCanConfigureAgentSetup(req, existing);
     }
 
+    const removedSecretBindingPaths = explicitSecretBindingRemovals(
+      asRecord(existing.adapterConfig),
+      asRecord(patchData.adapterConfig),
+      {
+        envOmissionRemoves: replaceAdapterConfig
+          && !(typeof patchData.adapterType === "string" && patchData.adapterType !== existing.adapterType),
+      },
+    );
     const actor = getActorInfo(req);
     const updateOptions = {
       expectedConfigurationRevision,
@@ -5858,7 +5869,10 @@ export function agentRoutes(
       action: "agent.updated",
       entityType: "agent",
       entityId: agent.id,
-      details: summarizeAgentUpdateDetails(patchData),
+      details: {
+        ...summarizeAgentUpdateDetails(patchData),
+        ...(removedSecretBindingPaths.length > 0 ? { removedSecretBindingPaths } : {}),
+      },
     });
 
     res.json({ ...redactAgentRowForResponse(agent), ...redactAgentConfiguration(agent), ...(configurationWarnings.length ? { configurationWarnings } : {}) });
