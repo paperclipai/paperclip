@@ -10,13 +10,17 @@ export const SERVER_SHUTDOWN_INTERRUPTED_CODE = "server_shutdown_interrupted";
 /**
  * A graceful shutdown stopped a legacy run while it was still preparing.
  *
- * A legacy controller persists `executionStage = 'dispatching'` in the lease
- * renewal that admits the adapter, and the dispatch gate writes
- * `budgetDispatch.handedOffAt` under the run lock before it calls the adapter.
- * Both require `status = 'running'`, so once the shutdown commits the
- * interruption a row that is still `preparing`, has no handoff receipt, no
- * process identity and no execution event proves that no adapter or provider
- * work began. The hard-restart reaper relies on the same stage proof.
+ * The proof is every clause together; none is redundant:
+ * - `budgetDispatch.handedOffAt`: the dispatch gate
+ *   (`dispatchResolvedInteractionIfCurrent`) writes it under the run lock
+ *   before it calls the adapter. It is the dispatch linearization point.
+ * - `executionStage`: every legacy dispatch first renews its controller lease
+ *   with stage `dispatching` (`authorizeFailedChatRetryExecution("dispatching")`
+ *   in `dispatchResolvedInteractionContinuationAfterAdmission`).
+ * - No process identity and no execution-start event (`adapter.invoke`,
+ *   process start/identity, session or provider events).
+ * The gate and the renewal both require `status = 'running'`, so once the
+ * shutdown commits the interruption these records can no longer change.
  *
  * Rows from a controller without a lease (no boot ID) or with any native,
  * remote-workspace or file-recovery obligation stay with their own recovery.
