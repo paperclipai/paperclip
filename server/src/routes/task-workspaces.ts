@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { issues, type Db } from "@paperclipai/db";
 import { Router, type Request } from "express";
-import { prepareWorkspaceRepositorySchema, selectTaskWorkspaceSchema } from "@paperclipai/shared";
+import { isUuidLike, normalizeIssueIdentifier, prepareWorkspaceRepositorySchema, selectTaskWorkspaceSchema } from "@paperclipai/shared";
 import { accessService } from "../services/access.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { issueReadSqlCondition } from "../services/authorization.js";
@@ -15,7 +15,11 @@ export function taskWorkspaceRoutes(db: Db) {
   const router = Router();
   const workspaces = executionWorkspaceService(db);
   async function task(req: Request, write = false) {
-    const [issue] = await db.select().from(issues).where(and(eq(issues.id, req.params.id as string), await issueReadSqlCondition(db, req.actor)));
+    const ref = String(req.params.id).trim();
+    const identifier = normalizeIssueIdentifier(ref);
+    if (!identifier && !isUuidLike(ref)) throw notFound("Task not found");
+    const match = identifier ? eq(issues.identifier, identifier) : eq(issues.id, ref);
+    const [issue] = await db.select().from(issues).where(and(match, await issueReadSqlCondition(db, req.actor)));
     if (!issue) throw notFound("Task not found");
     if (!hasCompanyAccess(req, issue.companyId)) throw notFound("Task not found");
     assertCompanyAccess(req, issue.companyId);

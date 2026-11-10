@@ -850,4 +850,27 @@ const support = await getEmbeddedPostgresTestSupport();
       selection: { kind: "existing", workspaceId: other.workspaceId } })).rejects.toThrow("unavailable or inaccessible");
     expect((await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).pendingSelection).toBeNull();
   });
+
+  it("resolves an issue identifier on the task workspace routes and answers 404 for an unknown reference", async () => {
+    const f = await fixture(), svc = executionWorkspaceService(db);
+    await svc.bindTaskWorkspace(f.companyId, f.issueId, f.workspaceId);
+    const identifier = `W${f.issueId.slice(0, 6).toUpperCase()}-41`;
+    await db.update(issues).set({ identifier }).where(eq(issues.id, f.issueId));
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = f.actor; next(); });
+    app.use("/api", taskWorkspaceRoutes(db));
+    app.use(errorHandler);
+    const inspected = await request(app).get(`/api/issues/${identifier.toLowerCase()}/workspace`);
+    expect(inspected.status).toBe(200);
+    expect(inspected.body).toMatchObject({ workspace: { id: f.workspaceId }, bindingRevision: 1 });
+    const selection = { selection: { kind: "task_directory" }, expectedBindingRevision: 1, requestKey: "identifier-selection" };
+    expect((await request(app).put(`/api/issues/${identifier}/workspace`).send(selection)).status).toBe(200);
+    expect((await svc.inspectTaskWorkspace(f.companyId, f.issueId, f.actor)).pendingSelection).toMatchObject({ requestKey: selection.requestKey });
+    for (const ref of ["not-a-task", `${identifier}9`]) {
+      const missing = await request(app).get(`/api/issues/${ref}/workspace`);
+      expect(missing.status).toBe(404);
+      expect(missing.body.error).toBe("Task not found");
+    }
+  });
 });
