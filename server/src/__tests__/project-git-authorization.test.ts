@@ -145,6 +145,11 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       await expect(f.service.resolve(f.request, f.scope)).rejects.toThrow("does not include this repository");
       vi.mocked(ghFetch).mockResolvedValueOnce(Response.json({ id: 2, full_name: "fixture/project", private: true, permissions: { pull: true } }));
       await expect(f.service.resolve({ ...f.request, expectedRepositoryId: "1" }, f.scope)).rejects.toThrow("does not include this repository");
+      await db.update(projectWorkspaces).set({ metadata: { githubRepositoryId: "1", githubRepositoryUrl: "https://github.com/fixture/project", githubRepositoryPrivate: true } }).where(eq(projectWorkspaces.id, f.workspace.id));
+      vi.mocked(ghFetch).mockResolvedValueOnce(Response.json({ id: 2, full_name: "fixture/project", private: true, permissions: { pull: true } }));
+      await expect(f.service.resolve(f.request, f.scope)).rejects.toThrow("does not include this repository");
+      vi.mocked(ghFetch).mockResolvedValueOnce(Response.json({ id: 1, full_name: "fixture/project", private: true, permissions: { pull: true } }));
+      expect(await f.service.resolve(f.request, f.scope)).toBe("test-token-A");
       await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.companyId, f.input.companyId));
       await expect(f.service.resolve(f.request, f.scope)).rejects.toThrow("authorization is unavailable");
       await db.update(companyMemberships).set({ status: "active" }).where(eq(companyMemberships.companyId, f.input.companyId));

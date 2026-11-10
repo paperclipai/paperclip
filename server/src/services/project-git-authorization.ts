@@ -270,8 +270,11 @@ export function projectGitAuthorizationService(db: Db) {
         });
         if (!response.ok) throw forbidden("Project GitHub authorization does not include this repository");
         const repository = await response.json() as { id?: number; full_name?: string; private?: boolean; permissions?: { pull?: boolean } };
+        const storedRepositoryId = workspace.metadata?.githubRepositoryId;
         if (repository.full_name?.toLowerCase() !== repo.fullName.toLowerCase() || repository.permissions?.pull !== true ||
-          (input.expectedRepositoryId !== undefined && String(repository.id) !== input.expectedRepositoryId))
+          ((storedRepositoryId != null || input.expectedRepositoryId !== undefined) && !Number.isSafeInteger(repository.id)) ||
+          (input.expectedRepositoryId !== undefined && String(repository.id) !== input.expectedRepositoryId) ||
+          (storedRepositoryId != null && String(repository.id) !== storedRepositoryId))
           throw forbidden("Project GitHub authorization does not include this repository");
         if (repository.private === false && !input.requireConnected) return null;
         if (typeof repository.private !== "boolean") throw forbidden("Repository visibility is unavailable");
