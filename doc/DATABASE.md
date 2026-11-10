@@ -2054,6 +2054,26 @@ pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-comment-wake-che
 This disposable fixture compares the complete check result, the complete
 positional SQL rows, plans, and timings with and without nested-loop joins.
 
+The stale-continuation check for dropped user comments uses the same per-binding
+run probes. It first keeps the comments that a stale-continuation cancellation
+dropped and that no open wake carries, and only those comments reach the run
+probes.
+
+The workspace recovery worker's next deadline (`nextWorkspaceRecoveryAt`) and
+its discovery conditions find the source run, its finalizer and its leases by
+`id = canonical uuid of evidence->>'runId'`. The value is null unless the saved
+text is the canonical lowercase form, so the probe matches exactly the rows the
+former `id::text = evidence->>'runId'` comparison matched. The text comparison
+could not use a key, so each exhausted hold read every run, finalizer and lease
+of its company.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-recovery-status-checks.ts --baseline-ref=8d2bf78323
+```
+
+This fixture compares every changed discovery condition for every recovery
+action, the complete check results and the positional SQL rows before timing.
+
 ### Agent runtime synchronization journal
 
 Migration 0347 adds the opt-in `agent_runtime` resource stream. Database triggers
