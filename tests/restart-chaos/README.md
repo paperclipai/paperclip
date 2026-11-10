@@ -739,6 +739,11 @@ past. The shift covers:
 - every time inside a `jsonb` column: ISO datetime strings keep their format, and whole numbers in the
   wave's epoch-millisecond window move too.
 
+A process start (`process_started_at`, `controller_process_started_at`, and `processStartedAt` keys in
+JSON) is not aged. It is part of a process's identity: owners compare the stamp they saved with the
+start time the OS reports, and a real sleep never changes that. Aging it would make every live owner
+look like a different process, a harness artifact rather than a lapsed deadline.
+
 The JSON pass matters. Receipts and snapshots keep copies of times (a continuation receipt stores the
 comment's `updatedAt` and compares it later). Shifting only the columns would fail those comparisons, a
 harness artifact rather than a product failure. Triggers are turned off for the shift (replica role) so

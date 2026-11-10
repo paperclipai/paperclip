@@ -21,7 +21,8 @@ describe.skipIf(!support.supported)("aging a wave database", () => {
     db = createDb(temporary.connectionString, { maxConnections: 1 });
     evidenceDir = await mkdtemp(path.join(os.tmpdir(), "chaos-time-evidence-"));
     await db.$client.unsafe(`create table chaos_time_comments (id text primary key, updated_at timestamptz not null, body text not null)`);
-    await db.$client.unsafe(`create table chaos_time_runs (id text primary key, status text, lease_expires_at timestamptz, finished_at timestamptz, context jsonb)`);
+    await db.$client.unsafe(`create table chaos_time_runs (id text primary key, status text, lease_expires_at timestamptz, finished_at timestamptz, context jsonb,
+      controller_process_started_at timestamptz)`);
     await db.$client.unsafe(`create table chaos_time_touch (id text primary key, updated_at timestamptz)`);
     // A trigger that would rewrite updated_at on every update: the shift must not fire it.
     await db.$client.unsafe(`create function chaos_time_touch_now() returns trigger language plpgsql as $$
@@ -29,10 +30,12 @@ describe.skipIf(!support.supported)("aging a wave database", () => {
     await db.$client.unsafe(`create trigger chaos_time_touch_trigger before update on chaos_time_touch for each row execute function chaos_time_touch_now()`);
     await db.$client.unsafe(`insert into chaos_time_comments values ('c1', $1, '2026-11-09T12:00:00Z stays text')`, [new Date(NOON).toISOString()]);
     await db.$client.unsafe(`insert into chaos_time_touch values ('t1', $1)`, [new Date(NOON).toISOString()]);
-    await db.$client.unsafe(`insert into chaos_time_runs values ('r1', 'running', $1, null, $2::jsonb)`, [
+    await db.$client.unsafe(`insert into chaos_time_runs values ('r1', 'running', $1, null, $2::jsonb, $3)`, [
       new Date(NOON + 20 * 60_000).toISOString(),
       JSON.stringify({ commentUpdatedAt: new Date(NOON).toISOString(), pgStyle: "2026-11-09 12:00:00.5+00", plain: "2026-11-09T12:00:00Z",
-        wallMs: NOON, count: 42, version: 20_261_109, note: "not 2026-11-09T12:00:00Z", nested: [{ at: "2026-11-09T12:00:00.123456+05:30" }] }),
+        wallMs: NOON, count: 42, version: 20_261_109, note: "not 2026-11-09T12:00:00Z", nested: [{ at: "2026-11-09T12:00:00.123456+05:30" }],
+        holder: { processStartedAt: "2026-11-09T11:30:00.000Z", processStartedAtMs: NOON - 30 * 60_000 } }),
+      new Date(NOON - 30 * 60_000).toISOString(),
     ]);
   }, 120_000);
 
@@ -50,8 +53,8 @@ describe.skipIf(!support.supported)("aging a wave database", () => {
     expect(result.tables.map(table => table.table)).toEqual(expect.arrayContaining(["chaos_time_comments", "chaos_time_runs", "chaos_time_touch"]));
 
     const [comment] = await db.$client.unsafe(`select updated_at, body from chaos_time_comments`) as unknown as Array<{ updated_at: unknown; body: string }>;
-    const [run] = await db.$client.unsafe(`select lease_expires_at, finished_at, context from chaos_time_runs`) as unknown as Array<{
-      lease_expires_at: unknown; finished_at: unknown; context: Record<string, unknown> }>;
+    const [run] = await db.$client.unsafe(`select lease_expires_at, finished_at, context, controller_process_started_at from chaos_time_runs`) as unknown as Array<{
+      lease_expires_at: unknown; finished_at: unknown; context: Record<string, unknown>; controller_process_started_at: unknown }>;
     const [touched] = await db.$client.unsafe(`select updated_at from chaos_time_touch`) as unknown as Array<{ updated_at: unknown }>;
     expect(ms(comment!.updated_at)).toBe(NOON - age);
     expect(comment!.body).toBe("2026-11-09T12:00:00Z stays text");
@@ -65,6 +68,9 @@ describe.skipIf(!support.supported)("aging a wave database", () => {
       pgStyle: "2026-11-08 10:00:00.5+00", plain: "2026-11-08T10:00:00Z", wallMs: NOON - age, count: 42, version: 20_261_109,
       note: "not 2026-11-09T12:00:00Z", nested: [{ at: "2026-11-08T10:00:00.123456+05:30" }],
     });
+    // Process start identity is not a deadline: the live owner must still match its saved stamp.
+    expect(ms(run!.controller_process_started_at)).toBe(NOON - 30 * 60_000);
+    expect(run!.context.holder).toEqual({ processStartedAt: "2026-11-09T11:30:00.000Z", processStartedAtMs: NOON - 30 * 60_000 });
 
     const evidence = JSON.parse(await readFile(result.evidencePath, "utf8")) as { ageMs: number; tables: Array<{ table: string; rows: number }> };
     expect(evidence.ageMs).toBe(age);
