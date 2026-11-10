@@ -118,9 +118,10 @@ export const gatewayRotationExternalCases = [definition("gateways-profiles.rotat
     const source = ctx.input.page.url();
     await ctx.input.page.goto(new URL(String(state.tokensPath), source).href, { waitUntil: "domcontentloaded" });
     const main = ctx.input.page.getByRole("main");
-    if (!(await main.getByText("Old test client", { exact: true }).isVisible())) await ctx.input.page.getByRole("button", { name: /Token history/ }).click();
+    if (!(await main.getByText("Old test client", { exact: true }).first().isVisible())) await ctx.input.page.getByRole("button", { name: /Token history/ }).click();
     for (const name of [String(state.replacementName), "Unrelated client", "Old test client"]) await expect(main.getByText(name, { exact: true }).first()).toBeVisible();
-    await expect(main.getByRole("row").filter({ has: ctx.input.page.getByText("Old test client", { exact: true }) })).toContainText(/revoked/i);
+    // The old token by its saved prefix: an agent may give the replacement the same name.
+    await expect(main.getByRole("row").filter({ has: ctx.input.page.getByText(`pcgw_${String(state.oldId).slice(0, 8)}•••`, { exact: true }) })).toContainText(/revoked/i);
     await expect(main).not.toContainText("Waiting for you to reveal");
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
   },

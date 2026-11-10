@@ -281,7 +281,8 @@ async function main() {
       const newWorkedBeforeRevocation = (await discover(replacement.token)).ok, oldWorkedUntilRevocation = (await discover(input.credential)).ok;
       if (!newWorkedBeforeRevocation || !oldWorkedUntilRevocation) throw new Error("Replacement must work before retiring old credential");
       await page.getByRole("button", {name:"Dismiss new token",exact:true}).click();
-      const oldRow = page.getByRole("row").filter({has:page.getByText("Old test client", {exact:true})});
+      // Identify the old token by its saved prefix: an agent may give the replacement the same name.
+      const oldRow = page.getByRole("row").filter({has:page.getByText(`pcgw_${g.oldTokenId.slice(0, 8)}•••`, {exact:true})});
       if (!await oldRow.isVisible()) await page.getByRole("button", {name:/Token history/}).click();
       await oldRow.getByRole("button", {name:"Revoke",exact:true}).click();
       const dialog = page.getByRole("dialog"); await dialog.getByLabel("Type the token name to confirm", {exact:true}).fill("Old test client");
