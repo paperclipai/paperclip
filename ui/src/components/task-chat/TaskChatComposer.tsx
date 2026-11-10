@@ -452,6 +452,13 @@ export function TaskChatComposer({
   const [takeoverControlsSlot, setTakeoverControlsSlot] =
     useState<HTMLElement | null>(null);
   const [localPendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
+  const previousWorkMode = useRef(workMode);
+  useEffect(() => {
+    const previous = previousWorkMode.current;
+    previousWorkMode.current = workMode;
+    // Adopt refreshed task data without replacing a locally chosen draft mode.
+    setPendingMode((current) => current === previous ? workMode : current);
+  }, [workMode]);
   const pendingMode = creation ? workMode : localPendingMode;
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
   const coordinator = useCoordinatorPresentation();
