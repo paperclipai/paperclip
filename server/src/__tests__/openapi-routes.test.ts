@@ -1508,6 +1508,10 @@ describe("openapi routes", () => {
     expect(
       (responseSchemas.start.properties as Record<string, unknown>).prompt,
     ).toBeDefined();
+    const activeSchema = spec.paths[`${base}/active`].get.responses["200"].content["application/json"].schema;
+    expect(activeSchema.properties.agentId).toMatchObject({ type: "string", format: "uuid" });
+    expect(activeSchema.required ?? []).not.toContain("agentId");
+    expect((responseSchemas.status.properties as Record<string, unknown>).agentId).toBeUndefined();
     // The prompt route returns the authorization URL and the optional transport
     // advisory. The advisory is present on a non-confidential transport, so the
     // client can show a non-blocking disclaimer.
