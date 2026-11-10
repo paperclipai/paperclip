@@ -137,7 +137,7 @@ import type {
   AgentToolDescriptor,
   PluginToolDispatcher,
 } from "./plugin-tool-dispatcher.js";
-import { logActivity, type LogActivityInput } from "./activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication, type LogActivityInput } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { connectionGrantCredentialRef, resolveConnectionGrantSecret } from "./connection-credentials.js";
 import { railwayCommandBudgetMs, createRailwayClient, isRailwayConnection, isRailwayEndpoint, isRailwayToolBlocked, normalizeRailwayToolName, RAILWAY_API_URL, RAILWAY_TOOL_PREFIX, RailwayError } from "./railway.js";
@@ -9470,19 +9470,26 @@ export function createToolGatewayService(
       const token = generateNamedGatewayToken(existing.id);
       const now = new Date();
       // Conditional on pendingReveal so concurrent reveals produce one value.
-      const [row] = await db.update(toolMcpGatewayTokens)
-        .set({ tokenHash: hashGatewayToken(token), pendingReveal: false, updatedAt: now })
-        .where(and(
-          eq(toolMcpGatewayTokens.companyId, input.companyId),
-          eq(toolMcpGatewayTokens.id, input.tokenId),
-          eq(toolMcpGatewayTokens.pendingReveal, true),
-          isNull(toolMcpGatewayTokens.revokedAt),
-        ))
-        .returning();
-      if (!row) throw new ToolGatewayHttpError(409, "This token's value was already shown once. Issue a new token to get a new value.", "gateway_token_already_revealed");
-      await logActivity(db, { companyId: input.companyId, actorType: "user", actorId: input.userId,
-        action: "tool_gateway.token_revealed", entityType: "tool_mcp_gateway", entityId: row.gatewayId,
-        details: { tokenId: row.id } });
+      // The value exists only in this response, so the reveal and its audit
+      // entry commit together: a failed audit write leaves the token pending.
+      const publications: ActivityPublication[] = [];
+      const row = await db.transaction(async tx => {
+        const [updated] = await tx.update(toolMcpGatewayTokens)
+          .set({ tokenHash: hashGatewayToken(token), pendingReveal: false, updatedAt: now })
+          .where(and(
+            eq(toolMcpGatewayTokens.companyId, input.companyId),
+            eq(toolMcpGatewayTokens.id, input.tokenId),
+            eq(toolMcpGatewayTokens.pendingReveal, true),
+            isNull(toolMcpGatewayTokens.revokedAt),
+          ))
+          .returning();
+        if (!updated) throw new ToolGatewayHttpError(409, "This token's value was already shown once. Issue a new token to get a new value.", "gateway_token_already_revealed");
+        await logActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "user", actorId: input.userId,
+          action: "tool_gateway.token_revealed", entityType: "tool_mcp_gateway", entityId: updated.gatewayId,
+          details: { tokenId: updated.id } }, publications);
+        return updated;
+      });
+      for (const publication of publications) publishActivity(publication);
       return { ...toGatewayToken(row), token };
     },
 

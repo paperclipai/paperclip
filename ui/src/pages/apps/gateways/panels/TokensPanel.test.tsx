@@ -21,6 +21,10 @@ vi.mock("@/api/tools", () => ({
   },
 }));
 
+vi.mock("@/api/companies-query", () => ({
+  useAccountIdentity: () => ({ userId: "user-1", settled: true, failed: false, bootstrap: undefined, updatedAt: 0 }),
+}));
+
 vi.mock("@/context/ToastContext", () => ({
   useToast: () => ({ pushToast: pushToastMock }),
 }));
@@ -225,6 +229,13 @@ describe("TokensPanel", () => {
     expect(revealGatewayTokenMock).toHaveBeenCalledWith("company-1", "agent-token");
     expect(container.textContent).toContain("New token — copy now");
     expect(container.textContent).toContain("pcgw_live_REVEALEDVALUE");
+  });
+
+  it("does not offer to reveal a token that acts for another person", async () => {
+    const pending = token({ id: "agent-token", name: "Someone else's client", createdByAgentId: "agent-1", createdByUserId: null, responsibleUserId: "user-2", pendingReveal: true });
+    await render(<TokensPanel companyId="company-1" gateway={gateway({ tokens: [pending] })} />);
+    expect(container.textContent).not.toContain("Waiting for you to reveal");
+    expect([...container.querySelectorAll("button")].some((el) => el.textContent?.trim() === "Reveal token")).toBe(false);
   });
 
   it("gates revoke behind a typed confirmation matching the token name", async () => {

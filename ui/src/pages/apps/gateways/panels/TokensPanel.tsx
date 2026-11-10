@@ -8,6 +8,7 @@ import type {
   ToolMcpGatewayWithTokens,
 } from "@paperclipai/shared";
 import { toolsApi } from "@/api/tools";
+import { useAccountIdentity } from "@/api/companies-query";
 import { Button } from "@/components/ui/button";
 import {
   Collapsible,
@@ -103,7 +104,12 @@ export function TokensPanel({
     () => [...gateway.tokens].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
     [gateway.tokens],
   );
-  const pendingTokens = useMemo(() => tokens.filter((token) => tokenStatus(token) === "pending"), [tokens]);
+  // Only the person an agent-created token acts for can reveal it.
+  const { userId } = useAccountIdentity();
+  const pendingTokens = useMemo(
+    () => tokens.filter((token) => tokenStatus(token) === "pending" && (!token.responsibleUserId || !userId || token.responsibleUserId === userId)),
+    [tokens, userId],
+  );
   const pageCount = Math.max(1, Math.ceil(tokens.length / TOKEN_PAGE_SIZE));
   const visibleTokens = tokens.slice((historyPage - 1) * TOKEN_PAGE_SIZE, historyPage * TOKEN_PAGE_SIZE);
 
