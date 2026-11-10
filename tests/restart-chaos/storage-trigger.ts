@@ -147,3 +147,15 @@ export function storageTriggerShortfall(receipts: readonly StorageTriggerReceipt
   return `--storage-trigger: ${unproven.length} fired restart(s) did not provably interrupt the held request: ${unproven
     .map(receipt => `${receipt.taskId} fault=${receipt.faultId ?? "none"} outcome=${receipt.request?.outcome ?? "none"}`).join(", ")}`;
 }
+
+export function storageTriggerMarkdown(receipts: readonly StorageTriggerReceipt[]): string {
+  const fired = receipts.filter(receipt => receipt.firedAt !== null);
+  const proven = fired.filter(receipt => receipt.faultId && receipt.request?.outcome === "aborted");
+  const lines = [`## Storage trigger (${receipts[0]?.target ?? "none"})`, "",
+    `${proven.length} of ${receipts.length} armed faults interrupted a transfer; ${receipts.length - fired.length} not reached.`, "",
+    "| Task | Fault | Fault id | Result | Request |", "| --- | --- | --- | --- | --- |",
+    ...receipts.map(receipt => `| ${receipt.taskId} | ${receipt.kind} | ${receipt.faultId ?? "-"} | ${receipt.firedAt === null
+      ? `not reached (${receipt.missedReason ?? "unknown"})` : receipt.request?.outcome ?? "unknown"} | ${receipt.request
+      ? `\`${receipt.request.method} ${receipt.request.path.split("/").slice(-3).join("/")}\`` : "-"} |`)];
+  return `${lines.join("\n")}\n`;
+}

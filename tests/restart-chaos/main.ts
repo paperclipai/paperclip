@@ -17,7 +17,7 @@ import { BoardUi } from "./board-ui.js";
 import { DEFAULT_MINIO_BINARY, MINIO_RELEASE, minioBinary, objectStoreServerEnvironment, startMinio, type ObjectStore } from "./object-store.js";
 import { StorageChaos, planStorageFaults, replayStorageWindows, type StorageFaultReceipt } from "./storage-chaos.js";
 import { startStorageFaultProxy } from "./storage-proxy.js";
-import { StorageTrigger, storageTriggerShortfall } from "./storage-trigger.js";
+import { StorageTrigger, storageTriggerMarkdown, storageTriggerShortfall } from "./storage-trigger.js";
 import { describeProviderFault, installProviderFaultSeam, resolveRealCodex, withProviderFaultCheck, type ProviderFaultSeam } from "./provider-faults.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
 import { assertControllerMatchesImage, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
@@ -247,6 +247,7 @@ async function main(): Promise<number> {
   let storageProxy: Awaited<ReturnType<typeof startStorageFaultProxy>> | null = null;
   let providerFaults: ProviderFaultSeam | null = null;
   let speedSection: string | null = null;
+  let storageSection: string | null = null;
   let harnessError: unknown;
   process.on("uncaughtException", error => {
     if (isSocketTypeOfServiceRace(error)) { timeline.add("harness_socket_race_ignored", { error: String(error) }); return; }
@@ -370,7 +371,9 @@ async function main(): Promise<number> {
           const work = (async () => {
             const exposed = active.filter(candidate => !candidate.done);
             await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
+            const queued = faultWork.length;
             fireFault(armed.kind, armed.holdMs, armed.taskId, exposed);
+            await faultWork[queued];
           })().finally(() => { faultsQueued -= 1; });
           faultWork.push(work);
           return work;
@@ -504,6 +507,7 @@ async function main(): Promise<number> {
     await Promise.all(faultWork);
     if (storageTrigger) {
       const shortfall = storageTriggerShortfall(storageTrigger.finish(faults));
+      storageSection = storageTriggerMarkdown(storageTrigger.receipts);
       timeline.add("storage_trigger_settled", { shortfall, receipts: storageTrigger.receipts.length });
       if (shortfall) harnessError ??= new Error(shortfall);
     }
@@ -681,7 +685,7 @@ async function main(): Promise<number> {
     if (lines.length) {
       await appendLedger(resultsRoot, lines);
       const summary = await writeSummary(resultsRoot, plan.waveId);
-      await writeFile(path.join(waveDir, "SUMMARY.md"), speedSection ? `${summary}\n${speedSection}` : summary, { mode: 0o600 });
+      await writeFile(path.join(waveDir, "SUMMARY.md"), [summary, speedSection, storageSection].filter(Boolean).join("\n"), { mode: 0o600 });
       console.info(`\n${summary}`);
     }
   }

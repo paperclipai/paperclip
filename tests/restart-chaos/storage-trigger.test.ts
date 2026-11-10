@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseCommand } from "./config.js";
 import { startStorageFaultProxy } from "./storage-proxy.js";
-import { redactStorageUrl, storageTriggerMatches, storageTriggerShortfall, StorageTrigger, type StorageTriggerReceipt, type ArmedStorageFault, type StorageTriggerHooks } from "./storage-trigger.js";
+import { redactStorageUrl, storageTriggerMarkdown, storageTriggerMatches, storageTriggerShortfall, StorageTrigger, type StorageTriggerReceipt, type ArmedStorageFault, type StorageTriggerHooks } from "./storage-trigger.js";
 import type { FaultReceipt } from "./types.js";
 
 const closers: Array<() => Promise<unknown>> = [];
@@ -170,5 +170,12 @@ describe("storage trigger receipts", () => {
     expect(storageTriggerShortfall([])).toMatch(/0 armed/);
     expect(storageTriggerShortfall([receipt("t01", 10, "completed", "f01")])).toMatch(/t01 fault=f01 outcome=completed/);
     expect(storageTriggerShortfall([receipt("t01", 10, "aborted")])).toMatch(/t01 fault=none outcome=aborted/);
+  });
+
+  it("summarises interrupted and unreached faults for the wave summary", () => {
+    const text = storageTriggerMarkdown([receipt("t01", 10, "aborted", "f01"), { ...receipt("t02", null), missedReason: "task_rested" }]);
+    expect(text).toContain("1 of 2 armed faults interrupted a transfer; 1 not reached.");
+    expect(text).toContain("| t01 | K1 | f01 | aborted | `PUT ws1/s1/u1.pcws` |");
+    expect(text).toContain("| t02 | K1 | - | not reached (task_rested) | - |");
   });
 });
