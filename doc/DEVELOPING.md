@@ -1119,6 +1119,13 @@ orphan recovery.
 pnpm exec vitest run server/src/services/heartbeat/agent-status.test.ts server/src/__tests__/heartbeat-agent-status-recovery.test.ts
 ```
 
+## Task document bodies
+
+The native `write_document` and `write_task_document` tools preserve the supplied
+Markdown body exactly, as the REST document PUT does. Leading whitespace,
+Markdown hard-break spaces, line endings, and final newlines are content.
+`write_document` still requires a nonblank body and normalizes key/title fields.
+
 ## Test Commands
 
 The [feature map](../maps/feature-map/README.md) is an optional reference for user

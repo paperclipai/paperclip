@@ -1861,7 +1861,8 @@ export class PaperclipRunnerToolAuthority {
         key: requiredString(input.key),
         title: requiredString(input.title),
         format: "markdown",
-        body: requiredString(input.body),
+        // Validate required content without changing Markdown whitespace.
+        body: requiredString(input.body, false),
         baseRevisionId: nullableProviderId(input.baseRevisionId),
         changeSummary: input.changeSummary === null || input.changeSummary === undefined
           ? null
@@ -3277,9 +3278,9 @@ export class PaperclipRunnerToolAuthority {
   }
 }
 
-function requiredString(value: unknown): string {
+function requiredString(value: unknown, trim = true): string {
   if (typeof value !== "string" || value.trim() === "") throw new Error("paperclip_runner_tool_input_invalid");
-  return value.trim();
+  return trim ? value.trim() : value;
 }
 
 /**
