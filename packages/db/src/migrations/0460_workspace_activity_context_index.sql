@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_company_ctx_execution_workspace_idx" ON "heartbeat_runs" USING btree ("company_id",("context_snapshot" ->> 'executionWorkspaceId'));

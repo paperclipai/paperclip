@@ -422,6 +422,20 @@ local fixture:
 pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-budget-cancellation-scan.ts --runs=20000 --payload-kib=16
 ```
 
+Workspace activity and cleanup checks (`expirationScope` in
+`server/src/services/git-workspace-expiration.ts`) find a workspace's runs with
+one index probe per binding: `issue_id`, `native_issue_id`, the bound issues'
+checkout and execution runs, and the legacy context keys `issueId`, `taskId`
+and `executionWorkspaceId`. Migration 0460 builds
+`heartbeat_runs_company_ctx_execution_workspace_idx` concurrently for the last
+key. The context expressions must stay textually equal to the index
+expressions; a regression test checks that no binding scans `heartbeat_runs`.
+To compare both plans on a disposable local fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-workspace-activity.ts --baseline-ref=<pre-fix commit> --runs-per-workspace=3000
+```
+
 GitHub review lookups use four indexes from migration 0456, which builds them
 concurrently. `chat_message_links_company_comment_idx` finds a source comment's
 link for inherited review waits and run-origin checks.
