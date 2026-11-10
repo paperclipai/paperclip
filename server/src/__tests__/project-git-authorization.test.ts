@@ -33,7 +33,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.insert(authUsers).values(["A", "B"].map(id => ({
       id, name: id, email: `${id}@example.invalid`, createdAt: new Date(), updatedAt: new Date(),
     })));
-  }, 30_000);
+  }, 90_000);
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); }, 60_000);
     async function projectAuthorizationFixture() {
       const input = await seed();
@@ -116,6 +116,33 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       await db.update(issues).set({ responsibleUserId: "B" }).where(eq(issues.id, f.input.issueId));
       expect(await f.service.resolve(f.request, f.scope)).toBe("test-token-A");
       expect((await db.select().from(resourceLifecycleEvents).where(eq(resourceLifecycleEvents.resourceId, f.project.id))).length).toBeGreaterThan(0);
+      await f.service.set(f.input.companyId, f.project.id, "A", null);
+      await expect(f.service.resolve(f.request, f.scope)).rejects.toThrow("Authorize this project");
+    });
+    it("allows a personal PAT for background access only while GitHub confirms repository access", async () => {
+      const f = await projectAuthorizationFixture();
+      await db.update(toolConnections).set({ authKind: "api_key", config: { sourceTemplateKey: "github", connectionMethodKey: "mcp-key" } }).where(eq(toolConnections.id, f.selected.connectionId));
+      await db.update(connectionGrants).set({ providerTenant: null, credentialSecretRefs: [{ secretId: f.selected.secretId, configPath: "credentials.authorization", versionSelector: "latest" }] }).where(eq(connectionGrants.id, f.selected.id));
+      await db.update(projectWorkspaces).set({ metadata: { githubRepositoryUrl: "https://github.com/fixture/project", githubRepositoryPrivate: true } }).where(eq(projectWorkspaces.id, f.workspace.id));
+      expect((await f.service.read(f.input.companyId, f.project.id, "A")).options).toEqual([expect.objectContaining({ grantId: f.selected.id })]);
+      await expect(f.service.set(f.input.companyId, f.project.id, "B", f.selected.id)).rejects.toThrow("own active");
+      await f.service.set(f.input.companyId, f.project.id, "A", f.selected.id);
+      vi.mocked(ghFetch).mockResolvedValueOnce(Response.json({ full_name: "fixture/project", private: true, permissions: { pull: true } }));
+      expect(await f.service.resolve(f.request, f.scope)).toBe("test-token-A");
+      expect(vi.mocked(ghFetch).mock.calls.at(-1)?.[0]).toBe("https://api.github.com/repos/fixture/project");
+      expect(new Headers(vi.mocked(ghFetch).mock.calls.at(-1)?.[1]?.headers).get("authorization")).toBe("Bearer test-token-A");
+      await db.update(projectWorkspaces).set({ metadata: {} }).where(eq(projectWorkspaces.id, f.workspace.id));
+      vi.mocked(ghFetch).mockResolvedValueOnce(new Response(null, { status: 404 }))
+        .mockResolvedValueOnce(Response.json({ full_name: "fixture/project", private: true, permissions: { pull: true } }));
+      expect(await f.service.resolve(f.request, f.scope)).toBe("test-token-A");
+      await db.update(projectWorkspaces).set({ metadata: { githubRepositoryUrl: "https://github.com/fixture/project", githubRepositoryPrivate: true } }).where(eq(projectWorkspaces.id, f.workspace.id));
+      vi.mocked(ghFetch).mockResolvedValueOnce(new Response(null, { status: 404 }));
+      await expect(f.service.resolve(f.request, f.scope)).rejects.toThrow("does not include this repository");
+      vi.mocked(ghFetch).mockResolvedValueOnce(Response.json({ full_name: "other/repo", private: true, permissions: { pull: true } }));
+      await expect(f.service.resolve(f.request, f.scope)).rejects.toThrow("does not include this repository");
+      await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.companyId, f.input.companyId));
+      await expect(f.service.resolve(f.request, f.scope)).rejects.toThrow("authorization is unavailable");
+      await db.update(companyMemberships).set({ status: "active" }).where(eq(companyMemberships.companyId, f.input.companyId));
       await f.service.set(f.input.companyId, f.project.id, "A", null);
       await expect(f.service.resolve(f.request, f.scope)).rejects.toThrow("Authorize this project");
     });

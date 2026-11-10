@@ -200,7 +200,10 @@ event so subscribed providers can reconcile the change.
 viewer's eligible personal grants. `PUT` accepts `{ grantId }` or `{ grantId: null }`.
 Agents cannot create this standing consent. Project workspace writers can remove it.
 Core rechecks membership, Connector installation/enablement, grant status, and
-repository metadata on each background use. Public repositories never require
+repository access on each background use. GitHub App grants use their installation
+repository metadata; personal access tokens are resolved from the instance vault
+and verified against the exact repository through GitHub's API before export.
+Public repositories never require
 a connection or credential. Private repositories wait for authorization before
 provisioning starts, so missing consent cannot leave a failed anonymous clone.
 Repository selections retain the same visibility metadata used by the UI lock.
@@ -235,7 +238,7 @@ inspection and removal. New provisioning and new consent remain blocked.
 
 The provider receives a transient GitHub token with its existing provider
 permissions. This is not a repository-scoped or read-only token minting API.
-Only grant-listed repositories can trigger background export. Plugins must never
+Only repositories authorized by the selected grant can trigger background export. Plugins must never
 save tokens in entities, state, configuration, operation receipts, or logs, and
 must send them only to trusted execution infrastructure over HTTPS. Revocation
 prevents subsequent credential acquisition; it cannot recall a token already
