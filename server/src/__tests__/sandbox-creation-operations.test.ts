@@ -98,22 +98,35 @@ describe("durable sandbox creation through the runtime entry point", () => {
     await db.execute(sql`create or replace function reject_fixture_write() returns trigger language plpgsql as $$ begin raise exception 'Fixture database write unavailable'; end $$`);
     await db.execute(sql.raw(`create trigger ${trigger} before insert on ${table} for each row execute function reject_fixture_write()`));
   }
-  async function acquirePluginLogin() {
+  async function acquirePluginLogin(heartbeatRunId: string | null = null) {
     pluginLogin = true;
     await db.update(environments).set({ driver: "plugin", config: { pluginKey: "paperclip.creation-fixture", driverKey: "creation-fixture", driverConfig: {} } }).where(eq(environments.id, environmentId));
     const [plugin] = await db.select().from(plugins).where(eq(plugins.id, pluginId));
     await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson, environmentDrivers: [{ driverKey: "creation-fixture", kind: "environment_driver", displayName: "Computer", creationOperationVersion: 1, configSchema: { type: "object" } }] } }).where(eq(plugins.id, pluginId));
-    return runtime().acquireRunLease({ companyId, environment: (await environmentService(db).getById(environmentId))!, heartbeatRunId: runId,
+    return runtime().acquireRunLease({ companyId, environment: (await environmentService(db).getById(environmentId))!, heartbeatRunId,
       issueId: null, persistedExecutionWorkspace: null, purpose: "login", loginCommandKey: "codex", requestedExpiresAt: new Date(Date.now() + 300000) });
   }
   it.each([false, true])("recovers an interrupted login using its exact receipt (provider-generated ID: %s)", async generated => {
     generatedLoginId = generated;
     loseReply = true; await expect(acquirePluginLogin()).rejects.toThrow("Lost provider reply");
     const [intent] = await db.select().from(sandboxCreationOperations);
-    expect(intent.metadata).toMatchObject({ purpose: "login", loginCommandKey: "codex" });
+    expect(intent.metadata).toMatchObject({ purpose: "login", loginCommandKey: "codex", creationHeartbeatRunId: null });
+    expect(intent.runId).not.toBe(runId);
     await due(); await runtime().flushDeferredOrphanCleanups();
     const [lease] = await db.select().from(environmentLeases);
-    expect(lease).toMatchObject({ status: "pending_cleanup", providerLeaseId: generated ? `provider-${intent.id}` : intent.id, metadata: { purpose: "login", loginCommandKey: "codex" } });
+    expect(lease).toMatchObject({ status: "pending_cleanup", heartbeatRunId: null, providerLeaseId: generated ? `provider-${intent.id}` : intent.id, metadata: { purpose: "login", loginCommandKey: "codex" } });
+    await runtime().retryPendingSandboxTeardown({ environment: null, lease: (await environmentService(db).getLeaseById(lease.id))! });
+    expect(resources.size).toBe(0); expect(destroys).toBe(1);
+  });
+  it.each([false, true])("preserves an actual heartbeat reference during recovery (legacy intent: %s)", async legacy => {
+    loseReply = true;
+    await expect(acquirePluginLogin(runId)).rejects.toThrow("Lost provider reply");
+    const [intent] = await db.select().from(sandboxCreationOperations);
+    expect(intent.metadata.creationHeartbeatRunId).toBe(runId);
+    if (legacy) await db.update(sandboxCreationOperations).set({ metadata: sql`metadata - 'creationHeartbeatRunId'` });
+    await due(); await runtime().flushDeferredOrphanCleanups();
+    const [lease] = await db.select().from(environmentLeases);
+    expect(lease.heartbeatRunId).toBe(runId);
     await runtime().retryPendingSandboxTeardown({ environment: null, lease: (await environmentService(db).getLeaseById(lease.id))! });
     expect(resources.size).toBe(0); expect(destroys).toBe(1);
   });

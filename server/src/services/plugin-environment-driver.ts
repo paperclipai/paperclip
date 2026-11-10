@@ -133,9 +133,16 @@ export interface ReadyPluginWorkerRecovery {
   timeoutMs?: number;
 }
 
-/** Shared admission/presentation check against the running worker, not only its manifest. */
-export function pluginSupportsLoginPty(driver: { supportsLoginPty?: boolean }, methods: readonly string[], requireCredentialRead = false): boolean {
-  return driver.supportsLoginPty === true && ["loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose", ...(requireCredentialRead ? ["loginPtyReadCredential"] : [])].every(method => methods.includes(method));
+/** Shared admission/presentation check, including recovery of a lost allocation reply. */
+export function pluginSupportsLoginPty(
+  driver: Pick<PluginEnvironmentDriverDeclaration, "supportsLoginPty" | "creationOperationVersion">,
+  methods: readonly string[],
+  requireCredentialRead = false,
+): boolean {
+  return driver.supportsLoginPty === true && driver.creationOperationVersion === 1 && [
+    "environmentInspectLease", "loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose",
+    ...(requireCredentialRead ? ["loginPtyReadCredential"] : []),
+  ].every(method => methods.includes(method));
 }
 
 export interface ReadyPluginEnvironmentDriver {

@@ -77,17 +77,49 @@ describe("listReadyPluginEnvironmentDrivers sandbox capability projection", () =
     });
     expect(drivers[0]?.supportsReusableLeases).toBe(true);
   });
+  it("preserves existing sandbox login presentation without plugin allocation recovery", async () => {
+    mockRegistry.list.mockResolvedValue([{
+      id: PLUGIN_ID, pluginKey: PLUGIN_KEY, status: "ready", manifestJson: {
+        ...manifest, environmentDrivers: [{ ...manifest.environmentDrivers![0], supportsLoginPty: true }],
+      },
+    }]);
+    const workerManager = { isRunning: () => true, getWorker: () => ({ supportedMethods: [] }) } as unknown as PluginWorkerManager;
+    const [driver] = await listReadyPluginEnvironmentDrivers({ db: {} as never, workerManager });
+    expect(driver.supportsLoginPty).toBe(true);
+  });
+
 });
 
 describe("live login capability admission and presentation", () => {
-  const hooks = ["loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose"];
-  it("fails closed for each missing transport hook", () => {
-    for (const missing of hooks) expect(pluginSupportsLoginPty({ supportsLoginPty: true }, hooks.filter(hook => hook !== missing))).toBe(false);
-    expect(pluginSupportsLoginPty({ supportsLoginPty: false }, hooks)).toBe(false);
+  const hooks = ["environmentInspectLease", "loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose"];
+  const driver = { supportsLoginPty: true, creationOperationVersion: 1 as const };
+  it("fails closed for each missing recovery or transport hook", () => {
+    for (const missing of hooks) expect(pluginSupportsLoginPty(driver, hooks.filter(hook => hook !== missing))).toBe(false);
+    expect(pluginSupportsLoginPty({ ...driver, supportsLoginPty: false }, hooks)).toBe(false);
+  });
+  it("requires recoverable allocation identity before admitting login", () => {
+    expect(pluginSupportsLoginPty({ supportsLoginPty: true }, hooks)).toBe(false);
+    expect(pluginSupportsLoginPty({ supportsLoginPty: true }, [...hooks, "loginPtyReadCredential"], true)).toBe(false);
   });
   it("requires the narrow credential hook only for Codex", () => {
-    expect(pluginSupportsLoginPty({ supportsLoginPty: true }, hooks)).toBe(true);
-    expect(pluginSupportsLoginPty({ supportsLoginPty: true }, hooks, true)).toBe(false);
-    expect(pluginSupportsLoginPty({ supportsLoginPty: true }, [...hooks, "loginPtyReadCredential"], true)).toBe(true);
+    expect(pluginSupportsLoginPty(driver, hooks)).toBe(true);
+    expect(pluginSupportsLoginPty(driver, hooks, true)).toBe(false);
+    expect(pluginSupportsLoginPty(driver, [...hooks, "loginPtyReadCredential"], true)).toBe(true);
   });
+  it.each(["complete", "missing-version", "missing-inspector"] as const)(
+    "projects the same recovery gate for login presentation: %s", async mode => {
+      mockRegistry.list.mockResolvedValue([{
+        id: PLUGIN_ID, pluginKey: PLUGIN_KEY, status: "ready", manifestJson: {
+          ...manifest, environmentDrivers: [{ ...manifest.environmentDrivers![0], ...driver,
+            kind: "environment_driver", creationOperationVersion: mode === "missing-version" ? undefined : 1,
+          }],
+        },
+      }]);
+      const methods = [...hooks, "loginPtyReadCredential"].filter(method => mode !== "missing-inspector" || method !== "environmentInspectLease");
+      const workerManager = { isRunning: () => true, getWorker: () => ({ supportedMethods: methods }) } as unknown as PluginWorkerManager;
+      const [projected] = await listReadyPluginEnvironmentDrivers({ db: {} as never, workerManager, kind: "environment_driver" });
+      expect(projected.supportsLoginPty).toBe(mode === "complete");
+      expect(projected.supportsCodexLogin).toBe(mode === "complete");
+    },
+  );
 });

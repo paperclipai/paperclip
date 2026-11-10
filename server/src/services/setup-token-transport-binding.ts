@@ -37,7 +37,7 @@ import {
 import { secretService } from "./secrets.js";
 import type { environmentService } from "./environments.js";
 import type { environmentRuntimeService } from "./environment-runtime.js";
-import { buildLoginLeaseAcquireArgs } from "./adapter-login-lease.js";
+import { buildLoginLeaseAcquireArgs, loginLeaseBoundsDeadline } from "./adapter-login-lease.js";
 import type { Db } from "@paperclipai/db";
 import {
   createLoginPtyTransport,
@@ -454,9 +454,7 @@ export function createProductionSetupTokenSandboxProvider(
       // the deadline, the server cannot guarantee the hard stop. Release the
       // remote lease and fail closed, so the login holds no lease and leaves no
       // durable cleanup row.
-      const expiresAt = leaseRecord.lease.expiresAt;
-      const expiresAtMs = expiresAt instanceof Date ? expiresAt.getTime() : Number.NaN;
-      if (!Number.isFinite(expiresAtMs) || expiresAtMs > deadline) {
+      if (!loginLeaseBoundsDeadline(leaseRecord.lease.expiresAt, deadline)) {
         await this.release(leaseId);
         log("[paperclip] Setup-token login: the acquired lease expiry does not bound the session deadline.");
         return failClosed();

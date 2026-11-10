@@ -444,7 +444,10 @@ live worker hooks before acquisition. The chosen agent is a transport target;
 it does not change the signed-in account's owner or agent grants.
 
 Core acquires this resource with `purpose: "login"`, the fixed command key, and
-an absolute expiry. It does not submit a Runner task or mount project volumes.
+an absolute expiry. The returned lease must attest an expiry no later than that
+deadline. Drivers must declare `creationOperationVersion: 1` and expose the live
+`environmentInspectLease` hook so Core can recover a lost acquisition reply.
+Core does not submit a Runner task or mount project volumes.
 The plugin keeps the computer binding in durable lease metadata. PTY close stops
 and detaches the terminal while preserving its result. Lease release/destroy
 removes only the login resources after Core commits the credential or ends the

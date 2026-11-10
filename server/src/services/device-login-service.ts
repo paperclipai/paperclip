@@ -35,7 +35,7 @@ import {
   type LoginPtySessionOpener,
 } from "@paperclipai/adapter-utils/login-pty-transport";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
-import { buildLoginLeaseAcquireArgs } from "./adapter-login-lease.js";
+import { buildLoginLeaseAcquireArgs, loginLeaseBoundsDeadline } from "./adapter-login-lease.js";
 import { environmentService } from "./environments.js";
 import { runDescriptorBoundAuthRead } from "./device-login-credential-read.js";
 import {
@@ -134,7 +134,7 @@ export interface LoginSessionLease {
 
 export interface AcquireLoginLeaseInput {
   agentId?: string;
-  expiresAt?: Date;
+  expiresAt: Date;
   companyId: string;
   environmentId: string;
   adapterType: AgentAdapterType;
@@ -454,13 +454,19 @@ export const ADAPTER_AUTH_PROMOTION_CLAIM_MS = 60_000;
  * provider leases that no live session references. The db-backed store
  * implements this next to {@link AdapterAuthSessionStore}.
  */
+export interface AdapterLoginLeaseReference {
+  sessionId: string;
+  environmentId: string;
+  providerLeaseId: string;
+}
+
 export interface AdapterAuthReaperStore {
   /** The non-terminal sessions with an `expiresAt` at or before `now`. */
   listExpiredActiveSessions(now: Date): Promise<AdapterAuthSessionRow[]>;
   /** The terminal sessions left in the internal `cleanup_pending` state. */
   listCleanupPendingSessions(): Promise<AdapterAuthSessionRow[]>;
-  /** Every provider lease reference a session row still holds. */
-  listLeaseReferences(): Promise<string[]>;
+  /** The exact session/environment/provider references that rows still hold. */
+  listLeaseReferences(): Promise<AdapterLoginLeaseReference[]>;
   setStatus(input: SetAdapterAuthSessionStatusInput): Promise<void>;
   /** A conditional status write. It returns true only when it changed one row. */
   compareAndSetStatus(input: CompareAndSetAdapterAuthSessionStatusInput): Promise<boolean>;
@@ -691,7 +697,7 @@ export function createDbAdapterAuthSessionStore(
     },
     async listLeaseReferences() {
       const rows = await db
-        .select({ providerLeaseId: adapterAuthSessions.providerLeaseId })
+        .select({ sessionId: adapterAuthSessions.id, environmentId: adapterAuthSessions.environmentId, providerLeaseId: adapterAuthSessions.providerLeaseId })
         .from(adapterAuthSessions)
         .where(
           and(
@@ -699,9 +705,7 @@ export function createDbAdapterAuthSessionStore(
             isNotNull(adapterAuthSessions.providerLeaseId),
           ),
         );
-      return rows
-        .map((row) => row.providerLeaseId)
-        .filter((value): value is string => value != null);
+      return rows.flatMap(row => row.providerLeaseId ? [{ ...row, providerLeaseId: row.providerLeaseId }] : []);
     },
     async withCompanyAdapterPromotionLock(companyId, startedByUserId, adapterType, fn) {
       return withAdapterLoginPromotionLock(db, companyId, startedByUserId, adapterType, fn);
@@ -1689,6 +1693,13 @@ export function createProductionLoginSessionRuntime(
         ...(record.lease.metadata ?? {}),
         [LOGIN_LEASE_SESSION_TAG_KEY]: input.sessionId,
       }));
+      // Keep the tagged cleanup obligation even if release fails. A database
+      // deadline alone cannot stop a provider after this Core process exits.
+      if (!loginLeaseBoundsDeadline(record.lease.expiresAt, input.expiresAt.getTime())) {
+        const runtimeDriver = deps.environmentRuntime.getDriver(record.environment.driver);
+        await runtimeDriver?.releaseRunLease({ environment: record.environment, lease: record.lease, status: "failed" });
+        throw new Error("Device login failed: the acquired lease expiry does not bound the session deadline.");
+      }
       const sessionHome = sessionLoginHomePath(input.sessionId);
       const authPath = sessionCredentialPath(input.sessionId);
       const providerLeaseId = record.lease.providerLeaseId ?? record.lease.id;

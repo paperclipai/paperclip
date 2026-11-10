@@ -9,6 +9,12 @@ import type { EnvironmentRuntimeService } from "./environment-runtime.js";
  */
 export type AcquireLoginLeaseArgs = Parameters<EnvironmentRuntimeService["acquireRunLease"]>[0];
 
+/** A requested deadline is safe only when the provider attests an expiry at or before it. */
+export function loginLeaseBoundsDeadline(expiresAt: Date | null | undefined, deadline: number): boolean {
+  const expiresAtMs = expiresAt instanceof Date ? expiresAt.getTime() : Number.NaN;
+  return Number.isFinite(expiresAtMs) && Number.isFinite(deadline) && expiresAtMs <= deadline;
+}
+
 /**
  * The company, environment, and provider adapter selected for this allocation.
  */
