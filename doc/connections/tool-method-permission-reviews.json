@@ -2975,10 +2975,11 @@
         "https://docs.gitlab.com/user/model_context_protocol/mcp_server/",
         "https://docs.gitlab.com/auth/tokens/fine_grained_access_tokens_rest/#mcp-tool"
       ],
-      "keyPermissions": "Create a fine-grained personal access token with the MCP tool resource and the Execute permission. Legacy personal, project and group access tokens are rejected by GitLab.",
+      "keyPermissions": "Create a fine-grained personal access token with the MCP tool resource (listed under Duo) and the Execute permission. Legacy personal, project and group access tokens are rejected by GitLab.",
       "reviewedAt": "2026-11-09",
       "evidenceLevel": "provider-documentation-reviewed",
-      "liveProof": "not-run"
+      "liveProof": "gitlab.com fine-grained personal access token on 2026-11-09: discovery returned 41 actions, get_mcp_server_version completed through the gateway, and disconnect revoked 1 grant and 1 secret. The token was sent as Authorization: Bearer and never appeared in activity or API responses.",
+      "evidenceLimit": "Self-Managed and Dedicated hosts and a completed write were not run. An expired token returns 401 invalid_token, which discovery reports as a sign-in prompt."
     }
   ]
 }

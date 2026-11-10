@@ -53,7 +53,7 @@
       "defaults": {
         "serverUrlTemplate": "https://{host}/api/v4/mcp"
       },
-      "guidanceMd": "Enter your GitLab host and a fine-grained personal access token with the MCP tool resource and the Execute permission. Legacy personal, project, and group access tokens are rejected by GitLab. An administrator must allow the GitLab MCP server for the instance.",
+      "guidanceMd": "Enter your GitLab host and a fine-grained personal access token with the MCP tool resource (listed under Duo) and the Execute permission. Legacy personal, project, and group access tokens are rejected by GitLab. An administrator must allow the GitLab MCP server for the instance.",
       "riskTier": "S3",
       "label": "Use an access token",
       "tenantFields": [
@@ -79,7 +79,7 @@
           "required": true,
           "secret": true,
           "placeholder": "Paste your fine-grained personal access token",
-          "helperMd": "Create a fine-grained personal access token with the MCP tool resource and the Execute permission. Legacy personal, project and group access tokens are rejected by GitLab."
+          "helperMd": "Create a fine-grained personal access token with the MCP tool resource (listed under Duo) and the Execute permission. Legacy personal, project and group access tokens are rejected by GitLab."
         }
       ],
       "keyPlacement": {

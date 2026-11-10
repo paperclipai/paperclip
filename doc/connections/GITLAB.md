@@ -31,8 +31,10 @@ a curated `AppDefinition` with no connector-specific runtime code. Sources:
   field defaults to `gitlab.com` and accepts a hostname only; custom ports are
   not supported.
 - GitLab rejects legacy personal, project, and group access tokens with
-  `403 insufficient_scope`. The token needs the MCP tool resource and the
-  Execute permission.
+  `403 insufficient_scope`. The token needs the MCP tool resource (listed
+  under Duo in the token form) and the Execute permission. GitLab expires
+  tokens at 00:00 UTC on the chosen date, so pick a date at least two days
+  ahead for a short test.
 - Credentials are stored as company secret references. Revoking the OAuth
   authorization or the token in GitLab blocks further calls.
 
@@ -86,7 +88,7 @@ sequenceDiagram
   group.
 - Self-Managed or Dedicated: an administrator must allow the GitLab MCP server
   for the instance. Each user then creates a fine-grained personal access token
-  with the MCP tool resource and the Execute permission.
+  with the MCP tool resource (listed under Duo) and the Execute permission.
 - DCR is rate-limited by GitLab to 10 registrations per hour per IP address.
 - Verify: connect, confirm the discovered catalog lists tools such as
   `get_project` and `list_merge_requests`, then run `get_mcp_server_version`
@@ -124,6 +126,10 @@ should consider Ask first for `accept_merge_request`, `add_commit`,
 - Error states: a group or instance without MCP allowed, a legacy token
   (`403 insufficient_scope`), an unreachable or non-HTTPS host, and DCR rate
   limiting.
+- An expired or invalid access token returns `401` with
+  `error="invalid_token"`. Discovery treats every `401` as an OAuth challenge,
+  so the setup page shows "This app needs you to sign in." instead of GitLab's
+  reason. Replace the token to recover.
 
 ## Governance Defaults
 
@@ -154,4 +160,19 @@ should consider Ask first for `accept_merge_request`, `add_commit`,
   | Secret handling | pass | The activity log and connection API responses contain no access token, refresh token, or client secret. |
   | Refresh | not run | Token refresh was not observed. GitLab issued a 2-hour access token with a refresh token. |
 
-- `mcp-access-token` against a Self-Managed instance: not run.
+- Live proof on 2026-11-09 for `mcp-access-token` against gitlab.com (host
+  `gitlab.com`, fine-grained personal access token), in the same instance:
+
+  | Scenario | Result | Evidence |
+  | --- | --- | --- |
+  | Setup | pass | The access-token method asked for the host and the token. |
+  | Authentication | pass | The connection stored `authKind: api_key`, server URL `https://gitlab.com/api/v4/mcp`, and one `credentials.authorization` secret ref placed in the `Authorization` header with the `Bearer ` prefix. |
+  | Catalog | pass | `tool_app.connected` recorded 41 actions. |
+  | Allowed read | pass | `get_mcp_server_version` completed through the gateway (`tool_gateway.call_completed`, `tool_completed`). |
+  | Governed write | not run | No write was run with the token. |
+  | Disconnect | pass | Disconnect archived the connection and revoked 1 grant and 1 secret. |
+  | Secret handling | pass | The activity log and connection API responses contain no token. |
+  | Expired token | observed | An expired token returned `401 invalid_token` and the setup page showed "This app needs you to sign in." |
+
+- `mcp-access-token` against a Self-Managed or Dedicated instance: not run.
+  Those hosts use the same method with a different `host` value.
