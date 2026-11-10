@@ -3,6 +3,11 @@ import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "./environment-lease-controller
 import { RetainedSandboxAbsentError, resumeReplyConfirmsAbsence } from "./retained-sandbox-absent-error.js";
 import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { ReusableSandboxResumeError } from "./reusable-sandbox-resume-error.js";
+import {
+  REUSABLE_SANDBOX_RESUME_BUDGET_MS,
+  retireUnresumableReusableSandboxLease,
+  sandboxStateTransitionFailure,
+} from "./reusable-sandbox-resume-replacement.js";
 import { PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
 import { HttpError } from "../errors.js";
 import { captureEnvironmentAcquisitionDiagnostic } from "./environment-acquisition-diagnostics.js";
@@ -793,6 +798,8 @@ function transientSandboxResumeFailure(error: unknown): boolean {
       ? candidate.statusCode
       : null;
   if (status === 429 || (status !== null && status >= 500)) return true;
+  // A sandbox still stopping, archiving, or starting can be started shortly.
+  if (sandboxStateTransitionFailure(error)) return true;
   const code = typeof candidate.code === "string" ? candidate.code.toUpperCase() : "";
   if (["ETIMEDOUT", "ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "ENETUNREACH"].includes(code)) {
     return true;
@@ -1822,11 +1829,15 @@ function createSandboxEnvironmentDriver(
             });
           }
           try {
-            const configuredResumeTimeoutMs =
+            // One run spends a bounded budget resuming, retries included; the
+            // provider's own start deadline (five minutes on Daytona) is not it.
+            const configuredResumeTimeoutMs = Math.min(
               resolvePluginSandboxRpcTimeoutMs(
                 workerConfig,
                 pluginProvider.resolved.driver.defaultAcquireTimeoutMs,
-              ) ?? 60_000;
+              ) ?? 60_000,
+              REUSABLE_SANDBOX_RESUME_BUDGET_MS,
+            );
             const resumeDeadline = Date.now() + configuredResumeTimeoutMs;
             let retryDelayMs = 250;
             let resumed: PluginEnvironmentLease;
@@ -1878,13 +1889,21 @@ function createSandboxEnvironmentDriver(
                   : "expired";
             }
           } catch (error) {
-            throw new ReusableSandboxResumeError({
-              provider: parsed.config.provider,
-              providerLeaseId: reusableLease.providerLeaseId,
-              cause: error,
-            });
+            // A refusal is not proof the sandbox is lost. Replace it only when
+            // nothing lives solely on it; otherwise preserve it for the retry.
+            if (!await retireUnresumableReusableSandboxLease({
+              db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
+              executionWorkspaceId: input.executionWorkspaceId, adapterType: input.adapterType, cause: error,
+            })) {
+              throw new ReusableSandboxResumeError({
+                provider: parsed.config.provider,
+                providerLeaseId: reusableLease.providerLeaseId,
+                cause: error,
+              });
+            }
+            replacementReason = "resume_failed";
           }
-          if (!providerLease) {
+          if (!providerLease && replacementReason !== "resume_failed") {
             if (
               input.adapterType === "paperclip_runner" &&
               !await verifyRecoverableNativeHarnessBackup({ db, companyId: reusableLease.companyId,
