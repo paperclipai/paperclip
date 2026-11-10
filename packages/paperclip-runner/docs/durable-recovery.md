@@ -197,6 +197,26 @@ startup fence over a `prepared` state that holds a saved thread. The next runner
 retires that fence once the recorded provider process and its group have exited,
 as it does for an open or active session.
 
+A restart can also kill the runner and Codex while `turn/start` is in flight.
+The runner marks the start ambiguous before it sends the request, so after the
+restart neither journal says whether Codex created the turn, and the resumed
+thread reports no active turn either way. Codex records a turn in the thread
+before it runs anything, so the restored runner reads the newest turn of the
+thread history (`thread/turns/list`, one turn, metadata only). If there is none,
+or it is a turn Paperclip already settled, the start never created a turn: the
+runner clears the ambiguity, emits the `ambiguous_turn_start_not_created`
+diagnostic and restores an idle session. The old `turn.start` stays settled as
+`execution_indeterminate` and never runs again; the same-run resume then starts
+the run's turn once, as for any recovered session without an active turn. If
+the newest turn is one Paperclip never settled, Codex did create the turn and it
+may have done work. The runner still fails closed and never starts that work
+again by itself; continuing is a person's decision (Retry or a new message).
+
+A follow-up run that a prior owner's unproven runner state refuses
+(`runner_state_identity_mismatch: prior_owner_*`) fails before it asks for a
+runner, so it never had a process. Retry and new messages after it continue
+without waiting for a stop record of that run.
+
 Saved OpenCode and Cursor Cloud provider state binds the digest of its own
 qualified launch profile (command, proxy script and, for OpenCode, the
 executable, each by path and SHA-256). Cursor Cloud does not re-bind. A changed
