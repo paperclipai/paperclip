@@ -5209,20 +5209,30 @@ workspace saves retain repository coverage only for directories present in the
 captured archive. Deleted checkouts lose coverage and can be acquired again.
 A failed batch upload marks the affected repository rows as needing repair.
 
-### Plugin Runner credential refreshes
+### Native Runner credential refreshes
 
-Core handles PRP `auth.credentials.updated` notifications for plugin Runner tasks.
+Core handles PRP `auth.credentials.updated` notifications for managed Codex and
+Grok subscriptions across local, SSH, sandbox, and supported plugin Runner tasks.
 After validating the company, agent, run, session, and Runner binding, it exports
-the selected Codex account through the task provider and writes newer credentials
-directly to the tenant secret. The durable lease handoff supplies grant, secret,
-version-selector, and session-epoch authority; no invocation temporary home is
-needed. A warm owner's handler rebinds with its current lease. Revoked grants and
-explicit reconnects cannot be overwritten by an old Runner refresh.
+the selected account and writes newer credentials directly to the tenant secret.
+Grant, secret, version-selector, session-epoch, and provider freshness checks are
+shared across execution targets. Explicit reconnects and revoked grants win over
+old refreshes. Providers that do not emit this event keep their existing flow;
+operator-owned homes do not acquire tenant writeback authority.
 
-The notification is acknowledged only after writeback succeeds or the generation
-is intentionally discarded. Failed exports or saves replay through PRP. Unchanged
-turns make no extra credential export request. The task provider must support
-account-bound exports while the task is running. Keep retirement writeback as the
-fallback for older Runners and interrupted sessions; its saved outcome records a
-rotation, unchanged credential, changed binding, undispatched task, or null export. No secrets
-are carried in PRP events or lease metadata.
+The transport's credential handler rebinds with each warm invocation, including
+its current target exporter. Idle refreshes and recovered controller handles do
+not depend on a completed invocation's temporary home. Detached handles cannot
+process new updates. Native/ACPX Codex and Grok use bounded, descriptor-based file
+reads; SSH and sandbox readers use the Node runtime already required by remote
+isolated-home preparation. Plugin tasks use their account-bound export operation.
+
+A notification is acknowledged only after writeback succeeds or its authority is
+intentionally discarded. Export and database failures replay through PRP. An
+unchanged managed-subscription turn does no credential export or database write.
+Retirement keeps a final export for legacy and recovery paths; a failed final
+export retains the provider's credential files for retry. Plugin retirement also
+records rotation, unchanged credential, changed binding, undispatched task, or a
+null export. No secret bytes appear in PRP events or lease metadata. The plugin
+provider must support live account-bound exports before enabling the paired Core
+handler.

@@ -1,3 +1,4 @@
+import type { NativeSession } from "../../vendor/paperclip-runner/index.js";
 import { currentControllerProcess } from "../controller-process-identity.js";
 import { activeNativeExecutionRunIds } from "./native-active-runs.js";
 import { onRetainedNativeSessionCleanupRelease } from "../retained-native-session-cleanup-notifications.js";
@@ -125,6 +126,10 @@ import { canonicalProviderPackJson } from "./remote-provider-pack-verification.j
 import * as providerPackAdmission from "./native-provider-pack-admission.js";
 import * as providerArtifactStorage from "./native-provider-artifacts.js";
 import * as providerArtifactCapture from "./native-provider-artifact-capture.js";
+import * as nativeCredentialEvents from "./native-credential-updates.js";
+import * as nativeCredentialStores from "./native-credential-store.js";
+import * as managedCredentialWriteback from "../managed-ai-credential-writeback.js";
+import { completeManagedNativeCredentialTurn } from "./managed-native-credentials.js";
 import * as nativeExecutionDriver from "./native-runner-execution-driver.js";
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -16784,6 +16789,74 @@ describe("runnerd provider runtime wiring", () => {
       runnerArtifact: { version: "admitted-artifact" } });
     expect(options).toMatchObject({ runnerReconnectGraceMs: 420_000 });
     expect(task.mock.calls.some(([op]) => ["prepare", "submit", "stop"].includes(op.kind))).toBe(false);
+  });
+
+  it.each(["codex", "acpx-codex", "grok"] as const)("writes managed %s events through the current warm exporter without per-turn reads", async provider => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "native-managed-refresh-")));
+    const previousRoot = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = join(root, "runner");
+    const firstHome = join(root, "first"), nextHome = join(root, "next");
+    await mkdir(firstHome); await mkdir(nextHome);
+    for (const home of [firstHome, nextHome]) await writeFile(join(home, "auth.json"), "{}", { mode: 0o600 });
+    const current = scopedNativeExecution(`managed-refresh-${provider}`);
+    current.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 60_000 };
+    if (provider !== "codex") {
+      current.provider = { kind: "acpx", agent: provider === "grok" ? "grok" : "codex", model: null, permissionMode: "deny-all" } as never;
+      current.session.driverKind = "acpx_runtime";
+    }
+    const firstStore = { read: vi.fn(async () => "first-refresh"), remove: vi.fn(async () => {}) };
+    const nextStore = { read: vi.fn(async () => "next-refresh"), remove: vi.fn(async () => {}) };
+    const stores = vi.spyOn(nativeCredentialStores, "createNativeCredentialStore").mockReturnValueOnce(firstStore).mockReturnValueOnce(nextStore);
+    const persist = vi.spyOn(managedCredentialWriteback, "syncManagedAiCredentials").mockImplementation(async (_db, _company, _binding, _provider, read) => {
+      await read(); return "rotated";
+    });
+    const append = vi.spyOn(nativeCredentialEvents, "appendNativeCredentialUpdate").mockImplementation(async (_db, input) => { await input.synchronizeCredentials?.(); });
+    const binding = { grantId: "10000000-0000-4000-8000-000000000001", secretId: "10000000-0000-4000-8000-000000000002", sessionEpoch: 1, versionSelector: "latest" as const };
+    const session = { close: vi.fn(async () => {}) } as unknown as NativeSession;
+    try {
+      const backend = await createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: "managed-runner",
+        managedAiCredentialHome: firstHome, managedAiCredentialWriteback: binding });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const retainedHook = state.createTransport.mock.calls.at(-1)![0].onCredentialsUpdated!;
+      backend.bindManagedSession(session);
+      await completeManagedNativeCredentialTurn(session);
+      expect(persist).not.toHaveBeenCalled(); expect(firstStore.read).not.toHaveBeenCalled();
+      await rm(firstHome, { recursive: true, force: true });
+      const notification: PrpEvent = {
+        schema: "paperclip.prp.event.v3", schemaVersion: 3, eventType: "auth.credentials.updated", sourceKind: "runner",
+        sourceInstanceId: "managed-runner", sourceEventId: "refresh", sourceSeq: 1, runId: current.binding.runId,
+        normalizedSessionId: current.session.normalizedSessionId!, priority: 0, emittedAt: "2020-01-01T00:00:00Z",
+        payload: { schema: "paperclip.auth.credentials.updated.v1", bindingId: "harness-auth", revision: 1,
+          detection: "credential_store", provider: provider === "grok" ? "grok" : "codex" },
+      };
+      await retainedHook(notification);
+      expect(firstStore.read).toHaveBeenCalledOnce();
+      // The mocked transport does not publish a durable Runner identity.
+      await rm(state.createTransport.mock.calls.at(-1)![0].stateDirectory!, { recursive: true, force: true });
+      const next = { ...current, binding: { ...current.binding, runId: `${current.binding.runId}-next` } };
+      const nextBinding = { ...binding };
+      const successor = await createRunnerdBackend({ db: leaseDb(next), execution: next, runnerInstanceId: "managed-runner",
+        managedAiCredentialHome: nextHome, managedAiCredentialWriteback: nextBinding });
+      successor.bindManagedSession(session);
+      await completeManagedNativeCredentialTurn(session);
+      await rm(nextHome, { recursive: true, force: true });
+      await retainedHook(notification);
+      expect(persist).toHaveBeenLastCalledWith(expect.anything(), current.binding.companyId, nextBinding,
+        provider === "grok" ? "grok" : "codex", nextStore.read);
+      expect(persist.mock.calls.at(-1)![2]).toBe(nextBinding);
+      await session.close({ reason: "idle retirement" });
+      expect(nextStore.read).toHaveBeenCalledTimes(2);
+      expect(firstStore.remove).not.toHaveBeenCalled(); expect(nextStore.remove).toHaveBeenCalledOnce();
+      expect(stores.mock.calls[0]![0].localHome).toContain(provider === "grok" ? "grok-home" : "codex-home");
+      persist.mockClear();
+      await expect(retainedHook({ ...notification, payload: { provider: "unexpected" } })).rejects.toThrow("provider_mismatch");
+      expect(persist).not.toHaveBeenCalled();
+    } finally {
+      stores.mockRestore(); persist.mockRestore(); append.mockRestore();
+      if (previousRoot === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previousRoot;
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it.each(["codex", "opencode", "acpx"] as const)("uses a task-only %s driver without exposing Core paths or transferring the agent home", async (kind) => {

@@ -51,7 +51,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notificati
 import { writeExecutionControl } from "../execution-control-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { createRunUsageRecorder } from "../usage-receipts.js";
-import { syncPluginTaskCredentialHandoff, registerPluginTaskCredentialHandoff, type PluginTaskCredentialWritebackBinding } from "../plugin-task-credential-writeback.js";
+import { syncPluginTaskCredentialHandoff, registerPluginTaskCredentialHandoff } from "../plugin-task-credential-writeback.js";
 import { resolvePluginTaskResume } from "../environment-task-runtime.js";
 import { environmentTaskOperationSchema, environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
@@ -103,6 +103,8 @@ import { RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
 import { createNativeDeliverableTextObservation } from "./native-deliverable-text.js";
 import { createNativeGitHubAccess, type NativeGitHubAccess } from "./native-github-access.js";
 import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
+import { syncManagedAiCredentials, type ManagedAiCredentialWritebackBinding } from "../managed-ai-credential-writeback.js";
+import { createNativeCredentialStore } from "./native-credential-store.js";
 import { bindManagedNativeCredentialTurn, completeManagedNativeCredentialTurn } from "./managed-native-credentials.js";
 import { createLocalNativeQuestionBridge } from "./local-native-question-bridge.js";
 import { createArtifactInstaller } from "./artifact-transfer.js";
@@ -243,7 +245,7 @@ import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { assertNativeRetainedSandboxBinding, deferNativeControllerRecovery, NativeControllerRecoveryWaitingError, readNativeControllerRecovery, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
 import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
-import { appendNativeCredentialUpdate } from "./native-credential-updates.js";
+import { createNativeCredentialUpdateOwner, appendNativeCredentialUpdate } from "./native-credential-updates.js";
 import { canonicalNativeJson, nativeSha256 } from "./canonical.js";
 import { lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
@@ -9417,7 +9419,7 @@ export async function executePaperclipNativeSession(input: {
   managedAiCredentialHome?: string;
   managedAiCredentialIdentity?: string;
   managedAiAccountIdentity?: string;
-  managedAiCredentialWriteback?: PluginTaskCredentialWritebackBinding;
+  managedAiCredentialWriteback?: ManagedAiCredentialWritebackBinding;
   billingIdentity?: Pick<AdapterExecutionResult, "provider" | "biller" | "billingType">;
   onTaskDispatched?: () => Promise<void> | void;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
@@ -14396,7 +14398,7 @@ export async function createRunnerdBackend(input: {
   managedAiCredentialHome?: string;
   managedAiCredentialIdentity?: string;
   managedAiAccountIdentity?: string;
-  managedAiCredentialWriteback?: PluginTaskCredentialWritebackBinding;
+  managedAiCredentialWriteback?: ManagedAiCredentialWritebackBinding;
   onTaskDispatched?: () => Promise<void> | void;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
   /** Resolved per-run authorization; not an independent instance setting. */
@@ -16455,6 +16457,33 @@ async function createRunnerdBackendWithinSessionClaim(
     owner => logger.warn({ companyId: owner.companyId, runId: owner.runId }, "Native session diagnostic recording failed"));
   const diagnosticLease = diagnostics.activate(diagnosticOwner, input.onLog);
   input.onDiagnosticLease?.(diagnosticLease);
+  const credentialProvider = input.execution.provider.kind === "codex" ? "codex"
+    : input.execution.provider.kind === "acpx" && (input.execution.provider.agent === "codex" || input.execution.provider.agent === "grok")
+      ? input.execution.provider.agent : null;
+  const acpxCredential = input.execution.provider.kind === "acpx";
+  const credentialRelativeHome = credentialProvider && acpxCredential
+    ? `acpx/acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(input.execution))}/${credentialProvider}-home` : "codex-home";
+  const credentialStore = credentialProvider && !preconfiguredHome ? createNativeCredentialStore({
+    provider: credentialProvider,
+    localHome: acpxCredential ? resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner", credentialRelativeHome) : join(root, "codex-home"),
+    ...(remoteRunnerFilesystemRoot && remoteCommandRunner ? {
+      remoteHome: posix.join(remoteRunnerFilesystemRoot, credentialRelativeHome), runner: remoteCommandRunner,
+    } : {}),
+  }) : null;
+  const synchronizeCredentials = input.managedAiCredentialWriteback && credentialProvider && credentialStore
+    ? async () => {
+      const outcome = await syncManagedAiCredentials(input.db, input.execution.binding.companyId,
+        input.managedAiCredentialWriteback!, credentialProvider, credentialStore.read);
+      if (outcome === "no_credentials") throw new Error("Native credential snapshot unavailable");
+    } : undefined;
+  const credentialUpdates = createNativeCredentialUpdateOwner(event => appendNativeCredentialUpdate(input.db, {
+    companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+    normalizedSessionId: nativeSessionKey(input.execution), runnerInstanceId: effectiveRunnerInstanceId, event,
+    synchronizeCredentials: synchronizeCredentials ? async () => {
+      if (event.payload.provider !== credentialProvider) throw new Error("native_credential_update_provider_mismatch");
+      await synchronizeCredentials();
+    } : undefined,
+  }));
   const backend = createNativeSessionBackend(runnerExecution, {
     retainedSystemInstructions,
     runnerInstanceId:
@@ -16497,13 +16526,7 @@ async function createRunnerdBackendWithinSessionClaim(
         ...(input.execution.provider.kind === "codex" ? { disableCodexWebSearch: "webSearch" in input.execution.provider && input.execution.provider.webSearch === "disabled" } : {}),
         homeMode: preconfiguredHome ? "preconfigured" : "isolated",
         ...accountingTransportOptions,
-        onCredentialsUpdated: (event) => appendNativeCredentialUpdate(input.db, {
-          companyId: input.execution.binding.companyId,
-          agentId: input.execution.binding.agentId,
-          normalizedSessionId: nativeSessionKey(input.execution),
-          runnerInstanceId: effectiveRunnerInstanceId,
-          event,
-        }),
+        onCredentialsUpdated: credentialUpdates.onCredentialsUpdated,
         provider:
           input.execution.provider.kind === "cursor_cloud" ? "cursor_cloud" : input.execution.provider.kind === "codex"
             ? "codex"
@@ -16816,6 +16839,7 @@ async function createRunnerdBackendWithinSessionClaim(
   });
   const boundManagedSessions = new WeakSet<NativeSession>();
   const wrapManagedSession = (session: NativeSession): NativeSession => {
+    credentialUpdates.bindSession(session);
     if (cursorCloudRuntime && !boundManagedSessions.has(session)) {
       boundManagedSessions.add(session);
       const close = session.close.bind(session);
@@ -16833,61 +16857,18 @@ async function createRunnerdBackendWithinSessionClaim(
         managedHome: antigravityCredential.home, credential: antigravityCredential.credential, runtimeHome,
       });
     }
-    if (isGrok && grokCredential?.home && !boundManagedSessions.has(session)) {
-      boundManagedSessions.add(session);
-      // The launch runtime directory already ends in "acpx"; ACPX adds its
-      // own namespace beneath it in resolveAcpxRuntimeRoot.
-      const relativeHome = `acpx/acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(input.execution))}/grok-home`;
-      const localHome = resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner", relativeHome);
-      const remoteHome = remoteRunnerFilesystemRoot ? posix.join(remoteRunnerFilesystemRoot, relativeHome) : null;
-      const readAuth = async (name: string): Promise<Buffer> => {
-        if (!remoteHome || !remoteCommandRunner) return Buffer.from(await readLocalAiCredentialFile(join(localHome, name)));
-        const script = `const fs=require('node:fs'),path=require('node:path');let fd;try{const file=process.argv[1];let parent=path.dirname(file);while(true){if(!fs.lstatSync(parent).isDirectory())throw Error('directory');const next=path.dirname(parent);if(next===parent)break;parent=next;}fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);const st=fs.fstatSync(fd);if(!st.isFile()||st.uid!==process.getuid()||(st.mode&511)!==384||st.size>65536)throw Error('credential');const b=Buffer.alloc(65537);let n=0;while(n<b.length){const k=fs.readSync(fd,b,n,b.length-n,n);if(!k)break;n+=k;}if(n>65536)throw Error('size');process.stdout.write(b.subarray(0,n).toString('base64'));b.fill(0);}catch(e){process.exitCode=e.code==='ENOENT'?66:1;}finally{if(fd!==undefined)fs.closeSync(fd);}`;
-        const result = await remoteCommandRunner.execute({ command: "node", args: ["-e", script, posix.join(remoteHome, name)], bypassSession: true, timeoutMs: 10000 });
-        if (result.exitCode !== 0 || result.timedOut) throw Object.assign(new Error("Grok credential refresh handoff unavailable"), { code: result.exitCode === 66 ? "ENOENT" : "INVALID_CREDENTIAL" });
-        return Buffer.from(result.stdout, "base64");
-      };
-      return bindManagedNativeCredentialTurn(session, {
-        copyBack: async () => {
-          await copyBackGrokAuth({ hostHomeDir: grokCredential.home!, log: () => {},
-            readSandboxAuth: () => readAuth("auth.json").catch((error) => {
-              if (error.code !== "ENOENT") throw error;
-              return readAuth("auth-refresh.json");
-            }),
-          });
-        },
-        remove: async () => {
-          for (const name of ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp"]) {
-            rmSync(join(localHome, name), { force: true });
-            if (remoteHome && remoteCommandRunner) {
-              const result = await remoteCommandRunner.execute({ command: "rm", args: ["-f", "--", posix.join(remoteHome, name)], bypassSession: true, timeoutMs: 10000 });
-              if (result.exitCode !== 0 || result.timedOut) throw new Error("Grok credential cleanup failed");
-            }
-          }
-        },
-      });
-    }
-    if (preconfiguredHome || !input.managedAiCredentialHome || input.execution.provider.kind !== "codex" || boundManagedSessions.has(session)) return session;
+    const destinationHome = credentialProvider === "grok" ? grokCredential?.home : input.managedAiCredentialHome;
+    if (!credentialProvider || !credentialStore || !destinationHome || boundManagedSessions.has(session)) return session;
     boundManagedSessions.add(session);
-    const remoteAuth = remoteRunnerFilesystemRoot ? posix.join(remoteRunnerFilesystemRoot, "codex-home", "auth.json") : null;
-    const localAuth = join(root, "codex-home", "auth.json");
     return bindManagedNativeCredentialTurn(session, {
-      copyBack: async () => {
-        await copyBackCodexAuth({
-          hostAuthPath: join(input.managedAiCredentialHome!, "auth.json"),
-          readSandboxAuth: async () => {
-            if (!remoteAuth || !remoteCommandRunner) return readFileSync(localAuth);
-            const result = await remoteCommandRunner.execute({ command: "base64", args: [remoteAuth], bypassSession: true, timeoutMs: 10000 });
-            if (result.exitCode !== 0 || result.timedOut) throw new Error("AI credential copy-back failed");
-            return Buffer.from(result.stdout, "base64");
-          },
-          log: () => {},
-        });
+      copyBack: synchronizeCredentials ? async () => {} : async () => {
+        if (credentialProvider === "grok") await copyBackGrokAuth({ hostHomeDir: destinationHome,
+          readSandboxAuth: async () => Buffer.from(await credentialStore.read()), log: () => {} });
+        else await copyBackCodexAuth({ hostAuthPath: join(destinationHome, "auth.json"),
+          readSandboxAuth: async () => Buffer.from(await credentialStore.read()), log: () => {} });
       },
-      remove: async () => {
-        rmSync(localAuth, { force: true });
-        if (remoteAuth && remoteCommandRunner) await remoteCommandRunner.execute({ command: "rm", args: ["-f", "--", remoteAuth], bypassSession: true, timeoutMs: 10000 });
-      },
+      retire: synchronizeCredentials,
+      remove: credentialStore.remove,
     });
   };
   input.executionContext?.signal.throwIfAborted();
