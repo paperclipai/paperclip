@@ -4473,6 +4473,13 @@ admitted lifecycle, including when recovery acquires a lease after the agent or
 environment lifecycle setting changes. Recovery uses the persisted execution
 input for both lease acquisition and lifecycle validation.
 
+Controller shutdown and warm idle expiry detach confirmed released plugin
+Runners without stopping them. The host owns parked Runner retention. The next
+turn uses the existing adoption and process-configuration checks to decide
+reuse. A failed detach keeps the local owner fenced and reports failure; it
+does not authorize a stop fallback. Unreleased sessions still checkpoint on
+shutdown, and explicit environment deletion still retires idle Runners.
+
 A warm sandbox's shared workspace binding persists independently of the
 experimental isolated-workspaces UI. Ordinary workspace updates remain gated;
 the runtime can bind only a validated shared workspace in the issue's company
