@@ -409,10 +409,10 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
     const previousMode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
     process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
     try {
-      const { companyId } = await seedArtifacts();
+      const { companyId, issueId } = await seedArtifacts();
       await db.update(issues).set({ visibility: "private", privacyRootIssueId: sql`${issues.id}`, responsibleUserId: "owner-user" })
         .where(eq(issues.companyId, companyId));
-      const list = async (userId: string) => {
+      const list = async (userId: string, search = "limit=50") => {
         const app = express();
         app.use((req, _res, next) => {
           req.actor = { type: "board", userId, source: "session", companyIds: [companyId],
@@ -421,12 +421,20 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
         });
         app.use("/api/companies", companyRoutes(db, createStorageService()));
         app.use(errorHandler);
-        return request(app).get(`/api/companies/${companyId}/artifacts?limit=50`);
+        return request(app).get(`/api/companies/${companyId}/artifacts?${search}`);
       };
       const outsider = await list("user-1");
       expect(outsider.status).toBe(200);
       expect(outsider.body.artifacts).toEqual([]);
       expect((await list("owner-user")).body.artifacts.length).toBeGreaterThan(0);
+      // A task id in the group selector reveals nothing about an unreadable task.
+      for (const groupBy of ["task", "parent_task"]) {
+        const grouped = await list("user-1", `groupBy=${groupBy}&groupIssueId=${issueId}`);
+        expect(grouped.status).toBe(200);
+        expect(grouped.body).toEqual({ artifacts: [], selectedGroup: null, nextCursor: null });
+        expect((await list("user-1", `groupBy=${groupBy}`)).body.artifacts).toEqual([]);
+      }
+      expect((await list("owner-user", `groupBy=task&groupIssueId=${issueId}`)).body.selectedGroup).toMatchObject({ issue: { id: issueId } });
     } finally {
       if (previousMode === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
       else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousMode;

@@ -427,7 +427,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const query = companyArtifactsQuerySchema.parse(req.query);
     res.json(await artifacts.list(companyId, query, {
       userId: query.starred && req.actor.type === "board" ? req.actor.userId : undefined,
-      issueConditions: [await issueReadSqlCondition(db, req.actor)],
+      readCondition: await issueReadSqlCondition(db, req.actor),
     }));
   });
 
