@@ -11863,7 +11863,7 @@ async function executePaperclipNativeSessionAttempt(
           .for("update");
         // Issue → coordinator → run, as below. A lease that lapsed untouched
         // (host sleep) is still this owner's to settle; see the held condition.
-        await lockNativeExecutionLeaseForReacquire(tx, input.execution.binding);
+        await lockNativeExecutionLeaseForReacquire(tx, { ...input.execution.binding, leaseOwner, preResultOnly: true });
         await notifyExecutionRunWork(tx, { companyId: input.execution.binding.companyId });
         await notifyNativeFinalizationWork(tx, input.execution.binding);
         const updated = await tx
@@ -12463,7 +12463,7 @@ async function executePaperclipNativeSessionAttempt(
       const releaseNow = new Date();
       const released = await timeController("coordinator_release", () => input.db.transaction(async tx => {
         // A lease that lapsed untouched (host sleep) is still this owner's to release.
-        await lockNativeExecutionLeaseForReacquire(tx, input.execution.binding);
+        await lockNativeExecutionLeaseForReacquire(tx, { ...input.execution.binding, leaseOwner });
         await notifyNativeFinalizationWork(tx, input.execution.binding);
         return tx.update(nativeRunFinalizations)
           .set({

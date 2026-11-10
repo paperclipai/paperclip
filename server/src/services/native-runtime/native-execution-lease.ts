@@ -83,12 +83,20 @@ export function nativeExecutionLeaseHeldCondition(input: {
  */
 export async function lockNativeExecutionLeaseForReacquire(tx: Pick<Db, "execute">, input: {
   runId: string; companyId: string; issueId: string;
+  /**
+   * Lock only a row the caller's UPDATE could match: this owner's, and with
+   * `preResultOnly` one without an accepted result. A row it cannot match
+   * stays unlocked, as the UPDATE alone would leave it.
+   */
+  leaseOwner?: string; preResultOnly?: boolean;
 }): Promise<boolean> {
   const rows = await tx.execute<{ live: boolean }>(sql`select coalesce(${nativeRunFinalizations.leaseExpiresAt} > clock_timestamp(), false) as live
     from ${nativeRunFinalizations}
     where ${nativeRunFinalizations.runId} = ${input.runId}
       and ${nativeRunFinalizations.companyId} = ${input.companyId}
       and ${nativeRunFinalizations.issueId} = ${input.issueId}
+      ${input.leaseOwner === undefined ? sql`` : sql`and ${nativeRunFinalizations.leaseOwner} = ${input.leaseOwner}`}
+      ${input.preResultOnly ? sql`and ${nativeRunFinalizations.resultId} is null` : sql``}
     for update`);
   const row = (rows as unknown as Array<{ live: boolean }> | undefined)?.[0];
   if (!row) return false;
