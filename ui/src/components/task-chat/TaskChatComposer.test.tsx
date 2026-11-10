@@ -1225,11 +1225,12 @@ describe("TaskChatComposer", () => {
       .toBe("planning");
     expect(onWorkModeChange).not.toHaveBeenCalled();
 
-    // Once the task acknowledges the local choice, later external changes apply.
+    // Matching task data does not acknowledge an unsent local choice.
     renderComposer({ onAdd, onWorkModeChange, workMode: "planning" });
     renderComposer({ onAdd, onWorkModeChange, workMode: "standard" });
     await flushAsync();
-    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode"))
+      .toBe("planning");
   });
 
   it("keeps the chosen mode and message when an optimistic mode save rolls back", async () => {
@@ -1261,6 +1262,41 @@ describe("TaskChatComposer", () => {
     expect(onAdd).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["standard", "planning", "standard"],
+    ["ask", "standard", "ask"],
+  ] as const)("keeps next draft mode %s → %s → %s through successful send", async (savedMode, sentMode, nextMode) => {
+    let resolveSend!: () => void;
+    const onAdd = vi.fn().mockReturnValue(new Promise<void>((resolve) => { resolveSend = resolve; }));
+    function PendingSendHarness() {
+      const [workMode, setWorkMode] = useState<"standard" | "ask" | "planning">(savedMode);
+      return <TaskChatComposer onAdd={onAdd} workMode={workMode}
+        onWorkModeChange={async (mode) => { setWorkMode(mode); }} />;
+    }
+    const selectedMode = () => container.querySelector('[data-testid="task-chat-composer-mode"]')
+      ?.getAttribute("data-pending-work-mode") ?? "standard";
+    render(<PendingSendHarness />);
+    pressKey("Tab", { shiftKey: true });
+    expect(selectedMode()).toBe(sentMode);
+    typeText("First message");
+    pressKey("Enter");
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledTimes(1);
+
+    if (nextMode === "standard") {
+      flushSync(() => container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-mode"]')!.click());
+    } else {
+      pressKey("Tab", { shiftKey: true });
+      pressKey("Tab", { shiftKey: true });
+    }
+    expect(selectedMode()).toBe(nextMode);
+    typeText("Next message");
+    await act(async () => resolveSend());
+    await flushAsync();
+    expect(selectedMode()).toBe(nextMode);
+    expect(editable().textContent).toBe("Next message");
+  });
+
   it("cycles the pending mode with Shift+Tab and applies it on submit", async () => {
     const onAdd = vi.fn().mockResolvedValue(undefined);
     const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
@@ -1286,6 +1322,11 @@ describe("TaskChatComposer", () => {
 
     expect(onWorkModeChange).toHaveBeenCalledWith("planning");
     expect(onAdd).toHaveBeenCalledWith("do the plan", undefined, undefined, undefined, expect.any(String));
+
+    renderComposer({ onAdd, onWorkModeChange, workMode: "ask" });
+    await flushAsync();
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode"))
+      .toBe("ask");
   });
 
   it("cycles Auto, Plan, and Ask modes with Cmd+Period while focused", () => {
