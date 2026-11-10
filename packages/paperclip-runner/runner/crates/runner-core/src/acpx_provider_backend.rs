@@ -1,11 +1,12 @@
 use crate::generated_acpx_profiles::{
     acpx_release_profile, ACPX_DRIVER_KIND, QUALIFIED_ACPX_VERSION,
 };
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fs::{self, DirBuilder, File};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
@@ -15,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::acpx_launch_artifacts::AcpxLaunchArtifacts;
 use crate::acpx_provider_capabilities::{run_attachment_policy, RunAttachmentPolicy};
 use crate::acpx_provider_session::{
     goal_is_dormant, AcpxPermissionMode, AcpxProviderRuntimePolicy, AcpxProviderSession,
@@ -37,7 +39,6 @@ use crate::provider_bridge::{
 use crate::provider_events::{
     project_acpx_state_event, AcpxEventProjectionContext, NormalizedProviderEvent,
 };
-use crate::qualified_launch::{verify_executable_launch_artifact, verify_launch_artifact};
 
 #[path = "acpx_park_preparation.rs"]
 mod park_preparation;
@@ -398,6 +399,7 @@ impl AcpxProviderDescriptor {
         tool_set: AuthorizedToolSet,
         expected_identity: Option<AcpxProviderSessionIdentity>,
         launch_profile: Option<&AcpxLaunchProfile>,
+        launch_artifacts: &AcpxLaunchArtifacts,
     ) -> Result<AcpxProviderSessionConfig, DurableRunnerError> {
         let candidate_admission =
             launch_profile.and_then(|profile| profile.candidate_admission.clone());
@@ -412,7 +414,7 @@ impl AcpxProviderDescriptor {
                 .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
         }
         secure_directory(&self.runtime_directory, "ACPX runtime")?;
-        let transport = self.verified_transport(launch_profile)?;
+        let transport = self.verified_transport(launch_profile, launch_artifacts)?;
         // Keep the controller's full authority catalog durable so terminal
         // semantic results can be correlated through the reserved bridge.
         // The ACPX provider session receives only dynamic operations: its
@@ -467,6 +469,7 @@ impl AcpxProviderDescriptor {
     fn verified_transport(
         &self,
         launch_profile: Option<&AcpxLaunchProfile>,
+        launch_artifacts: &AcpxLaunchArtifacts,
     ) -> Result<AcpxSidecarTransportConfig, DurableRunnerError> {
         let launch_profile = launch_profile.ok_or_else(|| {
             DurableRunnerError::invalid(
@@ -481,20 +484,7 @@ impl AcpxProviderDescriptor {
             ));
         }
 
-        let mut verified = HashMap::new();
-        for artifact in &launch_profile.artifacts {
-            if verified.contains_key(&artifact.path) {
-                return Err(DurableRunnerError::invalid(
-                    "ACPX runner launch profile repeats an artifact path",
-                ));
-            }
-            let snapshot = if artifact.path == launch_profile.command {
-                verify_executable_launch_artifact(artifact, "ACPX")?
-            } else {
-                verify_launch_artifact(artifact, "ACPX")?
-            };
-            verified.insert(artifact.path.clone(), snapshot);
-        }
+        let verified = launch_artifacts.verified(launch_profile)?;
         let command = verified
             .get(&launch_profile.command)
             .cloned()
@@ -965,6 +955,7 @@ pub struct AcpxCommandExecutor {
     #[cfg(test)]
     fail_after_state_rename: bool,
     launch_profile: Option<AcpxLaunchProfile>,
+    launch_artifacts: Arc<AcpxLaunchArtifacts>,
     recovery_pending_effects: Option<usize>,
     /// The failed turn-end restart's cause, reported by the next turn start.
     failed_turn_end_restart: Option<String>,
@@ -996,6 +987,14 @@ fn turn_control_provider_turn_id(payload: &Value) -> Result<&str, DurableRunnerE
 
 impl AcpxCommandExecutor {
     pub fn with_runner_config(state_dir: impl Into<PathBuf>, config: &DurableRunnerConfig) -> Self {
+        Self::with_launch_artifacts(state_dir, config, Arc::default())
+    }
+
+    pub fn with_launch_artifacts(
+        state_dir: impl Into<PathBuf>,
+        config: &DurableRunnerConfig,
+        launch_artifacts: Arc<AcpxLaunchArtifacts>,
+    ) -> Self {
         Self {
             state_dir: state_dir.into(),
             context: AcpxEventProjectionContext {
@@ -1016,6 +1015,7 @@ impl AcpxCommandExecutor {
             #[cfg(test)]
             fail_after_state_rename: false,
             launch_profile: config.acpx_launch_profile.clone(),
+            launch_artifacts,
         }
     }
 
@@ -1385,6 +1385,7 @@ impl AcpxCommandExecutor {
             state.tool_set.clone(),
             expected,
             self.launch_profile.as_ref(),
+            &self.launch_artifacts,
         )?;
         let mut session = AcpxProviderSession::start(&config).map_err(|error| {
             DurableRunnerError::invalid(format!("failed to start ACPX provider: {error}"))
@@ -4130,7 +4131,9 @@ mod tests {
         value["sidecarCommand"] = json!(command);
         value["sidecarArgs"] = json!(args);
         let descriptor: AcpxProviderDescriptor = serde_json::from_value(value).unwrap();
-        let transport = descriptor.verified_transport(Some(&profile)).unwrap();
+        let transport = descriptor
+            .verified_transport(Some(&profile), &AcpxLaunchArtifacts::default())
+            .unwrap();
         assert_eq!(transport.command, profile.command);
         assert_eq!(transport.args[0], sidecar.to_string_lossy());
         let verified_launch = transport.verified_launch.as_ref().unwrap();
@@ -4141,13 +4144,19 @@ mod tests {
 
         let mut drifted_path = descriptor.clone();
         drifted_path.sidecar_command = directory.join("other-node");
-        assert!(drifted_path.verified_transport(Some(&profile)).is_err());
+        assert!(drifted_path
+            .verified_transport(Some(&profile), &AcpxLaunchArtifacts::default())
+            .is_err());
         let mut drifted_args = descriptor.clone();
         drifted_args.sidecar_args.push("--untrusted".to_owned());
-        assert!(drifted_args.verified_transport(Some(&profile)).is_err());
+        assert!(drifted_args
+            .verified_transport(Some(&profile), &AcpxLaunchArtifacts::default())
+            .is_err());
 
         write_artifact(&sidecar, b"modified sidecar", false);
-        assert!(descriptor.verified_transport(Some(&profile)).is_err());
+        assert!(descriptor
+            .verified_transport(Some(&profile), &AcpxLaunchArtifacts::default())
+            .is_err());
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -4233,7 +4242,7 @@ mod tests {
                 assert_eq!(self.named_images(), 0);
                 let transport = self
                     .descriptor
-                    .verified_transport(Some(&self.profile))
+                    .verified_transport(Some(&self.profile), &AcpxLaunchArtifacts::default())
                     .unwrap();
                 assert_eq!(
                     self.named_images(),
@@ -4269,7 +4278,7 @@ mod tests {
             );
             let error = fixture
                 .descriptor
-                .verified_transport(Some(&fixture.profile))
+                .verified_transport(Some(&fixture.profile), &AcpxLaunchArtifacts::default())
                 .err()
                 .unwrap();
             assert!(error
@@ -4297,7 +4306,7 @@ mod tests {
             fixture.descriptor.sidecar_args.push(unauthenticated);
             let error = fixture
                 .descriptor
-                .verified_transport(Some(&fixture.profile))
+                .verified_transport(Some(&fixture.profile), &AcpxLaunchArtifacts::default())
                 .err()
                 .unwrap();
             assert!(error
@@ -4335,7 +4344,9 @@ mod tests {
         value["sidecarCommand"] = json!(command_link);
         value["sidecarArgs"] = json!([]);
         let descriptor: AcpxProviderDescriptor = serde_json::from_value(value).unwrap();
-        assert!(descriptor.verified_transport(Some(&profile)).is_err());
+        assert!(descriptor
+            .verified_transport(Some(&profile), &AcpxLaunchArtifacts::default())
+            .is_err());
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -4560,6 +4571,7 @@ mod tests {
                 attached.state.as_ref().unwrap().tool_set.clone(),
                 attached.state.as_ref().unwrap().identity.clone(),
                 Some(&launch_profile),
+                &AcpxLaunchArtifacts::default(),
             )
             .unwrap();
         assert_eq!(
@@ -4580,6 +4592,7 @@ mod tests {
                 attached.state.as_ref().unwrap().tool_set.clone(),
                 attached.state.as_ref().unwrap().identity.clone(),
                 Some(&launch_profile),
+                &AcpxLaunchArtifacts::default(),
             )
             .unwrap();
         crate::task_memory::TEST_TASK_CGROUP.with(|path| *path.borrow_mut() = None);
@@ -4927,6 +4940,7 @@ mod tests {
                 attached.state.as_ref().unwrap().tool_set.clone(),
                 attached.state.as_ref().unwrap().identity.clone(),
                 Some(&launch_profile),
+                &AcpxLaunchArtifacts::default(),
             )
             .unwrap();
         assert_eq!(
@@ -5203,6 +5217,7 @@ mod tests {
                 attached.state.as_ref().unwrap().tool_set.clone(),
                 attached.state.as_ref().unwrap().identity.clone(),
                 Some(&launch_profile),
+                &AcpxLaunchArtifacts::default(),
             )
             .unwrap();
         assert_eq!(
@@ -5792,6 +5807,7 @@ mod tests {
                 prior.tool_set.clone(),
                 prior.identity.clone(),
                 Some(&injected_profile),
+                &AcpxLaunchArtifacts::default(),
             )
             .is_err());
         assert_eq!(fs::read(executor.state_path()).unwrap(), before);
@@ -5822,6 +5838,7 @@ mod tests {
                 updated.tool_set.clone(),
                 updated.identity.clone(),
                 Some(profile),
+                &AcpxLaunchArtifacts::default(),
             )
             .unwrap();
         assert!(launch.candidate_admission.is_none());

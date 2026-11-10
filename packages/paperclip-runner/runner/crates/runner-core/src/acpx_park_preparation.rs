@@ -142,6 +142,7 @@ impl AcpxCommandExecutor {
             tool_set.clone(),
             Some(identity),
             self.launch_profile.as_ref(),
+            &self.launch_artifacts,
         ) else {
             return false;
         };

@@ -3,6 +3,7 @@
 pub mod acpx_candidate_admission;
 pub mod acpx_event_payload;
 pub mod acpx_event_scope;
+pub mod acpx_launch_artifacts;
 pub mod acpx_provider_backend;
 mod acpx_provider_capabilities;
 pub mod acpx_provider_checkpoint;

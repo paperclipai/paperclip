@@ -1,8 +1,10 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde_json::Value;
 
+use crate::acpx_launch_artifacts::AcpxLaunchArtifacts;
 use crate::acpx_provider_backend::{AcpxCommandExecutor, ACPX_PROVIDER_STATE_FILE};
 use crate::credential_observer::CredentialObserver;
 use crate::durable::{
@@ -141,6 +143,7 @@ pub struct NativeProviderCommandExecutor {
     selected: Option<SelectedExecutor>,
     recovery_checked: bool,
     credentials: CredentialObserver,
+    acpx_launch_artifacts: Arc<AcpxLaunchArtifacts>,
 }
 
 impl NativeProviderCommandExecutor {
@@ -153,6 +156,9 @@ impl NativeProviderCommandExecutor {
             selected: None,
             recovery_checked: false,
             credentials,
+            acpx_launch_artifacts: Arc::new(AcpxLaunchArtifacts::verify_in_background(
+                config.acpx_launch_profile.as_ref(),
+            )),
         }
     }
 
@@ -219,7 +225,11 @@ impl NativeProviderCommandExecutor {
             ))
         } else if acpx {
             Some(SelectedExecutor::Acpx(
-                AcpxCommandExecutor::with_runner_config(&self.state_dir, &self.config),
+                AcpxCommandExecutor::with_launch_artifacts(
+                    &self.state_dir,
+                    &self.config,
+                    Arc::clone(&self.acpx_launch_artifacts),
+                ),
             ))
         } else if codex {
             Some(SelectedExecutor::LocalFacade(
@@ -313,9 +323,10 @@ impl NativeProviderCommandExecutor {
             "codex" | "opencode" | "cursor_cloud" => SelectedExecutor::LocalFacade(
                 CodexCommandExecutor::with_runner_config(&self.state_dir, &self.config),
             ),
-            "acpx" => SelectedExecutor::Acpx(AcpxCommandExecutor::with_runner_config(
+            "acpx" => SelectedExecutor::Acpx(AcpxCommandExecutor::with_launch_artifacts(
                 &self.state_dir,
                 &self.config,
+                Arc::clone(&self.acpx_launch_artifacts),
             )),
             "claude_managed" | "aws_agentcore" => SelectedExecutor::Managed(
                 ManagedProviderCommandExecutor::with_runner_config(&self.state_dir, &self.config),
