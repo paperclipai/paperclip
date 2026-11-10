@@ -585,6 +585,7 @@ async function reconcilePluginWorkspaceReservation(
   });
   if (result.kind !== "prepared")
     throw conflict("Workspace reconciliation is incomplete");
+  const freshPreviousWorkspaceId = operation.kind === "prepare" ? operation.fresh?.previousWorkspaceId : null;
   const [updated] = await db.transaction(async (tx) => {
     await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
     return tx
@@ -593,7 +594,7 @@ async function reconcilePluginWorkspaceReservation(
         providerRef: result.binding.workspaceRef,
         branchName: result.branchName,
         updatedAt: new Date(),
-        ...(operation.fresh?.previousWorkspaceId ? { derivedFromExecutionWorkspaceId: operation.fresh.previousWorkspaceId } : {}),
+        ...(freshPreviousWorkspaceId ? { derivedFromExecutionWorkspaceId: freshPreviousWorkspaceId } : {}),
         metadata: {
           ...workspace.metadata,
           workspaceProvider: result.binding,
@@ -714,6 +715,7 @@ async function finishPendingRestoration(
   });
   if (result.kind !== "prepared")
     throw conflict("Workspace restoration is incomplete");
+  const freshPreviousWorkspaceId = operation.data.kind === "prepare" ? operation.data.fresh?.previousWorkspaceId : null;
   const [updated] = await db.transaction(async (tx) => {
     await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
     return tx
@@ -722,7 +724,7 @@ async function finishPendingRestoration(
         providerRef: result.binding.workspaceRef,
         branchName: result.branchName,
         updatedAt: new Date(),
-        ...(operation.fresh?.previousWorkspaceId ? { derivedFromExecutionWorkspaceId: operation.fresh.previousWorkspaceId } : {}),
+        ...(freshPreviousWorkspaceId ? { derivedFromExecutionWorkspaceId: freshPreviousWorkspaceId } : {}),
         metadata: {
           ...workspace.metadata,
           lifecycleGeneration: generation + 1,
