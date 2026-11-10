@@ -108,13 +108,14 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "storage-trigger": { type: "string" },
       "provider-fault-message": { type: "string" },
       "provider-fault-delays": { type: "string" },
+      "db-pressure": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "fault-after-seconds", "provider-fault-message", "provider-fault-delays"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -154,8 +155,8 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const options: WaveOptions = {
     env,
     adapters,
-    // The governance scenarios (G1, H1) and the saved question (Q1) are opt-in: H1 needs a wave of its own.
-    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "Q1"
+    // The governance scenarios (G1, H1), the saved question (Q1) and the contention run (L1) are opt-in: H1 needs a wave of its own.
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "Q1" && id !== "L1"
       && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
     faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault)),
@@ -251,6 +252,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
         + "for chaos tasks. Lower one of them (RESTART_CHAOS_DAYTONA_VCPU_BUDGET sets the budget).");
     }
   }
+  if (values["db-pressure"] !== undefined) options.dbPressure = integer(values["db-pressure"], "db-pressure", 0, 1, 8);
   if (storage !== "local" && storage !== "s3") throw new Error("--storage must be local or s3");
   if (storage === "s3") options.storage = "s3";
   if (values["storage-faults"] !== undefined) {

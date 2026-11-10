@@ -31,7 +31,7 @@ export function redactStorageUrl(url: string): string {
   if (query === undefined) return route;
   const kept = query.split("&").filter(part => part && !/^x-amz-/i.test(part)).map(part => {
     const [name = "", raw] = part.split("=", 2);
-    return name === "partNumber" || raw === undefined ? part : `${name}=…`;
+    return name === "partNumber" || name === "x-id" || raw === undefined ? part : `${name}=…`;
   });
   return kept.length ? `${route}?${kept.join("&")}` : route;
 }

@@ -60,6 +60,7 @@ describe("storage trigger targets", () => {
   it("keeps part numbers but hides upload ids and signatures in receipts", () => {
     expect(redactStorageUrl(`${snapshotPut}?partNumber=2&uploadId=abc&X-Amz-Signature=s`)).toBe(`${snapshotPut}?partNumber=2&uploadId=…`);
     expect(redactStorageUrl(`${snapshotPut}?uploads`)).toBe(`${snapshotPut}?uploads`);
+    expect(redactStorageUrl(`${snapshotPut}?x-id=PutObject`)).toBe(`${snapshotPut}?x-id=PutObject`);
   });
 
   it("parses --storage-trigger only with s3 storage and time triggers", () => {

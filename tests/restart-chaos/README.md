@@ -22,7 +22,7 @@ node scripts/typecheck-test-projects.mjs tests/restart-chaos        # typecheck
 ```
 
 Options: `--triggers time,comment,retry,queued,tool,result` (fault timing, below),
-`--workloads A1,B1,B5,C1`, `--budget-cents` (company hard cap,
+`--workloads A1,B1,B5,C1` (opt-in: G1, H1, L1, R1, S1), `--db-pressure <writers>` (below), `--budget-cents` (company hard cap,
 default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance),
 `--k4-hold-max-seconds` (raise the seeded K4 hold upper end from 300 s, up to the 600 s outage cap).
 `--fault-after-seconds <n>` fires every planned fault `n` seconds after its task launches (5–3600; with `--triggers time`), keeping
@@ -423,6 +423,92 @@ question must settle on its own first. The oracle checks these points:
 
 Q1 is not a default workload.
 
+## Database contention (L1, `--db-pressure`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex,claude --workloads L1 --faults K1 --concurrency 4 --tasks 4 --seed 20385 --db-pressure 4
+```
+
+Usage receipts and streamed run-log appends update the same `heartbeat_runs` row. In #20385 a
+receipt's repeatable-read snapshot went stale when a log append committed between its company check
+and its run-row lock; four retries ran out with SQLSTATE 40001, the event stayed in the runner's
+retained outbox, and every later terminal event was blocked (`native_event_replay_conflict:
+runner_event_commit_stalled ... last cause: Error`).
+
+**L1** asks the agent to run five shell commands as five tool calls, each printing 3,000 lines
+(about 300 KB), then save a `brief` naming each command's END line. Each run emits many log
+events and many usage reports. L1 is opt-in (not a default workload).
+
+**`--db-pressure <writers>`** (1–8) starts harness-owned writers against the wave's own database.
+Each one runs `update heartbeat_runs set updated_at = updated_at` on the wave company's `running`
+rows back to back. No value changes, but every statement writes a new row version, which is what a
+fast stream does to a run row. Locally the race window between a snapshot and its row lock is well
+under a millisecond, so without pressure the race almost never fires; the writers stand in for a
+hosted database whose round trip widens that window. The writers stop before the R6 sweep;
+`db_pressure_started` / `db_pressure_stopped` (with update and error counts) are in the timeline.
+
+At rest the harness reads each L1 task's runs from the wave database, and the T-oracle adds:
+
+| Check | Fails when |
+| --- | --- |
+| `no_event_commit_stall` | a run ended `native_event_replay_conflict` or `runner_event_commit_stalled` |
+| `usage_receipts_committed_once` | one producer event was journaled twice for a receipt source |
+| `terminal_receipts_committed` | a succeeded native run has no terminal (`turn.*`) receipt: its terminal event never left the outbox |
+| `finished_runs_accounted` | a finished native run has no `cost_accounted_at` |
+| `run_spend_matches_cost_events` | a run's recorded cost differs from its cost events (0.5% or 0.01 cent) |
+| `company_spend_settled` | the board's cost summary differs from the cost-event sum, or runs still wait for accounting |
+| `contention_produced` | the task produced fewer than 40 log events or 6 receipts (it did not test anything) |
+
+`contention-db.test.ts` checks the knob itself on real PostgreSQL: with four writers, the
+pre-#20385 repeatable-read receipt write exhausted its four retries with 40001 in 8 of 8 attempts
+locally, and the current READ COMMITTED writer (`persistUsageReceipt`) committed all 8. A live L1
+wave needs the runner stall (20 failed deliveries over at least 45 s) to show
+`native_event_replay_conflict`; run it against the parent of the #20385 merge (red) and against
+master (green) with the command above.
+
+## Universal checks (U1–U4)
+
+Every task of every wave is also graded on four scenario-independent rules (`universal.ts`), whatever
+its workload. They catch a stuck or misleading task that no scenario anticipated.
+
+| Rule | Fails when | Bound (env override) |
+| --- | --- | --- |
+| U1 liveness | a non-terminal task has neither a live owner (a running run with recent evidence, a run queued within the queue bound, a retry timer, a system recovery action) nor a visible, actionable item (Retry, a question or `userAction`, a failed notice, a board recovery action, an execution blocker, `blocked` or `in_review`) for longer than the bound, counting only time with the server ready | 3 min ownerless (`RESTART_CHAOS_U1_ORPHAN_SECONDS`); a run counts as an owner for 5 min of queueing (`RESTART_CHAOS_U1_QUEUED_SECONDS`) |
+| U2 retry loop | more than N consecutive failed runs with the same status and code while the issue status stays the same | 3 (`RESTART_CHAOS_U2_SAME_FAILURE_RUNS`) |
+| U3 diagnosable | a failed run has no code or a generic one (`adapter_failed`, `unknown`, `error`, ...), its stored error is empty or names only a bare cause (`last cause: Error`), or a recovery action's cause or next action is empty or bare | none |
+| U4 stale notice | a Retry or failed notice stays on a task after its latest run succeeded, longer than the bound or at rest | 60 s (`RESTART_CHAOS_U4_STALE_SECONDS`) |
+
+U1, U2 and U4 fail the task (signature `U<n>:...`). U3 is a warning: it is reported in each grade
+(`grade.universal`), the ledger (`universal`, `universalWarnings`) and the wave's `SUMMARY.md`, and
+never fails a task. U3 reads run error text and recovery-action causes from the wave database at
+wave end, because the board's run list hides most error text.
+
+The rules and bounds come from an audit of the saved evidence of 74 waves (1,592 tasks, 1,465 of
+them passing R1–R6 and T; 28 waves where every task passed), run with:
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/universal-audit.ts <results dir> [...]
+```
+
+| Rule | Flagged tasks | On passing tasks | On all-pass waves |
+| --- | --- | --- | --- |
+| U1 | 7 | 0 | 0 |
+| U2 | 1 | 0 | 0 |
+| U3 | 22 | 3 | 0 |
+| U4 | 0 | 0 | 0 |
+
+On passing tasks the longest ownerless stretch was 19 s and the longest queue wait 136 s (p99 40 s),
+and no failure repeated more than twice; the bounds leave about 9×, 2× and one more repeat of
+headroom. U1 flags a C1 task that sat 181 s in `todo` with a resolved interruption (it also failed
+R5), and six R1 tasks in three waves whose run stayed `queued` for 8 minutes while the issue still
+showed a retry row: the #20361 shape, which those waves graded only as a late R1. A retry row counts
+as a live timer only until its run is dispatched. U2 flags a claude task that failed four times in a
+row with `adapter_failed`. Every U3
+flag is `adapter_failed`, including three tasks that passed after a retry, which is why U3 stays a
+warning until `adapter_failed` names its cause. The audit saw only failure codes; the error-text
+part of U3 is checked only in waves run with this harness.
+
 ## Fault timing (`--triggers`)
 
 Each task samples one trigger with its cell. `time` (default) fires at the
@@ -453,8 +539,10 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `seed.ts` | Chaos Lab company, encrypted provider secrets, native Codex / ACPX Claude / OpenCode agents from the runner-e2e catalog, and the `chaos-sandbox` project (git repo: python CLI, one failing test, `bench.sh` ≈ 4 min) with isolated git-worktree workspaces. It first turns on the instance `enableIsolatedWorkspaces` setting; without it the server ignores the project policy and every repo task shares the primary checkout. |
 | `scheduler.ts` | Seeded plan: workload × adapter × fault cells and a random fire time per task. Saved to `results/<wave>/plan.json`. `--replay` reruns one task alone with the same choices and fires the recorded sequence of faults that crossed it (other tasks' faults included) at the same offsets from launch. |
 | `observer.ts` | Polls each issue and its runs. When a task rests needing Retry it calls `POST /api/issues/:id/retry` once (once more only if a later fault started after that click), with the body `useTaskRetry.ts` sends. Collects T-oracle artifacts and the R6 sweep. |
-| `grader.ts` | Pure R1–R6 grading over the samples. |
 | `config-faults.ts`, `config-wave.ts` | Config faults: the reference catalog, seeded plan and oracle (pure), and the wave runner that breaks, restarts, repairs and grades. |
+| `grader.ts` | Pure R1–R6 grading over the samples, plus the universal checks. |
+| `universal.ts`, `universal-audit.ts` | U1–U4 on every task, and their audit over saved waves. |
+| `contention.ts` | L1 workload, its accounting oracle and the `--db-pressure` writers. |
 | `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, M1 delegation, G1 approval across a restart, H1 budget hard stop across a restart, with their T-oracles. |
 | `evidence.ts`, `ledger.ts` | Evidence bundle for each failure and the JSONL ledger plus `SUMMARY.md`. |
 | `daytona-image.ts` | Docker-free extraction of the image's runnerd and provider pack, cached per digest, and the controller/image content-ID check. |
