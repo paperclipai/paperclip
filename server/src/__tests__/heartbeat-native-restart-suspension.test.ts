@@ -35,6 +35,7 @@ import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordin
 import { reconcileNativeFinalizations, registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
 import { currentProcessProbe, proveOwnerGone } from "../services/owner-proof.js";
+import { createRunLogWriterAuthority } from "../services/heartbeat/run-log-authority.js";
 
 
 describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shutdown", () => {
@@ -236,6 +237,47 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     expect(drained).toMatchObject({ restartSuspendedRunIds: [f.runId] });
     const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect({ status: run.status, errorCode: run.errorCode, finishedAt: run.finishedAt }).toEqual({
+      status: "running", errorCode: null, finishedAt: null });
+    expect(owner).toMatchObject({ phase: "observed", resultId: null, recoveryState: "awaiting_runner_reattach" });
+
+    await f.db.update(nativeRunFinalizations).set({ controllerPid: 2_000_000_001 })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    const resumed = vi.fn(() => { throw new Error("next boot reached provider dispatch"); });
+    const next = heartbeatService(f.db, { nativeSessionBackendFactory: resumed });
+    try {
+      const { claims } = await next.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
+      expect(claims).toEqual([expect.objectContaining({ runId: f.runId })]);
+    } finally { await next.drainActiveRunExecutions(); }
+    expect(resumed).toHaveBeenCalledOnce();
+  }, 90_000);
+
+  it.each([true, false])("leaves a preparing recovery that lost run-log writer authority to the next controller only after a drain (drained %s)", async (drainFirst) => {
+    const f = await seedRecoverableRun(`PREPARING-AUTHORITY-${drainFirst}`);
+    const dying = vi.fn(() => { throw new Error("A preparing recovery must not open a provider session"); });
+    let drained: unknown;
+    const heartbeat = heartbeatService(f.db, {
+      nativeSessionBackendFactory: dying,
+      beforeNativeRuntimeSelection: async () => {
+        if (drainFirst) drained = await heartbeat.drainRunningRunsForShutdown("SIGTERM", new Date(), [f.runId]);
+        else await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) })
+          .where(eq(nativeRunFinalizations.runId, f.runId));
+        const [admitted] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+        await createRunLogWriterAuthority(f.db, admitted)();
+      },
+    });
+    try {
+      const { claims } = await heartbeat.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
+      expect(claims).toEqual([expect.objectContaining({ runId: f.runId })]);
+    } finally { await heartbeat.drainActiveRunExecutions(); }
+    expect(dying).not.toHaveBeenCalled();
+    const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (!drainFirst) {
+      expect(run).toMatchObject({ status: "failed", errorCode: "adapter_failed" });
+      return;
+    }
+    expect(drained).toMatchObject({ restartSuspendedRunIds: [f.runId] });
     expect({ status: run.status, errorCode: run.errorCode, finishedAt: run.finishedAt }).toEqual({
       status: "running", errorCode: null, finishedAt: null });
     expect(owner).toMatchObject({ phase: "observed", resultId: null, recoveryState: "awaiting_runner_reattach" });

@@ -387,6 +387,7 @@ import {
   prepareIdleWarmNativeSessionsForSleep,
   NativeCancellationPendingRecoveryError,
   NativeControllerDetachedForRestartError,
+  watchNativeRestartDetach,
   prepareNativeWorkspaceSync,
   type NativeRestartRecoveryClaim,
   resolveHeartbeatNativeRuntimeMode,
@@ -2023,6 +2024,7 @@ export function heartbeatService(
     let githubLauncherLocation:
       Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
     let nativeSessionResumeScheduled = false;
+    const detachedForRestart = watchNativeRestartDetach(run.id);
     let nativeOwnershipHeld = false;
     let nativeStartupCleanupScheduled = false;
     let nativeStartupCleanupError: NativeStartupCleanupPendingError | undefined;
@@ -3793,6 +3795,12 @@ export function heartbeatService(
           }
           return;
         }
+        if (detachedForRestart() && !legacyAdapterEntered && !nativeDispatchStarted) {
+          logger.info({ runId: run.id, err: err instanceof Error ? err.message : String(err) },
+            "preparation stopped after a restart handed the run to the next controller");
+          nativeSessionResumeScheduled = true;
+          return;
+        }
         if (!(await preserveNativeWorkspaceOnFailure())) return;
         await runCompletion.failRun({
           run, agent, issueId, issueRef, signal: executionControl.controller.signal,
@@ -3850,6 +3858,10 @@ export function heartbeatService(
             );
           },
         );
+      } else if (detachedForRestart() && !legacyAdapterEntered && !nativeDispatchStarted) {
+        logger.info({ runId: run.id, err: outerErr instanceof Error ? outerErr.message : String(outerErr) },
+          "preparation stopped after a restart handed the run to the next controller");
+        nativeSessionResumeScheduled = true;
       } else {
         await preserveNativeWorkspaceOnFailure();
         if (!nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError) {
