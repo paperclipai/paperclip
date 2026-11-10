@@ -585,6 +585,8 @@ export const toolsApi = {
     api.patch<ToolMcpGatewayWithTokens>(`/tool-gateway/gateways/${gatewayId}`, { ...input, companyId }),
   createGatewayToken: (companyId: string, gatewayId: string, input: CreateGatewayTokenInput) =>
     api.post<ToolMcpGatewayTokenCreated>(`/tool-gateway/gateways/${gatewayId}/tokens`, { ...input, companyId }),
+  revealGatewayToken: (companyId: string, tokenId: string) =>
+    api.post<ToolMcpGatewayTokenCreated>(`/tool-gateway/gateway-tokens/${tokenId}/reveal`, { companyId }),
   revokeGatewayToken: (companyId: string, tokenId: string) =>
     api.post<ToolMcpGatewayToken>(`/tool-gateway/gateway-tokens/${tokenId}/revoke`, { companyId }),
 
