@@ -260,3 +260,54 @@ describe("wave speed grade", () => {
       .toEqual([{ kind: "K2", readyAt: 2_000, startedAt: 1_000, runIds: ["live", "during"] }]);
   });
 });
+
+// Receipts from wave w-20261110T115048-s302 (faults.json), trimmed to what the speed grade reads.
+const msReceipt = (kind: "MS1" | "MS2" | "MS3", times: { startedAt: number; readyAt: number; healthyAt?: number },
+  multi: Partial<NonNullable<FaultReceipt["multiServer"]>>): FaultReceipt => ({
+  faultId: "f", kind, requestedBy: "t", signal: "none", holdMs: 0, requestedAt: times.startedAt, startedAt: times.startedAt,
+  stoppedAt: null, restartedAt: null, healthyAt: times.healthyAt ?? null, readyAt: times.readyAt, phases: [],
+  serverLogOffsetAtStart: 0, serverLogOffsetAtReady: null, error: null,
+  multiServer: { kind, secondary: null, steps: [], ...multi },
+});
+const S302_MS2 = msReceipt("MS2", { startedAt: 1794311530823, readyAt: 1794311678390, healthyAt: 1794311647900 },
+  { primaryFreeze: { kind: "TM2", frozenAt: 1794311537833, thawedAt: 1794311647835 } });
+const S302_MS3 = msReceipt("MS3", { startedAt: 1794311934901, readyAt: 1794311992580 },
+  { primaryRestart: { stoppedAt: 1794311943796, restartedAt: 1794311943796, readyAt: 1794311949160, replacementPid: 80430 } });
+const MS1 = msReceipt("MS1", { startedAt: 1_000, readyAt: 120_000 }, {});
+
+describe("two-server faults in the speed grade", () => {
+  const live = [{ id: "r", createdAt: 0, finishedAt: null }];
+
+  it("takes no restart-recovery sample from MS1 or MS2: the primary never restarted", () => {
+    expect(faultRuns([MS1, S302_MS2], live)).toEqual([]);
+    // An MS2 primary that exited after the thaw and was replaced did restart: its replacement's health anchors it.
+    const replaced = { ...S302_MS2, multiServer: { ...S302_MS2.multiServer!, primaryFreeze: { kind: "TM2" as const,
+      frozenAt: 1794311537833, thawedAt: 1794311647835, serverExitedAfterThaw: { code: 1, signal: null } } } };
+    expect(faultRuns([replaced], live)).toEqual([{ kind: "MS2", readyAt: 1794311647900, startedAt: 1794311530823, runIds: ["r"] }]);
+  });
+
+  it("anchors an MS3 sample when the primary's replacement is ready, not when the second server stops", () => {
+    expect(faultRuns([S302_MS3], live)).toEqual([{ kind: "MS3", readyAt: 1794311949160, startedAt: 1794311934901, runIds: ["r"] }]);
+  });
+
+  it("removes only the time the primary could not serve", () => {
+    expect(outageWindows([MS1, S302_MS2, S302_MS3])).toEqual([
+      { startedAt: 1794311537833, readyAt: 1794311647835 },
+      { startedAt: 1794311934901, readyAt: 1794311949160 },
+    ]);
+  });
+
+  it("grades s302's MS3 shape as a fast recovery, and MS2 not at all", () => {
+    // The run resumes 1.5 s after the replacement is ready; its next provider event after the second server
+    // stopped (s302: about 11 s later, while bench.sh ran quietly) is not a recovery.
+    const resumedAt = 1794311949160 + 1_500;
+    const recovered: BaselineRun = { runId: "r", adapter: "codex", environment: "local", phase: "cold", events: [
+      { eventType: "session.resumed", createdAt: new Date(resumedAt).toISOString() },
+      { eventType: "tool.execution.progressed", createdAt: new Date(1794311992580 + 11_000).toISOString() }] };
+    const faults = [S302_MS2, S302_MS3];
+    const speed = gradeWaveSpeed("local", [recovered], faultRuns(faults, live), 0, [],
+      { adjusted: 0, removedMs: 0, windows: outageWindows(faults) });
+    expect(speed.rows.find(row => row.metric === "restart_recovery_control_plane")).toMatchObject({ measured: { n: 1, p50: 1_500 }, breaches: [] });
+    expect(speed).toMatchObject({ singleRunBreaches: 0, breaches: 0 });
+  });
+});

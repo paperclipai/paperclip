@@ -70,16 +70,49 @@ export function breachesOf(measured: Distribution, budget: SpeedBudget | null): 
   return out;
 }
 
+/**
+ * When the primary server served again after a restart, the anchor of a restart-recovery sample; null when
+ * the fault did not restart it. A two-server fault's own `readyAt` comes after the second server stopped
+ * (multi-server.ts), which is not a restart of the primary:
+ *   MS1  leaves the primary serving: no restart.
+ *   MS2  freezes and thaws it: no restart, unless it exited after the thaw and was replaced (its `healthyAt`).
+ *   MS3  restarts it (K2): its replacement's `readyAt`, before the second server's tail.
+ */
+export function primaryRestartReadyAt(fault: FaultReceipt): number | null {
+  const multi = fault.multiServer;
+  if (!multi) return fault.readyAt;
+  if (multi.kind === "MS3") return multi.primaryRestart?.readyAt ?? null;
+  if (multi.kind === "MS2" && multi.primaryFreeze?.serverExitedAfterThaw) return fault.healthyAt;
+  return null;
+}
+
 export function faultRuns(faults: readonly FaultReceipt[], runs: ReadonlyArray<{ id: string; createdAt: number; finishedAt: number | null }>): BaselineFault[] {
-  return faults.filter(fault => fault.readyAt !== null).map(fault => ({ kind: fault.kind, readyAt: fault.readyAt!, startedAt: fault.startedAt,
-    runIds: runs.filter(run => run.createdAt <= fault.readyAt! && (run.finishedAt === null || run.finishedAt >= fault.startedAt))
-      .map(run => run.id) }));
+  return faults.flatMap(fault => {
+    const readyAt = primaryRestartReadyAt(fault);
+    return readyAt === null ? [] : [{ kind: fault.kind, readyAt, startedAt: fault.startedAt,
+      runIds: runs.filter(run => run.createdAt <= readyAt && (run.finishedAt === null || run.finishedAt >= fault.startedAt))
+        .map(run => run.id) }];
+  });
 }
 
 export interface OutageWindow { startedAt: number; readyAt: number }
 
+/**
+ * Time the primary could not serve, removed from run timings. MS1 has none. MS2's is the freeze (to the
+ * replacement's health when it exited after the thaw). MS3's ends when the replacement is ready.
+ */
 export function outageWindows(faults: readonly FaultReceipt[]): OutageWindow[] {
-  return faults.filter(fault => fault.readyAt !== null).map(fault => ({ startedAt: fault.startedAt, readyAt: fault.readyAt! }));
+  return faults.flatMap((fault): OutageWindow[] => {
+    const multi = fault.multiServer;
+    if (!multi) return fault.readyAt === null ? [] : [{ startedAt: fault.startedAt, readyAt: fault.readyAt }];
+    if (multi.kind === "MS2") {
+      const freeze = multi.primaryFreeze;
+      const end = freeze?.serverExitedAfterThaw ? fault.healthyAt : freeze?.thawedAt ?? null;
+      return freeze?.frozenAt !== undefined && end !== null && end > freeze.frozenAt ? [{ startedAt: freeze.frozenAt, readyAt: end }] : [];
+    }
+    const ready = primaryRestartReadyAt(fault);
+    return ready === null ? [] : [{ startedAt: fault.startedAt, readyAt: ready }];
+  });
 }
 
 export function storageFaultWindows(receipts: readonly StorageFaultReceipt[], now: number): OutageWindow[] {
