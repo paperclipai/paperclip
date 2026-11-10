@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, desc, eq, gte, inArray, ne, or, sql } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
-import { readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
+import { aiProviderDefaults, heartbeatRuns, type Db } from "@paperclipai/db";
+import { readProviderFailure, type AiProvider, type ProviderFailure } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { infrastructureRetryDelayMs, PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
 import { parseProviderQuotaClockReset } from "../provider-quota-reset.js";
@@ -37,6 +37,30 @@ export type AgentProviderLimitCooldown = {
   sourceRunId: string | null;
 };
 
+type EvidenceGrant = { recordedGrantId: string | null; responsibleUserId: string | null };
+
+function evidenceGrantMatcher(db: Db, companyId: string, binding: unknown) {
+  const config = binding && typeof binding === "object" ? binding as Record<string, unknown> : null;
+  const defaults = new Map<string, Promise<string | null>>();
+  const userDefault = (userId: string, provider: AiProvider) => {
+    if (!defaults.has(userId)) {
+      defaults.set(userId, db.select({ grantId: aiProviderDefaults.grantId }).from(aiProviderDefaults)
+        .where(and(eq(aiProviderDefaults.companyId, companyId), eq(aiProviderDefaults.userId, userId), eq(aiProviderDefaults.provider, provider)))
+        .limit(1).then(rows => rows[0]?.grantId ?? null));
+    }
+    return defaults.get(userId)!;
+  };
+  return async ({ recordedGrantId, responsibleUserId }: EvidenceGrant): Promise<boolean> => {
+    if (!config || !recordedGrantId) return true;
+    if (config.mode === "responsible_user") {
+      if (!responsibleUserId || typeof config.provider !== "string") return true;
+      const current = await userDefault(responsibleUserId, config.provider as AiProvider);
+      return current === null || current === recordedGrantId;
+    }
+    return typeof config.grantId !== "string" || config.grantId === recordedGrantId;
+  };
+}
+
 /**
  * The latest known provider limit for this agent, from the current failure or
  * from the agent's recent runs. A later successful run clears older evidence.
@@ -47,9 +71,11 @@ export async function agentProviderLimitCooldown(db: Db, input: {
   /** Excluded from the evidence; the caller supplies its own failure. */
   runId?: string;
   failure?: ProviderFailure | null;
+  binding?: unknown;
   now: Date;
 }): Promise<AgentProviderLimitCooldown | null> {
   const now = input.now.getTime();
+  const usesRecordedGrant = evidenceGrantMatcher(db, input.companyId, input.binding);
   let latest = limitEvidence(input.failure ?? null, input.now, input.runId ?? null);
   const rows = await db
     .select({
@@ -59,6 +85,8 @@ export async function agentProviderLimitCooldown(db: Db, input: {
       observedAt: sql<Date>`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt})`.mapWith(heartbeatRuns.updatedAt),
       providerFailure: sql<unknown>`${heartbeatRuns.resultJson} -> 'providerFailure'`,
       retryNotBefore: sql<string | null>`${heartbeatRuns.resultJson} ->> 'retryNotBefore'`,
+      recordedGrantId: sql<string | null>`${heartbeatRuns.contextSnapshot} #>> '{aiConnection,grantId}'`,
+      responsibleUserId: heartbeatRuns.responsibleUserId,
     })
     .from(heartbeatRuns)
     .where(and(
@@ -77,6 +105,7 @@ export async function agentProviderLimitCooldown(db: Db, input: {
   for (const row of rows) {
     // The provider accepted work after this point, so its allowance was restored.
     if (row.status === "succeeded") break;
+    if (!(await usesRecordedGrant(row))) continue;
     let recorded = limitEvidence(readProviderFailure(row.providerFailure), row.observedAt, row.id);
     if (recorded === null && PROVIDER_LIMIT_ERROR_CODES.includes(row.errorCode ?? "")) {
       const reset = row.retryNotBefore ? Date.parse(row.retryNotBefore) : Number.NaN;

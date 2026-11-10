@@ -2876,7 +2876,9 @@ The retry is a resource wait: it does not consume the failure retry budget, and
 a wake that is still limited at its retry waits again until the evidence
 expires within a day. Manual runs, recovering runs, conversation turns and
 pool-routed connections are not held, so an operator can test a repaired
-account at once. ACP harnesses report an exhausted allowance as a generic
+account at once. Evidence is scoped to the account that reported it: a limit
+recorded on one grant does not hold the agent after it moves to another
+connection, or after its responsible user picks a different default. ACP harnesses report an exhausted allowance as a generic
 terminal limit failure; Runner adds the provider's typed session-failure title,
 and only a rate-limit or quota title becomes `rate_limit` or `quota_exhausted`.
 Context, turn and configured budget limits stay ordinary terminal failures. A
