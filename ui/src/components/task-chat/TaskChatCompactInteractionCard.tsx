@@ -306,7 +306,13 @@ function CompactTarget({
   if (!target || !label) return null;
   const href = target.type === "issue_attachment"
     ? `/api/attachments/${encodeURIComponent(target.attachmentId)}/content`
-    : target.href ? normalizeRequestConfirmationTargetHref(target.href) : null;
+    : target.href ? normalizeRequestConfirmationTargetHref(target.href)
+      // A document on this chat opens in its document panel, like a reply's
+      // `#document-<key>` link, so the person can read what they are asked to review.
+      // Plan reviews keep their header chip; their plan preview opens the plan.
+      : target.type === "issue_document" && target.key !== "plan" && (target.issueId ?? interaction.issueId) === interaction.issueId
+        ? `#document-${encodeURIComponent(target.key)}`
+        : null;
   if (href) {
     return (
       <a

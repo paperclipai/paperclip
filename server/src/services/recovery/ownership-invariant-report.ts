@@ -585,7 +585,7 @@ async function checkVisibleNextAction(db: Db, now: Date, limit: number): Promise
     const page = await db.select({ id: issues.id, companyId: issues.companyId, executionRunId: issues.executionRunId,
     updatedAt: issues.updatedAt })
     .from(issues).where(and(eq(issues.status, "in_progress"), isNotNull(issues.assigneeAgentId),
-      // A saved monitor deadline is a first-class wait path (SPEC-implementation).
+      // A saved monitor deadline is a first-class wait path (doc/execution-semantics.md §8).
       or(isNull(issues.monitorNextCheckAt), lt(issues.monitorNextCheckAt, now)),
       notExists(db.select({ one: sql`1` }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, issues.companyId), inArray(heartbeatRuns.status, ACTIVE_RUN_STATUSES),

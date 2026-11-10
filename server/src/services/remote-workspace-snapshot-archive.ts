@@ -1,6 +1,14 @@
 import { Worker } from "node:worker_threads";
 
 /**
+ * Bump when the capture policy starts accepting workspaces that an earlier
+ * release refused. Saves that recovery exhausted under an older version are
+ * retried once under the new one (workspace-recovery-capture-policy).
+ * 2: absolute or escaping symlinks are dropped and recorded instead of refusing the save.
+ */
+export const REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION = 2;
+
+/**
  * A portable, streaming workspace archive. This function is intentionally
  * self-contained: the same implementation runs locally and in a sandbox.
  */
@@ -460,8 +468,12 @@ export async function workspaceArchive(input: {
           entries.push({ path: next, type: "directory", mode: stat.mode & 0o777 });
           await visit(next, inRepository);
         } else if (stat.isSymbolicLink()) {
+          // Links are recorded, never followed. A link that resolves inside the
+          // workspace is kept. One that is absolute or leaves the workspace (a
+          // browser profile's socket in /tmp, a sandbox cache, a `..` escape)
+          // has no portable meaning: record its path as excluded and keep saving.
           const link = await fs.readlink(source);
-          if (!safeLink(next, link)) fail("unsafe_symlink");
+          if (!safeLink(next, link)) { excludedPaths.add(next); continue; }
           entries.push({ path: next, type: "symlink", target: link });
         } else if (stat.isFile()) {
           const entry: Entry = { path: next, type: "file" };
