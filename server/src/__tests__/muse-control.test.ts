@@ -1325,7 +1325,7 @@ describe("personal Muse control plane",()=>{
         shared:{getSecret:noShared,putSecret:noShared,createSecretIfAbsent:noShared,deleteSecret:noShared}});
       const runtime=runtimeModule.createRuntimeIdentitySignerFromEnv({CLOUD_HARNESS_RUNTIME_IDENTITY_SIGNING_JWK:JSON.stringify({...control.privateKey.export({format:"jwk"}),kid,alg:"EdDSA",use:"sig"}),CLOUD_HARNESS_RUNTIME_IDENTITY_JWKS:jwks},{required:true});
       const readiness=readinessModule.createHttpWakeReadinessProbe({fetch:mapped});
-      cloud=serviceModule.createCloudHarnessService({registry,provider,baseDomain:"paperclip.app",customerAppOrigin:cloudOrigin,
+      cloud=serviceModule.createCloudHarnessService({registry,provider,baseDomain:"example",customerAppOrigin:cloudOrigin,
         runtimeIdentity:runtime,incomingMcpWakeEnabled:true,entryReadinessProbe:readiness,wakeReadinessProbe:readiness,
         tenantSessionSigningKey:"muse-paired-tenant-".repeat(3),customerSessionSigningKey:"muse-paired-customer-".repeat(3),appVersion:"paired",schemaVersion:"fixture",
         assistantMcp:{store:registry.assistantMcpStore(),encryptionKey:Buffer.alloc(32,9)},connector:{environment:"test",providers:providersModule.providerRegistryFromEnvironment({}),
