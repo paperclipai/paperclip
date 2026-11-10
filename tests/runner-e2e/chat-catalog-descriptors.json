@@ -1836,6 +1836,7 @@
     "scenarioId": "cli-operations.choose-cli-context",
     "sourceFiles": [
       "chat-catalog-domains/privileged-support.ts",
+      "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-cli.ts",
       "chat-scenarios/cli-operations.yaml",
       "chat-catalog-domains/privileged-cli-support.ts",
@@ -1858,6 +1859,7 @@
     "scenarioId": "cli-operations.create-from-cli",
     "sourceFiles": [
       "chat-catalog-domains/privileged-support.ts",
+      "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-cli.ts",
       "chat-scenarios/cli-operations.yaml",
       "chat-catalog-domains/privileged-cli-support.ts",
@@ -1883,6 +1885,7 @@
     "scenarioId": "cli-operations.export-document-cli",
     "sourceFiles": [
       "chat-catalog-domains/privileged-support.ts",
+      "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-document-cli.ts",
       "chat-scenarios/cli-operations.yaml",
       "chat-catalog-domains/privileged-cli-support.ts",
@@ -1901,6 +1904,7 @@
     "scenarioId": "cli-operations.feedback-bundle",
     "sourceFiles": [
       "chat-catalog-domains/privileged-support.ts",
+      "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-feedback.ts",
       "chat-scenarios/cli-operations.yaml",
       "chat-catalog-domains/privileged-cli-support.ts",
@@ -1931,6 +1935,7 @@
     "scenarioId": "cli-operations.inspect-run-cli",
     "sourceFiles": [
       "chat-catalog-domains/privileged-support.ts",
+      "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-run-cli.ts",
       "chat-scenarios/cli-operations.yaml",
       "chat-catalog-domains/privileged-cli-support.ts",
@@ -1958,6 +1963,7 @@
     "scenarioId": "cli-operations.owned-dev-instance",
     "sourceFiles": [
       "chat-catalog-domains/privileged-support.ts",
+      "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-owned-dev.ts",
       "chat-scenarios/cli-operations.yaml",
       "../../cli/src/index.ts",
@@ -2671,6 +2677,7 @@
     "scenarioId": "developer-labs.component-reference",
     "sourceFiles": [
       "chat-catalog-domains/privileged-support.ts",
+      "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-developer-labs.ts",
       "chat-scenarios/developer-labs.yaml",
       "../../ui/src/App.tsx",
@@ -2690,6 +2697,7 @@
     "scenarioId": "developer-labs.gated-lab",
     "sourceFiles": [
       "chat-catalog-domains/privileged-support.ts",
+      "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-gated-lab.ts",
       "chat-scenarios/developer-labs.yaml",
       "chat-catalog-domains/privileged-production-ui.ts",
@@ -2717,6 +2725,7 @@
     "scenarioId": "developer-labs.interaction-fixture",
     "sourceFiles": [
       "chat-catalog-domains/privileged-support.ts",
+      "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-developer-labs.ts",
       "chat-scenarios/developer-labs.yaml",
       "../../ui/src/App.tsx",
@@ -2736,6 +2745,7 @@
     "scenarioId": "developer-labs.long-thread-performance",
     "sourceFiles": [
       "chat-catalog-domains/privileged-support.ts",
+      "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-performance.ts",
       "chat-scenarios/developer-labs.yaml",
       "../../ui/src/pages/IssueChatLongThreadPerf.tsx",
@@ -3223,9 +3233,10 @@
       "chat-catalog-domains/internal-definition.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-catalog-domains/internal-goals.ts",
-      "chat-scenarios/goals.yaml"
+      "chat-scenarios/goals.yaml",
+      "chat-catalog-domains/turn-response-card.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.internal.goals-align.v2",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
@@ -3437,6 +3448,7 @@
     "scenarioId": "instance-operations.backup-and-restore",
     "sourceFiles": [
       "chat-catalog-domains/privileged-support.ts",
+      "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-backup.ts",
       "chat-scenarios/instance-operations.yaml",
       "chat-catalog-domains/privileged-docker-database.ts",
@@ -3458,6 +3470,7 @@
     "scenarioId": "instance-operations.diagnose-health",
     "sourceFiles": [
       "chat-catalog-domains/privileged-support.ts",
+      "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-diagnose-health.ts",
       "chat-scenarios/instance-operations.yaml",
       "chat-catalog-domains/privileged-database-fault.ts",
@@ -3479,6 +3492,7 @@
     "scenarioId": "instance-operations.instance-settings",
     "sourceFiles": [
       "chat-catalog-domains/privileged-support.ts",
+      "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-configuration.ts",
       "chat-scenarios/instance-operations.yaml",
       "../../ui/src/pages/InstanceExperimentalSettings.tsx",
@@ -3501,6 +3515,7 @@
     "scenarioId": "instance-operations.provision-runtime",
     "sourceFiles": [
       "chat-catalog-domains/privileged-support.ts",
+      "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-provision.ts",
       "chat-scenarios/instance-operations.yaml",
       "chat-catalog-domains/privileged-installed.ts",
@@ -3521,6 +3536,7 @@
     "scenarioId": "instance-operations.restart-service",
     "sourceFiles": [
       "chat-catalog-domains/privileged-support.ts",
+      "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-instance.ts",
       "chat-scenarios/instance-operations.yaml"
     ],
@@ -3538,6 +3554,7 @@
     "scenarioId": "instance-operations.update-instance",
     "sourceFiles": [
       "chat-catalog-domains/privileged-support.ts",
+      "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-update.ts",
       "chat-scenarios/instance-operations.yaml",
       "chat-catalog-domains/privileged-installed.ts",
@@ -4266,9 +4283,10 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/questions-and-approvals.yaml",
-      "../../server/src/services/chat-completion-delivery.ts"
+      "../../server/src/services/chat-completion-delivery.ts",
+      "chat-catalog-domains/turn-response-card.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.plan-review.v5",
+    "oracleVersion": "paperclip.chat-catalog.plan-review.v6",
     "expectedRunCount": 3,
     "minimumRunCount": 1,
     "turnTimeoutMs": 120000,
@@ -4288,9 +4306,10 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/questions-and-approvals.yaml",
-      "../../server/src/services/chat-completion-delivery.ts"
+      "../../server/src/services/chat-completion-delivery.ts",
+      "chat-catalog-domains/turn-response-card.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.plan-review.v5",
+    "oracleVersion": "paperclip.chat-catalog.plan-review.v6",
     "expectedRunCount": 3,
     "minimumRunCount": 2,
     "turnTimeoutMs": 120000,
