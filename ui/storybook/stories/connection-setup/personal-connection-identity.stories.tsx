@@ -108,7 +108,9 @@ function IdentitiesHarness({
   error = false,
   audienceGrantId = null,
   audienceError = null,
+  dedicatedAgent = null,
 }: {
+  dedicatedAgent?: { id: string; name: string } | null;
   credentialPolicy?: ToolConnectionCredentialPolicy;
   grants: ConnectionGrant[];
   capabilities?: ToolConnectionCapabilities;
@@ -132,7 +134,7 @@ function IdentitiesHarness({
         credentialPolicy={credentialPolicy}
         ownerUserId={CURRENT_USER}
         connectedUser={{ label: "Carol", image: null }}
-        dedicatedAgent={null}
+        dedicatedAgent={dedicatedAgent}
         grantsQuery={loading || error ? undefined : response}
         loading={loading}
         error={error}
@@ -305,6 +307,33 @@ export const AudienceEditorServerDenial: Story = {
       ]}
       audienceGrantId="grant-org"
       audienceError="Every audience member must be an active company member."
+    />
+  ),
+};
+
+// --- GitHub dedicated agent identity ----------------------------------------
+
+export const DedicatedGitHubPersonalAccessToken: Story = {
+  name: "GitHub · dedicated agent identity from a personal access token",
+  render: () => (
+    <IdentitiesHarness
+      credentialPolicy="per_agent"
+      dedicatedAgent={{ id: "a-outreach", name: "Outreach Agent" }}
+      grants={[
+        grant({
+          id: "grant-agent",
+          kind: "agent",
+          subjectAgentId: "a-outreach",
+          isDefault: false,
+          providerTenant: {
+            githubAccount: {
+              userId: "4242",
+              login: "outreach-bot",
+              verifiedAt: "2026-10-14T12:00:00.000Z",
+            },
+          },
+        }),
+      ]}
     />
   ),
 };
