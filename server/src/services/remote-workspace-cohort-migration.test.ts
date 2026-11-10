@@ -139,7 +139,7 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
       expect(await git(targetDir, "log", "-1", "--format=%s")).toBe("Original history");
     }
   }, 60_000);
-  it("shares the merged child verifier across parallel aliases under the complete cohort fence", async () => {
+  it.each(["unchanged", "changed"] as const)("shares the merged child verifier across parallel aliases under the complete cohort fence (%s child bytes)", async mode => {
     const f = await fixture(), parent = f.leaves[0], cwd = path.join(parent.cwd!, ".paperclip", "worktrees", "nested");
     await git(f.root, "worktree", "add", "-qb", "nested", cwd);
     const [childIssue, aliasIssue] = await db.insert(issues).values([
@@ -172,10 +172,24 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
       return get(...args);
     });
     const capture = vi.spyOn(workspaceArchive, "captureRemoteWorkspaceDirectory");
-    await expect(run(f, { workspaceIds: [parent.id, alias.id] })).resolves.toMatchObject({ applied: true });
+    const beforeActivity = await db.select().from(activityLog), put = storage.putFile.bind(storage);
+    let uploads = 0;
+    if (mode === "changed") vi.spyOn(storage, "putFile").mockImplementation(async input => {
+      const result = await put(input);
+      if (++uploads === 2) await fs.writeFile(path.join(cwd, "untracked.txt"), "changed during parent upload\n");
+      return result;
+    });
+    const pending = run(f, { workspaceIds: [parent.id, alias.id] });
+    if (mode === "unchanged") await expect(pending).resolves.toMatchObject({ applied: true });
+    else {
+      await expect(pending).rejects.toThrow("nested_workspace_source_changed");
+      const selected = await db.select().from(executionWorkspaces).where(inArray(executionWorkspaces.id, [parent.id, alias.id]));
+      expect(selected.every(row => !readRemoteWorkspaceAuthority(row.metadata))).toBe(true);
+      expect(await db.select().from(activityLog)).toEqual(beforeActivity);
+    }
     expect(reads).toBe(1);
-    expect(capture.mock.calls.filter(([input]) => input.cwd === cwd && path.basename(input.archivePath) === "current.pcws")).toHaveLength(4);
-    expect(await fs.readFile(path.join(cwd, "untracked.txt"), "utf8")).toBe("nested dirty bytes\n");
+    expect(capture.mock.calls.filter(([input]) => input.cwd === cwd && path.basename(input.archivePath) === "current.pcws")).toHaveLength(2);
+    expect(await fs.readFile(path.join(cwd, "untracked.txt"), "utf8")).toBe(mode === "unchanged" ? "nested dirty bytes\n" : "changed during parent upload\n");
   }, 60_000);
   it.each(["foreign", "journal", "finished"])("refuses a changed %s operation before any authority write", async mode => {
     const f = await fixture(), put = storage.putFile.bind(storage); let uploaded = 0;

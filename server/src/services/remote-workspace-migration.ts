@@ -431,17 +431,32 @@ async function lockMigrationRecovery(lock: MigrationTransaction, plans: Migratio
   for (const reader of readers) if (reader.status === "rejected") throw reader.reason;
 }
 
-function createMigrationChildVerifier(input: MigrationInput, onlineSource: OnlineWorkspaceSource | undefined, sourceLock: MigrationTransaction) {
+function createMigrationChildVerifier(input: MigrationInput, onlineSource: OnlineWorkspaceSource | undefined, sourceLock: MigrationTransaction, cohort = false) {
   if (onlineSource?.kind !== "git") return undefined;
   const verifier = createNestedWorkspaceImportVerifier({ db: input.db, storage: input.storage, companyId: input.companyId,
     sourceLock, projectIds: onlineSource.projectIds, issueIds: onlineSource.issueIds, signal: input.signal, persistVerification: true });
+  type Options = Parameters<typeof prepareNestedWorkspaceImports>[0];
+  const initial = new Map<string, ReturnType<typeof prepareNestedWorkspaceImports>>(), final = new Map<string, ReturnType<typeof prepareNestedWorkspaceImports>>();
   let pending = Promise.resolve();
+  const prepare = (options: Options) => {
+    const work = pending.then(() => verifier.prepare(options));
+    pending = work.then(() => undefined, () => undefined);
+    return work;
+  };
+  const shared = async (options: Options, cache: typeof initial) => {
+    await verifier.assertOwner();
+    const root = options.workspace.cwd ?? options.workspace.providerRef;
+    const key = canonical([root ? await fs.realpath(root) : null, [...(options.gitSourceRoots ?? [])].sort(), options.recordedChildren ?? null]);
+    let work = cache.get(key);
+    if (!work) { work = prepare(options); cache.set(key, work); }
+    const result = await work;
+    await verifier.assertOwner();
+    return result;
+  };
   return {
-    prepare(options: Parameters<typeof prepareNestedWorkspaceImports>[0]) {
-      const work = pending.then(() => verifier.prepare(options));
-      pending = work.then(() => undefined, () => undefined);
-      return work;
-    },
+    prepare: (options: Options) => cohort ? shared(options, initial) : prepare(options),
+    finalize: (options: Options) => shared(options, final),
+    deferFinal: cohort,
     async close() { await pending; await verifier.close(); },
   };
 }
@@ -511,7 +526,7 @@ async function captureMigration(input: MigrationInput, reserved: ReservedMigrati
       const current = await captureRemoteWorkspaceDirectory({ cwd: sourceRoot!, archivePath: currentArchive, exclude, requireNoGit: onlineSource?.kind === "ordinary", gitSourceRoots: onlineSource?.gitSourceRoots, signal: input.signal });
       if (current.manifestDigest !== captured.manifestDigest) throw new Error("remote_workspace_migration_source_changed");
     }
-    if (nested.length) {
+    if (nested.length && !childVerifier?.deferFinal) {
       const verifyScratch = path.join(scratch, "verify-nested"); await fs.mkdir(verifyScratch);
       const verified = await (childVerifier?.prepare ?? prepareNestedWorkspaceImports)({ ...input, workspace: reserved.workspace,
         scratch: verifyScratch, recordedChildren: nested, gitSourceRoots: onlineSource?.gitSourceRoots });
@@ -828,7 +843,7 @@ export async function migrateRemoteWorkspaceCohort(input: {
       cohort = refreshedCohort;
     }
     const captures: Array<CapturedMigration | undefined> = Array(plans.length);
-    const childVerifier = createMigrationChildVerifier(plans[0].input, plans[0].onlineSource, lock);
+    const childVerifier = createMigrationChildVerifier(plans[0].input, plans[0].onlineSource, lock, true);
     let next = 0, failure: unknown;
     const worker = async () => {
       while (!signal.aborted && next < plans.length) {
@@ -842,6 +857,15 @@ export async function migrateRemoteWorkspaceCohort(input: {
       for (const peer of peers) if (peer.status === "rejected") failure ??= peer.reason;
       if (failure) throw failure;
       signal.throwIfAborted();
+      const nestedReaders = await Promise.allSettled(plans.map(async (plan, index) => {
+        const captured = captures[index]!;
+        if (!captured.nested.length) return;
+        const scratch = path.join(captured.scratch, "verify-nested"); await fs.mkdir(scratch);
+        const verified = await (childVerifier?.finalize ?? prepareNestedWorkspaceImports)({ ...plan.input, workspace: plan.reserved.workspace,
+          scratch, recordedChildren: captured.nested, gitSourceRoots: plan.onlineSource?.gitSourceRoots });
+        if (canonical(verified) !== canonical(captured.nested)) throw new Error("nested_workspace_source_changed");
+      }));
+      for (const reader of nestedReaders) if (reader.status === "rejected") throw reader.reason;
       await lock.execute(sql`select 1`);
       await lock.transaction(async tx => {
         await lockMigrationParents(tx, companyId, null, plans.flatMap(plan => [
