@@ -115,7 +115,7 @@ import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
 import { prepareVerifiedRemoteProviderPack, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
-import { readNativeLocalProcessStop, recordedLocalExecutionStopped, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, withReleasedNativeRunProcess } from "../native-local-process-stop.js";
+import { readNativeLocalProcessStop, recordedLocalExecutionStopped, PRIOR_OWNER_FENCE_REFUSED, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, withReleasedNativeRunProcess } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
 import { connectorToolDefinitionsForSkills } from "../connector-runtime.js";
 import { NATIVE_PREPARATION_FENCING_VERSION, setNativeExecutionActive } from "./native-active-runs.js";
@@ -5759,6 +5759,20 @@ async function rollBackUndeliveredAttachRotation(root: string, execution: Native
     `[paperclip-runner] Run ${execution.binding.runId} stopped before its runner received the session; resuming from the previous turn.\n`);
 }
 
+/** The fence refused this run before any launch, because another run's saved
+ * state could not be proven finished. Retry and new input read this event as
+ * proof that the run never had a runner (native-local-process-stop.ts). A
+ * failed write leaves the run held, which is the safe side. */
+async function recordPriorOwnerFenceRefusal(input: { db: Db; execution: NativeExecutionInput }, reason: string): Promise<void> {
+  const { binding } = input.execution;
+  await appendHeartbeatRunEvent(input.db, {
+    companyId: binding.companyId, runId: binding.runId, agentId: binding.agentId,
+    eventType: PRIOR_OWNER_FENCE_REFUSED, stream: "system", level: "warn",
+    message: "The saved runner state of a previous run could not be proven finished; this run started no runner.",
+    payload: { reason },
+  }).catch(() => undefined);
+}
+
 async function migrateRunnerdStateRootForExecution(input: {
   db: Db;
   execution: NativeExecutionInput;
@@ -5947,6 +5961,7 @@ async function migrateRunnerdStateRootForExecution(input: {
               : "identity_indeterminate",
           );
         }
+        await recordPriorOwnerFenceRefusal(input, `prior_owner_${verification}`);
         throw new Error(`runner_state_identity_mismatch: prior_owner_${verification}${retirementRefusal}`);
       }
     }
@@ -5988,6 +6003,7 @@ async function migrateRunnerdStateRootForExecution(input: {
           // untouched because the legacy name may still belong to them.
           quarantineRunnerdStateRoot(legacy, "identity_indeterminate");
         }
+        await recordPriorOwnerFenceRefusal(input, `legacy_prior_owner_${verification}`);
         throw new Error(`runner_state_identity_mismatch: legacy_prior_owner_${verification}`);
       }
       verifiedPriorRunId = identity.runId;

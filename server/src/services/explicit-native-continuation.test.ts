@@ -10,7 +10,7 @@ import { issueTreeControlService } from "./issue-tree-control.js";
 import { createReleaseIssueExecution } from "../modules/wake-queue/application/use-cases.js";
 import * as nativeExecutor from "./native-runtime/native-session-executor.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
-import { recordNativeLocalProcessStop, hasNativeLocalProcessStop, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
+import { recordNativeLocalProcessStop, hasNativeLocalProcessStop, PRIOR_OWNER_FENCE_REFUSED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
@@ -117,13 +117,16 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     // and Retry then waited forever for a stop record of a process that never
     // existed.
     { shape: "was refused at the prior-owner runner-state fence before launch", errorCode: "adapter_failed", launched: false,
-      prepared: true, error: PRIOR_OWNER_REFUSAL, comment: null, retry: null },
+      prepared: true, fenced: true, error: PRIOR_OWNER_REFUSAL, comment: null, retry: null },
     { shape: "was refused at the prior-owner runner-state fence with a coordinator", errorCode: "adapter_failed", launched: false,
-      prepared: true, coordinator: true, error: PRIOR_OWNER_REFUSAL, comment: null, retry: null },
+      prepared: true, coordinator: true, fenced: true, error: PRIOR_OWNER_REFUSAL, comment: null, retry: null },
     { shape: "was refused at the prior-owner runner-state fence after it requested a launch", errorCode: "adapter_failed", launched: true,
-      prepared: true, error: PRIOR_OWNER_REFUSAL, comment: "process_identity_missing", retry: "process_identity_missing" },
+      prepared: true, fenced: true, error: PRIOR_OWNER_REFUSAL, comment: "process_identity_missing", retry: "process_identity_missing" },
     { shape: "was refused at the prior-owner runner-state fence after a runner event", errorCode: "adapter_failed", launched: false,
-      runnerEvent: true, prepared: true, error: PRIOR_OWNER_REFUSAL, comment: "process_identity_missing", retry: "process_identity_missing" },
+      runnerEvent: true, prepared: true, fenced: true, error: PRIOR_OWNER_REFUSAL, comment: "process_identity_missing", retry: "process_identity_missing" },
+    // The fence's own server-authored event is the proof, never the error text.
+    { shape: "carries the prior-owner refusal text without the fence event", errorCode: "adapter_failed", launched: false,
+      prepared: true, error: PRIOR_OWNER_REFUSAL, comment: "process_identity_missing", retry: "process_identity_missing" },
     { shape: "failed its own runner-state authority check", errorCode: "adapter_failed", launched: false,
       prepared: true, error: "runner_state_identity_mismatch: authority_indeterminate",
       comment: "process_identity_missing", retry: "process_identity_missing" },
@@ -134,8 +137,8 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     { shape: "was interrupted without a process record after native selection", status: "interrupted", errorCode: "process_lost", launched: false,
       coordinator: true, comment: "process_identity_missing", retry: "process_identity_missing" },
   ] as Array<{ shape: string; status?: "timed_out" | "interrupted"; errorCode: string; launched: boolean; runnerEvent?: boolean; prepared?: boolean; coordinator?: boolean;
-    error?: string; comment: string | null; retry: string | null }>)("routes input after a run $shape to the gate that can clear it", async ({
-    status, errorCode, launched, runnerEvent, prepared, coordinator, error, comment, retry }) => {
+    error?: string; fenced?: boolean; comment: string | null; retry: string | null }>)("routes input after a run $shape to the gate that can clear it", async ({
+    status, errorCode, launched, runnerEvent, prepared, coordinator, error, fenced, comment, retry }) => {
     // s7532/t04: a Retry's run failed at the quarantine fence before it asked
     // for a runner. Input then waited for a stop record of a process that
     // never existed ("process_identity_missing", Retry still offered) instead
@@ -156,6 +159,9 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     if (runnerEvent) await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId,
       seq: 1, eventType: "session.started", stream: "system", level: "info", message: "runner event",
       sourceEventId: "runner-event-1", payload: {} });
+    if (fenced) await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId,
+      seq: 2, eventType: PRIOR_OWNER_FENCE_REFUSED, stream: "system", level: "warn", message: "fence refused before launch",
+      payload: { reason: "prior_owner_terminal_state_indeterminate" } });
     if (prepared) await db.update(heartbeatRuns).set({ nativeIssueId: f.issueId, nativeSessionId: randomUUID(), runnerInstanceId: randomUUID() })
       .where(eq(heartbeatRuns.id, f.sourceRunId));
     const { result, blocked } = await readAdmission(f, false);
