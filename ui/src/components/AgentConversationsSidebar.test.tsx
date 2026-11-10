@@ -7,6 +7,8 @@ import type { Agent } from "@paperclipai/shared";
 import { AgentConversationsSidebar } from "./AgentConversationsSidebar";
 import type { AgentConversationSidebarProps } from "./AgentConversationSidebar";
 import { queryKeys } from "@/lib/queryKeys";
+import { ApiError } from "@/api/client";
+import { useOpenAgentChat } from "@/hooks/useAgentChatNavigation";
 const state = vi.hoisted(() => ({ companyId: "company-a", navigate: vi.fn(), closeSidebar: vi.fn(), ensure: vi.fn(), getAgent: vi.fn(), newAgent: vi.fn() }));
 const sidebarInputs = vi.hoisted(() => [] as Pick<AgentConversationSidebarProps, "existingChatAgentIds" | "unreadAgentIds" | "unreadMessageCounts">[]);
 vi.mock("./AgentConversationSidebar", async importOriginal => {
@@ -49,7 +51,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   state.companyId = "company-a";
-  state.navigate.mockReset(); state.closeSidebar.mockReset(); state.ensure.mockReset(); state.getAgent.mockReset(); state.newAgent.mockReset(); localStorage.clear();
+  state.navigate.mockReset(); state.closeSidebar.mockReset(); state.ensure.mockReset(); state.getAgent.mockReset(); state.newAgent.mockReset(); localStorage.clear(); sessionStorage.clear();
   sidebarInputs.length = 0;
   state.ensure.mockImplementation(async (_company, id) => chat(id));
   memberships.agentMemberships = {};
@@ -68,13 +70,120 @@ it("notifies its parent only after a chat opens successfully", async () => {
   await choose("bob");
   expect(opened).toHaveBeenCalledOnce();
 });
+function commitChatWithLostFirstResponse() {
+  const committed = new Map<string, ReturnType<typeof chat>>();
+  let loseResponse = true;
+  state.ensure.mockImplementation(async (companyId: string, agentId: string, requestId?: string) => {
+    const userId = client.getQueryData<{ user: { id: string } }>(queryKeys.auth.session)!.user.id;
+    const key = `${companyId}:${userId}:${agentId}:${requestId ?? crypto.randomUUID()}`;
+    const conversation = committed.get(key) ?? { ...chat(agentId), id: `chat-${crypto.randomUUID()}`, companyId, conversationUserId: userId };
+    committed.set(key, conversation);
+    if (loseResponse) { loseResponse = false; throw new TypeError("Connection lost after the chat was created"); }
+    return conversation;
+  });
+  return committed;
+}
+it.each([false, true])("retries a lost create response without another chat (remount=%s)", async remount => {
+  const committed = commitChatWithLostFirstResponse();
+  await render(); await addChat(); await choose("bob");
+  expect(document.querySelector('[role="alert"]')?.textContent).toContain("Connection lost");
+  expect(state.navigate).not.toHaveBeenCalled();
+  if (remount) {
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render(); await addChat();
+  }
+  await choose("bob");
+  expect(committed.size).toBe(1);
+  const requestId = state.ensure.mock.calls[0][2];
+  expect(requestId).toMatch(/^[0-9a-f-]{36}$/i);
+  expect(state.ensure.mock.calls[1][2]).toBe(requestId);
+  const [conversation] = committed.values();
+  expect(state.navigate).toHaveBeenLastCalledWith(`/chats/bob/${conversation.id}`);
+  expect(client.getQueryData<ReturnType<typeof chat>[]>(queryKeys.agentChats.list("company-a", "user-a"))!.filter(item => item.conversationAgentId === "bob")).toHaveLength(1);
+});
+it("uses a fresh request for a new chat after confirmed creation", async () => {
+  state.ensure.mockImplementation(async (companyId: string, agentId: string) => ({ ...chat(agentId), companyId, id: crypto.randomUUID() }));
+  await render(); await addChat(); await choose("bob");
+  await addChat(); await choose("bob");
+  expect(state.ensure.mock.calls[0][2]).toMatch(/^[0-9a-f-]{36}$/i);
+  expect(state.ensure.mock.calls[1][2]).not.toBe(state.ensure.mock.calls[0][2]);
+  expect(client.getQueryData<ReturnType<typeof chat>[]>(queryKeys.agentChats.list("company-a", "user-a"))!.filter(item => item.conversationAgentId === "bob")).toHaveLength(2);
+});
+it("starts a fresh request after the server definitively rejects creation", async () => {
+  state.ensure.mockRejectedValueOnce(new ApiError("Not allowed", 403, null));
+  await render(); await addChat(); await choose("bob");
+  await choose("bob");
+  expect(state.ensure.mock.calls[1][2]).not.toBe(state.ensure.mock.calls[0][2]);
+});
+it.each([408, 429, 503])("retains the pending request after HTTP %s", async status => {
+  state.ensure.mockRejectedValueOnce(new ApiError("Try again", status, null));
+  await render(); await addChat(); await choose("bob");
+  await choose("bob");
+  expect(state.ensure.mock.calls[1][2]).toBe(state.ensure.mock.calls[0][2]);
+});
+it.each(["company", "user", "agent"])("keeps pending create retries in their original %s scope", async changed => {
+  commitChatWithLostFirstResponse();
+  await render(); await addChat(); await choose("bob");
+  if (changed === "company") {
+    state.companyId = "company-b";
+    client.setQueryData(queryKeys.agents.list("company-b"), roster.map(agent => ({ ...agent, companyId: "company-b" })));
+    client.setQueryData(queryKeys.agentChats.list("company-b", "user-a"), []);
+    await render(); await addChat(); await choose("bob");
+    state.companyId = "company-a";
+    await render();
+  } else if (changed === "user") {
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-b" } });
+    client.setQueryData(queryKeys.agentChats.list("company-a", "user-b"), []);
+    await render(); await addChat(); await choose("bob");
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-a" } });
+    await render();
+  } else {
+    await choose("alice");
+  }
+  expect(state.ensure.mock.calls[1][2]).not.toBe(state.ensure.mock.calls[0][2]);
+  await addChat(); await choose("bob");
+  expect(state.ensure.mock.calls[2][2]).toBe(state.ensure.mock.calls[0][2]);
+});
+it("does not send a create when its retry intent cannot be saved to browser storage", async () => {
+  const original = Storage.prototype.setItem;
+  const store = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function(this: Storage, key, value) {
+    if (key.startsWith("agent-chat-create:")) throw new DOMException("Storage full", "QuotaExceededError");
+    return original.call(this, key, value);
+  });
+  try {
+    await render(); await addChat(); await choose("bob");
+    expect(state.ensure).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("save the chat request");
+  } finally { store.mockRestore(); }
+});
+it("waits for the current account before binding a new chat request", async () => {
+  const rejected = vi.fn();
+  function Select({ userId }: { userId: string | null }) {
+    const open = useOpenAgentChat("company-a", userId, true);
+    return <button onClick={() => { void open(roster[1]).catch(rejected); }}>Create</button>;
+  }
+  const show = async (userId: string | null) => {
+    await act(async () => root.render(<QueryClientProvider client={client}><Select userId={userId} /></QueryClientProvider>));
+  };
+  const select = async () => { await act(async () => container.querySelector<HTMLButtonElement>("button")!.click()); };
+  client.removeQueries({ queryKey: queryKeys.auth.session });
+  await show(null); await select();
+  expect(state.ensure).not.toHaveBeenCalled();
+  client.setQueryData(queryKeys.auth.session, { user: { id: "user-a" } });
+  await select();
+  expect(state.ensure).not.toHaveBeenCalled();
+  expect(rejected).toHaveBeenCalledTimes(2);
+  await show("user-a"); await select();
+  expect(state.ensure).toHaveBeenCalledExactlyOnceWith("company-a", "bob", expect.any(String));
+});
 it("creates a chat and lists it separately from the agent", async () => {
   await render();
   expect(container.querySelectorAll('nav[aria-label="Agent conversations"] a')).toHaveLength(2);
   await addChat();
   expect([...document.querySelectorAll("[role=option]")].find(option => option.textContent?.startsWith("bob"))?.textContent).toContain("New chat");
   await choose("bob");
-  expect(state.ensure).toHaveBeenCalledWith("company-a", "bob");
+  expect(state.ensure).toHaveBeenCalledWith("company-a", "bob", expect.stringMatching(/^[0-9a-f-]{36}$/i));
   expect(state.navigate).toHaveBeenLastCalledWith("/chats/bob/chat-bob");
   expect(state.closeSidebar).toHaveBeenCalledWith(false);
   await render();

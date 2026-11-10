@@ -1974,6 +1974,8 @@ export {
   COMPANY_SEARCH_MAX_TOKENS,
   type CompanySearchExtractQuery,
   type CompanySearchQuery,
+  createAgentConversationSchema,
+  type CreateAgentConversation,
   createIssueSchema,
   issueSummariesQuerySchema,
   issueChatBootstrapQuerySchema,

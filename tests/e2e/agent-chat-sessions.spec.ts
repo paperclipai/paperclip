@@ -349,11 +349,34 @@ test("secondary chat navigation preserves layout, separate conversations, histor
 
     // Adding the same agent again creates a distinct conversation.
     const previousBetaEditor = await betaDraftEditor.elementHandle();
+    const createUrl = `**/api/companies/${f.company.id}/chats/${f.agents[1].id}?new=true`;
+    let lostRequestId: string | undefined;
+    let committedChatId: string | undefined;
+    let finishLostResponse!: () => void;
+    const lostResponseFinished = new Promise<void>(resolve => { finishLostResponse = resolve; });
+    await page.route(createUrl, async route => {
+      const response = await route.fetch();
+      try {
+        lostRequestId = route.request().postDataJSON().clientRequestId;
+        committedChatId = (await json(response)).id;
+        await route.abort("failed");
+      } finally {
+        await response.dispose();
+        finishLostResponse();
+      }
+    }, { times: 1 });
     await compose.click();
     await expect(picker.getByRole("combobox")).toHaveValue("");
     await picker.getByRole("combobox").fill("Beta");
     await expect(picker.getByRole("option", { name: /^Beta / })).toContainText("New chat");
     await picker.getByRole("combobox").press("Enter");
+    await expect(picker.getByRole("alert")).toBeVisible();
+    await lostResponseFinished;
+    expect(lostRequestId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(await json(await request.get(chatListPath))).toHaveLength(2);
+    const retryRequest = page.waitForRequest(request => request.method() === "POST" && request.url().endsWith(`/chats/${f.agents[1].id}?new=true`));
+    await picker.getByRole("combobox").press("Enter");
+    expect((await retryRequest).postDataJSON().clientRequestId).toBe(lostRequestId);
     await expect(picker).not.toBeVisible();
     await previousBetaEditor!.waitForElementState("hidden");
     await expect(betaDraftEditor).toHaveText("");
@@ -363,6 +386,7 @@ test("secondary chat navigation preserves layout, separate conversations, histor
     expect(new Set(betaChats.map((chat: { id: string }) => chat.id)).size).toBe(2);
     expect(betaChats.map((chat: { id: string }) => chat.id)).toContain(beta.id);
     const secondBeta = betaChats.find((chat: { id: string }) => chat.id !== beta.id);
+    expect(secondBeta.id).toBe(committedChatId);
     await sidebar.locator(`a[href$="/${beta.id}"]`).click();
     await expect(page).toHaveURL(new RegExp(`${beta.id}$`));
     await expect(betaDraftEditor).toContainText("First Beta conversation draft");

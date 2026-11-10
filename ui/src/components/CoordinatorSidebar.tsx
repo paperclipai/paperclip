@@ -213,7 +213,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
       </SidebarSection></div>}
       {children}
     </nav>
-    <AgentChatPicker open={chatPickerOpen} onOpenChange={setChatPickerOpen} agents={(agents.data ?? []).filter(agent => agent.status !== "terminated" && agent.status !== "pending_approval")} loading={agents.isPending} error={agents.error} onRetry={() => { void agents.refetch(); }} onSelect={openNewChat} />
+    <AgentChatPicker open={chatPickerOpen} onOpenChange={setChatPickerOpen} agents={(agents.data ?? []).filter(agent => agent.status !== "terminated" && agent.status !== "pending_approval")} loading={agents.isPending || session.isPending} error={agents.error ?? session.error} onRetry={() => { void agents.refetch(); void session.refetch(); }} onSelect={openNewChat} />
     <Dialog open={chatHistoryOpen} onOpenChange={setChatHistoryOpen}>
       <DialogContent aria-describedby={undefined} className="h-full max-h-screen overflow-hidden p-0 sm:max-w-md">
         <DialogTitle className="sr-only">All conversations</DialogTitle>
