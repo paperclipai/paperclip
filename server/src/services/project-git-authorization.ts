@@ -143,7 +143,7 @@ export function projectGitAuthorizationService(db: Db) {
       return read(companyId, projectId, userId);
     },
     async resolve(
-      input: { companyId: string; projectId: string; workspaceId: string; expectedRepository?: string },
+      input: { companyId: string; projectId: string; workspaceId: string; expectedRepository?: string; expectedRepositoryId?: string },
       scope?: {
         projectId: string;
         workspaceId?: string;
@@ -269,8 +269,9 @@ export function projectGitAuthorizationService(db: Db) {
           redirect: "error", signal: AbortSignal.timeout(10_000),
         });
         if (!response.ok) throw forbidden("Project GitHub authorization does not include this repository");
-        const repository = await response.json() as { full_name?: string; private?: boolean; permissions?: { pull?: boolean } };
-        if (repository.full_name?.toLowerCase() !== repo.fullName.toLowerCase() || repository.permissions?.pull !== true)
+        const repository = await response.json() as { id?: number; full_name?: string; private?: boolean; permissions?: { pull?: boolean } };
+        if (repository.full_name?.toLowerCase() !== repo.fullName.toLowerCase() || repository.permissions?.pull !== true ||
+          (input.expectedRepositoryId !== undefined && String(repository.id) !== input.expectedRepositoryId))
           throw forbidden("Project GitHub authorization does not include this repository");
         if (repository.private === false) return null;
         if (repository.private !== true) throw forbidden("Repository visibility is unavailable");

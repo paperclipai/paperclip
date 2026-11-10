@@ -140,6 +140,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       await expect(f.service.resolve(f.request, f.scope)).rejects.toThrow("does not include this repository");
       vi.mocked(ghFetch).mockResolvedValueOnce(Response.json({ full_name: "other/repo", private: true, permissions: { pull: true } }));
       await expect(f.service.resolve(f.request, f.scope)).rejects.toThrow("does not include this repository");
+      vi.mocked(ghFetch).mockResolvedValueOnce(Response.json({ id: 2, full_name: "fixture/project", private: true, permissions: { pull: true } }));
+      await expect(f.service.resolve({ ...f.request, expectedRepositoryId: "1" }, f.scope)).rejects.toThrow("does not include this repository");
       await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.companyId, f.input.companyId));
       await expect(f.service.resolve(f.request, f.scope)).rejects.toThrow("authorization is unavailable");
       await db.update(companyMemberships).set({ status: "active" }).where(eq(companyMemberships.companyId, f.input.companyId));
