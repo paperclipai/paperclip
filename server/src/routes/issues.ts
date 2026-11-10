@@ -15372,7 +15372,14 @@ export function issueRoutes(
         // the run untouched, so an automated hand-off cannot spend a run by
         // accident; `confirmLiveRunStop: true` keeps today's behaviour for a
         // manager, the operator or a workflow that really means it.
-        if (runToStopForReassignment && !isHumanSelfHandoff && req.body.confirmLiveRunStop !== true) {
+        // An explicit `interrupt` in the same request already asked for the run
+        // to stop, so the reassignment is not the thing that spends it.
+        if (
+          runToStopForReassignment
+          && !isHumanSelfHandoff
+          && !interruptRequested
+          && req.body.confirmLiveRunStop !== true
+        ) {
           throw conflict(
             `The issue has a live run (${runToStopForReassignment.id}); reassigning it would stop that run. `
             + `Read GET /api/issues/${existing.id}/live-runs, then repeat this update with confirmLiveRunStop: true to stop the run and reassign.`,

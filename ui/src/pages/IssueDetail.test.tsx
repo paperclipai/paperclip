@@ -2864,6 +2864,7 @@ describe("IssueDetail", () => {
           commentClientRequestId: undefined,
           assigneeAgentId: "agent-2",
           assigneeUserId: null,
+          confirmLiveRunStop: true,
           assigneeAdapterOverrides: null,
           attachmentIds: [id],
         });
