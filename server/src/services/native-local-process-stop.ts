@@ -112,9 +112,9 @@ export async function hasNativeLocalProcessStop(db: Db, companyId: string, runId
 /**
  * A local runner launch can be requested and the server killed before the
  * runner's process identity is recorded. With no PID to check, prove on this
- * host that no runner for the run exists and that it never wrote runner state
- * (no provider can start before that), then record the stop like a verified
- * PID. A later launch request invalidates the receipt as usual.
+ * host that no runner for the run exists and that this launch wrote no runner
+ * state (no provider can start before that), then record the stop like a
+ * verified PID. A later launch request invalidates the receipt as usual.
  */
 export async function recordUnidentifiedLocalRunnerStop(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "runtimeMode" | "processPid" | "processGroupId" | "runnerProfileJson">,
@@ -131,11 +131,11 @@ export async function recordUnidentifiedLocalRunnerStop(db: Db, run: Pick<typeof
     .where(and(eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
   if (leases.some(lease => lease.provider !== "local")) return false;
   const requestedAt = typeof latest.payload?.requestedAt === "string" ? Date.parse(latest.payload.requestedAt) : Number.NaN;
-  const earlierRunnersStoppedBefore = (!previous || previous.eventType === LOCAL_PROCESS_STOPPED) && Number.isFinite(requestedAt)
+  const launchRequestedAt = (!previous || previous.eventType === LOCAL_PROCESS_STOPPED) && Number.isFinite(requestedAt)
     ? requestedAt : null;
   const { unidentifiedLocalRunnerProvenAbsent } = await import("./native-runtime/native-session-executor.js");
   if (!await unidentifiedLocalRunnerProvenAbsent({ runId: run.id, execution: run.runnerProfileJson?.nativeExecutionInput,
-    earlierRunnersStoppedBefore })) return false;
+    launchRequestedAt })) return false;
   if (!options.record) return true;
   await appendHeartbeatRunEvent(db, {
     companyId: run.companyId,
@@ -144,7 +144,7 @@ export async function recordUnidentifiedLocalRunnerStop(db: Db, run: Pick<typeof
     eventType: LOCAL_PROCESS_STOPPED,
     stream: "system",
     level: "info",
-    message: "Verified that no runner for this run exists on this host and none saved runner state.",
+    message: "Verified that no runner for this run exists on this host and none saved runner state after the launch request.",
     payload: { processPid: null, processGroupId: null, processStartedAt: null, basis: "unidentified_runner_absent" },
   });
   return true;

@@ -2191,11 +2191,14 @@ function runnerdStateBase(): string {
 /**
  * A runner launch requested without a recorded process identity leaves no PID
  * to verify. On this host it is proven absent when no process carries the
- * run's runner arguments and no saved runner state belongs to the run: a
- * provider starts only after its runner connects and writes that state.
+ * run's runner arguments and no saved runner state belongs to the run, or,
+ * when the caller passes `launchRequestedAt` because every earlier runner of
+ * the run was proven stopped, when that state's command journal and lineage
+ * files all predate the launch request: a provider starts only from a command
+ * the runner journals first.
  */
 export async function unidentifiedLocalRunnerProvenAbsent(input: {
-  runId: string; execution: unknown; earlierRunnersStoppedBefore?: number | null;
+  runId: string; execution: unknown; launchRequestedAt?: number | null;
 }): Promise<boolean> {
   let execution: NativeExecutionInput;
   try {
@@ -2221,7 +2224,7 @@ export async function unidentifiedLocalRunnerProvenAbsent(input: {
     if (!existsSync(resolve(candidate, "control-plane", "control-plane-state.json"))) continue;
     try {
       if (record(readRunnerdControlPlaneState(candidate).identity).runId === input.runId &&
-          !runnerStateUnchangedSince(candidate, input.earlierRunnersStoppedBefore)) return false;
+          !runnerStateUnchangedSince(candidate, input.launchRequestedAt)) return false;
     } catch {
       return false;
     }

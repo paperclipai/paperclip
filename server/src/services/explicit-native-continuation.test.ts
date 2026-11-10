@@ -1318,8 +1318,8 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
           schema: "paperclip.runner.durable.control-plane-state.v1", identity: { runId: f.sourceRunId } }));
         await writeFile(join(root, "runner/runner-state.json"), JSON.stringify({ schema: "paperclip.runner.durable.state.v1" }));
         await writeFile(join(root, `runner/process-lineage/writer-${deadPid}.json`), JSON.stringify({ schema: "paperclip.runner.process-lineage-writer.v1" }));
-        const requestedAt = new Date(Math.floor(Date.now() / 1000) * 1000 + 60_500);
-        const earlier = new Date(requestedAt.getTime() - 30_000), later = new Date(requestedAt.getTime() + 30_000);
+        const requestedAt = new Date(Math.floor(Date.now() / 1000) * 1000 - 59_500);
+        const earlier = new Date(requestedAt.getTime() - 30_000), later = new Date(requestedAt.getTime() + 30_250);
         const stateTimes: Partial<Record<typeof kind, Date>> = { state_after_request: later,
           coarse_same_second: new Date(requestedAt.getTime() - 500), coarse_before_request: new Date(requestedAt.getTime() - 3_500) };
         const stateTime = stateTimes[kind] ?? earlier;
