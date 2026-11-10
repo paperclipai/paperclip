@@ -27,6 +27,8 @@ const CREDENTIAL_ERROR_MESSAGES: Record<CredentialErrorCode, string> = {
 export interface StorageFaultRule { fault: StorageFault; methods?: readonly string[]; pathIncludes?: string; remaining?: number;
   operations?: readonly S3Operation[]; partNumbers?: readonly number[] }
 
+export type StorageRequestListener = (incoming: IncomingMessage, outgoing: ServerResponse) => number | void;
+
 export interface StorageProxyCounts { requests: number; injected: number; byMethod: Record<string, number>; byStatus: Record<string, number>;
   injectedBy?: Record<string, number> }
 
@@ -62,6 +64,7 @@ export async function startStorageFaultProxy(endpoint: string, random: () => num
     throw new Error("Storage fault injection requires a loopback store");
   }
   let rules: StorageFaultRule[] = [];
+  let listener: StorageRequestListener | null = null;
   const counts: StorageProxyCounts = { requests: 0, injected: 0, byMethod: {}, byStatus: {}, injectedBy: {} };
   const sockets = new Set<Socket>();
   const delayed = new Set<ReturnType<typeof setTimeout>>();
@@ -95,9 +98,10 @@ export async function startStorageFaultProxy(endpoint: string, random: () => num
   };
   const server = createServer((incoming, outgoing) => {
     const method = incoming.method ?? "GET";
-    const rule = rules.find(candidate => matches(candidate, method, incoming.url ?? "/"));
+    const heldMs = listener?.(incoming, outgoing) || 0;
+    const rule = heldMs ? undefined : rules.find(candidate => matches(candidate, method, incoming.url ?? "/"));
     if (rule?.remaining !== undefined) rule.remaining -= 1;
-    const fault = rule?.fault ?? { kind: "pass" as const };
+    const fault: StorageFault = heldMs ? { kind: "latency", ms: heldMs } : rule?.fault ?? { kind: "pass" };
     if (fault.kind === "latency") {
       const delay = fault.ms + Math.round((fault.jitterMs ?? 0) * random());
       if (fault.bytesPerSecond && !links.has(rule!)) links.set(rule!, linkRates(fault.bytesPerSecond));
@@ -142,6 +146,7 @@ export async function startStorageFaultProxy(endpoint: string, random: () => num
     counts: () => ({ ...structuredClone(counts), lagged: writes.lagged }),
     setRules(next: readonly StorageFaultRule[]) { endLinks(); rules = next.map(rule => ({ ...rule })); },
     clear() { endLinks(); rules = []; },
+    observe(next: StorageRequestListener | null) { listener = next; },
     async close() {
       for (const timer of delayed) clearTimeout(timer);
       delayed.clear();

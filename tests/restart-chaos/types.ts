@@ -96,6 +96,7 @@ export interface WaveOptions {
   storageFaults?: Array<import("./storage-chaos.js").StorageFaultKind>;
   storageFaultMs?: [number, number];
   storageWindows?: import("./storage-chaos.js").StorageFaultWindow[];
+  storageTrigger?: import("./storage-trigger.js").StorageTriggerTarget;
   workspaceCommit?: string;
   workspaceGitUrl?: string;
   /** Provider message faults from `--faults` (PV1 delay, PV2 drop, PV3 duplicate); see provider-faults.ts. */

@@ -244,7 +244,8 @@ export type AgingColumn = { table: string; column: string; kind: "timestamp" | "
  * column it was copied from:
  * - an ISO datetime string keeps its exact format, separator and offset;
  * - a whole number in the epoch-millisecond window [lo, hi] (the wave's own times) moves by the age.
- * The age is whole seconds, so fractional digits never change.
+ * The age is whole seconds, so fractional digits never change. A process start
+ * (`processStartedAt`, any spelling) is identity, not a time: see `isProcessIdentityTime`.
  */
 export const SHIFT_JSON_FUNCTION = [
   "create or replace function pg_temp.paperclip_shift_json(v jsonb, age_ms bigint, lo bigint, hi bigint)",
@@ -253,7 +254,8 @@ export const SHIFT_JSON_FUNCTION = [
   "begin",
   "  case jsonb_typeof(v)",
   "  when 'object' then",
-  "    select coalesce(jsonb_object_agg(e.key, pg_temp.paperclip_shift_json(e.value, age_ms, lo, hi)), '{}'::jsonb) into r from jsonb_each(v) e;",
+  "    select coalesce(jsonb_object_agg(e.key, case when replace(lower(e.key), '_', '') like '%processstartedat%' then e.value",
+  "      else pg_temp.paperclip_shift_json(e.value, age_ms, lo, hi) end), '{}'::jsonb) into r from jsonb_each(v) e;",
   "    return r;",
   "  when 'array' then",
   "    select coalesce(jsonb_agg(pg_temp.paperclip_shift_json(e.value, age_ms, lo, hi) order by e.ord), '[]'::jsonb) into r",
@@ -278,12 +280,24 @@ export const SHIFT_JSON_FUNCTION = [
   "end $fn$",
 ].join("\n");
 
-/** One UPDATE per table, shifting all of its timestamp and JSON columns at once. */
+/**
+ * A process start time is part of a process's identity (pid + start), read from
+ * the OS and compared with the stamp an owner saved. A real sleep never changes
+ * it, so aging it would make every live owner look like a different process: a
+ * harness artifact, not a deadline that lapsed. Columns and JSON keys named for
+ * a process start (`process_started_at`, `controller_process_started_at`,
+ * `processStartedAt`, ...) keep their value.
+ */
+export function isProcessIdentityTime(name: string): boolean {
+  return name.toLowerCase().replaceAll("_", "").includes("processstartedat");
+}
+
+/** One UPDATE per table, shifting all of its timestamp and JSON columns at once (process start identity excepted). */
 export function agingStatements(columns: ReadonlyArray<AgingColumn>, ageMs: number,
   epochWindow: { lo: number; hi: number }): Array<{ table: string; columns: string[]; sql: string }> {
   if (!Number.isSafeInteger(ageMs) || ageMs <= 0 || ageMs % 1000 !== 0) throw new Error("Aging needs a positive whole number of seconds");
   const byTable = new Map<string, AgingColumn[]>();
-  for (const column of columns) byTable.set(column.table, [...(byTable.get(column.table) ?? []), column]);
+  for (const column of columns) if (!isProcessIdentityTime(column.column)) byTable.set(column.table, [...(byTable.get(column.table) ?? []), column]);
   const shift = (column: AgingColumn) => column.kind === "timestamp"
     ? `${quote(column.column)} - interval '${ageMs} milliseconds'`
     : `pg_temp.paperclip_shift_json(${quote(column.column)}, ${ageMs}, ${Math.trunc(epochWindow.lo)}, ${Math.trunc(epochWindow.hi)})`;
@@ -342,7 +356,8 @@ export async function ageWaveDatabase(input: { connectionString: string; faultId
             if (!recorded.has(statement.table)) continue;
             // Identity, state and times only: payload columns can carry run output.
             const keys = identityColumns.filter(key => key.table === statement.table).map(key => key.column);
-            const times = columns.filter(column => column.table === statement.table && column.kind === "timestamp").map(column => column.column);
+            const times = columns.filter(column => column.table === statement.table && column.kind === "timestamp"
+              && !isProcessIdentityTime(column.column)).map(column => column.column);
             const select = [...keys, ...times].map(quote).join(", ");
             const order = times.includes("created_at") ? " order by created_at desc" : "";
             before[statement.table] = await tx.unsafe(`select ${select} from public.${quote(statement.table)}${order} limit ${RECORDED_ROWS_PER_TABLE}`) as unknown as unknown[];
@@ -359,7 +374,7 @@ export async function ageWaveDatabase(input: { connectionString: string; faultId
         const evidencePath = path.join(input.evidenceDir, `${input.faultId}.json`);
         await mkdir(input.evidenceDir, { recursive: true, mode: 0o700 });
         await writeFile(evidencePath, `${JSON.stringify({ faultId: input.faultId, ageMs: input.ageMs, startedAt, appliedAt,
-          note: "Rows of the time-bound tables as they were before the shift; after the shift every timestamp shown is ageMs earlier.",
+          note: "Rows of the time-bound tables as they were before the shift; after the shift every timestamp shown is ageMs earlier. Process start identity is not aged and not shown.",
           tables, rowsBefore: outcome.before }, null, 2)}\n`, { mode: 0o600 });
         return { faultId: input.faultId, ageMs: input.ageMs, appliedAt, waveStartedAt: input.waveStartedAt, startedAt, tables,
           totalRows: tables.reduce((sum, table) => sum + table.rows, 0), triggersDisabled, lockRetries, evidencePath };
@@ -420,7 +435,8 @@ export function unshiftJson<T>(value: T, shifts: readonly AgingShift[]): T {
     }
     if (typeof node === "number") return shiftedEpochMs(node, shifts) ? unshiftMs(node, shifts) : node;
     if (Array.isArray(node)) return node.map(visit);
-    if (node && typeof node === "object") return Object.fromEntries(Object.entries(node).map(([key, child]) => [key, visit(child)]));
+    if (node && typeof node === "object") return Object.fromEntries(Object.entries(node)
+      .map(([key, child]) => [key, isProcessIdentityTime(key) ? child : visit(child)]));
     return node;
   };
   return visit(value) as T;

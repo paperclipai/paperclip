@@ -394,6 +394,30 @@ GitHub `origin` over https at its `origin/master` commit, so the sandbox clones 
 snapshots are Paperclip-sized. Its oracle reads the task's files through the board API, retrying for up
 to 4 minutes while the closing save makes the workspace readable, and runs its commands on a local copy.
 
+### Restart during a transfer (`--storage-trigger`)
+
+A time-based fault rarely lands while the server is moving bytes. `--storage-trigger <target>` turns
+each task's planned K fault into an armed fault: at its planned time (`--fault-after-seconds` pins it)
+the fault is armed, and it fires the moment the proxy sees the next matching server request. The
+proxy holds that request (up to 60 s) while the harness takes its pre-fault snapshot and restarts the
+server, so the restart provably interrupts the transfer.
+
+| Target | Matching request |
+| --- | --- |
+| `snapshot-upload` | `PUT` with a body under `workspace-snapshots/` (single PUT or multipart part; not create or complete) |
+| `snapshot-part` | multipart `UploadPart` (`PUT …?partNumber=`) under `workspace-snapshots/` |
+| `snapshot-download` | `GET` under `workspace-snapshots/` (restore) |
+| `run-log` | `PUT`/`POST` under `run-logs/` (run-log journal segments) |
+
+`storage-trigger.json` records, per armed fault, the request that fired it (method, path with upload
+ids hidden, declared bytes, outcome `aborted`/`completed`), every request in flight at that
+moment (the held one included), and the fault id it produced. A fault whose task rested first, or that saw no matching request
+before the wave ended, is recorded with `missedReason` (`task_rested` or `no_matching_request`). The wave
+summary adds a "Storage trigger" section with each armed fault's result and the count not reached. It
+fails when no restart fired, or when a fired restart has no fault id or its held request was not
+`aborted` (the hold expired first). It needs `--storage s3` and `--triggers time`, and does not take
+G1, H1 or Q1: their board actions would run while the fault waits for a request.
+
 Every Retry the grader needs is clicked in the real board UI: the harness opens the issue in a headless
 Chromium, waits for the visible Retry button and clicks it. A task whose Retry button is missing fails
 R3 as `ui_retry_button_missing (user saw: …)`; a click that sends no retry request fails as
@@ -723,6 +747,11 @@ past. The shift covers:
 - every `timestamp` column;
 - every time inside a `jsonb` column: ISO datetime strings keep their format, and whole numbers in the
   wave's epoch-millisecond window move too.
+
+A process start (`process_started_at`, `controller_process_started_at`, and `processStartedAt` keys in
+JSON) is not aged. It is part of a process's identity: owners compare the stamp they saved with the
+start time the OS reports, and a real sleep never changes that. Aging it would make every live owner
+look like a different process, a harness artifact rather than a lapsed deadline.
 
 The JSON pass matters. Receipts and snapshots keep copies of times (a continuation receipt stores the
 comment's `updatedAt` and compares it later). Shifting only the columns would fail those comparisons, a
