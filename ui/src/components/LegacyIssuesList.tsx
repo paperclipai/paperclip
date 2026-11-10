@@ -2,7 +2,7 @@ import { QueryErrorState } from "./QueryView";
 import { ISSUE_SORT_FIELDS, sortIssues, type IssueSort, type IssueSortField } from "../lib/issue-sort";
 import { saveTaskCollectionPreferences } from "../lib/task-collection-preferences";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
-import { usePreloadTaskChats } from "../hooks/usePreloadTaskChats";
+import { topRenderedNavEntryRefs, usePreloadTaskChats } from "../hooks/usePreloadTaskChats";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useIssueHierarchyContext } from "../hooks/useIssueHierarchyContext";
 import { includeIssueHierarchyContext } from "../lib/issue-hierarchy-context";
@@ -1338,12 +1338,6 @@ export function IssuesList({
       : group.items,
   })), [baseGroupedContent, hierarchy.issues, issues, enableAgentCreatedVisibilityFilter, viewState.showAgentCreatedTasks, viewState.routineTasksOnly, viewState.nestingEnabled, viewState.viewMode]);
   const visibleListRowCount = groupedContent.reduce((total, group) => total + group.items.length, 0);
-  const preloadTaskRefs = useMemo(() => preloadTaskChats
-    ? groupedContent
-      .filter((group) => !(group.label && viewState.collapsedGroups.includes(group.key)))
-      .flatMap((group) => group.items.map((issue) => issue.identifier ?? issue.id))
-    : [], [groupedContent, preloadTaskChats, viewState.collapsedGroups]);
-  usePreloadTaskChats(selectedCompanyId, preloadTaskRefs, !isLoading && !error && (!hierarchyEnabled || !hierarchy.isLoading) && preloadTaskRefs.length > 0);
 
 
   // Flattened visible order (group headers, then tree DFS per group —
@@ -1386,6 +1380,13 @@ export function IssuesList({
     viewState.collapsedParents,
     viewState.nestingEnabled,
   ]);
+  // The top rows the list renders, in display order (collapsed groups and
+  // parents hide theirs), so the preload warms what a person can click.
+  const preloadTaskRefs = useMemo(
+    () => preloadTaskChats ? topRenderedNavEntryRefs(flatNavEntries, renderedIssueRowLimit) : [],
+    [flatNavEntries, preloadTaskChats, renderedIssueRowLimit],
+  );
+  usePreloadTaskChats(selectedCompanyId, preloadTaskRefs, !isLoading && !error && (!hierarchyEnabled || !hierarchy.isLoading) && preloadTaskRefs.length > 0);
 
   const listNavStateRef = useRef({
     flatNavEntries,

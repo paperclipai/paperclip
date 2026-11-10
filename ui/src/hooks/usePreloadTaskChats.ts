@@ -4,6 +4,24 @@ import { CHAT_BOOTSTRAP_PRELOAD_LIMIT, loadIssueChatBootstraps } from "@/lib/iss
 import { whenPageSettles } from "@/lib/when-page-settles";
 
 /**
+ * The route refs of the first rendered task rows of a list's flattened
+ * display order, up to the preload limit. Rows past the render budget are
+ * skipped; the walk stops at the limit.
+ */
+export function topRenderedNavEntryRefs(
+  entries: readonly ({ type: "issue"; issue: { id: string; identifier: string | null }; budgetOrdinal: number } | { type: string })[],
+  renderedRowLimit: number,
+) {
+  const refs: string[] = [];
+  for (const entry of entries) {
+    if (entry.type !== "issue" || !("issue" in entry) || entry.budgetOrdinal > renderedRowLimit) continue;
+    refs.push(entry.issue.identifier ?? entry.issue.id);
+    if (refs.length >= CHAT_BOOTSTRAP_PRELOAD_LIMIT) break;
+  }
+  return refs;
+}
+
+/**
  * After a task list has painted and its own reads have settled, load what the
  * chat of each of its top rows needs before its first frame, so opening one
  * of them renders from cache. Tasks already cached, loading or preloaded
