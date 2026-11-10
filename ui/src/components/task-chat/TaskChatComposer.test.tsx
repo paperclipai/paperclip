@@ -508,9 +508,15 @@ describe("TaskChatComposer", () => {
     rejectSend(new CommentSubmissionUnknownError());
     await flushAsync();
     render(<div>Another task</div>);
-    render(<TaskChatComposer onAdd={onAdd} workMode="standard" draftKey={key}
+    const onWorkModeChange = vi.fn().mockResolvedValue(undefined);
+    render(<TaskChatComposer onAdd={onAdd} onWorkModeChange={onWorkModeChange} workMode="standard" draftKey={key} />);
+    await flushAsync();
+    pressKey("Tab", { shiftKey: true });
+    render(<TaskChatComposer onAdd={onAdd} onWorkModeChange={onWorkModeChange} workMode="ask" draftKey={key}
       confirmedSubmissionIds={new Set([attemptId])} />);
     await flushAsync();
+    expect(container.querySelector('[data-testid="task-chat-composer-mode"]')?.getAttribute("data-pending-work-mode")).toBe("planning");
+    expect(onWorkModeChange).not.toHaveBeenCalled();
     expect(editable().textContent).toBe("Keep this next draft");
     expect(localStorage.getItem(key)).toBe("Keep this next draft");
     expect(loadDraftSubmission(key)).toBeNull();
