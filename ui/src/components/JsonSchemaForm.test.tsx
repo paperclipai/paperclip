@@ -876,6 +876,18 @@ describe("JsonSchemaForm arrays of objects", () => {
     expect(entryButtons()[0].textContent).not.toContain("error");
   });
 
+  it("truncates a long entry label and keeps the full name in its title", async () => {
+    const longName = "a-very-long-backend-name-without-any-spaces-that-would-overflow-the-header";
+    await act(async () => {
+      root.render(<JsonSchemaForm schema={schema} values={{ backends: [{ ...backends[0], name: longName }] }} onChange={() => {}} />);
+    });
+
+    const label = entryButtons()[0].querySelector(`[title="${longName}"]`);
+    expect(label).not.toBeNull();
+    expect(label!.className).toContain("truncate");
+    expect(label!.className).toContain("min-w-0");
+  });
+
   it("gives multi-line text the full row of an open entry", async () => {
     const withNotes: JsonSchemaNode = {
       ...schema,

@@ -1127,9 +1127,10 @@ const ArrayField = React.memo(({
             ) : (
               <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
             )}
-            <span className="shrink-0 text-sm font-medium">{itemLabel}</span>
+            {/* The label and summary both truncate, so long names never cover the remove button. */}
+            <span className="min-w-0 truncate text-sm font-medium" title={itemLabel}>{itemLabel}</span>
             {summary && (
-              <span className="truncate text-xs text-muted-foreground">
+              <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
                 · {summary}
               </span>
             )}
