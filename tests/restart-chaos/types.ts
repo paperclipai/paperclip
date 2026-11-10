@@ -8,18 +8,23 @@ export type FaultKind = (typeof FAULT_KINDS)[number];
 /**
  * A task's planned fault. "K13" (restart storm) tasks have none of their own; the wave's storm crosses them.
  * PV1–PV3 (provider message faults, provider-faults.ts) restart nothing: the task's rule is armed in the Codex shim.
+ * "K0" is a `--matrix` baseline cell: the same journey with no fault.
  */
-export type TaskFaultKind = FaultKind | "K13" | ProviderFaultKind;
+export type TaskFaultKind = FaultKind | "K13" | "K0" | ProviderFaultKind;
 
-/** G1: an approval-gated action across a restart. H1: a budget hard stop crossed mid-run with a restart (its own wave). */
-/** L1: high-output, high-accounting run for database contention (contention.ts). */
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1"] as const;
+/**
+ * G1: an approval-gated action across a restart. H1: a budget hard stop crossed mid-run with a restart (its own wave).
+ * Q1: a saved question (question-handoff.ts). Q2, Q3: journeys.ts.
+ * L1: high-output, high-accounting run for database contention (contention.ts).
+ */
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
 export type AdapterId = (typeof ADAPTER_IDS)[number];
 
-export const TRIGGER_IDS = ["time", "comment", "retry", "queued", "tool", "result", "approval", "paused", "stop"] as const;
+/** `asked` and `answered`: the journey boundaries of Q1–Q3 (journeys.ts, question-handoff.ts). */
+export const TRIGGER_IDS = ["time", "comment", "retry", "queued", "tool", "result", "approval", "paused", "stop", "asked", "answered"] as const;
 export type TriggerId = (typeof TRIGGER_IDS)[number];
 
 export const ENVIRONMENT_KINDS = ["local", "daytona"] as const;
@@ -94,6 +99,10 @@ export interface WaveOptions {
   providerFaultDelaysMs?: number[];
   /** `--db-pressure <writers>`: harness-owned writers touching the wave's running run rows back to back (contention.ts). */
   dbPressure?: number;
+  /** `--matrix`: one task per workload × adapter × (K0, or each fault at each of the workload's triggers). */
+  matrix?: boolean;
+  /** `--server-from <dir>`: every server of the wave runs from this prepared checkout (for example a pre-fix commit). */
+  serverFrom?: string;
 }
 
 export interface StormFault {
@@ -262,6 +271,8 @@ export interface OracleArtifacts {
   providerFaultEvents?: ProviderFaultEvent[];
   /** L1: accounting and run-log evidence read from the wave database at rest. */
   contention?: import("./contention.js").ContentionEvidence;
+  /** Q2, Q3: what the board did and what the task, its runs and the harness's app saw. */
+  journey?: import("./journeys.js").JourneyArtifacts;
 }
 
 /** What the board did for a governance task (G1, H1), and what the observer saw. */
@@ -348,6 +359,8 @@ export interface TaskRecord {
   serverBuildAtLaunch?: "upgrade_from" | "current";
   /** Q1: the saved question and the board's answer. */
   question?: QuestionRecord;
+  /** Q2, Q3: the board's journey actions (journey-driver.ts). */
+  journey?: import("./journeys.js").JourneyRecord;
 }
 
 export interface TaskGrade {

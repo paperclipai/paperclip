@@ -10,7 +10,7 @@ import type { ChaosLab } from "./seed.js";
 import type { Timeline } from "./timeline.js";
 import type {
   AdapterId, GovernanceRecord, InterruptionSample, OracleArtifacts, RestSweep, RetryAttempt, RunSample, ScheduledFault, TaskPlan, TaskRecord,
-  TaskSample,
+  TaskSample, TriggerId,
 } from "./types.js";
 import { restartProcessStartMatches } from "../runner-e2e/process-tree-owner.js";
 import type { UiRetryClick } from "./board-ui.js";
@@ -19,6 +19,7 @@ import { awaitingQuestionAnswer, collectQuestionArtifacts, questionStep } from "
 import { captureRemoteWorkspaceFiles, readRemoteWorkspaceFile } from "./remote-workspace-files.js";
 import { taskFaultSchedule } from "./scheduler.js";
 import { g1ChildTitle, g1Decision, workloadDefinitions, type WorkloadAgents } from "./workloads.js";
+import { databaseUrlFromConfig, journeyDriverFor, type JourneyDriver } from "./journey-driver.js";
 
 const IGNORED_DIRECTORIES = new Set([".git", ".bench", "__pycache__", "node_modules"]);
 const MAX_SNAPSHOT_FILES = 2_000;
@@ -193,7 +194,7 @@ export class TaskObserver {
 
   constructor(readonly plan: TaskPlan, private readonly api: ChaosApi, private readonly lab: ChaosLab,
     private readonly timeline: Timeline,
-    private readonly supervisor: { serverReady: boolean; faultInProgress: boolean; serverBuild?: "upgrade_from" | "current" },
+    private readonly supervisor: { serverReady: boolean; faultInProgress: boolean; serverBuild?: "upgrade_from" | "current"; paths?: { configPath: string } },
     /** Paths oracle commands may not read: the operator's home, the instance root (secrets key, database) and results. */
     private readonly protectedRoots: readonly string[] = [os.homedir()],
     private readonly board: { clickRetry(identifier: string, issueId: string): Promise<UiRetryClick> } | null = null) {
@@ -202,7 +203,12 @@ export class TaskObserver {
       preFaultFiles: null, lostFiles: null };
     this.faultSchedule = taskFaultSchedule(plan);
     this.pendingFaults = [...this.faultSchedule];
+    this.journey = journeyDriverFor({ plan, api, lab, timeline, record: this.record,
+      databaseUrl: () => databaseUrlFromConfig(supervisor.paths?.configPath) });
   }
+
+  /** Q1–Q3: the board's side of the journey (journey-driver.ts). */
+  readonly journey: JourneyDriver | null;
 
   get definition() { return workloadDefinitions[this.plan.workload]; }
 
@@ -222,7 +228,7 @@ export class TaskObserver {
     const until = Date.now() + deadlineMs;
     for (;;) {
       try {
-        await this.api.patch(`/api/issues/${this.record.issueId}`, { assigneeAgentId: this.lab.agents[this.plan.adapter].id });
+        await this.api.patch(`/api/issues/${this.record.issueId}`, { assigneeAgentId: this.journey?.assigneeAgentId ?? this.lab.agents[this.plan.adapter].id });
         break;
       } catch (error) {
         const transient = error instanceof ChaosApiError && (error.status === null || error.status >= 500);
@@ -245,12 +251,14 @@ export class TaskObserver {
     const assign = options.assign !== false;
     if (this.plan.workload === "H1") await this.lowerBudgetToSpend();
     try {
+      // Q3: connect the harness's app and hire its agent; a failed setup is a failed launch.
+      await this.journey?.prepare();
       const issue = await this.api.post<Json>(`/api/companies/${this.lab.companyId}/issues`, {
         title: definition.title(this.plan.nonce),
         description: definition.description(this.plan.nonce, this.workloadAgents()),
         status: "todo",
         priority: "medium",
-        ...(assign ? { assigneeAgentId: this.lab.agents[this.plan.adapter].id } : {}),
+        ...(assign ? { assigneeAgentId: this.journey?.assigneeAgentId ?? this.lab.agents[this.plan.adapter].id } : {}),
         ...(definition.usesRepository ? { projectId: this.lab.projectId } : {}),
       });
       this.record.issueId = String(issue.id);
@@ -357,6 +365,13 @@ export class TaskObserver {
       case "tool": return this.record.benchFirstSeenAt ?? null;
       case "approval": return this.record.governance?.approvalSeenAt ?? null;
       case "paused": return this.record.governance?.budgetPausedAt ?? null;
+      // Q1 keeps its own record (question-handoff.ts); Q2 and Q3 use the journey driver.
+      case "asked": return this.journey ? this.journey.armedAt("asked") : this.record.question?.seenAt ?? null;
+      case "answered": {
+        if (this.journey) return this.journey.armedAt("answered");
+        const answer = this.record.question?.answer;
+        return answer ? (answer.error ? "missed" : answer.at) : null;
+      }
       case "stop": {
         const stop = this.record.stop;
         if (!stop) return null;
@@ -434,6 +449,8 @@ export class TaskObserver {
     this.readySince = sample.reachable && sample.serverReady ? (this.readySince ?? now) : null;
     await this.observeBenchProgress();
     await this.governanceStep(sample, now);
+    if (this.journey && await this.journey.step({ sample, now, pendingFaults: this.pendingFaults,
+      quiet: sample.reachable && sample.serverReady && !this.supervisor.faultInProgress })) this.restCandidateSince = null;
     if (await this.observeChildStalls(now)) {
       this.restCandidateSince = null;
       this.childrenSettledAt = null;
@@ -735,6 +752,7 @@ export class TaskObserver {
   /** G1 before the board's decision, or H1 while its company is paused and not yet resumed. */
   private awaitingBoard(): boolean {
     const governance = this.record.governance;
+    if (this.journey) return this.journey.awaitingBoard();
     if (this.plan.workload === "G1") return Boolean(governance?.approvalSeenAt) && !governance?.decision;
     if (this.plan.workload === "H1") return Boolean(governance?.budgetPausedAt) && !governance?.resume && !governance?.pauseLostAt;
     if (this.plan.workload === "Q1") return awaitingQuestionAnswer(this.record);
@@ -742,8 +760,9 @@ export class TaskObserver {
   }
 
   /** The board acts only after every fault this task planned has fired (or was missed), with the server ready. */
-  private boardMayAct(sample: TaskSample): boolean {
-    return sample.reachable && sample.serverReady && !this.supervisor.faultInProgress && this.pendingFaults.length === 0;
+  private boardMayAct(sample: TaskSample, waitsForThisAction?: TriggerId): boolean {
+    return sample.reachable && sample.serverReady && !this.supervisor.faultInProgress
+      && this.pendingFaults.every(fault => waitsForThisAction !== undefined && fault.trigger === waitsForThisAction);
   }
 
   /**
@@ -773,7 +792,8 @@ export class TaskObserver {
     if (this.plan.workload === "H1") await this.budgetStep(sample, now);
     if (this.plan.workload === "Q1") {
       await questionStep({ api: this.api, issueId: this.record.issueId, nonce: this.plan.nonce, record: this.record, sample, now,
-        boardMayAct: this.boardMayAct(sample), note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }) });
+        // An `answered` fault waits for the answer, so the board may answer before it fires.
+        boardMayAct: this.boardMayAct(sample, "answered"), note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }) });
     }
   }
 
@@ -953,6 +973,7 @@ export class TaskObserver {
       ...(this.plan.workload === "H1" ? await this.finalPauseCheck(issueId) : {}),
       ...(this.record.governance ? { governance: this.record.governance } : {}),
       ...(this.plan.workload === "Q1" ? { question: await collectQuestionArtifacts(this.api, issueId, this.record) } : {}),
+      ...(this.journey ? { journey: await this.journey.collect(issueId).finally(() => this.journey!.close()) } : {}),
     };
   }
 
