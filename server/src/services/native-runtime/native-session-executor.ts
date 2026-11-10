@@ -11948,7 +11948,7 @@ async function executePaperclipNativeSessionAttempt(
             ),
           )
           .for("update");
-        // Issue Ã¢â€ â€™ coordinator Ã¢â€ â€™ run, as below. A lease that lapsed untouched
+        // Issue -> coordinator -> run, as below. A lease that lapsed untouched
         // (host sleep) is still this owner's to settle; see the held condition.
         await lockNativeExecutionLeaseForReacquire(tx, { ...input.execution.binding, leaseOwner, preResultOnly: true });
         await notifyExecutionRunWork(tx, { companyId: input.execution.binding.companyId });
