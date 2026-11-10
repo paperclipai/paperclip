@@ -281,8 +281,16 @@ one attempt, two expected provider admissions, and 1,000-cent company and agent
 hard stops. Automatic infrastructure retries are disabled. Existing campaign
 reports retain failures, timings, usage, runtime costs, and source identity.
 Source-server startup prepares the existing shared/plugin SDK build dependencies
-before importing native tool authority. Installed-package checks never execute
-checkout build helpers.
+before importing native tool authority. The six source-local plugin-fixture
+journeys retain the actual certified shared/SDK outputs before server listen,
+fingerprinting, agent setup and human dispatch. Exact bytes, completion markers,
+source/lock/helper hashes remain in Actions-only `diagnostics/source-plugin-sdk`.
+The original hidden completion-marker bytes use the explicit non-hidden archival
+name `build-completion-receipt.json`, with original/retained paths and hashes
+recorded so bounded upload staging preserves them. The public report does not
+publish those files. Startup failure does not trigger
+a post-failure rebuild or manufacture missing output evidence. Installed-package
+checks never execute checkout build helpers.
 
 ## Configured repository and conversion checks
 
@@ -821,6 +829,33 @@ matching API-key or subscription credential.
 
 Never put credentials in `catalog.ts`, screenshots, fixture metadata, workflow
 inputs, or a tracked env file.
+
+## Private framework evidence
+
+The protected TestOps reporter (`PAPERCLIP_CHAT_COMPLETION_TESTOPS=v1`) uses
+Playwright's official JSON and JUnit reporters only with an approved private-cell
+preflight. Other runs, including generic private full-stack runs, keep the existing
+HTML and blob reporters. A setup failure can retain its SDK audit without a
+framework report; a malformed present framework report still fails closed. The immutable
+JSON source is retained in `snapshots/playwright-framework-original.txt` and is
+parsed and deeply inspected as registered Playwright JSON, including decoded
+inline text/JSON attachment bodies. The text suffix preserves source bytes; it
+does not exempt the file from JSON privacy checks. Unsupported inline carriers
+fail closed.
+
+`snapshots/playwright-framework.json` preserves the report and maps attachment
+paths to their owned canonical files with byte counts and SHA-256 hashes.
+Original status, errors, and nested user steps remain unchanged. Sealed originals
+retain all owned attachments. The final-results tree references those originals
+instead of storing another copy of registered Playwright output attachments.
+The downloader verifies each reference against the sealed original inventory,
+then restores exact referenced bytes into the derived selected report tree.
+Neither sealed inventory changes. Registered metadata and attachments are not
+silently rewritten: JSON values that need privacy redaction fail closed.
+Unknown, missing, changed, or foreign attachments fail validation. Native
+snapshots and other unregistered evidence are not removed. The existing physical
+byte, entry, archive, ZIP expansion, time, and privacy bounds remain unchanged.
+A complete evidence transfer does not attest that the feature passed.
 
 ## Local commands
 
@@ -3499,6 +3534,80 @@ pnpm test:e2e:runner -- --list --suite feedback-persistence --environment dayton
 pnpm test:e2e:runner -- --id feedback-persistence.runner-acpx-claude.local.complaint-and-suggestion --max-automatic-retries 0 --max-parallel 1
 ```
 
+### Optional owned Docker PostgreSQL lane
+
+The default embedded PostgreSQL lane and portable CI behavior are unchanged.
+An explicit local alternative is available with
+`PAPERCLIP_RUNNER_E2E_DATABASE_LANE=owned-docker-postgres`. It requires an
+already running local Unix-socket Docker Linux/arm64 engine and the installed
+official `postgres@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336`
+image (PostgreSQL `18.6-1.pgdg13+2`); the harness never pulls an image or starts
+an engine. Ambient database URLs remain scrubbed and cannot select a target.
+
+Each attempt owns one labeled container and labeled local data volume, a random
+loopback-only published port and private mode0600 credentials/config/receipt.
+No password is placed in argv or native/model environment. Context/engine,
+image, labels, mounts and port binding are verified; uncertain startup or
+cleanup retains its private receipt and fails closed. Cleanup never selects
+resources by a broad label sweep. Results and fingerprints explicitly bind
+this database lane and image/version; they do not claim embedded18.1 coverage.
+Historical embedded result interpretation remains unchanged.
+
+An infrastructure-only check uses normal source onboarding/migrations/API
+health, verifies zero companies/agents/native runs, then cleans up exact owned
+resources. Run only from an audited immutable source snapshot after the
+operator has authorized this infrastructure check:
+
+```sh
+PAPERCLIP_RUNNER_E2E_SOURCE_SHA=<snapshot-sha> node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/docker-postgres-health.ts --run-owned-infrastructure-health
+```
+
+Its receipt is retained under `results/chat-catalog-campaign/`; it is never a
+scenario measurement or feature acceptance. Missing/changed ownership or an
+unknown inspection result is not proof that a resource is absent.
+
+### Chat catalog remote OpenCode campaign
+
+The explicit `chat-features` matrix now selects `runner-opencode` with native
+`paperclip_runner`, provider `opencode`, and exact model
+`openrouter/deepseek/deepseek-v4.1-flash-1017`. Its credential is an encrypted
+`OPENROUTER_API_KEY` reference. OpenCode remains pinned to the runner-owned
+1.18.34 executable; this candidate does not change the previously qualified
+OpenCode model for other suites. `local` means the selected execution host,
+including an isolated AWS worker, rather than a requirement to use a developer laptop.
+
+This is a new 244-cell behavioral campaign. Historical Codex results and passes
+remain separate and do not qualify the new provider/model. Named-provider feature
+requests retain their original meaning. Unavailable-model history requires an
+actually admitted failed OpenCode run with the exact configured provider/model;
+a preflight rejection does not establish that prerequisite. Provider/account
+qualification, paid-job approval, and owned AWS Spot capacity must be established
+before remote admission. Discovery and credential-free controls establish none
+of those live outcomes.
+
+
+### Explicit chat provider setup health
+
+`chat-setup-health.runner-opencode.local.setup-only` is a diagnostic cell, outside
+all 244 chat catalog scenarios and excluded from `--all`. It reuses the exact
+chat OpenCode/OpenRouter/DeepSeek profile, ordinary trusted fixture setup, owned
+Docker PostgreSQL and normal teardown. One agent's ordinary automatic hello is
+expected; it makes no explicit environment-test call and sends no chat/task
+request. No heartbeat runs, issues, conversations or comments may exist.
+
+Select this cell explicitly with retries zero through the existing Product E2E
+workflow. A failed readiness check fails health and retains only closed check
+codes/categories. Public pause fences automatic setup retries; failed pause
+requests the existing owned supervisor's shutdown before further API observations.
+Multiple probe receipts fail health. Setup-probe usage/cost is unavailable, never
+zero. This diagnostic cannot qualify a catalog scenario or rewrite prior results.
+
+The manual `chat-features` suite uses the production default of no native active-turn
+cap (`timeoutSec: 0`). Zero describes only that per-turn cap; it does not mean zero
+cost or an unlimited cell. Existing finite scenario, Playwright, launcher watchdog,
+public cancellation and owned-process cleanup bounds remain in force. Setup evidence
+records the effective saved policy separately from authored legacy turn declarations.
+Earlier results with the 120-second cap remain unchanged historical measurements.
 
 ### Model-spend readiness and operating reconciliation
 
@@ -3647,3 +3756,38 @@ tree. The sealed original and final inventories remain unchanged. The existing
 normalizer and TestOps exporter consume the derived files. Registered raw JSON
 remains subject to deep JSON and decoded-body privacy checks regardless of its
 text suffix. No existing physical byte, entry, ZIP, time, or archive bound changes.
+
+### Work timeline narrative calibration
+
+`activity.work-timeline` keeps its original human query, three native runs and
+720000 ms attempt bound. Its v2 oracle accepts command exit-code wording and
+incidental summary mentions without using the first worker-name match as proof
+of a handoff. It requires an ordered failed command and pause, a recorded human
+reassignment to the different repair worker, and that worker's verified repair.
+Command, filename, digest, task/run, audit, link, privacy and read-only checks
+remain independent. The deterministic owner/verifier and production timeline
+route regressions do not qualify the actual model journey. Historical failures
+retain their original grades; a missing human handoff narrative still fails.
+
+The timeline API projects initial assignment and delegation only from complete
+`issue.created` audit facts or explicitly fresh `issue.child_created` receipts
+inside the requested window. Child receipts require `createdByRequest: true`;
+false, absent or malformed flags do not establish initial ownership. The first
+bounded receipt is selected before validation, and the issue creation time must
+also be in the requested window. This is not an all-history completeness proof.
+It uses the saved actor,
+target and timestamp, and requires a readable recorded parent for delegation.
+It does not use current ownership as creation evidence. Missing or malformed
+legacy creation details leave initial ownership unknown. The API performs no
+all-history ownership-presence query. Recorded canonical and legacy ownership
+clears emit `unassigned` events with their actual actor and timestamp, without a
+target edge. Event markers are not currently rendered by the timeline chart.
+
+User identities in the timeline require active membership in the requested
+company. This gate covers receipt validation, identity lookup, and public actor,
+event and edge output, including raw IDs. Canonical audit rows remain unchanged.
+The public child and accepted-plan schemas strip idempotency and conversation
+keys; private service replay controls do not imply HTTP replay support. The
+accepted-plan fresh-child list excludes keyed/title reuse reported by its
+existing callback for supported task inputs. This is not a universal internal
+conversation-creation provenance guarantee.

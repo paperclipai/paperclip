@@ -223,7 +223,7 @@ async function reusableDirectoryAfterPreparationFailure(db: Db, source: typeof h
       source.lastOutputSeq !== 0 || source.logCompressed ||
       Object.keys(source.usageJson ?? {}).some(key => key !== "ledgerScope") ||
       Object.keys(source.runnerProfileJson ?? {}).some(key => !["adapterDispatch", "chatControlRecoveryAdmission", "aiConnectionNonAssigneeCommentWake"].includes(key)) ||
-      Object.keys(source.resultJson ?? {}).some(key => !["effectiveTimeoutSec", "executionRecovery", "stopReason", "timeoutConfigured", "timeoutFired", "timeoutSource", "workspaceValidation"].includes(key))) return null;
+      Object.keys(source.resultJson ?? {}).some(key => !["effectiveTimeoutSec", "executionRecovery", "stopReason", "timeoutConfigured", "timeoutFired", "timeoutSource", "workspaceValidation", "failureCause"].includes(key))) return null;
   const settlement = await readFailedPreparationSettlement(db, source);
   const warning = settlement?.unsupportedHarnessWarning;
   if (!settlement || warning && (warning.message !== "Company observability was not applied: this harness is not supported."

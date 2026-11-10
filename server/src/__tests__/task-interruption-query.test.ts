@@ -124,6 +124,40 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     expect((await taskInterruptionPresentation(db, parent))?.retryWait?.reason).not.toBe("dependency_blocked");
   });
 
+  it("does not report a superseded Retry as failure after a newer conversation succeeds", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), oldRunId = randomUUID(), newRunId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Continued conversation", issuePrefix: `C${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Agent", adapterType: "paperclip_runner" });
+    const [task] = await db.insert(issues).values({ companyId, title: "Continue setup", status: "in_review",
+      assigneeAgentId: agentId }).returning();
+    await db.insert(heartbeatRuns).values([
+      { id: oldRunId, companyId, agentId, nativeIssueId: task.id, scopeKind: "issue", runtimeMode: "native",
+        status: "failed", createdAt: new Date(Date.now() - 120_000), finishedAt: new Date(Date.now() - 110_000) },
+      { id: newRunId, companyId, agentId, nativeIssueId: task.id, scopeKind: "issue", runtimeMode: "native",
+        status: "succeeded", createdAt: new Date(Date.now() - 60_000), finishedAt: new Date(Date.now() - 30_000) },
+    ]);
+    const [retry] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", reason: "task_retry",
+      status: "deferred_issue_execution", requestedByActorType: "user", requestedAt: new Date(Date.now() - 90_000),
+      payload: { issueId: task.id, taskRetry: { sourceRunId: oldRunId } } }).returning();
+    for (const presentation of [await taskInterruptionPresentation(db, task),
+      (await taskInterruptionPresentations(db, companyId, [task])).get(task.id)]) {
+      expect(presentation).toMatchObject({ state: "resolved", canRetry: false, intentId: null, observedRunId: newRunId });
+    }
+    // Reads do not acknowledge input or retire execution authority.
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.id)))[0]?.status)
+      .toBe("deferred_issue_execution");
+    // A later provider failure still belongs to the current run.
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_provider_terminal_failed" })
+      .where(eq(heartbeatRuns.id, newRunId));
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: true, observedRunId: newRunId });
+    await db.update(heartbeatRuns).set({ status: "succeeded", errorCode: null }).where(eq(heartbeatRuns.id, newRunId));
+    // Unconsumed ordinary input is independent of the obsolete Retry.
+    const [message] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand",
+      reason: "issue_commented", status: "deferred_issue_execution", requestedByActorType: "user",
+      requestedAt: new Date(Date.now() - 20_000), payload: { issueId: task.id } }).returning();
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", intentId: message.id });
+  });
+
   // G1 wave s9802 t02: an accepted Retry held by the unpriced-usage refusal
   // read as a budget wait. It is an accounting matter; name it so.
   it("labels a Retry held by unpriced usage as accounting, not budget", async () => {
@@ -317,6 +351,71 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
         expect(JSON.stringify(presentation)).not.toContain(secret);
       }
     } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("names a failed setup command on task detail and list reads, redacted with the run's registry (CF1)", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
+    try {
+      const f = await seedInterruptionFixture(db, { selected: 1, history: 1, unrelated: 0, payloadBytes: 0 });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+      const secret = `private-setup-value-${randomUUID()}`;
+      const command = "bash ./scripts/provision-worktree.sh";
+      const output = `bash: ./scripts/provision-worktree.sh: No such file or directory (${secret})`;
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "setup_failed",
+        error: `Execution workspace provision command "${command}" failed: ${output}`,
+        resultJson: { setupCommandFailure: { step: "workspace_provision", command, exitCode: 127, output } } }).where(eq(heartbeatRuns.id, run!.id));
+      await createRunSecretRedactionRegistry(db).register(f.companyId, run!.id, secret);
+      const read = async () => [(await taskInterruptionPresentations(db, f.companyId, f.input)).get(f.input[0]!.id),
+        await taskInterruptionPresentation(db, f.input[0]!)];
+      for (const presentation of await read()) {
+        expect(presentation).toMatchObject({ state: "failed", canRetry: true, setupFailure: { step: "workspace_provision", command, exitCode: 127 } });
+        expect(presentation?.setupFailure?.message).toContain(`The project's workspace provision command "${command}" failed with exit code 127`);
+        expect(presentation?.setupFailure?.output).toContain("REDACTED");
+        expect(JSON.stringify(presentation)).not.toContain(secret);
+      }
+      // A run recorded before the structured cause existed is named from its fixed message shape. Its
+      // registered secret crosses the 300-character cut; it is removed whole before shortening.
+      const longOutput = `${secret}${"z".repeat(290)}`;
+      await db.update(heartbeatRuns).set({ resultJson: {}, error: `Execution workspace provision command "${command}" failed: ${longOutput}` })
+        .where(eq(heartbeatRuns.id, run!.id));
+      for (const presentation of await read()) {
+        expect(presentation?.setupFailure).toMatchObject({ step: "workspace_provision", command, exitCode: null });
+        expect(presentation?.setupFailure?.output?.length).toBeLessThanOrEqual(300);
+        const text = JSON.stringify(presentation);
+        for (let index = 0; index + 8 <= secret.length; index += 1) expect(text).not.toContain(secret.slice(index, index + 8));
+      }
+      // A long older log still shows its final error line.
+      await db.update(heartbeatRuns).set({ error: `Execution workspace provision command "${command}" failed: ${"filler\n".repeat(800)}No such file or directory` })
+        .where(eq(heartbeatRuns.id, run!.id));
+      for (const presentation of await read()) expect(presentation?.setupFailure?.output).toMatch(/No such file or directory$/);
+      // A transient retry shows its setup_failed predecessor's cause.
+      const predecessorId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: predecessorId, companyId: f.companyId, agentId: run!.agentId, status: "failed",
+        errorCode: "setup_failed", resultJson: { setupCommandFailure: { step: "workspace_provision", command, exitCode: 1, output } },
+        createdAt: new Date(run!.createdAt.getTime() - 60_000) });
+      await createRunSecretRedactionRegistry(db).register(f.companyId, predecessorId, secret);
+      await db.update(heartbeatRuns).set({ status: "scheduled_retry", retryOfRunId: predecessorId, errorCode: null, error: null, resultJson: {},
+        scheduledRetryAt: new Date(Date.now() + 30_000), scheduledRetryAttempt: 1 }).where(eq(heartbeatRuns.id, run!.id));
+      for (const presentation of await read()) {
+        expect(presentation?.setupFailure).toMatchObject({ command, exitCode: 1 });
+        expect(JSON.stringify(presentation)).not.toContain(secret);
+      }
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("names the configured model a provider rejected on task detail and list reads (CF3 model_id)", async () => {
+    const f = await seedInterruptionFixture(db, { selected: 1, history: 1, unrelated: 0, payloadBytes: 0 });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_provider_model_rejected",
+      runnerProfileJson: { nativeExecutionInput: { provider: { kind: "codex", model: "chaos-missing-model-1234" } } } }).where(eq(heartbeatRuns.id, run!.id));
+    for (const presentation of [(await taskInterruptionPresentations(db, f.companyId, f.input)).get(f.input[0]!.id),
+      await taskInterruptionPresentation(db, f.input[0]!)]) {
+      expect(presentation).toMatchObject({ responsibility: "user", state: "waiting_for_user", userAction: "choose_model",
+        rejectedModel: "chaos-missing-model-1234" });
+    }
+    // Only a model rejection discloses the configured model.
+    await db.update(heartbeatRuns).set({ errorCode: "adapter_failed" }).where(eq(heartbeatRuns.id, run!.id));
+    expect(await taskInterruptionPresentation(db, f.input[0]!)).not.toHaveProperty("rejectedModel");
   });
 
   it.each(["decryption failure", "expanded message"])("keeps task reads available after provider display %s", async scenario => {
@@ -573,7 +672,7 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
   });
   // N-03: ONB-1 on staging waited 16 minutes on an overdue workspace_busy
   // retry. Nothing failed, yet the banner offered a Retry that cannot help.
-  it.each(["workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", "runner_revision_wait"])(
+  it.each(["workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", "runner_revision_wait", "storage_unavailable_wait"])(
     "does not present an overdue %s wait as a failed attempt", async reason => {
       const companyId = randomUUID(), agentId = randomUUID(), parentRunId = randomUUID();
       await db.insert(companies).values({ id: companyId, name: "Waiting task", issuePrefix: `W${companyId.slice(0, 7)}` });

@@ -24,7 +24,7 @@ scenarios:
       A bounded design request genuinely needs an audience, a tone and a custom headline; the
       fixture offers a paged form with choices and free text.
     query: >-
-      Help me choose the details for the launch page before you build it.
+      Walk me through the launch-page question form so I can choose the audience and tone and enter my own headline before you build anything.
     expected_outcome: >-
       The question flow retains earlier answers across pages, supports a custom answer and
       displays validation on missing required input. Only the submitted set resumes the work.

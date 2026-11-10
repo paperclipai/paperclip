@@ -1,3 +1,4 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { NativeControllerContainmentRecovery } from "../components/IssueRecoveryActionCard";
 import { useIssueIdBatches } from "@/hooks/useIssueIdBatches";
 import { TaskChatLoadingShell } from "@/components/task-chat/TaskChatLoadingShell";
@@ -103,7 +104,6 @@ import {
 } from "../lib/recovery-reconcile";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
-import { projectsApi } from "../api/projects";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -3716,8 +3716,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
 
   const { data: projects = EMPTY_PROJECTS } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    ...companyProjectsQuery(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
@@ -5952,6 +5951,18 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
 
   const conversationAgent = conversation?.agent ?? agents?.find(agent => agent.id === issue?.conversationAgentId);
+  const breadcrumbParent = issue?.ancestors?.[0];
+  const breadcrumbParentRef = breadcrumbParent && !isLockedIssueStub(breadcrumbParent)
+    ? breadcrumbParent.identifier ?? breadcrumbParent.id
+    : null;
+  const rememberBreadcrumbParent = useCallback(() => {
+    if (!breadcrumbParentRef) return;
+    rememberIssueDetailLocationState(
+      breadcrumbParentRef,
+      resolvedIssueDetailState ?? location.state,
+      location.search,
+    );
+  }, [breadcrumbParentRef, resolvedIssueDetailState, location.state, location.search]);
   useEffect(() => {
     if (conversationAgent) {
       setBreadcrumbs([{ label: "Chat" }]);
@@ -5959,6 +5970,18 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     }
     setBreadcrumbs([
       sourceBreadcrumb,
+      ...(breadcrumbParent ? [{
+        label: isLockedIssueStub(breadcrumbParent) ? "Private task" : breadcrumbParent.title,
+        identifier: breadcrumbParent.identifier ?? undefined,
+        href: isLockedIssueStub(breadcrumbParent)
+          ? undefined
+          : createIssueDetailPath(breadcrumbParent.identifier ?? breadcrumbParent.id),
+        onClick: isLockedIssueStub(breadcrumbParent) ? undefined : rememberBreadcrumbParent,
+        control: isLockedIssueStub(breadcrumbParent)
+          ? <LockedIssueChip identifier={isMobile ? null : breadcrumbParent.identifier} />
+          : undefined,
+        controlKey: isLockedIssueStub(breadcrumbParent) ? `private-parent:${isMobile}` : undefined,
+      }] : []),
       {
         // The status glyph (leading) already conveys in-progress/live state;
         // no redundant 🔵 emoji prefix on the title.
@@ -5973,6 +5996,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     coordinatorWorkspaceEnabled,
     breadcrumbTitle,
     breadcrumbIdentifier,
+    breadcrumbParent,
+    isMobile,
+    rememberBreadcrumbParent,
     hasLiveRuns,
     setBreadcrumbs,
     sourceBreadcrumb.href,

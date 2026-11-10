@@ -64,12 +64,19 @@ the active run through that broker. They do not require a persistent GitHub CLI
 login or inherit an ambient host broker capability.
 
 Claude through native ACPX retains the controller-projected broker URL and
-session/bridge capabilities alongside its managed launcher paths. Both isolated
+session/bridge capabilities alongside its managed launcher paths through both
+the Rust daemon-to-sidecar and TypeScript provider launch boundaries. Both isolated
 and preconfigured homes use this transport for shell `git` and `gh` operations.
 These capabilities stay out of persisted session environment data. Raw GitHub
 tokens remain confined to each managed command; ambient host capabilities and
 task-supplied broker overrides are excluded. A working connector tool alone does
 not prove that the terminal received its broker transport.
+
+The Rust sidecar launch accepts this transport only for Claude with a nonempty
+managed launcher directory. Existing saved sessions retain their profile and
+checkpoint format. A running provider needs its normal retirement and restart
+to receive the repaired launch environment; reconnecting the GitHub account
+does not repair a process that already started without the transport.
 
 Without a managed identity, local commits default to
 `Paperclip <noreply@paperclip.ing>`. The launcher writes this token-free default

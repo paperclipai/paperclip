@@ -209,6 +209,7 @@
 }
 
 :root {
+  --breadcrumb-parent-max-width: 40%;
   color-scheme: light;
   --font-paper-mono: "Paper Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --file-tree-indent-base: calc(var(--spacing) * 2);
