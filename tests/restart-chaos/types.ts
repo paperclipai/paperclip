@@ -201,6 +201,8 @@ export interface RunSample {
   toolInFlight?: boolean;
   /** The run's recorded local runner process is still running with the same start time. */
   processAlive?: boolean;
+  /** A provider turn started and has no turn terminal yet. */
+  providerTurnActive?: boolean;
 }
 
 export interface InterruptionSample {
