@@ -55,7 +55,7 @@ For normal issue implementation plans, use the issue-thread confirmation surface
 2. Create `request_confirmation` bound to the latest `plan` revision.
 3. Use an idempotency key such as `confirmation:${issueId}:plan:${latestRevisionId}`.
 4. Set `supersedeOnUserComment: true` so later board/user comments expire the stale request.
-5. Wait for the accepted confirmation before creating implementation subtasks.
+5. Wait for the accepted confirmation before implementation.
 
 ## Responding to Approval Resolutions
 

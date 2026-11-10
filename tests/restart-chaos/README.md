@@ -418,6 +418,26 @@ fails when no restart fired, or when a fired restart has no fault id or its held
 `aborted` (the hold expired first). It needs `--storage s3` and `--triggers time`, and does not take
 G1, H1 or Q1: their board actions would run while the fault waits for a request.
 
+### Restart at native start (`--native-trigger`)
+
+A time-based fault on a remote workspace often lands while the run is still preparing. `--native-trigger <target>[+<seconds>]`
+turns each task's planned K fault into an armed fault: at its planned time (`--fault-after-seconds` pins it) the fault is armed,
+and it fires `<seconds>` (0-600) after the next matching event of the task's running run.
+
+| Target | Matching run event |
+| --- | --- |
+| `native-start` | `native.process_start_requested` (the executor is about to start the runner) |
+| `provider-event` | the first `session.started`, `turn.submitted`, `turn.started` or `turn.accepted` |
+
+For example, `--native-trigger native-start+5` restarts the server five seconds after native start. `native-trigger.json` records,
+per armed fault, the run and event that fired it, the delay after the event, and its fault id. A fault whose task rested first, or
+that saw no matching event, is recorded with `missedReason` (`task_rested` or `no_matching_event`). The wave summary adds a "Native
+trigger" section and fails when no restart fired. It takes `--triggers time` only, not `--storage-trigger`, and not G1, H1 or Q1.
+
+`--native-trigger-outage <seconds>` (10-900, with `--storage s3` and no `--storage-faults`) also starts an ST1 outage of that
+length the moment each trigger fires, just before the restart. The recovered run then prepares while the store is down. The
+windows are written to `storage-faults.json` and removed from the speed grade like planned storage faults.
+
 Every Retry the grader needs is clicked in the real board UI: the harness opens the issue in a headless
 Chromium, waits for the visible Retry button and clicks it. A task whose Retry button is missing fails
 R3 as `ui_retry_button_missing (user saw: …)`; a click that sends no retry request fails as

@@ -1201,7 +1201,7 @@ describe("agent live run routes", () => {
         type: "board", userId: "operator", source: "session", companyIds: ["company-1"],
       }), url => request(url).post(`/api/agents/${routeAgentId}/wakeup`).send(retryBody));
       expect(res.status).toBe(409);
-      expect(res.body).toMatchObject({ error: expect.stringContaining("cleanup and reconciliation") });
+      expect(res.body).toMatchObject({ error: expect.stringContaining("still shutting down") });
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
       expect(mockChatRunRetries.prepareFailedChatRunRetry).not.toHaveBeenCalled();
     });

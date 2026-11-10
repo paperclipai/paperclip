@@ -72,6 +72,8 @@ export interface StorageProvider {
     | { ifMatch: string; ifNoneMatch?: never }
   )): Promise<{ etag: string }>;
 
+  abortIncompleteUploads?(input: { objectKey: string; signal?: AbortSignal }): Promise<number>;
+
   listObjects?(input: { prefix: string; continuationToken?: string; signal?: AbortSignal }): Promise<{
     keys: string[];
     continuationToken?: string;
@@ -106,4 +108,5 @@ export interface StorageService {
   getObject(companyId: string, objectKey: string, options?: Pick<GetObjectInput, "range" | "signal">): Promise<GetObjectResult>;
   headObject(companyId: string, objectKey: string, options?: Pick<GetObjectInput, "signal">): Promise<HeadObjectResult>;
   deleteObject(companyId: string, objectKey: string, options?: Pick<DeleteObjectInput, "signal" | "allVersions">): Promise<void>;
+  abortIncompleteUploads?(companyId: string, objectKey: string, options?: { signal?: AbortSignal }): Promise<number>;
 }

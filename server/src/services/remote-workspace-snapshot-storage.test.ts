@@ -77,6 +77,23 @@ suite("remote workspace snapshot storage", () => {
     const [row] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, ref.id));
     expect(row?.status).toBe("uploaded"); // The owning service still controls atomic publication.
   });
+  it.each(["uploaded", "lost-reply"])("refuses an unreadable %s snapshot key without downloading", async state => {
+    const f = await fixture(), put = storage.putFile.bind(storage);
+    if (state === "lost-reply") {
+      storage.putFile = async input => { await put(input); throw new Error("lost upload reply"); };
+      await expect(uploadWorkspaceSnapshot({ ...f.upload, verification: "upload" })).rejects.toThrow("lost upload reply");
+      storage.putFile = put;
+    } else await uploadWorkspaceSnapshot({ ...f.upload, verification: "upload" });
+    await fs.rm(f.archivePath);
+    const get = vi.spyOn(storage, "getObject").mockRejectedValue(new Error("must not download"));
+    const upload = vi.spyOn(storage, "putFile");
+    const [before] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id));
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "42".repeat(32));
+    await expect(uploadWorkspaceSnapshot({ ...f.upload, verification: "upload" })).rejects.toThrow();
+    const [after] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id));
+    expect(after).toEqual(before);
+    expect(get).not.toHaveBeenCalled(); expect(upload).not.toHaveBeenCalled();
+  });
   it("records where a save and a restore spend their time", async () => {
     const f = await fixture();
     const saveTiming = newWorkspaceSnapshotStorageTiming();
@@ -226,6 +243,41 @@ suite("remote workspace snapshot storage", () => {
     expect(await getWorkspaceSnapshot(db, { ...f, snapshotId: ref.id })).toEqual(ref);
     const [row] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, ref.id));
     expect((row?.metadata?.uploads as unknown[]).length).toBe(1);
+  });
+  it("aborts the incomplete upload of an attempt a restart cut off once a retried save publishes", async () => {
+    const f = await fixture(), put = storage.putFile.bind(storage), incomplete = new Set<string>();
+    storage.abortIncompleteUploads = vi.fn(async (_companyId: string, key: string) => Number(incomplete.delete(key)));
+    storage.putFile = async input => { incomplete.add(input.objectKey!); throw new Error("process killed mid UploadPart"); };
+    await expect(uploadWorkspaceSnapshot(f.upload)).rejects.toThrow("process killed mid UploadPart");
+    const [cut] = [...incomplete];
+    storage.putFile = put;
+    const ref = await uploadWorkspaceSnapshot(f.upload);
+    expect(ref.objectKey).not.toBe(cut);
+    expect(storage.abortIncompleteUploads).toHaveBeenCalledTimes(1);
+    expect(storage.abortIncompleteUploads).toHaveBeenCalledWith(f.companyId, cut, expect.anything());
+    expect(incomplete.size).toBe(0);
+    await uploadWorkspaceSnapshot(f.upload);
+    expect(storage.abortIncompleteUploads).toHaveBeenCalledTimes(1);
+  });
+  it("adopts the published save when another uploader aborts this attempt's upload", async () => {
+    const f = await fixture(), put = storage.putFile.bind(storage);
+    let release!: (error: Error) => void, started!: () => void;
+    const gate = new Promise<never>((_resolve, reject) => { release = reject; });
+    const blocked = new Promise<void>(resolve => { started = resolve; });
+    let first = true, aborted: string | null = null;
+    storage.putFile = async input => {
+      if (!first) return put(input);
+      first = false; aborted = input.objectKey!; started(); return gate;
+    };
+    storage.abortIncompleteUploads = vi.fn(async (_companyId: string, key: string) => {
+      if (key === aborted) release(Object.assign(new Error("NoSuchUpload"), { name: "NoSuchUpload" }));
+      return 1;
+    });
+    const loser = uploadWorkspaceSnapshot(f.upload);
+    await blocked;
+    const winner = await uploadWorkspaceSnapshot(f.upload);
+    expect(storage.abortIncompleteUploads).toHaveBeenCalledWith(f.companyId, aborted, expect.anything());
+    expect(await loser).toEqual(winner);
   });
   it("retains an unsuccessful operation and rejects a content-changing retry", async () => {
     const f = await fixture(); storage.putFile = async () => { throw new Error("storage unavailable"); };

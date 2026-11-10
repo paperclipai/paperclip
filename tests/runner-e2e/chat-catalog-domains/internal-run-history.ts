@@ -90,7 +90,7 @@ function findRuns(): ChatCatalogCase {
     await ctx.input.evidence("chat-catalog-real-interrupted-continuation.json", state); return state;
     } catch (error) { await gate.close(); gate = undefined; throw error; }
   }, gradeRunHistory);
-  return { ...base, oracleVersion: "paperclip.chat-catalog.run-history.v3", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 660_000,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.run-history.v4", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 660_000,
     runPolicy: { kind: "terminal-counts", terminalStatusCounts: { cancelled: 1, succeeded: 2 } },
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-run-history.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/internal-run-brief.ts", "../e2e/fetch-allowed-port.ts", "run-observations.ts"],
     async observe(ctx, state): Promise<RunHistory> {

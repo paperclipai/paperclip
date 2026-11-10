@@ -1020,11 +1020,11 @@
       ]
     },
     {
-      "id": "skill:skills/paperclip/references/api-reference.md:6-create-subtasks-and-delegate:621",
+      "id": "skill:skills/paperclip/references/api-reference.md:6-task-creation-with-an-optional-parent-and-assignee:621",
       "sourceKind": "skill_heading",
       "sourceAnchor": "skills/paperclip/references/api-reference.md:621",
-      "title": "6. Create subtasks and delegate.",
-      "expectedSemantics": "Skill guidance headed “6. Create subtasks and delegate.”.",
+      "title": "6. Task creation with an optional parent and assignee.",
+      "expectedSemantics": "Skill guidance headed “6. Task creation with an optional parent and assignee.”.",
       "primaryDisposition": "optional_agent_tool",
       "requiredGrants": [],
       "assertionClasses": [

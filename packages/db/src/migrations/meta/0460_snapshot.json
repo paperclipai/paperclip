@@ -1,6 +1,6 @@
 {
-  "id": "f98af245-4a2e-4c3d-b89e-6ed3e81a074c",
-  "prevId": "d54bfeb4-dedb-4f8b-9195-a4d4aa67d71f",
+  "id": "f93ccf18-7e86-4788-be77-b17430c86b2f",
+  "prevId": "e070677d-cfb8-4438-847c-29c4da7ca8c5",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -10188,6 +10188,40 @@
           "method": "btree",
           "with": {}
         },
+        "chat_actions_company_issue_kind_idx": {
+          "name": "chat_actions_company_issue_kind_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"payload\"->>'issueId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"chat_actions\".\"kind\" IN ('inbound_wakeup', 'failed_run_retry')",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
         "chat_actions_github_stale_head_idx": {
           "name": "chat_actions_github_stale_head_idx",
           "columns": [
@@ -10953,6 +10987,28 @@
           ],
           "isUnique": true,
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "chat_deliveries_github_automatic_delivery_idx": {
+          "name": "chat_deliveries_github_automatic_delivery_idx",
+          "columns": [
+            {
+              "expression": "endpoint_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"normalized_event\"->'githubAutomatic'->'context'->>'deliveryId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "(\"chat_deliveries\".\"normalized_event\"->'githubAutomatic'->'context'->>'deliveryId') is not null",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         }
@@ -12391,6 +12447,44 @@
           ],
           "isUnique": true,
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "chat_message_links_company_comment_idx": {
+          "name": "chat_message_links_company_comment_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "comment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"chat_message_links\".\"comment_id\" is not null",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
+        "chat_message_links_delivery_idx": {
+          "name": "chat_message_links_delivery_idx",
+          "columns": [
+            {
+              "expression": "delivery_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"chat_message_links\".\"delivery_id\" is not null",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         }
@@ -29073,6 +29167,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "environment_leases_native_backup_scope_idx": {
+          "name": "environment_leases_native_backup_scope_idx",
+          "columns": [
+            {
+              "expression": "(\"metadata\"->'nativeHarnessBackup'->>'sessionScopeSha256')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "(\"environment_leases\".\"metadata\"->'nativeHarnessBackup'->>'sessionScopeSha256') is not null",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -35421,6 +35531,22 @@
           "method": "btree",
           "with": {}
         },
+        "heartbeat_runs_pending_budget_cancellation_idx": {
+          "name": "heartbeat_runs_pending_budget_cancellation_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "jsonb_typeof(\"heartbeat_runs\".\"result_json\"->'startupCancellation'->'budgetEnforcement') = 'object'\n        and \"heartbeat_runs\".\"result_json\"->'startupCancellation'->'budgetEnforcement'->>'deliveredAt' is null",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
         "heartbeat_runs_tree_hold_suppression_idx": {
           "name": "heartbeat_runs_tree_hold_suppression_idx",
           "columns": [
@@ -35456,6 +35582,27 @@
           "isUnique": false,
           "where": "\"heartbeat_runs\".\"runtime_mode\" = 'legacy' AND \"heartbeat_runs\".\"status\" = 'running' AND \"heartbeat_runs\".\"controller_boot_id\" is not null",
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_company_wake_comment_idx": {
+          "name": "heartbeat_runs_company_wake_comment_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"context_snapshot\"->>'wakeCommentId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": true,
           "method": "btree",
           "with": {}
         },
@@ -35607,6 +35754,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_company_native_session_idx": {
+          "name": "heartbeat_runs_company_native_session_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "native_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"native_session_id\" is not null",
           "concurrently": true,
           "method": "btree",
           "with": {}
@@ -35845,6 +36014,28 @@
           ],
           "isUnique": false,
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_company_ctx_execution_workspace_idx": {
+          "name": "heartbeat_runs_company_ctx_execution_workspace_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"context_snapshot\" ->> 'executionWorkspaceId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"context_snapshot\" ? 'executionWorkspaceId'",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         },

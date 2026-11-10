@@ -17,6 +17,7 @@ import { readNativeWorkspaceSyncReference } from "./native-runtime/native-worksp
 import { completedWorkspaceRecoveryCondition, hasVerifiedWorkspaceRepair, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { nativeManualAdmissionHoldsExecution } from "./native-runtime/native-runner-ownership.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
+import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED } from "./native-runtime/completed-turn-cleanup.js";
 
 const blockerContextKeys = ["issueId", "taskId", "source", "connectionIntentResolution",
   "interactionKind", "interactionStatus", "mutation", "interactionId"] as const;
@@ -386,6 +387,9 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     !["done", "cancelled"].includes(conversation.status) && await canRetryStoppedRun(db, run));
   const runError = run && canRetry && isPreDispatchReviewWait(run)
     ? "Waiting for review; this continuation never started."
+    // Earlier releases saved operator-facing text for the cleanup gate. Show
+    // the plain wording from the code instead of the stored message.
+    : run?.errorCode === NATIVE_SESSION_CLEANUP_QUARANTINED ? NATIVE_CLEANUP_SETTLING_MESSAGE
     : cancellation?.reason ?? (run?.status === "cancelled"
       ? "Execution was cancelled; its source was not recorded."
       // Rows written before SQL text was kept out of run errors still carry it.

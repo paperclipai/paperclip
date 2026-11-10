@@ -158,5 +158,11 @@ export function createStorageService(provider: StorageProvider): StorageService 
       await cancellable(options?.signal, () => provider.deleteObject({ objectKey, signal: options?.signal,
         ...(options?.allVersions ? { allVersions: true } : {}) }));
     },
+
+    async abortIncompleteUploads(companyId: string, objectKey: string, options) {
+      ensureCompanyPrefix(companyId, objectKey);
+      if (!provider.abortIncompleteUploads) return 0;
+      return cancellable(options?.signal, () => provider.abortIncompleteUploads!({ objectKey, signal: options?.signal }));
+    },
   };
 }

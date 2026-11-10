@@ -35,22 +35,25 @@ The batch acquires an independent complete source fence, all component lifecycle
 locks, and the union of required physical copyback locks. It refuses to borrow
 an enclosing transaction because a savepoint cannot confirm the outer commit.
 
-Reservation runs serially on the original pool. Capture, encryption, upload,
-authenticated readback, restore, and recapture run concurrently on that pool.
+Reservation runs serially on the original pool. Each member makes one archive,
+computes its checksums while copying files into it, encrypts it, and
+uploads it. Migration trusts a successful upload. It does not pre-hash source
+files, download the upload, extract a test copy, or capture the source again.
+Encryption computes the ciphertext checksum as it writes, without a separate
+read of the encrypted file. These member operations run concurrently.
 Under the complete fence, preflight compares every selected workspace fingerprint
 with the aggregate source proof's full preimage before the first reservation.
 Each reservation repeats its member check before writing a journal. Earlier
 source changes refuse the attempt; a fresh attempt can replan when no journal
 was reserved. Source changes after a partial reservation remain blocked by the
 saved aggregate proof.
-One nested-child verifier belongs to the complete cohort fence. Its prepare
-calls are queued; each call retains the existing two-child bound and completed
-authenticated immutable proof. Every member still rechecks current local bytes,
-Git metadata, database references and recovery bindings. The verifier closes
-only after all member work joins, before the fence can leave.
+One nested-child selector belongs to the complete cohort fence. Its prepare
+calls are queued. It uses committed snapshot and operation records to retain
+already imported children as dependencies. It does not download, restore, or
+recapture those children. Publication still checks their database bindings.
+The selector closes after all member work joins, before the fence can leave.
 The caller must budget for the number of logical captures, even though there is
-only one Node process. Include up to two nested-child verification workers in
-addition to the configured member concurrency. The first hosted qualification
+only one Node process. The first hosted qualification
 uses two same-component leaves without imported children. Eight captures can use much more scratch space, CPU,
 storage bandwidth, and database capacity than one capture. Start with a
 two-member canary and measure the actual host before increasing concurrency.
@@ -71,9 +74,10 @@ eligibility or snapshot work. Publication repeats that check. The owner does
 not reset or reopen those journals. A single-workspace import refuses a cohort
 journal.
 
-After capture, the owner transaction locks and freshly validates every member,
-source, journal, recovery binding, and uploaded snapshot before it writes any
-workspace authority. It then publishes members serially. The outer commit must
+After upload, the owner transaction checks every member's ownership, journal,
+recovery binding, and snapshot record before it writes workspace authority.
+It does not reconstruct the data to prove the copy. It publishes members
+serially. The outer commit must
 succeed before the batch returns success or publishes live activity events.
 The originals remain intact.
 
@@ -83,6 +87,24 @@ preallocated operation IDs, including an interruption halfway through
 reservation. A changed or incomplete membership is rejected. Fresh physical
 source checks still run after a process or volume handover; the durable logical
 fingerprint does not treat an inode number as lasting authority.
+
+An acknowledged upload is reused directly. If the previous process lost its
+upload reply, a journaled upload found by HEAD is reused. Neither case rebuilds
+or downloads the archive. An explicit upload failure remains a failure.
+
+## Archive compatibility
+
+Migration keeps the PCWS1 archive format. The file checksums required by existing
+readers are computed during the single source copy, without a preliminary file
+read. Their fixed-length fields are filled in the archive header after copying.
+The complete archive is checksummed for storage. Existing readers, saved
+snapshots, and interrupted upload journals remain compatible. Ordinary run
+captures keep their existing mode. Object loading still authenticates and
+decrypts the complete encrypted archive when a real restore is needed.
+
+This deliberately trades migration readback and repeat source comparisons for
+speed. It relies on the existing source/writer fences and the storage upload
+acknowledgement. The original source is retained for recovery.
 
 An uncertain commit must first be observed through the canonical inventory and
 journals. An entirely remote set is an idempotent replay only when its selected

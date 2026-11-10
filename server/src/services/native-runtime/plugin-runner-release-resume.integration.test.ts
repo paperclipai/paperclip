@@ -43,11 +43,12 @@ const parkId = (source: DurableRecoveryIdentity) => `park_${sha(JSON.stringify(O
 describeEmbeddedPostgres("plugin Runner release/resume through the Core execution entry", () => {
   const environment = nativeRestartFixture();
   const nativeIt = process.platform === "win32" ? it.skip : realProcessIt;
-  nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "adopted"] as const).map(mode => [harness, mode] as const)), ["codex", "adopted cancellation"] as const, ["codex", "adopted legacy cancellation"] as const,
+  nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "adopted", "adopted restart"] as const).map(mode => [harness, mode] as const)), ["codex", "adopted cancellation"] as const, ["codex", "adopted legacy cancellation"] as const,
     ["codex", "cached cancellation"] as const, ["codex", "cached held claim"] as const, ["claude", "cached held claim"] as const,
-    ["codex", "cached managed GitHub"] as const, ["codex", "adopted managed GitHub"] as const])("completes %s runs through a retained %s process", { timeout: 60_000 }, async ([harness, mode], context) => {
+    ["codex", "cached managed GitHub"] as const, ["codex", "adopted managed GitHub"] as const, ["codex", "adopted restart managed GitHub"] as const])("completes %s runs through a retained %s process", { timeout: 60_000 }, async ([harness, mode], context) => {
     if (harness === "claude" && !existsSync(fakeAcpxSidecar)) context.skip();
     const adopted = mode.startsWith("adopted"), cancellation = mode.includes("cancellation"), heldClaimMode = mode === "cached held claim";
+    const restart = mode.includes("restart");
     const qualifiedCancellation = mode === "adopted cancellation" || mode === "cached cancellation";
     const managedGitHub = mode.endsWith("managed GitHub"), brokerUrl = "https://core.example.test/api", brokerToken = (runId: string) => `fixture-broker-${runId}`;
     const preparedBrokers: Array<{ runId: string; token?: string }> = [];
@@ -76,7 +77,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
       task: { identifier: "RELEASE-ENTRY", title: issue!.title, description: null, prompt: "Complete the controlled task.", workMode: "standard" },
       workspace: { cwd: workspace, repoUrl: null, repoRef: null, branchName: null },
       session: { normalizedSessionId: native.normalizedSessionId, driverKind: harness === "codex" ? "codex_app_server" : "acpx_runtime", protocolVersion: 1,
-        lifecyclePolicy: { mode: "warm", idleTimeoutMs: adopted ? 5_000 : 60_000 } },
+        lifecyclePolicy: { mode: "warm", idleTimeoutMs: adopted && !restart ? 5_000 : 60_000 } },
       completionContract: { id: contract!.id, sha256: contract!.canonicalSha256, schemaVersion: "paperclip.completion-contract.v1",
         contract: buildNativeCompletionContract(issue!, { revision: contract!.revision }) }, interactionResponses: [], credentialBindings: [] });
     const resultFile = join(root, "result.json"), calls = join(root, "provider-calls");
@@ -256,7 +257,10 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
         .toEqual({ closed: 0, busy: 0, failed: 0 });
       expect(stops).toBe(0); expect(handle!.isExitConfirmed?.()).toBe(false);
       if (adopted) {
-        await new Promise(done => setTimeout(done, 5_200));
+        if (restart) {
+          expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0 });
+          expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 0, busy: 0, failed: 0 });
+        } else await new Promise(done => setTimeout(done, 5_200));
         expect(stops).toBe(0); expect(handle!.isExitConfirmed?.()).toBe(false);
         expect(await proof()).toMatchObject({ source: releases[0], taskId });
       }

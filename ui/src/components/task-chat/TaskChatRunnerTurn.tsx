@@ -94,7 +94,7 @@ function RunnerTurnStatus({
   const label = terminal ? (failed ? "Stopped" : "Worked") : waitingLabel ?? "Working";
   const suffix = terminal
     ? elapsed ? ` ${failed ? "after" : "for"} ${elapsed}` : ""
-    : waitingLabel ? elapsed ? ` · ${elapsed}` : "" : ` for ${elapsed ?? "0s"}`;
+    : elapsed ? `${waitingLabel ? " · " : " for "}${elapsed}` : "";
 
   return (
     <span
@@ -135,7 +135,7 @@ function runnerWaitingLabel({ runId, status, execution, preparationLabel }: Runn
   if (isTerminalRunStatus(status)) return null;
   if (execution?.phase === "waiting_for_provider") return execution.label;
   if (!runId && preparationLabel) return preparationLabel;
-  return status === "queued" ? execution?.label ?? "Queued" : null;
+  return status === "queued" && execution?.cause ? execution.label : null;
 }
 
 /** One identity stays mounted while admission discovers the run's renderer. */

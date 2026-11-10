@@ -170,9 +170,11 @@ export function exhaustedSystemRecoveryAction(state: SystemRecoveryState, eviden
   const cause = state.failure?.cause ? `, cause: ${state.failure.cause.label}` : "";
   if (isDeterministicRecoveryRefusal(state)) {
     const code = state.failure!.code;
+    // Never promise a release. A retained-file hold the fallback settles
+    // (workspace-recovery-fallback) replaces this text with its own outcome.
     return `Paperclip refused to recover the saved files: ${recoveryRefusalReasons[code] ?? "a safety check on the saved files did not pass"} `
       + `(${code}${cause}). Automatic recovery does not repeat this check, because the same saved state gives the same result. `
-      + "Retry runs the check again and succeeds only after Paperclip is updated. The agent's result is saved, and the agent will not repeat its work.";
+      + "Retry runs the check again. The agent's result is saved, and the agent will not repeat its work.";
   }
   const reason = state.failure?.code ? ` (last failure: ${state.failure.code}${cause})` : "";
   const outcome = state.attempts > 1 ? `stopped after ${state.attempts} attempts` : "failed";

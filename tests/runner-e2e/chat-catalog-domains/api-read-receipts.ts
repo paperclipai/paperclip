@@ -49,8 +49,32 @@ export function recordParams(name: string, ...values: Array<string | null | unde
 }
 
 /**
- * Statuses of this run's call_api results whose saved input digest is one of
- * `digests`, paired to their tool_use by run and item id.
+ * Dedicated task read tools and the call_api input the server builds for them
+ * (taskBridgeApiRequest in paperclip-runner-tool-authority.ts). Their saved
+ * tool_use keeps the plaintext taskId, while the result carries the same
+ * redacted receipt (apiOperationId, ok, status) as call_api. Harnesses may
+ * namespace the name (paperclip_get_task, mcp__paperclip__get_task).
+ */
+const TASK_READ_TOOLS: Readonly<Record<string, string>> = {
+  get_task: "GET /api/issues/{id}",
+  list_task_documents: "GET /api/issues/{id}/documents",
+  read_task_document: "GET /api/issues/{id}/documents/{key}",
+};
+function taskReadTool(name: unknown): string | undefined {
+  const match = typeof name === "string" ? /^(?:[A-Za-z0-9_-]*__)?(?:paperclip_)?([a-z_]+)$/.exec(name) : null;
+  return match && Object.hasOwn(TASK_READ_TOOLS, match[1]!) ? match[1] : undefined;
+}
+function taskReadInput(tool: string, input: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (typeof input.taskId !== "string" || !input.taskId) return;
+  if (tool === "read_task_document" && (typeof input.key !== "string" || !input.key)) return;
+  return { operationId: TASK_READ_TOOLS[tool], pathParams: { id: input.taskId, ...(tool === "read_task_document" ? { key: input.key } : {}) } };
+}
+
+/**
+ * Statuses of this run's record reads whose input digest is one of `digests`,
+ * paired to their tool_use by run and item id: call_api uses by their saved
+ * digest, and dedicated task read tools by the digest of the call_api input
+ * the server builds from their plaintext input.
  */
 export function apiReadStatuses(events: readonly Record<string, unknown>[], digests: ReadonlySet<string>): Array<{ operationId: string; ok: boolean; status: number }> {
   const uses = new Map<string, string>();
@@ -61,6 +85,12 @@ export function apiReadStatuses(events: readonly Record<string, unknown>[], dige
     if (item.type === "tool_use" && item.name === "call_api") {
       const input = objectRecord(item.input);
       if (input.apiPayloadRedacted === true && typeof input.operationId === "string" && digests.has(String(input.apiPayloadSha256))) uses.set(`${run}:${String(item.id)}`, input.operationId);
+      continue;
+    }
+    const tool = item.type === "tool_use" ? taskReadTool(item.name) : undefined;
+    if (tool) {
+      const request = taskReadInput(tool, objectRecord(item.input));
+      if (request && digests.has(callApiInputDigest(request))) uses.set(`${run}:${String(item.id)}`, String(request.operationId));
       continue;
     }
     if (item.type !== "tool_result") continue;

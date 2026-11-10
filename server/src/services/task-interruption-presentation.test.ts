@@ -454,3 +454,63 @@ describe("setup command failure evidence", () => {
     for (let index = 0; index + 8 <= secret.length; index += 1) expect(text).not.toContain(secret.slice(index, index + 8));
   });
 });
+
+describe("saved result that ran out of finalization retries", () => {
+  const review = { ...issue, status: "in_review" };
+  const succeeded = { ...run, status: "succeeded", runtimeMode: "native" as const, errorCode: null, resultJson: null };
+
+  it("offers Retry for a succeeded run whose accepted result could not be finalized", () => {
+    expect(projectTaskInterruption(review, { run: { ...succeeded, nativeFinalizationRetry: true }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: true, observedRunId: "run" });
+  });
+
+  it("shows the saved result being applied after Retry", () => {
+    expect(projectTaskInterruption(review, { run: { ...succeeded, nativeFinalizationRetryPending: true }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "working", canRetry: false, recoveryStep: "finishing_recovery" });
+  });
+
+  it("keeps ordinary succeeded and failed runs unchanged", () => {
+    expect(projectTaskInterruption(review, { run: succeeded, agent, paused: false, approval: false }))
+      .toMatchObject({ state: "resolved", canRetry: false });
+    expect(projectTaskInterruption(review, { run: { ...succeeded, status: "failed", errorCode: "adapter_failed" }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption({ ...review, status: "done" }, { run: { ...succeeded, nativeFinalizationRetry: true },
+      agent, paused: false, approval: false })).toMatchObject({ state: "resolved", canRetry: false });
+  });
+});
+
+// Remote native run shape: the provider turn completed and its work was
+// saved, then a same-run recovery was refused by the cleanup gate. The task
+// showed "Couldn't finish this attempt" with a Retry the server refuses (409).
+describe("native cleanup quarantine presentation", () => {
+  const quarantined = { ...run, runtimeMode: "native" as const, errorCode: "native_session_cleanup_quarantined",
+    error: "native_session_cleanup_quarantined: prior session cleanup requires operator recovery; verify its retained process ownership and checkpoint before a controlled restart. Clearing a task session does not resolve this quarantine.",
+    resultJson: null, finishedAt: new Date("2026-11-10T14:39:31.873Z") };
+
+  it("shows the task's blocker wait, not a failed attempt, after a completed turn", () => {
+    expect(projectTaskInterruption(issue, { run: { ...quarantined, completedTurnCleanup: true }, agent,
+      waitingOnBlockers: true, paused: false, approval: false })).toMatchObject({ state: "resolved", canRetry: false });
+  });
+
+  it("keeps a missing disposition visible when the task has no wait of its own", () => {
+    expect(projectTaskInterruption(issue, { run: { ...quarantined, completedTurnCleanup: true }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: false,
+      retryWait: { reason: "cleanup_quarantined" } });
+  });
+
+  it("never offers a Retry that the retry route refuses", () => {
+    const presentation = projectTaskInterruption(issue, { run: quarantined, agent, paused: false, approval: false });
+    expect(presentation).toMatchObject({ state: "failed", canRetry: false,
+      retryWait: { reason: "cleanup_quarantined" } });
+    expect(presentation?.retryWait?.message).not.toMatch(/operator|admin/i);
+    // Every other path that offers Retry is refused for the same run too.
+    const preparation = { id: "retry", requestedAt: new Date(0), sourceRunId: quarantined.id, preparationStatus: "failed" };
+    expect(projectTaskInterruption(issue, { run: quarantined, agent, retryWait: preparation, paused: false, approval: false }))
+      .toMatchObject({ canRetry: false });
+  });
+
+  it("keeps Retry for ordinary failed native attempts", () => {
+    expect(projectTaskInterruption(issue, { run: { ...quarantined, errorCode: "native_session_interrupted" }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: true });
+  });
+});

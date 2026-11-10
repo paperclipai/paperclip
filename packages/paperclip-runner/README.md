@@ -193,6 +193,18 @@ and terminal settlement at the process boundary. Copilot and Pi remain gated.
 Verified distributions are build-owned; no provider accepts an arbitrary executable.
 See [the rich ACP capability report](../../doc/architecture/runner-rich-acp-capabilities.md).
 
+On stdin EOF, SIGTERM, SIGINT, or an internal shutdown request, the sidecar emits
+`sidecar_shutdown_requested` once through `runtime.diagnostic` and stderr before
+cleanup removes pending calls. The JSON message gives the shutdown reason,
+pending tool/input/permission counts, completion-normalization count, and at most
+16 oldest tool calls with elapsed milliseconds and SHA-256 call IDs. Hash a
+`runtime.tool_called` call ID to correlate it with this snapshot. Arguments,
+results, operation names, and raw call IDs are excluded. This diagnostic records
+the local trigger; stdin EOF alone does not identify why the controller stopped.
+A broken output pipe can prevent event delivery; consult retained stderr too.
+It does not change retries, cancellation, or tool authorization. No saved session
+shape changes; sessions from the previous release retain their existing behavior.
+
 If the controller sends assigned MCP tools in the PRP catalog, the sidecar uses
 its authenticated tool bridge.
 Isolated provider admission accepts this route without a separate native MCP endpoint.

@@ -675,6 +675,13 @@ export interface EnvironmentRuntimeDriver {
   /** True when the lease's plugin worker advertises both sync verbs. */
   supportsSync?(input: EnvironmentDriverLeaseInput): boolean;
   /**
+   * True when a new lease for this environment can be reusable: the provider
+   * declares reusable leases and, for a plugin, its running worker verifies the
+   * reuse methods. It uses the acquisition path's rule without waiting for a
+   * worker; a worker that is not running yet reads false.
+   */
+  providerSupportsReusableLeases?(environment: Pick<Environment, "driver" | "config">): Promise<boolean>;
+  /**
    * Resolve the effective eight-field capability snapshot for this driver and
    * lease. Every driver implements this general method, so a caller never
    * needs to branch on the driver name to read a capability.
@@ -2706,6 +2713,31 @@ function createSandboxEnvironmentDriver(
       throw new Error("Sandbox driver does not support direct command execution for built-in providers.");
     },
 
+    async providerSupportsReusableLeases(environment) {
+      let parsed: ReturnType<typeof parseEnvironmentDriverConfig>;
+      try {
+        parsed = parseEnvironmentDriverConfig(environment as Environment);
+      } catch {
+        return false; // Acquisition reports the invalid config; the default stays off.
+      }
+      if (parsed.driver !== "sandbox") return false;
+      const provider = parsed.config.provider;
+      if (isBuiltinSandboxProvider(provider)) {
+        return resolveDeclaredSandboxCapabilities({
+          supportsReusableLeases: getBuiltinSandboxProvider(provider)?.supportsReusableLeases,
+        }).reusableLeases === true;
+      }
+      if (!pluginWorkerManager) return false;
+      // Same rule as acquisition, without its worker-ready wait.
+      const running = await resolvePluginSandboxProviderDriverByKey({
+        db, driverKey: provider, workerManager: pluginWorkerManager, requireRunning: true,
+      });
+      if (!running) return false;
+      return resolveDeclaredSandboxCapabilities(running.driver).reusableLeases === true
+        && capabilityIsVerified("reusableLeases",
+          new Set(pluginWorkerManager.getWorker(running.plugin.id)?.supportedMethods ?? []));
+    },
+
     supportsSync(input) {
       if (!input.lease.metadata?.sandboxProviderPlugin || !pluginWorkerManager) return false;
       const pluginId = readString(input.lease.metadata?.pluginId);
@@ -4476,6 +4508,11 @@ export function environmentRuntimeService(
     supportsSync(input: EnvironmentDriverLeaseInput): boolean {
       const driver = getDriver(getLeaseDriverKey(input.lease, input.environment));
       return driver?.supportsSync?.(input) ?? false;
+    },
+
+    /** See {@link EnvironmentRuntimeDriver.providerSupportsReusableLeases}; false for a driver without it. */
+    async providerSupportsReusableLeases(environment: Pick<Environment, "driver" | "config">): Promise<boolean> {
+      return await getDriver(environment.driver)?.providerSupportsReusableLeases?.(environment) ?? false;
     },
 
     /**

@@ -498,12 +498,18 @@ export async function settleDispatchedEnvironmentTask(db: Db, workers: PluginWor
   const [current] = await db.update(environmentLeases).set({
     metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"runnerTaskRetiring":true}'::jsonb`,
   }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId)))
-    .returning({ metadata: environmentLeases.metadata, heartbeatRunId: environmentLeases.heartbeatRunId });
+    .returning({ metadata: environmentLeases.metadata, heartbeatRunId: environmentLeases.heartbeatRunId, taskId: environmentLeases.providerLeaseId });
   const startup = current?.metadata?.runnerTaskStartup;
   const startupCleanup = current?.metadata?.runnerTaskStartupCleanup as { requiresPreparationStop?: boolean } | undefined;
   if (current?.metadata?.runnerTaskDispatched !== true && !startup && !startupCleanup) {
-    if (current?.metadata) await settlePluginTaskCredentialHandoff(db, { companyId: lease.companyId, leaseId: lease.id }, current.metadata,
-      async () => { throw new Error("Undispatched task must not request credentials"); });
+    if (current?.metadata) await settlePluginTaskCredentialHandoff(db, {
+      companyId: lease.companyId, leaseId: lease.id, expectedTaskId: current.taskId ?? undefined,
+    }, current.metadata, async accountIdentity => {
+      const snapshot = await executeEnvironmentTask(db, workers, { companyId: lease.companyId, leaseId: lease.id,
+        expectedTaskId: current.taskId ?? undefined, operation: { kind: "credentials", accountIdentity } });
+      if (snapshot.kind !== "credentials") throw new Error("Plugin Runner credential snapshot unavailable");
+      return snapshot.credential;
+    });
     return current?.metadata?.runnerTaskExecutionStopped === true ? "stopped" : false;
   }
   const scope = { companyId: lease.companyId, leaseId: lease.id };

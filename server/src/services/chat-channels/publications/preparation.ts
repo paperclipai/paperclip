@@ -24,6 +24,13 @@ import {
   splitNativePublicationText,
 } from "../../chat-publication-text-parts.js";
 
+/** Returned only before provider invocation; waiting does not consume a delivery attempt. */
+export type ChatPublicationPreparationWait = Readonly<{
+  kind: "wait";
+  reason: string;
+  retryAfterMs: number;
+}>;
+
 type PublicationPreparationOptions = {
   runPublicationToReplace: ReturnType<typeof createChatPublicationReplacement>["runPublicationToReplace"];
   publicationTransportPreparationBarrier?: (input: { publicationId: string }) => Promise<void>;

@@ -2,7 +2,7 @@
  * Pure statistics for the Phase 0 time-to-first-token baseline
  * (doc/plans/2026-11-07-ttft-baseline.md). Input is the run log only:
  * `run.performance.span`, `run.startup.reuse` and `native.recovery.transition`
- * rows from `heartbeat_run_events`. Never Telemetry (AGENTS.md §5.7).
+ * rows from `heartbeat_run_events`. Never Telemetry (rules/data-paths.mdc).
  */
 
 export interface BaselineEvent {
@@ -16,7 +16,7 @@ export interface BaselineRun {
   adapter: string;
   environment: string;
   /** Driver intent: a new task, a follow-up comment on the same task, or a run crossed by a restart. */
-  phase: "cold" | "warm" | "restart" | "midturn" | "verify";
+  phase: "cold" | "warm" | "restart" | "midturn" | "verify" | "postfault";
   events: BaselineEvent[];
   workspaceCreated?: boolean;
 }
@@ -222,8 +222,8 @@ export interface BaselineRow { adapter: string; environment: string; warmth: "co
 export function baselineRows(runs: readonly BaselineRun[]): BaselineRow[] {
   const groups = new Map<string, { adapter: string; environment: string; warmth: "cold" | "warm"; metrics: RunMetrics[] }>();
   for (const run of runs) {
-    // Restart samples and new-agent verification samples are reported on their own.
-    if (run.phase === "restart" || run.phase === "verify") continue;
+    // Restart, post-restart and new-agent verification samples are reported on their own.
+    if (run.phase === "restart" || run.phase === "verify" || run.phase === "postfault") continue;
     const warmth = runWarmth(run);
     const key = `${run.adapter}|${run.environment}|${warmth}`;
     const group = groups.get(key) ?? { adapter: run.adapter, environment: run.environment, warmth, metrics: [] };
@@ -308,4 +308,59 @@ export function openShellExecutions(events: readonly BaselineEvent[], marker?: s
     if (marker && label.includes(marker)) entry.matched = true;
   }
   return [...open.entries()].map(([executionId, entry]) => ({ executionId, matched: entry.matched, unlabelled: !entry.labelled }));
+}
+
+/**
+ * Whether finished tasks keep their Daytona sandbox for the idle window. The warm
+ * fixture always does. An inheriting environment defers to the agent, whose catalog
+ * profile pins per_turn unless --lifecycle warm replaces it. --lifecycle default
+ * leaves the agent unset; on Daytona, which keeps reusable leases, a measured
+ * harness with no lifecycle anywhere then defaults to warm.
+ */
+export function daytonaRetainsSandboxes(input: { warmEnvironment: boolean; inheritEnvironment: boolean; lifecycle: string | undefined }): boolean {
+  if (input.warmEnvironment) return true;
+  return input.inheritEnvironment && (input.lifecycle === "warm" || input.lifecycle === "default");
+}
+
+/** Daytona sandboxes a TTFT baseline can hold at once, for the vCPU budget check. */
+export function daytonaBaselineHolders(input: { adapters: number; samples: number; phases: ReadonlySet<string>; restarts: number;
+  retainsSandboxes: boolean }): number {
+  // The default fixture releases each sandbox after its turn, so only the concurrent tasks hold one.
+  if (!input.retainsSandboxes) return input.adapters;
+  // A warm sandbox outlives its task for the idle window and no other task reuses it.
+  // coldwarm, midturn and verify create one task per sample; restart creates one per
+  // fault, K1 and K2 for each --restarts, independent of --samples.
+  const sampledTasks = Math.max(1, input.samples) * ["coldwarm", "midturn", "verify"].filter(phase => input.phases.has(phase)).length;
+  const restartTasks = input.phases.has("restart") ? 2 * input.restarts : 0;
+  return input.adapters * Math.max(1, sampledTasks + restartTasks);
+}
+
+/** Validates the TTFT driver's environment options; returns the environment. */
+const BASELINE_PHASES = ["coldwarm", "midturn", "restart", "verify", "postfault"] as const;
+
+/** `--phases`: known phases only; postfault follows up on the coldwarm tasks, so it needs coldwarm. */
+export function parseBaselinePhases(value: string): Set<string> {
+  const phases = new Set(value.split(",").map(phase => phase.trim()).filter(Boolean));
+  const unknown = [...phases].filter(phase => !(BASELINE_PHASES as readonly string[]).includes(phase));
+  if (unknown.length || !phases.size) throw new Error(`--phases takes ${BASELINE_PHASES.join(", ")}; got ${unknown.join(", ") || "nothing"}`);
+  if (phases.has("postfault") && !phases.has("coldwarm")) {
+    throw new Error("--phases postfault follows up on the coldwarm tasks after an idle restart; add coldwarm");
+  }
+  return phases;
+}
+
+export function parseBaselineEnvironment(input: { env: string | undefined; image: string | undefined; cpu: string | undefined;
+  warm: boolean; inherit: boolean }): { env: "local" | "daytona"; cpu: number } {
+  const env = input.env ?? "local";
+  if (env !== "local" && env !== "daytona") throw new Error(`--env must be local or daytona, got ${env}`);
+  const cpu = Number(input.cpu ?? "4");
+  if (env === "local") {
+    if (input.warm || input.inherit || input.image) throw new Error("--daytona-* options apply only to --env daytona");
+    return { env, cpu };
+  }
+  if (!input.image) throw new Error("--env daytona needs --daytona-image");
+  if (!Number.isInteger(cpu) || cpu < 1 || cpu > 4) throw new Error(`--daytona-cpu must be an integer from 1 to 4, got ${input.cpu}`);
+  // The warm fixture pins its lifecycle; inherit removes the pins. The two contradict.
+  if (input.warm && input.inherit) throw new Error("--daytona-warm and --daytona-inherit cannot be combined");
+  return { env, cpu };
 }

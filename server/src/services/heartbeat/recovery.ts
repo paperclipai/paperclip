@@ -478,7 +478,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     enterShutdown();
     const idleSessions = await closeIdleWarmNativeSessionsForRestart();
     if (idleSessions.failed > 0) {
-      logger.warn({ idleSessions }, "idle native sessions could not checkpoint before controller shutdown");
+      logger.warn({ idleSessions }, "idle native session cleanup failed before controller shutdown");
     }
     let intent: Awaited<ReturnType<typeof readHotRestartIntent>>;
     try {

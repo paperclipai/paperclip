@@ -60,7 +60,7 @@ import type {
   Message,
   Thread,
 } from "chat";
-import { DELIVERY_PROCESSING_STALE_MS, deliveryContentWasRedacted, setupDestinationActivationSuppressed, normalizedDeliveryThreadId, normalizedLifecycleTargetEventId, normalizedLifecycleEffect, deliveryReady, conversationDeliveryOrder, pendingInboundWakeupCondition, lifecycleRuntimeFence } from "./delivery-ledger.js";
+import { DELIVERY_PROCESSING_STALE_MS, deliveryContentWasRedacted, setupDestinationActivationSuppressed, normalizedDeliveryThreadId, normalizedLifecycleTargetEventId, normalizedLifecycleEffect, deliveryReady, conversationDeliveryOrder, pendingInboundWakeupCondition, openConversationDeliveryIds, lifecycleRuntimeFence } from "./delivery-ledger.js";
 import type { createChatMessageLifecycle } from "./lifecycle.js";
 import type { LiveInboundMessage } from "../runtime-types.js";
 type DeliveryRow = typeof chatDeliveries.$inferSelect;
@@ -102,13 +102,7 @@ export function createChatConversationDeliveryQueue(db: Db, options: Conversatio
       .where(
         and(
           eq(chatDeliveries.endpointId, endpointId),
-          or(
-            inArray(chatDeliveries.state, ["received", "retry", "processing"]),
-            and(
-              eq(chatDeliveries.state, "processed"),
-              pendingInboundWakeupCondition(),
-            ),
-          ),
+          inArray(chatDeliveries.id, openConversationDeliveryIds(endpointId)),
           notInArray(chatDeliveries.eventKind, [
             "reaction_added",
             "reaction_removed",

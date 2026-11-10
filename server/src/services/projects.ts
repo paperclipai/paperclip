@@ -1,6 +1,7 @@
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
-import { listProjectWorkspaceProviders, resolveProjectWorkspaceProvider, withDefaultProjectStorage } from "./project-workspace-provider.js";
+import { withDefaultProjectStorage, type ProjectCreationEnvironment } from "./project-environments.js";
+import { listProjectWorkspaceProviders, resolveProjectWorkspaceProvider } from "./project-workspace-provider.js";
 import { retireRemovedPluginWorkspaceDependents } from "./plugin-workspaces.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { enqueueProjectSkillSource, detachProjectSkillSource } from "./project-skill-source-bindings.js";
@@ -115,7 +116,6 @@ export async function ensurePersonalPrivateProject(dbOrTx: any, companyId: strin
         visibility: "private",
         personalOwnerUserId: userId,
         privacyOwnerUserId: userId,
-        executionWorkspacePolicy: await withDefaultProjectStorage(dbOrTx, companyId, null) as Record<string, unknown> | null,
       })
       .onConflictDoNothing()
       .returning()
@@ -654,6 +654,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
   const createProject = async (
     companyId: string,
     data: Omit<typeof projects.$inferInsert, "companyId"> & { goalIds?: string[] },
+    environment: ProjectCreationEnvironment = {},
   ): Promise<ProjectWithGoals> => {
     const { goalIds: inputGoalIds, ...projectData } = data;
     const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
@@ -674,7 +675,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
     // skipped validation whenever `goalIds: []` and `goalId` arrive
     // together (goalIds wins resolution, mirroring the update path).
     const legacyGoalId = ids?.[0] ?? null;
-    const executionWorkspacePolicy = await withDefaultProjectStorage(db, companyId, projectData.executionWorkspacePolicy ?? null) as typeof projectData.executionWorkspacePolicy;
+    const executionWorkspacePolicy = await withDefaultProjectStorage(db, companyId, projectData.executionWorkspacePolicy ?? null, environment) as typeof projectData.executionWorkspacePolicy;
 
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
@@ -919,10 +920,10 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       };
     },
 
-    createWithRepositories: async (companyId: string, data: Parameters<typeof createProject>[1], repositories: import("@paperclipai/shared").ProjectRepository[]): Promise<ProjectWithGoals> => {
+    createWithRepositories: async (companyId: string, data: Parameters<typeof createProject>[1], repositories: import("@paperclipai/shared").ProjectRepository[], environment: ProjectCreationEnvironment = {}): Promise<ProjectWithGoals> => {
       return db.transaction(async (tx) => {
         const service = projectService(tx as unknown as Db, { captureWorkspaceUpdates: false });
-        const project = await service.create(companyId, data);
+        const project = await service.create(companyId, data, environment);
         for (const repo of repositories) {
           await service.createWorkspace(project.id, { name: repo.fullName, repoUrl: repo.url, metadata: { githubRepositoryId: repo.id, githubRepositoryUrl: repo.url, githubRepositoryPrivate: repo.private } });
         }

@@ -209,6 +209,12 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
     | { mode: "per_turn"; idleTimeoutMs: null }
     | { mode: "warm"; idleTimeoutMs: number }
     | null;
+  /**
+   * The environment's configured warm idle window, present even when the
+   * environment inherits the lifecycle. A defaulted warm runner uses it first,
+   * as the provider's auto-stop does, so both keep the same window.
+   */
+  readonly runnerIdleTimeoutMs?: number;
   /** Whether this environment is configured to reuse its provider lease. */
   readonly reusableLeaseConfigured?: boolean;
   /** Host-observed provenance for this exact sandbox acquisition. */

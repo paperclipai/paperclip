@@ -4,6 +4,7 @@ import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contra
 import { checks } from "./internal-support.js";
 import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
 import { identityDefinition, identityObservation, observeIdentity, probeAgentPermission, waitForReply } from "./identity-support.js";
+import { waitForRenderedReply } from "./internal-comment-reference.js";
 
 interface Session { user: { id: string; name: string; image?: string | null } }
 type Person = Awaited<ReturnType<typeof createAuthenticatedPerson>>;
@@ -49,10 +50,13 @@ export const profileIdentityCases: readonly ChatCatalogCase[] = [identityDefinit
   } catch (error) { await observer.dispose(); observers.delete(ctx); throw error; }
 }, gradeProfile, {
   authentication: "human-session",
-  oracleVersion: "paperclip.chat-catalog.identity-profile.v2",
-  sourceFiles: ["chat-catalog-domains/identity-profile.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/identity-private-browser.ts", "chat-catalog-domains/identity-private-browser-worker.ts", "chat-catalog-domains/identity-wizard.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/navigation-preferences.yaml"],
+  oracleVersion: "paperclip.chat-catalog.identity-profile.v3",
+  sourceFiles: ["chat-catalog-domains/identity-profile.ts", "chat-catalog-domains/internal-comment-reference.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/identity-private-browser.ts", "chat-catalog-domains/identity-private-browser-worker.ts", "chat-catalog-domains/identity-wizard.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/navigation-preferences.yaml"],
   async act(ctx, state) {
-    await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx)); state.beforeHumanName = (await ctx.input.api.get<Session>("/api/auth/get-session")).user.name;
+    await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx));
+    // Run settle precedes the reply's render; look for the rendered link only once the saved reply is on the page.
+    await waitForRenderedReply(ctx, { leadId: ctx.input.fixtures.agent.id, runs: await ctx.allRuns() });
+    state.beforeHumanName = (await ctx.input.api.get<Session>("/api/auth/get-session")).user.name;
     state.agentWriteStatus = await probeAgentPermission(ctx, "/api/auth/profile", "PATCH", { name: "Alex Chen" });
     const source = ctx.input.page.url();
     // The person follows the agent's rendered link when there is one; otherwise the journey still saves the name so the remaining checks report.

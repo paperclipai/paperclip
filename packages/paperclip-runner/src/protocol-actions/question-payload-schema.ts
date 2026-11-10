@@ -14,9 +14,11 @@ const canonicalQuestionSchema = {
 
 export const questionPayloadSchema = {
   type: "object",
-  description: "Kind-specific interaction data. For questions, send version:1 and one complete questionSet containing every text and choice question. Paperclip generates compatibility questions. Each canonical question needs id, prompt, required, and answerMode: text, single_select, or multi_select. Text questions have no options or customAnswer. Choice questions need at least two meaningful options with id/label. Use customAnswer:{enabled:true} for an optional written answer to a choice question. Legacy questions remain supported; if both representations are supplied, they must describe the same complete form. Keep IDs stable across retries. For required output quality review, confirmation payload must contain qualityReview:{key:<required deliverable key>} and target:{type:issue_document,key:<output document key>,revisionId:<saved revision>} or target:{type:issue_attachment,attachmentId,assetId,sha256}. For item_verdicts put qualityReview and target on each reviewed item. Keep supersedeOnUserComment:false inside payload. Never discard these bindings to work around a validation error; an unbound confirmation cannot satisfy required quality review.",
+  description: "Kind-specific interaction data. For questions, send one complete questionSet containing every text and choice question. Paperclip generates compatibility questions. Each canonical question needs id, prompt, required, and answerMode: text, single_select, or multi_select. Text questions have no options or customAnswer. Choice questions need at least two meaningful options with id/label. Use customAnswer:{enabled:true} for an optional written answer to a choice question. Legacy questions remain supported; if both representations are supplied, they must describe the same complete form. Keep IDs stable across retries. For required output quality review, confirmation payload must contain qualityReview:{key:<required deliverable key>} and target:{type:issue_document,key:<output document key>,revisionId:<saved revision>} or target:{type:issue_attachment,attachmentId,assetId,sha256}. For item_verdicts put qualityReview and target on each reviewed item. Keep supersedeOnUserComment:false inside payload. Never discard these bindings to work around a validation error; an unbound confirmation cannot satisfy required quality review.",
   properties: {
-    version: { const: 1 },
+    // Paperclip stores payload version 1 itself. Models commonly send the
+    // number as a string or omit it; rejecting those forms only cost retries.
+    version: { enum: [1, "1"], description: "Optional. Paperclip stores version 1; you may omit it." },
     qualityReview: {
       type: "object", required: ["key"],
       properties: { key: { type: "string", pattern: "^[a-z][a-z0-9_-]{0,79}$" } },
@@ -71,7 +73,7 @@ export const questionsPayloadRequirement = {
   then: {
     required: ["payload"],
     properties: {
-      payload: { required: ["version"], anyOf: [{ required: ["questionSet"] }, { required: ["questions"] }] },
+      payload: { anyOf: [{ required: ["questionSet"] }, { required: ["questions"] }] },
     },
   },
 } as const;

@@ -1,12 +1,14 @@
+import { parseSlackConfiguredCoverage, type SlackConfiguredCoverage } from "./chat-channels/slack/configured-coverage.js";
 /** Closed Cloud-owned ingress catalog. No credential material belongs in this proof. */
 export interface IdleIncomingWakeCapability {
   version: 1;
   ownerId: string;
   generation: string;
-  routes: ("tenant-api-http-v2" | "github-broker-events-v1" | "mcp-oauth-http-v1")[];
+  routes: ("tenant-api-http-v2" | "github-broker-events-v1" | "slack-broker-events-v1" | "mcp-oauth-http-v1")[];
   apiKeyProof?: { version: 1; challenge: string };
   mcpOAuthProof?: { version: 1; challenge: string };
   githubBroker?: { instanceId: string; bindingsFingerprint: string };
+  slackBroker?: SlackConfiguredCoverage;
 }
 export interface IdleCapabilities {
   incomingWake?: IdleIncomingWakeCapability;
@@ -40,6 +42,7 @@ export function parseIdleCapabilities(value: unknown): IdleCapabilities {
         "generation",
         "routes",
         "githubBroker",
+        "slackBroker",
         "apiKeyProof",
         "mcpOAuthProof",
       ]) ||
@@ -51,9 +54,9 @@ export function parseIdleCapabilities(value: unknown): IdleCapabilities {
       !digest(v.generation) ||
       !Array.isArray(v.routes) ||
       v.routes.length < 1 ||
-      v.routes.length > 3 ||
+      v.routes.length > 4 ||
       v.routes.some(
-        (r) => !["tenant-api-http-v2", "github-broker-events-v1", "mcp-oauth-http-v1"].includes(r),
+        (r) => !["tenant-api-http-v2", "github-broker-events-v1", "slack-broker-events-v1", "mcp-oauth-http-v1"].includes(r),
       ) ||
       new Set(v.routes).size !== v.routes.length ||
       [...v.routes].sort().join() !== v.routes.join()
@@ -82,10 +85,18 @@ export function parseIdleCapabilities(value: unknown): IdleCapabilities {
     } else if (v.githubBroker !== undefined)
       throw new Error("Unexpected GitHub wake binding");
   }
+  if (value.incomingWake && typeof value.incomingWake === "object" && !Array.isArray(value.incomingWake)) {
+    const incoming = Object.fromEntries(Object.entries(value.incomingWake));
+    if (Array.isArray(incoming.routes) && incoming.routes.includes("slack-broker-events-v1")) {
+      const proof = parseSlackConfiguredCoverage(incoming.slackBroker);
+      if (proof.generation !== incoming.generation) throw new Error("Slack capability generation changed");
+    } else if (incoming.slackBroker !== undefined) throw new Error("Unexpected Slack wake binding");
+  }
   // Return a detached immutable snapshot; request callers cannot mutate a verified claim.
   const parsed = JSON.parse(JSON.stringify(value)) as IdleCapabilities;
   if (parsed.incomingWake) {
     Object.freeze(parsed.incomingWake.routes);
+    if (parsed.incomingWake.slackBroker) parsed.incomingWake.slackBroker = parseSlackConfiguredCoverage(parsed.incomingWake.slackBroker);
     if (parsed.incomingWake.apiKeyProof) Object.freeze(parsed.incomingWake.apiKeyProof);
     if (parsed.incomingWake.mcpOAuthProof) Object.freeze(parsed.incomingWake.mcpOAuthProof);
     if (parsed.incomingWake.githubBroker)

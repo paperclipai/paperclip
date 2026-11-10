@@ -36,6 +36,8 @@ describe("admitted native lifecycle policy", () => {
 describe("default lifecycle for an agent that never chose one", () => {
   const defaultWarm: NativeLifecyclePolicy = { mode: "warm", idleTimeoutMs: 300_000 };
   const unset: Input = { ...base, agentMode: undefined, agentIdleTimeoutMs: undefined, localTarget: true };
+  const reusable = { reusableLease: true };
+  const ephemeral = { reusableLease: false };
   it.each<{ name: string; change: Partial<Input>; expected: NativeLifecyclePolicy }>([
     { name: "local Codex keeps a warm runner for the default idle window", change: {}, expected: defaultWarm },
     { name: "local OpenCode is warm", change: { backend: "opencode_server" }, expected: defaultWarm },
@@ -44,6 +46,26 @@ describe("default lifecycle for an agent that never chose one", () => {
     { name: "an explicit per-turn choice is honored", change: { agentMode: "per_turn" }, expected: perTurn },
     { name: "an explicit warm idle window is honored", change: { agentMode: "warm", agentIdleTimeoutMs: 900_000 }, expected: warm },
     { name: "a remote target stays per-turn", change: { localTarget: false }, expected: perTurn },
+    // A remote sandbox follow-up otherwise gets a new sandbox and uploads the whole workspace.
+    { name: "remote-sandbox Codex on a reusable lease is warm", change: { localTarget: false, remoteSandboxTarget: reusable }, expected: defaultWarm },
+    { name: "remote-sandbox OpenCode on a reusable lease is warm", change: { localTarget: false, remoteSandboxTarget: reusable, backend: "opencode_server" }, expected: defaultWarm },
+    { name: "remote-sandbox Claude on a reusable lease is warm", change: { localTarget: false, remoteSandboxTarget: reusable, backend: "acpx_runtime", acpxAgent: "claude" }, expected: defaultWarm },
+    // Rule 1: without a reusable lease (E2B, Modal, fake, or reuse unavailable) the run stays per-turn, as on master.
+    { name: "remote-sandbox Codex without a reusable lease stays per-turn", change: { localTarget: false, remoteSandboxTarget: ephemeral }, expected: perTurn },
+    { name: "remote-sandbox Claude without a reusable lease stays per-turn", change: { localTarget: false, remoteSandboxTarget: ephemeral, backend: "acpx_runtime", acpxAgent: "claude" }, expected: perTurn },
+    { name: "a remote-sandbox unmeasured ACP harness stays per-turn", change: { localTarget: false, remoteSandboxTarget: reusable, backend: "acpx_runtime", acpxAgent: "grok" }, expected: perTurn },
+    // Rule 2: explicit configuration wins.
+    { name: "a remote-sandbox explicit per-turn choice is honored", change: { localTarget: false, remoteSandboxTarget: reusable, agentMode: "per_turn" }, expected: perTurn },
+    { name: "a remote-sandbox default honors the agent's idle window", change: { localTarget: false, remoteSandboxTarget: reusable, agentIdleTimeoutMs: 900_000 }, expected: warm },
+    // The same window the environment view forwards to the provider: the environment's, then the agent's.
+    { name: "a remote-sandbox default honors an inheriting environment's idle window", change: { localTarget: false,
+      remoteSandboxTarget: { reusableLease: true, idleTimeoutMs: 900_000 }, agentIdleTimeoutMs: 600_000 }, expected: warm },
+    { name: "an explicit warm choice keeps the agent's idle window", change: { localTarget: false, agentMode: "warm",
+      remoteSandboxTarget: { reusableLease: true, idleTimeoutMs: 600_000 }, agentIdleTimeoutMs: 900_000 }, expected: warm },
+    { name: "a remote-sandbox environment that pins per-turn wins", change: { localTarget: false, remoteSandboxTarget: reusable, environmentPolicy: perTurn }, expected: perTurn },
+    { name: "a remote-sandbox session admitted per-turn stays per-turn", change: { localTarget: false, remoteSandboxTarget: reusable, persistedPolicy: perTurn }, expected: perTurn },
+    { name: "remote-sandbox managed Claude stays per-turn", change: { localTarget: false, remoteSandboxTarget: reusable, backend: "acpx_runtime", acpxAgent: "claude", managedAiSelected: true }, expected: perTurn },
+    { name: "remote-sandbox managed Codex, which supports a managed warm session, is warm", change: { localTarget: false, remoteSandboxTarget: reusable, managedAiSelected: true }, expected: defaultWarm },
     { name: "an unknown target stays per-turn", change: { localTarget: undefined }, expected: perTurn },
     { name: "an unmeasured ACP harness stays per-turn", change: { backend: "acpx_runtime", acpxAgent: "grok" }, expected: perTurn },
     { name: "managed Claude without warm support stays per-turn", change: { backend: "acpx_runtime", acpxAgent: "claude", managedAiSelected: true }, expected: perTurn },

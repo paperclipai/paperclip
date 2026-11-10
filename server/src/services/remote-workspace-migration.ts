@@ -15,8 +15,8 @@ import { workspaceExportCauses } from "./workspace-recovery-source.js";
 import type { StorageService } from "../storage/types.js";
 import { persistActivity, publishActivity } from "./activity-log.js";
 import { tryAcquireExecutionWorkspaceLifecycleLock, withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
-import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
-import { beginWorkspaceSnapshot, loadWorkspaceSnapshotArchive, recoverWorkspaceSnapshotArchive, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
+import { captureRemoteWorkspaceDirectory } from "./remote-workspace-snapshot-archive.js";
+import { beginWorkspaceSnapshot, recoverWorkspaceSnapshotUpload, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
 import { notifyRemoteWorkspaceSnapshots } from "./remote-workspace-snapshot-retention.js";
 import { materializeTaskDirectorySnapshot, removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { loadTaskDirectoryRestorePoint, mayBeIsolatedTaskDirectoryWorkspace, readTaskDirectoryRetention, validateTaskDirectoryRestorePointRef } from "./isolated-task-directory-retention.js";
@@ -65,6 +65,8 @@ const gitSourceProof = (source: ArchivedGitMigrationSource | null) => source ? {
 } : null;
 
 type RepositoryRequest = typeof executionWorkspaceRepositories.$inferSelect;
+const repositoryIntentBindings = (rows: RepositoryRequest[]) => rows.map(({ id, relativePath }) => ({ id, relativePath }))
+  .sort((a, b) => a.id.localeCompare(b.id));
 
 function isUnmaterializedRepositoryCandidate(repository: RepositoryRequest) {
   const unprepared = repository.state === "pending" && !repository.failureCode
@@ -411,6 +413,8 @@ async function reserveMigration(input: MigrationInput, onlineSource?: OnlineWork
       if (canonical(recoverySourcesResumeIdentity(operation.metadata?.legacyRecoverySources ?? []))
         !== canonical(recoverySourcesResumeIdentity(current.legacyRecoverySources))) throw new Error("remote_workspace_migration_source_changed");
       if (canonical(operation.metadata?.onlineRecoveryHolds ?? []) !== canonical(current.onlineRecoveryHolds)) throw new Error("remote_workspace_migration_source_changed");
+      if (canonical(operation.metadata?.archivedRepositoryIntents ?? []) !== canonical(repositoryIntentBindings(current.archivedRepositoryIntents)))
+        throw new Error("remote_workspace_migration_source_changed");
       return { workspace, authority: null, operation, source, sourceFingerprint, issueBinding, retainedDirectory: current.retainedDirectory, archivedGitSource: current.archivedGitSource, legacyRecoverySources: current.legacyRecoverySources, finalizedRecoveryHolds: current.finalizedRecoveryHolds, onlineRecoveryHolds: current.onlineRecoveryHolds, archivedRepositoryIntents: current.archivedRepositoryIntents };
     }
     let migrationSupersession;
@@ -424,6 +428,7 @@ async function reserveMigration(input: MigrationInput, onlineSource?: OnlineWork
     const [operation] = await tx.insert(workspaceOperations).values({ ...(cohort ? { id: cohort.members.find(member => member.workspaceId === input.workspaceId)!.operationId } : {}), companyId: workspace.companyId, executionWorkspaceId: workspace.id,
       issueId: workspace.sourceIssueId, cwd: workspace.cwd ?? workspace.providerRef, phase: "remote_workspace_migration", status: "running",
       metadata: { schema: SCHEMA, sourceFingerprint, source, sourceIssueBinding: current.issueBinding,
+        archivedRepositoryIntents: repositoryIntentBindings(current.archivedRepositoryIntents),
         ...(cohort ? { cohortMigration: cohort } : {}),
         ...(migrationSupersession ? { migrationSupersession } : {}),
         ...(nativeSessionContinuity ? { nativeSessionContinuity } : {}),
@@ -463,7 +468,7 @@ async function lockMigrationRecovery(lock: MigrationTransaction, plans: Migratio
 function createMigrationChildVerifier(input: MigrationInput, onlineSource: OnlineWorkspaceSource | undefined, sourceLock: MigrationTransaction, cohort = false) {
   if (onlineSource?.kind !== "git") return undefined;
   const verifier = createNestedWorkspaceImportVerifier({ db: input.db, storage: input.storage, companyId: input.companyId,
-    sourceLock, projectIds: onlineSource.projectIds, issueIds: onlineSource.issueIds, signal: input.signal, persistVerification: true });
+    sourceLock, projectIds: onlineSource.projectIds, issueIds: onlineSource.issueIds, signal: input.signal });
   type Options = Parameters<typeof prepareNestedWorkspaceImports>[0];
   const initial = new Map<string, ReturnType<typeof prepareNestedWorkspaceImports>>(), final = new Map<string, ReturnType<typeof prepareNestedWorkspaceImports>>();
   let pending = Promise.resolve();
@@ -491,7 +496,8 @@ function createMigrationChildVerifier(input: MigrationInput, onlineSource: Onlin
 }
 
 async function captureMigration(input: MigrationInput, reserved: ReservedMigration, onlineSource?: OnlineWorkspaceSource,
-  childVerifier?: ReturnType<typeof createMigrationChildVerifier>) {
+  childVerifier?: ReturnType<typeof createMigrationChildVerifier>,
+  captureArchive = captureRemoteWorkspaceDirectory) {
   let operation = reserved.operation!;
   if (canonical(operation.metadata?.legacyRecoverySources ?? []) !== canonical(reserved.legacyRecoverySources)) {
     const [refreshed] = await input.db.update(workspaceOperations).set({ metadata: { ...operation.metadata,
@@ -512,24 +518,32 @@ async function captureMigration(input: MigrationInput, reserved: ReservedMigrati
     input.signal?.throwIfAborted();
     const retained = reserved.retainedDirectory?.restorePoint;
     const archivePath = path.join(scratch, "workspace.pcws");
-    const recovered = reserved.archivedGitSource ? await recoverWorkspaceSnapshotArchive({
+    const scope = object(operation.metadata?.nestedWorkspaceScope);
+    if (operation.metadata?.nestedWorkspaceScope !== undefined && (scope.version !== 1 || !["pending", "fixed"].includes(String(scope.state))))
+      throw new Error("nested_workspace_scope_invalid");
+    const recovered = await recoverWorkspaceSnapshotUpload({
       db: input.db, storage: input.storage, companyId: input.companyId, workspaceId: input.workspaceId,
-      snapshotId: snapshot.id, targetPath: archivePath, signal: input.signal,
-    }) : null;
-    const sourceRoot = recovered ? null : retained ? await materializeTaskDirectorySnapshot({
+      snapshotId: snapshot.id, signal: input.signal,
+    });
+    if (recovered) {
+      if (scope.state === "pending") throw new Error("nested_workspace_scope_invalid");
+      const ref = await uploadWorkspaceSnapshot({ ...input, snapshotId: snapshot.id, archivePath,
+        manifestDigest: recovered.manifestDigest, verification: "upload",
+        ...(reserved.archivedGitSource ? { unpublishedRecapture: { sourceOperationId: operation.id } } : {}) });
+      return { operation, ref, nested: scope.state === "fixed" ? validateImportedWorkspaceChildren(scope.children) : [], scratch };
+    }
+    const sourceRoot = retained ? await materializeTaskDirectorySnapshot({
       payload: await loadTaskDirectoryRestorePoint({ storage: input.storage, workspace: reserved.workspace, ref: retained, recoverMissingEmpty: true, signal: input.signal }),
       target: path.join(scratch, "retained-source"), expectedDigest: retained.digest,
     }) : reserved.archivedGitSource ? await materializeArchivedGitMigrationSource({ db: input.db, storage: input.storage,
       workspace: reserved.workspace, source: reserved.archivedGitSource, scratch }) : reserved.workspace.cwd ?? reserved.workspace.providerRef!;
-    const scope = object(operation.metadata?.nestedWorkspaceScope);
-    if (operation.metadata?.nestedWorkspaceScope !== undefined && (scope.version !== 1 || !["pending", "fixed"].includes(String(scope.state))))
-      throw new Error("nested_workspace_scope_invalid");
     // Journals predating scoped captures included every child. Preserve that
     // archive identity even if a later batch has already imported the leaves.
     const recordedChildren = scope.state === "fixed" ? validateImportedWorkspaceChildren(scope.children)
       : scope.state === "pending" ? undefined : [];
     const nested = (input.writersStopped || onlineSource?.kind === "git") && !retained && !reserved.archivedGitSource
-      ? await (childVerifier?.prepare ?? prepareNestedWorkspaceImports)({ ...input, workspace: reserved.workspace, scratch, recordedChildren, gitSourceRoots: onlineSource?.gitSourceRoots }) : [];
+      ? await (childVerifier?.prepare ?? prepareNestedWorkspaceImports)({ ...input, workspace: reserved.workspace, scratch, recordedChildren,
+        gitSourceRoots: onlineSource?.gitSourceRoots }) : [];
     if (scope.state === "pending") {
       const [saved] = await input.db.update(workspaceOperations).set({ metadata: { ...operation.metadata,
         nestedWorkspaceScope: { version: 1, state: "fixed", children: nested } }, updatedAt: new Date() })
@@ -540,37 +554,51 @@ async function captureMigration(input: MigrationInput, reserved: ReservedMigrati
     }
     if (sourceRoot) await assertArchivedRepositoryIntents(sourceRoot, reserved.archivedRepositoryIntents);
     const exclude = nested.map(child => child.relativePath);
-    const captured = recovered ?? await captureRemoteWorkspaceDirectory({ cwd: sourceRoot!, archivePath, exclude, requireNoGit: onlineSource?.kind === "ordinary", gitSourceRoots: onlineSource?.gitSourceRoots, signal: input.signal });
-    const restoredArchive = path.join(scratch, "verified.pcws"), restored = path.join(scratch, "restored");
-    const verifiedArchivePath = process.platform === "win32" ? undefined : restoredArchive;
+    const captured = await captureArchive({ cwd: sourceRoot!, archivePath, exclude, requireNoGit: onlineSource?.kind === "ordinary",
+      gitSourceRoots: onlineSource?.gitSourceRoots, signal: input.signal, singlePass: true });
     const ref = await uploadWorkspaceSnapshot({ db: input.db, storage: input.storage, snapshotId: snapshot.id,
       companyId: input.companyId, workspaceId: input.workspaceId, archivePath, manifestDigest: captured.manifestDigest, signal: input.signal,
-      verifiedArchivePath,
+      verification: "upload",
       // Private Git reconstruction can change administrative bytes between
       // attempts. Its journaled logical recipe is checked at reservation and
       // again under source locks before authority publication below.
       ...(reserved.archivedGitSource ? { unpublishedRecapture: { sourceOperationId: operation.id } } : {}),
     });
-    if (!verifiedArchivePath) await loadWorkspaceSnapshotArchive({ storage: input.storage, reference: ref,
-      targetPath: restoredArchive, signal: input.signal });
-    await restoreRemoteWorkspaceArchive({ archivePath: restoredArchive, targetDir: restored, expectedManifestDigest: ref.manifestDigest, signal: input.signal });
-    await assertArchivedRepositoryIntents(restored, reserved.archivedRepositoryIntents);
-    if (!recovered) {
-      const currentArchive = path.join(scratch, "current.pcws");
-      const current = await captureRemoteWorkspaceDirectory({ cwd: sourceRoot!, archivePath: currentArchive, exclude, requireNoGit: onlineSource?.kind === "ordinary", gitSourceRoots: onlineSource?.gitSourceRoots, signal: input.signal });
-      if (current.manifestDigest !== captured.manifestDigest) throw new Error("remote_workspace_migration_source_changed");
-    }
-    if (nested.length && !childVerifier?.deferFinal) {
-      const verifyScratch = path.join(scratch, "verify-nested"); await fs.mkdir(verifyScratch);
-      const verified = await (childVerifier?.prepare ?? prepareNestedWorkspaceImports)({ ...input, workspace: reserved.workspace,
-        scratch: verifyScratch, recordedChildren: nested, gitSourceRoots: onlineSource?.gitSourceRoots });
-      if (canonical(verified) !== canonical(nested)) throw new Error("nested_workspace_source_changed");
-    }
     input.signal?.throwIfAborted();
-    return { operation, ref, nested, scratch, restored };
+    return { operation, ref, nested, scratch };
   } catch (error) { await removeTaskDirectoryTree(scratch); throw error; }
 }
 type CapturedMigration = Awaited<ReturnType<typeof captureMigration>>;
+
+function createCohortArchiveCapture() {
+  type Options = Parameters<typeof captureRemoteWorkspaceDirectory>[0];
+  type Capture = Awaited<ReturnType<typeof captureRemoteWorkspaceDirectory>>;
+  const pending = new Map<string, { key: string; capture: Promise<{ archivePath: string; captured: Capture }> }>(), scratch: string[] = [];
+  return {
+    scratch,
+    async capture(input: Options): Promise<Capture> {
+      const { archivePath, signal, ...options } = input;
+      const root = await fs.realpath(input.cwd), key = canonical({ ...options, cwd: root });
+      let shared = pending.get(root);
+      if (shared && shared.key !== key) return captureRemoteWorkspaceDirectory(input);
+      if (!shared) {
+        const capture = (async () => {
+          const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-cohort-capture-")));
+          scratch.push(directory);
+          const sharedPath = path.join(directory, "workspace.pcws");
+          return { archivePath: sharedPath, captured: await captureRemoteWorkspaceDirectory({ ...input, archivePath: sharedPath }) };
+        })();
+        shared = { key, capture };
+        pending.set(root, shared);
+      }
+      const saved = await shared.capture;
+      signal?.throwIfAborted();
+      await fs.copyFile(saved.archivePath, archivePath, fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL);
+      signal?.throwIfAborted();
+      return saved.captured;
+    },
+  };
+}
 
 async function validateMigrationPublication(tx: MigrationTransaction, input: MigrationInput, reserved: ReservedMigration,
   captured: CapturedMigration, onlineSource?: OnlineWorkspaceSource, cohort?: WorkspaceMigrationCohort) {
@@ -618,7 +646,8 @@ async function validateMigrationPublication(tx: MigrationTransaction, input: Mig
   if (Boolean(validation.retainedDirectory) !== Boolean(reserved.retainedDirectory)) throw new Error("remote_workspace_migration_source_changed");
   if (canonical(gitSourceProof(validation.archivedGitSource)) !== canonical(gitSourceProof(reserved.archivedGitSource))) throw new Error("remote_workspace_migration_source_changed");
   if (validation.reasons.length) throw new Error(`remote_workspace_migration_blocked:${validation.reasons.join(",")}`);
-  await assertArchivedRepositoryIntents(captured.restored, validation.archivedRepositoryIntents);
+  if (canonical(repositoryIntentBindings(validation.archivedRepositoryIntents)) !== canonical(repositoryIntentBindings(reserved.archivedRepositoryIntents)))
+    throw new Error("remote_workspace_migration_source_changed");
   if (reserved.archivedGitSource) await lockArchivedGitMigrationSources(tx as unknown as Db, workspace, reserved.archivedGitSource);
   const [uploaded] = await tx.select().from(executionWorkspaceSnapshots).where(and(eq(executionWorkspaceSnapshots.companyId, workspace.companyId),
     eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id), eq(executionWorkspaceSnapshots.id, ref.id))).for("update");
@@ -893,17 +922,19 @@ export async function migrateRemoteWorkspaceCohort(input: {
     }
     const captures: Array<CapturedMigration | undefined> = Array(plans.length);
     const childVerifier = createMigrationChildVerifier(plans[0].input, plans[0].onlineSource, lock, true);
+    const sharedArchive = createCohortArchiveCapture();
+    const duplicateRoots = new Set(plans.filter(plan => plans.some(other => other !== plan
+      && other.onlineSource!.root === plan.onlineSource!.root)).map(plan => plan.onlineSource!.root));
     let next = 0, failure: unknown;
     const worker = async () => {
       while (!signal.aborted && next < plans.length) {
         const index = next++, plan = plans[index];
         try {
-          const captured = await captureMigration(plan.input, plan.reserved, plan.onlineSource, childVerifier);
+          const captured = await captureMigration(plan.input, plan.reserved, plan.onlineSource, childVerifier,
+            duplicateRoots.has(plan.onlineSource!.root) ? sharedArchive.capture : undefined);
           captures[index] = captured;
           if (plan.onlineSource && !plan.reserved.archivedRepositoryIntents.length) {
-            for (const name of ["workspace.pcws", "verified.pcws", "current.pcws"])
-              await fs.rm(path.join(captured.scratch, name), { force: true });
-            await removeTaskDirectoryTree(captured.restored);
+            await fs.rm(path.join(captured.scratch, "workspace.pcws"), { force: true });
           }
         }
         catch (error) { failure ??= error; stop.abort(error); }
@@ -946,10 +977,11 @@ export async function migrateRemoteWorkspaceCohort(input: {
       return { companyId, cohortId: cohort.id, applied: true, replayed: false, members: results };
     } catch (error) { failure = error; throw error; }
     finally {
-      await childVerifier?.close();
-      const cleanup = await mapCohortMembers(captures.filter((capture): capture is CapturedMigration => Boolean(capture)),
-        capture => removeTaskDirectoryTree(capture.scratch).then(() => [], error => [error]));
-      const errors = cleanup.flat();
+      const errors: unknown[] = [];
+      try { await childVerifier?.close(); } catch (error) { errors.push(error); }
+      const cleanup = await mapCohortMembers([...captures.flatMap(capture => capture ? [capture.scratch] : []), ...sharedArchive.scratch],
+        scratch => removeTaskDirectoryTree(scratch).then(() => [], error => [error]));
+      errors.push(...cleanup.flat());
       if (errors.length) throw new AggregateError(failure ? [failure, ...errors] : errors, "workspace_cohort_cleanup_failed");
       if (!failure) signal.throwIfAborted();
     }

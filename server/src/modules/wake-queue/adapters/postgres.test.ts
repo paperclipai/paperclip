@@ -868,6 +868,35 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].statusVersion).toBe(blockedIssue.statusVersion);
   });
 
+  it.each([true, false])("holds a native pre-dispatch failure only when no automatic retry owns it (retry scheduled: %s)", async (retryScheduled) => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, status: "in_progress" });
+    const runId = await seedRun({ companyId, agentId, status: "failed", contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", errorCode: "adapter_failed",
+      resultJson: { failureCause: "40001", nativePreDispatchFailure: { version: 1, providerWorkStarted: false } } })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    if (retryScheduled) {
+      await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation", status: "scheduled_retry",
+        retryOfRunId: runId, scheduledRetryReason: "interrupted_preparation", scheduledRetryAttempt: 1,
+        contextSnapshot: { issueId, retryReason: "interrupted_preparation" } });
+    }
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async () => undefined as never);
+    const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    const issue = (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
+    if (retryScheduled) {
+      // The uncharged retry owns the next attempt: no incident, no blocked task, no Retry click.
+      expect(issue.status).toBe("in_progress");
+      expect(actions).toHaveLength(0);
+    } else {
+      // An exhausted lane keeps today's hold, whose task offers a manual Retry.
+      expect(issue.status).toBe("blocked");
+      expect(actions[0]).toMatchObject({ cause: "native_continuation_requires_reconciliation" });
+    }
+  });
+
   it("does not open a reconciliation incident for a native run whose model the provider rejected", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });

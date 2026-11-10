@@ -35,7 +35,7 @@ import {
   type CompanyImportTransferStatus,
 } from "@paperclipai/shared/company-import-transfer";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
-import { authorizationDeniedDetails } from "../services/authorization.js";
+import { authorizationDeniedDetails, issueReadSqlCondition } from "../services/authorization.js";
 import { PORTABLE_ZIP_UPLOAD_LIMIT_BYTES } from "../http/body-limits.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
@@ -427,6 +427,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const query = companyArtifactsQuerySchema.parse(req.query);
     res.json(await artifacts.list(companyId, query, {
       userId: query.starred && req.actor.type === "board" ? req.actor.userId : undefined,
+      readCondition: await issueReadSqlCondition(db, req.actor),
     }));
   });
 

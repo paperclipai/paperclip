@@ -5,7 +5,8 @@ import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node
 import os from "node:os";
 import path from "node:path";
 import { afterEach, test } from "vitest";
-import { synchronizeSdkPublicInputs } from "./source-sdk-public-inputs.mjs";
+import { fileURLToPath } from "node:url";
+import { staleSdkPublicInputs, synchronizeSdkPublicInputs } from "./source-sdk-public-inputs.mjs";
 
 const registry = "tests/runner-e2e/source-sdk-public-inputs.json";
 const roots = [];
@@ -69,4 +70,24 @@ test("admits only the separately pinned restored lock overlay without changing i
   assert.equal(updated.inputs["pnpm-lock.yaml"], git(root, "rev-parse", `${revision}:pnpm-lock.yaml`).trim());
   await writeFile(path.join(root, "pnpm-lock.yaml"), "unknown lock overlay");
   await assert.rejects(synchronizeSdkPublicInputs(root, revision));
+});
+
+// The pins only prove the SDK public types while they match the committed
+// source. A PR that edits packages/shared/src (or another pinned input) without
+// refreshing them breaks every SDK-dependent Runner cell before its server
+// starts, so fail here, cheaply, with the inputs and the fix command.
+test("the committed SDK public source pins match this checkout's committed tree", async () => {
+  const root = fileURLToPath(new URL("../..", import.meta.url));
+  const stale = await staleSdkPublicInputs(root);
+  assert.deepEqual(stale, [], `${registry} is stale for ${stale.length} pinned input(s): ${stale.slice(0, 10).map(row => `${row.file} (${row.change})`).join(", ")}${stale.length > 10 ? ", ..." : ""}. `
+    + "Commit your change, run `node tests/runner-e2e/source-sdk-public-inputs.mjs $(git rev-parse HEAD) --write`, and commit the updated registry.");
+});
+test("the drift guard names changed, unpinned and removed inputs and clears after a resync", async () => {
+  const { root, revision } = await fixture();
+  assert.deepEqual((await staleSdkPublicInputs(root)).map(row => row.change), Array(11).fill("changed"));
+  await synchronizeSdkPublicInputs(root, revision, { write: true });
+  assert.deepEqual(await staleSdkPublicInputs(root), []);
+  await put(root, "packages/shared/src/added.ts", "synthetic added source\n"); await rm(path.join(root, "packages/plugins/sdk/src/types.ts"));
+  git(root, "add", "-A"); git(root, "-c", "user.name=Synthetic unit", "-c", "user.email=synthetic@example.invalid", "commit", "-qm", "drift");
+  assert.deepEqual(await staleSdkPublicInputs(root), [{ file: "packages/plugins/sdk/src/types.ts", change: "removed" }, { file: "packages/shared/src/added.ts", change: "unpinned" }]);
 });

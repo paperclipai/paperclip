@@ -1,1 +1,0 @@
-ALTER TABLE "mcp_oauth_client_mirror_state" ADD COLUMN "dot_device_cutover" jsonb;

@@ -229,7 +229,7 @@ export const WATCHDOG_DEFAULT_MANDATE = [
   "- Treat every terminal, cancelled, blocked, in-review, or otherwise stopped leaf in the watched subtree as a claim that must be verified against comments, documents, work products, screenshots, tests, blockers, and review state.",
   '- Do not accept "I could not" or "waiting for approval" as automatically valid. Read the evidence before deciding.',
   "- If a stopped leaf is genuinely complete, leave it alone and record why you believe so.",
-  "- If a stopped leaf is not genuinely complete, restore a live path inside the watched subtree by reopening, reassigning, commenting actionable instructions, creating a follow-up child issue, or accepting an eligible task-level interaction (such as a routine plan confirmation when no custom instruction forbids it).",
+  "- If a stopped leaf is not genuinely complete, restore a live path inside the watched subtree by reopening, reassigning, commenting actionable instructions, or accepting an eligible task-level interaction (such as a routine plan confirmation when no custom instruction forbids it).",
   "- If you discover a Paperclip product or platform bug while reviewing the stopped subtree, create a linked engineering follow-up outside the watched source tree using the server-provided watchdog discovery route instead of making it a source child.",
   "- If you confirm a true blocker on a human or external system, leave the issue in a valid waiting disposition that names the unblock owner and action, rather than silently approving it.",
   "",
@@ -2680,14 +2680,14 @@ function renderPaperclipWakePromptBody(
     if (acceptedPlanContinuation) {
       directive = acceptedPlanWithMissingWakeComment
         ? "Continue the accepted-plan review only. Do not write code or perform implementation work on the planning issue."
-        : "Create child issues from the approved plan only. Do not write code or perform implementation work on the planning issue.";
+        : "Implement the accepted plan on this issue. Follow any task assignments explicitly included in the approved plan. Plan acceptance alone does not require subtasks.";
     }
     lines.push(`- planning directive: ${directive}`);
     if (acceptedPlanContinuation) {
       lines.push(
         acceptedPlanWithMissingWakeComment
           ? "- accepted-plan continuation: fetch and reconcile the missing wake comment; do not create a child merely because a plan was accepted"
-          : "- accepted-plan continuation: you may create child implementation issues from the approved plan, but must not start implementation work on the planning issue itself",
+          : "- accepted-plan continuation: continue the approved work on this issue unless the approved plan explicitly assigns it elsewhere",
       );
     }
   }
@@ -2898,7 +2898,7 @@ function renderPaperclipWakePromptBody(
       "## Open document annotations",
       "",
       "These open annotations are grouped by issue document. Resolved annotations were intentionally omitted.",
-      "Scope: a document annotation authorizes document edits and thread replies only; propose a child issue before making code changes.",
+      "Scope: a document annotation authorizes document edits and thread replies only; obtain authorization before making code changes.",
       "For snapshot documents such as QA evidence and run summaries, prefer replying and resolving the thread over rewriting the snapshot.",
       `- open annotation threads included: ${context.totals.includedThreadCount}/${context.totals.openThreadCount}`,
       `- annotation comments included: ${context.totals.includedCommentCount}/${context.totals.commentCount}`,
@@ -3124,7 +3124,7 @@ function renderPaperclipWakePromptBody(
       ...(action.nextAction ? [`- next action for the board: ${action.nextAction}`] : []),
       "",
       "Choose one, then stop:",
-      `- Re-delegate: if the work can be done another way, create or reassign a task for it and stop depending on ${label}.`,
+      `- Reassign: if the work can be done another way, reassign its existing task and stop depending on ${label}.`,
       `- Escalate: comment on this issue with what is stuck and what the board must do on ${label} (its Retry or reassignment), so the board sees it here.`,
       `- Block this issue with a reason that names ${label} and its recovery action, if nothing else can move until the board acts.`,
       `Do not redo ${label}'s work yourself while it is assigned, and do not wait silently.`,

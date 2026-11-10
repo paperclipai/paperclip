@@ -1,5 +1,5 @@
 {
-  "id": "54755f92-a986-44e4-beea-94a72e79076d",
+  "id": "109f5f96-1597-40da-9e08-6ed488f8ad27",
   "prevId": "a2606b41-36c2-4eb5-a59d-28cc730bc455",
   "version": "7",
   "dialect": "postgresql",
@@ -35708,6 +35708,28 @@
           "method": "btree",
           "with": {}
         },
+        "heartbeat_runs_company_native_session_idx": {
+          "name": "heartbeat_runs_company_native_session_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "native_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"native_session_id\" is not null",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
         "heartbeat_runs_company_issue_created_idx": {
           "name": "heartbeat_runs_company_issue_created_idx",
           "columns": [
@@ -64934,12 +64956,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
-        },
-        "dot_device_cutover": {
-          "name": "dot_device_cutover",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "device_cutover_stack_id": {
           "name": "device_cutover_stack_id",

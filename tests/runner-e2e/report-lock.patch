@@ -1,40 +1,54 @@
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index 97cbf7b..851e65a 100644
+index 851e65af..6d825f97 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
-@@ -43,7 +43,7 @@ patchedDependencies:
-     hash: 6st5fzvttegjv64llnfegwwpca
-     path: patches/acpx@0.12.0.patch
-   acpx@0.13.1:
--    hash: ujlgpkxl4mvt34bejc3uxyvthq
-+    hash: 25xv27loodfejozcsygclyiyau
-     path: patches/acpx@0.13.1.patch
-   embedded-postgres@18.1.0-beta.16:
-     hash: 55uhvnotpqyiy37rn3pqpukhei
-@@ -523,7 +523,7 @@ importers:
-         version: 0.160.0
-       acpx:
-         specifier: 0.13.1
--        version: 0.13.1(patch_hash=ujlgpkxl4mvt34bejc3uxyvthq)
-+        version: 0.13.1(patch_hash=25xv27loodfejozcsygclyiyau)
-       ajv:
-         specifier: ^8.20.0
-         version: 8.20.0
-@@ -1021,7 +1021,7 @@ importers:
+@@ -28,7 +28,7 @@ patchedDependencies:
+     hash: x25bk7vvljpm57viwan5qoaddi
+     path: patches/@chat-adapter__github@4.39.0.patch
+   '@chat-adapter/slack@4.39.0':
+-    hash: 226jj24akljccsfbw7bcxujz4u
++    hash: eskb5kxp7eud5v3ostluhynfoa
+     path: patches/@chat-adapter__slack@4.39.0.patch
+   '@chat-adapter/teams@4.39.0':
+     hash: jfm44m5wrw3jrn2jijafzk7s5a
+@@ -934,7 +934,7 @@ importers:
+         version: 4.39.0(patch_hash=x25bk7vvljpm57viwan5qoaddi)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
+       '@chat-adapter/slack':
+         specifier: 4.39.0
+-        version: 4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
++        version: 4.39.0(patch_hash=eskb5kxp7eud5v3ostluhynfoa)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
+       '@chat-adapter/teams':
+         specifier: 4.39.0
+         version: 4.39.0(patch_hash=jfm44m5wrw3jrn2jijafzk7s5a)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
+@@ -1015,7 +1015,7 @@ importers:
+         version: 2.2.0(@grpc/grpc-js@1.14.5)(nice-grpc-common@2.0.4)(nice-grpc@2.1.17)
+       '@vercel/connect':
+         specifier: 2.3.3
+-        version: 2.3.3(@chat-adapter/slack@4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.6.7))(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(ai@7.0.130(zod@4.6.7))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.11)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))))
++        version: 2.3.3(@chat-adapter/slack@4.39.0(patch_hash=eskb5kxp7eud5v3ostluhynfoa)(ai@7.0.130(zod@4.6.7))(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(ai@7.0.130(zod@4.6.7))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.11)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))))
+       acorn:
+         specifier: 8.18.0
          version: 8.18.0
-       acpx:
-         specifier: 0.13.1
--        version: 0.13.1(patch_hash=ujlgpkxl4mvt34bejc3uxyvthq)
-+        version: 0.13.1(patch_hash=25xv27loodfejozcsygclyiyau)
-       ai:
-         specifier: 7.0.130
-         version: 7.0.130(zod@4.6.7)
-@@ -13916,7 +13916,7 @@ snapshots:
-       - bare-buffer
-       - react-native-b4a
+@@ -10043,7 +10043,7 @@ snapshots:
+       - workflow
+       - zod
  
--  acpx@0.13.1(patch_hash=ujlgpkxl4mvt34bejc3uxyvthq):
-+  acpx@0.13.1(patch_hash=25xv27loodfejozcsygclyiyau):
+-  '@chat-adapter/slack@4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)':
++  '@chat-adapter/slack@4.39.0(patch_hash=eskb5kxp7eud5v3ostluhynfoa)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)':
      dependencies:
-       '@agentclientprotocol/sdk': 1.4.0(zod@4.6.7)
-       commander: 15.0.0
+       '@chat-adapter/shared': 4.39.0(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
+       '@slack/socket-mode': 2.0.7
+@@ -13803,11 +13803,11 @@ snapshots:
+     dependencies:
+       execa: 5.1.1
+ 
+-  '@vercel/connect@2.3.3(@chat-adapter/slack@4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.6.7))(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(ai@7.0.130(zod@4.6.7))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.11)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))))':
++  '@vercel/connect@2.3.3(@chat-adapter/slack@4.39.0(patch_hash=eskb5kxp7eud5v3ostluhynfoa)(ai@7.0.130(zod@4.6.7))(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))(ai@7.0.130(zod@4.6.7))(better-auth@1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.11)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1))))':
+     dependencies:
+       '@vercel/oidc': 3.8.9
+     optionalDependencies:
+-      '@chat-adapter/slack': 4.39.0(patch_hash=226jj24akljccsfbw7bcxujz4u)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
++      '@chat-adapter/slack': 4.39.0(patch_hash=eskb5kxp7eud5v3ostluhynfoa)(ai@7.0.130(zod@4.6.7))(zod@4.6.7)
+       '@modelcontextprotocol/sdk': 1.31.0(zod@4.6.7)
+       ai: 7.0.130(zod@4.6.7)
+       better-auth: 1.7.2(@opentelemetry/api@1.9.1)(drizzle-kit@0.31.11)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(kysely@0.29.5)(pg@8.18.0)(postgres@3.4.9(patch_hash=6q4cic6qawywsyeo2spgnjamda)))(pg@8.18.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(vitest@5.0.3(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.1)))

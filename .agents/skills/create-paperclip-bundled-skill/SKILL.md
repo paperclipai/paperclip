@@ -53,10 +53,8 @@ xc search '<topic keywords>' -n 30    # related discussion
 ```
 
 If `xc` is not on PATH, is unauthenticated, or the account lacks read access
-(the check above fails for any reason), delegate the
-fetch to a teammate with X/Twitter access (e.g. the Content Strategist agent)
-via a child issue: give them the URL and ask for full text of the post + thread
-+ any linked content.
+(the check above fails for any reason), use another authorized source or ask
+the user for the post, thread, and linked content. Report any unavailable context.
 
 **Other sources.** Fetch linked articles/READMEs directly. Record the source
 URL — it goes in the skill body or PR description as attribution.

@@ -1,6 +1,6 @@
 {
-  "id": "2be53987-902a-41b6-8cb4-6e89a768f8cf",
-  "prevId": "f98af245-4a2e-4c3d-b89e-6ed3e81a074c",
+  "id": "3347b37d-b35b-4357-b08c-a78c017086ac",
+  "prevId": "109f5f96-1597-40da-9e08-6ed488f8ad27",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -10188,6 +10188,40 @@
           "method": "btree",
           "with": {}
         },
+        "chat_actions_company_issue_kind_idx": {
+          "name": "chat_actions_company_issue_kind_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"payload\"->>'issueId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"chat_actions\".\"kind\" IN ('inbound_wakeup', 'failed_run_retry')",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
         "chat_actions_github_stale_head_idx": {
           "name": "chat_actions_github_stale_head_idx",
           "columns": [
@@ -10953,6 +10987,28 @@
           ],
           "isUnique": true,
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "chat_deliveries_github_automatic_delivery_idx": {
+          "name": "chat_deliveries_github_automatic_delivery_idx",
+          "columns": [
+            {
+              "expression": "endpoint_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"normalized_event\"->'githubAutomatic'->'context'->>'deliveryId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "(\"chat_deliveries\".\"normalized_event\"->'githubAutomatic'->'context'->>'deliveryId') is not null",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         }
@@ -12391,6 +12447,44 @@
           ],
           "isUnique": true,
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "chat_message_links_company_comment_idx": {
+          "name": "chat_message_links_company_comment_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "comment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"chat_message_links\".\"comment_id\" is not null",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
+        "chat_message_links_delivery_idx": {
+          "name": "chat_message_links_delivery_idx",
+          "columns": [
+            {
+              "expression": "delivery_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"chat_message_links\".\"delivery_id\" is not null",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         }
@@ -35475,6 +35569,27 @@
           "method": "btree",
           "with": {}
         },
+        "heartbeat_runs_company_wake_comment_idx": {
+          "name": "heartbeat_runs_company_wake_comment_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"context_snapshot\"->>'wakeCommentId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
         "heartbeat_runs_cost_accounting_pending_idx": {
           "name": "heartbeat_runs_cost_accounting_pending_idx",
           "columns": [
@@ -35623,6 +35738,28 @@
             }
           ],
           "isUnique": false,
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_company_native_session_idx": {
+          "name": "heartbeat_runs_company_native_session_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "native_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"native_session_id\" is not null",
           "concurrently": true,
           "method": "btree",
           "with": {}

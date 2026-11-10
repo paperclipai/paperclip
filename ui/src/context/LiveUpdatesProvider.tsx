@@ -3,6 +3,7 @@ import { resolveAgentAppearance, TASK_IDENTITY_CHANGED_FIELD, issueActivityChang
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { createLiveQueryRecovery } from "../lib/live-query-recovery";
 import { isLiveReconciledQuery } from "../lib/live-reconcile";
+import { refreshPendingTaskBrowserReads, refreshTaskBrowsers } from "../lib/task-browsers-refresh";
 import {
   createContext,
   useCallback,
@@ -21,9 +22,12 @@ import {
   type QueryClient,
 } from "@tanstack/react-query";
 import {
+  AMBIENT_INVALIDATION_SPACING_MS,
   createCoalescingQueryClient,
   createInvalidationBatcher,
+  createLaneRoutingBatcher,
   excludingQueryKeys,
+  type InvalidationBatcher,
 } from "../lib/query-invalidation-batcher";
 import {
   patchRunStatusInList,
@@ -1579,6 +1583,8 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
+    // Browser lists stop polling while connected; this activity refreshes them.
+    if (entityId && action?.startsWith("browser.")) refreshTaskBrowsers(queryClient, entityId);
     const chatListKey = queryKeys.agentChats.list(companyId, currentActor.userId);
     const knownChat = entityId && queryClient.getQueryData<Issue[]>(chatListKey)?.some(chat => chat.id === entityId);
     const ownChatDelivery = readString(details?.conversationUserId) === (currentActor.userId ?? "local-board");
@@ -2153,6 +2159,41 @@ function handleLiveEvent(
   }
 }
 
+/**
+ * Company-scoped query families whose data is a company-wide list or
+ * projection: task lists and summaries, the agent list, run lists, badges,
+ * the dashboard, costs and the company activity feed. Many events in a busy
+ * company change them, and no single task view depends on them for its own
+ * state. Task detail, comments, runs and other per-entity keys are not listed.
+ */
+const AMBIENT_COMPANY_QUERY_ROOTS: ReadonlySet<string> = new Set([
+  "issues",
+  "agents",
+  "heartbeats",
+  "live-runs",
+  "dashboard",
+  "sidebar-badges",
+  "costs",
+  "activity",
+]);
+
+function isAmbientCompanyQueryKey(companyId: string | null, queryKey: readonly unknown[]): boolean {
+  return !!companyId && queryKey[1] === companyId
+    && typeof queryKey[0] === "string" && AMBIENT_COMPANY_QUERY_ROOTS.has(queryKey[0]);
+}
+
+function createLiveInvalidationBatcher(
+  queryClient: QueryClient,
+  companyId: string | null,
+  ambientSpacingMs: number = AMBIENT_INVALIDATION_SPACING_MS,
+): InvalidationBatcher {
+  return createLaneRoutingBatcher(
+    createInvalidationBatcher(queryClient),
+    createInvalidationBatcher(queryClient, undefined, { minSpacingMs: ambientSpacingMs }),
+    (queryKey) => isAmbientCompanyQueryKey(companyId, queryKey),
+  );
+}
+
 function resolveLiveCompanyId(
   selectedCompanyId: string | null,
   selectedCompanyLiveId: string | null,
@@ -2196,6 +2237,8 @@ function closeSocketQuietly(
 }
 
 export const __liveUpdatesTestUtils = {
+  createLiveInvalidationBatcher,
+  isAmbientCompanyQueryKey,
   MENTION_POOL_REFRESH_WINDOW_MS,
   buildActivityToast,
   applyRunLifecycleToCompanyLiveRuns,
@@ -2272,10 +2315,12 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
   // Coalesce the per-event invalidation storm. Optimistic setQueryData writes
   // still pass straight through (immediate); only invalidateQueries is batched
-  // and flushed at most a few times per second.
+  // and flushed at most a few times per second. Company-wide lists and
+  // projections use a slower lane, so a busy company does not refetch them on
+  // every batch while a task is open.
   const invalidationBatcher = useMemo(
-    () => createInvalidationBatcher(queryClient),
-    [queryClient],
+    () => createLiveInvalidationBatcher(queryClient, liveCompanyId),
+    [queryClient, liveCompanyId],
   );
   const coalescingClient = useMemo(
     () => createCoalescingQueryClient(queryClient, invalidationBatcher),
@@ -2383,6 +2428,10 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         // too. Reconcile that gap as well as reconnects: events are not replayed.
         const initialHealthyOpen = !hasOpenedSocket.current && !hasNeededSocketRecovery.current;
         hasOpenedSocket.current = true;
+        // Browser lists stop polling on an empty result. A reconcile that joins
+        // an older read needs one more read after it. Scan before reconciling,
+        // so the reconcile's own reads are not followed up again.
+        refreshPendingTaskBrowserReads(queryClient);
         void queryClient.invalidateQueries({
           type: "active",
           predicate: initialHealthyOpen ? (query) => {
@@ -2403,6 +2452,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           const parsed = JSON.parse(raw) as LiveEvent;
           if (transcripts.receive(parsed, recoverQueries)) {
             if ((parsed as { type: string }).type === "live.resync") {
+              refreshPendingTaskBrowserReads(queryClient);
               void queryClient.invalidateQueries({ type: "active", predicate: isLiveReconciledQuery }, { cancelRefetch: false });
             }
             return;

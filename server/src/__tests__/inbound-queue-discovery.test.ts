@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, eq, getTableColumns, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, inArray, notInArray, or, sql } from "drizzle-orm";
 import { chatActions, chatDeliveries, chatEndpoints, createDb, startEmbeddedPostgresTestDatabase, type Db } from "@paperclipai/db";
 import { createChatConversationDeliveryQueue } from "../services/chat-channels/inbound/conversation-queue.js";
-import { pendingInboundWakeupCondition } from "../services/chat-channels/inbound/delivery-ledger.js";
+import { conversationDeliveryOrder, openConversationDeliveryIds, pendingInboundWakeupCondition } from "../services/chat-channels/inbound/delivery-ledger.js";
 import { captureInboundQuery, pendingIds, queueOptions, runQuery, seedInboundDiscovery } from "./helpers/inbound-discovery-fixture.js";
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -27,6 +27,56 @@ describe("inbound queue discovery", () => {
     expect(booleans.every(row => typeof row.pending === "boolean" && row.pending === row.oracle)).toBe(true);
     expect(await pendingIds(db, pendingInboundWakeupCondition(), f.companyId)).toEqual(await pendingIds(db, oracle, f.companyId));
     expect((await pendingIds(db, pendingInboundWakeupCondition(), f.companyId)).map(row => row.id).sort()).toEqual([f.pending.id, duplicate.id].sort());
+  });
+
+  it("selects the same open conversation work as the endpoint state predicate", async () => {
+    const f = await seedInboundDiscovery(db);
+    const other = await seedInboundDiscovery(db, 0);
+    const otherEndpoint = await f.anotherEndpoint();
+    const open = await Promise.all((["received", "retry", "processing"] as const).map(state => f.delivery({ state })));
+    const closed = await Promise.all((["filtered", "failed", "processed"] as const).map(state => f.delivery({ state })));
+    const processingWake = await f.delivery({ state: "processed" });
+    await f.action(processingWake.id, { status: "processing" });
+    const duplicateWake = await f.delivery({ state: "processed" });
+    await f.action(duplicateWake.id); await f.action(duplicateWake.id);
+    const wakeForOpenDelivery = await f.delivery({ state: "retry" });
+    await f.action(wakeForOpenDelivery.id);
+    const wakeForFailedDelivery = await f.delivery({ state: "failed" });
+    await f.action(wakeForFailedDelivery.id);
+    const notPending = await f.delivery({ state: "processed" });
+    await f.action(notPending.id, { status: "processed" });
+    await f.action(notPending.id, { kind: "other" });
+    await f.action(notPending.id, { endpointId: otherEndpoint });
+    await f.action(null);
+    const crossEndpointWake = await f.delivery({ state: "processed", endpointId: otherEndpoint });
+    await f.action(crossEndpointWake.id);
+    const otherEndpointWake = await f.delivery({ state: "processed", endpointId: otherEndpoint });
+    await f.action(otherEndpointWake.id, { endpointId: otherEndpoint });
+    const reaction = await f.delivery({ state: "received", eventKind: "reaction_added" });
+    const oracle = or(inArray(chatDeliveries.state, ["received", "retry", "processing"]),
+      and(eq(chatDeliveries.state, "processed"), pendingInboundWakeupCondition()));
+    for (const endpointId of [f.endpointId, other.endpointId, otherEndpoint]) {
+      const expected = await db.select({ id: chatDeliveries.id }).from(chatDeliveries)
+        .where(and(eq(chatDeliveries.endpointId, endpointId), oracle)).orderBy(chatDeliveries.id);
+      const actual = await db.select({ id: chatDeliveries.id }).from(chatDeliveries)
+        .where(and(eq(chatDeliveries.endpointId, endpointId), inArray(chatDeliveries.id, openConversationDeliveryIds(endpointId)))).orderBy(chatDeliveries.id);
+      expect(actual).toEqual(expected);
+    }
+    const selected = (await db.select({ id: chatDeliveries.id }).from(chatDeliveries)
+      .where(and(eq(chatDeliveries.endpointId, f.endpointId), inArray(chatDeliveries.id, openConversationDeliveryIds(f.endpointId))))).map(row => row.id).sort();
+    for (const row of [f.pending, ...open, processingWake, duplicateWake, wakeForOpenDelivery, reaction]) expect(selected).toContain(row.id);
+    expect(new Set(selected).size).toBe(selected.length);
+    for (const row of [...closed, wakeForFailedDelivery, notPending, other.pending, crossEndpointWake, otherEndpointWake]) expect(selected).not.toContain(row.id);
+    expect((await db.select({ id: chatDeliveries.id }).from(chatDeliveries)
+      .where(and(eq(chatDeliveries.endpointId, otherEndpoint), inArray(chatDeliveries.id, openConversationDeliveryIds(otherEndpoint))))).map(row => row.id)).toEqual([otherEndpointWake.id]);
+    // The real head query returns the oracle's first row in conversation order.
+    const earliest = await f.delivery({ state: "processed", normalizedEvent: { conversation: { externalThreadId: f.threadId }, message: { providerSentAt: "2025-12-31T00:00:00Z" } } });
+    await f.action(earliest.id, { status: "processing" });
+    const [expectedHead] = await db.select({ id: chatDeliveries.id }).from(chatDeliveries).where(and(eq(chatDeliveries.endpointId, f.endpointId), oracle,
+      notInArray(chatDeliveries.eventKind, ["reaction_added", "reaction_removed"]), sql`${chatDeliveries.normalizedEvent}->'conversation'->>'externalThreadId' = ${f.threadId}`))
+      .orderBy(...conversationDeliveryOrder()).limit(1);
+    expect(expectedHead?.id).toBe(earliest.id);
+    expect((await runQuery(db, await captureInboundQuery(db, f, "head")))[0]?.[0]).toBe(earliest.id);
   });
 
   it("preserves scoped ready-head probes with unrelated malformed retry data", async () => {

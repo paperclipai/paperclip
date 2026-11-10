@@ -36,13 +36,13 @@ describe.skipIf(!support.supported)("installed project workspace defaults", () =
     return f;
   }
 
-  it("attaches a new project to the installed default and leaves existing projects where they are", async () => {
+  it("keeps a new project on core storage when no environment selects the installed plugin", async () => {
     const f = await fixture();
     await db.update(projects).set({ executionWorkspacePolicy: null }).where(eq(projects.id, f.input.projectId));
     const svc = projectService(db);
     const created = await svc.create(f.companyId, { name: "New project" });
-    expect(created.executionWorkspacePolicy).toMatchObject({ enabled: true, storageProviderPluginId: f.pluginId });
-    expect(created.workspaceProvider).toMatchObject({ source: "project", pluginId: f.pluginId });
+    expect(created.executionWorkspacePolicy).toBeNull();
+    expect(created.workspaceProvider).toMatchObject({ source: "core", pluginId: null });
     const existing = await svc.getById(f.input.projectId);
     expect(existing!.executionWorkspacePolicy).toBeNull();
     expect(existing!.workspaceProvider).toMatchObject({ source: "core", pluginId: null });
@@ -73,10 +73,10 @@ describe.skipIf(!support.supported)("installed project workspace defaults", () =
       .toMatchObject({ source: "project", pluginId: other.pluginId });
   });
 
-  it("keeps a personal project on the installed default", async () => {
+  it("does not attach a personal project based only on a plugin default claim", async () => {
     const f = await fixture();
     const project = await ensurePersonalPrivateProject(db, f.companyId, "user-one");
-    expect(project.executionWorkspacePolicy).toMatchObject({ storageProviderPluginId: f.pluginId });
+    expect(project.executionWorkspacePolicy).toBeNull();
   });
 
   it.each(["create", "import"] as const)("%s leaves an unspecified task mode inherited from the effective provider", async method => {
@@ -153,7 +153,7 @@ describe.skipIf(!support.supported)("installed project workspace defaults", () =
     await db.insert(pluginCompanySettings).values({ companyId: other.id, pluginId: f.pluginId, enabled: true });
     const svc = projectService(db);
     expect((await svc.create(f.companyId, { name: "Disabled here" })).executionWorkspacePolicy).toBeNull();
-    expect((await svc.create(other.id, { name: "Enabled here" })).executionWorkspacePolicy).toMatchObject({ storageProviderPluginId: f.pluginId });
+    expect((await svc.create(other.id, { name: "Enabled here", executionWorkspacePolicy: { enabled: true, storageProviderPluginId: f.pluginId } })).executionWorkspacePolicy).toMatchObject({ storageProviderPluginId: f.pluginId });
     await expect(effectiveProjectWorkspacePolicy(db, f.companyId, { enabled: true, storageProviderPluginId: f.pluginId }, true))
       .rejects.toThrow("unavailable");
   });
@@ -175,13 +175,13 @@ describe.skipIf(!support.supported)("installed project workspace defaults", () =
     expect(await db.select().from(executionWorkspaces)).toHaveLength(0);
   });
 
-  it("asks for a choice when creating a project with conflicting defaults, and leaves existing projects working", async () => {
+  it("ignores conflicting storage default claims without a matching environment and preserves explicit choices", async () => {
     const f = await fixture();
     const other = await createPluginWorkspaceFixture(db, f.companyId);
     const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
     await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson, id: `test.${other.pluginId}` } }).where(eq(plugins.id, other.pluginId));
     const svc = projectService(db);
-    await expect(svc.create(f.companyId, { name: "Ambiguous" })).rejects.toThrow("Multiple workspace storage plugins");
+    expect((await svc.create(f.companyId, { name: "Core" })).workspaceProvider).toMatchObject({ pluginId: null, error: null });
     expect((await svc.create(f.companyId, { name: "Chosen", executionWorkspacePolicy: { enabled: true, storageProviderPluginId: f.pluginId } })).workspaceProvider)
       .toMatchObject({ pluginId: f.pluginId, error: null });
     expect((await svc.getById(f.input.projectId))!.workspaceProvider).toMatchObject({ pluginId: f.pluginId, error: null });

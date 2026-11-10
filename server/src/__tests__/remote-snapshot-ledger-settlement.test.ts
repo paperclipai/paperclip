@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import {
   agents,
@@ -18,6 +18,11 @@ import {
   type OwnershipReport,
 } from "../services/recovery/ownership-invariant-report.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
+
+const aborted = vi.hoisted(() => ({ keys: [] as string[] }));
+vi.mock("../storage/index.js", () => ({
+  getStorageService: () => ({ abortIncompleteUploads: async (_companyId: string, key: string) => { aborted.keys.push(key); return 1; } }),
+}));
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_HISTORY_TEST_DATABASE_URL");
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
@@ -44,7 +49,7 @@ describe("remote snapshot ledger settlement", () => {
   beforeEach(async () => {
     await db.execute(sql`truncate execution_workspace_snapshots, activity_log, workspace_operations, execution_workspaces,
       heartbeat_runs, agents, companies cascade`);
-    companyId = randomUUID(); agentId = randomUUID();
+    companyId = randomUUID(); agentId = randomUUID(); aborted.keys = [];
     await db.insert(companies).values({ id: companyId, name: "Ledger fixture", issuePrefix: "LED" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Fixture", role: "engineer", adapterType: "codex_local" });
   });
@@ -139,5 +144,26 @@ describe("remote snapshot ledger settlement", () => {
     expect(operation!.metadata).toMatchObject({ lastFailure: { code: "remote_workspace_save_abandoned" } });
     expect(await ledger(snapshotId)).toMatchObject({ status: "deleted",
       metadata: { abandonedUpload: { runId: failed, operationId } } });
+  });
+
+  it("aborts the incomplete multipart uploads of every attempt when the reconciler retires an abandoned save", async () => {
+    const failed = await run("failed");
+    const ledgerWorkspace = await workspace({ epoch: 2, writerRunId: null, dirty: false });
+    const ledgerId = randomUUID(), ledgerKeys = ["a", "b"].map(name => `${companyId}/workspace-snapshots/${ledgerWorkspace}/${ledgerId}/${name}.pcws`);
+    await save({ workspaceId: ledgerWorkspace, runId: failed,
+      snapshot: { id: ledgerId, metadata: { uploads: [...ledgerKeys.map(objectKey => ({ objectKey })), { objectKey: `${companyId}/elsewhere/c.pcws` }] } } });
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(),
+      kinds: OWNABLE_KINDS.filter(kind => kind.id === "remote_snapshot_ledger") });
+    expect(aborted.keys).toEqual(ledgerKeys);
+
+    aborted.keys = [];
+    const saveWorkspace = await workspace({ epoch: 2, writerRunId: null, dirty: false });
+    const saveId = randomUUID(), saveKey = `${companyId}/workspace-snapshots/${saveWorkspace}/${saveId}/cut.pcws`;
+    await save({ workspaceId: saveWorkspace, runId: failed, status: "running", lastFailure: false,
+      snapshot: { id: saveId, metadata: { uploads: [{ objectKey: saveKey }] } } });
+    await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(),
+      kinds: OWNABLE_KINDS.filter(kind => kind.id === "remote_snapshot_save") });
+    expect(await ledger(saveId)).toMatchObject({ status: "delete_requested" });
+    expect(aborted.keys).toEqual([saveKey]);
   });
 });

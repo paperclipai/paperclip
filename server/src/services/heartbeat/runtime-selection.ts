@@ -17,6 +17,7 @@ import { isConversation } from "../agent-conversations.js";
 import { renewLegacyControllerLease } from "../legacy-controller-lease.js";
 import type { prepareManagedAiRuntime } from "../ai-connection-runtime.js";
 import { resolveHeartbeatNativeLifecyclePolicy, type NativeLifecyclePolicy } from "./native-lifecycle.js";
+import { resolveWarmProviderSelection } from "../native-runtime/native-warm-capability.js";
 import {
   getNativeReviewAssignment,
   readNativeReviewAssignmentContext,
@@ -170,6 +171,14 @@ export interface NativeSandboxLifecycle {
   failoverBackup: "verified";
 }
 
+/** The acquired sandbox lease is reusable: configured, and supported by the provider. */
+function sandboxTargetHasReusableLease(target: {
+  reusableLeaseConfigured?: boolean;
+  effectiveCapabilities?: { reusableLeases: boolean } | null;
+}): boolean {
+  return target.reusableLeaseConfigured === true && target.effectiveCapabilities?.reusableLeases === true;
+}
+
 export function resolveReusableSandboxLifecycle(input: {
   lifecyclePolicy:
     | { mode: "per_turn"; idleTimeoutMs: null }
@@ -184,9 +193,7 @@ export function resolveReusableSandboxLifecycle(input: {
   if (input.target?.kind !== "remote" || input.target.transport !== "sandbox") {
     return null;
   }
-  const reusableLease =
-    input.target.reusableLeaseConfigured === true &&
-    input.target.effectiveCapabilities?.reusableLeases === true;
+  const reusableLease = sandboxTargetHasReusableLease(input.target);
   if (input.lifecyclePolicy.mode === "warm" && !reusableLease) {
     throw new Error("runner_warm_lifecycle_requires_reusable_provider_lease");
   }
@@ -262,15 +269,26 @@ function readNonEmptyString(value: unknown): string | null {
 
 function resolveRuntimeLifecyclePolicy(input: HeartbeatRuntimeSelectionInput): NativeLifecyclePolicy | null {
   if (input.nativeRuntimeResolution.kind !== "native") return null;
+  const target = input.workspace.executionTarget;
+  const sandboxTarget = target?.kind === "remote" && target.transport === "sandbox" ? target : null;
+  const backend = input.nativeRuntimeResolution.profile.backend;
+  const rawAcpxAgent = parseObject(input.agent.adapterConfig).acpxAgent;
+  // The environment view resolves the harness through the runtime's resolver
+  // (ACPX without an agent is Claude); use the same harness here so the lease
+  // and the runner decisions agree.
+  const resolved = backend === "acpx_runtime" && rawAcpxAgent === undefined
+    ? resolveWarmProviderSelection(input.agent.adapterConfig, input.agent.companyId) : null;
   return resolveHeartbeatNativeLifecyclePolicy({
-    adapterType: input.agent.adapterType, backend: input.nativeRuntimeResolution.profile.backend,
-    acpxAgent: parseObject(input.agent.adapterConfig).acpxAgent,
+    adapterType: input.agent.adapterType, backend,
+    acpxAgent: resolved?.backend === backend ? resolved.acpxAgent : rawAcpxAgent,
     agentMode: parseObject(input.agent.adapterConfig).lifecycleMode, agentIdleTimeoutMs: parseObject(input.agent.adapterConfig).idleTimeoutMs,
-    environmentPolicy: input.workspace.executionTarget?.kind === "remote" && input.workspace.executionTarget.transport === "sandbox" ? input.workspace.executionTarget.runnerLifecyclePolicy : null,
+    environmentPolicy: sandboxTarget ? sandboxTarget.runnerLifecyclePolicy : null,
     persistedPolicy: input.session.persistedNativeExecutionInput?.session.lifecyclePolicy,
     managedAiSelected: Boolean(input.config.managedAiRuntime), managedAiAttribution: input.config.managedAiRuntime?.attribution,
-    taskOwned: Boolean(input.workspace.executionTarget?.kind === "remote" && input.workspace.executionTarget.transport === "sandbox" && input.workspace.executionTarget.runnerTask),
-    localTarget: input.workspace.executionTarget?.kind !== "remote",
+    taskOwned: Boolean(sandboxTarget?.runnerTask),
+    localTarget: target?.kind !== "remote",
+    remoteSandboxTarget: sandboxTarget && !sandboxTarget.runnerTask
+      ? { reusableLease: sandboxTargetHasReusableLease(sandboxTarget), idleTimeoutMs: sandboxTarget.runnerIdleTimeoutMs } : undefined,
   });
 }
 

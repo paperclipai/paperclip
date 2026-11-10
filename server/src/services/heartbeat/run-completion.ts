@@ -1,7 +1,10 @@
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
 import { isContextCompactionRun } from "../context-compaction.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
-import { GENERIC_RUN_FAILURE_CODES, failureCauseFromAdapterResult, failureCauseFromError } from "./run-failure-cause.js";
+import { GENERIC_RUN_FAILURE_CODES, NATIVE_PRE_DISPATCH_FAILURE_CODE, NATIVE_PRE_DISPATCH_FAILURE_KEY, NATIVE_PRE_DISPATCH_FAILURE_RECORD, failureCauseFromAdapterResult, failureCauseFromError,
+  isNativePreDispatchTransientFailure } from "./run-failure-cause.js";
+import { INTERRUPTED_PREPARATION_RETRY_REASON } from "../execution-recovery-attempt.js";
+import { hasNativeExecutionStartEvidence } from "../native-runtime/native-restart-recovery.js";
 import { withoutSqlStatementText } from "@paperclipai/shared";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
 import { boundOriginalMessage, describeRefusedExactResume, interruptedExactResumeCause } from "../native-runtime/native-exact-resume-failure.js";
@@ -35,8 +38,8 @@ import { accountRunCost } from "../run-cost-accounting.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import { isWorkspaceGitScanError } from "../workspace-git-operation-scheduler.js";
-import { and, eq, sql } from "drizzle-orm";
-import { heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
 import { HttpError } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { normalizeResponsibleUserDenialCode } from "../responsible-user-denial-run-outcomes.js";
@@ -152,6 +155,12 @@ export interface FailHeartbeatRunInput extends RunCompletionInput {
   identityRedactor: Pick<ReturnType<typeof createAgentIdentityRedactor>, "redact">;
   requiredWorkspaceRestoreEvidence: Record<string, unknown> | null;
   legacyAdapterEntered: boolean;
+  /**
+   * False only when this controller never entered the native dispatch gate and
+   * is not resuming a restart claim. Omitted means provider work may have
+   * started, so the failure keeps the native hold.
+   */
+  nativeDispatchMayHaveStarted?: boolean;
   goalCheckpointSession: { current: { params: Record<string, unknown>; displayId: string } | null };
   previousSessionDisplayId: string | null;
   taskSession: TaskSession;
@@ -164,6 +173,8 @@ export interface FailHeartbeatRunSetupInput {
   signal: AbortSignal;
   /** True once a legacy adapter or native dispatch began provider work. */
   providerDispatchStarted: boolean;
+  /** See FailHeartbeatRunInput.nativeDispatchMayHaveStarted. */
+  nativeDispatchMayHaveStarted?: boolean;
   identityRedactor: Pick<ReturnType<typeof createAgentIdentityRedactor>, "redact">;
   readFailureReportSecrets: () => string[];
 }
@@ -1098,9 +1109,89 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     await settleAgent();
   }
 
+  /**
+   * The pre-dispatch record for a native run that failed before provider work
+   * could start, else nothing. Only a failure path calls it, so the normal
+   * path gains no I/O. Missing or unreadable evidence keeps the native hold.
+   */
+  async function nativePreDispatchFailureResult(runId: string, dispatchMayHaveStarted: boolean | undefined) {
+    if (dispatchMayHaveStarted !== false) return null;
+    try {
+      const [row] = await db.select({ companyId: heartbeatRuns.companyId, runtimeMode: heartbeatRuns.runtimeMode,
+        processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId,
+        processStartedAt: heartbeatRuns.processStartedAt, sessionIdAfter: heartbeatRuns.sessionIdAfter,
+        inheritedProcessIdentityRunId: sql<unknown>`${heartbeatRuns.runnerProfileJson}->>'inheritedProcessIdentityRunId'`,
+        coordinator: { runId: nativeRunFinalizations.runId, phase: nativeRunFinalizations.phase,
+          attempt: nativeRunFinalizations.attempt, leaseOwner: nativeRunFinalizations.leaseOwner,
+          controllerBootId: nativeRunFinalizations.controllerBootId, resultId: nativeRunFinalizations.resultId } })
+        .from(heartbeatRuns)
+        .leftJoin(nativeRunFinalizations, and(eq(nativeRunFinalizations.runId, heartbeatRuns.id),
+          eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId)))
+        .where(eq(heartbeatRuns.id, runId)).limit(1);
+      if (!row || row.runtimeMode !== "native") return null;
+      // A recorded process or provider session also means work may have run.
+      // Runtime selection copies a warm predecessor's process identity onto a
+      // follow-up and names that run; such an inherited identity is not this
+      // run's process. Its own process would still record its start events.
+      const inheritedProcessIdentity = typeof row.inheritedProcessIdentityRunId === "string";
+      if ((!inheritedProcessIdentity && (row.processPid !== null || row.processGroupId !== null
+        || row.processStartedAt !== null)) || row.sessionIdAfter !== null) return null;
+      // Runtime selection creates the coordinator unclaimed ("observed",
+      // attempt 0). Only the executor, after entering dispatch, claims it with
+      // a lease owner and controller; any claim, in any generation, disqualifies.
+      const coordinator = row.coordinator;
+      if (coordinator?.runId && (coordinator.phase !== "observed" || coordinator.attempt !== 0
+        || coordinator.leaseOwner !== null || coordinator.controllerBootId !== null || coordinator.resultId !== null)) return null;
+      // The executor records native.process_start_requested before any backend
+      // may spawn a runner; runner events carry a source event ID. Any of them,
+      // in this or an earlier controller generation, means work may have run.
+      // Restart recovery uses the same canonical proof.
+      if (await hasNativeExecutionStartEvidence(db, { companyId: row.companyId, id: runId })) return null;
+      const [result] = await db.select({ id: nativeRunResults.id }).from(nativeRunResults)
+        .where(and(eq(nativeRunResults.companyId, row.companyId), eq(nativeRunResults.runId, runId))).limit(1);
+      if (result) return null;
+      return { [NATIVE_PRE_DISPATCH_FAILURE_KEY]: NATIVE_PRE_DISPATCH_FAILURE_RECORD };
+    } catch (error) {
+      logger.warn({ err: error, runId }, "could not prove a native failure started no provider work; keeping the native hold");
+      return null;
+    }
+  }
+
+  /**
+   * Runtime selection leaves an unclaimed coordinator ("observed", attempt 0).
+   * It counts as pending cleanup and would hold the re-queued successor, so a
+   * failure proven to start no provider work closes it as a terminal failure.
+   * The guard matches only an unclaimed row; a claimed one keeps its owner.
+   */
+  async function settleUnclaimedNativeCoordinator(run: Pick<Run, "id" | "companyId">) {
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", failureCode: NATIVE_PRE_DISPATCH_FAILURE_CODE,
+      updatedAt: new Date() }).where(and(eq(nativeRunFinalizations.companyId, run.companyId),
+      eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.phase, "observed"), eq(nativeRunFinalizations.attempt, 0),
+      isNull(nativeRunFinalizations.leaseOwner), isNull(nativeRunFinalizations.controllerBootId), isNull(nativeRunFinalizations.resultId)));
+  }
+
+  /**
+   * A native run that failed on a transient database fault before provider
+   * work re-queues itself in the uncharged, bounded interrupted-preparation
+   * lane. An answered interaction keeps its own continuation retry.
+   */
+  async function scheduleNativePreDispatchRetry(run: Run, agent: Agent) {
+    if (!isNativePreDispatchTransientFailure(run) || isResolvedInteractionContinuationWakeContext(run.contextSnapshot)) return null;
+    try {
+      await settleUnclaimedNativeCoordinator(run);
+    } catch (error) {
+      logger.warn({ err: error, runId: run.id }, "could not close the unclaimed native coordinator; keeping the native hold");
+      return null;
+    }
+    return scheduleBoundedRetryForRun(run, agent, { retryReason: INTERRUPTED_PREPARATION_RETRY_REASON }).catch((retryError) => {
+      logger.warn({ err: retryError, runId: run.id }, "failed to re-queue a native run that failed before provider work");
+      return null;
+    });
+  }
+
   async function failRun(input: FailHeartbeatRunInput) {
     const { run, agent, issueId, issueRef, signal, output, session, readFailureReportSecrets, runId, err, identityRedactor, requiredWorkspaceRestoreEvidence,
-      legacyAdapterEntered, goalCheckpointSession, previousSessionDisplayId, taskSession } = input;
+      legacyAdapterEntered, nativeDispatchMayHaveStarted, goalCheckpointSession, previousSessionDisplayId, taskSession } = input;
     const { runtimeForAdapter, previousSessionParams, taskKey, configuredModel, sessionConfigMetadata } = session;
     const { handle, outputProgressState, flushOutputProgress } = output;
     // A process adapter may throw while its owned Stop is joining the
@@ -1208,6 +1299,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const stoppedDuringFailure = signal.aborted;
     const stopSnapshot = stoppedDuringFailure ? await getRun(run.id) : null;
     const failureOutcome = stoppedDuringFailure ? "cancelled" : "failed";
+    const nativePreDispatchFailure = !stoppedDuringFailure && nativeTerminalFailureCode === null
+      ? await nativePreDispatchFailureResult(run.id, nativeDispatchMayHaveStarted) : null;
     const failedRunWrite = await measureRunPhase("completion.terminal_write", () => setRunStatusIfRunning(run.id, failureOutcome, {
       error: message,
       errorCode: stopSnapshot?.errorCode ?? failureErrorCode,
@@ -1231,6 +1324,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             configurationIncompleteFailure?.resultJson ??
             {}),
           ...(stoppedDuringFailure ? controllerLeaseLossResultJson(signal) : {}),
+          ...nativePreDispatchFailure,
           ...(!legacyAdapterEntered && run.runtimeMode !== "native"
             ? {
                 executionRecovery: {
@@ -1318,7 +1412,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         })
         : null;
       if (storageWait?.outcome === "retry_exhausted") await markStorageWaitExhausted(livenessRun);
-      if (storageWait?.outcome !== "scheduled" && storageWait?.outcome !== "retry_exhausted") {
+      const nativePreDispatchRetry = storageWait === null ? await scheduleNativePreDispatchRetry(livenessRun, agent) : null;
+      if (storageWait?.outcome !== "scheduled" && storageWait?.outcome !== "retry_exhausted" && nativePreDispatchRetry === null) {
         await scheduleInteractionContinuationInfrastructureRetryIfEligible(
           livenessRun,
           agent,
@@ -1330,7 +1425,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         // terminal failure, generic issue recovery must not create a
         // replacement retryOfRunId chain for the same provider work.
         suppressImmediateRecovery: nativeTerminalFailureCode !== null || storageWait?.outcome === "scheduled"
-          || storageWait?.outcome === "retry_exhausted",
+          || storageWait?.outcome === "retry_exhausted" || nativePreDispatchRetry?.outcome === "scheduled",
       });
       await handleIssueReviewPathDisposition(livenessRun);
 
@@ -1392,7 +1487,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
   }
 
   async function failRunSetup(input: FailHeartbeatRunSetupInput) {
-    const { run, runId, outerErr, signal, providerDispatchStarted, identityRedactor, readFailureReportSecrets } = input;
+    const { run, runId, outerErr, signal, providerDispatchStarted, nativeDispatchMayHaveStarted, identityRedactor, readFailureReportSecrets } = input;
     // The lease watchdog stopped preparation because this host no longer owns
     // the run. That is host infrastructure, not a defect in the agent or setup.
     // A post-dispatch error can also land here (for example a failed usage
@@ -1558,6 +1653,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ...(!providerDispatchStarted
         ? { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }
         : {}),
+      ...(!providerDispatchStarted && !signal.aborted
+        ? await nativePreDispatchFailureResult(runId, nativeDispatchMayHaveStarted) : null),
     };
     const setupFailureWrite = await setRunStatusIfRunning(runId, "failed", {
       error: message,
@@ -1612,6 +1709,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         failedRun,
       ).catch(() => failedRun);
       let storageWaitScheduled = false;
+      let nativePreDispatchRetryScheduled = false;
       const setupFailureIssueId = readNonEmptyString(
         parseObject(livenessRun.contextSnapshot).issueId,
       );
@@ -1675,7 +1773,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
               : livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE
                 ? scheduleBoundedRetryForRun(livenessRun, failedAgent, STORAGE_UNAVAILABLE_RETRY)
                 : scheduleBoundedRetryForRun(livenessRun, failedAgent)
-            : scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent)
+            : scheduleNativePreDispatchRetry(livenessRun, failedAgent).then(nativeRetry => nativeRetry
+              ?? scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent))
           ).catch((retryError) => {
             logger.warn(
               { err: retryError, runId: livenessRun.id },
@@ -1687,10 +1786,11 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           if (livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE && retry?.outcome === "retry_exhausted") await markStorageWaitExhausted(livenessRun);
           storageWaitScheduled = livenessRun.errorCode === STORAGE_UNAVAILABLE_CODE
             && (retry?.outcome === "scheduled" || retry?.outcome === "retry_exhausted");
+          nativePreDispatchRetryScheduled = retry?.outcome === "scheduled" && isNativePreDispatchTransientFailure(livenessRun);
         }
       }
       await releaseIssueExecutionAndPromote(livenessRun, {
-        suppressImmediateRecovery: storageWaitScheduled ||
+        suppressImmediateRecovery: storageWaitScheduled || nativePreDispatchRetryScheduled ||
           readNonEmptyString(
             parseObject(livenessRun.contextSnapshot).goalControlRequestId,
           ) !== null ||

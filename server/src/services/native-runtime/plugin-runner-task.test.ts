@@ -856,3 +856,18 @@ it.each(["codex", "claude"] as const)("rejects a foreign %s source tuple before 
     expect(task).not.toHaveBeenCalled(); expect(connect).not.toHaveBeenCalled();
   } finally { await registration.release!("detach"); }
 });
+
+it("routes credential notifications to the current warm lease after rebind", async () => {
+  const { task } = provider();
+  const first = vi.fn(async () => {}), successor = vi.fn(async () => {});
+  const input = { taskId: "task", task, projectIds: [], harness: "codex", adoptIdentity: requirements.identity,
+    onCredentialsUpdated: first };
+  const owner = createPluginRunnerTaskOwner(input);
+  const event = { eventType: "auth.credentials.updated" } as never;
+  await owner.credentialsUpdated(event);
+  owner.rebind({ ...input, onCredentialsUpdated: successor });
+  await owner.credentialsUpdated(event);
+  expect(first).toHaveBeenCalledExactlyOnceWith(event);
+  expect(successor).toHaveBeenCalledExactlyOnceWith(event);
+  expect(task).not.toHaveBeenCalled();
+});

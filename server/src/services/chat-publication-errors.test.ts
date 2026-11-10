@@ -475,4 +475,17 @@ describe("chat publication error classification", () => {
       });
     },
   );
+  it("retries an unknown preparation failure only with a local before-invocation fact", () => {
+    const error = new Error("form_publication_enrollment_pending");
+    expect(classifyChatPublicationError(error, 1, "not_started")).toEqual({
+      kind: "retry", retryAfterMs: 2000, reason: error.message,
+    });
+    expect(classifyChatPublicationError(error, 1)).toEqual({ kind: "delivery_unknown", reason: error.message });
+    expect(classifyChatPublicationError(error, 1, "possible")).toEqual({ kind: "delivery_unknown", reason: error.message });
+  });
+  it("preserves definite provider dispositions with before-invocation context", () => {
+    expect(classifyChatPublicationError(Object.assign(new Error("rejected"), { status: 400 }), 1, "not_started")).toMatchObject({ kind: "failed" });
+    expect(classifyChatPublicationError(Object.assign(new Error("slow down"), { status: 429 }), 1, "not_started")).toMatchObject({ kind: "retry", providerRateLimit: true });
+  });
+
 });

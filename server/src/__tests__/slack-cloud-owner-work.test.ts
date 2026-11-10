@@ -6,7 +6,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { SLACK_CHAT_BOT_SCOPES } from "@paperclipai/shared";
 import { activityLog, agentRuntimeState, agentTaskSessions, agentWakeupRequests, agents, applyPendingMigrations, authUsers,
-  chatDeliveries, chatEndpoints, chatExternalPrincipals, companySecretBindings, chatIdentityLinks, chatSlackRegistrations, companies, companyMemberships,
+  chatActions, chatDeliveries, chatEndpoints, chatExternalPrincipals, companySecretBindings, chatIdentityLinks, chatSlackRegistrations, companies, companyMemberships,
   companySecrets, companySkills, costEvents, financeEvents, heartbeatRunEvents, heartbeatRuns, issueComments, issues, toolApplications, toolConnections,
   closeCheckpointDb, closeFileStorageDb, closeLivenessDb, createDb } from "@paperclipai/db";
 import { databaseWorkPending, reconcileDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db/work-signals";
@@ -229,7 +229,16 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(Date.parse(retained.nextAttemptAt!)).toBeGreaterThan(Date.now());
     expect(cloud.calls.slice(start).filter(call => call.enrollment?.endpointId === a)).toEqual([]);
     const retryAt = Date.parse(retained.nextAttemptAt!);
-    expect(owner.nextPollAt()).toBe(retryAt);
+    const formRetries = await db.select({ result: chatActions.result }).from(chatActions).where(and(
+      eq(chatActions.companyId, companyId),
+      sql`${chatActions.kind} in ('slack_form_owner','slack_form_grant','slack_form_session')`,
+      sql`${chatActions.payload}->>'environment' = ${cloud.config.environment}`,
+      sql`coalesce(${chatActions.payload}->'binding'->>'instanceId', ${chatActions.payload}->'enrollment'->>'instanceId') = ${cloud.config.instanceId}`,
+      sql`${chatActions.result}->>'nextAttemptAt' is not null`));
+    expect(formRetries.some(value => value.result?.failureCode === "form_owner_broker_unavailable")).toBe(true);
+    const formDeadlines = formRetries.map(value => Date.parse(String(value.result?.nextAttemptAt)));
+    expect(formDeadlines.every(Number.isFinite)).toBe(true);
+    expect(owner.nextPollAt()).toBe(Math.min(retryAt, ...formDeadlines));
     releases.splice(0).forEach(release => release()); await Promise.all(heldLeases);
     pollTime = retryAt - 1;
     await owner.pollOnce();

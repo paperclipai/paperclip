@@ -219,7 +219,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(insertedTables).toContain(companyMemberships);
   });
 
-  it.each(["/api/health", "/api/instance/task-drain"])("counts unfinished authentication on exempt %s requests", async (path) => {
+  it.each(["/api/health", "/api/instance/task-drain", "/api/instance/task-drain/status"])("counts unfinished authentication on exempt %s requests", async (path) => {
     let enterWrite!: () => void, finishWrite!: () => void;
     const entered = new Promise<void>(resolve => { enterWrite = resolve; });
     const pending = new Promise<void>(resolve => { finishWrite = resolve; });
@@ -235,8 +235,9 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
       res.json(await readIdleSleepSafety(emptyDb, () => ({ ...hold, draining: true, activeRuns: 0, pendingWakes: 0 }),
         Date.now, hold.ownerId, async () => "none"));
     });
+    server.post("/api/instance/task-drain/status", (_req, res) => res.sendStatus(204));
     trackIdleRequestHandlers(server);
-    const accepted = request(server).get(path).set(VALID_HEADERS).then(response => response);
+    const accepted = (path.endsWith("/status") ? request(server).post(path) : request(server).get(path)).set(VALID_HEADERS).then(response => response);
     try {
       await entered;
       expect(idleWorkSnapshot().active).toBeGreaterThan(0);

@@ -17,6 +17,7 @@ import { findChatCatalogCase, loadChatCatalogImplementation } from "./chat-catal
 import { chatCatalogInventoryDigest } from "./chat-catalog-inventory.js";
 import { resolveChatCatalogQuery } from "./chat-query-bindings.js";
 import { chatRunEvidenceApi } from "./chat-run-evidence-observer.js";
+import { markReturningBrowser } from "./chat-returning-browser.js";
 
 /** The case owns product semantics; this flow owns the actual chat entry point and evidence lifecycle. */
 export async function runChatCatalogFlow(context: ChatCatalogContext) {
@@ -117,6 +118,8 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
     return { grade, runs: evidence.runs, issue: evidence.issue };
   }
   try {
+    // Setup may finish five or more tasks; a returning person has already dismissed the star prompt.
+    await markReturningBrowser(input.page, input.api?.baseURL);
     await input.evidence("chat-catalog-definition.json", { scenarioId: scenario.id, ...fingerprint,
       suiteDefinitionHash: input.execution.suiteDefinitionHash, journeyKind: implementation.journeyKind ?? "agent-chat" });
     // Setup turns (prerequisite chat messages, worker runs) spend before the query. Fund the company and

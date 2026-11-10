@@ -1109,7 +1109,7 @@ describe("renderPaperclipWakePrompt", () => {
     };
     const ordinary = renderPaperclipWakePrompt(payload, { resumedSession: true });
     expect(ordinary).not.toContain("Execution contract:");
-    expect(ordinary).toContain("Create child issues from the approved plan");
+    expect(ordinary).toContain("Implement the accepted plan on this issue.");
     for (const resumedSession of [false, true]) {
       const chat = renderPaperclipWakePrompt(payload, {
         resumedSession, conversationMode: true, includeExecutionContract: true,
@@ -1117,7 +1117,7 @@ describe("renderPaperclipWakePrompt", () => {
       expect(chat).not.toContain("Execution contract:");
       expect(chat).not.toContain("clear final disposition");
       expect(chat).not.toContain("Create child issues");
-      expect(chat).not.toContain("you may create child implementation issues");
+      expect(chat).not.toContain("Implement the accepted plan on this issue.");
     }
   });
 
@@ -2552,7 +2552,7 @@ describe("renderPaperclipWakePrompt", () => {
     );
     expect(prompt).not.toContain("accepted-plan continuation");
     expect(prompt).not.toContain(
-      "Create child issues from the approved plan only",
+      "Implement the accepted plan on this issue.",
     );
   });
 
@@ -2574,10 +2574,10 @@ describe("renderPaperclipWakePrompt", () => {
     });
 
     expect(prompt).toContain("accepted-plan continuation");
-    expect(prompt).toContain("Create child issues from the approved plan only");
-    expect(prompt).toContain("may create child implementation issues");
+    expect(prompt).toContain("Implement the accepted plan on this issue.");
+    expect(prompt).toContain("Plan acceptance alone does not require subtasks.");
     expect(prompt).toContain(
-      "must not start implementation work on the planning issue itself",
+      "continue the approved work on this issue unless the approved plan explicitly assigns it elsewhere",
     );
   });
 
@@ -2920,7 +2920,7 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("selected text: Passed in Chrome");
     expect(prompt).toContain("Attach the run id.");
     expect(prompt).toContain(
-      "propose a child issue before making code changes",
+      "obtain authorization before making code changes",
     );
     expect(prompt).toContain(
       "prefer replying and resolving the thread over rewriting the snapshot",
@@ -3031,7 +3031,7 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("CHA-8 Ship the migration (blocked)");
     expect(prompt).toContain("execution_recovery_budget_exhausted");
     expect(prompt).toContain("Retry the run or reassign the task");
-    expect(prompt).toMatch(/re-delegate/i);
+    expect(prompt).toContain("reassign its existing task");
     expect(prompt).toMatch(/escalate/i);
     expect(prompt).toMatch(/block this issue/i);
   });

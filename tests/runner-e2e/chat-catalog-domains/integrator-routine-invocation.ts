@@ -110,7 +110,7 @@ export const integratorRoutineInvocationCases = [integratorDefinition("routines"
   if (!o || !task) throw new Error("Missing actual routine result task");
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, task.title!, resultHref(o, task.identifier ?? task.id, "issues") ?? resultHref(o, task.id, "issues"));
 }, {
-  oracleVersion: "paperclip.chat-catalog.integrator.routine-invocation.v3",
+  oracleVersion: "paperclip.chat-catalog.integrator.routine-invocation.v4",
   sourceFiles: ["chat-catalog-domains/integrator-routine-invocation.ts", "chat-catalog-domains/api-read-receipts.ts", "run-observations.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/routines.yaml"],
   expectedRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
   async act(ctx, state) {

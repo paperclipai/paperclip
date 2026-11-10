@@ -10,7 +10,7 @@ description: >
 
 A repeatable operating skill for driving one Terminal-Bench problem to a passing smoke through Paperclip, with explicit issue topology, bounded runs, board-gated product fixes, and worktree continuity.
 
-This skill is **operational + diagnostic**, not engineering. It coordinates issues, artifacts, and approvals around a Terminal-Bench loop. It does not authorize code changes — every accepted product fix lands as a separate implementation child issue after a board confirmation.
+This skill is **operational + diagnostic**, not engineering. It coordinates issues, artifacts, and approvals around a Terminal-Bench loop. It does not authorize code changes — product fixes require a board confirmation before implementation.
 
 Canonical execution model: read `doc/execution-semantics.md` before starting a loop or moving any loop issue. Every loop issue must rest in a state the doc allows: terminal (`done`/`cancelled`), explicitly live (active run / queued wake), explicitly waiting (`in_review` with participant/interaction/approval), or explicit recovery/blocker (`blocked` with `blockedByIssueIds` and a named owner).
 
@@ -49,7 +49,7 @@ Collect these on the top-level loop issue before iteration 1. Any input that can
 - **Source issue.** The Paperclip issue that asked for the loop. The loop parent links back to it.
 - **Terminal-Bench task name.** Single-task identifier (e.g. `terminal-bench/fix-git`). Multi-task suites are out of scope for this skill.
 - **Iteration budget.** Maximum number of iterations before the loop must stop without further fixes (typical: 3–5). Also record a per-iteration wall-clock cap.
-- **Paperclip App worktree issue.** The implementation-side issue under the Paperclip App project whose execution workspace owns the isolated worktree. First iteration creates it; later iterations reuse it via `inheritExecutionWorkspaceFromIssueId` or equivalent.
+- **Paperclip App worktree issue.** The implementation-side issue under the Paperclip App project whose execution workspace owns the isolated worktree. Use the current issue's isolated worktree for the default workflow; the optional task-tree procedure below records its owning issue.
 - **Benchmark command.** The exact `paperclip-bench` invocation, including the `PAPERCLIPAI_CMD` (or equivalent) binding pinned to the Paperclip App worktree under test. Record verbatim on the loop issue.
 - **Dispatch runner config.** The exact Harbor/Paperclip runner dispatch config required for the smoke to actually start a Paperclip heartbeat. For the current Harbor wrapper, record the `PAPERCLIP_HARBOR_RUNNER_CONFIG` JSON (or equivalent config file) verbatim enough to preserve: `assignee`, `heartbeat_strategy`, `agent_adapter` / `agent_adapters`, `reuse_host_home` when local credentials are intentionally needed, and the stop budget. A bare Harbor command that creates `BEN-1` as unassigned `todo` with zero heartbeat-enabled agents is a harness/setup failure, not a valid product diagnosis.
 - **Latest artifact root.** Filesystem or storage path under which `paperclip-bench` writes run artifacts (manifest, `results.jsonl`, Harbor raw job folders, redacted telemetry). Each iteration appends; nothing is overwritten.
@@ -57,9 +57,15 @@ Collect these on the top-level loop issue before iteration 1. Any input that can
 
 Record each input on the top-level loop issue (description or a dedicated `inputs` document). If any input changes mid-loop, note the change and the iteration it took effect.
 
-## Issue topology
+## Default workflow
 
-The loop must be representable as a tree, not as prose in comments:
+Run the smoke, diagnosis, approved fix, and rerun on the current issue. Record each iteration in its documents. Save a fix proposal as `plan`, read back its latest revision, and request board confirmation bound to that revision before implementation. Use the same isolated worktree for the fix and rerun. Keep the iteration budget, evidence requirements, and QA/CTO review gates below; use the current issue's review participants or approval interactions for those gates.
+
+The task-tree procedure below applies only when the user explicitly requests separate tasks or when continuing an existing tree. Do not propose a task tree merely to run this workflow. For the default workflow, iteration records replace iteration children, and plan approval and review waits stay on the current issue.
+
+## Optional issue topology
+
+For an explicitly requested task tree:
 
 - **Top-level loop issue.** Long-lived. Holds inputs, iteration counter, current state, links to every iteration child, and the product-rule history. Rests in `in_progress` while an iteration is running, `in_review` only when a typed waiter sits directly on the loop parent (execution-policy participant, `request_confirmation` / `ask_user_questions` / `suggest_tasks` interaction, approval, or named human owner), `blocked` with `blockedByIssueIds` while a child issue is the gating work (iteration child holding the fix-proposal `request_confirmation`, or implementation, QA, or CTO review children), `done` on pass, or `cancelled` on board-rejection / budget exhaustion.
 - **Iteration child issues.** One per iteration. Each carries: a bounded run issue (smoke), a diagnosis issue (applies `/diagnose-why-work-stopped`), a fix-proposal document with a `request_confirmation` interaction, and — only after acceptance — implementation, QA, CTO review, and rerun children. Iteration children are blocked by their predecessors so the executor wakes them in order.
@@ -67,7 +73,7 @@ The loop must be representable as a tree, not as prose in comments:
 
 Wire dependencies with `blockedByIssueIds`, never with prose like "blocked by X". When a dependent child is `done`, the executor auto-wakes the next.
 
-## Procedure
+## Procedure for an explicitly requested task tree
 
 ### 0. Read the current execution contract
 
@@ -165,7 +171,7 @@ A loop must never end on a prose comment alone. Every stop is a status transitio
 
 The loop must not test whatever Paperclip checkout happens to be current for the heartbeat. It must test the same isolated Paperclip App worktree where proposed fixes are applied.
 
-- The first iteration creates the Paperclip App implementation child; that project's git-worktree policy spawns a fresh worktree.
+- The default workflow uses the current issue's isolated worktree. In the optional task-tree workflow, the first iteration records the implementation issue that owns the worktree.
 - The loop issue records the worktree-owning issue id and the workspace path (or workspace id).
 - Every later implementation, QA, and rerun child sets `inheritExecutionWorkspaceFromIssueId` to that worktree-owning issue, so all subsequent loop work shares one workspace.
 - The benchmark command always sets `PAPERCLIPAI_CMD` (or the equivalent command binding) to the CLI entrypoint inside that worktree, and it carries the recorded dispatch runner config (`PAPERCLIP_HARBOR_RUNNER_CONFIG` or equivalent) needed to assign the benchmark issue and start the heartbeat. The benchmark command stored on the loop issue is the source of truth — if a heartbeat needs to run the smoke from a different shell, it copies the recorded command block verbatim, not only the Harbor invocation line.
@@ -210,7 +216,7 @@ If a loop issue does not fit one of these on exit, the heartbeat is not done. Fi
 
 ## Deterministic smoke
 
-Run this smoke after installing or changing the skill, before treating it as operational for a live Terminal-Bench loop:
+This smoke checks the optional task-tree lifecycle. Run it when changing that lifecycle; it does not test the default single-issue workflow:
 
 ```sh
 pnpm smoke:terminal-bench-loop-skill

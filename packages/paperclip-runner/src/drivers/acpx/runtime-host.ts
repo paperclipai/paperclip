@@ -1,3 +1,4 @@
+import { retainAcpxCredentialRefresh } from "./credential-refresh.js";
 import { assertAcpxExecutionAdmission, parseAcpxCandidateStartupAdmission, type AcpxCandidateStartupAdmission } from "./candidate-admission.js";
 import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
 import { recordAcpxAdmissionFailure, type ACPX_ADMISSION_CODES } from "./admission-diagnostics.js";
@@ -505,12 +506,17 @@ export class AcpxRuntimeHost {
       if (options.agent === "codex" && !preconfigured) {
         credential = await acquireAbortableAdmissionResource({
           signal: options.signal,
-          acquire: () =>
-            (dependencies.stageCredential ?? stageManagedCodexCredential)({
+          acquire: async () => {
+            const lease = await (dependencies.stageCredential ?? stageManagedCodexCredential)({
               agentHomeDirectory: sandbox.agentHomeDirectory,
               environment: options.environment,
               sourcePath: options.managedCodexCredentialSourcePath,
-            }),
+            });
+            return retainAcpxCredentialRefresh({
+              lease, agentHomeDirectory: sandbox.agentHomeDirectory,
+              retainRefresh: () => admissionSucceeded && lease.mode !== "api_key",
+            });
+          },
           resource: "credential",
           releaseLate: (lateCredential) => lateCredential.close(),
           reportFailure: (failure) =>

@@ -335,6 +335,13 @@ function hydrateDialogQueries(queryClient: ReturnType<typeof useQueryClient>) {
   queryClient.setQueryData(queryKeys.auth.session, storybookAuthSession);
   queryClient.setQueryData(queryKeys.agents.list(COMPANY_ID), storybookAgents);
   queryClient.setQueryData(queryKeys.projects.list(COMPANY_ID), storybookProjects);
+  queryClient.setQueryData(queryKeys.projects.environments(COMPANY_ID), {
+    groups: [
+      { storageProviderPluginId: null, environments: [{ id: "sandbox", name: "Paperclip Sandbox" }, { id: "local", name: "Local" }] },
+      { storageProviderPluginId: "computer-storage", environments: [{ id: "computers", name: "Agent computers" }] },
+    ],
+    defaultEnvironmentId: "sandbox", error: null,
+  });
   queryClient.setQueryData(queryKeys.goals.list(COMPANY_ID), storybookGoals);
   queryClient.setQueryData(queryKeys.issues.list(COMPANY_ID), storybookIssues);
   queryClient.setQueryData(queryKeys.issues.labels(COMPANY_ID), storybookIssueLabels);

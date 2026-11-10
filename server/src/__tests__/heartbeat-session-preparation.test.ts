@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentTaskSessions, authUsers, companies, companyMemberships, createDb, executionWorkspaces, heartbeatRuns, issues, plugins, projects } from "@paperclipai/db";
+import { agents, agentTaskSessions, authUsers, companies, companyMemberships, createDb, executionWorkspaces, environments, heartbeatRuns, issues, plugins, projects } from "@paperclipai/db";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -120,9 +120,14 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
     const f = await seed();
     const storage = await createPluginWorkspaceFixture(db, f.companyId);
     const [plugin] = await db.select().from(plugins).where(eq(plugins.id, storage.pluginId));
-    await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson, workspaceProvider: {
-      ...plugin.manifestJson.workspaceProvider!, defaultForProjects: { mode: "isolated_workspace", strategy: "git_worktree" },
-    } } }).where(eq(plugins.id, storage.pluginId));
+    const [environment] = await db.insert(environments).values({ name: `Storage tasks ${storage.pluginId}`, driver: "plugin", status: "active",
+      config: { pluginKey: plugin.pluginKey, driverKey: "tasks", driverConfig: {} } }).returning();
+    await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
+      capabilities: [...plugin.manifestJson.capabilities, "environment.drivers.register"],
+      environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, configSchema: { type: "object" } }],
+      workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, defaultForProjects: { mode: "isolated_workspace", strategy: "git_worktree" } },
+    } }).where(eq(plugins.id, storage.pluginId));
+    await db.update(agents).set({ defaultEnvironmentId: environment.id }).where(eq(agents.id, f.agentId));
     await db.update(projects).set({ executionWorkspacePolicy: { enabled: true, storageProviderPluginId: storage.pluginId } }).where(eq(projects.id, storage.input.projectId));
     await db.update(issues).set({ projectId: storage.input.projectId, projectWorkspaceId: storage.input.projectWorkspaceId,
       executionWorkspaceSettings: settings,
@@ -132,6 +137,9 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
     const createOrchestrator = environmentOrchestrator.environmentRunOrchestrator;
     const realization = vi.spyOn(environmentOrchestrator, "environmentRunOrchestrator").mockImplementation((...args) => ({
       ...createOrchestrator(...args),
+      // These tests dispatch a synthetic adapter; substitute only the provider
+      // transport while preserving the configured storage/task-driver identity.
+      acquireForRun: async input => createOrchestrator(...args).acquireForRun({ ...input, selectedEnvironmentId: input.localEnvironmentId }),
       realizeForRun: async input => {
         input.executionWorkspace.cwd = cwd;
         return { lease: input.lease, persistedExecutionWorkspace: input.persistedExecutionWorkspace,

@@ -26,7 +26,8 @@ import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspace-epoch-
 import { hasStopOnlyCleanup, prepareHistoricalSandboxStopVerification, prepareSandboxStopAndRetain, restoreSandboxStopAfterFailedRestart, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
 import { nativeWorkspaceFinalizationBlockSchema } from "./native-runtime/preserved-native-result-finalization.js";
 import { withNativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
-import { PERMANENT_SOURCE_RETRY_CLASSES, RETAINED_SOURCE_FALLBACK_CHECK_KEY, UNVERIFIABLE_SOURCE_CODES, retainedHoldFallbackEligible } from "./workspace-recovery-fallback-discovery.js";
+import { PERMANENT_SOURCE_RETRY_CLASSES, RETAINED_SOURCE_FALLBACK_CHECK_KEY, UNVERIFIABLE_SOURCE_CODES, isRetainedFileHold,
+  retainedHoldFallbackEligible } from "./workspace-recovery-fallback-discovery.js";
 import { captureReadOnlyWorkspaceArchive, sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { readSystemRecovery, type SystemRecoveryState } from "./system-recovery-state.js";
@@ -44,7 +45,6 @@ export const RETAINED_SOURCE_FALLBACK_SCHEMA = "paperclip.retained-source-fallba
 export const SIBLING_WORKSPACE_RECOVERY_SCHEMA = "paperclip.sibling-workspace-recovery.v1" as const;
 export const RETAINED_SOURCE_QUARANTINE_PHASE = "workspace_recovery_quarantine";
 
-const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminal = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
 // A check deferred for a transient reason runs again after this delay, a bounded number of times.
 const FALLBACK_RECHECK_MS = 5 * 60_000;
@@ -113,7 +113,7 @@ async function inspectFallback(db: Db, input: Source, lock: boolean, requireStop
   if (!issue || !run || !action) return refuse("source_changed");
   if (object(action.evidence.retainedSourceFallback).schema === RETAINED_SOURCE_FALLBACK_SCHEMA) return { kind: "settled" as const };
   const system = readSystemRecovery(action.evidence);
-  if (!exportCauses.includes(action.cause) || !["active", "escalated"].includes(action.status) || action.evidence.runId !== run.id
+  if (!isRetainedFileHold(action) || action.evidence.runId !== run.id
     || action.evidence.executionReconciliation || system?.state !== "exhausted" || system.sourceRunId !== run.id
     || !retainedHoldFallbackEligible(action.evidence, system)) return refuse("not_unverifiable_source_hold");
   if (run.runtimeMode !== "native" || !terminal.includes(run.status) || !run.finishedAt
@@ -347,12 +347,16 @@ export async function continueFromLastSavedWorkspace(input: Source & {
     // failure that nothing changed since) still names it. Otherwise a newer
     // decision owns the block: it is kept and no continuation is started.
     const block = nativeWorkspaceFinalizationBlockSchema.safeParse(action.evidence.workspaceFinalizationBlock);
+    // A native no-replay hold records the Blocked status version its run's failure set.
+    const failureBlock = object(action.evidence.nativeFailureBlock);
     const blockedAt = issue.blockedTransitionAt?.getTime();
     const ownsBlock = issue.status === "blocked" && (block.success
       ? block.data.issueId === issue.id && block.data.runId === run.id
         && block.data.statusVersion === Number(issue.statusVersion) && block.data.priorDecisionId === issue.lastStatusDecisionId
-      : action.evidence.workspaceFinalizationBlock === undefined && issue.lastStatusDecisionId === null && blockedAt !== undefined
-        && blockedAt >= run.finishedAt!.getTime() - 1_000 && blockedAt <= action.createdAt.getTime() + 60_000);
+      : action.evidence.nativeFailureBlock !== undefined
+        ? failureBlock.runId === run.id && failureBlock.statusVersion === Number(issue.statusVersion)
+        : action.evidence.workspaceFinalizationBlock === undefined && issue.lastStatusDecisionId === null && blockedAt !== undefined
+          && blockedAt >= run.finishedAt!.getTime() - 1_000 && blockedAt <= action.createdAt.getTime() + 60_000);
     const dispatchable = issue.status !== "blocked" || ownsBlock;
     const userText = quarantine.state === "captured"
       ? "Paperclip could not verify the previous run's unsaved files, so the task continues from the last saved version. Those files are attached to the task, unapplied."

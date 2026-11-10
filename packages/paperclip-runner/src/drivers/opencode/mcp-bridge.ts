@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
+import { toolInputError } from "../tool-input-error.js";
 
 import {
   PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
@@ -285,8 +286,7 @@ async function handleRequest(
         ? "continuation" : errors.some(error => error.instancePath === "") ? "root" : "other";
       context.diagnoseFinishInput({ input: params.arguments, callId, validationCategory });
     }
-    const detail = validator?.errors?.map((error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`).join("; ");
-    const error = `Invalid tool input${detail ? `: ${detail}` : "."}`;
+    const error = toolInputError(validator);
     try { context.onRejectedCall?.({ tool, callId, arguments: args }, error); } catch {}
     writeRpc(response, id, {
       isError: true,

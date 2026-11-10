@@ -1,5 +1,6 @@
+import { DEFAULT_JSON_BODY_LIMIT_BYTES } from "../http/body-limits.js";
 import { parseIdleCapabilities, type IdleCapabilities } from "./idle-incoming-wake-capability.js";
-import { createPublicKey, timingSafeEqual, verify, type JsonWebKey } from "node:crypto";
+import { createHash, createPublicKey, timingSafeEqual, verify, type JsonWebKey } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { instanceSettings } from "@paperclipai/db";
@@ -449,6 +450,7 @@ export const CLOUD_CONTROL_JWS_TYPE = "paperclip-cloud-control+jwt";
 export const CLOUD_CONTROL_ACTIONS = [
   "ephemeral-enrollment:prepare",
   "task-drain:read",
+  "task-drain:read-body",
   "task-drain:start",
   "task-drain:stop",
   "lifecycle:read",
@@ -496,6 +498,7 @@ export type CloudControlClaims = {
   action: CloudControlAction;
   requestId: string;
   idleCapabilities?: IdleCapabilities;
+  bodySha256?: string;
   iat: number;
   exp: number;
 };
@@ -509,6 +512,7 @@ export type CloudControlClaims = {
  */
 export function verifyCloudControlAssertion(input: {
   compactJws: string;
+  rawBody?: Uint8Array;
   expectedAction: CloudControlAction;
   env?: NodeJS.ProcessEnv;
   now?: Date;
@@ -577,9 +581,27 @@ export function verifyCloudControlAssertion(input: {
   ) {
     throw new Error("Cloud control assertion is expired or has an invalid lifetime");
   }
-  if (payload.idleCapabilities !== undefined) {
-    if (payload.action !== "task-drain:read") throw new Error("Idle capabilities require task-drain:read");
-    payload.idleCapabilities = parseIdleCapabilities(payload.idleCapabilities);
+  if (payload.action === "task-drain:read-body") {
+    if (payload.idleCapabilities !== undefined || typeof payload.bodySha256 !== "string" || !/^[a-f0-9]{64}$/.test(payload.bodySha256)
+      || !input.rawBody || input.rawBody.byteLength === 0 || input.rawBody.byteLength > DEFAULT_JSON_BODY_LIMIT_BYTES) {
+      throw new Error("Invalid Cloud idle status body binding");
+    }
+    const raw = Buffer.from(input.rawBody);
+    if (createHash("sha256").update(raw).digest("hex") !== payload.bodySha256) throw new Error("Cloud idle status body digest changed");
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+    let body: unknown;
+    try { body = JSON.parse(text); }
+    catch { throw new Error("Invalid Cloud idle status body JSON"); }
+    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).join() !== "idleCapabilities") {
+      throw new Error("Invalid Cloud idle status body");
+    }
+    payload.idleCapabilities = parseIdleCapabilities(Reflect.get(body, "idleCapabilities"));
+  } else {
+    if (payload.bodySha256 !== undefined) throw new Error("Cloud body binding requires task-drain:read-body");
+    if (payload.idleCapabilities !== undefined) {
+      if (payload.action !== "task-drain:read") throw new Error("Idle capabilities require task-drain:read");
+      payload.idleCapabilities = parseIdleCapabilities(payload.idleCapabilities);
+    }
   }
   // Consumed LAST, only after every other check passed: a rejected
   // assertion must not burn its request id, or an attacker could deny a
@@ -588,4 +610,25 @@ export function verifyCloudControlAssertion(input: {
     throw new Error("Cloud control assertion has already been used");
   }
   return payload as CloudControlClaims;
+}
+
+export function verifyCloudConnectorReceipt<T extends { binding: { instanceId: string } }>(input: { compactJws: string; env?: NodeJS.ProcessEnv }, parseReceipt: (value: unknown) => T): T {
+  const env = input.env ?? process.env;
+  if (Buffer.byteLength(input.compactJws, "ascii") > 12_000 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(input.compactJws))
+    throw new Error("Invalid connector ACK receipt encoding");
+  const [headerPart, payloadPart, signaturePart] = input.compactJws.split(".");
+  const header = decodeJsonPart(headerPart, "connector receipt header");
+  if (Object.keys(header).sort().join() !== "alg,kid,typ" || header.alg !== "EdDSA"
+    || header.typ !== "paperclip-connector-ack-receipt+jwt" || typeof header.kid !== "string" || !header.kid)
+    throw new Error("Invalid connector ACK receipt header");
+  const key = cloudRuntimePublicKeyForKid(env, header.kid);
+  if (!verify(null, Buffer.from(`${headerPart}.${payloadPart}`, "ascii"), key, Buffer.from(signaturePart, "base64url")))
+    throw new Error("Invalid connector ACK receipt signature");
+  const claims = decodeJsonPart(payloadPart, "connector receipt claims");
+  if (Object.keys(claims).sort().join() !== "aud,iss,receipt,sub,v" || claims.v !== 1 || claims.iss !== CLOUD_RUNTIME_IDENTITY_ISSUER
+    || claims.aud !== "paperclip-connector-ack-receipt/v1" || claims.sub !== nonEmpty(env.PAPERCLIP_CLOUD_STACK_ID))
+    throw new Error("Invalid connector ACK receipt claims");
+  const receipt = parseReceipt(claims.receipt);
+  if (receipt.binding.instanceId !== claims.sub) throw new Error("Connector ACK receipt instance changed");
+  return receipt;
 }

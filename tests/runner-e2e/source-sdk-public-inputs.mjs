@@ -63,6 +63,24 @@ export async function synchronizeSdkPublicInputs(root, revision, { write = false
   return result;
 }
 
+/**
+ * Cheap drift guard: the source pins in the registry file must equal the blobs
+ * this checkout committed. Compares Git trees only (no working-tree reads), so
+ * a stale registry fails with the inputs that changed instead of the opaque
+ * "SDK public source proof unavailable" raised later by the source proof.
+ */
+export async function staleSdkPublicInputs(root, revision = "HEAD") {
+  const pinned = JSON.parse(await readFile(path.join(root, registryPath), "utf8")).inputs ?? {};
+  const committed = {};
+  for (const entry of git(root, ["ls-tree", "-rz", revision, "--", ...sourceRoots, ...buildInputs]).split("\0").filter(Boolean)) {
+    const match = /^\d+ blob ([a-f0-9]{40})\t(.+)$/.exec(entry);
+    if (match) committed[match[2]] = match[1];
+  }
+  return [...new Set([...Object.keys(pinned), ...Object.keys(committed)])].sort()
+    .filter(file => pinned[file] !== committed[file])
+    .map(file => ({ file, change: !pinned[file] ? "unpinned" : !committed[file] ? "removed" : "changed" }));
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [revision, mode] = process.argv.slice(2);
   if (process.argv.length !== 4 || !["--check", "--write"].includes(mode)) throw new Error("Usage: node tests/runner-e2e/source-sdk-public-inputs.mjs <HEAD-40hex> --check|--write");

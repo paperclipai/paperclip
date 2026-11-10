@@ -211,7 +211,7 @@ export class NativeSessionCleanupQuarantinedError extends Error {
 
   constructor() {
     super(
-      "native_session_cleanup_quarantined: prior session cleanup requires operator recovery; verify its retained process ownership and checkpoint before a controlled restart. Clearing a task session does not resolve this quarantine.",
+      "native_session_cleanup_quarantined: the previous session is still shutting down; Paperclip finishes the cleanup automatically and the saved work is kept.",
     );
     this.name = "NativeSessionCleanupQuarantinedError";
   }

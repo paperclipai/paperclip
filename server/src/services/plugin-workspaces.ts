@@ -1,5 +1,5 @@
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
-import { effectiveProjectWorkspacePolicy, isWorkspaceProvider } from "./project-workspace-provider.js";
+import { assertProjectStorageEnvironment, effectiveProjectWorkspacePolicy, isWorkspaceProvider } from "./project-workspace-provider.js";
 import { releaseProviderRecoveryTransfers, stageProviderFreshWorkspace } from "./provider-fresh-workspace.js";
 import { retireAbandonedPluginWorkspaceReservation } from "./plugin-workspace-reservations.js";
 import { randomUUID, createHash } from "node:crypto";
@@ -198,6 +198,7 @@ export async function preparePluginWorkspace(
     mode: string;
     strategy: string;
     selectedProviderPluginId?: string | null;
+    environment?: Pick<import("@paperclipai/shared").Environment, "driver" | "config" | "name"> | null;
     branchMode?: "create" | "existing";
     branchName?: string | null;
     baseRef?: string | null;
@@ -276,6 +277,7 @@ export async function preparePluginWorkspace(
       "An existing local workspace cannot change storage providers",
     );
   const selectedProvider = await provider(db, workers, input.companyId, pluginId, true);
+  if (input.environment) assertProjectStorageEnvironment(selectedProvider, input.environment);
   const declaration = selectedProvider.manifestJson.workspaceProvider!;
   if (input.fresh && declaration.freshWorkspaceVersion !== 1)
     throw conflict("A fresh attempt is unavailable for this workspace storage provider. The existing workspace is retained.", { reason: "fresh_workspace_storage_unsupported" });
