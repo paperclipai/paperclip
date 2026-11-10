@@ -845,6 +845,9 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         intent.actorId !== wake.requestedByActorId) return;
     const issueId = readNonEmptyString(wake.payload?.issueId);
     if (!issueId) return;
+    const { issueService } = await import("../issues.js");
+    const readiness = (await issueService(db).listDependencyReadiness(companyId, [issueId])).get(issueId);
+    if (readiness && !readiness.isDependencyReady) return;
     await enqueueWakeup(wake.agentId, { source: "on_demand", triggerDetail: "manual", reason: "task_retry",
       requestedByActorType: "user", requestedByActorId: intent.actorId, taskRetryRequestId: wake.id,
       payload: { issueId }, contextSnapshot: { issueId, triggeredBy: "board", actorId: intent.actorId,

@@ -142,7 +142,13 @@ const retryWaitMessages: Record<string, string> = {
 const UNIDENTIFIED_RUNNER_STOP_MESSAGE = "Paperclip can't confirm that the previous run stopped. The server restarted after it started the agent but before it recorded the agent's process. "
   + "If no agent is still working on this task, a board operator can confirm that it stopped, and your Retry starts right away. Your message is saved.";
 
-type RetryDependencies = { count: number; blocked: boolean; cancelled: boolean; savingFilesOnly: boolean };
+type RetryDependencies = { count: number; blocked: boolean; cancelled: boolean; savingFilesOnly: boolean; unresolvedBlockerIssueIds?: string[] };
+
+function dependencyRetryWait(dependencies: RetryDependencies): NonNullable<TaskInterruptionPresentation["retryWait"]> {
+  const ids = dependencies.unresolvedBlockerIssueIds ?? [];
+  return { reason: "dependency_blocked", message: dependencyRetryWaitMessage(dependencies),
+    ...(ids.length ? { unresolvedBlockerIssueIds: ids } : {}) };
+}
 
 function dependencyRetryWaitMessage(dependencies: RetryDependencies): string {
   if (dependencies.cancelled) return "Retry is waiting on a cancelled task this one depends on. Remove or replace that dependency to continue. Your Retry is saved.";
@@ -277,8 +283,7 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   if (recoveryRunning) return { ...base, state: "working", ...(recoveryStep ? { recoveryStep } : {}) };
   const dependencies = input.retryDependencies;
   if (retryWait?.sourceRunId === run.id && !retryWait.executionWaitReason && !retryWait.preparationStatus && dependencies?.count)
-    return { ...base, intentId: retryWait.id, state: "working",
-      retryWait: { reason: "dependency_blocked", message: dependencyRetryWaitMessage(dependencies) } };
+    return { ...base, intentId: retryWait.id, state: "working", retryWait: dependencyRetryWait(dependencies) };
   if (retryWait?.sourceRunId === run.id && retryWait.executionWaitReason === "process_identity_missing"
       && input.unidentifiedLaunchConfirmable)
     return { ...base, responsibility: "user", state: "waiting_for_user", canRetry: false, userAction: "confirm_run_stopped",
@@ -499,7 +504,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       const saving = new Set(row.pendingFinalizeBlockerIssueIds);
       retryDependencyMap.set(waitingIssueId, { count: ids.length,
         blocked: statuses.includes("blocked"), cancelled: statuses.includes("cancelled"),
-        savingFilesOnly: ids.every(id => saving.has(id)) });
+        savingFilesOnly: ids.every(id => saving.has(id)), unresolvedBlockerIssueIds: ids });
     }
   }
   for (const wait of currentWaits) {

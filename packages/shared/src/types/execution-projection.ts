@@ -125,7 +125,7 @@ export interface TaskInterruptionPresentation {
   providerFailure?: import("../provider-failure.generated.js").ProviderFailure;
   workspaceFailure?: { message: string };
   /** A persisted Retry admission wait, normalized to public text by the server. */
-  retryWait?: { reason: string; message: string };
+  retryWait?: { reason: string; message: string; unresolvedBlockerIssueIds?: string[] };
   intentId: string | null;
   responsibility: "system" | "user";
   state: "working" | "retry_scheduled" | "failed" | "waiting_for_user" | "resolved";
