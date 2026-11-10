@@ -13522,7 +13522,7 @@ export function issueService(db: Db) {
             : (options?.metadata ?? null),
         );
       let comment: typeof issueComments.$inferSelect | null = null;
-      if (createdByRunId && !options?.proactiveChatMessage) {
+      if (createdByRunId && !options?.proactiveChatMessage && !(actor.userId && options?.clientRequestId)) {
         const existing = await dbOrTx
           .select()
           .from(issueComments)

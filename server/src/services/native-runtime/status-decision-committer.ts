@@ -710,6 +710,7 @@ async function materializeDecisionEffect(input: {
       input.issue,
       reviewInput,
       { agentId: input.actorAgentId, systemId: "native-status-committer", runId: input.runId },
+      { supersedePendingSiblingInteractions: false },
     );
     // The card and its next actor commit together. The post-commit dispatcher
     // revalidates this exact review before granting a scoped reviewer run.

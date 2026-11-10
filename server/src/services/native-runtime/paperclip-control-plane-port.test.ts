@@ -1945,6 +1945,13 @@ describe("PaperclipControlPlanePort conformance", () => {
     const agentReview = (await db.select().from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.issueId, issueId)))
       .find((entry) => entry.addresseeAgentId === reviewerAgentId)!;
+    await issueThreadInteractionService(db).sweepSupersededPendingRequestConfirmations();
+    expect(await db.select({ status: issueThreadInteractions.status, createdByAgentId: issueThreadInteractions.createdByAgentId })
+      .from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId)))
+      .toEqual([
+        { status: "pending", createdByAgentId: identity.agentId },
+        { status: "pending", createdByAgentId: identity.agentId },
+      ]);
     expect(reviewWakes[0]).toMatchObject({
       companyId: identity.companyId, status: "queued", reason: "native_completion_review",
       payload: { issueId, nativeReviewInteractionId: agentReview.id },

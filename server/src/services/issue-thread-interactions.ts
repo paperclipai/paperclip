@@ -3635,7 +3635,7 @@ export function issueThreadInteractionService(
         replacementInteractionId: string;
       }> = [];
       for (const row of rows) {
-        if (!row.createdByAgentId) continue;
+        if (!row.createdByAgentId || isNativeCompletionReview(row)) continue;
         const groupKey = `${row.companyId}:${row.issueId}:${row.kind}:${row.createdByAgentId}`;
         const newest = newestByGroup.get(groupKey);
         if (!newest) {
@@ -4203,6 +4203,8 @@ export function issueThreadInteractionService(
             eq(issueThreadInteractions.status, "pending"),
             ne(issueThreadInteractions.id, row.id),
             sql`${issueThreadInteractions.payload}->'qualityReview' IS NULL`,
+            sql`not coalesce(${issueThreadInteractions.payload}->'target'->>'type' = 'custom'
+              and ${issueThreadInteractions.payload}->'target'->>'key' = 'native_completion_review', false)`,
           );
           if (data.kind === "request_confirmation") {
             // The issue lock above excludes concurrent interaction creation.

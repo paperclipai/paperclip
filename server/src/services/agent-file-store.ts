@@ -272,7 +272,7 @@ export function agentFileStore(db: Db) {
         for (const [name, entry] of incoming.entries) {
           if (entry.kind !== "file" || JSON.stringify(entry) === JSON.stringify(input.baseline.entries.get(name))) continue;
           if ((await fs.stat(await assertInstructionPathSafe(input.sourceDir, name))).size > MAX_INSTRUCTION_BYTES) continue;
-          const bytes = await readInstructionBytes(input.sourceDir, name);
+          const bytes = (await inspectAgentFile(input.sourceDir, name))?.bytes;
           const mentions = bytes ? extractAgentMentionIds(bytes.toString("utf8")) : [];
           if (mentions.length) changedMentions.set(name, { hash: fileHash(bytes!), text: mentions.map(id => `[@agent](agent://${id})`).join(" ") });
         }
