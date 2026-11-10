@@ -53,7 +53,7 @@ import { retryNativeWorkspaceExport } from "../services/native-runtime/native-wo
 import { deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, firstTurnTakesAllQueuedComments, runAcceptsFirstTurnQueuedInput } from "../services/native-runtime/first-turn-queued-input.js";
 import { reconstructNativeWorkspace, unreconciledNativeExportPredicate } from "../services/native-runtime/native-workspace-reconstruction.js";
 import { reconstructWorkspaceSchema } from "@paperclipai/shared";
-import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse, type QueuedInteractionResponse } from "../services/queued-interaction-response.js";
+import { isToolActionOutcomeReceipt, queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse, type QueuedInteractionResponse } from "../services/queued-interaction-response.js";
 import { deliverConversationComments, heldConversationComments, isConversation } from "../services/agent-conversations.js";
 import { assertOnboardingFirstTaskDependenciesAllowed } from "../services/onboarding-first-task-admission.js";
 import { resolveChatTaskAssignment } from "../services/chat-task-assignment.js";
@@ -7556,12 +7556,19 @@ export function issueRoutes(
       .select({
         id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
         status: agentWakeupRequests.status, runId: agentWakeupRequests.runId,
+        // A tool action outcome is projected by identity only, never its
+        // result text, so isToolActionOutcomeReceipt can recognise it.
         payload: sql<Record<string, unknown>>`jsonb_build_object(
           'issueId', ${agentWakeupRequests.payload}->'issueId',
           'mutation', ${agentWakeupRequests.payload}->'mutation',
           'interactionId', ${agentWakeupRequests.payload}->'interactionId',
           'interactionStatus', ${agentWakeupRequests.payload}->'interactionStatus',
           'externalChatContinuation', ${agentWakeupRequests.payload}->'externalChatContinuation',
+          'toolAction', CASE WHEN jsonb_typeof(${agentWakeupRequests.payload}->'toolAction') = 'object'
+            THEN jsonb_build_object(
+              'actionRequestId', ${agentWakeupRequests.payload}->'toolAction'->'actionRequestId',
+              'toolName', ${agentWakeupRequests.payload}->'toolAction'->'toolName') END,
+          'toolActionRequestIds', ${agentWakeupRequests.payload}->'toolActionRequestIds',
           'executionWait', jsonb_build_object(
             'reason', ${agentWakeupRequests.payload}->'executionWait'->'reason',
             'message', ${agentWakeupRequests.payload}->'executionWait'->'message'),
@@ -7591,7 +7598,8 @@ export function issueRoutes(
     for (const wake of rows) {
       if (
         readObject(wake.payload).issueId !== issue.id ||
-        (queuedCommentIdsFromWakePayload(wake.payload).length === 0 && !queuedInteractionId(wake.payload))
+        (queuedCommentIdsFromWakePayload(wake.payload).length === 0 && !queuedInteractionId(wake.payload)) ||
+        isToolActionOutcomeReceipt(wake.payload)
       )
         continue;
       const isReceipt = Boolean(queuedInteractionId(wake.payload));
@@ -7789,7 +7797,8 @@ export function issueRoutes(
     if (
       !wake ||
       readObject(wake.payload).issueId !== input.issue.id ||
-      (queuedCommentIdsFromWakePayload(wake.payload).length === 0 && !queuedInteractionId(wake.payload))
+      (queuedCommentIdsFromWakePayload(wake.payload).length === 0 && !queuedInteractionId(wake.payload)) ||
+      isToolActionOutcomeReceipt(wake.payload)
     ) {
       throw conflict("The queued message is no longer pending", {
         code: "queued_comment_not_pending",

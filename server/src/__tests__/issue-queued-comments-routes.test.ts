@@ -791,6 +791,33 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(await hasQueuedInteractionResponse(db, seeded.companyId, seeded.issueId, seeded.agentId)).toBe(true);
   });
 
+  // Approve = run: the tool already ran (or was declined) when its outcome wake
+  // is deferred behind a later turn. That wake hands the recorded result to the
+  // agent; it is not a message the person still has to send, so the composer
+  // queue must not show it as "Accepted: Approve tool action".
+  it.each([
+    { status: "accepted", outcome: "executed" },
+    { status: "rejected", outcome: "rejected" },
+  ] as const)("does not queue a $status tool action's outcome delivery as a message", async ({ status, outcome }) => {
+    const toolActionCase = {
+      kind: "request_confirmation", status, title: "Approve tool action", label: `${status}`,
+      payload: { version: 1, prompt: "Create the page?", toolAction: { toolName: "notebook_create_page", actionRequestId: randomUUID() } },
+      result: { version: 1, outcome: status, toolAction: { executionStatus: outcome, resultSummary: "Page created" } },
+    } as unknown as (typeof deliveredReceiptCases)[number];
+    const seeded = await seedDeliveredReceipt(toolActionCase, null);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.staleWakeId));
+    const toolAction = { toolName: "notebook_create_page", actionRequestId: randomUUID(), executionStatus: outcome };
+    await db.update(agentWakeupRequests).set({ requestedByActorType: "user", requestedByActorId: "queue-owner",
+      payload: { ...wake.payload, interactionKind: "request_confirmation", toolAction, toolActions: [toolAction],
+        toolActionRequestIds: [toolAction.actionRequestId] } }).where(eq(agentWakeupRequests.id, seeded.staleWakeId));
+    const queue = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(queue.body.entries).toEqual([]);
+    // Hiding the row must not drop the outcome: the agent still receives it.
+    const [after] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.staleWakeId));
+    expect(after.status).toBe("deferred_issue_execution");
+    expect(await hasQueuedInteractionResponse(db, seeded.companyId, seeded.issueId, seeded.agentId)).toBe(true);
+  });
+
   it("shows a later undelivered receipt instead of an earlier delivered one", async () => {
     const seeded = await seedDeliveredReceipt(deliveredReceiptCases[3], "succeeded");
     const pendingId = randomUUID();
