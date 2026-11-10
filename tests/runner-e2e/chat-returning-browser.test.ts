@@ -44,3 +44,8 @@ it("keeps a choice the browser already saved", async () => {
   await markReturningBrowser(open.page, "http://127.0.0.1:3100");
   expect(open.storage.get("paperclip.github-star-prompt.seen")).toBe("kept");
 });
+
+it("does nothing for a page stand-in without a browser context", async () => {
+  await expect(markReturningBrowser({ url: () => "http://127.0.0.1:3100/" } as never, "http://127.0.0.1:3100")).resolves.toBeUndefined();
+  await expect(markReturningBrowser(undefined as never, "http://127.0.0.1:3100")).resolves.toBeUndefined();
+});

@@ -20,8 +20,11 @@ function markSeen({ origin, keys, seenAt }: { origin: string; keys: readonly str
 
 /** Marks the prompts seen for every later document of this app origin, and for the one already open. */
 export async function markReturningBrowser(page: Page, appOrigin: string) {
+  // Flow unit tests drive the flow with page stand-ins that have no browser context; there is nothing to mark.
+  const context = typeof page?.context === "function" ? page.context() : undefined;
+  if (!context || typeof appOrigin !== "string") return;
   const args = { origin: new URL(appOrigin).origin, keys: [...RETURNING_BROWSER_SEEN_KEYS], seenAt: SEEN_AT };
-  await page.context().addInitScript(markSeen, args);
+  await context.addInitScript(markSeen, args);
   let current: string | undefined;
   try { current = new URL(page.url()).origin; } catch { current = undefined; }
   // The prompt rereads storage before it opens, so an already-open page needs no reload.
