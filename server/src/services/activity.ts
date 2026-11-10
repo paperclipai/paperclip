@@ -478,7 +478,8 @@ export function activityService(db: Db) {
           usageJson: summarizedUsageJson,
           resultJson: summarizedResultJson(viewerUserId),
           // Bounded cause of a generic failure code; validated below, legacy rows have none.
-          failureCause: sql<string | null>`left(${heartbeatRuns.resultJson} ->> 'failureCause', ${RUN_FAILURE_CAUSE_MAX_LENGTH + 1})`,
+          failureCause: sql<string | null>`case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'failureCause') = 'string'
+            then left(${heartbeatRuns.resultJson} ->> 'failureCause', ${RUN_FAILURE_CAUSE_MAX_LENGTH + 1}) end`,
           logBytes: heartbeatRuns.logBytes,
           retryOfRunId: heartbeatRuns.retryOfRunId,
           scheduledRetryAt: heartbeatRuns.scheduledRetryAt,

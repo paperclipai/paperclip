@@ -135,7 +135,7 @@ describe("U3 diagnosable failures", () => {
       expect(gradeU3(record(failed(cause))).verdict).toBe("pass");
     }
     // An old row without the field, or a cause that is itself bare, still names nothing.
-    for (const cause of [undefined, "", "Error", "unknown_error"]) {
+    for (const cause of [undefined, "", "Error", "unknown_error", "adapter_reported_error"]) {
       const result = gradeU3(record(failed(cause)));
       expect(result.verdict).toBe("fail");
       expect(result.detail).toContain("r1:code=adapter_failed");
@@ -147,7 +147,9 @@ describe("U3 diagnosable failures", () => {
   it("recognizes diagnosable failure causes", () => {
     expect(diagnosableFailureCause("40001")).toBe(true);
     expect(diagnosableFailureCause("signal_SIGKILL")).toBe(true);
-    for (const cause of [null, undefined, "", " ", "Error", "unknown", "adapter_failed"]) expect(diagnosableFailureCause(cause)).toBe(false);
+    for (const cause of [null, undefined, "", " ", "Error", "unknown", "adapter_failed", "adapter_reported_error", "object"]) {
+      expect(diagnosableFailureCause(cause)).toBe(false);
+    }
   });
   it("flags a recovery action with an empty or bare cause", () => {
     const db = { runMessages: new Map(), recoveryActions: [{ id: "a1", kind: "stalled_issue", cause: "Error", nextAction: "Retry the task" }] };

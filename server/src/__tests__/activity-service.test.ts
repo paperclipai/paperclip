@@ -370,6 +370,8 @@ describeEmbeddedPostgres("activity service", () => {
     ["legacy row without the field", undefined, null],
     ["malformed", 'Failed query: select "secret" from x', null],
     ["overlong", "X".repeat(81), null],
+    ["boolean", true, null],
+    ["number", 40001, null],
   ] as const)("projects only a closed-shape failure cause in issue history: %s", async (_case, stored, expected) => {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Failure cause", issuePrefix: `F${companyId.slice(0, 6)}` });

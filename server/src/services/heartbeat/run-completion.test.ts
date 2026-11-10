@@ -856,6 +856,15 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       resultJson: { stopReason: "adapter_failed", failureCause: "exit_code_137" } });
   });
 
+  it("keeps SQL text out of a cancelled adapter result's error", async () => {
+    const f = await fixture();
+    await f.completion.completeRun({ ...f.input, adapterResult: { ...f.input.adapterResult, exitCode: 1,
+      errorMessage: 'Failed query: select "secret_value" from x where id = $1\nparams: sk-secret', resultJson: { status: "cancelled" } } });
+    const run = await read(f.run.id);
+    expect(run.status).toBe("cancelled");
+    expect(run.error).toBe("Database query failed");
+  });
+
   it("records no failure cause when the failure already has a named code", async () => {
     const f = await fixture();
     await f.completion.completeRun({ ...f.input, adapterResult: { ...f.input.adapterResult, exitCode: 1, errorCode: "provider_quota", errorMessage: "quota" } });

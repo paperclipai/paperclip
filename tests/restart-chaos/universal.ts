@@ -78,10 +78,13 @@ const ready = (sample: TaskSample) => sample.reachable && sample.serverReady;
  * shows it as "adapter failed".
  */
 export const GENERIC_FAILURE_CODES: ReadonlySet<string> = new Set(["", "error", "unknown", "unknown_error", "failed", "adapter_failed", "internal_error"]);
-/** A recorded failureCause that still names nothing: empty, or a bare class or `unknown_error`. */
+/** Server fallbacks that record only that the adapter gave no code: they name nothing specific. */
+const VAGUE_FAILURE_CAUSES: ReadonlySet<string> = new Set(["adapter_reported_error", "object", "string", "undefined"]);
+/** A recorded failureCause that names something: not empty, a bare class, `unknown_error` or a no-code fallback. */
 export function diagnosableFailureCause(cause: string | null | undefined): boolean {
   const text = (cause ?? "").trim();
-  return text !== "" && !GENERIC_FAILURE_CODES.has(text.toLowerCase()) && !bareCauseMessage(text);
+  return text !== "" && !GENERIC_FAILURE_CODES.has(text.toLowerCase()) && !VAGUE_FAILURE_CAUSES.has(text)
+    && !bareCauseMessage(text);
 }
 const FAILED_RUN = new Set(["failed", "timed_out"]);
 

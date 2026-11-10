@@ -479,7 +479,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const normalizedUsage = sessionUsageResolution.normalizedUsage;
     const runErrorMessage =
       outcome === "cancelled"
-        ? redactCurrentUserText(latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled", currentUserRedactionOptions)
+        ? redactCurrentUserText(withoutSqlStatementText(latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled"), currentUserRedactionOptions)
         : outcome === "succeeded"
           ? null
           : redactCurrentUserText(
