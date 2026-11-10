@@ -65,6 +65,7 @@ import type { BudgetServiceHooks } from "../budgets.js";
 import type { providerTraceStore } from "../provider-trace-store.js";
 import type { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import type { CurrentUserRedactionOptions } from "../../log-redaction.js";
+import { ACCOUNTING_CONTENTION_MESSAGE, isAccountingContentionError } from "../accounting-transaction.js";
 import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { getRunLogStore, RunLogHandle } from "../run-log-store.js";
 import type { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
@@ -1110,7 +1111,11 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       redactCurrentUserText(identityRedactor.redact(text), currentUserRedactionOptions);
     // Bounded code from the error or its first three causes; never message text.
     const thrownFailureCause = failureCauseFromError(err, providerFailure);
-    const thrownMessage = withoutSqlStatementText(
+    // Exhausted accounting retries carry their own bounded message. The code
+    // stays generic (adapter_failed) so existing retry paths still apply;
+    // failureCause records the SQLSTATE.
+    const accountingContention = isAccountingContentionError(err);
+    const thrownMessage = accountingContention ? ACCOUNTING_CONTENTION_MESSAGE : withoutSqlStatementText(
       redactFailureText(err instanceof Error ? err.message : "Unknown adapter failure"), thrownFailureCause);
     const workspaceValidationFailure = isWorkspaceValidationFailure(err)
       ? err

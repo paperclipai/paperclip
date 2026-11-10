@@ -38,6 +38,7 @@ import { withS3FailureDiagnostics } from "../../storage/s3-failure.js";
 import { workspaceProviderCallFailure } from "../workspace-provider-failure.js";
 import { logger } from "../../middleware/logger.js";
 import { unprocessable } from "../../errors.js";
+import { ACCOUNTING_CONTENTION_MESSAGE, AccountingContentionError } from "../accounting-transaction.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure, classifyManagedProjectAuthFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
@@ -1412,6 +1413,24 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "runner_revision_mismatch" });
     expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, RUNNER_REVISION_MISMATCH_RETRY);
     expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+  });
+
+  it("saves a bounded cause and keeps the retryable generic code when accounting retries are exhausted", async () => {
+    const f = await fixture();
+    const logged = vi.spyOn(logger, "error");
+    onTestFinished(() => logged.mockRestore());
+    const driverError = Object.assign(new Error("could not serialize access due to concurrent update"),
+      { name: "PostgresError", code: "40001" });
+    const queryError = new Error("Failed query: select \"id\" from \"heartbeat_runs\" where \"id\" = $1 for update\nparams: secret-run-id",
+      { cause: driverError });
+    await f.completion.failRun(f.failure(new AccountingContentionError(queryError, 4)));
+    const failed = await read(f.run.id);
+    // adapter_failed keeps chat and recovery retry paths that key on it.
+    expect(failed).toMatchObject({ status: "failed", errorCode: "adapter_failed", error: ACCOUNTING_CONTENTION_MESSAGE,
+      resultJson: { failureCause: "40001" } });
+    expect(JSON.stringify(failed)).not.toMatch(/heartbeat_runs|secret-run-id|Failed query/);
+    const failureLog = logged.mock.calls.find(call => call[1] === "heartbeat execution failed");
+    expect(failureLog?.[0]).toMatchObject({ runId: f.run.id, errorCode: "adapter_failed", failureCause: "40001" });
   });
 
   it("records a workspace provider's reason on the run and in the setup failure log without retrying", async () => {
