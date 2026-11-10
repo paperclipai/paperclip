@@ -71,6 +71,53 @@ describe("portable remote workspace archives", () => {
     const promise = new Promise<void>(done => { resolve = done; });
     return { promise, resolve };
   }
+  it("copies each source file once and preserves the existing archive format", async () => {
+    const cwd = await fs.realpath(await source()), file = path.join(cwd, "saved.txt");
+    await fs.writeFile(file, "saved work\n");
+    await fs.writeFile(path.join(cwd, "empty.txt"), "");
+    await fs.chmod(file, 0o750);
+    await fs.symlink("saved.txt", path.join(cwd, "link"));
+    const opens: string[] = [];
+    archiveIo.afterOpen = async target => { if (target.startsWith(cwd + path.sep)) opens.push(target); };
+    const archivePath = path.join(root, "once.pcws");
+    const snapshot = { archivePath, ...await captureRemoteWorkspaceDirectory({ cwd, archivePath, singlePass: true }) };
+    expect(opens.sort()).toEqual([path.join(cwd, "empty.txt"), file].sort());
+    const bytes = await fs.readFile(archivePath), manifestSize = bytes.readUInt32BE(6);
+    const manifest = JSON.parse(bytes.subarray(10, 10 + manifestSize).toString());
+    expect(manifest.entries.find((entry: { path: string }) => entry.path === "saved.txt").sha256)
+      .toBe(createHash("sha256").update("saved work\n").digest("hex"));
+    const compatible = await captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "compatible.pcws") });
+    expect(snapshot.sha256).toBe(compatible.sha256);
+    expect(snapshot.manifestDigest).toBe(compatible.manifestDigest);
+    expect(snapshot.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+    await fs.rm(cwd, { recursive: true });
+    const restored = await restore(snapshot);
+    expect(await fs.readFile(path.join(restored, "saved.txt"), "utf8")).toBe("saved work\n");
+    expect((await fs.stat(path.join(restored, "saved.txt"))).mode & 0o777).toBe(0o750);
+    expect(await fs.readlink(path.join(restored, "link"))).toBe("saved.txt");
+    bytes[bytes.length - 1] ^= 1;
+    const corrupt = path.join(root, "corrupt.pcws"); await fs.writeFile(corrupt, bytes);
+    await expect(restoreRemoteWorkspaceArchive({ archivePath: corrupt, targetDir: path.join(root, "corrupt"),
+      expectedManifestDigest: snapshot.manifestDigest })).rejects.toThrow("file_hash_mismatch");
+    await expect(fs.access(path.join(root, "corrupt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("resumes staged and unstaged Git work from one source capture", async () => {
+    const base = await source(); await git(base, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(base, "work.txt"), "committed\n"); await git(base, "add", "."); await git(base, "commit", "-qm", "base");
+    const cwd = path.join(root, "linked"); await git(base, "worktree", "add", "-qb", "selected", cwd);
+    await fs.writeFile(path.join(cwd, "work.txt"), "staged\n"); await git(cwd, "add", ".");
+    await fs.writeFile(path.join(cwd, "work.txt"), "unstaged\n");
+    await fs.writeFile(path.join(cwd, "new.txt"), "untracked\n");
+    const archivePath = path.join(root, "git-once.pcws");
+    const snapshot = { archivePath, ...await captureRemoteWorkspaceDirectory({ cwd, archivePath,
+      singlePass: true, gitSourceRoots: [await fs.realpath(root)] }) };
+    await fs.rm(base, { recursive: true }); await fs.rm(cwd, { recursive: true });
+    const restored = await restore(snapshot);
+    expect(await git(restored, "show", ":work.txt")).toBe("staged");
+    expect(await fs.readFile(path.join(restored, "work.txt"), "utf8")).toBe("unstaged\n");
+    expect(await fs.readFile(path.join(restored, "new.txt"), "utf8")).toBe("untracked\n");
+    await git(restored, "fsck", "--connectivity-only", "--no-dangling");
+  });
   it.each([".", "nested"])("requires a shared Git fence before reading included %s Git storage", async location => {
     const cwd = await source(), repository = path.join(cwd, location);
     await fs.mkdir(repository, { recursive: true });
@@ -84,8 +131,8 @@ describe("portable remote workspace archives", () => {
     expect(await sourceBytes(cwd)).toBe(before);
     await expect(capture(cwd)).resolves.toMatchObject({ manifestDigest: expect.any(String) });
   });
-  it.each(["linked", "borrowed"].flatMap(kind => ["local", "serialized"].map(mode => ({ kind, mode }))))(
-    "enforces owned Git source roots for $kind $mode capture without changing archive bytes", async ({ kind, mode }) => {
+  it.each(["linked", "borrowed"].flatMap(kind => ["local", "serialized"].flatMap(mode => [false, true].map(singlePass => ({ kind, mode, singlePass })))))(
+    "enforces owned Git source roots for $kind $mode capture (single pass: $singlePass)", async ({ kind, mode, singlePass }) => {
       const base = await source(); await git(base, "init", "-q", "-b", "main");
       await fs.writeFile(path.join(base, "work.txt"), "base work\n"); await git(base, "add", "."); await git(base, "commit", "-qm", "base");
       const cwd = path.join(root, "selected");
@@ -96,7 +143,7 @@ describe("portable remote workspace archives", () => {
       const baseline = await capture(cwd), archivePath = path.join(root, "owned.pcws");
       const prefix = remoteWorkspaceArchiveScript().split("const [kind, first, second, digest]")[0];
       const fenced = async (roots: string[]) => {
-        const input = { kind: "capture", cwd, archivePath, gitSourceRoots: roots };
+        const input = { kind: "capture", cwd, archivePath, gitSourceRoots: roots, singlePass };
         return mode === "local" ? captureRemoteWorkspaceDirectory(input)
           : JSON.parse((await execute(process.execPath, ["--eval", `${prefix}archive(${JSON.stringify(input)}).then(value=>process.stdout.write(JSON.stringify(value))).catch(error=>{process.stderr.write(error.message);process.exitCode=1;});`], { env })).stdout);
       };
