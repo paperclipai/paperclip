@@ -408,7 +408,13 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         actor: { agentId: actor.agentId, userId: req.actor.type === "board" ? req.actor.userId : null },
         managementContext: connectionRequestContext(req),
       });
-      res.status(201).json(gateway);
+      if (req.actor.type !== "agent") {
+        res.status(201).json(gateway);
+        return;
+      }
+      // Agents link the person to the saved gateway; clients need a token from its Tokens page.
+      const tokensPath = await gatewayTokensPath(req.params.companyId as string, gateway.id);
+      res.status(201).json({ ...gateway, gatewayPath: tokensPath.replace(/\/tokens$/, "/overview"), tokensPath });
     } catch (err) {
       sendGatewayError(res, err);
     }

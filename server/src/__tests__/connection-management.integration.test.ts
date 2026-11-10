@@ -1558,6 +1558,7 @@ describe("connection management with production default agents", () => {
     const tokenValue = /pcgw_[0-9a-f-]{36}\.[A-Za-z0-9_-]+/;
     const [company] = await server.db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, f.companyId));
     const tokensPath = `/${company.issuePrefix}/apps/gateways/${gateway.body.id}/tokens`;
+    expect(gateway.body).toMatchObject({ tokensPath, gatewayPath: `/${company.issuePrefix}/apps/gateways/${gateway.body.id}/overview` });
 
     const created = await call("gateway-client-create", "POST /api/tool-gateway/gateways/{gatewayId}/tokens", { gatewayId: gateway.body.id }, body);
     expect(created, JSON.stringify(created)).toMatchObject({ status: 201, data: { name: "Fixture client", pendingReveal: true, tokensPath,
