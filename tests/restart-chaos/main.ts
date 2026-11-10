@@ -17,6 +17,7 @@ import { BoardUi } from "./board-ui.js";
 import { DEFAULT_MINIO_BINARY, MINIO_RELEASE, minioBinary, objectStoreServerEnvironment, startMinio, type ObjectStore } from "./object-store.js";
 import { StorageChaos, planStorageFaults, replayStorageWindows, type StorageFaultReceipt } from "./storage-chaos.js";
 import { startStorageFaultProxy } from "./storage-proxy.js";
+import { StorageTrigger } from "./storage-trigger.js";
 import { describeProviderFault, installProviderFaultSeam, resolveRealCodex, withProviderFaultCheck, type ProviderFaultSeam } from "./provider-faults.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
 import { assertControllerMatchesImage, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
@@ -224,6 +225,7 @@ async function main(): Promise<number> {
   let board: BoardUi | null = null;
   let objectStore: ObjectStore | null = null;
   let storageChaos: StorageChaos | null = null;
+  let storageTrigger: StorageTrigger | null = null;
   let storageProxy: Awaited<ReturnType<typeof startStorageFaultProxy>> | null = null;
   let providerFaults: ProviderFaultSeam | null = null;
   let speedSection: string | null = null;
@@ -335,6 +337,20 @@ async function main(): Promise<number> {
       }));
     };
 
+    if (storageProxy && plan.options.storageTrigger) {
+      storageTrigger = new StorageTrigger(plan.options.storageTrigger, {
+        canFire: () => !interrupted && !faultsQueued && !supervisor.faultInProgress && supervisor.serverReady,
+        isOpen: taskId => observers.some(observer => observer.plan.taskId === taskId && !observer.done && observer.record.restAt === null),
+        record: (kind, data) => timeline.add(kind, data),
+        fire: async armed => {
+          const exposed = active.filter(candidate => !candidate.done);
+          await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
+          fireFault(armed.kind, armed.holdMs, armed.taskId, exposed);
+        },
+      });
+      storageProxy.observe(storageTrigger.listener);
+    }
+
     supervisor.onCrashPoint = receipt => {
       const owner = pointResults.find(result => result.token === receipt.crashPoint?.token);
       if (owner) owner.fault = receipt;
@@ -431,6 +447,7 @@ async function main(): Promise<number> {
         const due = observer.faultDue(Date.now());
         if (!due) continue;
         if (observer.record.restAt !== null) { timeline.add("fault_skipped_task_resting", { taskId: observer.plan.taskId, fault: due.kind }); continue; }
+        if (storageTrigger) { storageTrigger.arm({ taskId: observer.plan.taskId, kind: due.kind, holdMs: due.holdMs, armedAt: Date.now() }); continue; }
         const exposed = active.filter(candidate => !candidate.done);
         await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
         if (!(await observer.confirmTrigger(due, Date.now()))) continue;
@@ -605,6 +622,8 @@ async function main(): Promise<number> {
     }
     storageChaos?.stop();
     if (storageProxy) {
+      storageProxy.observe(null);
+      if (storageTrigger) await writeFile(path.join(waveDir, "storage-trigger.json"), `${JSON.stringify(storageTrigger.finish(faults), null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
       if (storageChaos) await writeFile(path.join(waveDir, "storage-faults.json"), `${JSON.stringify(storageChaos.receipts, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
       await writeFile(path.join(waveDir, "storage-proxy.json"), `${JSON.stringify(storageProxy.counts(), null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
       await storageProxy.close().catch(() => undefined);
