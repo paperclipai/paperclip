@@ -162,6 +162,19 @@ describe("the record built before the first kill", () => {
     expect(build(undefined).planned).toEqual(planRestartSteps("RR3", createRng(9).int));
   });
 
+  it("never gives the first replacement the last one's health time", () => {
+    const watched = { ...build(planned), stopOn: "recovering" as const };
+    recordFirstRestart(watched, { stoppedAt: 5_400, restartedAt: 5_400, healthyAt: null }, 77);
+    watched.restarts.push({ ...watched.restarts[0]!, index: 1, healthyAt: 40_000 });
+    // The evidence write after the sequence sees the receipt's health: the last replacement's.
+    recordFirstRestart(watched, { stoppedAt: 5_400, restartedAt: 5_400, healthyAt: 40_000 }, null);
+    expect(watched.restarts[0]!.healthyAt).toBeNull();
+    const gapped = build(planned);
+    gapped.restarts.push({ ...gapped.restarts[0]!, index: 1, healthyAt: 40_000 });
+    recordFirstRestart(gapped, { stoppedAt: 5_400, restartedAt: 5_400, healthyAt: 40_000 }, null);
+    expect(gapped.restarts[0]!.healthyAt).toBeNull();
+  });
+
   it("does not overwrite first-kill times already recorded", () => {
     const rr = build(planned);
     recordFirstRestart(rr, { stoppedAt: 5_400, restartedAt: 5_400, healthyAt: 13_000 }, 77);

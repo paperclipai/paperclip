@@ -130,7 +130,9 @@ export function recordFirstRestart(record: RepeatedRestartRecord, receipt: { sto
   const first = record.restarts[0]!;
   first.stoppedAt ??= receipt.stoppedAt;
   first.restartedAt ??= receipt.restartedAt;
-  first.healthyAt ??= receipt.healthyAt;
+  // The receipt's health is the first replacement's only before any follow-up stop; later it is the last
+  // replacement's. With `stopOn` the first replacement is never waited on to health at all.
+  if (!record.stopOn && record.restarts.length === 1) first.healthyAt ??= receipt.healthyAt;
   first.replacementPid ??= replacementPid;
 }
 
