@@ -10339,7 +10339,7 @@ async function executePaperclipNativeSessionAttempt(
     const history = await input.db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
       eq(heartbeatRunEvents.companyId, input.execution.binding.companyId), eq(heartbeatRunEvents.runId, input.execution.binding.runId),
       or(sql`${heartbeatRunEvents.payload}->'prpEvent'->'payload'->>'kind' = 'usage'`,
-        inArray(heartbeatRunEvents.eventType, ["turn.started", "turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"])),
+        inArray(heartbeatRunEvents.eventType, ["turn.started", "turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted", "session.resumed"])),
     )).orderBy(heartbeatRunEvents.seq);
     for (const row of history) {
       const event = record(row.payload).prpEvent as PrpEvent;
