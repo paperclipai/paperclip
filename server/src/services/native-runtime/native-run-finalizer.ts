@@ -326,6 +326,14 @@ function terminalFinalizationFailureMessage(failureCode: string, failureScope: "
     : `Native run finalization failed (${failureCode}).`;
 }
 
+const NATIVE_FINALIZATION_RETRY_LIMIT = 3;
+
+/** Failed finalizations of this run's saved result. Rows saved before the count existed start at zero. */
+function readFinalizationFailureCount(resultJson: unknown) {
+  const count = record(resultJson).finalizationFailureCount;
+  return typeof count === "number" && Number.isInteger(count) && count >= 0 ? count : 0;
+}
+
 async function recordRetryableFailure(input: {
   db: Db;
   run: typeof heartbeatRuns.$inferSelect;
@@ -449,11 +457,19 @@ async function recordRetryableFailure(input: {
             ? priorFailureDetail.workspaceFinalizeAttempt
             : 0) + 1
         : null;
+    // Finalization has its own budget. `coordinator.attempt` counts provider
+    // attempts, so a run resumed three times after restarts would otherwise
+    // turn its first transient finalization failure into a terminal one and
+    // strand an accepted result. The count lives on the run's result because
+    // every claim clears the coordinator's failure detail.
+    const finalizationFailureCount = input.failureScope === "workspace"
+      ? null
+      : readFinalizationFailureCount(input.run.resultJson) + 1;
     const exhausted =
       input.permanent === true ||
       (workspaceFinalizeAttempt !== null
         ? workspaceFinalizeAttempt >= 3
-        : input.coordinator.attempt >= 3);
+        : finalizationFailureCount! >= NATIVE_FINALIZATION_RETRY_LIMIT);
     const phase =
       supersededByNewerRun || exhausted
         ? ("terminal_failure" as const)
@@ -541,6 +557,7 @@ async function recordRetryableFailure(input: {
           originalFailureCode: input.failureCode,
           // The latest attempt's redacted cause; cleared when it named none.
           failureCause,
+          ...(finalizationFailureCount === null ? {} : { finalizationFailureCount }),
           nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt.toISOString(),
         })}::jsonb`,
         updatedAt: now,
