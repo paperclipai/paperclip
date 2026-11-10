@@ -42,7 +42,7 @@ describe("adapter session codecs", () => {
       sessionId: "11111111-1111-4111-8111-111111111111",
       cwd: "/tmp/workspace",
       mcpServerIdentity: JSON.stringify([{
-        name: "Paperclip projects",
+        name: "paperclip_projects",
         url: "http://localhost:3100/api/mcp/project-tools",
         connectionId: "paperclip-project-tools",
       }]),

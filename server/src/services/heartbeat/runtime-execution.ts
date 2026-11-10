@@ -832,14 +832,14 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         adapter.runtimeToolDelivery ?? "invocation_context";
       if (runtimeTools && runtimeToolDelivery === "native_mcp") {
         runtimeMcpServers.unshift({
-          name: "Paperclip connections",
+          name: "paperclip_connections",
           url: runtimeTools.mcpEndpoint,
           token: runtimeTools.bearerToken,
           connectionId: "paperclip-runtime-tools",
         });
       }
       if (authToken && configuredPaperclipApiBaseUrl() && issueRef) {
-        runtimeMcpServers.unshift({ name: "Paperclip projects", url: `${paperclipApiBaseUrl()}/api/mcp/project-tools`,
+        runtimeMcpServers.unshift({ name: "paperclip_projects", url: `${paperclipApiBaseUrl()}/api/mcp/project-tools`,
           token: authToken, connectionId: "paperclip-project-tools" });
       }
       const runtimeMcp = createAdapterRuntimeMcpAccess(runtimeMcpServers);
