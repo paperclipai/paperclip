@@ -329,7 +329,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     expect(await claimNativeSessionResumptions({ db, runnerInstanceId: "duplicate", runIds: [runId], now: deadline })).toEqual([]);
   });
 
-  // Staging PAP-3881 (Nov 10): a preparation-only run's epoch was abandoned, so
+  // The Nov 10 staging shape: a preparation-only run's epoch was abandoned, so
   // the warm follow-up restored the last save into a new allocation of the same
   // sandbox. The committed source's Runner state stays in its own directory.
   it("binds a retained Runner read to the source's directory after the workspace moved within the same sandbox", async () => {

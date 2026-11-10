@@ -320,7 +320,7 @@ describe("retained source fallback", () => {
   }, 60_000);
 
   /**
-   * Staging PAP-3881 (Nov 10): a native run failed before provider work, so its
+   * The Nov 10 staging shape: a native run failed before provider work, so its
    * prepared files sit under a no-replay hold that is recorded resolved but
    * blocked. Its reusable sandbox history made the source unverifiable
    * (allocation_ownership_ambiguous) and the task stayed blocked on a Retry
