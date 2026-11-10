@@ -130,6 +130,15 @@ Current implementation status:
 - Node.js 24.11+
 - pnpm 9+
 
+Managed repository clones on Windows pass `git -c core.longpaths=true clone` so
+long paths work during repository initialization and template copying. They also
+save `core.longpaths=true` in the clone's local Git configuration for the initial
+checkout and later branch checkouts, including when managed credentials disable
+global and system Git config.
+Their temporary clone directories use a short name under the canonical staging
+parent. This keeps Windows Git remote helpers below their metadata path limits
+without changing the published workspace or crossing filesystem boundaries.
+
 ## Dependency Lockfile Policy
 
 GitHub Actions owns every managed pnpm lockfile:

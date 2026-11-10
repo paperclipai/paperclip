@@ -128,9 +128,11 @@ export async function materializeManagedProjectWorkspace(
   let auth = input.resolveGitAuth && !input.localSource && !input.gitObjectSource
     ? await measureRunPhase("workspace.checkout.git_auth", () => input.resolveGitAuth!(input.repoUrl!))
     : null;
-  const cloneTmpDir = await fs.mkdtemp(input.stagingParent
-    ? path.join(input.stagingParent, `${path.basename(cwd)}.clone-`)
-    : `${cwd}.clone-`);
+  const cloneTmpDir = await fs.mkdtemp(process.platform === "win32"
+    ? path.join(await fs.realpath(input.stagingParent ?? path.dirname(cwd)), ".clone-")
+    : input.stagingParent
+      ? path.join(input.stagingParent, `${path.basename(cwd)}.clone-`)
+      : `${cwd}.clone-`);
   const cloneSource = input.localSource ?? input.repoUrl;
   let objectCache = input.objectCacheCompanyDirectory && !input.localSource && !input.gitObjectSource
     ? await measureRunPhase("workspace.checkout.cache_lookup", async () => {
@@ -151,7 +153,7 @@ export async function materializeManagedProjectWorkspace(
         if (input.gitObjectSource) return copyManagedGitObjects(cloneTmpDir, input.repoUrl!, input.gitObjectSource);
         await execFile(
           "git",
-          [...(auth?.configArgs ?? []), ...(referencePath ? ["-c", "repack.updateServerInfo=false"] : []), "clone", "--no-hardlinks", ...(referencePath ? ["--reference-if-able", referencePath, "--dissociate"] : []), "--", cloneSource, cloneTmpDir],
+          [...(auth?.configArgs ?? []), ...(process.platform === "win32" ? ["-c", "core.longpaths=true"] : []), ...(referencePath ? ["-c", "repack.updateServerInfo=false"] : []), "clone", "--no-hardlinks", ...(process.platform === "win32" ? ["--config", "core.longpaths=true"] : []), ...(referencePath ? ["--reference-if-able", referencePath, "--dissociate"] : []), "--", cloneSource, cloneTmpDir],
           {
             env: {
               ...sanitizeRuntimeServiceBaseEnv(process.env),
