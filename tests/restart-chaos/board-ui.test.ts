@@ -11,7 +11,6 @@ const pages: Record<string, string> = {
   "/issues/CHA-4": `<section><p>Couldn’t load the subtasks.</p><button onclick="window.reloaded=true">Retry</button></section>
     <div role="status">Couldn’t finish this attempt. <button onclick="${retry("i4")}">Retry</button></div>`,
   "/issues/CHA-5": `<div role="status">Couldn’t finish this attempt. <button onclick="${retry("other")}">Retry</button></div>`,
-  // An earlier Retry stays in the accessibility tree but has no box, as in a collapsed panel.
   "/issues/CHA-6": `<button style="width:0;height:0;padding:0;border:0;overflow:hidden">Retry</button>
     <div role="status">Couldn’t finish this attempt. Your message is saved. <button onclick="${retry("i6")}">Retry</button></div>`,
 };

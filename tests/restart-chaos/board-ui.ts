@@ -12,7 +12,6 @@ export interface UiRetryClick {
 }
 
 const PER_BUTTON_REQUEST_MS = 5_000;
-const RETRY_POLL_MS = 250;
 
 export function isRetryRequestFor(issueRefs: readonly string[], method: string, url: string): boolean {
   if (method !== "POST") return false;
@@ -37,20 +36,14 @@ export async function clickRetryOnPage(page: Page, url: string, issueRefs: reado
     const texts = await page.locator("[role=status], [role=alert]").allInnerTexts().catch(() => []);
     return texts.map(text => text.trim()).filter(Boolean).join(" | ").slice(0, 500) || null;
   };
-  // Wait for any visible Retry, not for the first match in document order: a
-  // page can hold an earlier Retry that is in the accessibility tree but has no
-  // box (a collapsed panel, a zero-size control). Waiting on that one alone
-  // reported the visible banner Retry as missing.
-  const deadline = Date.now() + timeoutMs;
-  let buttons = await retryButtonsBannerFirst(page);
-  while (!buttons.length && Date.now() < deadline) {
-    await page.waitForTimeout(Math.min(RETRY_POLL_MS, Math.max(0, deadline - Date.now())));
-    buttons = await retryButtonsBannerFirst(page);
-  }
-  if (!buttons.length)
+  try {
+    await page.getByRole("button", { name: "Retry", exact: true }).filter({ visible: true }).first()
+      .waitFor({ state: "visible", timeout: timeoutMs });
+  } catch {
     return { clicked: false, httpStatus: null, accepted: null, error: UI_RETRY_BUTTON_MISSING, bannerText: await banner() };
+  }
   const bannerText = await banner();
-  for (const button of buttons) {
+  for (const button of await retryButtonsBannerFirst(page)) {
     const response = page.waitForResponse(candidate => isRetryRequestFor(issueRefs, candidate.request().method(), candidate.url()),
       { timeout: perButtonMs }).catch(() => null);
     await button.click().catch(() => undefined);
