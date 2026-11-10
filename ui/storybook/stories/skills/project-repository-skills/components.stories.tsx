@@ -7,7 +7,7 @@ import { projectRepository } from '../../../support/projectRepositorySkills';
 function Components({ state = 'available' }: { state?: 'available' | 'pending' | 'importing' | 'partial' | 'error' | 'private' | 'paused' | 'refreshing' }) {
   const [imported, setImported] = useState(false), [automatic, setAutomatic] = useState(state !== 'paused');
   return <div className="mx-auto flex max-w-3xl flex-col gap-6 p-6">
-    <ProjectSkillRepositoryRow repository={{ ...projectRepository,
+    <ProjectSkillRepositoryRow workspaces={[projectRepository]} repository={{ ...projectRepository,
       status: imported || ['pending', 'importing'].includes(state) ? 'pending' : state === 'error' ? 'error' : 'available', importState: ['importing', 'partial'].includes(state) ? 'importing' : 'queued',
       projectVisibility: state === 'private' ? 'private' : 'open', lastError: state === 'error' ? 'GitHub access is unavailable. Reconnect GitHub and retry.' : null }} backgroundPending={state === 'partial'} onImport={() => setImported(true)} />
     <SkillSourceSyncControls automaticUpdates={automatic} refreshing={state === 'refreshing'} onAutomaticUpdates={setAutomatic} onRefresh={() => setImported(true)} />
