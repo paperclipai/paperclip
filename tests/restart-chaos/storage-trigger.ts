@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { FaultKind, FaultReceipt, WaveOptions, WorkloadId } from "./types.js";
 import type { StorageRequestListener } from "./storage-proxy.js";
+import type { RestartStep } from "./repeated-restarts.js";
 
 export const STORAGE_TRIGGER_TARGETS = ["snapshot-upload", "snapshot-part", "snapshot-download", "run-log"] as const;
 export type StorageTriggerTarget = typeof STORAGE_TRIGGER_TARGETS[number];
@@ -48,7 +49,7 @@ export interface StorageRequestRecord {
   held: boolean; outcome: StorageRequestOutcome; status: number | null; settledAt: number | null;
 }
 
-export interface ArmedStorageFault { taskId: string; kind: FaultKind; holdMs: number; armedAt: number }
+export interface ArmedStorageFault { taskId: string; kind: FaultKind; holdMs: number; armedAt: number; restartSteps?: RestartStep[] }
 
 export interface StorageTriggerReceipt {
   target: StorageTriggerTarget; taskId: string; kind: FaultKind; armedAt: number;

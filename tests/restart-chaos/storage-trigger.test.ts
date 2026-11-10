@@ -91,12 +91,12 @@ describe("storage-triggered restart", () => {
     expect(await before.response).toBe(200);
     expect(fired).toEqual([]);
 
-    trigger.arm({ taskId: "t01", kind: "K1", holdMs: 0, armedAt: Date.now() });
+    trigger.arm({ taskId: "t01", kind: "K1", holdMs: 0, armedAt: Date.now(), restartSteps: [{ gapMs: 5_000, signal: "SIGKILL" }] });
     const other = send(proxy.endpoint, "PUT", "/bucket/chaos/w/run-logs/r1/1.ndjson");
     expect(await other.response).toBe(200);
     const held = send(proxy.endpoint, "PUT", `${snapshotPut}?partNumber=1&uploadId=u`, "x".repeat(1024));
     await until(() => fired.length > 0);
-    expect(fired).toEqual([{ armed: expect.objectContaining({ taskId: "t01", kind: "K1" }), path: `${snapshotPut}?partNumber=1&uploadId=…` }]);
+    expect(fired).toEqual([{ armed: expect.objectContaining({ taskId: "t01", kind: "K1", restartSteps: [{ gapMs: 5_000, signal: "SIGKILL" }] }), path: `${snapshotPut}?partNumber=1&uploadId=…` }]);
     await new Promise(resolve => setTimeout(resolve, 100));
     expect(store.seen.filter(line => line.includes("partNumber"))).toEqual([]);
 

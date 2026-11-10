@@ -400,7 +400,7 @@ async function main(): Promise<number> {
             const exposed = await exposedAfterLaunch(launching, launched);
             await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
             const queued = faultWork.length;
-            fireFault(armed.kind, armed.holdMs, armed.taskId, exposed);
+            fireFault(armed.kind, armed.holdMs, armed.taskId, exposed, undefined, undefined, armed.restartSteps);
             await faultWork[queued];
           })().finally(() => { faultsQueued -= 1; });
           faultWork.push(work);
@@ -514,7 +514,7 @@ async function main(): Promise<number> {
         const due = observer.faultDue(Date.now());
         if (!due) continue;
         if (observer.record.restAt !== null) { timeline.add("fault_skipped_task_resting", { taskId: observer.plan.taskId, fault: due.kind }); continue; }
-        if (storageTrigger) { storageTrigger.arm({ taskId: observer.plan.taskId, kind: due.kind, holdMs: due.holdMs, armedAt: Date.now() }); continue; }
+        if (storageTrigger) { storageTrigger.arm({ taskId: observer.plan.taskId, kind: due.kind, holdMs: due.holdMs, armedAt: Date.now(), ...(due.restartSteps ? { restartSteps: due.restartSteps } : {}) }); continue; }
         const exposed = active.filter(candidate => !candidate.done);
         await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
         if (!(await observer.confirmTrigger(due, Date.now()))) continue;
