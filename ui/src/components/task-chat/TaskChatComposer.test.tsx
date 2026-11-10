@@ -787,6 +787,19 @@ describe("TaskChatComposer", () => {
     expect(loadDraftSubmission(key)?.attemptId).toBe(attemptId);
     expect(onAdd).not.toHaveBeenCalled();
   });
+  it("shows a rejected message and retains its draft", async () => {
+    const { ApiError } = await import("../../api/client");
+    const onAdd = vi.fn().mockRejectedValue(new ApiError("Forbidden", 403, { error: "Forbidden" }));
+    renderComposer({ onAdd, workMode: "standard" });
+    typeText("Keep this draft");
+    flushSync(() => sendButton().click());
+    await flushAsync();
+    expect(editable().textContent).toBe("Keep this draft");
+    expect(container.querySelector('[data-testid="task-chat-composer-error"]')?.textContent).toBeTruthy();
+    typeText(" changed");
+    expect(container.querySelector('[data-testid="task-chat-composer-error"]')).toBeNull();
+  });
+
   it("retains explicit upload receipt IDs across a failed send without uploading again", async () => {
     const onAdd = vi
       .fn()
