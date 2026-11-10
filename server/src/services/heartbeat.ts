@@ -51,7 +51,7 @@ import { prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
 import { selectHeartbeatEnvironment } from "./heartbeat/environment-selection.js";
 import { reconcileMuseNativeTerminalRun } from "./native-runtime/muse-terminal-reconciliation.js";
 import { prepareHeartbeatWorkspace } from "./heartbeat/workspace-preparation.js";
-import { nativeRecoveryClaimRelinquished } from "./native-runtime/native-execution-lease.js";
+import { nativeRecoveryClaimRelinquished, releaseLapsedNativeRestartClaim } from "./native-runtime/native-execution-lease.js";
 import { executeHeartbeatRuntime, NativeSessionResumeScheduledError, NativeWorkspaceFinalizeScheduledError } from "./heartbeat/runtime-execution.js";
 import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
 import { nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
@@ -2023,6 +2023,7 @@ export function heartbeatService(
     let githubLauncherLocation:
       Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
     let nativeSessionResumeScheduled = false;
+    let restartClaimLapsed = false;
     let nativeOwnershipHeld = false;
     let nativeStartupCleanupScheduled = false;
     let nativeStartupCleanupError: NativeStartupCleanupPendingError | undefined;
@@ -3794,9 +3795,14 @@ export function heartbeatService(
           return;
         }
         if (!(await preserveNativeWorkspaceOnFailure())) {
+          const claim = runOptions.nativeRestartRecovery;
+          restartClaimLapsed = claim !== undefined && await releaseLapsedNativeRestartClaim({ db, companyId: run.companyId, runId: run.id,
+            leaseOwner: claim.leaseOwner, controllerGeneration: claim.controllerGeneration, providerAttempt: claim.providerAttempt })
+            .catch(() => false);
           logger.warn({ runId: run.id, err: identityRedactor.redact({ message: err instanceof Error ? err.message : String(err),
-            stack: err instanceof Error ? err.stack : undefined }), restartClaim: runOptions.nativeRestartRecovery?.kind ?? null },
-            "native run failure left to the workspace owner that holds the run");
+            stack: err instanceof Error ? err.stack : undefined }), restartClaim: claim?.kind ?? null, restartClaimLapsed },
+            restartClaimLapsed ? "native restart claim lapsed during a failed preparation; released it for restart recovery"
+              : "native run failure left to the workspace owner that holds the run");
           return;
         }
         await runCompletion.failRun({
@@ -4114,6 +4120,7 @@ export function heartbeatService(
       } finally {
         controllerLease.stop();
         activeRunExecutions.delete(run.id);
+        if (restartClaimLapsed) scheduleNativeSessionResumeDispatch(run.id, new Date(), "restart");
         // A failed owned Stop remains visible until this exact executor settles,
         // including a graceful exit result arriving after the cancellation error.
         // It is never retained beyond the active execution's cleanup.

@@ -145,6 +145,23 @@ export async function nativeRecoveryClaimRelinquished(input: {
     && row.lastDisposition === "restart_suspended";
 }
 
+export async function releaseLapsedNativeRestartClaim(input: {
+  db: Db; companyId: string; runId: string; leaseOwner: string; controllerGeneration: number; providerAttempt: number;
+}): Promise<boolean> {
+  const released = await input.db.update(nativeRunFinalizations)
+    .set({ leaseOwner: null, leaseExpiresAt: null, updatedAt: new Date() })
+    .where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, input.runId),
+      eq(nativeRunFinalizations.phase, "observed"), isNull(nativeRunFinalizations.resultId),
+      eq(nativeRunFinalizations.leaseOwner, input.leaseOwner),
+      eq(nativeRunFinalizations.controllerGeneration, input.controllerGeneration),
+      eq(nativeRunFinalizations.attempt, input.providerAttempt),
+      sql`${nativeRunFinalizations.leaseExpiresAt} <= clock_timestamp()`,
+      sql`exists (select 1 from ${heartbeatRuns} where ${heartbeatRuns.id} = ${nativeRunFinalizations.runId}
+        and ${heartbeatRuns.companyId} = ${input.companyId} and ${heartbeatRuns.status} = 'running')`))
+    .returning({ runId: nativeRunFinalizations.runId });
+  return released.length > 0;
+}
+
 /**
  * Preparation failed after a fresh claim and before any provider turn. Release
  * only this exact claim, so ordinary failure settlement can retain the source
