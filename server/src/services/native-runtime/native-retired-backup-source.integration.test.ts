@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { createReusableLeaseHandoff } from "../environment-lease-handoff.js";
+import { environmentService } from "../environments.js";
 import { retiredSourceAuthorizesNativeBackupRestore } from "./native-retired-backup-source.js";
 
 const describeDb = recoveryPostgresSupport.supported ? describe : describe.skip;
@@ -194,6 +195,31 @@ describeDb("retired native backup source authority", () => {
     expect(source!.metadata).not.toHaveProperty("reusableSandboxLease");
     expect(source!.metadata?.reusableSandboxLeaseSuperseded).toMatchObject({
       schema: "paperclip.reusable-sandbox-lease-superseded.v1", reusableSandboxLease: { version: 1, provider: "daytona" } });
+  });
+
+  it("refuses a reuse handoff of a source superseded while its provider resume was pending", async () => {
+    // An acquisition selected the warm source and resumed it at the provider.
+    // Before it records the handoff, this run claims the source and restores
+    // its backup elsewhere. The handoff then competes on the same row and loses.
+    await expect(fixture({ idleWarm: "retained" })).resolves.toBe(true);
+    const [source] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lastSourceLeaseId));
+    const environmentId = randomUUID(), runId = randomUUID(), agentId = randomUUID();
+    await db.insert(environments).values({ id: environmentId, name: environmentId, driver: "sandbox" });
+    await db.insert(agents).values({ id: agentId, companyId: source!.companyId, name: "Other", adapterType: "paperclip_runner" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: source!.companyId, agentId, status: "running",
+      runtimeMode: "native", invocationSource: "assignment", triggerDetail: "system" });
+    const issueId = randomUUID(), workspaceId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId: source!.companyId, title: "Warm source" });
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: source!.companyId, sourceIssueId: issueId,
+      mode: "shared_workspace", strategyType: "project_primary", name: "Warm workspace" });
+    await db.update(environmentLeases).set({ environmentId, executionWorkspaceId: workspaceId, issueId })
+      .where(eq(environmentLeases.id, source!.id));
+    await expect(environmentService(db).acquireLease({ companyId: source!.companyId, environmentId,
+      executionWorkspaceId: workspaceId, issueId, heartbeatRunId: runId, leasePolicy: "reuse_by_environment",
+      provider: "daytona", providerLeaseId: source!.providerLeaseId, metadata: { agentId },
+      replacesReusableLeaseId: source!.id })).rejects.toThrow("ownership changed");
+    const [after] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, source!.id));
+    expect(after!.status).toBe("retained");
   });
 
   it.each([
