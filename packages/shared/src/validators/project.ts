@@ -126,6 +126,8 @@ const projectFields = {
 export const createProjectSchema = z.object({
   idempotencyKey: z.string().trim().min(1).max(255).optional(),
   ...projectFields,
+  environmentId: z.string().guid().optional(),
+  expectedStorageProviderPluginId: z.string().guid().nullable().optional(),
   workspace: createProjectWorkspaceSchema.optional(),
   repositoryIds: z.array(z.string().regex(/^\d+$/)).optional(),
   repositoryUrls: z.array(z.string().url().max(2000)).max(100).optional(),
