@@ -65,11 +65,10 @@ export function questionAnswer(interaction: Json, choice: string): { questionId:
 }
 
 /** The scripted Q3 agent: one connected-app call, then report the reviewed result. Adapted from tests/e2e/connection-reviews.spec.ts. */
-export function q3AgentScript(connectionId: string, title: string, serverBaseUrl: string): string {
-  // The wave's own loopback server. On a tailnet host, PAPERCLIP_API_URL names the machine's
-  // public URL, which reaches a different instance.
+export function q3AgentScript(connectionId: string, title: string): string {
+  // The supervisor pins PAPERCLIP_API_URL to the wave's own loopback server.
   return `
-const base = ${JSON.stringify(serverBaseUrl)} + "/api";
+const base = process.env.PAPERCLIP_API_URL.replace(/\\/+$/, "").replace(/\\/api$/, "") + "/api";
 const headers = { authorization: "Bearer " + process.env.PAPERCLIP_API_KEY, "content-type": "application/json", "x-paperclip-run-id": process.env.PAPERCLIP_RUN_ID };
 const api = async (path, method = "GET", body) => {
   const response = await fetch(base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -164,7 +163,7 @@ export class JourneyDriver {
       const agent = await api.post<Json>(`/api/companies/${lab.companyId}/agents`, {
         name: `Chaos pages agent ${plan.nonce}`, role: "engineer", title: "Connected-app journey agent",
         capabilities: "Creates one page with the chaos app after review.", adapterType: "process",
-        adapterConfig: { command: process.execPath, args: ["--input-type=module", "-e", q3AgentScript(state.connectionId, q3ToolArgument(plan.nonce), api.baseUrl)] },
+        adapterConfig: { command: process.execPath, args: ["--input-type=module", "-e", q3AgentScript(state.connectionId, q3ToolArgument(plan.nonce))] },
       });
       state.agentId = String(agent.id);
       // A scripted process run records usage with no price, which the company's default budget

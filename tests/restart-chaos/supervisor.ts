@@ -59,6 +59,16 @@ export function crashLoopShouldFire(target: (typeof CRASH_LOOP_TARGETS)[number],
   return phase === "ready";
 }
 
+/**
+ * Agents reach the server at PAPERCLIP_API_URL. An explicit value wins over the URL the server
+ * derives from its public URL (a developer's .paperclip/.env or shell can name a tailnet origin
+ * that serves a different instance). Pin this wave's own loopback origin so an agent's key for
+ * the temporary instance is only ever sent to that instance.
+ */
+export function waveServerUrlEnvironment(port: number): { PAPERCLIP_API_URL: string } {
+  return { PAPERCLIP_API_URL: `http://127.0.0.1:${port}` };
+}
+
 export interface SupervisorPaths { temporaryRoot: string; home: string; configPath: string; serverLogPath: string }
 
 /**
@@ -211,6 +221,7 @@ export class ChaosSupervisor {
       // set values. A worktree-initialized checkout's file sets
       // PAPERCLIP_IN_WORKTREE=true, which suppresses all scheduling: no run starts.
       PAPERCLIP_IN_WORKTREE: "false",
+      ...waveServerUrlEnvironment(this.port),
       ...extraEnvironment,
     };
     const environment = buildPaperclipServerEnvironment(source, overrides);
