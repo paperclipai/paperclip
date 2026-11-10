@@ -372,6 +372,13 @@ function readRunIssueId(context: Record<string, unknown> | null) {
   return typeof nestedIssueId === "string" && isUuidLike(nestedIssueId) ? nestedIssueId : null;
 }
 
+// Instruction history IDs are revision or save-record UUIDs, or the current
+// content token, which is a version-8 UUID that `isUuidLike` rejects.
+const INSTRUCTION_REVISION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+function isInstructionRevisionId(value: string) {
+  return INSTRUCTION_REVISION_ID_RE.test(value);
+}
+
 // Confirms a pre-existing `CODEX_HOME_<handle>` secret still names this
 // account's own home before a device login treats the secret's presence as a
 // successful, idempotent login. The secret name alone is not proof of a
@@ -5415,7 +5422,7 @@ export function agentRoutes(
     if (!existing) return;
     assertExternalInstructionsAdmin(req, existing);
     const revisionId = req.params.revisionId as string;
-    if (!isUuidLike(revisionId)) throw unprocessable("Invalid instruction revision id");
+    if (!isInstructionRevisionId(revisionId)) throw unprocessable("Invalid instruction revision id");
     const entryFile = typeof req.query.path === "string" ? req.query.path : deriveBundleState(existing).entryFile;
     res.json(await instructionRevisions.readRevision({ companyId: existing.companyId, agentId: existing.id, entryFile, revisionId }, req.actor));
   });
@@ -5425,7 +5432,7 @@ export function agentRoutes(
     assertExternalInstructionsAdmin(req, existing);
     const fromRevisionId = typeof req.query.from === "string" ? req.query.from : "";
     const toRevisionId = typeof req.query.to === "string" ? req.query.to : "";
-    if (!isUuidLike(fromRevisionId) || !isUuidLike(toRevisionId)) throw unprocessable("Provide valid from and to revision ids");
+    if (!isInstructionRevisionId(fromRevisionId) || !isInstructionRevisionId(toRevisionId)) throw unprocessable("Provide valid from and to revision ids");
     const entryFile = typeof req.query.path === "string" ? req.query.path : deriveBundleState(existing).entryFile;
     res.json(await instructionRevisions.diff({ companyId: existing.companyId, agentId: existing.id, entryFile, fromRevisionId, toRevisionId }, req.actor));
   });

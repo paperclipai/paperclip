@@ -655,6 +655,22 @@ describe("agent instructions bundle routes", () => {
     expect(mockInstructionRevisions.restore).toHaveBeenCalledWith({ companyId: "company-1", agentId: "11111111-1111-4111-8111-111111111111", entryFile: "AGENTS.md", revisionId, baseRevisionId }, expect.objectContaining({ type: "board", userId: "local-board" }));
   });
 
+  it("opens a listed save against the current content token", async () => {
+    const app = await createApp();
+    const saveId = "33333333-3333-4333-8333-333333333333";
+    // The current content token is a version-8 UUID derived from the file hash.
+    const currentToken = "0f3c9a1e-7b2d-8e4f-a1b2-c3d4e5f60718";
+    const prefix = "/api/agents/11111111-1111-4111-8111-111111111111/instructions-bundle";
+    mockInstructionRevisions.diff.mockResolvedValue({ removed: "old", added: "new" });
+    mockInstructionRevisions.readRevision.mockResolvedValue({ revision: { id: currentToken, entryFile: "AGENTS.md", byteLength: 3 }, content: "new" });
+    expect((await requestApp(app, (url) => request(url).get(`${prefix}/diff?path=AGENTS.md&from=${saveId}&to=${currentToken}`))).status).toBe(200);
+    expect(mockInstructionRevisions.diff).toHaveBeenCalledWith(expect.objectContaining({ fromRevisionId: saveId, toRevisionId: currentToken }), expect.anything());
+    expect((await requestApp(app, (url) => request(url).get(`${prefix}/revision/${currentToken}?path=AGENTS.md`))).status).toBe(200);
+    expect(mockInstructionRevisions.readRevision).toHaveBeenCalledWith(expect.objectContaining({ revisionId: currentToken }), expect.anything());
+    expect((await requestApp(app, (url) => request(url).get(`${prefix}/diff?path=AGENTS.md&from=${saveId}&to=not-a-revision`))).status).toBe(422);
+    expect((await requestApp(app, (url) => request(url).get(`${prefix}/revision/0f3c9a1e-7b2d-9e4f-a1b2-c3d4e5f60718?path=AGENTS.md`))).status).toBe(422);
+  });
+
   it("requires a base revision and rejects client-supplied responsible identity", async () => {
     const app = await createApp();
     for (const body of [ { path: "AGENTS.md", content: "stale" }, { path: "AGENTS.md", content: "forged", baseRevisionId: null, responsibleUserId: "forged" } ]) {
