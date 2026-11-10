@@ -8,7 +8,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import os from "node:os";
-import { currentProcessSpaceHash } from "./controller-process-identity.js";
+import { currentProcessSpaceHash, sameProcessSpace } from "./controller-process-identity.js";
 import { proveOwnerGone } from "./owner-proof.js";
 
 export const PROCESS_START_REQUESTED = "native.process_start_requested";
@@ -382,7 +382,9 @@ export function settledNativeProcessIdentityCondition(db: Db) {
 }
 
 export function clearedNativeProcessIdentityCondition() {
-  return and(isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt),
+  const space = currentProcessSpaceHash();
+  if (space === "unknown") return sql`false`;
+  return and(eq(heartbeatRuns.processHostHash, space), isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt),
     sql`exists (select 1 from (select e.event_type, e.agent_id, e.payload from heartbeat_run_events e
       where e.company_id = ${heartbeatRuns.companyId} and e.run_id = ${heartbeatRuns.id} and e.source_event_id is null
         and e.event_type in ('native.process_start_requested', 'native.process_identity_recorded', 'native.local_process_stopped')
@@ -397,10 +399,12 @@ export async function releaseSettledNativeRunProcess(db: Db, runId: string, opti
     const [run] = await tx.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId, nativeIssueId: heartbeatRuns.nativeIssueId,
       runtimeMode: heartbeatRuns.runtimeMode, status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt,
       processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId, processStartedAt: heartbeatRuns.processStartedAt,
+      processHostHash: heartbeatRuns.processHostHash,
       hasSessionCheckpoint: sql<boolean>`coalesce(${heartbeatRuns.runnerProfileJson}->'sessionCheckpoint', 'null'::jsonb) <> 'null'::jsonb`,
     }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update").limit(1);
     if (!run || run.runtimeMode !== "native" || !SETTLED_RUN_STATUSES.includes(run.status) || !run.finishedAt) return "skipped";
     const cleared = run.processPid === null && run.processGroupId === null && run.processStartedAt === null;
+    if (cleared && !sameProcessSpace(run.processHostHash)) return "skipped";
     const [coordinator] = await tx.select({ phase: nativeRunFinalizations.phase, leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations)
       .where(eq(nativeRunFinalizations.runId, run.id)).for("update", { skipLocked: true }).limit(1);
     if (!coordinator) {

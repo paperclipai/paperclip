@@ -1,3 +1,4 @@
+import * as processIdentity from "./controller-process-identity.js";
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
@@ -34,6 +35,15 @@ import { heartbeatService, persistHeartbeatRunProcessMetadata, type HeartbeatEnv
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { createDurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 import { recordNativeFinalizationFailure } from "./native-runtime/native-run-finalizer.js";
+function qualifiedProcessSpace() {
+  const actual = processIdentity.currentProcessSpaceHash();
+  if (actual !== "unknown") return { hash: actual, restore() {} };
+  const hash = "1".repeat(32);
+  const current = vi.spyOn(processIdentity, "currentProcessSpaceHash").mockReturnValue(hash);
+  const matches = vi.spyOn(processIdentity, "sameProcessSpace").mockImplementation(recorded => recorded === hash);
+  return { hash, restore() { current.mockRestore(); matches.mockRestore(); } };
+}
+
 const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_CONTINUATION_TEST_DATABASE_URL");
 const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("explicit native conversation continuation", () => {
@@ -2502,10 +2512,11 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         leaseOwner: scenario === "controller" ? "active-controller" : null,
         failureDetail: scenario === "successor" ? { successorRunId: randomUUID() } : null,
       }).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+      const space = scenario === "cleared identity" ? qualifiedProcessSpace() : null;
       if (scenario === "cleared identity") {
         await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.sourceRunId));
         await db.update(heartbeatRuns).set({ processPid: null, processGroupId: null, processStartedAt: null,
-          runnerProfileJson: { sessionCheckpoint: { fixture: true } } }).where(eq(heartbeatRuns.id, f.sourceRunId));
+          processHostHash: space!.hash, runnerProfileJson: { sessionCheckpoint: { fixture: true } } }).where(eq(heartbeatRuns.id, f.sourceRunId));
         await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId,
           eventType: PROCESS_IDENTITY_RECORDED, payload: { targetKind: "local", hostname: os.hostname(),
             processPid: 999999999, processGroupId: null, processStartedAt: "2026-09-11T09:55:00.000Z" } });
@@ -2521,7 +2532,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
         return admitExplicitNativeContinuation({ ...f, db: tx as unknown as Db,
           reason: "task_retry", commentId: null, taskRetryRequestId: requestId });
-      });
+      }).finally(() => space?.restore());
       if (scenario === "settled" || scenario === "cleared identity") expect(result).toMatchObject({ previousRunId: f.sourceRunId, taskRetryRequestId: requestId });
       else expect(result).toBeNull();
       expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId)))[0])
