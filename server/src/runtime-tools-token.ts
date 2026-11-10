@@ -82,7 +82,7 @@ export function createRuntimeToolsToken(input: {
   if (raw.length > MAX_CLAIMS_BYTES) throw new Error("Managed Git runtime repository bindings are too large");
   const compressed = raw.length > 6000;
   const payload = compressed ? deflateRawSync(raw).toString("base64url") : raw.toString("base64url");
-  const signingInput = `${encode({ alg: "HS256", typ: "JWT", ...(compressed ? { zip: "DEF" } : {}) })}.${payload}`;
+  const signingInput = `${encode({ alg: "HS256", typ: "JWT", ...(compressed ? { zip: "DEF", company_id: input.companyId, instance_id: instanceId } : {}) })}.${payload}`;
   if (signingInput.length + 44 > MAX_TOKEN_LENGTH) throw new Error("Managed Git runtime repository bindings are too large");
   const signature = sign(signingInput, input.companyId, instanceId);
   return signature
@@ -97,9 +97,15 @@ export function verifyRuntimeToolsToken(token: string, scope: RuntimeToolsTokenC
   let claims: Record<string, unknown>;
   try {
     header = JSON.parse(Buffer.from(parts[0]!, "base64url").toString("utf8"));
-    if (header.zip !== undefined && header.zip !== "DEF") return null;
+    if (header.alg !== "HS256" || (header.zip !== undefined && header.zip !== "DEF")) return null;
+    if (header.zip === "DEF") {
+      if (typeof header.company_id !== "string" || typeof header.instance_id !== "string" || header.instance_id !== resolvePaperclipInstanceId()) return null;
+      const expected = sign(`${parts[0]}.${parts[1]}`, header.company_id, header.instance_id);
+      if (!expected || !safeEqual(parts[2]!, expected)) return null;
+    }
     const payload = Buffer.from(parts[1]!, "base64url");
     claims = JSON.parse((header.zip === "DEF" ? inflateRawSync(payload, { maxOutputLength: MAX_CLAIMS_BYTES }) : payload).toString("utf8"));
+    if (header.zip === "DEF" && (claims.company_id !== header.company_id || claims.instance_id !== header.instance_id)) return null;
   } catch {
     return null;
   }
