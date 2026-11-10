@@ -51,8 +51,10 @@ The server validates the choice again and stores its storage owner. The project
 is then available to the compatible environments in that group; no single run
 environment is pinned. An explicit `executionWorkspacePolicy.storageProviderPluginId`
 continues to work. The UI sends both the environment and its observed storage
-owner, so a changed environment cannot silently select different storage. If
-both fields are supplied, they must agree. Without either,
+owner in `expectedStorageProviderPluginId`, so a changed environment cannot
+silently select different storage. This guard does not create a workspace-mode
+policy; instance task-isolation defaults remain inherited. An explicit policy
+and environment must agree when both are supplied. Without either,
 storage follows the caller's effective environment. A plugin's
 `defaultForProjects` claim alone no longer attaches a project to that plugin.
 

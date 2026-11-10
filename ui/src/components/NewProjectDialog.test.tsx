@@ -113,8 +113,9 @@ describe("project environment selection", () => {
     act(() => { select.value = "sandbox"; select.dispatchEvent(new Event("change", { bubbles: true })); });
     act(() => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
     await settle();
-    expect(projectsApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ environmentId: "sandbox", executionWorkspacePolicy: { enabled: true, storageProviderPluginId: null } }));
+    expect(projectsApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ environmentId: "sandbox", expectedStorageProviderPluginId: null }));
     expect(select.value).toBe("sandbox");
+    expect(vi.mocked(projectsApi.create).mock.calls[0][1].executionWorkspacePolicy).toBeUndefined();
   });
 
   it("hides the picker for compatible environments but still sends the default", async () => {

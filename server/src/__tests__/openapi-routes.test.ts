@@ -1308,6 +1308,7 @@ describe("openapi routes", () => {
     expect(operation.responses["200"].content["application/json"].schema.properties).toHaveProperty("defaultEnvironmentId");
     const creation = spec.paths["/api/companies/{companyId}/projects"].post;
     expect(creation.requestBody.content["application/json"].schema.properties.environmentId).toMatchObject({ type: "string", format: "uuid" });
+    expect(creation.requestBody.content["application/json"].schema.properties.expectedStorageProviderPluginId).toMatchObject({ type: "string", nullable: true });
   });
 
   it("documents board-only repository discovery and selection", () => {

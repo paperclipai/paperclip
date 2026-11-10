@@ -11,6 +11,7 @@ export interface ProjectCreationEnvironment {
   userId?: string | null;
   agentId?: string | null;
   environmentId?: string;
+  expectedStorageProviderPluginId?: string | null;
 }
 
 export async function projectEnvironmentOptions(db: Db, companyId: string, actor: ProjectCreationEnvironment = {}): Promise<ProjectEnvironmentOptions> {
@@ -71,13 +72,16 @@ export async function projectEnvironmentOptions(db: Db, companyId: string, actor
 
 export async function withDefaultProjectStorage(db: Db, companyId: string, rawPolicy: unknown, actor: ProjectCreationEnvironment = {}) {
   const policy = parseProjectExecutionWorkspacePolicy(rawPolicy);
-  if (policy?.storageProviderPluginId !== undefined && !actor.environmentId) return rawPolicy;
+  if (policy?.storageProviderPluginId !== undefined && !actor.environmentId && actor.expectedStorageProviderPluginId === undefined) return rawPolicy;
   const options = await projectEnvironmentOptions(db, companyId, actor);
   const environmentId = actor.environmentId ?? options.defaultEnvironmentId;
   const group = options.groups.find(value => value.environments.some(environment => environment.id === environmentId));
   if (actor.environmentId && !group) throw conflict("The selected environment is unavailable for this project. Select an available environment.", { code: "project_environment_unavailable" });
   if (!actor.environmentId && options.error) throw conflict(options.error, { code: "project_environment_unavailable" });
   const pluginId = group?.storageProviderPluginId ?? null;
+  if (actor.expectedStorageProviderPluginId !== undefined && actor.expectedStorageProviderPluginId !== pluginId) {
+    throw conflict("The environment's project storage changed. Review the available environments and retry.", { code: "project_environment_incompatible" });
+  }
   if (policy?.storageProviderPluginId !== undefined && policy.storageProviderPluginId !== pluginId) {
     throw conflict("The selected environment cannot use the requested project workspace storage.", { code: "project_environment_incompatible" });
   }

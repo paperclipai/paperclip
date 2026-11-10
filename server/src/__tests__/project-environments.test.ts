@@ -7,6 +7,8 @@ import { agents, authUsers, companyMemberships, builtInManagedResources, compani
 import { projectEnvironmentOptions, withDefaultProjectStorage } from "../services/project-environments.js";
 import { assertProjectStorageEnvironment, projectStorageForEnvironment } from "../services/project-workspace-provider.js";
 import { issueService } from "../services/issues.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { applyDefaultIsolatedExecutionWorkspacePolicy, gateProjectExecutionWorkspacePolicy, parseProjectExecutionWorkspacePolicy, resolveExecutionWorkspaceMode, buildExecutionWorkspaceAdapterConfig, resolveEffectiveWorkspaceStrategyType } from "../services/execution-workspace-policy.js";
 import { projectService } from "../services/projects.js";
 import { preparePluginWorkspace } from "../services/plugin-workspaces.js";
 import { projectRoutes } from "../routes/projects.js";
@@ -102,6 +104,24 @@ describe.skipIf(!support.supported)("project environment compatibility", () => {
     expect((await svc.getById(sandboxProject.id))?.workspaceProvider?.pluginId).toBeNull();
   });
 
+  it("preserves inherited task isolation when checking the observed core storage owner", async () => {
+    const f = await fixture();
+    const { experimental: settings } = await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true, enableIsolatedWorkspacesByDefault: true });
+    const project = await projectService(db).createWithRepositories(f.companyId, { name: "Inherited isolation" }, [
+      { id: "42", fullName: "example/repo", url: "https://github.com/example/repo", connections: [] },
+    ], { environmentId: f.sandbox.id, expectedStorageProviderPluginId: null });
+    expect(project.executionWorkspacePolicy).toBeNull();
+    const projectPolicy = applyDefaultIsolatedExecutionWorkspacePolicy({
+      projectPolicy: gateProjectExecutionWorkspacePolicy(parseProjectExecutionWorkspacePolicy(project.executionWorkspacePolicy), settings.enableIsolatedWorkspaces),
+      defaultIsolatedWorkspacesEnabled: settings.enableIsolatedWorkspacesByDefault,
+      hasProjectWorkspace: project.workspaces.length > 0,
+    });
+    const mode = resolveExecutionWorkspaceMode({ projectPolicy, issueSettings: null, legacyUseProjectWorkspace: null });
+    const config = buildExecutionWorkspaceAdapterConfig({ agentConfig: {}, projectPolicy, issueSettings: null, mode, legacyUseProjectWorkspace: null });
+    expect(mode).toBe("isolated_workspace");
+    expect(resolveEffectiveWorkspaceStrategyType(mode, config)).toBe("git_worktree");
+  });
+
   it("fails before a provider operation when managed storage cannot serve the selected environment", async () => {
     const f = await fixture();
     expect(() => assertProjectStorageEnvironment(f.plugin, { ...f.sandbox, driver: "sandbox" })).toThrow('does not support the environment "Sandbox"');
@@ -191,7 +211,7 @@ describe.skipIf(!support.supported)("project environment compatibility", () => {
     expect((await request(agent).get(`${url}/project-environments`)).status).toBe(200);
     await db.update(environments).set({ driver: "plugin", config: f.computer.config }).where(eq(environments.id, f.ssh.id));
     const changed = await request(board).post(`${url}/projects`).send({ name: "Changed storage", environmentId: f.ssh.id,
-      executionWorkspacePolicy: { enabled: true, storageProviderPluginId: null } });
+      expectedStorageProviderPluginId: null });
     expect(changed.status).toBe(409);
     expect(changed.body.details.code).toBe("project_environment_incompatible");
     const invalid = await request(board).post(`${url}/projects`).send({ name: "Invalid", environmentId: randomUUID() });

@@ -37,7 +37,7 @@ export function NewProjectForm({ companyId, onClose }: { companyId: string; onCl
   const environmentReady = Boolean(environments.isSuccess && options && (!options.error || selectedGroup) && (!options.groups.length || selectedGroup));
 
   const create = useMutation({
-    mutationFn: () => projectsApi.create(companyId, { name: name.trim(), color, status: "planned", repositoryIds: repos.map((repo) => repo.id), ...(selectedGroup ? { environmentId, executionWorkspacePolicy: { enabled: true, storageProviderPluginId: selectedGroup.storageProviderPluginId } } : {}) }),
+    mutationFn: () => projectsApi.create(companyId, { name: name.trim(), color, status: "planned", repositoryIds: repos.map((repo) => repo.id), ...(selectedGroup ? { environmentId, expectedStorageProviderPluginId: selectedGroup.storageProviderPluginId } : {}) }),
     onSuccess: (project) => {
       trackRecentProject(project.id, companyId);
       void client.invalidateQueries({ queryKey: queryKeys.projects.all(companyId) });

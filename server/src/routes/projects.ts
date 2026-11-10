@@ -392,9 +392,10 @@ export function projectRoutes(db: Db) {
       workspace?: Parameters<typeof svc.createWorkspace>[1];
       repositoryIds?: string[];
       environmentId?: string;
+      expectedStorageProviderPluginId?: string | null;
     };
 
-    const { workspace, repositoryIds, repositoryUrls, idempotencyKey, environmentId, ...projectData } = req.body as CreateProjectPayload & { idempotencyKey?: string; repositoryUrls?: string[] };
+    const { workspace, repositoryIds, repositoryUrls, idempotencyKey, environmentId, expectedStorageProviderPluginId, ...projectData } = req.body as CreateProjectPayload & { idempotencyKey?: string; repositoryUrls?: string[] };
     const receiptOnly = req.get("X-Paperclip-Receipt-Only") === "true";
     if (receiptOnly && !idempotencyKey) throw unprocessable("Project receipt recovery requires an idempotency key");
     projectData.privacyOwnerUserId = req.actor.type === "board" ? req.actor.userId ?? null : req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
@@ -423,7 +424,7 @@ export function projectRoutes(db: Db) {
     const urlRepositories = (repositoryUrls ?? []).map(normalizeProjectRepositoryUrl);
     const repositories = repositoryIds ? await selectedRepositories(req, companyId, repositoryIds) : null;
     const actor = getActorInfo(req);
-    const fingerprint = createHash("sha256").update(JSON.stringify({ projectData, workspace, repositoryIds, repositoryUrls, environmentId })).digest("hex");
+    const fingerprint = createHash("sha256").update(JSON.stringify({ projectData, workspace, repositoryIds, repositoryUrls, environmentId, expectedStorageProviderPluginId })).digest("hex");
     const receiptKey = idempotencyKey ? `project:${companyId}:${actor.actorId}:${runContext?.issue.id ?? "board"}:${idempotencyKey}` : null;
     const result = await db.transaction(async (tx) => {
       if (receiptKey) {
@@ -470,6 +471,7 @@ export function projectRoutes(db: Db) {
       const service = projectService(tx as unknown as Db);
       const environment = {
         environmentId,
+        expectedStorageProviderPluginId,
         userId: req.actor.type === "board" ? req.actor.userId : req.actor.onBehalfOfUserId,
         agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       };
