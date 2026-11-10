@@ -573,23 +573,25 @@ type CapturedMigration = Awaited<ReturnType<typeof captureMigration>>;
 function createCohortArchiveCapture() {
   type Options = Parameters<typeof captureRemoteWorkspaceDirectory>[0];
   type Capture = Awaited<ReturnType<typeof captureRemoteWorkspaceDirectory>>;
-  const pending = new Map<string, Promise<{ archivePath: string; captured: Capture }>>(), scratch: string[] = [];
+  const pending = new Map<string, { key: string; capture: Promise<{ archivePath: string; captured: Capture }> }>(), scratch: string[] = [];
   return {
     scratch,
     async capture(input: Options): Promise<Capture> {
       const { archivePath, signal, ...options } = input;
-      const key = canonical({ ...options, cwd: await fs.realpath(input.cwd) });
-      let shared = pending.get(key);
+      const root = await fs.realpath(input.cwd), key = canonical({ ...options, cwd: root });
+      let shared = pending.get(root);
+      if (shared && shared.key !== key) return captureRemoteWorkspaceDirectory(input);
       if (!shared) {
-        shared = (async () => {
+        const capture = (async () => {
           const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-cohort-capture-")));
           scratch.push(directory);
           const sharedPath = path.join(directory, "workspace.pcws");
           return { archivePath: sharedPath, captured: await captureRemoteWorkspaceDirectory({ ...input, archivePath: sharedPath }) };
         })();
-        pending.set(key, shared);
+        shared = { key, capture };
+        pending.set(root, shared);
       }
-      const saved = await shared;
+      const saved = await shared.capture;
       signal?.throwIfAborted();
       await fs.copyFile(saved.archivePath, archivePath, fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL);
       signal?.throwIfAborted();

@@ -555,6 +555,8 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     await expect(run(f, { workspaceIds: ids })).resolves.toMatchObject({ applied: true });
     expect(capture).toHaveBeenCalledTimes(2);
     expect(capture.mock.calls.map(([input]) => input.exclude!.length).sort()).toEqual([0, 2]);
+    expect(capture.mock.calls.filter(([input]) => path.basename(path.dirname(input.archivePath))
+      .startsWith("pc-workspace-cohort-capture-"))).toHaveLength(1);
     for (const id of ids) {
       const [row] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, id));
       const ref = (await getWorkspaceSnapshot(db, { companyId: f.companyId, workspaceId: id,
