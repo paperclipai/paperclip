@@ -138,6 +138,8 @@ global and system Git config.
 Their temporary clone directories use a short name under the canonical staging
 parent. This keeps Windows Git remote helpers below their metadata path limits
 without changing the published workspace or crossing filesystem boundaries.
+Nested-clone migration requires a replacement shared base to persist the same
+long-path setting; otherwise it skips migration and keeps the standalone clone.
 
 ## Dependency Lockfile Policy
 

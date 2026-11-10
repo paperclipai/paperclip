@@ -547,13 +547,19 @@ async function assertReproducibleFetchHead(cwd: string, gitDir: string, signal?:
   }
 }
 
-export async function assertReproducibleLocalGitConfig(cwd: string, signal?: AbortSignal) {
+export async function assertReproducibleLocalGitConfig(cwd: string, signal?: AbortSignal, replacementCwd?: string) {
   const localConfig = await gitCacheCommand(cwd, ["config", "--local", "--name-only", "--list"], signal);
   const keys = localConfig.split("\n").map(key => key.trim()).filter(Boolean);
   if (keys.some(key => !/^(core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|longpaths)|remote\.origin\.(url|fetch)|branch\..+\.(remote|merge))$/.test(key))) throw new Error("unsupported_local_git_config");
-  if (keys.includes("core.longpaths")
-    && (await gitCacheCommand(cwd, ["config", "--local", "--null", "--get-all", "core.longpaths"], signal)) !== "true\0") {
-    throw new Error("unsupported_local_git_config");
+  if (keys.includes("core.longpaths")) {
+    if (await gitCacheCommand(cwd, ["config", "--local", "--null", "--get-all", "core.longpaths"], signal) !== "true\0") {
+      throw new Error("unsupported_local_git_config");
+    }
+    if (replacementCwd) {
+      const replacement = await gitCacheCommand(replacementCwd, ["config", "--local", "--null", "--get-all", "core.longpaths"], signal)
+        .catch((error: { code?: number }) => { if (error.code === 1) return ""; throw error; });
+      if (replacement !== "true\0") throw new Error("unsupported_base_git_config");
+    }
   }
 }
 

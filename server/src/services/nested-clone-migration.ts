@@ -209,7 +209,7 @@ async function inspectStandaloneClone(checkout: string, repoUrl: string, base: s
     throw new Error("unproven_managed_checkout");
   }
   if (await git(real, ["config", "--local", "--null", "--get-all", "remote.origin.url"], { signal }).catch(() => "") !== `${repoUrl}\0`) throw new Error("foreign_origin");
-  await assertReproducibleLocalGitConfig(real, signal);
+  await assertReproducibleLocalGitConfig(real, signal, base);
   if ((await git(real, ["worktree", "list", "--porcelain"], { signal })).split("\n").filter(line => line.startsWith("worktree ")).length !== 1) {
     throw new Error("nested_clone_has_worktrees");
   }
@@ -479,6 +479,7 @@ export async function migrateNestedRepositoryClone(db: Db, snapshot: Workspace, 
           }
           await hooks?.beforeWorktreeAdd?.({ from: inspected.checkout, to: paths.worktree });
           await assertSafeBaseConfig(base, signal);
+          await assertReproducibleLocalGitConfig(inspected.checkout, signal, base);
           await git(base, ["worktree", "add", "--quiet", ...(result.branchName ? [paths.worktree, result.branchName] : ["--detach", paths.worktree, inspected.head])],
             { signal, timeout: FETCH_TIMEOUT_MS });
           const staged = await canonicalPath(paths.worktree);
@@ -510,6 +511,7 @@ export async function migrateNestedRepositoryClone(db: Db, snapshot: Workspace, 
           const [current] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, row!.id));
           if (!current || current.updatedAt.getTime() !== row!.updatedAt.getTime() || current.cwd !== row!.cwd) throw new Error("workspace_changed");
           if (!await workspaceMoveEligible(tx, current)) throw new Error("live_or_unresolved_consumer");
+          await assertReproducibleLocalGitConfig(inspected.checkout, signal, base);
           pending.phase = "swap";
           await writePending(db, row!.id, name, pending);
           await fs.rename(inspected.checkout, paths.aside);

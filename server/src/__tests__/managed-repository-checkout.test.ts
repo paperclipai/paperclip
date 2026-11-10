@@ -49,6 +49,18 @@ describe("atomic managed repository publication", () => {
     await execFile("git", ["-C", target, "worktree", "add", "-b", "linked", linked]);
     await expect(assertReproducibleGitFiles(linked)).resolves.toEqual([]);
   });
+  it.each(["missing", "false", "duplicate", "true"])("requires a replacement base to preserve long-path support: %s", async value => {
+    const { source, target } = await fixture();
+    await materializeManagedProjectWorkspace(target, { repoUrl: source });
+    if (process.platform === "win32") await execFile("git", ["-C", target, "config", "--unset-all", "core.symlinks"]);
+    await execFile("git", ["-C", target, "config", "core.longpaths", "true"]);
+    if (value !== "missing") await execFile("git", ["-C", source, "config", "core.longpaths", value === "false" ? "false" : "true"]);
+    if (value === "duplicate") await execFile("git", ["-C", source, "config", "--add", "core.longpaths", "true"]);
+    const check = assertReproducibleLocalGitConfig(target, undefined, source);
+    if (value === "true") await expect(check).resolves.toBeUndefined();
+    else await expect(check).rejects.toThrow("unsupported_base_git_config");
+    expect(await readFile(path.join(target, "source.txt"), "utf8")).toBe("initial\n");
+  });
   it.each(["false", "duplicate", "unsupported"])("rejects non-reproducible local config: %s", async kind => {
     const { source } = await fixture();
     if (process.platform === "win32") await execFile("git", ["-C", source, "config", "--unset-all", "core.symlinks"]);
