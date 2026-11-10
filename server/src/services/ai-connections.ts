@@ -267,14 +267,10 @@ export function aiConnectionService(db: Db) {
       ? await credential(row, 0, { actorType: "user", actorId: userId, ...audit, responsibleUserId: userId }) : "";
     return { ...identity, ...await probeAiAccountIdentity(metadata, value) };
   }
-  async function select(input: {
+  async function authorize(input: {
     companyId: string;
     userId: string | null;
     agentId: string;
-    adapterType: string;
-    model?: unknown;
-    runnerProvider?: unknown;
-    acpxAgent?: unknown;
     allowUninstalledPersonal?: boolean;
     allowUninstalledShared?: boolean;
     allowLegacyValidation?: boolean;
@@ -285,16 +281,6 @@ export function aiConnectionService(db: Db) {
     // the binding first, but an unknown mode must never skip those checks.
     if (binding.mode !== "responsible_user" && binding.mode !== "shared" && binding.mode !== "delegated")
       throw aiConnectionConfigurationFailure("ai_connection_incompatible", "Select a supported AI connection mode");
-    if (
-      !isAiConnectionCompatible(
-        binding,
-        input.adapterType,
-        input.model,
-        input.runnerProvider,
-        input.acpxAgent,
-      )
-    )
-      throw aiConnectionConfigurationFailure("ai_connection_incompatible", "Select an AI connection compatible with this harness and model");
     if (binding.mode === "responsible_user" && !userId)
       throw aiConnectionConfigurationFailure("ai_connection_responsible_user_missing", "This run needs a responsible user to select an AI connection");
     if (userId && !(await membership(companyId, userId)))
@@ -334,8 +320,7 @@ export function aiConnectionService(db: Db) {
     if (
       !metadata.success ||
       metadata.data.provider !== binding.provider ||
-      (binding.mode !== "responsible_user" && metadata.data.method !== binding.method) ||
-      !isAiConnectionCompatible(metadata.data, input.adapterType, input.model, input.runnerProvider, input.acpxAgent)
+      (binding.mode !== "responsible_user" && metadata.data.method !== binding.method)
     )
       throw aiConnectionConfigurationFailure("ai_connection_incompatible", "The selected AI connection is incompatible");
     if (aiSubscriptionNeedsIsolatedLogin(connection.config))
@@ -421,6 +406,20 @@ export function aiConnectionService(db: Db) {
         responsibleUserId: userId,
       } satisfies AiConnectionAttribution,
     };
+  }
+  async function select(input: Parameters<typeof authorize>[0] & {
+    adapterType: string;
+    model?: unknown;
+    runnerProvider?: unknown;
+    acpxAgent?: unknown;
+  }) {
+    if (!isAiConnectionCompatible(input.binding, input.adapterType, input.model, input.runnerProvider, input.acpxAgent))
+      throw aiConnectionConfigurationFailure("ai_connection_incompatible", "Select an AI connection compatible with this harness and model");
+    const row = await authorize(input);
+    const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
+    if (!isAiConnectionCompatible(metadata, input.adapterType, input.model, input.runnerProvider, input.acpxAgent))
+      throw aiConnectionConfigurationFailure("ai_connection_incompatible", "The selected AI connection is incompatible");
+    return row;
   }
   /** Internal decision use has its own capability check, never a pretend CLI harness. */
   async function selectDecision(input: {
@@ -1269,5 +1268,5 @@ export function aiConnectionService(db: Db) {
       return [{ ...row, summary }];
     });
   }
-  return { list, selectDecision, selectFastResponse, selectImageGeneration, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, accountIdentity, save, setDefault, membership, markAuthenticationFailed };
+  return { list, selectDecision, selectFastResponse, selectImageGeneration, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, authorize, select, credential, runtimeCredential, probeUsage, accountIdentity, save, setDefault, membership, markAuthenticationFailed };
 }

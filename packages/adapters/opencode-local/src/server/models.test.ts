@@ -4,6 +4,7 @@ import {
   discoverOpenCodeModels,
   ensureOpenCodeModelConfiguredAndAvailable,
   listOpenCodeModels,
+  parseOpenCodeModelsOutput,
   requireOpenCodeModelId,
   resetOpenCodeModelsCacheForTests,
 } from "./models.js";
@@ -15,6 +16,16 @@ describe("openCode models", () => {
     resetOpenCodeModelsCacheForTests();
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it("preserves complete model IDs in the line-oriented CLI catalog", () => {
+    expect(parseOpenCodeModelsOutput(
+      "Models cache refreshed\r\npaperclip/custom model\r\npaperclip/custom  model\r\nopenrouter/vendor/model\r\npaperclip/custom model\r\n/not-valid\r\nprovider/\r\n",
+    )).toEqual([
+      { id: "paperclip/custom model", label: "paperclip/custom model" },
+      { id: "paperclip/custom  model", label: "paperclip/custom  model" },
+      { id: "openrouter/vendor/model", label: "openrouter/vendor/model" },
+    ]);
   });
 
   it("returns an empty list when discovery command is unavailable", async () => {

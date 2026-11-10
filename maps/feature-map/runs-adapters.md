@@ -121,6 +121,28 @@ Cloud onboarding must not offer shell commands the customer cannot run.
 
 Manual: Select the intended adapter and account, refresh model choices, and run its environment test. Save, reload, then execute a small task. Repeat with a deliberately unavailable account and verify the failure remains visible.
 
+For gateway/local connection pools, model choices follow the requesting harness
+and the account's routing protocol, not its provider label alone. Verify OpenCode's
+`paperclip/` model namespace and Hermes's raw model IDs, including literal
+`paperclip/` aliases. Pool defaults remain raw: OpenCode must distinguish `custom/a`
+from the raw alias `paperclip/custom/a` by projecting the latter as
+`paperclip/paperclip/custom/a`; Hermes preserves both raw IDs. Empty chat inventories
+require explicit model entry before saving or enabling a pool. Verify the selected
+execution target supports the member's managed credentials before allocation,
+including mixed-pool lifecycle verification. Global environment failures must retain
+their actionable diagnosis. Legacy OpenCode discovery preserves complete spaced
+model IDs on both local and remote targets.
+Model inventories are hints: retain saved manual member defaults absent from a nonempty inventory;
+task overrides must exactly equal the member's projected default or the projected ID of
+one of its own hints, otherwise the default is kept with a fallback note, even when hints
+are empty. Pins retain their producing harness: OpenCode/Hermes switches fail closed
+even for colliding names; native/legacy OpenCode replay preserves the same identity.
+Older chat pins without harness evidence require another AI connection.
+Saving or listing models does not prove provider
+availability. [Pool routing regressions](../../server/src/__tests__/ai-connection-router.test.ts)
+and [catalog/runtime regressions](../../server/src/__tests__/agent-hire-ai-connections.test.ts)
+cover fixture behavior, not live-provider acceptance.
+
 For Legacy Codex, assign a service secret such as `SLACK_BOT_TOKEN` through agent
 configuration and run a task that checks its presence without printing its value.
 Check both ACP and CLI execution. Remove the binding and repeat on the next run.

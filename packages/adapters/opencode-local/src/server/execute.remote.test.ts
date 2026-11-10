@@ -305,6 +305,43 @@ describe("opencode remote execution", () => {
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ["paperclip/custom model", true],
+    ["paperclip/custom", false],
+  ])("checks the remote catalog before running %s (available=%s)", async (model, available) => {
+    runChildProcess.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "paperclip/custom model\nopenai/gpt-5\n",
+      stderr: "",
+      pid: 456,
+      startedAt: new Date().toISOString(),
+    }));
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-remote-model-space-"));
+    cleanupDirs.push(workspace);
+    const execution = execute({
+      runId: "remote-catalog-run",
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "opencode", cwd: workspace, model },
+      context: {},
+      executionTransport: { remoteExecution: { host: "127.0.0.1", port: 2222, username: "fixture", remoteCwd: "/remote/workspace", remoteWorkspacePath: "/remote/workspace" } },
+      onLog: async () => {},
+    });
+    if (available) {
+      expect((await execution).exitCode).toBe(0);
+      expect(runChildProcess).toHaveBeenCalledTimes(2);
+      expect(runChildProcess.mock.calls[0]?.[2]).toEqual(["models"]);
+      const args = runChildProcess.mock.calls[1]![2];
+      expect(args[args.indexOf("--model") + 1]).toBe(model);
+    } else {
+      await expect(execution).rejects.toThrow("Configured OpenCode model is unavailable on the remote execution target: paperclip/custom.");
+      expect(runChildProcess).toHaveBeenCalledTimes(1);
+      expect(runChildProcess.mock.calls[0]?.[2]).toEqual(["models"]);
+    }
+  });
+
   it("fails before the remote run when the configured model is unavailable on the SSH target", async () => {
     runChildProcess.mockImplementationOnce(async () => ({
       exitCode: 0,
