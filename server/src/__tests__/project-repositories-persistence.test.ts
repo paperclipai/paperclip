@@ -106,24 +106,21 @@ const support = await getEmbeddedPostgresTestSupport();
       name: `Catalog project ${Date.now()}`, repositoryUrls: ["https://github.com/org/selected.git"],
     });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
-    expect(catalog).toHaveBeenCalledWith(companyId, "alice", true);
+    expect(catalog).not.toHaveBeenCalled();
     const project = await projectService(db).getById(created.body.id);
     expect(project?.workspaces).toHaveLength(1);
-    expect(project?.workspaces[0]).toMatchObject({ repoUrl: "https://github.com/org/selected", metadata: {
-      repositoryProvider: "github", repositoryId: "201", githubRepositoryId: "201", repositoryPrivate: true,
-    } });
+    expect(project?.workspaces[0]).toMatchObject({ repoUrl: "https://github.com/org/selected" });
 
     catalog.mockResolvedValueOnce({ repositories: [], connections: [], connectionCount: 0, failedConnectionCount: 0 });
     const missingName = `Unconnected project ${Date.now()}`;
     const denied = await request(app).post(`/api/companies/${companyId}/projects`).send({
       name: missingName, repositoryUrls: ["https://github.com/org/missing"],
     });
-    expect(denied.status).toBe(422);
-    expect(denied.body.error).toMatch(/active GitHub connection/i);
-    expect(await db.select().from(projectTable).where(eq(projectTable.name, missingName))).toEqual([]);
+    expect(denied.status).toBe(201);
+    expect(await db.select().from(projectTable).where(eq(projectTable.name, missingName))).toHaveLength(1);
   });
 
-  it("requires a workspace GitHub URL to resolve to exactly one active catalog repository", async () => {
+  it("retains legacy support for a workspace GitHub URL without a catalog connection", async () => {
     const catalog = vi.fn().mockResolvedValue({ repositories: [
       { id: "202", provider: "github", fullName: "org/workspace", url: "https://github.com/org/workspace", private: false, connections: ["github-connection"] },
     ], connections: [{ id: "github-connection", name: "GitHub" }], connectionCount: 1, failedConnectionCount: 0 });
@@ -139,14 +136,14 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     expect(created.body.workspaces?.[0] ?? (await projectService(db).getById(created.body.id))?.workspaces[0]).toMatchObject({
-      metadata: { repositoryProvider: "github", repositoryId: "202", githubRepositoryId: "202" },
+      repoUrl: "https://github.com/org/workspace.git",
     });
 
     catalog.mockResolvedValueOnce({ repositories: [], connections: [], connectionCount: 0, failedConnectionCount: 0 });
     const denied = await request(app).post(`/api/companies/${companyId}/projects`).send({
       name: `Unconnected workspace ${Date.now()}`, workspace: { name: "Source", repoUrl: "https://github.com/org/unknown" },
     });
-    expect(denied.status).toBe(422);
+    expect(denied.status).toBe(201);
   });
 
   it("authorizes Azure DevOps workspace URLs from the active catalog and rejects missing entries", async () => {

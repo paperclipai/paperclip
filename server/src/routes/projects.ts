@@ -88,7 +88,7 @@ export function projectRoutes(db: Db) {
     if (!url && suppliedMetadata && ["repositoryProvider", "repositoryId", "repositoryUrl", "repositoryPrivate",
       "githubRepositoryId", "githubRepositoryUrl", "githubRepositoryPrivate"].some(key => key in suppliedMetadata))
       throw unprocessable("Repository identity must be selected through an active provider connection.");
-    if (!url || (!isGitHubProjectRemote(url) && !isAzureDevOpsRemote(url))) return workspace;
+    if (!url || !isAzureDevOpsRemote(url)) return workspace;
     const github = isGitHubProjectRemote(url);
     const canonical = github ? canonicalProjectGitHubRepositories([url])[0] : url.replace(/\/$/, "");
     if (!canonical) throw unprocessable("Select a repository from an active connection.");
@@ -456,16 +456,7 @@ export function projectRoutes(db: Db) {
     }
     if (workspace && (repositoryIds || repositoryUrls)) throw unprocessable("Use either workspace or repositoryIds/repositoryUrls when creating a project");
     const urlRepositories = (repositoryUrls ?? []).map(normalizeProjectRepositoryUrl);
-    const repositories = repositoryIds || urlRepositories.length ? await selectedRepositories(req, companyId, repositoryIds ?? []) : null;
-    if (urlRepositories.length) {
-      const viewer = await repositoryViewer(req);
-      const available = await toolAccessService(db).listProjectRepositories(companyId, viewer.userId, viewer.localTrusted);
-      for (const repo of urlRepositories) {
-        const matches = available.repositories.filter(candidate => candidate.url.toLowerCase() === repo.url.toLowerCase());
-        if (matches.length !== 1) throw unprocessable("Repository access requires an active GitHub connection. Reconnect and select the repository.");
-        if (!repositories!.some(candidate => candidate.id === matches[0]!.id)) repositories!.push(matches[0]!);
-      }
-    }
+    const repositories = repositoryIds ? await selectedRepositories(req, companyId, repositoryIds) : null;
     const authorizedWorkspace = workspace ? await authorizeWorkspaceRepository(req, companyId, workspace) : null;
     const actor = getActorInfo(req);
     const fingerprint = createHash("sha256").update(JSON.stringify({ projectData, workspace, repositoryIds, repositoryUrls })).digest("hex");
@@ -515,6 +506,14 @@ export function projectRoutes(db: Db) {
       const service = projectService(tx as unknown as Db);
       const project = repositories ? await service.createWithRepositories(companyId, projectData, repositories) : await service.create(companyId, projectData);
       if (project.visibility === "private") await addActorAsPrivateProjectPrincipal(req, project, tx as unknown as Db);
+      const attachedUrls = new Set((repositories ?? []).map(repo => repo.url.toLowerCase()));
+      const registeredUrls: typeof urlRepositories = [];
+      for (const repo of urlRepositories) {
+        if (attachedUrls.has(repo.url.toLowerCase())) continue;
+        attachedUrls.add(repo.url.toLowerCase());
+        await service.createWorkspace(project.id, { name: repo.fullName, repoUrl: repo.url });
+        registeredUrls.push(repo);
+      }
       const createdWorkspace = authorizedWorkspace ? await service.createWorkspace(project.id, authorizedWorkspace) : null;
       if (workspace && !createdWorkspace) throw unprocessable("Invalid project workspace payload");
       const hydrated = await service.getById(project.id);
@@ -525,7 +524,7 @@ export function projectRoutes(db: Db) {
         details: {
           name: project.name, description: project.description, icon: project.icon,
           sourceIssueId: runContext?.issue.id ?? null,
-          repositories: [...(repositories ?? []).map(repo => ({ id: repo.id, name: repo.fullName, url: repo.url })),
+          repositories: [...(repositories ?? []).map(repo => ({ id: repo.id, name: repo.fullName, url: repo.url })), ...registeredUrls.map(repo => ({ id: repo.url, name: repo.fullName, url: repo.url })),
             ...(createdWorkspace?.repoUrl ? [{ id: createdWorkspace.id, name: createdWorkspace.name, url: createdWorkspace.repoUrl }] : []),
           ],
           workspaceId: createdWorkspace?.id ?? null,
@@ -763,8 +762,7 @@ export function projectRoutes(db: Db) {
         res.status(404).json({ error: "Project workspace not found" });
         return;
       }
-      const mergeRepositoryMetadata = typeof req.body.repoUrl === "string" &&
-        (isGitHubProjectRemote(req.body.repoUrl) || isAzureDevOpsRemote(req.body.repoUrl));
+      const mergeRepositoryMetadata = typeof req.body.repoUrl === "string" && isAzureDevOpsRemote(req.body.repoUrl);
       const workspace = await svc.updateWorkspace(id, workspaceId, await authorizeWorkspaceRepository(req, existing.companyId, req.body), { mergeRepositoryMetadata });
       if (!workspace) {
         res.status(422).json({ error: "Invalid project workspace payload" });
