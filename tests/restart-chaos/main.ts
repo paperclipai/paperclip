@@ -17,6 +17,7 @@ import { BoardUi } from "./board-ui.js";
 import { DEFAULT_MINIO_BINARY, MINIO_RELEASE, minioBinary, objectStoreServerEnvironment, startMinio, type ObjectStore } from "./object-store.js";
 import { StorageChaos, planStorageFaults, replayStorageWindows, type StorageFaultReceipt } from "./storage-chaos.js";
 import { startStorageFaultProxy } from "./storage-proxy.js";
+import { StorageAuditor, auditsStorage, storageAuditMarkdown } from "./storage-audit.js";
 import { exposedAfterLaunch, StorageTrigger, storageTriggerMarkdown, storageTriggerShortfall } from "./storage-trigger.js";
 import { needsCredentialRotation, startCredentialRotation, type CredentialRotation } from "./storage-credentials.js";
 import { describeProviderFault, installProviderFaultSeam, resolveRealCodex, withProviderFaultCheck, type ProviderFaultSeam } from "./provider-faults.js";
@@ -254,6 +255,7 @@ async function main(): Promise<number> {
   let storageTrigger: StorageTrigger | null = null;
   let storageProxy: Awaited<ReturnType<typeof startStorageFaultProxy>> | null = null;
   let credentialRotation: CredentialRotation | null = null;
+  let storageAuditor: StorageAuditor | null = null;
   let providerFaults: ProviderFaultSeam | null = null;
   let acpxSidecarSeam: AcpxSidecarSeam | null = null;
   let speedSection: string | null = null;
@@ -288,6 +290,7 @@ async function main(): Promise<number> {
       if (!binary) throw new Error(`--storage s3 needs MinIO ${MINIO_RELEASE} at ${DEFAULT_MINIO_BINARY} or RESTART_CHAOS_MINIO_BIN`);
       objectStore = await startMinio({ binary, root: supervisor.paths.temporaryRoot });
       storageProxy = await startStorageFaultProxy(objectStore.endpoint);
+      if (auditsStorage(plan.options)) storageAuditor = new StorageAuditor(objectStore, `chaos/${plan.waveId}/`);
       Object.assign(serverEnvironment, objectStoreServerEnvironment(objectStore, storageProxy.endpoint, `chaos/${plan.waveId}/`));
       if (needsCredentialRotation(plan.options)) {
         const rotating = await startCredentialRotation({ store: objectStore, binary, root: supervisor.paths.temporaryRoot, record: (kind, data) => timeline.add(kind, data) });
@@ -623,6 +626,11 @@ async function main(): Promise<number> {
         rules: Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.verdict])), T: grade.T.verdict,
         universal: Object.fromEntries(Object.entries(grade.universal ?? {}).map(([id, rule]) => [id, `${rule.verdict}${rule.enforced ? "" : " (warning)"}`])) });
     }
+    if (storageAuditor) {
+      storageChaos?.stop();
+      await credentialRotation?.settled();
+      await storageAuditor.checkSnapshots(evidenceDb, lab.companyId);
+    }
     await evidenceDb.$client.end({ timeout: 5 }).catch(() => undefined);
     await writeFile(path.join(waveDir, "faults.json"), `${JSON.stringify(faults, null, 2)}\n`, { mode: 0o600 });
     const speed = await (async () => {
@@ -722,6 +730,13 @@ async function main(): Promise<number> {
       if (storageChaos) await writeFile(path.join(waveDir, "storage-faults.json"), `${JSON.stringify(storageChaos.receipts, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
       await writeFile(path.join(waveDir, "storage-proxy.json"), `${JSON.stringify(storageProxy.counts(), null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
       await storageProxy.close().catch(() => undefined);
+    }
+    if (storageAuditor) {
+      const failures = await storageAuditor.finish(waveDir, { kinds: storageChaos?.windows.map(window => window.kind) ?? [],
+        injectedBy: storageProxy?.counts().injectedBy }).catch(error => [`storage audit failed: ${String(error)}`]);
+      timeline.add("storage_audit", { ...storageAuditor.audit, failures });
+      if (failures.length) anyFailure = true;
+      speedSection = `${speedSection ?? ""}\n${storageAuditMarkdown(storageAuditor.audit)}`;
     }
     await objectStore?.stop().catch(error => timeline.add("object_store_stop_failed", { error: String(error) }));
     await acpxSidecarSeam?.remove().catch(error => timeline.add("acpx_stand_in_cleanup_failed", { error: String(error) }));

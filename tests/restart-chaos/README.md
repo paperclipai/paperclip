@@ -362,8 +362,17 @@ method and status are written to `storage-proxy.json`.
 | ST1 | outage: every request answers 503 `ServiceUnavailable` |
 | ST2 | slow store: 1–10 s added latency with jitter, and a 2–16 MiB/s bandwidth cap shared by every request in the window (each direction) |
 | ST3 | 30% of requests answer 503, half of them `SlowDown` |
+| ST4 | partial multipart: for workspace snapshot uploads, a seeded subset of parts 1–4 fails with 500/503, a connection reset, or a reset after 1–4 MiB of the part body; sometimes `CompleteMultipartUpload` also fails (500 or reset). Each fault hits 1–3 times or for the whole window |
 | ST5 | credentials rejected: every request answers 403 `ExpiredToken`, `InvalidAccessKeyId` or `SignatureDoesNotMatch` (seeded per window) |
 | ST5R | real key rotation: MinIO restarts with a new root key (old key revoked), and the server's credential source keeps serving the old key until the window ends |
+| ST7 | read-after-write lag: a `GET` or `HEAD` of an object answers 404 `NoSuchKey` for 5–30 s (seeded) after its `PUT` or multipart completion succeeded |
+
+With ST4 or ST7 in the wave, the harness audits the store when the wave ends (`storage-audit.json` and a
+`Storage audit` section in `SUMMARY.md`). It reads every committed workspace snapshot back from MinIO and checks
+its size and SHA-256 against the snapshot row, and after the server stops it lists incomplete multipart uploads
+under the wave's prefix. An orphaned upload, a committed snapshot that does not read back, a planned ST4 or ST7 fault
+that never changed a request, or a skipped snapshot check fails the wave. ST4 truncation forwards the first bytes
+of the part to MinIO before it cuts both connections.
 
 With ST5R the server gets no static key: `AWS_PROFILE` names a profile in a wave-owned `AWS_CONFIG_FILE`
 whose `credential_process` prints the key currently in `aws-credentials/current.json` under the instance
