@@ -1,6 +1,6 @@
 {
   "inputs": {
-    "package.json": "e670c9718e4b0039768aad204085b1063508997a",
+    "package.json": "88c3caa4d83b43e4c3aa473d8a64da053d17662c",
     "packages/plugins/sdk/package.json": "b7a4936e2803fd0d3b32dd7f17fc1ea86609ead0",
     "packages/plugins/sdk/src/bundlers.ts": "883bf3d9f2bd42877cfc0c3707cd882a6f6248d0",
     "packages/plugins/sdk/src/define-plugin.ts": "eb6530c006722d22f55355ec810745f1524b874a",
