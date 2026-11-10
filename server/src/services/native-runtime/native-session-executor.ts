@@ -2232,7 +2232,7 @@ export async function unidentifiedLocalRunnerProvenAbsent(input: {
 function runnerStateUnchangedSince(root: string, requestedAt: number | null | undefined): boolean {
   if (typeof requestedAt !== "number" || !Number.isFinite(requestedAt)) return false;
   const stateFile = resolve(root, "runner", "runner-state.json");
-  const lineage = resolve(root, "process-lineage");
+  const lineage = resolve(root, "runner", "process-lineage");
   const paths = [stateFile, ...existsSync(lineage) ? readdirSync(lineage).map(name => resolve(lineage, name)) : []];
   return paths.every(path => {
     const stats = lstatSync(path, { throwIfNoEntry: false });

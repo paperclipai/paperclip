@@ -1312,15 +1312,15 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         })).digest("hex"));
         await mkdir(join(root, "control-plane"), { recursive: true });
         await mkdir(join(root, "runner"), { recursive: true });
-        await mkdir(join(root, "process-lineage"), { recursive: true });
+        await mkdir(join(root, "runner/process-lineage"), { recursive: true });
         await writeFile(join(root, "control-plane/control-plane-state.json"), JSON.stringify({
           schema: "paperclip.runner.durable.control-plane-state.v1", identity: { runId: f.sourceRunId } }));
         await writeFile(join(root, "runner/runner-state.json"), JSON.stringify({ schema: "paperclip.runner.durable.state.v1" }));
-        await writeFile(join(root, `process-lineage/writer-${deadPid}.json`), JSON.stringify({ schema: "paperclip.runner.process-lineage-writer.v1" }));
+        await writeFile(join(root, `runner/process-lineage/writer-${deadPid}.json`), JSON.stringify({ schema: "paperclip.runner.process-lineage-writer.v1" }));
         const requestedAt = new Date(Date.now() + 60_000);
         const earlier = new Date(requestedAt.getTime() - 30_000), later = new Date(requestedAt.getTime() + 30_000);
         await utimes(join(root, "runner/runner-state.json"), earlier, kind === "state_after_request" ? later : earlier);
-        await utimes(join(root, `process-lineage/writer-${deadPid}.json`), earlier, kind === "lineage_after_request" ? later : earlier);
+        await utimes(join(root, `runner/process-lineage/writer-${deadPid}.json`), earlier, kind === "lineage_after_request" ? later : earlier);
         await event(PROCESS_START_REQUESTED, { hostname: host, providerAttempt: 1,
           ...(kind === "previous_release" ? {} : { requestedAt: requestedAt.toISOString() }) });
         if (kind === "live_runner") {
