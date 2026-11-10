@@ -31,6 +31,8 @@ import { createDb } from "../../packages/db/src/index.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
 import { collectWaveSpeed, speedMarkdown } from "./wave-speed.js";
 import { TaskObserver, childSpeedTasksInTurn } from "./observer.js";
+import { closeJourneyApps } from "./journey-driver.js";
+import { matrixMayLaunch, planMatrixWave } from "./journey-matrix.js";
 import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurrentBuild, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
@@ -76,7 +78,8 @@ async function loadPlan(): Promise<{ plan: WavePlan; keep: boolean }> {
     }
     return { plan, keep: command.keep };
   }
-  return { plan: planWave(waveIdFor(command.options.seed), command.options), keep: command.keep };
+  const waveId = waveIdFor(command.options.seed);
+  return { plan: command.options.matrix ? planMatrixWave(waveId, command.options) : planWave(waveId, command.options), keep: command.keep };
 }
 
 function run(command: string, args: string[], cwd: string, label: string) {
@@ -133,7 +136,8 @@ function preflight(plan: WavePlan) {
     ?? path.join(repositoryRoot, "packages/paperclip-runner/runner/target/debug/paperclip-runnerd");
   if (!existsSync(runner)) throw new Error(`Runner binary missing at ${runner}. Run: pnpm --filter @paperclipai/paperclip-runner run build:runner-binaries`);
   // K14: the older checkout must be prepared (installed and built) before the wave, like this one.
-  const upgradeFrom = plan.options.upgradeFrom;
+  // `--server-from` runs the whole wave on another prepared checkout, prepared like an upgrade's older build.
+  const upgradeFrom = plan.options.upgradeFrom ?? plan.options.serverFrom;
   // One runner binary for both builds would not test the older runner's saved state.
   if (upgradeFrom && process.env.PAPERCLIP_RUNNER_BINARY) {
     throw new Error("--upgrade-from runs each build's own runner; unset PAPERCLIP_RUNNER_BINARY");
@@ -188,7 +192,7 @@ async function main(): Promise<number> {
   const batchSize = crashPoints.length ? Math.max(1, Math.floor(plan.tasks.length / crashPoints.length)) : 0;
   if (crashPoint && plan.tasks.length !== batchSize * crashPoints.length) throw new Error(`--tasks must be a multiple of the ${crashPoints.length} crash point(s)`);
   const supervisor = await ChaosSupervisor.create({ repositoryRoot, waveDir, timeline,
-    ...(plan.options.upgradeFrom ? { upgradeFrom: plan.options.upgradeFrom } : {}) });
+    ...(plan.options.upgradeFrom ?? plan.options.serverFrom ? { upgradeFrom: plan.options.upgradeFrom ?? plan.options.serverFrom } : {}) });
   // Crash-point suite: one booted server, one point at a time. Each point gets
   // its own batch of tasks; the point is armed once the batch launched and the
   // server kills itself at its nth hit (restarted like K1). Invariants are
@@ -429,7 +433,9 @@ async function main(): Promise<number> {
       }
       // Recheck the storm clock per launch: ensureServing or a slow launch can cross the storm's end.
       while (!crashPoint && active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress
-        && (!storm || storm.mayLaunch(Date.now()))) {
+        && (!storm || storm.mayLaunch(Date.now()))
+        // `--matrix`: no-fault baselines never share the server with a fault cell.
+        && (!plan.options.matrix || matrixMayLaunch(pending[0]!.plan, active.filter(observer => !observer.done).map(observer => observer.plan)))) {
         const next = pending.shift()!;
         launched.push(next);
         await next.launch();
@@ -601,6 +607,7 @@ async function main(): Promise<number> {
     // Best effort for an interrupted or failed wave; the server may already be down.
     if (supervisor.serverReady) await recordWaveSpend().catch(() => undefined);
     await board?.close().catch(() => undefined);
+    await closeJourneyApps();
     // A failure here (for example writing the report) must not skip stopping the controller and Postgres.
     try { if (sweeper) try {
       const owned = sweeper as DaytonaWaveSweeper;
