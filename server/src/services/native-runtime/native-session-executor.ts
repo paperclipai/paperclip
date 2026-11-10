@@ -2194,7 +2194,9 @@ function runnerdStateBase(): string {
  * run's runner arguments and no saved runner state belongs to the run: a
  * provider starts only after its runner connects and writes that state.
  */
-export async function unidentifiedLocalRunnerProvenAbsent(input: { runId: string; execution: unknown }): Promise<boolean> {
+export async function unidentifiedLocalRunnerProvenAbsent(input: {
+  runId: string; execution: unknown; earlierRunnersStoppedBefore?: number | null;
+}): Promise<boolean> {
   let execution: NativeExecutionInput;
   try {
     execution = parseNativeExecutionInput(input.execution);
@@ -2218,12 +2220,24 @@ export async function unidentifiedLocalRunnerProvenAbsent(input: { runId: string
   for (const candidate of candidates) {
     if (!existsSync(resolve(candidate, "control-plane", "control-plane-state.json"))) continue;
     try {
-      if (record(readRunnerdControlPlaneState(candidate).identity).runId === input.runId) return false;
+      if (record(readRunnerdControlPlaneState(candidate).identity).runId === input.runId &&
+          !runnerStateUnchangedSince(candidate, input.earlierRunnersStoppedBefore)) return false;
     } catch {
       return false;
     }
   }
   return true;
+}
+
+function runnerStateUnchangedSince(root: string, requestedAt: number | null | undefined): boolean {
+  if (typeof requestedAt !== "number" || !Number.isFinite(requestedAt)) return false;
+  const stateFile = resolve(root, "runner", "runner-state.json");
+  const lineage = resolve(root, "process-lineage");
+  const paths = [stateFile, ...existsSync(lineage) ? readdirSync(lineage).map(name => resolve(lineage, name)) : []];
+  return paths.every(path => {
+    const stats = lstatSync(path, { throwIfNoEntry: false });
+    return path === stateFile && !stats ? true : Boolean(stats?.isFile() && stats.mtimeMs < requestedAt);
+  });
 }
 
 /** `paperclip-runnerd` is always launched with `--run-id <runId>`. A failed or
@@ -11242,7 +11256,7 @@ async function executePaperclipNativeSessionAttempt(
                 // Binds a later identity-less stop proof to the host that launched.
                 // The provider attempt opens that attempt's outcome window for
                 // the work-based budget (provider-attempt-outcome.ts).
-                payload: { hostname: hostname(), providerAttempt: attempt },
+                payload: { hostname: hostname(), providerAttempt: attempt, requestedAt: new Date().toISOString() },
               });
               crashPoint("native.process_start.after_requested_before_spawn");
             },
