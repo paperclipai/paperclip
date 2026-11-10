@@ -588,6 +588,16 @@ foreign inodes fail before any signal. Native Linux calibration exercises both
 descriptor launches with synthetic owned processes and no provider credentials;
 it does not qualify paid Pi behavior or change previous failed grades.
 
+These fixtures run without `paperclip-runnerd --trusted-launch-root`, so the
+Runner still hands providers a sealed memfd Node and the memfd assertions above
+are unchanged. Under a trusted launch root (the agent computer's read-only Runner
+ROM) the Runner instead holds the ROM's own Node file. Kimi admission then takes
+its existing linked-descriptor branch: one link, the same inode as the parent's
+`/proc/<pid>/exe`, and the complete bytes hashed against `nodeSha256`. It never
+accepts that file as a memfd. Pi admission binds to the native distribution
+snapshot's Node, which the ACPX closure copies whether or not a trusted root is
+set.
+
 The private resource-admission marker and raw cleanup results control recovery-state retention independently of evidence packaging. A worker crash after admission keeps the owner-only recovery database; a confirmed pre-allocation bootstrap failure does not. Neither the marker nor the database enters published evidence.
 
 ## Task workspace fixture source

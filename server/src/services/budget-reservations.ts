@@ -78,7 +78,15 @@ export async function recheckRunBudgetReservationInTransaction(
 
 /** Reserve before dispatch, under the same company lock as charges and policy
  * changes. Estimates constrain admission; they cannot cap a provider's bill.
- * A reservation survives timeouts and restarts until accounting proves closure. */
+ * A reservation survives timeouts and restarts until accounting proves closure.
+ *
+ * READ COMMITTED: every mutable read follows the shared admission fences, the
+ * agent share lock and the run-row lock, so it sees each commit that preceded
+ * those locks. Run-log appends and output progress update the run row while a
+ * run prepares; a repeatable-read snapshot taken before the run lock went stale
+ * on each such commit and could exhaust every retry. Exposure is one statement
+ * (hold-to-ledger atomic), and the per-run unique index plus the run lock
+ * fence a duplicate reservation. */
 export async function reserveRunBudget(db: Db, companyId: string, runId: string, projectId: string | null, ledgerScope: Record<string, unknown> = {}, recoveryLeaseOwner?: string) {
   const result = await withBudgetSpan("budget.admission.reserve", () => withOperationAccountingTransaction(db, companyId, async (tx, publications) => {
     await lockBudgetAdmissionControls(tx, companyId, projectId);
@@ -142,7 +150,7 @@ export async function reserveRunBudget(db: Db, companyId: string, runId: string,
     }).where(eq(heartbeatRuns.id, runId));
     await queueBudgetEvaluation(tx, { companyId, agentId: run.agentId, projectId });
     return { ...reservation, reused: false };
-  }));
+  }, { isolationLevel: "read committed" }));
   // Commit required block/resume transitions even when dispatch is denied.
   // Throwing inside the transaction would discard those durable obligations.
   if ("admissionBlockReason" in result) throw conflict(result.admissionBlockReason ?? "Budget admission blocked");

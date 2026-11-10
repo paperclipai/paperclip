@@ -1,3 +1,4 @@
+import { releaseAbandonedNativeOwners } from "../services/native-runtime/native-failed-run-owner-release.js";
 import { guardSlackFixtureNetwork } from "./helpers/slack-cloud/transport.js";
 import { chatHistoryActionBlocks } from "./helpers/chat-history-proof.js";
 import type { NativeExecutionInput, NativeSession, NativeSessionBackend, PrpEvent } from "../vendor/paperclip-runner/index.js";
@@ -67914,6 +67915,250 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
+  it.each(["blocked_owner_queued", "todo_owner_useful", "todo_admin_useful", "todo_operator_denied"] as const)(
+    "admits a separate connected-conversation Retry only after committed original-controller containment: %s", async mode => {
+    const f = await failedChatRetryFixture("telegram", undefined, true);
+    const companyId = f.fixture.companyId, issueId = f.issue.id, agentId = f.fixture.assignedAgentId;
+    let heartbeat: ReturnType<typeof heartbeatService> | undefined;
+    const useful = mode.endsWith("useful"), denied = mode === "todo_operator_denied";
+    const role = mode === "todo_admin_useful" ? "admin" : denied ? "operator" : "owner";
+    // Initial task state and real membership: no status/receipt rewrite occurs
+    // during containment or the new Retry journey.
+    await db.update(companyMemberships).set({ membershipRole: role }).where(and(
+      eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, "user"),
+      eq(companyMemberships.principalId, "owner-user")));
+    if (mode.startsWith("todo")) await db.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
+    const settings = instanceSettingsService(db), previousSettings = await settings.getExperimental();
+    const workingDirectory = useful ? mkdtempSync(path.join(os.tmpdir(), "chat-contained-todo-")) : null;
+    let providerTurns = 0;
+    const answer = "The separately retried todo request completed once after original-host containment.";
+
+    // Historical initial facts: the original connected request was admitted,
+    // failed after a recorded launch on a foreign host, and retained an expired
+    // result-less owner. No stop/result or successful provider outcome is seeded.
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId, nativePhase: "observed",
+      processPid: 2_000_000_001, processGroupId: 2_000_000_001, processStartedAt: new Date(0),
+      runnerProfileJson: {} }).where(eq(heartbeatRuns.id, f.runId));
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId: f.runId, phase: "observed",
+      leaseOwner: "native-exec:historical-connected-source", leaseExpiresAt: new Date(Date.now() - 1_000),
+      controllerBootId: randomUUID(), controllerHostHash: "historical-foreign-process-space",
+      controllerPid: 2_000_000_001, controllerProcessStartedAt: new Date(0), controllerGeneration: 1, attempt: 1 });
+    await appendHeartbeatRunEvent(db, { companyId, agentId, runId: f.runId,
+      eventType: "native.process_identity_recorded", payload: { targetKind: "local", hostname: "original-foreign-host",
+        processPid: 2_000_000_001, processGroupId: 2_000_000_001, processStartedAt: new Date(0).toISOString() } });
+    try {
+      expect(await releaseAbandonedNativeOwners(db)).toBe(0);
+      const [action] = await db.select().from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+        eq(issueRecoveryActions.cause, "native_restart_recovery_blocked"), eq(issueRecoveryActions.status, "active")));
+      expect(action).toBeDefined();
+      const authority = action.evidence.controllerAuthority;
+      if (!authority || typeof authority !== "object" || Array.isArray(authority)
+        || !("digest" in authority) || typeof authority.digest !== "string") throw new Error("Normal exact controller attention required");
+      const app = express(); app.use(express.json());
+      app.use((req, _res, next) => { req.actor = boardActor(companyId); next(); });
+      app.use("/api", issueRoutes(db, createStorageService().storage, { chatRunRetries: f.service })); app.use(errorHandler);
+      const [task] = await readIssuesById(issueId);
+      const evidence = "Verified original controller and provider stopped on the original host; retained completed external actions.";
+      expect(task.status).toBe(mode.startsWith("todo") ? "todo" : "blocked");
+      const beforeRuns = await readHeartbeatRunsByCompanyId(companyId);
+      const beforeWakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+      const beforeOwner = (await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0];
+      const containment = await request(app).post(`/api/issues/${issueId}/recovery-actions/resolve`).send({ actionId: action.id,
+        outcome: "restored", sourceIssueStatus: task.status, executionReconciliation: { runId: f.runId,
+          controllerStopped: true, providerStopped: true, controllerAuthorityDigest: authority.digest,
+          actionOutcome: "mixed", outcomeEvidence: evidence } });
+      if (denied) {
+        expect(containment.status).toBe(403);
+        expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(beforeOwner);
+        expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0]).toEqual(action);
+        expect(await readHeartbeatRunsByCompanyId(companyId)).toEqual(beforeRuns);
+        expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toEqual(beforeWakes);
+        // A deliberate click may persist an intent; only the REAL normal
+        // queue may decide admission. The transport fixture's receipt stub is
+        // not sufficient evidence that an uncontained source cannot execute.
+        const unexpectedBackend = vi.fn((): NativeSessionBackend => {
+          throw new Error("An uncontained foreign owner must never create a new provider backend");
+        });
+        await settings.updateExperimental({ enableNativeRunner: true, enableIsolatedWorkspaces: true });
+        heartbeat = heartbeatService(db, { nativeSessionBackendFactory: unexpectedBackend });
+        f.wakeup.mockImplementation(heartbeat.wakeup);
+        const idempotencyKey = randomUUID();
+        const retryInput = { observedRunId: f.runId, idempotencyKey };
+        const click = await request(app).post(`/api/issues/${issueId}/retry`).send(retryInput);
+        expect(click.status).toBe(202);
+        expect(click.body.requestId).toEqual(expect.any(String));
+        expect(click.body.chatActionId).toEqual(expect.any(String));
+        const deniedRetry = await f.service.processFailedChatRunRetry(click.body.chatActionId);
+        expect(deniedRetry).toMatchObject({ status: "failed", runId: null });
+        const [deniedAction] = await db.select().from(chatActions).where(eq(chatActions.id, click.body.chatActionId));
+        expect(deniedAction).toMatchObject({ status: "failed", result: { code: "failed_chat_retry_not_authorized" } });
+        await reconcileTaskChatRetryReceipts(db, { companyId, requestId: click.body.requestId });
+        const [intent] = await readAgentWakeupRequestsById(click.body.requestId);
+        expect(intent).toMatchObject({ status: "failed", runId: null, payload: { taskRetry: {
+          sourceRunId: f.runId, actorId: "owner-user", actorSource: "session", chatActionId: click.body.chatActionId,
+        } } });
+        // A lost HTTP response may be retried with the same key. It replays
+        // this exact denied intent, never creates another execution authority.
+        const replay = await request(app).post(`/api/issues/${issueId}/retry`).send(retryInput);
+        expect(replay.status).toBe(202);
+        expect(replay.body).toMatchObject({ requestId: click.body.requestId, chatActionId: click.body.chatActionId });
+        expect(await f.service.processFailedChatRunRetry(replay.body.chatActionId)).toMatchObject({ status: "failed", runId: null });
+        expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.idempotencyKey, `task-retry:${idempotencyKey}`)))).toHaveLength(1);
+        await heartbeat.resumeTaskRetry(companyId, click.body.requestId);
+        expect(unexpectedBackend).not.toHaveBeenCalled();
+        expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(beforeOwner);
+        expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0]).toEqual(action);
+        expect(await readHeartbeatRunsByCompanyId(companyId)).toEqual(beforeRuns);
+        expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toHaveLength(0);
+        expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(0);
+        return;
+      }
+      expect(containment.status).toBe(200);
+      const [settled] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      expect(settled).toMatchObject({ phase: "terminal_failure", leaseOwner: null, resultId: null,
+        failureCode: "native_restart_recovery_blocked", failureDetail: { releasedOwner: { reason: "operator_containment" } } });
+      const [resolved] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+      expect(resolved).toMatchObject({ status: "resolved", evidence: { continuationDelivery: "not_requested" } });
+      if (!useful) expect(resolved.outcome).toBe("restored");
+      expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(0);
+      expect(await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+        eq(heartbeatRunEvents.runId, f.runId), eq(heartbeatRunEvents.eventType, "native.local_process_stopped")))).toHaveLength(0);
+      const direct = { companyId, issueId, agentId, failedRunId: f.runId, initiatedByUserId: "owner-user" };
+      // These are corrupt/stale control receipts, not provider outcomes. Restore
+      // their exact committed beforeimages before the real new Retry below.
+      for (const invalid of ["wrong_digest", "changed_generation", "not_resolved"] as const) {
+        try {
+          if (invalid === "wrong_digest") await db.update(issueRecoveryActions).set({ evidence: {
+            ...resolved.evidence, controllerAuthority: { schema: "paperclip.native-controller-authority.v1", digest: "0".repeat(64) },
+          } }).where(eq(issueRecoveryActions.id, action.id));
+          if (invalid === "changed_generation") await db.update(nativeRunFinalizations)
+            .set({ controllerGeneration: settled.controllerGeneration + 1 }).where(eq(nativeRunFinalizations.runId, f.runId));
+          if (invalid === "not_resolved") await db.update(issueRecoveryActions).set({ status: "cancelled" })
+            .where(eq(issueRecoveryActions.id, action.id));
+          await expect(db.transaction(tx => f.service.prepareFailedChatRunRetry(tx, direct)))
+            .rejects.toMatchObject({ details: { code: "chat_failed_run_retry_not_authorized" } });
+        } finally {
+          await db.update(issueRecoveryActions).set({ evidence: resolved.evidence, status: resolved.status })
+            .where(eq(issueRecoveryActions.id, action.id));
+          await db.update(nativeRunFinalizations).set({ controllerGeneration: settled.controllerGeneration })
+            .where(eq(nativeRunFinalizations.runId, f.runId));
+        }
+      }
+      // Existing real-queue pattern: another task occupies capacity, so this
+      // assertion proves admission and exact provenance, not provider execution.
+      const backend = (execution: NativeExecutionInput): NativeSessionBackend => {
+        const turnId = randomUUID(), evidenceId = randomUUID(), evidenceRef = `work_product:${evidenceId}`;
+        const identity = { companyId, agentId, issueId, runId: execution.binding.runId,
+          sessionId: execution.session.normalizedSessionId! };
+        const result = structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT);
+        result.summary = answer;
+        result.completionClaim.contractRevision = execution.completionContract.contract.revision;
+        result.completionClaim.criteria = execution.completionContract.contract.criteria.map(criterion => ({
+          criterionId: criterion.id, status: "satisfied", evidenceRefs: [evidenceRef] }));
+        result.evidence = [{ kind: "work_product", ref: evidenceRef }]; result.verification[0]!.artifactRef = evidenceRef;
+        let started = () => {}; const turnStarted = new Promise<void>(resolve => { started = resolve; });
+        const capabilities = { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
+        const session: NativeSession = {
+          identity: () => identity, async capabilities() { return capabilities; },
+          async *events() {
+            await turnStarted; const [run] = await readHeartbeatRunsById(identity.runId);
+            yield { schema: "paperclip.prp.event.v1", sourceEventId: `${identity.runId}:terminal`, sourceSeq: 1,
+              sourceInstanceId: run.runnerInstanceId!, sourceKind: "runner", runId: identity.runId,
+              normalizedSessionId: identity.sessionId, turnId, eventType: "turn.completed", schemaVersion: 1,
+              priority: 0, emittedAt: new Date().toISOString(), payload: {} } satisfies PrpEvent;
+          },
+          async startTurn() { providerTurns += 1; started(); return { turnId }; },
+          async result() { await turnStarted; return { result, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, turnId }; },
+          async snapshot() { return { backendKind: "mock", sessionId: "contained-todo-fixture", identity,
+            providerSessionId: `provider-${identity.runId}`, activeTurnId: null, pendingRuntimeRequests: [], lineage: [], cursor: "1" }; },
+          async close() {},
+        };
+        return {
+          async descriptor() { return { kind: "mock", name: "contained-todo-retry", version: "1", capabilities,
+            runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" } }; },
+          async openSession() {
+            await db.insert(issueWorkProducts).values({ id: evidenceId, companyId, issueId,
+              type: "artifact", provider: "paperclip", title: "Contained todo request result", status: "ready_for_review", reviewState: "approved" });
+            return session;
+          },
+          async recoverSession() { throw new Error("Containment Retry must create a fresh authorized session, never replay the old provider"); },
+        };
+      };
+      if (useful) await settings.updateExperimental({ enableNativeRunner: true, enableIsolatedWorkspaces: true });
+      await db.update(agents).set({ adapterType: "paperclip_runner", status: useful ? "idle" : "running",
+        ...(useful ? { adapterConfig: { provider: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017",
+          cwd: workingDirectory, workspaceStrategy: { type: "project_primary" } } } : {}),
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } }).where(eq(agents.id, agentId));
+      if (!useful) await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", startedAt: new Date() });
+      heartbeat = heartbeatService(db, useful ? { nativeSessionBackendFactory: backend } : {});
+      f.wakeup.mockImplementation(heartbeat.wakeup);
+      const classifyDenial = (value: unknown) => value === "chat_failed_run_retry_not_authorized"
+        || value === "failed_chat_retry_not_authorized" ? value : "withheld_unknown";
+      const click = await request(app).post(`/api/issues/${issueId}/retry`)
+        .send({ observedRunId: f.runId, idempotencyKey: randomUUID() });
+      expect(click.status, JSON.stringify({ phase: "ordinary_retry_response", status: click.status,
+        code: classifyDenial(click.body?.code ?? click.body?.details?.code) })).toBe(202);
+      expect(resolved.outcome).toBe("restored");
+      expect(click.body.chatActionId).toBeTruthy();
+      const outcome = await f.service.processFailedChatRunRetry(click.body.chatActionId);
+      const [retryAction] = await db.select().from(chatActions).where(eq(chatActions.id, click.body.chatActionId));
+      const outcomeDiagnostic = JSON.stringify({ phase: "durable_chat_retry", status: outcome.status,
+        code: classifyDenial(retryAction?.result?.code) });
+      if (useful) expect(["queued", "running", "succeeded"], outcomeDiagnostic).toContain(outcome.status);
+      else expect(outcome.status, outcomeDiagnostic).toBe("queued");
+      const [wake] = await readAgentWakeupRequestsById(click.body.chatActionId);
+      expect(wake).toMatchObject({ ...(!useful ? { status: "queued" } : {}), runId: expect.any(String) });
+      const [successor] = await readHeartbeatRunsById(wake.runId!);
+      expect(successor).toMatchObject({ ...(!useful ? { status: "queued" } : {}), retryOfRunId: f.runId, contextSnapshot: {
+        source: "chat:telegram", wakeCommentIds: [f.action.payload.commentId], taskRetryRequestId: click.body.requestId,
+      } });
+      expect(successor.contextSnapshot?.forceFreshSession).toBe(true);
+      // Use the same canonical projection as heartbeat/task-context before
+      // execution. The chat payload carries a source reference, never a copy
+      // of operator authority or a fabricated provider outcome.
+      const { buildExecutionContinuation } = await import("../services/execution-continuation.js");
+      const continuation = await buildExecutionContinuation({ db, companyId, issueId, agentId,
+        runId: successor.id, context: successor.contextSnapshot ?? {}, summary: null, exposeLowTrustRaw: false });
+      expect(continuation.trigger.sourceRunId).toBe(f.runId);
+      expect(continuation.recoveryOutcomes).toContainEqual({ recoveryActionId: action.id,
+        decision: expect.objectContaining({ runId: f.runId, controllerStopped: true, providerStopped: true,
+          actionOutcome: "mixed", outcomeEvidence: evidence }) });
+      await f.service.processFailedChatRunRetry(click.body.chatActionId);
+      expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(1);
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+        .toMatchObject({ resultId: null, failureDetail: { releasedOwner: { actionOutcome: "mixed", outcomeEvidence: evidence } } });
+      if (useful) {
+        await heartbeat.resumeQueuedRuns();
+        await vi.waitFor(async () => {
+          const [completed] = await readHeartbeatRunsById(successor.id);
+          expect(completed.status, JSON.stringify({ phase: "useful_successor", status: completed.status,
+            errorCode: completed.errorCode, nativePhase: completed.nativePhase })).toBe("succeeded");
+          expect(completed.resultJson?.nativeResult).toMatchObject({ summary: answer });
+          expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, successor.id)))[0].phase).toBe("committed");
+          expect(providerTurns).toBe(1);
+          await f.service.processPendingPublications(); await f.service.processPendingPublications();
+          expect((await readChatPublicationsByEndpointId(f.endpoint.id)).filter(publication => publication.state === "published"
+            && typeof publication.payload.text === "string" && publication.payload.text.includes(answer))).toHaveLength(1);
+        }, { timeout: 10_000, interval: 25 });
+        const [completed] = await readHeartbeatRunsById(successor.id);
+        expect(completed.resultJson?.nativeResult).toMatchObject({ summary: answer });
+        expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, successor.id)))[0].phase).toBe("committed");
+        expect(providerTurns).toBe(1);
+        expect((await readChatPublicationsByEndpointId(f.endpoint.id)).filter(publication => publication.state === "published"
+          && typeof publication.payload.text === "string" && publication.payload.text.includes(answer))).toHaveLength(1);
+        await f.service.processFailedChatRunRetry(click.body.chatActionId);
+        await heartbeat.resumeTaskRetry(companyId, click.body.requestId);
+        expect(providerTurns).toBe(1);
+      }
+    } finally {
+      await f.service.shutdown(); if (heartbeat) await heartbeat.drainActiveRunExecutions();
+      if (useful || denied) await settings.updateExperimental(previousSettings);
+      if (workingDirectory) rmSync(workingDirectory, { recursive: true, force: true });
+    }
+  });
+
   it.each(["stopped", "real_queue", "unknown_executor", "source_edited", "cancelled_stopped", "cancelled_unknown"] as const)(
     "admits ordinary chat task Retry with a missing checkpoint only after containment: %s", async kind => {
       const context = await failedChatRetryFixture("telegram", undefined, kind === "real_queue");
@@ -78401,7 +78646,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       kind: "request_confirmation",
       status: "pending",
       effectiveResolverPolicy: "human_only",
-      createdByAgentId: null,
+      createdByAgentId: fixture.assignedAgentId,
       createdByUserId: null,
     });
     await db

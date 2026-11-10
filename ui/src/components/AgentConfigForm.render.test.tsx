@@ -2487,6 +2487,21 @@ describe("AgentConfigForm environment selector", () => {
     expect(mockAgentsApi.cancelAdapterAuthLogin).not.toHaveBeenCalled();
   });
 
+  it.each(["codex_local", "claude_local"])("does not resume %s on a different sign-in computer", async (adapterType) => {
+    const active = { sessionId: "computer-a-login", agentId: "computer-a", environmentId: "plugin-env", status: "waiting_for_user", prompt: null };
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockResolvedValue(active);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockResolvedValue(active);
+    const container = document.createElement("div"); document.body.appendChild(container);
+    const root = createRoot(container); roots.push(root);
+    await act(async () => renderFormView(root, createFormQueryClient(),
+      <AdapterLoginPanel requiresAgent agentId="computer-b" companyId="company-1" adapterType={adapterType} environmentId="plugin-env" chrome="onboarding" autoStart />));
+    await flushUntil(() => container.textContent?.includes("Another sign-in attempt") ?? false);
+    expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+    expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+    expect(mockAgentsApi.getAdapterAuthLoginStatus).not.toHaveBeenCalled();
+    expect(mockAgentsApi.getClaudeSetupTokenLoginStatus).not.toHaveBeenCalled();
+  });
+
   it("recovers a previous-environment sign-in only after explicit successful cancellation", async () => {
     const intent = { provider: "xai", method: "subscription", name: "My Grok subscription", ownership: "personal", agentIds: [], allAgents: true } as const;
     mockAgentsApi.getActiveAdapterAuthLoginSession.mockResolvedValueOnce({

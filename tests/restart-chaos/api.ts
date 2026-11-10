@@ -20,16 +20,16 @@ export function rateLimitDelayMs(response: { status: number; headers: { get(name
 export class ChaosApi {
   constructor(readonly baseUrl: string, private readonly timeoutMs = 10_000, private readonly rateLimitAttempts = 5) {}
 
-  private async request<T>(method: string, route: string, body?: unknown, timeoutMs = this.timeoutMs): Promise<T> {
+  private async request<T>(method: string, route: string, body?: unknown, timeoutMs = this.timeoutMs, text = false): Promise<T> {
     for (let attempt = 1; ; attempt += 1) {
-      const outcome = await this.attempt<T>(method, route, body, timeoutMs);
+      const outcome = await this.attempt<T>(method, route, body, timeoutMs, text);
       if (!("retryAfterMs" in outcome)) return outcome.value;
       if (method !== "GET" || attempt >= this.rateLimitAttempts) throw outcome.error;
       await new Promise(resolve => setTimeout(resolve, Math.min(10_000, outcome.retryAfterMs * attempt)));
     }
   }
 
-  private async attempt<T>(method: string, route: string, body: unknown, timeoutMs: number):
+  private async attempt<T>(method: string, route: string, body: unknown, timeoutMs: number, asText = false):
     Promise<{ value: T } | { retryAfterMs: number; error: ChaosApiError }> {
     let response: Response;
     try {
@@ -50,10 +50,11 @@ export class ChaosApi {
       if (retryAfterMs !== null) return { retryAfterMs, error };
       throw error;
     }
-    return { value: (text ? JSON.parse(text) : null) as T };
+    return { value: (asText ? text : text ? JSON.parse(text) : null) as T };
   }
 
   get<T>(route: string, timeoutMs?: number) { return this.request<T>("GET", route, undefined, timeoutMs); }
+  getText(route: string, timeoutMs?: number) { return this.request<string>("GET", route, undefined, timeoutMs, true); }
   post<T>(route: string, body?: unknown, timeoutMs?: number) { return this.request<T>("POST", route, body ?? {}, timeoutMs); }
   put<T>(route: string, body?: unknown) { return this.request<T>("PUT", route, body ?? {}); }
   patch<T>(route: string, body?: unknown) { return this.request<T>("PATCH", route, body ?? {}); }

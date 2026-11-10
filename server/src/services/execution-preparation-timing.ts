@@ -7,6 +7,9 @@ import { isSpanContextValid, ROOT_CONTEXT, SpanStatusCode, trace, type Context }
 type PreparationPhase = "environment_selection" | "execution_configuration" | "session"
   | "agent_read" | "chat_completion" | "conversation" | "runtime_state" | "issue_context"
   | "run_identity" | "trust_preset" | "task_context"
+  | "chat_retry_admission" | "workspace_selection" | "dependency_readiness" | "issue_checkout"
+  | "instance_settings" | "workspace_context" | "project_context" | "plan_wake_routing"
+  | "routine_environment" | "responsible_user" | "execution_start"
   | "workspace" | "github_environment" | "github_launchers" | "run_output"
   | "workspace_validation" | "runtime_services" | "instructions" | "runtime_selection"
   | "configuration_mentions" | "configuration_github_identity" | "configuration_secrets"
@@ -34,7 +37,8 @@ type PreparationPhase = "environment_selection" | "execution_configuration" | "s
   | "github_access" | "wake_binding" | "backend_setup" | "connector_assignments"
   | "assigned_mcp" | "tool_authority" | "companion_selection" | "runner_binary"
   | "github_stop" | "coordinator_release" | "instruction_checkpoint"
-  | "instruction_changes" | "warm_release" | "instruction_collection";
+  | "instruction_changes" | "warm_release" | "instruction_collection"
+  | "attachment_staging" | "warm_restore" | "span_persistence" | "state_migration";
 
 export type ExecutionPhase =
   | "skills.inventory" | "skills.inventory.wait" | "skills.inventory.bundled" | "skills.inventory.releases"
@@ -103,6 +107,10 @@ export type ExecutionPhase =
   | "connectors.slack.authority.transaction" | "connectors.slack.authority.transaction.entry" | "connectors.slack.authority.transaction.commit" | "connectors.slack.authority.transaction.rollback"
   | "connectors.slack.catalog.transaction" | "connectors.slack.catalog.transaction.entry" | "connectors.slack.catalog.transaction.commit" | "connectors.slack.catalog.transaction.rollback"
   | "connectors.slack.catalog.lock" | "connectors.slack.catalog.entries" | "connectors.slack.catalog.write" | "connectors.slack.catalog.profile"
+  | "storage.snapshot.prior_attempts" | "storage.snapshot.encrypt" | "storage.snapshot.digest" | "storage.snapshot.put"
+  | "storage.snapshot.verify" | "storage.snapshot.download" | "storage.snapshot.decrypt" | "storage.snapshot.verify_plaintext"
+  | "storage.snapshot.publish" | "workspace.snapshot.sandbox_restore"
+  | "workspace.snapshot.sandbox_upload" | "workspace.snapshot.sandbox_extract"
   | "execution.runtime" | "execution.workspace_ownership" | "execution.workspace_finalize" | "execution.workspace_restore" | "execution.workspace_commit"
   | "execution.workspace_ownership_wait" | "execution.realtime"
   | "execution.usage" | "execution.native_finalize"
@@ -112,7 +120,10 @@ export type ExecutionPhase =
   | "response.transaction" | "response.transaction.entry" | "response.transaction.commit" | "response.transaction.rollback" | "response.row_lock" | "response.write"
   | "response.resolve" | "response.authorize" | "response.add_comment" | "response.activity" | "response.publish";
 
-type RunScope = { runId: string; phase: string; parent?: Context; ended: boolean; details: Map<string, number> };
+// recordRunId: the run whose preparation log receives nested measureRunPhase
+// steps. A traced step opens its own scope, so it carries its preparation
+// ancestor's target; other scopes (execution attempts) never record.
+type RunScope = { runId: string; phase: string; parent?: Context; ended: boolean; details: Map<string, number>; recordRunId?: string };
 const ownership = new AsyncLocalStorage<RunScope>();
 const endpointEnabled = () => Boolean(process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim());
 
@@ -183,9 +194,9 @@ export function drainRunPreparationPhases(runId: string): RecordedPreparationPha
   return phases;
 }
 
-function measure<T>(runId: string, name: string, work: () => T | Promise<T>, independent = false, counts: { fileCount?: number; bytes?: number } = {}, activeParent?: Context): Promise<T> {
+function measure<T>(runId: string, name: string, work: () => T | Promise<T>, independent = false, counts: { fileCount?: number; bytes?: number } = {}, activeParent?: Context, recordRunId?: string): Promise<T> {
   const startedAtMs = Date.now();
-  const operation = measureTraced(runId, name, work, independent, counts, activeParent);
+  const operation = measureTraced(runId, name, work, independent, counts, activeParent, recordRunId);
   // Only pre-dispatch preparation reaches the run log here; execution attempts
   // and runtime timings belong to the turn, not to the next attempt's prepare.
   if (isPreparationPhaseName(name)) operation.then(
@@ -195,7 +206,7 @@ function measure<T>(runId: string, name: string, work: () => T | Promise<T>, ind
   return operation;
 }
 
-function measureTraced<T>(runId: string, name: string, work: () => T | Promise<T>, independent = false, counts: { fileCount?: number; bytes?: number } = {}, activeParent?: Context): Promise<T> {
+function measureTraced<T>(runId: string, name: string, work: () => T | Promise<T>, independent = false, counts: { fileCount?: number; bytes?: number } = {}, activeParent?: Context, recordRunId?: string): Promise<T> {
   let operation: Promise<T> | undefined;
   const run = (span?: { setStatus(status: { code: number }): void; end(): void }, parent?: Context) => {
     if (operation) return operation;
@@ -204,6 +215,7 @@ function measureTraced<T>(runId: string, name: string, work: () => T | Promise<T
       parent: parent ?? (!independent && previous?.runId === runId && !previous.ended ? previous.parent : undefined),
       ended: false,
       details: !independent && previous?.runId === runId ? previous.details : new Map<string, number>(),
+      recordRunId,
     };
     operation = withDatabaseOperation(name, () => Promise.resolve().then(() =>
       ownership.run(owned, () => runWithRuntimeParent(owned.parent, work))).then(value => {
@@ -272,14 +284,14 @@ export function measureRunPhase<T>(phase: ExecutionPhase, work: () => T | Promis
     if (count >= 16) return work();
     owned.details.set(phase, count + 1);
     // A step inside a preparation phase reaches the run log with or without a tracer.
-    const recordedRunId = isPreparationPhaseName(owned.phase) ? owned.runId : null;
+    const recordedRunId = isPreparationPhaseName(owned.phase) ? owned.runId : owned.recordRunId ?? null;
     const startedAtMs = Date.now();
     let outcome: RecordedPreparationPhase["outcome"] = "failed";
     try {
       // A startup step can be more specific than the owning run phase. Keep that
       // causal parent while the child publishes its own context to plugin workers.
       const value = endpointEnabled()
-        ? await measure(owned.runId, phase, work, false, counts, getActiveStepContext()?.parentContext as Context | undefined)
+        ? await measure(owned.runId, phase, work, false, counts, getActiveStepContext()?.parentContext as Context | undefined, recordedRunId ?? undefined)
         : await work();
       outcome = "ok";
       return value;

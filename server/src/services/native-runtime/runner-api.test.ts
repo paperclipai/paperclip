@@ -202,6 +202,18 @@ describe("runner API catalog", () => {
     expect(operation.authorization.actor).toBeTruthy();
   });
 
+  it("keeps natural-language function words from hiding the requested API resource", () => {
+    expect(searchRunnerApi({ query: "list comments for an issue" }).results[0]?.operationId)
+      .toBe("GET /api/issues/{id}/comments");
+    for (const [query, operation] of [
+      ["queued comments for an issue", "GET /api/issues/{id}/queued-comments"],
+      ["activity for an issue", "GET /api/issues/{id}/activity"],
+      ["runs for an issue", "GET /api/issues/{id}/runs"],
+      ["case for task", "GET /api/issues/{issueId}/cases"],
+    ]) expect(searchRunnerApi({ query }).results.map(row => row.operationId)).toContain(operation);
+    expect(searchRunnerApi({ query: "for an the" }).results).toEqual([]);
+  });
+
   it("ranks natural language, explains dedicated alternatives, and supports exact lookup", () => {
     expect(
       searchRunnerApi({ query: "create project" }).results.map(
@@ -275,7 +287,8 @@ describe("runner API request boundary", () => {
           [name, name === "companyId" ? context.companyId : "fixture"]),
       );
       const result = await executeRunnerApi(
-        { operationId: operation.operationId, pathParams }, context, io(request),
+        // A body-less PATCH is rejected before dispatch; send an empty update.
+        { operationId: operation.operationId, pathParams, ...(operation.method === "PATCH" && operation.requestBody?.required ? { body: {} } : {}) }, context, io(request),
       );
       expect(operation.callPolicy).toBe("rest");
       expect(result).toMatchObject({ ok: false, status: 403, data: { error: "Route permission required" } });
@@ -326,7 +339,7 @@ describe("runner API request boundary", () => {
     );
     await expect(
       executeRunnerApi(
-        { operationId: operation.operationId, pathParams },
+        { operationId: operation.operationId, pathParams, ...(operation.method === "PATCH" ? { body: { status: "resolved" } } : {}) },
         context,
         io(request),
       ),
@@ -759,7 +772,26 @@ describe("runner API request boundary", () => {
   });
   it("does not page mutation responses by repeating the mutation", async () => {
     const request = vi.fn<typeof fetch>();
-    await expect(executeRunnerApi({ operationId: createProject, body: { name: "Once" }, responseText: {} }, context, io(request))).rejects.toThrow("GET");
+    await expect(executeRunnerApi({ operationId: createProject, body: { name: "Once" }, responseText: { offsetBytes: 4 } }, context, io(request))).rejects.toThrow("This request was not sent");
+    expect(request).not.toHaveBeenCalled();
+  });
+  it.each([{}, { limitBytes: 8192 }, { offsetBytes: 0, limitBytes: 4096 }])("sends a mutation once when responseText asks only for the first window: %j", async responseText => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ id: "company-a", name: "Acorn Studio" }));
+    const result = await executeRunnerApi({ operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" }, body: { name: "Acorn Studio" }, responseText }, context, io(request));
+    expect(request).toHaveBeenCalledTimes(1);
+    const [, init] = request.mock.calls[0]!;
+    expect(init?.method).toBe("PATCH");
+    expect(JSON.parse(String(init?.body))).toEqual({ name: "Acorn Studio" });
+    expect(result).toMatchObject({ ok: true, status: 200, data: { name: "Acorn Studio" } });
+    expect(result).not.toHaveProperty("responseText");
+  });
+  it("rejects a PATCH with no body instead of sending a no-op update", async () => {
+    const request = vi.fn<typeof fetch>();
+    const call = { operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" }, query: {}, responseText: { limitBytes: 8192 } };
+    await expect(executeRunnerApi(call, context, io(request))).rejects.toThrow(/not sent.*requires body.*name.*Received arguments: operationId, pathParams, query, responseText/);
+    expect(() => validateRunnerApiCall({ operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" }, body: {} }, context)).not.toThrow();
+    // Recovery validates saved calls without dispatch: an older accepted body-less PATCH stays readable.
+    expect(() => validateRunnerApiCall({ operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" } }, context)).not.toThrow();
     expect(request).not.toHaveBeenCalled();
   });
   it("rejects binary, invalid UTF-8 and offsets that split text", async () => {

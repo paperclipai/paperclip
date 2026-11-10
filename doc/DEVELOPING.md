@@ -1068,8 +1068,10 @@ npx paperclipai allowed-hostname dotta-macbook-pro
 ## Agent status recovery
 
 Lifecycle verification stops automatic attempts after missing authentication,
-an unavailable model or command, an invalid working directory, or unexpected
-probe output. A generic failed test gets up to three failures before automatic
+an unavailable model or command, an invalid working directory, unexpected
+probe output, or an owned AI account selection refusal. Account selection guidance
+names missing defaults, unavailable accounts, incompatible bindings, missing
+responsible users, or credential sharing requirements without provider error text. A generic failed test gets up to three failures before automatic
 checks stop. The saved `verificationFailures` count only advances when the host
 verification test fails; claims deferred before the test do not spend that budget.
 An explicit retry or execution configuration change resets that count.
@@ -2597,7 +2599,7 @@ The default `worktree init` still seeds eagerly. A lean worktree (created withou
 
 - `pnpm paperclipai worktree ensure-seeded` performs the deferred seed **exactly once**. It is lock-guarded and idempotent: only a complete `verified` manifest short-circuits it, so it is safe to call repeatedly and from concurrent processes. Managed workspaces derive the source from the control-plane-provided base project workspace when it carries its own `.paperclip/config.json`, and otherwise from the control plane's own registered instance config; either way the workspace's manifest never selects it. Manual worktrees must pass `--from-config`.
 - `paperclipai run` calls `ensureWorktreeSeeded` automatically before doctor/boot. Managed runs transparently seed a lean worktree from their registered base workspace; an unmanaged lean worktree must first run `worktree ensure-seeded --from-config <source-config>`.
-- Managed Paperclip git worktrees default to the repository's `scripts/provision-worktree.sh` when the strategy omits `provisionCommand`. When a registered source config exists, setup creates the isolated config and pending manifest. Runtime startup also runs `scripts/provision-worktree-runtime.sh` automatically when no explicit runtime provision command is configured and the manifest is not verified. Explicitly configured provision commands still take precedence.
+- Managed git worktrees run a repository's `scripts/provision-worktree.sh` when the strategy omits `provisionCommand` and that file exists. The Paperclip repository deliberately does not ship a file at that path, so agent turns in Paperclip worktrees do not wait on dependency installs or instance setup. Its setup script is `scripts/setup-paperclip-worktree.sh`: run it by hand, or set it as the project's `provisionCommand` to opt in. When a registered source config exists, it creates the isolated config and pending manifest, then installs dependencies. Runtime startup still runs `scripts/provision-worktree-runtime.sh` automatically when no explicit runtime provision command is configured and the manifest is not verified; that script runs `scripts/setup-paperclip-worktree.sh` first when the worktree has no config. Explicitly configured provision commands still take precedence.
 - An environment-configured server may have no local seed config. If neither the base checkout nor the default control-plane instance has one, a fresh worktree prepares its dependencies without creating a development instance. This also applies when `PAPERCLIP_CONFIG` names the default `$PAPERCLIP_HOME/instances/$PAPERCLIP_INSTANCE_ID/config.json` path, as the Docker image does. Setup creates no config, environment file, or seed manifest and does not claim runtime or seed readiness. A later request for a seeded development runtime still needs a canonical registered source config. Once that source exists, provisioning the checkout again creates the development instance normally.
 - A missing custom `PAPERCLIP_CONFIG`, rejected symlink, or non-regular source file still fails setup. An existing worktree with a config, environment file, or seed state also fails if its source disappears; setup never downgrades that instance to a plain checkout. Repair the source before retrying.
 - The built-in deferred seed is recorded as its own terminal `workspace_seed` operation. A zero exit code is not enough for success: the operation succeeds only when `.paperclip/seed-manifest.json` contains complete verified evidence; failed, missing, or malformed manifests produce a failed operation with the seed phase in metadata.
@@ -3189,6 +3191,10 @@ Saved OpenCode agents keep their runner and runtime policies.
 Plugin environment drivers can declare `requiresAgent: true` when their leases
 need an agent-owned resource. The host selects that plugin's lifecycle work only for
 agents on that environment. See [Required plugin work](./AGENT-LIFECYCLE.md#required-plugin-work).
+Moving a ready agent to an environment that needs a new plugin automatically
+pauses execution, waits for stop completion, starts the required resources, and
+verifies the saved configuration before allowing work. Existing pause holds
+still apply; the user does not need to pause or resume the agent for this move.
 Setup saves the draft and environment, runs its
 existing lifecycle preparation, and waits in `verifying` with the `setup` hold.
 The worker becomes idle there until the user finishes hiring. Connection tests
@@ -4690,8 +4696,9 @@ whether or not anything is left to compact.
 
 A compacted worktree is in the same state as a freshly created one, so when the
 task resumes, whatever produced those files the first time produces them again:
-reuse runs the workspace provision command (or `scripts/provision-worktree.sh`),
-which reinstalls dependencies when `node_modules` is missing. Repositories without
+reuse runs the workspace provision command (or a repository's
+`scripts/provision-worktree.sh`), which can reinstall dependencies when
+`node_modules` is missing. Repositories without
 a provision command rely on the agent's own install step, as they do for a new
 worktree.
 

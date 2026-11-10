@@ -1,3 +1,5 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { NativeControllerContainmentRecovery } from "../components/IssueRecoveryActionCard";
 import { useIssueIdBatches } from "@/hooks/useIssueIdBatches";
 import { TaskChatLoadingShell } from "@/components/task-chat/TaskChatLoadingShell";
 import { useConversationHistoryPages, type ConversationHistoryPage } from "@/hooks/useConversationHistoryPages";
@@ -78,6 +80,15 @@ import { describeInteractionResolutionFailure, interactionResolutionErrorMessage
 import { approvalsApi } from "../api/approvals";
 import { activityApi, type RunForIssue } from "../api/activity";
 import {
+  fetchRecentIssueActivity,
+  fetchRecentIssueRunWindow,
+  issueCommentInputFactsQueryKey,
+  issueInputCommentIds,
+  recentIssueActivityQueryKey,
+  recentIssueRunWindowQueryKey,
+  type RecentIssueRunWindow,
+} from "../lib/issue-chat-history-queries";
+import {
   heartbeatsApi,
   type ActiveRunForIssue,
   type LiveRunForIssue,
@@ -86,13 +97,13 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { accessApi } from "../api/access";
 import {
   canBoardManageRuntime,
+  canBoardConfirmOwnerStop,
   canBoardResolveRecoveryAction,
   isRetainedWorkspaceExportCause,
   readRecoveryReconcileWorkspaceId,
 } from "../lib/recovery-reconcile";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
-import { projectsApi } from "../api/projects";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -1182,11 +1193,6 @@ function InboxMobileToolbar({
   );
 }
 
-interface RecentIssueRunWindow {
-  runs: RunForIssue[];
-  hasEarlierRuns: boolean;
-}
-
 type IssueDetailChatTabProps = {
   executionBlocked?: boolean;
   interruption?: Issue["interruption"];
@@ -1486,21 +1492,18 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     isError: activityError,
     refetch: refetchActivity,
   } = useQuery({
-    queryKey: historyExpanded ? queryKeys.issues.activity(issueQueryRef) : [...queryKeys.issues.activity(issueQueryRef), "recent"],
-    queryFn: async () => {
-      if (historyExpanded) return activityApi.forIssue(issueQueryRef);
-      const recent = await activityApi.recentForIssue(issueQueryRef);
-      const previous = queryClient.getQueryData<ActivityEvent[]>([...queryKeys.issues.activity(issueQueryRef), "recent"]) ?? [];
-      return [...new Map([...previous, ...recent].map((event) => [event.id, event])).values()];
-    },
+    queryKey: historyExpanded ? queryKeys.issues.activity(issueQueryRef) : recentIssueActivityQueryKey(issueQueryRef),
+    queryFn: () => historyExpanded
+      ? activityApi.forIssue(issueQueryRef)
+      : fetchRecentIssueActivity(queryClient, issueQueryRef),
     enabled: !!issueId,
     placeholderData: historyExpanded
       ? queryClient.getQueryData<ActivityEvent[]>([...queryKeys.issues.activity(issueQueryRef), "recent"])
       : undefined,
   });
-  const inputCommentIds = comments.filter((comment) => !("clientStatus" in comment) || !comment.clientStatus).map((comment) => comment.id).sort();
+  const inputCommentIds = issueInputCommentIds(comments);
   const inputFacts = useIssueIdBatches(
-    [...queryKeys.issues.activity(issueQueryRef), "comment-inputs"], inputCommentIds,
+    issueCommentInputFactsQueryKey(issueQueryRef), inputCommentIds,
     ids => activityApi.inputFactsForIssue(issueQueryRef, ids), !!issueId && !historyExpanded,
   );
   const {
@@ -1607,7 +1610,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const hasLiveRuns = liveRunCount > 0 || !!resolvedActiveRun;
   const linkedRunsKey = historyExpanded
     ? queryKeys.issues.runs(issueQueryRef)
-    : [...queryKeys.issues.runs(issueQueryRef), "recent-window"];
+    : recentIssueRunWindowQueryKey(issueQueryRef);
   const {
     data: linkedRunHistory,
     isPending: linkedRunsPending,
@@ -1615,35 +1618,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     refetch: refetchLinkedRuns,
   } = useQuery<RunForIssue[] | RecentIssueRunWindow>({
     queryKey: linkedRunsKey,
-    queryFn: async () => {
-      if (historyExpanded) return activityApi.runsForIssue(issueQueryRef);
-      let recent = await activityApi.recentRunsForIssue(issueQueryRef);
-      const previousWindow = queryClient.getQueryData<RecentIssueRunWindow>(linkedRunsKey);
-      let previous = previousWindow?.runs ?? [];
-      let reconciledFullHistory = false;
-      if (previous.some((run) =>
-        (run.status === "running" || run.status === "queued") && !recent.some((next) => next.runId === run.runId),
-      )) {
-        // After a reconnect, several turns may have completed beyond the small
-        // window. Reconcile watched runs once against authoritative summaries.
-        recent = conversationMode
-          ? await activityApi.runsByIdsForIssue(issueQueryRef, [...new Set([...previous.map(run => run.runId), ...recent.map(run => run.runId)])])
-          : await activityApi.runsForIssue(issueQueryRef);
-        reconciledFullHistory = true;
-        const existingRunIds = new Set(recent.map((run) => run.runId));
-        previous = previous.filter((run) => existingRunIds.has(run.runId));
-      }
-      // The second row refreshes a just-finished predecessor. Start with only
-      // the latest run, then keep every run observed while this task is open.
-      const visible = new Set([...previous.map((run) => run.runId), ...recent.slice(0, 1).map((run) => run.runId)]);
-      return {
-        runs: [...new Map([...previous, ...recent].filter((run) => visible.has(run.runId)).map((run) => [run.runId, run])).values()],
-        // A first run is already visible. The disclosure needs evidence of an
-        // omitted run, and must retain that evidence as later turns arrive.
-        hasEarlierRuns: recent.some((run) => !visible.has(run.runId))
-          || (!reconciledFullHistory && recent.length >= 2 && previousWindow?.hasEarlierRuns === true),
-      };
-    },
+    queryFn: () => historyExpanded
+      ? activityApi.runsForIssue(issueQueryRef)
+      : fetchRecentIssueRunWindow(queryClient, issueQueryRef, { conversationMode }),
     enabled: !!issueId,
     refetchInterval:
       hasLiveRuns || issueStatus === "in_progress" ? 1000 : false,
@@ -3739,8 +3716,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
 
   const { data: projects = EMPTY_PROJECTS } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    ...companyProjectsQuery(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
@@ -3760,6 +3736,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     selectedCompanyId,
     boardAccess,
   );
+  const canConfirmOwnerStop = canBoardConfirmOwnerStop(selectedCompanyId, boardAccess);
   // Retained-file recovery reports whether it offers its own control. The task's
   // Retry stays visible whenever it does not, so a retryable hold never dead-ends.
   const [retainedRecoveryOwnsRetry, setRetainedRecoveryOwnsRetry] = useState(true);
@@ -8192,7 +8169,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           )}
           {resolvedDetailTab === "chat" && (
             <ExecutionBlockerNotice className={shellSectionClass} presentation={issue.interruption} blockers={issue.blockedBy}
-              issueId={issue.id} agentName={agentMap.get(issue.assigneeAgentId ?? "")?.name} projectName={issue.project?.name}
+              issueId={issue.id} companyId={issue.companyId} agentName={agentMap.get(issue.assigneeAgentId ?? "")?.name} projectName={issue.project?.name}
               canRetry={canResolveBoardRecoveryAction && !(issue.executionBlocker?.workspaceRepairRequired
                 && isRetainedWorkspaceExportCause(issue.executionBlocker.cause) && retainedRecoveryOwnsRetry)} onRetry={taskRetry.retry}
               optimistic={taskRetry.optimistic} takingLonger={taskRetry.takingLonger} error={taskRetry.error} />
@@ -8499,6 +8476,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                         : null,
                   onRetry: (actionId) => retryDispositionRecovery.mutateAsync(actionId).then(() => undefined),
                 }}>
+                <NativeControllerContainmentRecovery key={`${issue.activeRecoveryAction?.id}:${JSON.stringify(issue.activeRecoveryAction?.evidence?.controllerAuthority)}`} issue={issue}
+                  canManage={canConfirmOwnerStop} onRecorded={() => {
+                    invalidateIssueCollections();
+                    void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+                    void queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId!) });
+                  }} />
                 <IssueDetailChatTab
                   executionBlocked={Boolean(issue.executionBlocker)}
                   interruption={issue.interruption}

@@ -128,6 +128,18 @@ describe("heartbeat retry module callbacks", () => {
     expect(database.access).not.toHaveBeenCalled();
   });
 
+  it("ends an answered interaction's storage wait at its limit and escalates it", async () => {
+    const database = guardedDatabase();
+    const deps = callbacks();
+    const run = { ...unitRun(), status: "failed", errorCode: "storage_unavailable", scheduledRetryReason: "storage_unavailable_wait", scheduledRetryAttempt: 10,
+      contextSnapshot: { issueId: "issue", interactionId: "interaction-1", interactionStatus: "answered", interactionKind: "ask_user_questions",
+        mutation: "interaction", retryReason: "storage_unavailable_wait",
+        executionRetryAccounting: { version: 1, failureRetries: 0, maxTurnContinuations: 0 } } } as Run;
+    const retry = await extracted.createHeartbeatRetries(database.db, deps).scheduleBoundedRetryForRun(run, { adapterType: "codex_local" } as Agent);
+    expect(retry).toMatchObject({ outcome: "retry_exhausted", maxAttempts: 10 });
+    expect(deps.escalatePlanApprovalResumeFailureNeedsAttention).toHaveBeenCalledWith(expect.objectContaining({ run, maxAttempts: 10 }));
+  });
+
   it("leaves successor work to the committed case handoff without retry escalation", async () => {
     const database = guardedDatabase();
     const deps = callbacks();
@@ -389,6 +401,40 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect(isResolvedInteractionContinuationWakeContext(successor!.contextSnapshot)).toBe(true);
     const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, successor!.wakeupRequestId!));
     expect(wake!.payload).toMatchObject({ mutation: "interaction", interactionId: "interaction-1", retryReason: "runner_revision_wait" });
+  });
+
+  it("waits out a storage outage in its own lane without spending failure retries", async () => {
+    const { run, agent } = await fixture();
+    const ledger = { executionRetryAccounting: { version: 1, failureRetries: 1, maxTurnContinuations: 0 } };
+    let [failed] = await db.update(heartbeatRuns).set({ status: "failed", errorCode: "storage_unavailable",
+      contextSnapshot: { ...run.contextSnapshot, ...ledger } }).where(eq(heartbeatRuns.id, run.id)).returning();
+    for (let attempt = 1; attempt <= 10; attempt++) {
+      const result = await boundRetries().retries.scheduleBoundedRetryForRun(failed!, agent, { now });
+      expect(result.outcome).toBe("scheduled");
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, failed!.id));
+      expect(successor).toMatchObject({ scheduledRetryReason: "storage_unavailable_wait", scheduledRetryAttempt: attempt });
+      expect(successor!.contextSnapshot).toMatchObject({ executionRetryAccounting: { failureRetries: 1 } });
+      [failed] = await db.update(heartbeatRuns).set({ status: "failed", errorCode: "storage_unavailable", finishedAt: now,
+        resultJson: run.resultJson })
+        .where(eq(heartbeatRuns.id, successor!.id)).returning();
+      await db.update(issues).set({ executionRunId: successor!.id, checkoutRunId: successor!.id }).where(eq(issues.id, run.issueId!));
+    }
+    expect(await boundRetries().retries.scheduleBoundedRetryForRun(failed!, agent, { now }))
+      .toMatchObject({ outcome: "retry_exhausted", maxAttempts: 10 });
+  });
+
+  it("keeps an answered interaction through a storage outage wait", async () => {
+    const { run, agent } = await fixture();
+    const snapshot = { ...run.contextSnapshot, interactionId: "interaction-1", interactionStatus: "answered", interactionKind: "ask_user_questions",
+      mutation: "interaction", wakeReason: "issue_commented" };
+    const [failed] = await db.update(heartbeatRuns).set({ errorCode: "storage_unavailable", contextSnapshot: snapshot })
+      .where(eq(heartbeatRuns.id, run.id)).returning();
+    expect((await boundRetries().retries.scheduleBoundedRetryForRun(failed!, agent, { now })).outcome).toBe("scheduled");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    expect(successor).toMatchObject({ scheduledRetryReason: "storage_unavailable_wait" });
+    expect(isResolvedInteractionContinuationWakeContext(successor!.contextSnapshot)).toBe(true);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, successor!.wakeupRequestId!));
+    expect(wake!.payload).toMatchObject({ mutation: "interaction", interactionId: "interaction-1", retryReason: "storage_unavailable_wait" });
   });
 
   it("resolves current skills on a retry while retaining the failed attempt snapshot", async () => {

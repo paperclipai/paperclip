@@ -1,20 +1,41 @@
 /** Shared types for the control-plane restart chaos harness (plan §5). */
+import type { ProviderFaultEvent, ProviderFaultKind, ProviderFaultRule, ProviderMessage, ProviderRestartKind } from "./provider-faults.js";
+import type { QuestionArtifacts, QuestionRecord } from "./question-handoff.js";
+import type { RepeatedRestartRecord, RestartStep } from "./repeated-restarts.js";
+import type { TimeFaultRecord } from "./time-faults.js";
 
-/** K14 (upgrade mid-run): a graceful stop, then the replacement starts from the current build (`--upgrade-from`). */
-export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14"] as const;
+/**
+ * K14 (upgrade mid-run): a graceful stop, then the replacement starts from the current build (`--upgrade-from`).
+ * TM1–TM3 (time faults, time-faults.ts): freeze the server, sleep with aged rows, or an aged outage.
+ * RR1–RR3 (repeated restarts, repeated-restarts.ts): a K1, then more restarts while the replacement recovers.
+ * MS1–MS3 (two servers, one database, multi-server.ts): a second server beside the first.
+ */
+export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14", "TM1", "TM2", "TM3", "RR1", "RR2", "RR3", "MS1", "MS2", "MS3"] as const;
 export type FaultKind = (typeof FAULT_KINDS)[number];
-/** A task's planned fault. "K13" (restart storm) tasks have none of their own; the wave's storm crosses them. */
-export type TaskFaultKind = FaultKind | "K13";
+/** The shortest seeded K4 outage (scheduler.ts K4_HOLD_RANGE_MS), also the K4 hold after a provider fault. */
+export const K4_MIN_HOLD_MS = 120_000;
+/**
+ * A task's planned fault. "K13" (restart storm) tasks have none of their own; the wave's storm crosses them.
+ * PV1–PV3 (provider message faults, provider-faults.ts) restart nothing: the task's rule is armed in the Codex shim.
+ * "K0" is a `--matrix` baseline cell: the same journey with no fault.
+ */
+export type TaskFaultKind = FaultKind | "K13" | "K0" | ProviderFaultKind;
 
-/** G1: an approval-gated action across a restart. H1: a budget hard stop crossed mid-run with a restart (its own wave). */
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1"] as const;
+/**
+ * G1: an approval-gated action across a restart. H1: a budget hard stop crossed mid-run with a restart (its own wave).
+ * Q1: a saved question (question-handoff.ts). Q2, Q3: journeys.ts.
+ * L1: high-output, high-accounting run for database contention (contention.ts).
+ */
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
 export type AdapterId = (typeof ADAPTER_IDS)[number];
 
-export const TRIGGER_IDS = ["time", "comment", "retry", "queued", "tool", "result", "approval", "paused", "stop"] as const;
-export type TriggerId = (typeof TRIGGER_IDS)[number];
+/** `asked` and `answered`: the journey boundaries of Q1–Q3 (journeys.ts, question-handoff.ts). */
+export const TRIGGER_IDS = ["time", "comment", "retry", "queued", "tool", "result", "approval", "paused", "stop", "asked", "answered"] as const;
+/** `provider` is not a `--triggers` choice: `--provider-fault-restart` schedules it (K1 after a provider fault applied). */
+export type TriggerId = (typeof TRIGGER_IDS)[number] | "provider";
 
 export const ENVIRONMENT_KINDS = ["local", "daytona"] as const;
 export type EnvironmentKind = (typeof ENVIRONMENT_KINDS)[number];
@@ -40,6 +61,7 @@ export interface WaveOptions {
   daytonaReuseLease?: boolean;
   /** `--k4-hold-max-seconds`: upper end of the seeded K4 hold (default 300 s, cap 600 s). */
   k4HoldMaxMs?: number;
+  faultAfterMs?: number;
   /**
    * Known product signatures this wave deliberately masks. "rc06" keeps the
    * company budget amount but disables its hard stop, so a stuck
@@ -73,7 +95,37 @@ export interface WaveOptions {
    */
   upgradeFrom?: string;
   workspaceRepo?: string;
+  storage?: "s3";
+  storageFaults?: Array<import("./storage-chaos.js").StorageFaultKind>;
+  storageFaultMs?: [number, number];
+  storageWindows?: import("./storage-chaos.js").StorageFaultWindow[];
+  storageTrigger?: import("./storage-trigger.js").StorageTriggerTarget;
   workspaceCommit?: string;
+  workspaceGitUrl?: string;
+  /** Provider message faults from `--faults` (PV1 delay, PV2 drop, PV3 duplicate); see provider-faults.ts. */
+  providerFaults?: ProviderFaultKind[];
+  providerFaultMessage?: ProviderMessage;
+  /** `--provider-fault-message S1=interrupt_ack,...`: a workload's own message, over `providerFaultMessage`. */
+  providerFaultMessageByWorkload?: Partial<Record<WorkloadId, ProviderMessage>>;
+  /** PV1 delays, cycled across tasks (`--provider-fault-delays`). */
+  providerFaultDelaysMs?: number[];
+  /** `--db-pressure <writers>`: harness-owned writers touching the wave's running run rows back to back (contention.ts). */
+  dbPressure?: number;
+  /** `--matrix`: one task per workload × adapter × (K0, or each fault at each of the workload's triggers). */
+  matrix?: boolean;
+  /** `--server-from <dir>`: every server of the wave runs from this prepared checkout (for example a pre-fix commit). */
+  serverFrom?: string;
+  /** TM2/TM3: how far every database timestamp is shifted back (`--time-age-hours`, default 26 h). */
+  timeAgeMs?: number;
+  /** `--provider-fault-restart K1`: each PV1/PV2 task also restarts the control plane after its fault applied. */
+  providerFaultRestart?: ProviderRestartKind;
+  /** `--provider-fault-restart K2,K4,K1`: restart kinds cycled across PV1/PV2 tasks (the first is `providerFaultRestart`). */
+  providerFaultRestartKinds?: ProviderRestartKind[];
+  providerFaultRestartAfterMs?: number;
+  /** RR1–RR3: the gap from a replacement's health to the next stop (`--rr-gap-seconds`); absent keeps each kind's default. */
+  rrGapMs?: [number, number];
+  /** RR1–RR3 (`--rr-stop-on recovering`): stop each replacement on its first `recovering` status instead of after a gap. */
+  rrStopOn?: "recovering";
 }
 
 export interface StormFault {
@@ -109,6 +161,10 @@ export interface TaskPlan {
    * its offset from the task's launch. Replaces the single planned fault.
    */
   replayFaults?: ScheduledFault[];
+  /** PV1–PV3 tasks: the provider message rule armed for this task's nonce. */
+  providerFault?: ProviderFaultRule;
+  /** RR1–RR3: the seeded restarts after the first kill. */
+  restartSteps?: RestartStep[];
 }
 
 export interface ScheduledFault {
@@ -116,6 +172,8 @@ export interface ScheduledFault {
   atMs: number;
   trigger?: TriggerId;
   delayMs?: number;
+  /** RR1–RR3: the restarts after the first kill. */
+  restartSteps?: RestartStep[];
 }
 
 export interface WavePlan {
@@ -142,6 +200,8 @@ export interface RunSample {
   startedAt: string | null;
   finishedAt: string | null;
   errorCode: string | null;
+  /** Bounded code naming why a generic `errorCode` (such as `adapter_failed`) failed, e.g. `40001`. */
+  failureCause?: string | null;
   retryOfRunId: string | null;
   wakeCommentIds: string[];
   livenessState: string | null;
@@ -150,6 +210,8 @@ export interface RunSample {
   toolInFlight?: boolean;
   /** The run's recorded local runner process is still running with the same start time. */
   processAlive?: boolean;
+  /** A provider turn started and has no turn terminal yet. */
+  providerTurnActive?: boolean;
 }
 
 export interface InterruptionSample {
@@ -183,14 +245,20 @@ export interface RetryAttempt {
   httpStatus: number | null;
   accepted: boolean | null;
   error: string | null;
+  via?: "ui" | "api";
+  bannerText?: string | null;
 }
+
+export const UI_RETRY_BUTTON_MISSING = "ui_retry_button_missing";
+export const UI_RETRY_NO_REQUEST = "ui_retry_no_request";
 
 export interface FaultReceipt {
   faultId: string;
   kind: FaultKind;
   /** Task that scheduled the fault; every other running task is also exposed. */
   requestedBy: string;
-  signal: "SIGKILL" | "SIGTERM";
+  /** "none": MS1 sends no signal to the primary server. */
+  signal: "SIGKILL" | "SIGTERM" | "SIGSTOP" | "none";
   holdMs: number;
   requestedAt: number;
   startedAt: number;
@@ -207,6 +275,12 @@ export interface FaultReceipt {
   crashPoint?: { name: string; hit: number; pid: number; token?: string };
   /** K14: the build the stopped server ran and the build its replacement runs. */
   upgrade?: { fromRoot: string; fromSha: string | null; toRoot: string; toSha: string | null; switched: boolean };
+  /** TM1–TM3: what was frozen and which rows were aged. */
+  timeFault?: TimeFaultRecord;
+  /** RR1–RR3: every stop and replacement of the sequence, the first kill included. */
+  repeatedRestart?: RepeatedRestartRecord;
+  /** MS1–MS3: the second server and what happened to the first. */
+  multiServer?: import("./multi-server.js").MultiServerRecord;
   serverLogOffsetAtStart: number;
   serverLogOffsetAtReady: number | null;
   error: string | null;
@@ -221,7 +295,7 @@ export interface OracleArtifacts {
   workspacePath: string | null;
   /** B5: distinct `.bench/progress` values the harness itself saw while the task was live. */
   benchProgressObserved?: number;
-  stop?: { runId: string; runStatus: string | null; runsStartedBeforeContinue: string[]; continuePosted: boolean };
+  stop?: { runId: string | null; runStatus: string | null; runsStartedBeforeContinue: string[]; continuePosted: boolean; missed?: boolean };
   children?: Array<{ id: string; title?: string | null; status: string | null; assigneeAgentId: string | null; documents: Record<string, string | null> }>;
   childStalls?: Array<{ childIssueId: string; recoveryActionId: string | null }>;
   stallWakes?: Array<{ stalledIssueId: string | null; recoveryActionId: string | null }>;
@@ -229,6 +303,14 @@ export interface OracleArtifacts {
   approvals?: Array<{ id: string; status: string; title: string | null }>;
   /** G1 and H1: the board's actions and what the observer saw around them. */
   governance?: GovernanceRecord;
+  /** Q1: the saved question and the task's runs. */
+  question?: QuestionArtifacts;
+  /** PV1–PV3: the shim's log lines for this task. */
+  providerFaultEvents?: ProviderFaultEvent[];
+  /** L1: accounting and run-log evidence read from the wave database at rest. */
+  contention?: import("./contention.js").ContentionEvidence;
+  /** Q2, Q3: what the board did and what the task, its runs and the harness's app saw. */
+  journey?: import("./journeys.js").JourneyArtifacts;
 }
 
 /** What the board did for a governance task (G1, H1), and what the observer saw. */
@@ -283,7 +365,7 @@ export interface TaskRecord {
   deadlineAt: number | null;
   timedOut: boolean;
   followUp: { at: number; sentAt?: number; postedAt?: number; commentId: string | null; error: string | null; duringRun?: boolean } | null;
-  stop?: { at: number; runId: string; httpStatus: number | null; error: string | null };
+  stop?: { at: number; runId: string | null; httpStatus: number | null; error: string | null; missed?: boolean };
   faultIds: string[];
   sweep: RestSweep | null;
   /** Workspace files present just before the first fault that hit this task (R2). */
@@ -297,6 +379,9 @@ export interface TaskRecord {
   workspaceMovedTo?: string;
   /** Set when the pre-fault snapshot could not read the workspace; R2 then fails visibly. */
   preFaultSnapshotError?: string | null;
+  remoteWorkspace?: boolean;
+  remoteFiles?: Record<string, string | null>;
+  remoteFileErrors?: Record<string, string>;
   /** Pre-fault files missing at rest; null when not checked. */
   lostFiles: string[] | null;
   /** B5: distinct bench progress values the observer read during polling. */
@@ -310,6 +395,12 @@ export interface TaskRecord {
   governance?: GovernanceRecord;
   /** K14 waves: the build serving when the task launched. */
   serverBuildAtLaunch?: "upgrade_from" | "current";
+  /** Q1: the saved question and the board's answer. */
+  question?: QuestionRecord;
+  /** Q2, Q3: the board's journey actions (journey-driver.ts). */
+  journey?: import("./journeys.js").JourneyRecord;
+  /** PV with `--provider-fault-restart`: when the shim logged the task's fault (arms the `provider` trigger). */
+  providerFaultAppliedAt?: number;
 }
 
 export interface TaskGrade {
@@ -317,6 +408,8 @@ export interface TaskGrade {
   crossingFaults: string[];
   rules: Record<RuleId, RuleResult>;
   T: OracleResult;
+  /** Universal checks U1–U4 (universal.ts); absent on grades written before them. */
+  universal?: import("./universal.js").UniversalGrade;
   pass: boolean;
   signature: string | null;
 }

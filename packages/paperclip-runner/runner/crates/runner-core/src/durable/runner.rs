@@ -327,6 +327,12 @@ pub trait CommandExecutor {
         Ok(())
     }
 
+    /// The cause of a provider restart after a turn that failed and was
+    /// recovered, once; recorded as a runner diagnostic.
+    fn take_turn_end_restart_failure(&mut self) -> Option<String> {
+        None
+    }
+
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError>;
 
     fn observe_recovery_state(&mut self, _state: &DurableState) -> Result<(), DurableRunnerError> {
@@ -379,6 +385,10 @@ pub trait CommandExecutor {
     /// from their durable owner; terminal observation precedes deadline expiry.
     fn maintain_backpressured_provider(&mut self) -> Result<(), DurableRunnerError> {
         Ok(())
+    }
+
+    fn provider_poll_is_live(&self) -> bool {
+        false
     }
 
     /// Removes the prefix returned by `poll_events` after every event in that
@@ -893,6 +903,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
             notifications.poll(&config, &mut state, &store);
         }
         let mut sent_source_seq = state.acked_source_seq;
+        let replayed_through_source_seq = state.highest_source_seq();
         let mut ack_persistence = CumulativeAckPersistence::default();
 
         let mut lifecycle_after_reply = CommandLifecycle::Continue;
@@ -1049,6 +1060,8 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                     .min(reconnect_deadline.saturating_duration_since(Instant::now()));
             continue;
         }
+        let mut control_frame_consumed = false;
+        let mut quiet_through_source_seq = replayed_through_source_seq;
         loop {
             if !config.max_runtime.is_zero() && started.elapsed() >= config.max_runtime {
                 break;
@@ -1147,7 +1160,19 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                     }
                 }
             }
-            let control_message = transport.receive_json();
+            let control_message = if control_frame_consumed
+                && state.highest_source_seq() > quiet_through_source_seq
+                && executor.provider_poll_is_live()
+            {
+                transport.receive_queued_json()
+            } else {
+                transport.receive_json()
+            };
+            control_frame_consumed = matches!(control_message, Ok(Some(_)));
+            let source_seq_before_poll = state.highest_source_seq();
+            let polls_provider = matches!(control_message, Ok(None))
+                && state.pending_provider_cleanup.is_none()
+                && state.acked_source_seq >= sent_source_seq;
             poll_executor_events_when_control_idle(
                 &mut state,
                 &store,
@@ -1156,6 +1181,9 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                 sent_source_seq,
                 &control_message,
             )?;
+            if polls_provider {
+                quiet_through_source_seq = source_seq_before_poll;
+            }
             let message = match control_message {
                 Ok(Some(message)) => message,
                 Ok(None) => continue,
@@ -2175,6 +2203,10 @@ fn poll_executor_events_after_controller_ack<E: CommandExecutor>(
     poll_executor_events(state, store, config, executor)?;
     if state.acked_source_seq >= state.highest_source_seq() {
         executor.prepare_next_turn()?;
+        if let Some(failure) = executor.take_turn_end_restart_failure() {
+            state.record_diagnostic(format!("turn-end provider restart failed: {failure}"));
+            store.save(state)?;
+        }
     }
     Ok(())
 }
@@ -3043,6 +3075,7 @@ mod tests {
             reconnect_delay: Duration::from_millis(1),
             reconnect_grace: None,
             max_runtime: Duration::from_secs(1),
+            turn_scoped: false,
         }
     }
 

@@ -4,12 +4,14 @@ import { experimentalApiMetadata } from "./experimental-api-metadata.js";
 import { ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
 import { agentCaseHandoffSchema, caseWorkflowDocumentTextSchema, doneCaseHandoffSchema, createWorkflowSchema, updateWorkflowSchema, listWorkflowsSchema, readWorkflowQuerySchema } from "@paperclipai/shared";
 import {
+  experimentalApiDocs,
   experimentalApiPaths,
   experimentalApiQueries,
 } from "./experimental-api-paths.js";
 import { Router } from "express";
 import { subscriptionPriceSchema, mergeSubscriptionsSchema } from "@paperclipai/shared";
 import { z } from "zod";
+import { getHiddenSettings } from "../services/settings-visibility.js";
 import {
   gitHubRepositoryPageQuerySchema,
   toggleAllGitHubRepositoriesSchema,
@@ -51,6 +53,9 @@ import {
   updateAgentSchema,
   updatePrimaryAgentSchema,
   updateAgentPermissionsSchema,
+  updateAgentPermissionGrantSchema,
+  updateAgentInteractionPermissionsSchema,
+  agentInteractionPermissionsSchema,
   addAgentProjectAccessSchema,
   updateAgentInstructionsPathSchema,
   updateAgentInstructionsBundleSchema,
@@ -262,6 +267,7 @@ import {
   resumeWorkspaceFinalizationSchema,
   confirmNativeControllerStoppedSchema,
   confirmOwnerGoneSchema,
+  confirmRunStoppedSchema,
   cancelIssueThreadInteractionSchema,
   // Secret provider configs and remote import
   createSecretProviderConfigSchema,
@@ -1429,6 +1435,7 @@ const browserUseOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "PATCH /api/agents/{id}/permission-grants",
   // Budget changes are board-only (assertBoard in routes/costs.ts).
   "POST /api/companies/{companyId}/budgets/policies",
   "POST /api/companies/{companyId}/budget-incidents/{incidentId}/resolve",
@@ -1483,13 +1490,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/companies/import/jobs/{jobId}",
   "POST /api/board-claim/{token}/claim",
   "GET /api/cli-auth/me",
-  "POST /api/companies/{companyId}/invites",
-  "GET /api/companies/{companyId}/invites",
   "POST /api/companies/{companyId}/openclaw/invite-prompt",
-  "GET /api/companies/{companyId}/join-requests",
-  "POST /api/companies/{companyId}/join-requests/{requestId}/approve",
-  "POST /api/companies/{companyId}/join-requests/{requestId}/reject",
-  "GET /api/companies/{companyId}/members",
   "PATCH /api/companies/{companyId}/members/{memberId}",
   "PATCH /api/companies/{companyId}/members/{memberId}/role-and-grants",
   "POST /api/companies/{companyId}/members/{memberId}/archive",
@@ -3764,8 +3765,15 @@ registry.registerPath({
   method: "get",
   path: "/api/agents/me/inbox/mine",
   tags: ["agents"],
-  summary: "Get current agent assigned inbox items",
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  summary: "List a person's Mine inbox tasks",
+  description: "Agent read of one board user's personal inbox: the tasks that person participated in and has not archived, the same set as their Mine list, which they open at /<prefix>/inbox/mine. Use it when a person asks what is in their inbox or needs their attention; it is not your own work queue (GET /api/agents/me/inbox-lite) and a company-wide task search is not a substitute. userId is required: use the person's user id, such as the authorUserId of their message.",
+  request: {
+    query: z.object({
+      userId: z.string().min(1).describe("The person's user id, such as the authorUserId of their message. Required."),
+      status: z.string().optional().describe("Comma-separated task statuses; defaults to the Mine list statuses (cancelled excluded)."),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
@@ -3832,6 +3840,36 @@ registry.registerPath({
     body: jsonBody(updateAgentPermissionsSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "patch",
+  path: "/api/agents/{id}/permission-grants",
+  tags: ["agents"],
+  summary: "Grant or revoke one explicit agent permission",
+  description: "Board-only. Requires users:manage_permissions in the agent's company. Enables an unscoped grant or removes that permission key without replacing other grants. Does not reactivate inactive memberships or start agent work. Writes an activity record in the same transaction.",
+  request: { params: z.object({ id: z.string().uuid() }), body: jsonBody(updateAgentPermissionGrantSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+const agentInteractionPermissionsResponse = z.object({
+  agentId: z.string().uuid(), companyId: z.string().uuid(), overrides: agentInteractionPermissionsSchema,
+  effective: agentInteractionPermissionsSchema.required(),
+});
+registry.registerPath({
+  method: "get", path: "/api/agents/{id}/interaction-permissions", tags: ["agents"],
+  summary: "Read individual agent interaction restrictions",
+  description: "Requires agent configuration read access. Returns sparse saved overrides and effective restriction values; true does not grant authority denied by other policies.",
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: { 200: r.ok(agentInteractionPermissionsResponse), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registry.registerPath({
+  method: "patch", path: "/api/agents/{id}/interaction-permissions", tags: ["agents"],
+  summary: "Set individual agent interaction restrictions",
+  description: "Human permission managers only: requires board authentication and users:manage_permissions. A partial map sets true/false; null removes the override. Missing values preserve existing behavior. Does not change grants or start work. Every change is audited atomically.",
+  request: { params: z.object({ id: z.string().uuid() }), body: jsonBody(updateAgentInteractionPermissionsSchema) },
+  responses: { 200: r.ok(agentInteractionPermissionsResponse), 400: r.badRequest, 401: r.unauthorized,
+    403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 const agentProjectAccessResponse = z.object({ projectIds: z.array(z.string().uuid()), canManage: z.boolean() });
@@ -3909,7 +3947,7 @@ registry.registerPath({
 });
 
 for (const operation of [
-  { suffix: "history", summary: "List immutable instruction revisions", query: z.object({ path: z.string().optional(), cursor: z.string().uuid().optional() }) },
+  { suffix: "history", summary: "List pre-upgrade instruction revisions. Current saves record no revision history; an empty list means no earlier version is retained", query: z.object({ path: z.string().optional(), cursor: z.string().uuid().optional() }) },
   { suffix: "revision/{revisionId}", summary: "Read exact instruction content at a revision", query: z.object({ path: z.string().optional() }) },
   { suffix: "diff", summary: "Compare instruction revisions (exact common prefix, removed, added, suffix)", query: z.object({ path: z.string().optional(), from: z.string().uuid(), to: z.string().uuid() }) },
 ]) {
@@ -4352,12 +4390,35 @@ registry.registerPath({
   path: "/api/companies/{companyId}/issues/summaries",
   tags: ["issues"],
   summary: "Get authorized recent-task summaries",
-  description: "Accepts only the ids query parameter: one to five comma-separated UUIDs, bounded before deduplication. IDs are trimmed and normalized to lowercase. Repeated, array and nested query syntax is rejected, including mixed forms. Returns accessible, visible tasks in request order; unavailable IDs are omitted. This private, no-store read excludes full task and workspace enrichment.",
+  description: "Accepts only the ids query parameter: one to fifty comma-separated UUIDs, bounded before deduplication. IDs are trimmed and normalized to lowercase. Repeated, array and nested query syntax is rejected, including mixed forms. Returns accessible, visible tasks in request order; unavailable IDs are omitted. This private, no-store read excludes full task and workspace enrichment.",
   request: {
     params: z.object({ companyId: z.string() }),
-    query: z.object({ ids: z.string().min(1).describe("One to five comma-separated task UUIDs; repeated query parameters are rejected") }),
+    query: z.object({ ids: z.string().min(1).describe("One to fifty comma-separated task UUIDs; repeated query parameters are rejected") }),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/issues/chat-bootstrap",
+  tags: ["issues"],
+  summary: "Read what the task chat needs before its first frame, for up to ten tasks",
+  description: "Accepts only the ids query parameter: one to ten comma-separated task UUIDs or identifiers, normalized (UUID lowercase, identifier uppercase) and deduplicated. Returns { items } in request order; each item has the normalized ref plus issue (GET /issues/{id}?view=core), recentComments (/recent-comments), commentInputFacts (/activity?view=comment-inputs for the recent comments), recentActivity (/activity?view=recent), recentRuns (/runs?view=recent), interactions, attachments, liveRuns and activeRun, each in that endpoint's shape. Missing, foreign and unreadable tasks are omitted. Read-only, without break-glass; private, no-store. Task-bridge keys are rejected.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ ids: z.string().min(1).describe("One to ten comma-separated task UUIDs or identifiers; other query parameters are rejected") }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{ref}/chat-bootstrap",
+  tags: ["issues"],
+  summary: "Read what the task chat needs before its first frame, for one task",
+  description: "The single-task form of /companies/{companyId}/issues/chat-bootstrap for a hard load of a task URL. Returns one item (not wrapped in items), identical to the batch item for the same ref. 404 when the task is missing or unreadable. Read-only, without break-glass; private, no-store.",
+  request: { params: z.object({ ref: z.string().describe("A task UUID or identifier") }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -5303,11 +5364,42 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+// A plugin-managed routine is still an ordinary routine row, so agents read it
+// through the routine routes; say there who owns it and where it is changed.
+const PLUGIN_MANAGED_ROUTINE_GUIDANCE =
+  "A routine with a non-null `managedByPlugin` is a plugin-managed routine: that plugin created it and owns its definition "
+  + "(title, instructions, schedule, assignee), and the plugin can reset it to its manifest defaults. "
+  + "It is changed through the settings that plugin exposes, which a board user opens at "
+  + "[plugin settings](/<prefix>/company/settings/instance/plugins/<pluginId>), with `managedByPlugin.pluginId` as <pluginId> "
+  + "and this conversation's company prefix as <prefix>. "
+  + "Do not rewrite, detach or duplicate a plugin-managed routine to imitate a change, and do not search for another route: "
+  + "reply now with that link and the routine's page link.";
+// When the hosting operator hides plugin management, that settings page redirects
+// away, so the guidance names the operator instead of linking it.
+const PLUGIN_MANAGED_ROUTINE_OPERATOR_GUIDANCE =
+  "A routine with a non-null `managedByPlugin` is a plugin-managed routine: that plugin created it and owns its definition "
+  + "(title, instructions, schedule, assignee), and the plugin can reset it to its manifest defaults. "
+  + "On this instance the hosting operator manages plugins, so no Paperclip page offers that change. "
+  + "Do not rewrite, detach or duplicate a plugin-managed routine to imitate a change, and do not search for another route: "
+  + "reply now that the hosting operator controls this plugin's settings, with the routine's page link.";
+
+/** Picks the plugin-managed routine guidance that matches plugin settings visibility. */
+export function applyPluginSettingsVisibility(document: any, hidden: ReadonlySet<string> = getHiddenSettings()): any {
+  if (!hidden.has("instance.plugins")) return document;
+  for (const operation of [document.paths?.["/api/routines/{id}"]?.get, document.paths?.["/api/routines/{id}"]?.patch]) {
+    if (typeof operation?.description === "string") {
+      operation.description = operation.description.replace(PLUGIN_MANAGED_ROUTINE_GUIDANCE, PLUGIN_MANAGED_ROUTINE_OPERATOR_GUIDANCE);
+    }
+  }
+  return document;
+}
+
 registry.registerPath({
   method: "get",
   path: "/api/routines/{id}",
   tags: ["routines"],
   summary: "Get a routine",
+  description: `Routine details including triggers. ${PLUGIN_MANAGED_ROUTINE_GUIDANCE}`,
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
@@ -5317,6 +5409,7 @@ registry.registerPath({
   path: "/api/routines/{id}",
   tags: ["routines"],
   summary: "Update a routine",
+  description: `Agents can update only routines assigned to them and cannot reassign them. ${PLUGIN_MANAGED_ROUTINE_GUIDANCE}`,
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(updateRoutineSchema),
@@ -7263,6 +7356,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/invites",
   tags: ["access"],
   summary: "List company invites",
+  description: "Board members or agents holding users:invite in this company. Lists invite records; it never returns invite tokens.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -7272,6 +7366,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/invites",
   tags: ["access"],
   summary: "Create a company invite",
+  description: "Board members or agents holding users:invite in this company. Creates a shareable join link (inviteUrl) that the person who should join opens; it does not send email and has no email field. Write the returned inviteUrl as a Markdown link in your reply. Membership starts only after the person accepts the link (and a join request is approved when required). humanRole defaults to operator.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(createCompanyInviteSchema),
@@ -7284,6 +7379,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/join-requests",
   tags: ["access"],
   summary: "List company join requests",
+  description: "Board members or agents holding joins:approve in this company.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -7293,6 +7389,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/join-requests/{requestId}/approve",
   tags: ["access"],
   summary: "Approve a company join request",
+  description: "Board members or agents holding joins:approve in this company.",
   request: {
     params: z.object({ companyId: z.string(), requestId: z.string() }),
   },
@@ -7304,6 +7401,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/join-requests/{requestId}/reject",
   tags: ["access"],
   summary: "Reject a company join request",
+  description: "Board members or agents holding joins:approve in this company.",
   request: {
     params: z.object({ companyId: z.string(), requestId: z.string() }),
   },
@@ -7350,6 +7448,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/members",
   tags: ["access"],
   summary: "List company members",
+  description: "Board members or agents holding users:manage_permissions in this company. Returns each member's role, status and explicit grants. Changing a member's role, grants or status stays board-only: A person makes this change on the Members page at /<prefix>/company/settings/members (prefix = the company's issue prefix); link that page as a Markdown link.",
   request: { params: z.object({ companyId: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -7359,6 +7458,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/members/{memberId}",
   tags: ["access"],
   summary: "Update a company member status or role",
+  description: "Board-only, even for agents holding users:manage_permissions. A person makes this change on the Members page at /<prefix>/company/settings/members (prefix = the company's issue prefix); link that page as a Markdown link.",
   request: {
     params: z.object({ companyId: z.string(), memberId: z.string() }),
     body: jsonBody(updateCompanyMemberSchema),
@@ -7376,6 +7476,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/members/{memberId}/role-and-grants",
   tags: ["access"],
   summary: "Update a company member role and explicit grants",
+  description: "Board-only, even for agents holding users:manage_permissions. A person makes this change on the Members page at /<prefix>/company/settings/members (prefix = the company's issue prefix); link that page as a Markdown link.",
   request: {
     params: z.object({ companyId: z.string(), memberId: z.string() }),
     body: jsonBody(updateCompanyMemberWithPermissionsSchema),
@@ -7393,6 +7494,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/members/{memberId}/archive",
   tags: ["access"],
   summary: "Archive a company member",
+  description: "Board-only, even for agents holding users:manage_permissions. A person makes this change on the Members page at /<prefix>/company/settings/members (prefix = the company's issue prefix); link that page as a Markdown link.",
   request: {
     params: z.object({ companyId: z.string(), memberId: z.string() }),
     body: jsonBody(archiveCompanyMemberSchema),
@@ -7410,6 +7512,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/members/{memberId}/permissions",
   tags: ["access"],
   summary: "Update explicit company member permissions",
+  description: "Board-only, even for agents holding users:manage_permissions. A person makes this change on the Members page at /<prefix>/company/settings/members (prefix = the company's issue prefix); link that page as a Markdown link.",
   request: {
     params: z.object({ companyId: z.string(), memberId: z.string() }),
     body: jsonBody(updateMemberPermissionsSchema),
@@ -11126,6 +11229,15 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
+  path: "/api/issues/{id}/recovery-actions/confirm-run-stopped",
+  tags: ["issues"],
+  summary: "Confirm that a local run whose process was never recorded stopped, so its parked Retry can start",
+  body: confirmRunStoppedSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
   path: "/api/issues/{id}/recovery-actions/confirm-owner-gone",
   tags: ["issues"],
   summary: "Confirm that the unrecorded server holding a stuck recovery record stopped, so recovery can release it",
@@ -13238,16 +13350,16 @@ for (const [method, path, body, summary] of [
 for (const [method, path, body] of experimentalApiPaths) {
   const query = experimentalApiQueries[`${method.toUpperCase()} ${path}`];
   const metadata = experimentalApiMetadata[`${method.toUpperCase()} ${path}`];
+  const docs = experimentalApiDocs[`${method.toUpperCase()} ${path}`];
   registry.registerPath({
     method,
     path,
     tags: ["Experimental"],
-    summary: `${method.toUpperCase()} ${path
+    summary: docs?.summary ?? `${method.toUpperCase()} ${path
       .replace(/\{[^}]+\}/g, "")
       .replace(/\/api\//, "")
       .replaceAll("/", " ")}`,
-    description:
-      "Experimental API; the corresponding instance feature must be enabled. Existing route authorization applies.",
+    description: `${docs ? `${docs.description} ` : ""}Experimental API; the corresponding instance feature must be enabled. Existing route authorization applies.`,
     request: {
       params: z.object(
         Object.fromEntries(
@@ -13300,7 +13412,7 @@ for (const [method, path, body] of experimentalApiPaths) {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function buildOpenApiDocument(): any {
-  return applyDocumentFixups({
+  return applyPluginSettingsVisibility(applyDocumentFixups({
     openapi: "3.0.0",
     info: {
       title: "Paperclip API",
@@ -13310,7 +13422,7 @@ export function buildOpenApiDocument(): any {
     servers: [{ url: "/" }],
     components: registry.buildComponents(),
     paths: registry.buildPaths(),
-  });
+  }));
 }
 
 export const buildOpenApiSpec = buildOpenApiDocument;
