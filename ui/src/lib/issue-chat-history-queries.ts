@@ -58,7 +58,7 @@ export async function fetchRecentIssueActivity(queryClient: QueryClient, issueRe
   // A cold open may already have this in a loading bootstrap; a refresh asks the server.
   const recent = cached
     ? await activityApi.recentForIssue(issueRef)
-    : await readFromIssueChatBootstrap(issueRef, (item) => item.recentActivity, () => activityApi.recentForIssue(issueRef));
+    : await readFromIssueChatBootstrap(queryClient, recentIssueActivityQueryKey(issueRef), issueRef, (item) => item.recentActivity, () => activityApi.recentForIssue(issueRef));
   const previous = cached ?? [];
   return [...new Map([...previous, ...recent].map((event) => [event.id, event])).values()];
 }
@@ -73,7 +73,7 @@ export async function fetchRecentIssueRunWindow(
   const previousWindow = queryClient.getQueryData<RecentIssueRunWindow>(key);
   let recent = previousWindow
     ? await activityApi.recentRunsForIssue(issueRef)
-    : await readFromIssueChatBootstrap(issueRef, (item) => item.recentRuns, () => activityApi.recentRunsForIssue(issueRef));
+    : await readFromIssueChatBootstrap(queryClient, key, issueRef, (item) => item.recentRuns, () => activityApi.recentRunsForIssue(issueRef));
   let previous = previousWindow?.runs ?? [];
   let reconciledFullHistory = false;
   if (previous.some((run) =>

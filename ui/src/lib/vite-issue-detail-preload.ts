@@ -56,6 +56,7 @@ export function preloadIssueDetail(): Plugin {
             if (parts[parts.length - 2] === "issues" && ref) {
               window[${JSON.stringify(EARLY_CHAT_BOOTSTRAP_GLOBAL)}] = {
                 ref: decodeURIComponent(ref),
+                startedAt: Date.now(),
                 promise: fetch("/api/issues/" + ref + "/chat-bootstrap", { credentials: "include", headers: { Accept: "application/json" } })
                   .then(response => response.ok ? response.json() : null)
                   .catch(() => null),

@@ -5,6 +5,7 @@ import type { Issue, IssueRecentComments } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EARLY_CHAT_BOOTSTRAP_GLOBAL } from "./issue-detail-preload-events";
 import {
+  issueChatBootstrapEntryCountForTest,
   loadIssueChatBootstraps,
   readFromIssueChatBootstrap,
   resetIssueChatBootstrapsForTest,
@@ -115,7 +116,7 @@ describe("loadIssueChatBootstraps", () => {
     // The click that opens a task unmounts the list and aborts its preload.
     controller.abort();
     const ownRead = vi.fn();
-    const interactions = readFromIssueChatBootstrap("ABC-3", (bootstrap) => bootstrap.recentActivity, ownRead);
+    const interactions = readFromIssueChatBootstrap(client, ["unread", "ABC-3"], "ABC-3", (bootstrap) => bootstrap.recentActivity, ownRead);
     answer(respondWith(refs.slice(0, 10)));
     await loading;
     await expect(interactions).resolves.toEqual([{ id: "event-3" }]);
@@ -128,7 +129,7 @@ describe("loadIssueChatBootstraps", () => {
     chatBootstrap.mockRejectedValueOnce(new Error("busy"));
     await loadIssueChatBootstraps(client, "company-1", ["ABC-1"]);
     const read = vi.fn().mockResolvedValue("from server");
-    await expect(readFromIssueChatBootstrap("ABC-1", (bootstrap) => bootstrap.interactions, read)).resolves.toBe("from server");
+    await expect(readFromIssueChatBootstrap(client, ["unread", "ABC-1"], "ABC-1", (bootstrap) => bootstrap.interactions, read)).resolves.toBe("from server");
     expect(read).toHaveBeenCalledOnce();
     await loadIssueChatBootstraps(client, "company-1", ["ABC-1"]);
     expect(chatBootstrap).toHaveBeenCalledTimes(2);
@@ -139,7 +140,7 @@ describe("loadIssueChatBootstraps", () => {
     await loadIssueChatBootstraps(client, "company-1", ["ABC-7"]);
     expect(client.getQueryData([...queryKeys.issues.detail("ABC-7"), "core"])).toBeUndefined();
     const read = vi.fn().mockResolvedValue([]);
-    await readFromIssueChatBootstrap("ABC-7", (bootstrap) => bootstrap.interactions, read);
+    await readFromIssueChatBootstrap(client, ["unread", "ABC-7"], "ABC-7", (bootstrap) => bootstrap.interactions, read);
     expect(read).toHaveBeenCalledOnce();
   });
 });
@@ -151,8 +152,8 @@ describe("readFromIssueChatBootstrap", () => {
     void loadIssueChatBootstraps(client, "company-1", ["ABC-9"]);
     await Promise.resolve();
     const ownRead = vi.fn();
-    const interactions = readFromIssueChatBootstrap("abc-9", (bootstrap) => bootstrap.interactions, ownRead);
-    const activity = readFromIssueChatBootstrap("ABC-9", (bootstrap) => bootstrap.recentActivity, ownRead);
+    const interactions = readFromIssueChatBootstrap(client, ["unread", "abc-9"], "abc-9", (bootstrap) => bootstrap.interactions, ownRead);
+    const activity = readFromIssueChatBootstrap(client, ["unread", "ABC-9"], "ABC-9", (bootstrap) => bootstrap.recentActivity, ownRead);
     answer(respondWith(["ABC-9"]));
     await expect(interactions).resolves.toEqual([]);
     await expect(activity).resolves.toEqual([{ id: "event-9" }]);
@@ -165,12 +166,12 @@ describe("readFromIssueChatBootstrap", () => {
     chatBootstrap.mockResolvedValueOnce({ items: [] });
     await loadIssueChatBootstraps(client, "company-1", ["ABC-4"]);
     const read = vi.fn().mockResolvedValue(["server"]);
-    await expect(readFromIssueChatBootstrap("ABC-4", (bootstrap) => bootstrap.attachments, read)).resolves.toEqual(["server"]);
-    await expect(readFromIssueChatBootstrap("ABC-5", (bootstrap) => bootstrap.attachments, read)).resolves.toEqual(["server"]);
+    await expect(readFromIssueChatBootstrap(client, ["unread", "ABC-4"], "ABC-4", (bootstrap) => bootstrap.attachments, read)).resolves.toEqual(["server"]);
+    await expect(readFromIssueChatBootstrap(client, ["unread", "ABC-5"], "ABC-5", (bootstrap) => bootstrap.attachments, read)).resolves.toEqual(["server"]);
     await loadIssueChatBootstraps(client, "company-1", ["ABC-8"]);
     // A later read of a loaded task is a refresh: it asks the server.
     vi.setSystemTime(Date.now() + 5_000);
-    await expect(readFromIssueChatBootstrap("ABC-8", (bootstrap) => bootstrap.attachments, read)).resolves.toEqual(["server"]);
+    await expect(readFromIssueChatBootstrap(client, ["unread", "ABC-8"], "ABC-8", (bootstrap) => bootstrap.attachments, read)).resolves.toEqual(["server"]);
     expect(read).toHaveBeenCalledTimes(3);
   });
 });
@@ -180,7 +181,7 @@ describe("startIssueChatBootstrap", () => {
     (window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL] = { ref: "abc-3", promise: Promise.resolve(item("ABC-3")) };
     startIssueChatBootstrap(client, null, "ABC-3");
     const ownRead = vi.fn();
-    await expect(readFromIssueChatBootstrap("ABC-3", (bootstrap) => bootstrap.recentActivity, ownRead)).resolves.toEqual([{ id: "event-3" }]);
+    await expect(readFromIssueChatBootstrap(client, ["unread", "ABC-3"], "ABC-3", (bootstrap) => bootstrap.recentActivity, ownRead)).resolves.toEqual([{ id: "event-3" }]);
     expect(client.getQueryData([...queryKeys.issues.detail("ABC-3"), "core"])).toMatchObject({ identifier: "ABC-3" });
     expect(chatBootstrap).not.toHaveBeenCalled();
     expect(ownRead).not.toHaveBeenCalled();
@@ -191,7 +192,7 @@ describe("startIssueChatBootstrap", () => {
     (window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL] = { ref: "ABC-3", promise: Promise.resolve(item("ABC-3")) };
     startIssueChatBootstrap(client, "company-2", "ABC-3");
     const read = vi.fn().mockResolvedValue([]);
-    await readFromIssueChatBootstrap("ABC-3", (bootstrap) => bootstrap.recentActivity, read);
+    await readFromIssueChatBootstrap(client, ["unread", "ABC-3"], "ABC-3", (bootstrap) => bootstrap.recentActivity, read);
     expect(read).toHaveBeenCalledOnce();
     expect(client.getQueryData([...queryKeys.issues.detail("ABC-3"), "core"])).toBeUndefined();
   });
@@ -200,7 +201,7 @@ describe("startIssueChatBootstrap", () => {
     (window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL] = { ref: "ABC-3", promise: Promise.resolve(null) };
     startIssueChatBootstrap(client, null, "ABC-3");
     const read = vi.fn().mockResolvedValue([]);
-    await readFromIssueChatBootstrap("ABC-3", (bootstrap) => bootstrap.recentActivity, read);
+    await readFromIssueChatBootstrap(client, ["unread", "ABC-3"], "ABC-3", (bootstrap) => bootstrap.recentActivity, read);
     expect(read).toHaveBeenCalledOnce();
   });
 
@@ -208,7 +209,79 @@ describe("startIssueChatBootstrap", () => {
     (window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL] = { ref: "ABC-1", promise: Promise.resolve(item("ABC-1")) };
     startIssueChatBootstrap(client, "company-1", "ABC-2");
     await Promise.resolve();
-    await expect(readFromIssueChatBootstrap("ABC-2", (bootstrap) => bootstrap.issue.identifier, vi.fn())).resolves.toBe("ABC-2");
+    await expect(readFromIssueChatBootstrap(client, ["unread", "ABC-2"], "ABC-2", (bootstrap) => bootstrap.issue.identifier, vi.fn())).resolves.toBe("ABC-2");
     expect(requestedRefs()).toEqual(["ABC-2"]);
+  });
+});
+
+describe("safeguards", () => {
+  it("never shares a bootstrap with a refresh of a key that already holds data", async () => {
+    let answer!: (value: unknown) => void;
+    chatBootstrap.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    void loadIssueChatBootstraps(client, "company-1", ["ABC-9"]);
+    await Promise.resolve();
+    // An accepted confirmation was written and its key invalidated: the refresh
+    // must read the server, not the bootstrap's older pending interaction.
+    const key = queryKeys.issues.interactions("ABC-9");
+    client.setQueryData(key, [{ id: "accepted" }]);
+    const read = vi.fn().mockResolvedValue([{ id: "accepted" }]);
+    await expect(readFromIssueChatBootstrap(client, key, "ABC-9", (bootstrap) => bootstrap.interactions, read)).resolves.toEqual([{ id: "accepted" }]);
+    expect(read).toHaveBeenCalledOnce();
+    answer(respondWith(["ABC-9"]));
+  });
+
+  it("never gives one account's bootstrap to another account", async () => {
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    await loadIssueChatBootstraps(client, "company-1", ["ABC-3"]);
+    client.clear();
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+    const read = vi.fn().mockResolvedValue(["server"]);
+    await expect(readFromIssueChatBootstrap(client, ["unread"], "ABC-3", (bootstrap) => bootstrap.attachments, read)).resolves.toEqual(["server"]);
+    expect(read).toHaveBeenCalledOnce();
+    // The new account loads the task for itself.
+    await loadIssueChatBootstraps(client, "company-1", ["ABC-3"]);
+    expect(requestedRefs()).toEqual(["ABC-3", "ABC-3"]);
+  });
+
+  it("drops an early answer when the account changes before it arrives", async () => {
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    let answer!: (value: unknown) => void;
+    (window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL] = {
+      ref: "ABC-3", startedAt: Date.now(), promise: new Promise((resolve) => { answer = resolve; }),
+    };
+    startIssueChatBootstrap(client, null, "ABC-3");
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+    answer(item("ABC-3"));
+    const read = vi.fn().mockResolvedValue([]);
+    await readFromIssueChatBootstrap(client, ["unread"], "ABC-3", (bootstrap) => bootstrap.recentActivity, read);
+    expect(read).toHaveBeenCalledOnce();
+    expect(client.getQueryData([...queryKeys.issues.detail("ABC-3"), "core"])).toBeUndefined();
+  });
+
+  it("stamps an early answer with its request time and ignores one that is already stale", async () => {
+    const startedAt = Date.now() - 5_000;
+    (window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL] = { ref: "ABC-3", startedAt, promise: Promise.resolve(item("ABC-3")) };
+    await startIssueChatBootstrap(client, null, "ABC-3");
+    expect(client.getQueryState([...queryKeys.issues.detail("ABC-3"), "core"])?.dataUpdatedAt).toBe(startedAt);
+
+    (window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL] = {
+      ref: "ABC-4", startedAt: Date.now() - ISSUE_CHAT_BOOTSTRAP_FRESH_MS - 1, promise: Promise.resolve(item("ABC-4")),
+    };
+    startIssueChatBootstrap(client, "company-1", "ABC-4");
+    await Promise.resolve();
+    // The page read the task itself instead of seeding the stale answer.
+    expect(requestedRefs()).toEqual(["ABC-4"]);
+  });
+
+  it("drops expired answers so they do not stay in memory", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    await loadIssueChatBootstraps(client, "company-1", ["ABC-1"]);
+    await Promise.resolve();
+    vi.setSystemTime(Date.now() + ISSUE_CHAT_BOOTSTRAP_FRESH_MS + 1);
+    client.clear();
+    await loadIssueChatBootstraps(client, "company-1", ["ABC-2"]);
+    await Promise.resolve();
+    // Only ABC-2 remains, under its identifier and its id.
+    expect(issueChatBootstrapEntryCountForTest()).toBe(2);
   });
 });

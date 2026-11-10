@@ -47,6 +47,21 @@ export function includeTaskListAncestors(items: readonly TaskListItem[], matches
   return items.filter(item => included.has(item.issue.id));
 }
 
+/**
+ * The route refs of the first `limit` rendered rows. Rows that are not
+ * rendered are skipped; no row after the last one returned is read.
+ */
+export function topRenderedTaskRefs(rows: Iterable<Pick<Issue, "id" | "identifier">>, rendered: ReadonlySet<string>, limit: number) {
+  const refs: string[] = [];
+  if (limit <= 0) return refs;
+  for (const issue of rows) {
+    if (!rendered.has(issue.id)) continue;
+    refs.push(issue.identifier ?? issue.id);
+    if (refs.length >= limit) break;
+  }
+  return refs;
+}
+
 /** Preloads the chats of a list's top rows. A component, so lists without it need no query client. */
 function TaskChatPreload({ companyId, refs }: { companyId: string; refs: readonly string[] }) {
   usePreloadTaskChats(companyId, refs, true);
@@ -152,15 +167,16 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
     const label = groupBy === "status" ? issueFilterLabel(root.status) : groupBy === "project" ? root.project?.name ?? "No project" : "";
     groups.set(label, [...(groups.get(label) ?? []), root]);
   }
-  // The top rendered rows, in display order: grouped lists show their top-level rows.
-  const preloadRefs: string[] = [];
-  if (preloadCompanyId) {
-    for (const id of groupBy === "none" ? rowIds : [...groups.values()].flat().map(issue => issue.id)) {
-      if (preloadRefs.length >= CHAT_BOOTSTRAP_PRELOAD_LIMIT) break;
-      const issue = renderedIds.has(id) ? visibleById.get(id)?.issue : undefined;
-      if (issue) preloadRefs.push(issue.identifier ?? issue.id);
+  // The top rendered rows, in display order. The walk is lazy: it stops after
+  // the preload limit, whatever the size of the list.
+  function* displayedRows(): Generator<Issue> {
+    function* branch(issue: Issue): Generator<Issue> {
+      yield issue;
+      if (!collapsed.has(issue.id)) for (const child of childMap.get(issue.id) ?? []) yield* branch(child);
     }
+    for (const groupRoots of groups.values()) for (const root of groupRoots) yield* branch(root);
   }
+  const preloadRefs = preloadCompanyId ? topRenderedTaskRefs(displayedRows(), renderedIds, CHAT_BOOTSTRAP_PRELOAD_LIMIT) : [];
   return (
     <TaskListViewport visibleColumns={columns} columnOrder={columnOrder} controls={<TaskListColumnSettings visibleColumns={columns} onVisibleColumnsChange={updateColumns} onColumnOrderChange={setColumnOrder} onResetDefaults={() => setSort(undefined)} />}>
       <TaskListColumnHeader sort={sort && isTaskListColumnSort(sort) ? sort : undefined} onSortChange={setSort} onColumnOrderChange={setColumnOrder} />

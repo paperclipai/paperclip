@@ -1,4 +1,4 @@
-import type { QueryClient } from "@tanstack/react-query";
+import type { QueryClient, QueryKey } from "@tanstack/react-query";
 import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS } from "@paperclipai/shared";
 import { api } from "@/api/client";
 import { issuesApi } from "@/api/issues";
@@ -35,24 +35,43 @@ export const CHAT_BOOTSTRAP_PRELOAD_LIMIT = ISSUE_CHAT_BOOTSTRAP_MAX_IDS;
 /** How long after it arrives a bootstrap answer may stand in for a page read. */
 const SHARE_WINDOW_MS = 2_000;
 
-type Entry = { promise: Promise<ChatBootstrapItem | undefined>; startedAt: number; settledAt?: number };
+/**
+ * One task's part of a bootstrap request. `userId` is the account that sent
+ * it: an entry is never used by another account.
+ */
+type Entry = { promise: Promise<ChatBootstrapItem | undefined>; userId: string | null; startedAt: number; settledAt?: number };
 const entries = new Map<string, Entry>();
 
 function refKey(ref: string) {
   return /^[0-9a-f-]{36}$/i.test(ref) ? ref.toLowerCase() : ref.toUpperCase();
 }
 
-function isCurrent(entry: Entry | undefined, now = Date.now()) {
-  return !!entry && (entry.settledAt === undefined || now - entry.settledAt < ISSUE_CHAT_BOOTSTRAP_FRESH_MS);
+/** The signed-in user, or null for a local board. */
+function sessionUserId(queryClient: QueryClient) {
+  const session = queryClient.getQueryData<{ user?: { id?: unknown } | null } | null>(queryKeys.auth.session);
+  return typeof session?.user?.id === "string" ? session.user.id : null;
+}
+
+function isExpired(entry: Entry, now: number) {
+  return entry.settledAt !== undefined && now - entry.settledAt >= ISSUE_CHAT_BOOTSTRAP_FRESH_MS;
+}
+
+/** This account's entry for `ref` that is loading or loaded recently. */
+function currentEntry(queryClient: QueryClient, ref: string, now = Date.now()) {
+  const entry = entries.get(refKey(ref));
+  return entry && entry.userId === sessionUserId(queryClient) && !isExpired(entry, now) ? entry : undefined;
 }
 
 /**
  * Track one task's part of a request under the ref it was asked by. When the
  * answer arrives it is also recorded under the task's id and identifier, so a
  * list (identifiers) and Recents (ids) never load the same task twice.
+ * Expired entries are dropped, so answers do not stay in memory.
  */
-function track(ref: string, startedAt: number, promise: Promise<ChatBootstrapItem | undefined>) {
-  const entry: Entry = { startedAt, promise };
+function track(queryClient: QueryClient, ref: string, userId: string | null, startedAt: number, promise: Promise<ChatBootstrapItem | undefined>) {
+  const now = Date.now();
+  for (const [key, entry] of entries) if (isExpired(entry, now)) entries.delete(key);
+  const entry: Entry = { startedAt, userId, promise };
   entries.set(refKey(ref), entry);
   void promise.then((item) => {
     entry.settledAt = Date.now();
@@ -62,15 +81,9 @@ function track(ref: string, startedAt: number, promise: Promise<ChatBootstrapIte
       return;
     }
     for (const alias of [item.issue.id, item.issue.identifier]) {
-      if (alias && !isCurrent(entries.get(refKey(alias)))) entries.set(refKey(alias), entry);
+      if (alias && !currentEntry(queryClient, alias)) entries.set(refKey(alias), entry);
     }
   });
-}
-
-/** The signed-in user, or null for a local board. */
-function sessionUserId(queryClient: QueryClient) {
-  const session = queryClient.getQueryData<{ user?: { id?: unknown } | null } | null>(queryKeys.auth.session);
-  return typeof session?.user?.id === "string" ? session.user.id : null;
 }
 
 function startChunk(queryClient: QueryClient, companyId: string, refs: string[]) {
@@ -87,7 +100,7 @@ function startChunk(queryClient: QueryClient, companyId: string, refs: string[])
     }
     return byRef;
   });
-  for (const ref of refs) track(ref, requestedAt, request.then((byRef) => byRef.get(refKey(ref)), () => undefined));
+  for (const ref of refs) track(queryClient, ref, userId, requestedAt, request.then((byRef) => byRef.get(refKey(ref)), () => undefined));
   return request.then(() => undefined, () => undefined);
 }
 
@@ -115,7 +128,7 @@ export async function loadIssueChatBootstraps(
   for (const target of targets) {
     const refs = typeof target === "string" ? [target] : [target.id, target.identifier].filter((ref): ref is string => !!ref);
     if (!refs.length || wanted.has(refKey(refs[0]!))) continue;
-    if (refs.some((ref) => isCurrent(entries.get(refKey(ref)), now))) continue;
+    if (refs.some((ref) => currentEntry(queryClient, ref, now))) continue;
     if (hasFreshIssueChatFirstFrame(queryClient, refs, now)) continue;
     wanted.set(refKey(refs[0]!), refs[0]!);
   }
@@ -126,7 +139,8 @@ export async function loadIssueChatBootstraps(
   }
 }
 
-type EarlyChatBootstrap = { ref: string; promise: Promise<ChatBootstrapItem | null> };
+/** Set by the inline script; `startedAt` is the request's `Date.now()`. */
+type EarlyChatBootstrap = { ref: string; startedAt?: number; promise: Promise<ChatBootstrapItem | null> };
 
 /**
  * Adopt the fetch the page's inline script started on a hard load of this task
@@ -138,9 +152,14 @@ function adoptEarlyChatBootstrap(queryClient: QueryClient, companyId: string | n
   const early = holder[EARLY_CHAT_BOOTSTRAP_GLOBAL];
   if (!early || refKey(early.ref) !== refKey(ref)) return false;
   delete holder[EARLY_CHAT_BOOTSTRAP_GLOBAL];
-  const startedAt = Date.now();
-  track(ref, startedAt, early.promise.then((item) => {
-    if (!item?.issue) return undefined;
+  // Staleness counts from when the server could last have read the task.
+  const startedAt = typeof early.startedAt === "number" ? early.startedAt : Date.now();
+  // A page that took this long to start reads the task itself.
+  if (Date.now() - startedAt >= ISSUE_CHAT_BOOTSTRAP_FRESH_MS) return false;
+  const userId = sessionUserId(queryClient);
+  track(queryClient, ref, userId, startedAt, early.promise.then((item) => {
+    // The answer belongs to the account that loaded the page.
+    if (!item?.issue || sessionUserId(queryClient) !== userId) return undefined;
     // The route's task is the one the page opens; a known company must match it.
     const ownerCompanyId = companyId ?? item.issue.companyId;
     return seedIssueChatBootstrap(queryClient, item, { companyId: ownerCompanyId, requestedAt: startedAt }) ? item : undefined;
@@ -156,7 +175,7 @@ function startSingle(queryClient: QueryClient, ref: string) {
   const requestedAt = Date.now();
   const userId = sessionUserId(queryClient);
   const path = `/issues/${encodeURIComponent(ref)}/chat-bootstrap`;
-  track(ref, requestedAt, Promise.resolve().then(() => api.get<ChatBootstrapItem>(path, { cache: "no-store" })).then((item) => {
+  track(queryClient, ref, userId, requestedAt, Promise.resolve().then(() => api.get<ChatBootstrapItem>(path, { cache: "no-store" })).then((item) => {
     if (!item?.issue || sessionUserId(queryClient) !== userId) return undefined;
     return seedIssueChatBootstrap(queryClient, item, { companyId: item.issue.companyId, requestedAt }) ? item : undefined;
   }, () => undefined));
@@ -174,8 +193,8 @@ export function startIssueChatBootstrap(
   ref: string | null | undefined,
 ): Promise<unknown> {
   if (!ref) return Promise.resolve();
-  const settled = () => entries.get(refKey(ref))?.promise ?? Promise.resolve();
-  if (isCurrent(entries.get(refKey(ref)))) return settled();
+  const settled = () => currentEntry(queryClient, ref)?.promise ?? Promise.resolve();
+  if (currentEntry(queryClient, ref)) return settled();
   if (adoptEarlyChatBootstrap(queryClient, companyId, ref)) return settled();
   if (companyId) {
     void loadIssueChatBootstraps(queryClient, companyId, [ref]);
@@ -187,18 +206,22 @@ export function startIssueChatBootstrap(
 }
 
 /**
- * For a task page read: when a bootstrap for this task is loading or just
- * arrived, use its part of the answer instead of sending another request.
- * Falls back to the normal read when there is none, or it lacks the task.
+ * For a task page's first read of `key`: when this account's bootstrap for
+ * the task is loading or just arrived, use its part of the answer instead of
+ * sending another request. A key that already holds data is being refreshed
+ * (after a write, an invalidation or a poll), so it always asks the server.
+ * Falls back to the normal read when there is no bootstrap, or it lacks the task.
  */
 export async function readFromIssueChatBootstrap<T>(
+  queryClient: QueryClient,
+  key: QueryKey,
   ref: string,
   pick: (item: ChatBootstrapItem) => T | undefined,
   read: () => Promise<T>,
 ): Promise<T> {
-  const entry = entries.get(refKey(ref));
-  // Only share an answer that is still loading or a moment old; later reads
-  // are refreshes and must ask the server.
+  if (queryClient.getQueryData(key) !== undefined) return read();
+  const entry = currentEntry(queryClient, ref);
+  // Only share an answer that is still loading or a moment old.
   if (entry && (entry.settledAt === undefined || Date.now() - entry.settledAt < SHARE_WINDOW_MS)) {
     const item = await entry.promise;
     const value = item ? pick(item) : undefined;
@@ -215,4 +238,9 @@ export function sameIds(a: readonly string[], b: readonly string[]) {
 /** Test seam. */
 export function resetIssueChatBootstrapsForTest() {
   entries.clear();
+}
+
+/** Test seam: how many refs hold an entry. */
+export function issueChatBootstrapEntryCountForTest() {
+  return entries.size;
 }

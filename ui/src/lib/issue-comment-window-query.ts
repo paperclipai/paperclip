@@ -17,7 +17,7 @@ export function getIssueRecentCommentsQueryOptions(queryClient: QueryClient, iss
       const previous = queryClient.getQueryData<IssueRecentComments>(recentKey);
       // A cold open may already have this window in a loading bootstrap.
       if (!previous) {
-        return readFromIssueChatBootstrap(issueRef, (item) => item.recentComments, () => issuesApi.recentComments(issueRef, { signal }));
+        return readFromIssueChatBootstrap(queryClient, recentKey, issueRef, (item) => item.recentComments, () => issuesApi.recentComments(issueRef, { signal }));
       }
       const snapshot = await issuesApi.recentComments(issueRef, { signal });
       // A burst can contain more than the cold-open window. Catch up from the
