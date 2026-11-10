@@ -244,7 +244,7 @@ describe("CompanyExport", () => {
     expect(container.textContent).not.toContain("Prepare export preview");
     expect(mockAuthApi.getSession).toHaveBeenCalledTimes(1);
     expect(mockAgentsApi.list).toHaveBeenCalledWith("company-1");
-    expect(mockProjectsApi.list).toHaveBeenCalledWith("company-1");
+    expect(mockProjectsApi.list).toHaveBeenCalledWith("company-1", { includeArchived: true });
     expect(mockCompaniesApi.exportPreview).toHaveBeenCalledTimes(1);
     expect(mockCompaniesApi.exportPreview.mock.calls[0]?.[1]).toMatchObject({
       include: { company: true, agents: true, projects: true, issues: false, skills: true },

@@ -5,6 +5,8 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IssueQueuedCommentQueue } from "@paperclipai/shared";
+import { ThemeProvider } from "@/context/ThemeContext";
+import { MemoryRouter } from "@/lib/router";
 import {
   reorderQueuedMessageEntries,
   TaskChatQueuedMessages,
@@ -76,7 +78,7 @@ describe("TaskChatQueuedMessages", () => {
       onDiscard: vi.fn().mockResolvedValue(undefined),
       ...overrides,
     };
-    flushSync(() => root.render(<TaskChatQueuedMessages {...props} />));
+    flushSync(() => root.render(<MemoryRouter><ThemeProvider><TaskChatQueuedMessages {...props} /></ThemeProvider></MemoryRouter>));
     return props;
   }
 
@@ -87,6 +89,17 @@ describe("TaskChatQueuedMessages", () => {
     expect(container.textContent).toContain("First queued message");
     render();
     expect(container.textContent).not.toContain(message);
+  });
+
+  it("says why a chat message held in the outbox waits, without offering queue actions", () => {
+    const message = "CEO reached its daily run limit. Your message is saved and sends automatically when the limit resets at 00:00 UTC.";
+    render({ queue: { ...queue, queueId: null, targetRunId: null, steeringDisposition: "unsupported",
+      executionWait: { reason: "heartbeat.daily_run_limit", message },
+      entries: queue.entries.slice(0, 1).map(entry => ({ ...entry, canEdit: false, canDiscard: false })) } });
+    expect([...container.querySelectorAll('p[role="status"]')].map(node => node.textContent)).toEqual([message]);
+    expect(container.textContent).toContain("First queued message");
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')?.disabled ?? true).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-discard-comment-1"]')?.disabled).toBe(true);
   });
 
   it("renders each queued message once as a compact one-line row", () => {
@@ -103,6 +116,53 @@ describe("TaskChatQueuedMessages", () => {
     ).toHaveLength(2);
     expect(container.textContent).toContain("First queued message");
     expect(container.textContent).toContain("Second queued message");
+  });
+
+  it("renders queued Markdown and screenshot thumbnails without showing image syntax", () => {
+    const body = "Check **mobile** and *desktop* with `pnpm verify`.\n\n![mobile.png](/api/attachments/mobile/content)\n![desktop.png](/api/attachments/desktop/content)";
+    render({ queue: { ...queue, entries: [{ ...queue.entries[0], comment: { ...queue.entries[0].comment, body } }] } });
+    const row = container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')!;
+    expect(row.querySelector("strong")?.textContent).toBe("mobile");
+    expect(row.querySelector("em")?.textContent).toBe("desktop");
+    expect(row.querySelector("code")?.textContent).toBe("pnpm verify");
+    expect([...row.querySelectorAll("img")].map(img => [img.alt, img.getAttribute("src")])).toEqual([
+      ["mobile.png", "/api/attachments/mobile/content"],
+      ["desktop.png", "/api/attachments/desktop/content"],
+    ]);
+    expect(row.textContent).not.toContain("![");
+    expect(row.textContent).not.toContain("/api/attachments");
+  });
+
+  it("shows a thumbnail for an image-only queued message", () => {
+    const body = "![screen.png](/api/attachments/screen/content)";
+    render({ queue: { ...queue, entries: [{ ...queue.entries[0], comment: { ...queue.entries[0].comment, body } }] } });
+    expect(container.querySelector('img[alt="screen.png"]')?.getAttribute("src")).toBe("/api/attachments/screen/content");
+    expect(container.textContent).not.toContain(body);
+  });
+
+  it("only loads local attachment images and counts the remaining screenshots", () => {
+    const urls = [
+      "/api/attachments/first/content", "/api/assets/second/content?download=0",
+      "/api/attachments/third/content", "/api/attachments/fourth/content",
+      "https://other.example/api/attachments/pixel/content", "//other.example/pixel.png",
+      "javascript:alert", "data:image/png;base64,AAAA", "/other/pixel.png",
+      "/api/attachments/first/content/extra", "/api/attachments/first/content#fragment",
+    ];
+    const body = urls.map((url, index) => `![screen-${index}](${url})`).join("\n");
+    render({ queue: { ...queue, entries: [{ ...queue.entries[0], comment: { ...queue.entries[0].comment, body } }] } });
+    const row = container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')!;
+    expect([...row.querySelectorAll("img")].map(image => image.getAttribute("src"))).toEqual(urls.slice(0, 3));
+    expect(row.querySelector('[aria-label="Queued images"]')?.textContent).toBe("+1");
+  });
+
+  it("omits inline images from the compact text without exposing their URLs", () => {
+    const body = "Check ![inline](/api/attachments/inline/content) then **retry**.";
+    render({ queue: { ...queue, entries: [{ ...queue.entries[0], comment: { ...queue.entries[0].comment, body } }] } });
+    const row = container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')!;
+    expect(row.querySelector("strong")?.textContent).toBe("retry");
+    expect(row.textContent).toContain("Check  then retry.");
+    expect(row.textContent).not.toContain("/api/attachments");
+    expect(row.querySelector("img")).toBeNull();
   });
 
   it.each(["legacy", "native", "native-plan"] as const)("shows a read-only response and sends it only on click for %s", async (runtime) => {

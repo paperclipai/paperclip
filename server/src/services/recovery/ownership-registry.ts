@@ -21,20 +21,26 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
-import { readControllerProcess } from "../controller-process-identity.js";
+import { currentControllerBootId, readControllerProcess } from "../controller-process-identity.js";
+import { isRemoteWorkspaceSaveInvocationLive } from "../remote-workspaces.js";
 import { idleAccountingSpoolPath, idleOrphanSpoolPath } from "../idle-local-work.js";
 import {
   NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT,
   NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE,
 } from "../native-runtime/native-runner-ownership.js";
 import type { LocalOwnerStamp, OwnerProof, RemoteFenceState, RemoteOwnerStamp } from "../owner-proof.js";
+import { OPERATOR_ATTESTED_PROCESS_SPACE } from "../owner-proof.js";
+import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
+import { OWNER_GONE_ATTESTATION_KEY, attestOwnerGoneByRecordVersion, requestOwnerGoneConfirmation } from "./owner-gone-attestation.js";
 import {
   requestNativeAcceptedResultLeaseOperatorAction,
-  settleNativeAcceptedResultLease,
+  settleNativeAcceptedResultLease, classifyNativeAcceptedResultLeaseOwners,
 } from "../native-runtime/native-accepted-result-lease-settlement.js";
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
-import { settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
-import { runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
+import { settleAbandonedRemoteSnapshotSave, settleAbandonedWorkspaceCommandOperation, settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
+import { settlePreparationOnlyRemoteWorkspaceEpoch } from "./remote-workspace-unsaved-files-settlement.js";
+import { settleAbandonedRemoteSnapshotLedger } from "./remote-snapshot-ledger-settlement.js";
+import { LOCAL_WORKSPACE_COMMAND_PHASES, runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
 import { copybackOwnerHoldOwner, settleCopybackOwnerHold } from "./copyback-owner-hold.js";
 import { applyObservedFenceProviderProof, observedWorkspaceFenceOwner, settleObservedWorkspaceFence } from "./observed-workspace-fence.js";
 import { copybackOwnerStamp } from "../native-runtime/native-workspace-owner-stop-proof.js";
@@ -43,6 +49,7 @@ import { nativeControllerOwnerStamp, runProcessOwnerStamp } from "../native-runt
 import { settleIssueLock } from "./issue-lock-settlement.js";
 import { settleAgentLifecycleLease } from "./agent-lifecycle-lease-settlement.js";
 import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
+import { heldInterruptedPreparationWhere, settleHeldInterruptedPreparation } from "../interrupted-preparation-hold-settlement.js";
 import {
   nativeLeaseHolderStamp,
   readNativeLeaseHolder,
@@ -148,6 +155,13 @@ export type OwnableKind = {
   settle: SettleRecord | null;
   /** Optional operator action for an unprovable owner of a settling kind. */
   onUnprovable?: UnprovableAction;
+  /** Records the board's confirmation that this record's unrecorded owner stopped, so its
+   * owner proves gone (`operator_attested`). Returns false when the record no longer qualifies. */
+  attestOwnerGone?: (tx: Db, target: { companyId: string; recordId: string; requestedVersion: string | null },
+    proof: Record<string, unknown>) => Promise<"attested" | "released" | "changed">;
+  /** `record_version`: the board's confirmation stays on its recovery action, bound to the
+   * record version it was asked about, and the reconciler reads it back as `operator_attested`. */
+  ownerGoneAttestation?: "record_version";
   /** When a record of this kind next becomes settleable without a signal
    * (a retention window ending). The reconciler wakes then. */
   nextDueAt?: (db: Db, now: Date) => Promise<Date | null>;
@@ -177,6 +191,54 @@ function int(value: unknown): number | null {
 }
 
 const runOwner = (runId: string | null | undefined): RecordOwner => runId ? { kind: "run", runId } : { kind: "none" };
+
+/**
+ * Lets the board confirm that a settling kind's unrecorded owner stopped. A process-owned record
+ * saved before its owner was fully recorded (`missing_identity`, `process_space_unrecorded`) is
+ * unprovable and is never released on its own; the board's confirmation, bound to the record
+ * version recovery asked about, proves its owner gone, and the kind's own settle releases it.
+ */
+function ownerGoneAttestable(kind: OwnableKind, lockVersion: RecordVersionLock): OwnableKind {
+  const ask = requestOwnerGoneConfirmation(kind.id);
+  const settle = kind.settle!;
+  return { ...kind, ownerGoneAttestation: "record_version",
+    attestOwnerGone: (tx, target) => attestOwnerGoneByRecordVersion(tx, target, lockVersion),
+    // These settles compare-and-swap on the recorded process, so only a process-owned record can be
+    // released; a record with no version cannot be bound to a confirmation. Recovery asks for neither.
+    onUnprovable: async (db, record, context) => {
+      if (record.owner.kind === "process" && record.updatedAt) await ask(db, record, context);
+    },
+    // A confirmation proves the owner gone only for the version the board confirmed: lock the
+    // record and check that version in the same transaction as the kind's own settle.
+    settle: (db, record, context) => context.proof.reason !== "operator_attested" ? settle(db, record, context)
+      : db.transaction(async transaction => {
+        const tx = transaction as unknown as Db;
+        const version = record.companyId ? await lockVersion(tx, { companyId: record.companyId, recordId: record.recordId }) : null;
+        if (!version || !record.updatedAt || version.getTime() !== record.updatedAt.getTime()) {
+          return { settled: false, reason: "record_changed_since_confirmation" };
+        }
+        return settle(tx, record, context);
+      }) };
+}
+
+/** Locks a record row for update and returns its last write time (null when the row is gone). */
+type RecordVersionLock = (tx: Db, target: { companyId: string; recordId: string }) => Promise<Date | null>;
+
+function versionLock(table: typeof heartbeatRuns | typeof environmentLeases | typeof sandboxCreationOperations
+  | typeof workspaceOperations): RecordVersionLock {
+  return async (tx, target) => {
+    const [row] = await tx.select({ updatedAt: table.updatedAt }).from(table)
+      .where(and(eq(table.id, target.recordId), eq(table.companyId, target.companyId))).for("update");
+    return row?.updatedAt ?? null;
+  };
+}
+
+const nrfVersionLock: RecordVersionLock = async (tx, target) => {
+  const [row] = await tx.select({ updatedAt: nativeRunFinalizations.updatedAt }).from(nativeRunFinalizations)
+    .where(and(eq(nativeRunFinalizations.runId, target.recordId), eq(nativeRunFinalizations.companyId, target.companyId)))
+    .for("update");
+  return row?.updatedAt ?? null;
+};
 
 // ----------------------------------------------------------------------------
 // native_run_finalizations
@@ -320,6 +382,10 @@ function runLeaseOwner(row: RunLeaseRow): RecordOwner {
   if (row.runStatus !== null && !TERMINAL_RUN_STATUSES.includes(row.runStatus)) return runOwner(row.heartbeatRunId);
   const holder = controllerStamp(json(row.metadata)[ENVIRONMENT_LEASE_CONTROLLER_KEY], "environment_run_lease_active");
   if (holder.kind !== "none") return holder;
+  // The board confirmed that the server holding this unstamped lease stopped.
+  if (json(row.metadata)[OWNER_GONE_ATTESTATION_KEY]) return { kind: "process", stamp: { kind: "local",
+    scope: "environment_run_lease_active", generation: null, host: null, processSpace: OPERATOR_ATTESTED_PROCESS_SPACE,
+    bootId: null, pid: null, processStartedAt: null, processGroupId: null } };
   return ephemeralServerEnabled() ? { kind: "none" } : runOwner(row.heartbeatRunId);
 }
 
@@ -336,6 +402,23 @@ function runLeaseKind(): OwnableKind {
   return {
     id: "environment_run_lease_active", title: "Run lease (active)", obligation: "ownership", storage: "database",
     invariantChecks: [1, 2], settle: settleEnvironmentRunLease,
+    onUnprovable: requestOwnerGoneConfirmation("environment_run_lease_active"),
+    // Only an unstamped lease of a finished run: a stamped holder is judged by its stamp.
+    attestOwnerGone: async (tx, target, proof) => {
+      const attested = (await writeEnvironmentCleanup(tx, write => write.update(environmentLeases)
+      .set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ [OWNER_GONE_ATTESTATION_KEY]: proof })}::jsonb` })
+      .where(and(eq(environmentLeases.id, target.recordId), eq(environmentLeases.companyId, target.companyId),
+        eq(environmentLeases.status, "active"), isNotNull(environmentLeases.heartbeatRunId),
+        sql`not (coalesce(${environmentLeases.metadata}, '{}'::jsonb) ? ${ENVIRONMENT_LEASE_CONTROLLER_KEY})`,
+        sql`exists (select 1 from heartbeat_runs run where run.id = ${environmentLeases.heartbeatRunId}
+          and run.status in ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted'))`))
+      .returning({ id: environmentLeases.id }), { companyId: target.companyId, leaseId: target.recordId })).length > 0;
+      if (attested) return "attested";
+      // Released by another path since the board was asked: nothing is left to attest.
+      const [lease] = await tx.select({ status: environmentLeases.status }).from(environmentLeases)
+        .where(and(eq(environmentLeases.id, target.recordId), eq(environmentLeases.companyId, target.companyId)));
+      return !lease || lease.status !== "active" ? "released" : "changed";
+    },
     listInProgress: async (db, limit, offset) => {
       const rows = await select(db).where(where).orderBy(asc(environmentLeases.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
@@ -439,6 +522,21 @@ function controllerStamp(value: unknown, scope: string): RecordOwner {
 
 // ----------------------------------------------------------------------------
 // workspace_operations
+
+function remoteSnapshotSaveOwner(row: OperationRow): RecordOwner {
+  const work = json(json(row.metadata).saveWork);
+  const active = Array.isArray(work.activeIds) ? work.activeIds.filter((id): id is string => typeof id === "string") : [];
+  if (!active.length) return runOwner(row.heartbeatRunId);
+  const owners = json(work.owners);
+  const stamps = active.map(id => readControllerProcess(owners[id]));
+  if (stamps.every(stamp => stamp === null) && !active.some(id => owners[id] !== undefined)) return runOwner(row.heartbeatRunId);
+  const [first] = stamps;
+  if (!first || stamps.some(stamp => !stamp || stamp.bootId !== first.bootId || stamp.pid !== first.pid)) return { kind: "none" };
+  if (first.bootId === currentControllerBootId() && first.pid === process.pid && !active.some(isRemoteWorkspaceSaveInvocationLive)) {
+    return runOwner(row.heartbeatRunId);
+  }
+  return controllerStamp(owners[active[0]!], "remote_snapshot_save");
+}
 
 type OperationRow = Pick<typeof workspaceOperations.$inferSelect, "id" | "companyId" | "heartbeatRunId" | "issueId"
   | "metadata" | "updatedAt">;
@@ -576,6 +674,11 @@ const agentLifecycleLeaseKind: OwnableKind = {
   },
 };
 
+const acceptedNativeResultLease = nrfKind("native_accepted_result_lease", "Accepted-result executor lease", "accepted_result",
+  and(isNotNull(nativeRunFinalizations.resultId), notInArray(nativeRunFinalizations.phase, TERMINAL_PHASES),
+    isNotNull(nativeRunFinalizations.leaseOwner), notFinalizerOrCleanup,
+    sql`${nativeRunFinalizations.leaseExpiresAt} > now()`));
+
 export const OWNABLE_KINDS: readonly OwnableKind[] = [
   // Native runtime and Runner
   nrfKind("native_executor_claim", "Executor execution claim (fresh run)", "ownership",
@@ -591,10 +694,13 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     // exact lease so finalization runs now (RC-41).
     // Outstanding leases only: an expired lease no longer holds the result,
     // so it is not in progress for this kind (finalization reclaims it).
-    ...nrfKind("native_accepted_result_lease", "Accepted-result executor lease", "accepted_result",
-      and(isNotNull(nativeRunFinalizations.resultId), notInArray(nativeRunFinalizations.phase, TERMINAL_PHASES),
-        isNotNull(nativeRunFinalizations.leaseOwner), notFinalizerOrCleanup,
-        sql`${nativeRunFinalizations.leaseExpiresAt} > now()`)),
+    ...acceptedNativeResultLease,
+    listInProgress: async (db, limit, offset) => {
+      const listed = await acceptedNativeResultLease.listInProgress!(db, limit, offset);
+      return { ...listed, records: await classifyNativeAcceptedResultLeaseOwners(db, listed.records) };
+    },
+    listForRuns: async (db, runIds) => classifyNativeAcceptedResultLeaseOwners(db,
+      await acceptedNativeResultLease.listForRuns!(db, runIds)),
     settle: settleNativeAcceptedResultLease,
     onUnprovable: requestNativeAcceptedResultLeaseOperatorAction,
   },
@@ -606,19 +712,21 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   // space is unprovable and keeps its lease until expiry, when the next claim
   // takes it over and the old holder's token compare-and-swap fails: that
   // fence is the handoff, never a host difference.
-  {
+  ownerGoneAttestable({
     ...nrfKind("native_finalizer_lease", "Finalizer lease", "accepted_result",
       and(like(nativeRunFinalizations.leaseOwner, "native-finalizer:%"), notInArray(nativeRunFinalizations.phase, TERMINAL_PHASES),
         sql`${nativeRunFinalizations.leaseExpiresAt} > now()`),
       row => nrfTokenLeaseOwner(row, "native_finalizer_lease")),
     settle: (db, record, context) => settleNativeTokenLease("native_finalizer_lease", db, record, context),
-  },
-  {
+
+  }, nrfVersionLock),
+  ownerGoneAttestable({
     ...nrfKind("native_cleanup_lease", "Cleanup lease", "workspace_preservation",
       and(like(nativeRunFinalizations.leaseOwner, "native-cleanup:%"), sql`${nativeRunFinalizations.leaseExpiresAt} > now()`),
       row => nrfTokenLeaseOwner(row, "native_cleanup_lease")),
     settle: (db, record, context) => settleNativeTokenLease("native_cleanup_lease", db, record, context),
-  },
+
+  }, nrfVersionLock),
   runKind("native_ownership_unverified_hold", "Ownership-unverified hold", "ownership",
     and(eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "running"), or(
       and(eq(heartbeatRuns.errorCode, NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE), eq(heartbeatRuns.nativePhase, "terminal_failure")),
@@ -686,7 +794,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   },
 
   // Environments and sandboxes
-  {
+  ownerGoneAttestable({
     // Shared path since Phase 2: a creator proven gone makes its intent due
     // now; creation recovery then reconciles it with the provider. An intent
     // whose creator is already marked lost belongs to that recovery deadline.
@@ -705,9 +813,9 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
         owner: controllerStamp(json(row.metadata).creationController, "sandbox_creation_intent"), updatedAt: row.updatedAt,
       })) };
     },
-  },
+  }, versionLock(sandboxCreationOperations)),
   runLeaseKind(),
-  {
+  ownerGoneAttestable({
     // Shared path since Phase 2: a claimant proven gone ends its fence now.
     ...leaseKind("environment_teardown_claim", "Teardown claim (in-flight cleanup)", "ownership",
       // Text compare: a malformed flag never makes the whole listing fail.
@@ -715,7 +823,8 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
         sql`coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') = 'true'`),
       teardownClaimOwner),
     settle: settleEnvironmentTeardownClaim,
-  },
+
+  }, versionLock(environmentLeases)),
   pendingCleanupKind(),
   leaseKind("environment_stop_and_retain_intent", "Stop-and-retain intent", "workspace_preservation",
     and(eq(environmentLeases.status, "pending_cleanup"), sql`${environmentLeases.metadata} ? 'sandboxStopAndRetain'`),
@@ -744,7 +853,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   },
 
   // Workspaces
-  {
+  ownerGoneAttestable({
     // Shared path since Phase 2: the owner stamp names the server process and,
     // since this kind moved, its boot id and start time, so a dead or reused
     // PID is proof. Another host or a stamp without a PID space stays
@@ -756,8 +865,9 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
         return stamp ? { kind: "process", stamp } : { kind: "none" };
       }),
     settle: settleRuntimeControlOperation,
-  },
-  {
+
+  }, versionLock(workspaceOperations)),
+  ownerGoneAttestable({
     // Shared path since Phase 2: a finalize attempt whose process died (a
     // restart between start and copyback, or between copyback and done) is
     // settled so it cannot stay `running` forever (crash points
@@ -768,14 +878,23 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
       row => json(row.metadata).finalizeOwner ? controllerStamp(json(row.metadata).finalizeOwner, "native_workspace_finalize_attempt")
         : runOwner(row.heartbeatRunId)),
     settle: settleAbandonedWorkspaceFinalizeAttempt,
-  },
+
+  }, versionLock(workspaceOperations)),
+  ownerGoneAttestable({
+    ...operationKind("workspace_command_operation", "Local workspace command (provision, prepare, teardown)", "ownership",
+      and(inArray(workspaceOperations.phase, [...LOCAL_WORKSPACE_COMMAND_PHASES]), eq(workspaceOperations.status, "running"),
+        sql`not (${workspaceOperations.metadata} ? 'runtimeControlOwner')`),
+      row => json(row.metadata).commandOwner ? controllerStamp(json(row.metadata).commandOwner, "workspace_command_operation")
+        : runOwner(row.heartbeatRunId)),
+    settle: settleAbandonedWorkspaceCommandOperation,
+  }, versionLock(workspaceOperations)),
   operationKind("remote_provision_command", "Remote provision command intent", "workspace_preservation",
     and(eq(workspaceOperations.phase, "remote_workspace_provision"), or(eq(workspaceOperations.status, "running"),
       sql`(${workspaceOperations.metadata}->>'uncertain')::boolean is true`)),
     row => runOwner(row.heartbeatRunId)),
-  operationKind("remote_snapshot_save", "Remote snapshot save", "workspace_preservation",
+  { ...operationKind("remote_snapshot_save", "Remote snapshot save", "workspace_preservation",
     and(eq(workspaceOperations.phase, "remote_workspace_snapshot"), inArray(workspaceOperations.status, ["running", "pending"])),
-    row => runOwner(row.heartbeatRunId)),
+    remoteSnapshotSaveOwner), settle: settleAbandonedRemoteSnapshotSave },
   operationKind("remote_workspace_migration", "Remote workspace migration op", "workspace_preservation",
     and(eq(workspaceOperations.phase, "remote_workspace_migration"), eq(workspaceOperations.status, "running")),
     () => ({ kind: "none" })),
@@ -813,7 +932,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   },
   {
     id: "remote_workspace_unsaved_files", title: "Remote workspace unsaved-files flag", obligation: "workspace_preservation",
-    storage: "database", settle: null, invariantChecks: [1, 2],
+    storage: "database", settle: settlePreparationOnlyRemoteWorkspaceEpoch, invariantChecks: [1, 2],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaces.id, companyId: executionWorkspaces.companyId,
         metadata: executionWorkspaces.metadata, updatedAt: executionWorkspaces.updatedAt }).from(executionWorkspaces)
@@ -828,7 +947,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   },
   {
     id: "remote_snapshot_ledger", title: "Remote snapshot ledger", obligation: "workspace_preservation",
-    storage: "database", settle: null, invariantChecks: [2],
+    storage: "database", settle: settleAbandonedRemoteSnapshotLedger, invariantChecks: [2],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaceSnapshots.id, companyId: executionWorkspaceSnapshots.companyId,
         sourceRunId: executionWorkspaceSnapshots.sourceRunId, updatedAt: executionWorkspaceSnapshots.updatedAt })
@@ -922,7 +1041,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
       })) };
     },
   },
-  {
+  ownerGoneAttestable({
     // Shared path since Phase 2: the claim records its controller process
     // (`controller_process`, bound to the boot id); settle expires the lease of
     // a controller proven gone, and live-run recovery settles the run now
@@ -942,6 +1061,21 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
       return records;
     },
     settle: settleLegacyControllerLease,
+  }, versionLock(heartbeatRuns)),
+  {
+    // A preparation a shutdown interrupted, held before its no-provider-work
+    // proof could exist. Its owner is the recorded controller process: the
+    // shared prover must prove it gone (a missing stamp, or one from another
+    // host or PID space, is unprovable and stays held). The settle re-checks
+    // the durable proof and replays the preparation exactly once.
+    // Keep this entry after the environment teardown kinds: a lease they settle
+    // in a pass is released before this kind lists in that same pass.
+    ...runKind("legacy_interrupted_preparation_hold", "Interrupted preparation held for replay", "ownership",
+      heldInterruptedPreparationWhere(), row => {
+        const stamp = legacyControllerOwnerStamp(row);
+        return stamp ? { kind: "process", stamp } : { kind: "none" };
+      }),
+    settle: settleHeldInterruptedPreparation,
   },
   runKind("detached_process_marker", "Detached-process marker", "ownership",
     and(eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.errorCode, "process_detached")),

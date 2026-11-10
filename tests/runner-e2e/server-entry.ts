@@ -1,6 +1,8 @@
 // This entrypoint is used only by isolated Runner E2E instances. Production
 // service code has no test flag, delay, altered prompt, or private test API.
 import { ServerResponse } from "node:http";
+import path from "node:path";
+import { installAgentFilesystemSandbox } from "./agent-filesystem-sandbox.js";
 import { PaperclipRunnerToolAuthority } from "../../server/src/services/native-runtime/paperclip-runner-tool-authority.js";
 import { canonicalDocumentIssueId, contextCommentGateSelected, holdCommittedDocumentResponse, isArmed } from "./context-comment-gate.js";
 import { holdInteractionResponse } from "./interaction-response-gate.js";
@@ -81,4 +83,6 @@ if (contextCommentGate || completionBusyGate) {
     return Reflect.apply(end, this, args);
   } as typeof end;
 }
+// Before the product starts any agent, hide the eval harness from runnerd and its descendants.
+installAgentFilesystemSandbox(path.resolve(import.meta.dirname, "../.."));
 await import("../../cli/src/index.js");

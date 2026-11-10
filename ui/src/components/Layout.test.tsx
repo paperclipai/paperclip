@@ -164,6 +164,10 @@ vi.mock("./AnnouncementWell", () => ({
   AnnouncementWell: () => <div data-announcement-well />,
 }));
 
+vi.mock("./GitHubStarPrompt", () => ({
+  GitHubStarPrompt: () => null,
+}));
+
 vi.mock("./MobileBottomNav", () => ({
   MobileBottomNav: () => null,
 }));

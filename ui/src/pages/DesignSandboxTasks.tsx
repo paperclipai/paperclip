@@ -1,3 +1,4 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { useEffect } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ListChecks, SearchX } from "lucide-react";
@@ -5,7 +6,6 @@ import { accessApi } from "@/api/access";
 import { agentsApi } from "@/api/agents";
 import { useAccountIdentity } from "@/api/companies-query";
 import { issuesApi } from "@/api/issues";
-import { projectsApi } from "@/api/projects";
 import { EmptyState } from "@/components/EmptyState";
 import { KanbanBoard } from "@/components/KanbanBoard";
 import { TaskList, type TaskListItem } from "@/components/TaskList";
@@ -45,7 +45,7 @@ export function DesignSandboxTasks() {
     enabled: !!companyId,
   });
   const agents = useQuery({ queryKey: queryKeys.agents.list(companyId!), queryFn: () => agentsApi.list(companyId!), enabled: !!companyId });
-  const projects = useQuery({ queryKey: queryKeys.projects.list(companyId!, { includeArchived: true }), queryFn: () => projectsApi.list(companyId!, { includeArchived: true }), enabled: !!companyId });
+  const projects = useQuery({ ...companyProjectsQuery(companyId!, { includeArchived: true }), enabled: !!companyId });
   const directory = useQuery({ queryKey: queryKeys.access.companyUserDirectory(companyId!), queryFn: () => accessApi.listUserDirectory(companyId!), enabled: !!companyId });
   const labels = useQuery({ queryKey: queryKeys.issues.labels(companyId!), queryFn: () => issuesApi.listLabels(companyId!), enabled: !!companyId });
   // The ordinary organization list does not include viewer read context.

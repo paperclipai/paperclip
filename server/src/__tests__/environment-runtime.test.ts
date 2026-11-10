@@ -5534,6 +5534,39 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
+  it("destroys a retained restore-source sandbox (retain_on_failure) when its environment is deleted", async () => {
+    const { pluginId, runId, reusableLease } = await seedReusablePluginSandboxLease();
+    await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, runId));
+    // A failed run's sandbox kept, stopped, as a workspace-restore source. The
+    // restore marker protects it from every ordinary teardown.
+    await db.update(environmentLeases).set({ leasePolicy: "retain_on_failure", status: "released", cleanupStatus: "success",
+      releasedAt: new Date(), metadata: { ...reusableLease.metadata,
+        workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", runId } } })
+      .where(eq(environmentLeases.id, reusableLease.id));
+    expect(await environmentService(db).getDeleteBlastRadius(reusableLease.environmentId!))
+      .toMatchObject({ reusableSandboxLeaseCount: 1, canDelete: false,
+        reusableSandboxLeaseHolders: [expect.objectContaining({ leasePolicy: "retain_on_failure" })] });
+    // The atomic delete guard refuses too, not only the blast-radius pre-check.
+    expect(await environmentService(db).removeIfDeletable(reusableLease.environmentId!)).toBeFalsy();
+    const workerManager = {
+      isRunning: vi.fn((id: string) => id === pluginId),
+      call: vi.fn(async (_pluginId: string, method: string) => {
+        if (method === "environmentDestroyLease") return { providerLeaseId: reusableLease.providerLeaseId, state: "destroyed" };
+        throw new Error(`Unexpected plugin method: ${method}`);
+      }),
+      getWorker: vi.fn(() => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] })),
+    } as unknown as PluginWorkerManager;
+    // The operator consented to deleting the environment and the files only
+    // this sandbox holds: that consent releases the restore protection.
+    const result = await environmentRuntimeService(db, { pluginWorkerManager: workerManager })
+      .destroyReusableSandboxLeasesForEnvironment({ environmentId: reusableLease.environmentId!, failureReason: "environment_deleted",
+        consentedBy: "board-user" });
+    expect(result).toEqual({ destroyed: 1, failed: 0, skippedLiveRun: 0 });
+    expect(workerManager.call).toHaveBeenCalledWith(pluginId, "environmentDestroyLease", expect.anything(), expect.anything());
+    await expect(environmentService(db).getLeaseById(reusableLease.id)).resolves.toMatchObject({
+      status: "expired", failureReason: "environment_deleted", cleanupStatus: "success" });
+  });
+
   it("destroys a failed reusable sandbox after successful release before deleting its environment", async () => {
     const { pluginId, companyId, runId, environment, reusableLease } = await seedReusablePluginSandboxLease();
     const workerManager = {
@@ -6255,11 +6288,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
   it("forwards a requested expiry to the acquire RPC and records only a provider-attested expiry", async () => {
     const pluginId = randomUUID();
     let receivedRequestedExpiresAt: unknown;
+    let receivedPurpose: unknown, receivedCommand: unknown;
     const workerManager = {
       isRunning: vi.fn(() => true),
       call: vi.fn(async (_pluginId: string, method: string, params: Record<string, unknown>) => {
         if (method === "environmentAcquireLease") {
           receivedRequestedExpiresAt = params.requestedExpiresAt;
+          receivedPurpose = params.purpose; receivedCommand = params.loginCommandKey;
           // The provider grants no expiry.
           return { providerLeaseId: "plugin-lease-no-expiry", metadata: { remoteCwd: "/workspace" } };
         }
@@ -6277,10 +6312,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       heartbeatRunId: runId,
       persistedExecutionWorkspace: null,
       requestedExpiresAt,
+      purpose: "login", loginCommandKey: "codex",
     });
 
     // The acquire RPC receives the requested expiry as an ISO 8601 string.
     expect(receivedRequestedExpiresAt).toBe(requestedExpiresAt.toISOString());
+    expect(receivedPurpose).toBe("login"); expect(receivedCommand).toBe("codex");
     // The provider gave no expiry, so the lease row records no expiry. The runtime
     // never synthesizes the requested deadline as evidence of provider enforcement.
     expect(acquired.lease.expiresAt ?? null).toBeNull();

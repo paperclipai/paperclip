@@ -323,6 +323,91 @@ checks it out only after authorization. Target-controlled code cannot replace
 the report sanitizer or the AWS history publisher. Fork refs and
 target-controlled workflow definitions do not enter this path.
 
+## Agent view of the eval harness
+
+The agent under test must not read the eval. A local cell runs the product from
+the checkout that also holds `tests/`, as the same OS user as the harness, so
+file modes cannot separate them. OpenCode's `external_directory` policy guards
+its own read and grep tools, but not arbitrary shell commands.
+
+`agent-filesystem-sandbox.ts` closes that gap for local native cells on Linux.
+The launcher selects the hidden paths: `tests/`, the checkout's Git store (which
+holds the committed scenarios and graders; for a linked worktree, its gitdir
+and the shared common directory), the trusted
+`.manual-private-trusted/` copy, the private evidence directory, `RUNNER_TEMP`,
+and the attempt root's `artifacts-private/`, `control/`,
+`selected-private-inputs/` and `playwright-transform-cache/` children.
+Playwright compiles the harness and graders (with source maps) into
+`PWTEST_CACHE_DIR`, which the launcher points at that hidden child. The
+launcher also removes Playwright's default cache in the shared temporary
+directory.
+
+Landlock hides a path by leaving its ancestors ungranted, and an ungranted
+directory accepts no new entries. Agents must keep creating files in `/tmp`, so
+a sandboxed attempt creates its root in `/var/tmp` instead of `/tmp`. The
+agent's workspace, home and Paperclip home stay readable inside that root. If
+harness material would stay under the shared temporary directory or contain the
+agent's state, the launcher fails the attempt in CI and warns elsewhere. The E2E server entry starts each `paperclip-runnerd` (through `spawn`,
+`spawnSync`, `execFile` or `execFileSync`, by absolute path or PATH; a shell
+launch is refused) through
+`agent-filesystem-sandbox.py`, which applies a Landlock domain and then execs
+runnerd with its original PID, argv, cwd and environment. Runnerd, the provider,
+its tools and every shell command inherit the domain. The domain also sets
+`no_new_privs`, so `sudo` cannot widen it. The product server itself stays
+unrestricted because it loads its E2E entry from the harness.
+
+Before the product starts an agent, a probe runs a sandboxed shell. The probe
+must be denied the harness, every hidden path and Playwright's default cache, and it must read the product
+package and write a temporary file. The server log records the probe result and
+each wrapped runnerd launch. In CI a missing or ineffective sandbox stops the
+attempt. Landlock does not hide that a path exists (`stat` still works); it
+denies reading and listing.
+
+Each runnerd launch is also scoped to its own run, so an eval agent learns
+nothing about the case from another run's saved session, run log or provider
+trace, or from the attempt instance's database files and secrets. The launcher passes the instance root to the server entry, and each
+runnerd launch additionally hides the instance's `durable-sessions/`,
+`runner/`, `control-plane/` and `opencode/` directories under
+`runtime/paperclip-runner/`, and `data/run-logs/`, `data/provider-traces/`,
+`data/backups/`, `db/` and `secrets/`. It then exposes only the launch's own
+entries, found from its `--state-dir`, `--session-id` and provider trace path:
+its durable session directory (or Codex runner state directory), its OpenCode
+session directory and its trace file. Landlock does not check path traversal,
+so a rule on an exposed path grants it although the directory above it has
+none; listing that directory stays denied, and entries created there later
+(another run's new session) stay unreadable. The server creates the exposed
+entries, and the shared directories the product creates beside them on first
+use, before the launch, because their hidden or ungranted parents accept no new
+entries from inside the sandbox. The helper fails the launch unless every
+hidden path is denied and every exposed path is readable. The setup probe
+repeats this on a fixture instance (another run's session, OpenCode database,
+run log, trace, `pg_wal`, secrets and control-plane state denied; the run's own
+session, OpenCode directory and trace writable) and stops the attempt in CI on
+any failure. A run still sees its own session's control-plane state.
+
+Landlock cannot hide `/proc/<pid>/cmdline`. Same-user `hidepid` does not help
+either: it hides only other users' processes. Landlock does deny reading a
+process's environment, memory and file descriptors outside the sandbox, so CI
+passes the selected cell in `PAPERCLIP_RUNNER_E2E_SELECTED_ID` instead of
+`--id`; the launcher reads and removes it. The workflow keeps `--id` for target
+branches that predate this.
+
+Limits: Codex cells keep Codex's own bubblewrap sandbox, which cannot mount
+inside Landlock. Legacy adapters, installed-release launches and macOS run
+without this sandbox. A process that can reach the Docker daemon can still
+mount the checkout into a container, and `ps` shows every harness process's
+command line (paths, but no longer the selected cell in CI). Other agents' homes
+and task workspaces in the same instance stay readable. Case fixtures that create their own private directories directly in the
+shared temporary directory stay readable. The boundary is filesystem only: the
+scenarios and graders are public on GitHub, and agents have network access for
+their model provider. Daytona cells run the agent in a remote sandbox that holds only the
+staged runnerd and provider pack, not the checkout.
+
+Fixture names that an agent can read (company, agent, environment, secret,
+connection and project) use a neutral word and a digest suffix. They do not
+contain case ids, suite names, "E2E" or "test". The digest is salted per
+process, so public catalog ids cannot be hashed back to a case.
+
 ## AWS OIDC and S3
 
 The AWS role trust policy should accept only GitHub's OIDC audience and the
@@ -502,6 +587,16 @@ birth checks remain required. Other descriptor aliases, missing descriptors and
 foreign inodes fail before any signal. Native Linux calibration exercises both
 descriptor launches with synthetic owned processes and no provider credentials;
 it does not qualify paid Pi behavior or change previous failed grades.
+
+These fixtures run without `paperclip-runnerd --trusted-launch-root`, so the
+Runner still hands providers a sealed memfd Node and the memfd assertions above
+are unchanged. Under a trusted launch root (the agent computer's read-only Runner
+ROM) the Runner instead holds the ROM's own Node file. Kimi admission then takes
+its existing linked-descriptor branch: one link, the same inode as the parent's
+`/proc/<pid>/exe`, and the complete bytes hashed against `nodeSha256`. It never
+accepts that file as a memfd. Pi admission binds to the native distribution
+snapshot's Node, which the ACPX closure copies whether or not a trusted root is
+set.
 
 The private resource-admission marker and raw cleanup results control recovery-state retention independently of evidence packaging. A worker crash after admission keeps the owner-only recovery database; a confirmed pre-allocation bootstrap failure does not. Neither the marker nor the database enters published evidence.
 

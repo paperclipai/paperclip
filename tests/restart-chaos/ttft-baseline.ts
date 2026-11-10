@@ -19,6 +19,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { setTimeout as delay } from "node:timers/promises";
+import { releaseInstance } from "../runner-e2e/instance-retention.js";
 import { ChaosApi } from "./api.js";
 import { CREDENTIAL_FOR_ADAPTER, DAYTONA_VCPU_BUDGET } from "./config.js";
 import { ACTIVE_RUN_STATUSES } from "./grader.js";
@@ -196,8 +197,8 @@ async function readyAdapters(api: ChaosApi, lab: ChaosLab, adapters: AdapterId[]
 
 function report(runs: BaselineRun[], faults: BaselineFault[]): string {
   const ms = (value: number | null) => value === null ? "—" : `${(value / 1000).toFixed(2)} s`;
-  const lines = ["| Adapter | Env | Start | n | TTFT p50 | TTFT p95 | Wait behind live turn p50 / p95 (n) | TTFT from run created p50 / p95 | Boot p50 | Boot p95 | TTFT anchors |", "|---|---|---|---|---|---|---|---|---|---|---|"];
-  const rowLine = (row: ReturnType<typeof baselineRows>[number]) => `| ${row.adapter} | ${row.environment} | ${row.warmth} | ${row.ttft.n}/${row.boot.n} | ${ms(row.ttft.p50)} | ${ms(row.ttft.p95)} | ${ms(row.inputWait.p50)} / ${ms(row.inputWait.p95)} (${row.inputWait.n}) | ${ms(row.ttftAfterRunCreated.p50)} / ${ms(row.ttftAfterRunCreated.p95)} | ${ms(row.boot.p50)} | ${ms(row.boot.p95)} | ${Object.entries(row.anchors).map(([k, v]) => `${k}×${v}`).join(", ") || "—"} |`;
+  const lines = ["| Adapter | Env | Start | n | TTFT p50 | TTFT p95 | Wait behind live turn p50 / p95 (n) | First activity from run created p50 / p95 (budget) | TTFT from run created p50 / p95 | Boot p50 | Boot p95 | TTFT anchors |", "|---|---|---|---|---|---|---|---|---|---|---|---|"];
+  const rowLine = (row: ReturnType<typeof baselineRows>[number]) => `| ${row.adapter} | ${row.environment} | ${row.warmth} | ${row.ttft.n}/${row.boot.n} | ${ms(row.ttft.p50)} | ${ms(row.ttft.p95)} | ${ms(row.inputWait.p50)} / ${ms(row.inputWait.p95)} (${row.inputWait.n}) | ${ms(row.firstActivityAfterRunCreated.p50)} / ${ms(row.firstActivityAfterRunCreated.p95)} | ${ms(row.ttftAfterRunCreated.p50)} / ${ms(row.ttftAfterRunCreated.p95)} | ${ms(row.boot.p50)} | ${ms(row.boot.p95)} | ${Object.entries(row.anchors).map(([k, v]) => `${k}×${v}`).join(", ") || "—"} |`;
   for (const row of baselineRows(runs)) lines.push(rowLine(row));
   // New agents wait for harness verification before their run is created:
   // their own rows, so that wait never blends into ordinary cold starts.
@@ -215,7 +216,7 @@ function report(runs: BaselineRun[], faults: BaselineFault[]): string {
   lines.push("", "| Pre-turn step | n | p50 | p95 | Adapters |", "|---|---|---|---|---|");
   for (const step of rankPreTurnSteps(runs).slice(0, 25)) lines.push(`| \`${step.step}\` | ${step.n} | ${ms(step.p50)} | ${ms(step.p95)} | ${step.adapters.join(", ")} |`);
   const samples = recoverySamples(runs, faults);
-  lines.push("", "| Adapter | Fault | Disposition | n | Recovery p50 | Recovery p95 | No provider event |", "|---|---|---|---|---|---|---|");
+  lines.push("", "| Adapter | Fault | Disposition | n | Recovery p50 | Recovery p95 | Paperclip share p50 / p95 | No provider event |", "|---|---|---|---|---|---|---|---|");
   const groups = new Map<string, typeof samples>();
   for (const sample of samples) {
     const key = `${sample.adapter}|${sample.kind}|${sample.disposition}`;
@@ -224,7 +225,8 @@ function report(runs: BaselineRun[], faults: BaselineFault[]): string {
   for (const [key, group] of [...groups.entries()].sort()) {
     const [adapter, kind, disposition] = key.split("|");
     const d = distribution(group.flatMap(sample => sample.latencyMs === null ? [] : [sample.latencyMs]));
-    lines.push(`| ${adapter} | ${kind} | ${disposition} | ${d.n} | ${ms(d.p50)} | ${ms(d.p95)} | ${group.length - d.n} |`);
+    const control = distribution(group.flatMap(sample => sample.controlPlaneMs === null ? [] : [sample.controlPlaneMs]));
+    lines.push(`| ${adapter} | ${kind} | ${disposition} | ${d.n} | ${ms(d.p50)} | ${ms(d.p95)} | ${ms(control.p50)} / ${ms(control.p95)} | ${group.length - d.n} |`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -338,9 +340,11 @@ async function main() {
       process.exitCode = 1;
     }
   };
-  const shutdown = () => (stopping ??= releaseDaytona().then(() => supervisor.stop()).catch(error => {
+  const shutdown = () => (stopping ??= releaseDaytona().then(() => supervisor.stop()).then(() => false, error => {
     process.stderr.write(`supervisor stop: ${String(error)}\n`);
-  }));
+    return true;
+  }).then(stopFailed => releaseInstance(supervisor.paths.temporaryRoot, { keep: false, stopFailed, owner: "ttft-baseline" }))
+    .then(() => undefined, error => { process.stderr.write(`instance cleanup: ${String(error)}\n`); }));
   const onSignal = (signal: NodeJS.Signals) => {
     timeline.add("baseline_interrupted", { signal });
     void shutdown().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
@@ -351,12 +355,12 @@ async function main() {
     await supervisor.start(env === "daytona"
       ? await prepareDaytonaController({ image: values["daytona-image"]!, repositoryRoot, timeline }) : {});
     const api = new ChaosApi(supervisor.baseUrl);
-    const repositoryPath = values["workspace-repo"] ? path.resolve(values["workspace-repo"]) : undefined;
-    projectScopedTasks = Boolean(repositoryPath);
+    const workspaceRepo = values["workspace-repo"] ? path.resolve(values["workspace-repo"]) : undefined;
+    projectScopedTasks = Boolean(workspaceRepo);
     const lab = await seedChaosLab({ api, env, daytonaImage: values["daytona-image"], daytonaCpu: cpu,
       daytonaWarm: values["daytona-warm"], daytonaInherit: values["daytona-inherit"],
       adapters: requested, concurrency: requested.length, budgetCents: 3000,
-      masks: ["rc06"], fixtureRoot: supervisor.paths.temporaryRoot, waveId, timeline, adapterConfigOverrides, repositoryPath,
+      masks: ["rc06"], fixtureRoot: supervisor.paths.temporaryRoot, waveId, timeline, adapterConfigOverrides, workspaceRepo,
       onEnvironment: owned => {
         sweeper = new DaytonaWaveSweeper({ apiKey: process.env.DAYTONA_API_KEY!, companyId: owned.companyId, environmentId: owned.environmentId, api });
       } });

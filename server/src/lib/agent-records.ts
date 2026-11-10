@@ -89,6 +89,10 @@ export type AgentConfigurationPatch = Partial<Pick<typeof agents.$inferInsert, t
 export type AgentHireRecord = Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "adapterConfig" | "permissions" | "metadata" | "status">;
 
 export interface CreateAgentOptions {
+  createdByAgentId?: string | null;
+  createdByAgentCompanyId?: string;
+  interactionTexts?: readonly string[];
+  initialBudgetPolicyUserId?: string;
   setupOnly?: boolean;
   setupAgentId?: string;
   runnerResolved?: boolean;
@@ -330,7 +334,7 @@ export function agentRecordQueries(db: Db) {
     const { lifecycleOperation, lifecycleRequiredPluginIds, harnessVerifiedDigest, harnessVerifiedAt, ...publicRow } = row;
     return withUrlKey({
       ...publicRow,
-      permissions: normalizeAgentPermissions(row.permissions),
+      permissions: normalizeAgentPermissions(row.permissions, { role: row.role }),
     });
   }
 

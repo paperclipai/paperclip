@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { readFileSync, readlinkSync } from "node:fs";
-import { hostname, uptime } from "node:os";
+import { hostname } from "node:os";
 import { readProcessStartedAt } from "./hot-restart.js";
 import { currentWorkspaceWorker, type WorkspaceWorker } from "./native-runtime/native-workspace-platform-proof.js";
 
@@ -63,10 +64,17 @@ function processSpaceHash(): string {
     const parts = [hostname()];
     if (process.platform === "linux") {
       parts.push(readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(), readlinkSync("/proc/self/ns/pid"));
+    } else if (process.platform === "darwin") {
+      // One bounded, read-only kernel identity observation per module. Rounded
+      // boot-time estimates can collide across hosts and cannot authorize PID
+      // comparisons. Old weak hashes simply stop matching this stronger proof.
+      const bootSession = execFileSync("/usr/sbin/sysctl", ["-n", "kern.bootsessionuuid"], {
+        encoding: "utf8", timeout: 1_500, maxBuffer: 4_096, windowsHide: true,
+      }).trim().toLowerCase();
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(bootSession)) return UNKNOWN_PROCESS_SPACE;
+      parts.push(bootSession);
     } else {
-      // No PID namespaces here. The boot time keeps a rebooted host distinct;
-      // rounding can only make a record unmatched, which fails closed.
-      parts.push(String(Math.round((Date.now() - uptime() * 1000) / 600_000)));
+      return UNKNOWN_PROCESS_SPACE;
     }
     if (parts.some(part => !part)) return UNKNOWN_PROCESS_SPACE;
     return createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 32);
@@ -119,10 +127,23 @@ export function currentControllerBootId(): string {
   return bootId;
 }
 
+const stampListeners = new Set<() => void>();
+/** Called (synchronously, without I/O) whenever this process stamps ownership of a record. */
+export function onControllerStamp(listener: () => void): () => void {
+  stampListeners.add(listener);
+  return () => { stampListeners.delete(listener); };
+}
+function notifyStamp() {
+  for (const listener of stampListeners) {
+    try { listener(); } catch { /* a listener never blocks a stamp */ }
+  }
+}
+
 export async function currentControllerProcess(): Promise<ControllerProcess> {
   const startedAt = await currentProcessStartedAtMs();
   const iso = startedAt === null ? null : new Date(startedAt).toISOString();
   resolvedProcessStartedAt = iso;
+  notifyStamp();
   return { bootId, pid: process.pid, hostHash, processStartedAt: iso, ...deploymentField() };
 }
 
@@ -133,6 +154,7 @@ export async function currentControllerProcess(): Promise<ControllerProcess> {
  * a live PID then stays ambiguous, which fails closed.
  */
 export function currentControllerProcessStamp(): ControllerProcess {
+  notifyStamp();
   return { bootId, pid: process.pid, hostHash, processStartedAt: resolvedProcessStartedAt, ...deploymentField() };
 }
 

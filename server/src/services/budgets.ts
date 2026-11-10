@@ -1,3 +1,4 @@
+import { markBudgetCancelledWorkForResume } from "./budget-resume-continuation.js";
 import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
 import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
@@ -70,6 +71,8 @@ export type BudgetEnforcementScope = {
 
 export type BudgetServiceHooks = {
   cancelWorkForScope?: (scope: BudgetEnforcementScope) => Promise<void>;
+  /** Deliver budget-resume continuations; the enforcement worker calls it after Stop delivery. */
+  deliverResumeContinuations?: () => Promise<void>;
 };
 
 function currentUtcMonthWindow(now = new Date()) {
@@ -349,7 +352,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     const now = new Date();
     if (policy.scopeType === "agent") {
       const { applyAgentBudgetHoldInTransaction } = await import("./agent-lifecycle.js");
-      await applyAgentBudgetHoldInTransaction(db, policy.companyId, policy.scopeId, true);
+      await applyAgentBudgetHoldInTransaction(db, policy.companyId, policy.scopeId, true, publications);
       return;
     }
 
@@ -420,7 +423,7 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     await promoteDeferredWorkIntents(db, { companyId: policy.companyId, trigger: "pause_lifted" });
     if (policy.scopeType === "agent") {
       const { applyAgentBudgetHoldInTransaction } = await import("./agent-lifecycle.js");
-      await applyAgentBudgetHoldInTransaction(db, policy.companyId, policy.scopeId, false);
+      await applyAgentBudgetHoldInTransaction(db, policy.companyId, policy.scopeId, false, publications);
       return;
     }
 
@@ -1007,6 +1010,8 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       incidentId: string,
       input: BudgetIncidentResolutionInput,
       actorUserId: string,
+      /** The resolving actor's session source, kept for the continuation Retry. */
+      actorSource?: string | null,
     ): Promise<BudgetIncident> => {
       const incident = await db
         .select()
@@ -1066,6 +1071,24 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
         }
 
         await resumeScopeFromBudget(policy);
+        // Claim the work this stop cancelled for one continuation each, before
+        // the incident closes: a crash before here leaves the incident open,
+        // and resolving it again keeps existing claims. The continuation
+        // worker delivers each claim once its stop has settled.
+        const claimedRunIds = await markBudgetCancelledWorkForResume(db, {
+          companyId, scopeType: policy.scopeType as BudgetScopeType, scopeId: policy.scopeId,
+          incidentId: incident.id, incidentOpenedAt: incident.createdAt, actorUserId, actorSource,
+        });
+        if (claimedRunIds.length > 0) await recordActivity({
+          companyId,
+          actorType: "user",
+          actorId: actorUserId,
+          action: "budget.cancelled_work_resume_requested",
+          entityType: "budget_incident",
+          entityId: incident.id,
+          details: { scopeType: policy.scopeType, scopeId: policy.scopeId, runCount: claimedRunIds.length,
+            sampleRunIds: claimedRunIds.slice(0, 20) },
+        });
         await db
           .update(budgetIncidents)
           .set({
@@ -1355,11 +1378,12 @@ export function budgetService(db: Db, _hooks: BudgetServiceHooks = {}) {
     getInvocationBlock: (companyId: string, agentId: string | null, context?: AdmissionContext) =>
       withBudgetSpan("budget.admission.inspect", () => withAccountingReadSnapshot(db, companyId,
         tx => budgetServiceInTransaction(tx).getInvocationBlock(companyId, agentId, context))),
-    resolveIncident: async (companyId: string, incidentId: string, input: BudgetIncidentResolutionInput, actorUserId: string) => {
+    resolveIncident: async (companyId: string, incidentId: string, input: BudgetIncidentResolutionInput, actorUserId: string,
+      actorSource?: string | null) => {
       const [scope] = await db.select({ scopeType: budgetIncidents.scopeType, scopeId: budgetIncidents.scopeId }).from(budgetIncidents)
         .where(and(eq(budgetIncidents.id, incidentId), eq(budgetIncidents.companyId, companyId)));
       if (!scope) throw notFound("Budget incident not found");
-      return mutate(companyId, service => service.resolveIncident(companyId, incidentId, input, actorUserId), scope);
+      return mutate(companyId, service => service.resolveIncident(companyId, incidentId, input, actorUserId, actorSource), scope);
     },
   };
 }

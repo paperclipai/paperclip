@@ -23,6 +23,8 @@ const apiPrefixes: Record<string, string> = {
   "adapters.ts": "/api",
   "agents.ts": "/api",
   "agent-project-access.ts": "/api",
+  "agent-permission-grants.ts": "/api",
+  "agent-interaction-permissions.ts": "/api",
   "agent-commentary.ts": "/api",
   "agent-chat-messages.ts": "/api",
   "agent-avatars.ts": "/api",
@@ -331,6 +333,25 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("tells agents managed-agent profiles are created with the CLI, not a web page", () => {
+    const route = buildOpenApiSpec().paths["/api/companies/{companyId}/managed-agent-profiles"];
+    for (const operation of [route.get, route.post]) {
+      expect(operation.description).toContain("Board only");
+      expect(operation.description).toContain("There is no web page");
+    }
+    expect(route.post.description).toContain("paperclipai managed-agent setup --company-id <companyId>");
+    expect(route.post.description).toContain("--acknowledge-retention");
+  });
+
+  it("documents the agent Mine inbox read as a person's inbox that requires their user id", () => {
+    const operation = buildOpenApiSpec().paths["/api/agents/me/inbox/mine"].get;
+    expect(operation.summary).not.toMatch(/current agent/i);
+    expect(operation.description).toContain("/<prefix>/inbox/mine");
+    expect(operation.description).toContain("not your own work queue");
+    const userId = operation.parameters.find((parameter: { name: string; in: string }) => parameter.name === "userId" && parameter.in === "query");
+    expect(userId).toMatchObject({ required: true });
+  });
+
   it("documents the export include body so agents can request projects and skills", () => {
     const spec = buildOpenApiSpec();
     for (const path of ["/api/companies/{companyId}/exports", "/api/companies/{companyId}/exports/preview"]) {
@@ -388,6 +409,51 @@ describe("openapi routes", () => {
       detail: { properties: { kind: { enum: ["questions"] } } },
     } } });
     for (const code of ["200", "400", "401", "403", "404"]) expect(operation.responses[code]).toBeDefined();
+  });
+
+  it("documents task-tree controls as board-only and names the human page", () => {
+    const spec = buildOpenApiSpec() as any;
+    const boardSecurity = [{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }];
+    for (const [path, method] of [
+      ["/api/issues/{id}/tree-control/state", "get"],
+      ["/api/issues/{id}/tree-control/preview", "post"],
+      ["/api/issues/{id}/tree-holds", "get"],
+      ["/api/issues/{id}/tree-holds", "post"],
+      ["/api/issues/{id}/tree-holds/{holdId}", "get"],
+      ["/api/issues/{id}/tree-holds/{holdId}/release", "post"],
+    ] as const) {
+      const operation = spec.paths[path][method];
+      expect(operation.security).toEqual(boardSecurity);
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    }
+    const create = spec.paths["/api/issues/{id}/tree-holds"].post.description as string;
+    expect(create).toContain("Pause subtree");
+    expect(create).toContain("/{prefix}/issues/{identifier}");
+  });
+
+  it("publishes grant-gated access operations as board_or_agent and keeps member edits board-only", () => {
+    const spec = buildOpenApiSpec() as any;
+    for (const [path, method, grant] of [
+      ["/api/companies/{companyId}/invites", "post", "users:invite"],
+      ["/api/companies/{companyId}/invites", "get", "users:invite"],
+      ["/api/companies/{companyId}/join-requests", "get", "joins:approve"],
+      ["/api/companies/{companyId}/join-requests/{requestId}/approve", "post", "joins:approve"],
+      ["/api/companies/{companyId}/join-requests/{requestId}/reject", "post", "joins:approve"],
+      ["/api/companies/{companyId}/members", "get", "users:manage_permissions"],
+    ] as const) {
+      const operation = spec.paths[path][method];
+      expect(operation["x-paperclip-authorization"], `${method} ${path}`).toEqual({ actor: "board_or_agent" });
+      expect(operation.description).toContain(grant);
+    }
+    expect(spec.paths["/api/companies/{companyId}/invites"].post.description).toContain("inviteUrl");
+    for (const path of [
+      "/api/companies/{companyId}/members/{memberId}/permissions",
+      "/api/companies/{companyId}/members/{memberId}/role-and-grants",
+    ]) {
+      expect(spec.paths[path].patch["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(spec.paths[path].patch.description).toContain("/<prefix>/company/settings/members");
+    }
+    expect(spec.paths["/api/companies/{companyId}/members"].get.description).toContain("/<prefix>/company/settings/members");
   });
 
   it("documents owned conversation reads and exact revision access separately", () => {
@@ -576,12 +642,32 @@ describe("openapi routes", () => {
     expect(dismiss.description).toContain("viewers may dismiss their own");
   });
 
+  it("tells agents that Agent Chat is always on instead of advertising a retired toggle", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+    const experimental = res.body.paths["/api/instance/settings/experimental"];
+    for (const operation of [experimental.get, experimental.patch]) {
+      expect(operation.description).toContain("Agent Chat is always on");
+      expect(operation.description).toContain("enableAgentChat is a retired compatibility key");
+      expect(operation.description).toContain("tell them it is already on");
+    }
+  });
+
   it("tells agents that archiving keeps a status card and where a person restores it", async () => {
     const res = await request(createApp()).get("/api/openapi.json");
     const patch = res.body.paths["/api/status-cards/{id}"].patch;
     expect(patch.description).toContain("it is not deleted");
     expect(patch.description).toContain("give them the returned href as a Markdown link");
     expect(patch.description).toContain("Restoring (archived: false) starts a fresh full summary");
+  });
+
+  it("tells agents that creating or refreshing a status card only queues the summarizer, so they reply now with its link", async () => {
+    const res = await request(createApp()).get("/api/openapi.json");
+    const create = res.body.paths["/api/companies/{companyId}/status-cards"].post;
+    expect(create.description).toContain("The response is returned before any summary exists");
+    expect(create.description).toContain("reply now with the returned href as a Markdown link");
+    const refresh = res.body.paths["/api/status-cards/{id}/refresh"].post;
+    expect(refresh.description).toContain("Queues a refresh; it does not return a new summary");
+    expect(refresh.description).toContain("Do not sleep or poll for it: reply now that the refresh is queued, with the returned card.href");
   });
 
   it("documents exact failed-run selection and durable accepted retry responses", async () => {
@@ -1130,6 +1216,16 @@ describe("openapi routes", () => {
     });
   });
 
+  it("documents agent permission grants as Board-only with a strict request", () => {
+    const operation = loadSpecRoutes().spec.paths["/api/agents/{id}/permission-grants"].patch;
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    expect(operation.requestBody.content["application/json"].schema).toMatchObject({
+      additionalProperties: false, required: ["permissionKey", "enabled"],
+      properties: { enabled: { type: "boolean" }, permissionKey: { enum: expect.arrayContaining(["commentary:view"]) } },
+    });
+  });
+
   it("documents additive project access as board-only with a strict request", () => {
     const { spec } = loadSpecRoutes();
     const path = spec.paths["/api/agents/{id}/project-access"];
@@ -1412,6 +1508,10 @@ describe("openapi routes", () => {
     expect(
       (responseSchemas.start.properties as Record<string, unknown>).prompt,
     ).toBeDefined();
+    const activeSchema = spec.paths[`${base}/active`].get.responses["200"].content["application/json"].schema;
+    expect(activeSchema.properties.agentId).toMatchObject({ type: "string", format: "uuid" });
+    expect(activeSchema.required ?? []).not.toContain("agentId");
+    expect((responseSchemas.status.properties as Record<string, unknown>).agentId).toBeUndefined();
     // The prompt route returns the authorization URL and the optional transport
     // advisory. The advisory is present on a non-confidential transport, so the
     // client can show a non-blocking disclaimer.

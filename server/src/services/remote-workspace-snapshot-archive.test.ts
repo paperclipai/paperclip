@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { captureRemoteWorkspaceDirectory, readRemoteWorkspaceArchiveDirectories, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
+import { workspaceArchive, readRemoteWorkspaceArchiveDirectories, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage } from "./remote-workspace-snapshot-archive.js";
 
 const archiveIo = vi.hoisted(() => ({
   afterChmod: undefined as ((target: string, mode: number) => void) | undefined,
@@ -34,6 +34,9 @@ vi.mock("node:fs/promises", async importOriginal => {
     await actual.chmod(target, mode); archiveIo.afterChmod?.(target, mode);
   } };
 });
+
+const captureRemoteWorkspaceDirectory = (input: Omit<Parameters<typeof workspaceArchive>[0], "kind">) => workspaceArchive({ ...input, kind: "capture" });
+const restoreRemoteWorkspaceArchive = (input: Omit<Parameters<typeof workspaceArchive>[0], "kind">) => workspaceArchive({ ...input, kind: "restore" });
 
 const execute = promisify(execFile);
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull,
@@ -724,6 +727,30 @@ describe("portable remote workspace archives", () => {
     const bytes = await sourceBytes(cwd);
     await expect(capture(cwd)).rejects.toThrow("remote_workspace_archive_git_operation_in_progress");
     expect(await sourceBytes(cwd)).toBe(bytes);
+    await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it.each(["staged", "committed"])("refuses to save a repository missing a %s object", async kind => {
+    const cwd = await source();
+    await git(cwd, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(cwd, "work.txt"), "committed\n"); await git(cwd, "add", ".");
+    await git(cwd, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "base");
+    if (kind === "staged") { await fs.writeFile(path.join(cwd, "work.txt"), "staged\n"); await git(cwd, "add", "work.txt"); }
+    const object = await git(cwd, "rev-parse", kind === "staged" ? ":work.txt" : "HEAD:work.txt");
+    await fs.rm(path.join(cwd, ".git", "objects", object.slice(0, 2), object.slice(2)), { force: true });
+    await expect(capture(cwd)).rejects.toThrow();
+    await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("refuses to save a repository with a corrupt packed object", async () => {
+    const cwd = await source();
+    await git(cwd, "init", "-q", "-b", "main");
+    for (const name of ["a", "b", "c"]) await fs.writeFile(path.join(cwd, `${name}.txt`), `${name} `.repeat(4096));
+    await git(cwd, "add", "."); await git(cwd, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "base");
+    await git(cwd, "repack", "-qad");
+    const packs = path.join(cwd, ".git", "objects", "pack");
+    const pack = path.join(packs, (await fs.readdir(packs)).find(name => name.endsWith(".pack"))!);
+    const bytes = await fs.readFile(pack); bytes[Math.floor(bytes.length / 2)] ^= 0xff;
+    await fs.chmod(pack, 0o600); await fs.writeFile(pack, bytes);
+    await expect(capture(cwd)).rejects.toThrow();
     await expect(fs.access(path.join(root, "snapshot.pcws"))).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("rejects a damaged Git entry with a closed reason instead of a raw command error", async () => {

@@ -1,8 +1,10 @@
+import { Worker } from "node:worker_threads";
+
 /**
  * A portable, streaming workspace archive. This function is intentionally
  * self-contained: the same implementation runs locally and in a sandbox.
  */
-async function workspaceArchive(input: {
+export async function workspaceArchive(input: {
   kind: "capture" | "restore";
   cwd?: string;
   archivePath: string;
@@ -315,6 +317,39 @@ async function workspaceArchive(input: {
     return { gitDirectory, commonDirectory, stores };
   };
   const gitStatePath = async (repo: string, name: string) => (await git(repo, ["rev-parse", "--path-format=absolute", "--git-path", name])).trim();
+  // The checks of `git fsck --full --no-dangling` without its single-threaded
+  // re-hash of every packed object, which took ~20 s for a Paperclip-sized
+  // history on every save. Connectivity proves every reachable object (refs,
+  // index, saved Git state) is present; each loose object must hash to its
+  // name; index-pack --verify hashes every packed object on several threads.
+  const verifyGitObjects = async (repo: string) => {
+    await git(repo, ["fsck", "--connectivity-only", "--no-dangling"]);
+    const format = (await git(repo, ["rev-parse", "--show-object-format"])).trim();
+    if (!["sha1", "sha256"].includes(format)) fail("unsupported_git_setting");
+    const zlib = await import("node:zlib");
+    const { pipeline } = await import("node:stream/promises");
+    const objects = await gitStatePath(repo, "objects");
+    const listing = async (directory: string) => fs.readdir(directory)
+      .catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return [] as string[]; throw error; });
+    const loose = new RegExp(`^[0-9a-f]{${format === "sha1" ? 38 : 62}}$`, "u");
+    for (const prefix of (await listing(objects)).filter(name => /^[0-9a-f]{2}$/u.test(name)).sort()) {
+      for (const rest of (await listing(path.join(objects, prefix))).filter(name => loose.test(name)).sort()) {
+        check();
+        const hash = crypto.createHash(format);
+        // pipeline forwards read errors and cancellation from both streams and
+        // closes them; only damaged zlib data names the entry as damaged Git.
+        await pipeline(createReadStream(path.join(objects, prefix, rest), { signal: input.signal }), zlib.createInflate(),
+          async (inflated: AsyncIterable<Buffer>) => { for await (const bytes of inflated) hash.update(bytes); },
+        ).catch((error: NodeJS.ErrnoException) => { if (/^Z_/u.test(error?.code ?? "")) fail("invalid_git_repository"); throw error; });
+        if (hash.digest("hex") !== prefix + rest) fail("invalid_git_repository");
+      }
+    }
+    const packs = path.join(objects, "pack");
+    const threads = Math.max(1, Math.min(8, os.availableParallelism?.() ?? os.cpus().length));
+    for (const name of (await listing(packs)).filter(name => name.endsWith(".pack")).sort()) {
+      await git(repo, ["index-pack", "--verify", `--threads=${threads}`, path.join(packs, name)]);
+    }
+  };
   const gitStateHash = async (repo: string, name: string) => {
     const file = await gitStatePath(repo, name);
     return readStableFile(file).then(entry => entry.sha256).catch((error: NodeJS.ErrnoException) => {
@@ -471,7 +506,7 @@ async function workspaceArchive(input: {
           // A shallow local clone uses upload-pack. It drops index-only objects
           // and asks a filtered source for promised blobs it never downloaded.
           // Preserve its existing stores and promisor boundaries without fetch.
-          await git(repo, ["fsck", "--full", "--no-dangling"]);
+          await verifyGitObjects(repo);
           const format = (await git(repo, ["rev-parse", "--show-object-format"])).trim();
           if (!["sha1", "sha256"].includes(format)) fail("unsupported_git_setting");
           await git(root, ["init", "--bare", "--template=", `--object-format=${format}`, normalized]);
@@ -522,7 +557,7 @@ async function workspaceArchive(input: {
           await git(restoredRepo, ["cat-file", "-e", `${object}^{${type}}`]);
         }
         await fs.rm(path.join(destination, "objects", "info", "alternates"), { force: true });
-        await git(restoredRepo, ["fsck", "--full", "--no-dangling"]);
+        await verifyGitObjects(restoredRepo);
         if (await signature(repo) !== gitSignatures.get(relative)) fail("changed");
       }
       const originals = new Map(before.map(entry => [entry.path, entry]));
@@ -629,8 +664,81 @@ async function workspaceArchive(input: {
   }
 }
 
+type ArchiveInput = Parameters<typeof workspaceArchive>[0];
+let activeArchiveWorkers = 0;
+const archiveWaiters: Array<() => void> = [];
+
+async function archiveWorkerSlot(signal?: AbortSignal): Promise<() => void> {
+  signal?.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const start = () => {
+      signal?.removeEventListener("abort", abort);
+      activeArchiveWorkers++;
+      resolve();
+    };
+    const abort = () => {
+      const index = archiveWaiters.indexOf(start);
+      if (index >= 0) archiveWaiters.splice(index, 1);
+      reject(signal!.reason);
+    };
+    if (activeArchiveWorkers < 8) start();
+    else {
+      archiveWaiters.push(start);
+      signal?.addEventListener("abort", abort, { once: true });
+    }
+  });
+  return () => { activeArchiveWorkers--; archiveWaiters.shift()?.(); };
+}
+
+async function runArchiveWorker(input: ArchiveInput): ReturnType<typeof workspaceArchive> {
+  const release = await archiveWorkerSlot(input.signal);
+  let workerScratch: string | undefined;
+  const fs = await import("node:fs/promises");
+  try {
+    input.signal?.throwIfAborted();
+    const path = await import("node:path"), os = await import("node:os");
+    workerScratch = await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-archive-worker-"));
+    await fs.chmod(workerScratch, 0o700);
+    const { signal, ...parameters } = input;
+    const source = workspaceArchive.toString().replaceAll("__vite_ssr_dynamic_import__", "import");
+    const worker = new Worker(`const {parentPort,workerData}=require("node:worker_threads");
+const __name=value=>value;
+const controller=new AbortController();
+parentPort.on("message",()=>controller.abort());
+const archive=${source};
+archive({...workerData,signal:controller.signal}).then(result=>parentPort.postMessage({result}),error=>parentPort.postMessage({error:{...error,name:error.name,message:error.message}})).finally(()=>parentPort.close());`, {
+      eval: true, workerData: parameters, execArgv: [], stdout: true, stderr: true,
+      env: { ...process.env, TMPDIR: workerScratch, TMP: workerScratch, TEMP: workerScratch },
+      resourceLimits: { maxOldGenerationSizeMb: 1024, maxYoungGenerationSizeMb: 64, stackSizeMb: 4 },
+    });
+    worker.stdout.resume(); worker.stderr.resume();
+    const abort = () => worker.postMessage("abort");
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    try {
+      return await new Promise<Awaited<ReturnType<typeof workspaceArchive>>>((resolve, reject) => {
+        let result: Awaited<ReturnType<typeof workspaceArchive>> | undefined, failure: Error | undefined;
+        worker.once("message", (message: { result?: typeof result; error?: Record<string, unknown> }) => {
+          result = message.result;
+          if (message.error) failure = Object.assign(new Error(String(message.error.message)), message.error);
+        });
+        worker.once("error", error => { failure = error; });
+        worker.once("exit", code => {
+          if (signal?.aborted) reject(signal.reason);
+          else if (failure) reject(failure);
+          else if (code === 0 && result) resolve(result);
+          else reject(new Error("remote_workspace_archive_worker_failed"));
+        });
+      });
+    } finally { signal?.removeEventListener("abort", abort); }
+  } finally {
+    try { if (workerScratch) await fs.rm(workerScratch, { recursive: true, force: true }); }
+    finally { release(); }
+  }
+}
+
 export function captureRemoteWorkspaceDirectory(input: { cwd: string; archivePath: string; manifestPath?: string; exclude?: string[]; requireNoGit?: boolean; gitSourceRoots?: string[]; signal?: AbortSignal }) {
-  return workspaceArchive({ ...input, kind: "capture" });
+  return runArchiveWorker({ ...input, kind: "capture" });
 }
 
 export async function readRemoteWorkspaceArchiveDirectories(archivePath: string, expectedManifestDigest: string) {
@@ -658,7 +766,7 @@ export async function readRemoteWorkspaceArchiveDirectories(archivePath: string,
 }
 
 export function restoreRemoteWorkspaceArchive(input: { archivePath: string; targetDir: string; expectedManifestDigest: string; signal?: AbortSignal; maxEntries?: number; maxManifestBytes?: number }) {
-  return workspaceArchive({ ...input, kind: "restore" });
+  return runArchiveWorker({ ...input, kind: "restore" });
 }
 
 export function remoteWorkspaceCaptureFailureMessage(error: unknown): string | null {

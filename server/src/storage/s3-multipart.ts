@@ -1,4 +1,6 @@
 import { AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CreateMultipartUploadCommand, UploadPartCommand, type S3Client } from "@aws-sdk/client-s3";
+import { sendThroughStorageOutage } from "./storage-unavailable.js";
+import { recordStorageBackoff, recordStoragePart, recordStorageThrottle, withStorageRequestStats } from "./request-stats.js";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createReadStream } from "node:fs";
@@ -66,7 +68,7 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
   const partSize = Math.max(bufferedPartSize, Math.ceil(input.contentLength / 10_000));
   try {
     check();
-    uploadId = (await withS3FailureDiagnostics("create_multipart_upload", () => client.send(new CreateMultipartUploadCommand({ Bucket: bucket, Key: key, ContentType: input.contentType }), { abortSignal: controller.signal }))).UploadId;
+    uploadId = (await withS3FailureDiagnostics("create_multipart_upload", () => client.send(new CreateMultipartUploadCommand({ Bucket: bucket, Key: key, ContentType: input.contentType }), { abortSignal: controller.signal }), controller.signal)).UploadId;
     if (!uploadId) throw new Error("S3 did not return a multipart upload id");
     const parts: { ETag: string; PartNumber: number }[] = [];
     let partNumber = 0;
@@ -93,7 +95,7 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
         if (!body.write(chunk)) await once(body, "drain", { signal: controller.signal });
       };
       const sending = (async () => {
-        const result = await withS3FailureDiagnostics("upload_part", () => client.send(new UploadPartCommand({ Bucket: bucket, Key: key, UploadId: uploadId, PartNumber: number, Body: body, ContentLength: length }), { abortSignal: controller.signal }));
+        const result = await withS3FailureDiagnostics("upload_part", () => client.send(new UploadPartCommand({ Bucket: bucket, Key: key, UploadId: uploadId, PartNumber: number, Body: body, ContentLength: length }), { abortSignal: controller.signal }), controller.signal);
         if (remaining || !body.readableEnded || !result.ETag) throw new Error("S3 upload part is incomplete");
         parts[number - 1] = { ETag: result.ETag, PartNumber: number };
       })().catch(stop);
@@ -114,11 +116,11 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
     if (pending.length || !(await readNext()).done) throw new Error("S3 upload source exceeds its declared size");
     await Promise.all(active);
     check();
-    await withS3FailureDiagnostics("complete_multipart_upload", () => client.send(new CompleteMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId, MultipartUpload: { Parts: parts } }), { abortSignal: controller.signal }));
+    await withS3FailureDiagnostics("complete_multipart_upload", () => client.send(new CompleteMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId, MultipartUpload: { Parts: parts } }), { abortSignal: controller.signal }), controller.signal);
   } catch (error) {
     stop(error);
     await Promise.all(active);
-    if (uploadId) await cleanupStorageFailure(signal => client.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId }), { abortSignal: signal }));
+    if (uploadId) await cleanupStorageFailure(signal => withStorageRequestStats(() => client.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId }), { abortSignal: signal })));
     throw failure;
   } finally {
     input.signal?.removeEventListener("abort", onAbort);
@@ -129,7 +131,59 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
 
 export const FILE_PART_CONCURRENCY = 8;
 const FILE_PART_ATTEMPTS = 3;
+/** A provider that asks for a lower request rate gets more, longer-spaced attempts. */
+export const THROTTLED_PART_ATTEMPTS = 8;
+const THROTTLE_BACKOFF_BASE_MS = 1_000;
+const THROTTLE_BACKOFF_MAX_MS = 20_000;
 const FILE_READ_BYTES = 1024 * 1024;
+
+/**
+ * S3 answers a request-rate limit with 503 SlowDown; compatible gateways also
+ * use 429. The SDK never retries a part because its body is a stream, so the
+ * upload must slow down itself.
+ */
+function isRequestRateLimited(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const { name, $metadata } = error as { name?: unknown; $metadata?: { httpStatusCode?: unknown } };
+  return name === "SlowDown" || $metadata?.httpStatusCode === 503 || $metadata?.httpStatusCode === 429;
+}
+
+const TRANSIENT_FILE_REQUEST_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const TRANSIENT_FILE_REQUEST_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EPIPE", "EAI_AGAIN",
+  "ENOTFOUND", "ERR_STREAM_PREMATURE_CLOSE", "UND_ERR_SOCKET"]);
+const TRANSIENT_FILE_REQUEST_NAMES = new Set(["RequestTimeout", "TimeoutError", "NetworkingError", "InternalError", "ServiceUnavailable"]);
+
+function isTransientFileRequestFailure(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const { name, code, $metadata } = error as { name?: unknown; code?: unknown; $metadata?: { httpStatusCode?: unknown } };
+  const status = $metadata?.httpStatusCode;
+  if (typeof status === "number") return TRANSIENT_FILE_REQUEST_STATUS.has(status);
+  return (typeof code === "string" && TRANSIENT_FILE_REQUEST_CODES.has(code))
+    || (typeof name === "string" && TRANSIENT_FILE_REQUEST_NAMES.has(name));
+}
+
+export async function sendFileRequestWithRetry<T>(signal: AbortSignal | undefined, send: () => Promise<T>): Promise<T> {
+  for (let failures = 0, throttles = 0; ;) {
+    signal?.throwIfAborted();
+    try {
+      return await send();
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (isRequestRateLimited(error)) {
+        recordStorageThrottle();
+        if (++throttles >= THROTTLED_PART_ATTEMPTS) throw error;
+        const ceiling = Math.min(THROTTLE_BACKOFF_MAX_MS, THROTTLE_BACKOFF_BASE_MS * 2 ** (throttles - 1));
+        const wait = Math.floor(Math.random() * ceiling);
+        recordStorageBackoff(wait);
+        await delay(wait, undefined, { signal });
+        continue;
+      }
+      if (!isTransientFileRequestFailure(error) || ++failures >= FILE_PART_ATTEMPTS) throw error;
+      recordStorageBackoff(failures * 500);
+      await delay(failures * 500, undefined, { signal });
+    }
+  }
+}
 
 /** Base64 MD5 of an inclusive byte range, as the Content-MD5 header expects. */
 export async function fileRangeMd5(file: string, start: number, end: number, signal?: AbortSignal) {
@@ -146,7 +200,9 @@ export async function assertSourceFileSize(file: string, contentLength: number) 
 /** A file source is read per part instead of through one stream. Parts upload
  * in parallel without the shared memory window, each carries Content-MD5 so
  * the backend rejects bytes it did not receive intact, and a failed part is
- * resent from disk instead of failing the whole upload. */
+ * resent from disk instead of failing the whole upload. When the backend
+ * limits the request rate, the part backs off with jitter and the upload
+ * halves its parts in flight, once per round of throttled requests. */
 export async function putS3MultipartFile(
   client: S3Client, bucket: string, key: string, input: PutObjectInput & { sourceFile: string },
 ): Promise<PutObjectReceipt> {
@@ -163,49 +219,67 @@ export async function putS3MultipartFile(
     controller.signal.throwIfAborted();
     const partSize = Math.max(bufferedPartSize, Math.ceil(input.contentLength / 10_000));
     const count = Math.ceil(input.contentLength / partSize);
-    uploadId = (await withS3FailureDiagnostics("create_multipart_upload", () => client.send(new CreateMultipartUploadCommand({ Bucket: bucket, Key: key, ContentType: input.contentType }), { abortSignal: controller.signal }))).UploadId;
+    uploadId = (await sendThroughStorageOutage(() => withS3FailureDiagnostics("create_multipart_upload", () => client.send(new CreateMultipartUploadCommand({ Bucket: bucket, Key: key, ContentType: input.contentType }), { abortSignal: controller.signal }), controller.signal), controller.signal)).UploadId;
     if (!uploadId) throw new Error("S3 did not return a multipart upload id");
     const id = uploadId;
     const parts: { ETag: string; PartNumber: number }[] = new Array(count);
+    // Workers at or above this slot stop taking new parts. A reduction counts
+    // only for requests sent after the previous one, so a burst of parallel
+    // throttled parts halves the rate once rather than once per part.
+    let concurrency = FILE_PART_CONCURRENCY, reductions = 0;
     const sendPart = async (index: number) => {
       const start = index * partSize, length = Math.min(partSize, input.contentLength - start), end = start + length - 1;
       const contentMd5 = await fileRangeMd5(file, start, end, controller.signal);
-      for (let attempt = 1; ; attempt++) {
+      for (let failures = 0, throttles = 0; ;) {
         controller.signal.throwIfAborted();
         const body = createReadStream(file, { start, end, highWaterMark: 64 * 1024 });
+        const sentAfter = reductions;
         try {
           const result = await withS3FailureDiagnostics("upload_part", () => client.send(new UploadPartCommand({
             Bucket: bucket, Key: key, UploadId: id, PartNumber: index + 1, Body: body, ContentLength: length, ContentMD5: contentMd5,
-          }), { abortSignal: controller.signal }));
+          }), { abortSignal: controller.signal }), controller.signal);
           if (!result.ETag) throw new Error("S3 upload part is incomplete");
           parts[index] = { ETag: result.ETag, PartNumber: index + 1 };
+          recordStoragePart();
           return;
         } catch (error) {
           // A part read from disk can be resent; the stream path cannot.
-          if (controller.signal.aborted || attempt >= FILE_PART_ATTEMPTS) throw error;
-          await delay(attempt * 500, undefined, { signal: controller.signal });
+          if (controller.signal.aborted) throw error;
+          if (isRequestRateLimited(error)) {
+            recordStorageThrottle();
+            if (++throttles >= THROTTLED_PART_ATTEMPTS) throw error;
+            if (sentAfter === reductions) { concurrency = Math.max(1, Math.floor(concurrency / 2)); reductions++; }
+            const ceiling = Math.min(THROTTLE_BACKOFF_MAX_MS, THROTTLE_BACKOFF_BASE_MS * 2 ** (throttles - 1));
+            const wait = Math.floor(Math.random() * ceiling);
+            recordStorageBackoff(wait);
+            await delay(wait, undefined, { signal: controller.signal });
+            continue;
+          }
+          if (++failures >= FILE_PART_ATTEMPTS) throw error;
+          recordStorageBackoff(failures * 500);
+          await delay(failures * 500, undefined, { signal: controller.signal });
         } finally { body.destroy(); }
       }
     };
     let next = 0;
-    const worker = async () => {
-      while (next < count) {
+    const worker = async (slot: number) => {
+      while (next < count && slot < concurrency) {
         const index = next++;
-        try { await sendPart(index); }
+        try { await sendThroughStorageOutage(() => sendPart(index), controller.signal); }
         catch (error) { if (!controller.signal.aborted) controller.abort(error); throw error; }
       }
     };
     // Wait for every sibling to settle before the multipart upload is aborted.
-    const settled = await Promise.allSettled(Array.from({ length: Math.min(FILE_PART_CONCURRENCY, count) }, worker));
+    const settled = await Promise.allSettled(Array.from({ length: Math.min(FILE_PART_CONCURRENCY, count) }, (_, slot) => worker(slot)));
     const rejected = settled.find((entry): entry is PromiseRejectedResult => entry.status === "rejected");
     if (rejected) throw controller.signal.aborted && controller.signal.reason !== undefined ? controller.signal.reason : rejected.reason;
     controller.signal.throwIfAborted();
-    await withS3FailureDiagnostics("complete_multipart_upload", () => client.send(new CompleteMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: id, MultipartUpload: { Parts: parts } }), { abortSignal: controller.signal }));
+    await sendThroughStorageOutage(() => withS3FailureDiagnostics("complete_multipart_upload", () => client.send(new CompleteMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: id, MultipartUpload: { Parts: parts } }), { abortSignal: controller.signal }), controller.signal), controller.signal);
     uploadId = undefined;
     return { integrity: "server_verified_md5" };
   } catch (error) {
     const failedUpload = uploadId;
-    if (failedUpload) await cleanupStorageFailure(signal => client.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: failedUpload }), { abortSignal: signal }));
+    if (failedUpload) await cleanupStorageFailure(signal => withStorageRequestStats(() => client.send(new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: failedUpload }), { abortSignal: signal })));
     throw error;
   } finally {
     input.signal?.removeEventListener("abort", onAbort);

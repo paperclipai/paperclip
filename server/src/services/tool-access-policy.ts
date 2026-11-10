@@ -49,6 +49,7 @@ import { toolPolicyConditionsSchema } from "@paperclipai/shared";
 import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
 import {
   effectiveToolProfileBindings,
+  isConnectionAccessProfile,
   profileIdsInBindingOrder,
 } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
@@ -760,6 +761,23 @@ function rateBucket(rule: ToolRateLimitRule, ctx: ToolAccessContext): string {
   }).join("|");
 }
 
+// Grant scope keys that name which tools the grant covers: an action, a
+// connection or an application. Context keys such as agentId or projectId only
+// narrow when the grant applies, so a grant with only those still covers every
+// tool and does not count as a choice about one connection's actions.
+const TOOL_GRANT_TARGET_SCOPE_KEYS = new Set([
+  "allow",
+  "toolName", "toolNames",
+  "catalogEntryId", "catalogEntryIds",
+  "connectionId", "connectionIds",
+  "applicationId", "applicationIds",
+  "applicationKey", "applicationKeys",
+]);
+
+function isToolTargetedGrant(scope: unknown) {
+  return isRecord(scope) && Object.keys(scope).some((key) => TOOL_GRANT_TARGET_SCOPE_KEYS.has(key));
+}
+
 function scopeAllowsTool(scope: Record<string, unknown> | null, ctx: ToolAccessContext) {
   if (scope === null || scope === undefined) return true;
   if (!isRecord(scope)) return false;
@@ -1246,7 +1264,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     return { profiles: activeProfiles, entries };
   }
 
-  async function explicitGrant(ctx: ToolAccessContext, cache?: ToolAccessDecisionCache): Promise<boolean> {
+  async function explicitGrant(ctx: ToolAccessContext, cache?: ToolAccessDecisionCache, options: { toolTargetedOnly?: boolean } = {}): Promise<boolean> {
     const principalType = ctx.actorType === "agent" ? "agent" : ctx.actorType === "user" ? "user" : null;
     const principalId = ctx.actorType === "agent" ? ctx.agentId : ctx.actorId;
     if (!principalType || !principalId) return false;
@@ -1260,7 +1278,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
           eq(principalPermissionGrants.principalId, principalId),
           eq(principalPermissionGrants.permissionKey, "tools:use"),
         )));
-    return grants.some((grant) => scopeAllowsTool(grant.scope, ctx));
+    return grants.some((grant) => (!options.toolTargetedOnly || isToolTargetedGrant(grant.scope)) && scopeAllowsTool(grant.scope, ctx));
   }
 
   async function enforceRateLimit(policy: typeof toolPolicies.$inferSelect, ctx: ToolAccessContext, consume: boolean) {
@@ -1650,7 +1668,19 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
         return decision("allow", "allow_policy", "Tool access allowed by policy.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
       }
     }
-    if (await explicitGrant(ctx, cache)) {
+    // A connection's profile decides which of its actions agents may call. An
+    // unscoped tools:use grant, which every new standard agent receives, is
+    // permission to use tools at all; it must not turn on an action that a
+    // profile governing this connection leaves off. The connection's own
+    // access profile governs it even with no entries (every action turned
+    // off), and so does any entry that selects this action, connection or
+    // application. A grant that names the action, connection or application
+    // still applies. Board users keep their operator grants.
+    const governedByConnectionProfile = ctx.actorType === "agent" && !!ctx.connectionId && (
+      profileState.profiles.some((profile) => isConnectionAccessProfile(profile, ctx.connectionId))
+      || profileState.entries.some((entry) => entry.connectionId === ctx.connectionId || profileEntryMatches(entry, ctx))
+    );
+    if (await explicitGrant(ctx, cache, { toolTargetedOnly: governedByConnectionProfile })) {
       return decision("allow", "allow_explicit_grant", "Tool access allowed by explicit grant.", effectiveProfileIds, [], { redactionPlan: redaction.redactionPlan });
     }
 

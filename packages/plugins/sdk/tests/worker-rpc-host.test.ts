@@ -403,6 +403,23 @@ describe("worker configChanged cross-tenant guard", () => {
     return { callWorker, initialize, stop };
   }
 
+  it.each([false, true])("advertises a fixed login credential read only with an explicit hook: %s", async supported => {
+    const params = { driverKey: "computer", companyId: "company", environmentId: "environment", providerLeaseId: "login", loginCommandKey: "codex" as const };
+    const worker = makeWorker(definePlugin({
+      async setup() {},
+      ...(supported ? { async onLoginPtyReadCredential(input: typeof params) {
+        expect(input).toEqual(params);
+        return { kind: "codex-auth-json" as const, authJson: '{"fixture":true}' };
+      } } : {}),
+    }));
+    try {
+      const initialized = await worker.initialize() as { supportedMethods: string[] };
+      expect(initialized.supportedMethods.includes("loginPtyReadCredential")).toBe(supported);
+      if (supported) expect(await worker.callWorker("loginPtyReadCredential", params)).toEqual({ kind: "codex-auth-json", authJson: '{"fixture":true}' });
+      else await expect(worker.callWorker("loginPtyReadCredential", params)).rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED });
+    } finally { worker.stop(); }
+  });
+
   it.each([false, true])("advertises and dispatches stop-only only with an explicit hook: %s", async supported => {
     let releases = 0, stops = 0;
     const worker = makeWorker(definePlugin({ async setup() {},
@@ -900,6 +917,7 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
         return { workerSessionId: "ws-1" };
       },
       async onLoginPtyInput(params) {
+        expect(params.inputId).toBe("input-1");
         inputs.push(params.data);
       },
       async onLoginPtyStop() {
@@ -986,7 +1004,7 @@ describe("worker setup-token pseudo-terminal dispatch", () => {
 
       // The worker streams output as a notification bound to the worker session id.
       emitOutput?.("prompt output");
-      await callWorker("loginPtyInput", { workerSessionId: "ws-1", data: "browser-code" });
+      await callWorker("loginPtyInput", { workerSessionId: "ws-1", data: "browser-code", inputId: "input-1" });
       await callWorker("loginPtyStop", { workerSessionId: "ws-1" });
       resolveWait?.({ exitCode: 0 });
       await expect(

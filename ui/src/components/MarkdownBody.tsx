@@ -130,8 +130,8 @@ interface MarkdownBodyProps {
   resolveLinkHref?: (href: string) => string | null;
   /** Called when a user clicks an inline image */
   onImageClick?: (src: string, image: HTMLImageElement) => void;
-  /** Keep untrusted decision media inert: image references and diagram source only. */
-  mediaMode?: "render" | "reference";
+  /** Keep media inert as references, or omit images in compact text previews. */
+  mediaMode?: "render" | "reference" | "omit";
   /**
    * Resolver that decides which inline-code workspace file paths may be linked
    * to the issue file viewer. Omitting it (or returning null) leaves every
@@ -967,7 +967,9 @@ function MarkdownBodyImpl({
       );
     },
     };
-    if (mediaMode === "reference") {
+    if (mediaMode === "omit") {
+      map.img = () => null;
+    } else if (mediaMode === "reference") {
       map.img = ({ src, alt, title }) => (
         <span data-markdown-image-reference title={title}>
           Image: {alt || "Untitled image"}{src ? ` (${src})` : ""}
