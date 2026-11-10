@@ -693,13 +693,22 @@ export class TaskObserver {
 
   private async remoteWorkspaceFile(issueId: string, relative: string): Promise<string | null> {
     const captured = this.record.remoteFiles?.[relative];
-    return typeof captured === "string" ? captured : await readRemoteWorkspaceFile(this.api, issueId, relative);
+    return typeof captured === "string" ? captured
+      : await readRemoteWorkspaceFile(this.api, issueId, relative, { onError: message => this.noteRemoteFileError(relative, message) });
   }
 
   private async captureRemoteFilesAtDone(sample: TaskSample): Promise<void> {
     const wanted = this.definition.collect.files(this.plan.nonce);
     if (!wanted.length || this.lab.environmentKind === "local" || sample.issueStatus !== "done" || !this.record.issueId) return;
-    await captureRemoteWorkspaceFiles(this.api, this.record.issueId, wanted, this.record.remoteFiles ??= {});
+    await captureRemoteWorkspaceFiles(this.api, this.record.issueId, wanted, this.record.remoteFiles ??= {},
+      (relative, message) => this.noteRemoteFileError(relative, message));
+  }
+
+  private noteRemoteFileError(relative: string, message: string): void {
+    const errors = this.record.remoteFileErrors ??= {};
+    if (errors[relative] === message) return;
+    errors[relative] = message;
+    this.timeline.add("remote_file_read_failed", { taskId: this.plan.taskId, path: relative, error: message });
   }
 
   async workspacePath(): Promise<string | null> {

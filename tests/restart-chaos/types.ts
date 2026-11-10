@@ -310,6 +310,7 @@ export interface TaskRecord {
   preFaultSnapshotError?: string | null;
   remoteWorkspace?: boolean;
   remoteFiles?: Record<string, string | null>;
+  remoteFileErrors?: Record<string, string>;
   /** Pre-fault files missing at rest; null when not checked. */
   lostFiles: string[] | null;
   /** B5: distinct bench progress values the observer read during polling. */
