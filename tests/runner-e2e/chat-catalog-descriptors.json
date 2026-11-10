@@ -3121,12 +3121,15 @@
     "scenarioId": "gateways-profiles.create-gateway",
     "sourceFiles": [
       "chat-catalog-domains/external-gateways-profiles.ts",
+      "chat-catalog-domains/external-gateway-rotation.ts",
+      "chat-catalog-domains/external-secret-scan.ts",
       "chat-catalog-domains/external-support.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-catalog-domains/identity-support.ts",
+      "run-observations.ts",
       "chat-scenarios/gateways-profiles.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.external.v2",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -3195,11 +3198,9 @@
     "scenarioId": "gateways-profiles.rotate-token",
     "sourceFiles": [
       "chat-catalog-domains/external-gateway-rotation.ts",
-      "chat-catalog-domains/external-gateway-handoff.ts",
-      "../../ui/src/components/AppsSidebar.tsx",
       "../../ui/src/components/IssueThreadInteractionCard.tsx",
-      "../../ui/src/pages/apps/gateways/GatewaysList.tsx",
       "../../ui/src/pages/apps/gateways/GatewayDetail.tsx",
+      "../../ui/src/pages/apps/gateways/panels/TokensPanel.tsx",
       "chat-catalog-domains/external-provider.ts",
       "chat-catalog-domains/external-secret-scan.ts",
       "chat-catalog-domains/external-support.ts",
@@ -3210,7 +3211,7 @@
       "run-observations.ts",
       "chat-scenarios/gateways-profiles.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.external.v2",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,

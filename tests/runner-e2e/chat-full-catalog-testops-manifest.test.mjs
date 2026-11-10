@@ -401,6 +401,23 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   [
     "activity.routine-audit",
     "originalContext"
+  ],
+  // Agents keep delegated gateway and token authority and never receive token values (gateways-profiles.create-gateway, rotate-token).
+  [
+    "gateways-profiles.create-gateway",
+    "originalContext"
+  ],
+  [
+    "gateways-profiles.create-gateway",
+    "expectedOutcome"
+  ],
+  [
+    "gateways-profiles.rotate-token",
+    "originalContext"
+  ],
+  [
+    "gateways-profiles.rotate-token",
+    "expectedOutcome"
   ]
 ]);
   for (const change of repair.changedFields) {
