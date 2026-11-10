@@ -102,6 +102,7 @@ export interface InstanceExperimentalSettings {
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
   enableAgentGraph: boolean;
+  enableCustomizableDashboard: boolean;
   enableExternalObjects: boolean;
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;

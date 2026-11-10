@@ -108,6 +108,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
     enableAgentGraph: false,
+    enableCustomizableDashboard: false,
     enableExternalObjects: false,
     enableBuiltInAgents: false,
     enableBetaSkills: false,
