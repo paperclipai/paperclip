@@ -36,9 +36,9 @@ locks, and the union of required physical copyback locks. It refuses to borrow
 an enclosing transaction because a savepoint cannot confirm the outer commit.
 
 Reservation runs serially on the original pool. Each member makes one archive,
-checksums the complete archive body while copying its files, encrypts it, and
-uploads it. Migration trusts a successful upload. It does not hash each source
-file, download the upload, extract a test copy, or capture the source again.
+computes its checksums while copying files into it, encrypts it, and
+uploads it. Migration trusts a successful upload. It does not pre-hash source
+files, download the upload, extract a test copy, or capture the source again.
 Encryption computes the ciphertext checksum as it writes, without a separate
 read of the encrypted file. These member operations run concurrently.
 Under the complete fence, preflight compares every selected workspace fingerprint
@@ -94,13 +94,13 @@ or downloads the archive. An explicit upload failure remains a failure.
 
 ## Archive compatibility
 
-Migration uses the existing PCWS1 container with a `bodySha256` manifest field
-instead of per-file hashes. The manifest digest binds that checksum. Readers
-check the complete body during extraction. Existing per-file archives remain
-readable. Deploy the new reader before running this migration: older releases
-cannot read archive-checksummed snapshots. Ordinary run captures keep their
-existing per-file mode. Object loading still authenticates and decrypts the
-complete encrypted archive when a real restore is needed.
+Migration keeps the PCWS1 archive format. The file checksums required by existing
+readers are computed during the single source copy, without a preliminary file
+read. Their fixed-length fields are filled in the archive header after copying.
+The complete archive is checksummed for storage. Existing readers, saved
+snapshots, and interrupted upload journals remain compatible. Ordinary run
+captures keep their existing mode. Object loading still authenticates and
+decrypts the complete encrypted archive when a real restore is needed.
 
 This deliberately trades migration readback and repeat source comparisons for
 speed. It relies on the existing source/writer fences and the storage upload

@@ -111,7 +111,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       expect(await migrate()).toMatchObject({ applied: true });
       expect(await migrate()).toMatchObject({ applied: true, replayed: true });
       expect(capture).toHaveBeenCalledTimes(1);
-      expect(capture.mock.calls[0][0]).toMatchObject({ integrity: "archive" });
+      expect(capture.mock.calls[0][0]).toMatchObject({ singlePass: true });
       expect(put).toHaveBeenCalledTimes(1); expect(get).not.toHaveBeenCalled();
       get.mockRestore();
       const authority = readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)!;
@@ -637,7 +637,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     }
     expect(get).not.toHaveBeenCalled();
     expect(capture).toHaveBeenCalledTimes(1);
-    expect(capture.mock.calls[0][0]).toMatchObject({ cwd: parent.cwd, integrity: "archive" });
+    expect(capture.mock.calls[0][0]).toMatchObject({ cwd: parent.cwd, singlePass: true });
     expect(readRemoteWorkspaceAuthority((await workspace(child.workspaceId)).metadata)).toEqual(authority);
     expect(await fs.readFile(path.join(parent.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
     if (mode === "abort") {
@@ -811,7 +811,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     const capture = vi.spyOn(workspaceArchive, "captureRemoteWorkspaceDirectory");
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).resolves.toMatchObject({ applied: true });
     expect(restore).not.toHaveBeenCalled(); expect(capture).toHaveBeenCalledTimes(1);
-    expect(capture.mock.calls[0][0]).toMatchObject({ integrity: "archive" });
+    expect(capture.mock.calls[0][0]).toMatchObject({ singlePass: true });
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)?.snapshotId).toBeTruthy();
     expect((await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, f.repository.id)))[0]).toEqual(f.repository);
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toEqual(f.task);

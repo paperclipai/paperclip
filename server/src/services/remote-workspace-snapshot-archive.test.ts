@@ -71,7 +71,7 @@ describe("portable remote workspace archives", () => {
     const promise = new Promise<void>(done => { resolve = done; });
     return { promise, resolve };
   }
-  it("copies each source file once and restores an archive with one body checksum", async () => {
+  it("copies each source file once and preserves the existing archive format", async () => {
     const cwd = await fs.realpath(await source()), file = path.join(cwd, "saved.txt");
     await fs.writeFile(file, "saved work\n");
     await fs.writeFile(path.join(cwd, "empty.txt"), "");
@@ -80,13 +80,15 @@ describe("portable remote workspace archives", () => {
     const opens: string[] = [];
     archiveIo.afterOpen = async target => { if (target.startsWith(cwd + path.sep)) opens.push(target); };
     const archivePath = path.join(root, "once.pcws");
-    const snapshot = { archivePath, ...await captureRemoteWorkspaceDirectory({ cwd, archivePath, integrity: "archive" }) };
+    const snapshot = { archivePath, ...await captureRemoteWorkspaceDirectory({ cwd, archivePath, singlePass: true }) };
     expect(opens.sort()).toEqual([path.join(cwd, "empty.txt"), file].sort());
     const bytes = await fs.readFile(archivePath), manifestSize = bytes.readUInt32BE(6);
     const manifest = JSON.parse(bytes.subarray(10, 10 + manifestSize).toString());
-    expect(manifest.bodySha256).toBe(createHash("sha256").update(bytes.subarray(10 + manifestSize)).digest("hex"));
-    expect(manifest.entries.filter((entry: { type: string }) => entry.type === "file")
-      .every((entry: { sha256?: string }) => entry.sha256 === undefined)).toBe(true);
+    expect(manifest.entries.find((entry: { path: string }) => entry.path === "saved.txt").sha256)
+      .toBe(createHash("sha256").update("saved work\n").digest("hex"));
+    const compatible = await captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "compatible.pcws") });
+    expect(snapshot.sha256).toBe(compatible.sha256);
+    expect(snapshot.manifestDigest).toBe(compatible.manifestDigest);
     expect(snapshot.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
     await fs.rm(cwd, { recursive: true });
     const restored = await restore(snapshot);
@@ -96,10 +98,10 @@ describe("portable remote workspace archives", () => {
     bytes[bytes.length - 1] ^= 1;
     const corrupt = path.join(root, "corrupt.pcws"); await fs.writeFile(corrupt, bytes);
     await expect(restoreRemoteWorkspaceArchive({ archivePath: corrupt, targetDir: path.join(root, "corrupt"),
-      expectedManifestDigest: snapshot.manifestDigest })).rejects.toThrow("archive_hash_mismatch");
+      expectedManifestDigest: snapshot.manifestDigest })).rejects.toThrow("file_hash_mismatch");
     await expect(fs.access(path.join(root, "corrupt"))).rejects.toMatchObject({ code: "ENOENT" });
   });
-  it("resumes staged and unstaged Git work from one archive-checksummed capture", async () => {
+  it("resumes staged and unstaged Git work from one source capture", async () => {
     const base = await source(); await git(base, "init", "-q", "-b", "main");
     await fs.writeFile(path.join(base, "work.txt"), "committed\n"); await git(base, "add", "."); await git(base, "commit", "-qm", "base");
     const cwd = path.join(root, "linked"); await git(base, "worktree", "add", "-qb", "selected", cwd);
@@ -108,7 +110,7 @@ describe("portable remote workspace archives", () => {
     await fs.writeFile(path.join(cwd, "new.txt"), "untracked\n");
     const archivePath = path.join(root, "git-once.pcws");
     const snapshot = { archivePath, ...await captureRemoteWorkspaceDirectory({ cwd, archivePath,
-      integrity: "archive", gitSourceRoots: [await fs.realpath(root)] }) };
+      singlePass: true, gitSourceRoots: [await fs.realpath(root)] }) };
     await fs.rm(base, { recursive: true }); await fs.rm(cwd, { recursive: true });
     const restored = await restore(snapshot);
     expect(await git(restored, "show", ":work.txt")).toBe("staged");

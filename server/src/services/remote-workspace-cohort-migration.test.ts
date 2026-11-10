@@ -135,7 +135,7 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     expect(maximum).toBe(2);
     await expect(run(f)).resolves.toMatchObject({ applied: true, replayed: true });
     expect(capture).toHaveBeenCalledTimes(2);
-    expect(capture.mock.calls.every(([input]) => input.integrity === "archive")).toBe(true);
+    expect(capture.mock.calls.every(([input]) => input.singlePass === true)).toBe(true);
     expect(restore).not.toHaveBeenCalled(); expect(get).not.toHaveBeenCalled(); expect(head).not.toHaveBeenCalled();
     await expect(run(f, { workspaceIds: [f.leaves[0].id] })).rejects.toThrow("workspace_cohort_membership_changed");
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, held.runId)))[0]).toEqual(held.owner);
@@ -210,7 +210,7 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
       .every(row => readRemoteWorkspaceAuthority(row.metadata))).toBe(true);
     expect(await db.select().from(activityLog)).toHaveLength(beforeActivity.length + 2);
     expect(captured).toHaveBeenCalledTimes(2);
-    expect(captured.mock.calls.every(([input]) => input.cwd === parent.cwd && input.integrity === "archive")).toBe(true);
+    expect(captured.mock.calls.every(([input]) => input.cwd === parent.cwd && input.singlePass === true)).toBe(true);
     expect(restore).not.toHaveBeenCalled(); expect(get).not.toHaveBeenCalled(); expect(head).not.toHaveBeenCalled();
     expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, childSnapshot.id)))[0]).toEqual(childSnapshot);
     expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, child.id)))[0]).toEqual(childWorkspace);
@@ -261,7 +261,7 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     expect(uploads).toBe(2);
     expect(get).not.toHaveBeenCalled(); expect(head).not.toHaveBeenCalled(); expect(restore).not.toHaveBeenCalled();
     expect(capture).toHaveBeenCalledTimes(2);
-    expect(capture.mock.calls.every(([input]) => input.cwd === parent.cwd && input.integrity === "archive")).toBe(true);
+    expect(capture.mock.calls.every(([input]) => input.cwd === parent.cwd && input.singlePass === true)).toBe(true);
     expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, snapshot.id)))[0]).toEqual(snapshot);
     expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, child.id)))[0]).toEqual(childWorkspace);
     for (const member of selected) {
@@ -478,7 +478,7 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     const operations = (await db.select().from(workspaceOperations)).filter(row => workspaceIds.includes(row.executionWorkspaceId!));
     expect(operations).toHaveLength(10); expect(operations.every(row => row.status === "succeeded")).toBe(true);
     expect(capture).toHaveBeenCalledTimes(mode === "fresh" ? 10 : 11);
-    expect(capture.mock.calls.every(([input]) => input.cwd === f.root && input.integrity === "archive")).toBe(true);
+    expect(capture.mock.calls.every(([input]) => input.cwd === f.root && input.singlePass === true)).toBe(true);
     expect(get).not.toHaveBeenCalled(); expect(restore).not.toHaveBeenCalled();
     expect(head.mock.calls.filter(([, key]) => childSnapshots.some(snapshot => snapshot.objectKey === key))).toEqual([]);
     if (mode === "fresh") expect(head).not.toHaveBeenCalled();

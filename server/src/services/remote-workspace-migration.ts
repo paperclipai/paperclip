@@ -554,7 +554,7 @@ async function captureMigration(input: MigrationInput, reserved: ReservedMigrati
     if (sourceRoot) await assertArchivedRepositoryIntents(sourceRoot, reserved.archivedRepositoryIntents);
     const exclude = nested.map(child => child.relativePath);
     const captured = await captureRemoteWorkspaceDirectory({ cwd: sourceRoot!, archivePath, exclude, requireNoGit: onlineSource?.kind === "ordinary",
-      gitSourceRoots: onlineSource?.gitSourceRoots, signal: input.signal, integrity: "archive" });
+      gitSourceRoots: onlineSource?.gitSourceRoots, signal: input.signal, singlePass: true });
     const ref = await uploadWorkspaceSnapshot({ db: input.db, storage: input.storage, snapshotId: snapshot.id,
       companyId: input.companyId, workspaceId: input.workspaceId, archivePath, manifestDigest: captured.manifestDigest, signal: input.signal,
       verification: "upload",
