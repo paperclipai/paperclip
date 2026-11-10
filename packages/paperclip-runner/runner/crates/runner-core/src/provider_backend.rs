@@ -6383,10 +6383,11 @@ mod tests {
         fn restart_keeps_the_fence_for_a_prepared_state_without_a_saved_thread() {
             // Only a prepared state over a saved thread is a settled checkpoint.
             let pid = exited_process_group();
-            let directory = orphaned_startup_fixture("orphaned-startup-unopened", "prepared", |executor| {
-                executor.state.as_mut().unwrap().thread_id = None;
-                spawned(pid)(executor);
-            });
+            let directory =
+                orphaned_startup_fixture("orphaned-startup-unopened", "prepared", |executor| {
+                    executor.state.as_mut().unwrap().thread_id = None;
+                    spawned(pid)(executor);
+                });
             assert!(reload_and_retire(&directory)
                 .assert_startup_admitted()
                 .is_err());
