@@ -523,7 +523,7 @@ in wave w-20261110T050407-s206 Codex exited 1.5 s after `turn/interrupt` with no
 **Across a restart.** A PV task fires no restart unless `--provider-fault-restart K1` is given. Then each
 PV1 or PV2 task also kills -9 the control plane `--provider-fault-restart-after-seconds` (default 3)
 after its fault applied, through the `provider` trigger. That delay must be shorter than every PV1 delay,
-so the message is still held. K1 kills the runner with its provider and the held message, so the late
+so the message is still held, and the wave runs with `--concurrency 1`, because every K1 kills the whole control plane. K1 kills the runner with its provider and the held message, so the late
 or missing terminal straddles the restart: the replacement control plane must settle the saved wait
 without it. Planned restart faults (`--faults K1,PV2`) are still rejected, and PV3 does not combine with
 a restart, since a duplicate holds nothing. Such a task passes when:

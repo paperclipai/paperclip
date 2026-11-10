@@ -225,7 +225,7 @@ function task(nonce: string, rule: ProviderFaultRule): TaskPlan {
 describe("provider faults across a restart", () => {
   it("plans Claude PV tasks and a K1 armed by the provider trigger", () => {
     const command = parseCommand(["--adapters", "claude", "--workloads", "Q1", "--faults", "PV1,PV2", "--provider-fault-restart", "K1",
-      "--provider-fault-restart-after-seconds", "4", "--tasks", "2", "--seed", "5"]);
+      "--provider-fault-restart-after-seconds", "4", "--tasks", "2", "--concurrency", "1", "--seed", "5"]);
     if (command.mode !== "wave") throw new Error("expected a wave");
     expect(command.options).toMatchObject({ adapters: ["claude"], providerFaultRestart: "K1", providerFaultRestartAfterMs: 4_000, faults: [] });
     const plan = planWave("w-20261109T000000-s5", command.options);
@@ -242,7 +242,8 @@ describe("provider faults across a restart", () => {
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV2", "--provider-fault-restart", "K2"])).toThrow(/K1/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "K1", "--provider-fault-restart", "K1"])).toThrow(/provider fault/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "G1", "--faults", "PV2"])).toThrow(/G1 grades the board decision after a restart/);
-    expect(parseCommand(["--adapters", "codex", "--workloads", "G1", "--faults", "PV2", "--provider-fault-restart", "K1"]).mode).toBe("wave");
+    expect(parseCommand(["--adapters", "codex", "--workloads", "G1", "--faults", "PV2", "--provider-fault-restart", "K1", "--concurrency", "1"]).mode).toBe("wave");
+    expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV2", "--provider-fault-restart", "K1", "--concurrency", "2"])).toThrow(/--concurrency 1/);
     expect(parseProviderFaultRestart(undefined, undefined, ["PV2"], undefined)).toEqual({});
     expect(() => parseProviderFaultRestart(undefined, "3", ["PV2"], undefined)).toThrow(/needs --provider-fault-restart/);
   });

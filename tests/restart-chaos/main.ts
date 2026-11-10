@@ -302,7 +302,8 @@ async function main(): Promise<number> {
       Object.assign(serverEnvironment, providerFaults.serverEnvironment);
       if (plan.tasks.some(task => task.providerFault && task.adapter === "claude")) {
         // Claude (ACPX): the stand-in sidecar taps the verified provider's pipe (acpx-provider-faults.ts).
-        acpxSidecarSeam = await installAcpxSidecarSeam({ repositoryRoot, waveId: plan.waveId, controlPath: providerFaults.controlPath,
+        // The seam must mirror the runner the server actually loads (`--server-from` runs another checkout).
+        acpxSidecarSeam = await installAcpxSidecarSeam({ repositoryRoot: plan.options.serverFrom ?? repositoryRoot, waveId: plan.waveId, controlPath: providerFaults.controlPath,
           logPath: providerFaults.logPath, stateDirectory: providerFaults.stateDirectory });
         Object.assign(serverEnvironment, acpxSidecarSeam.serverEnvironment,
           { NODE_OPTIONS: withAcpxSidecarHook(serverEnvironment.NODE_OPTIONS) });
