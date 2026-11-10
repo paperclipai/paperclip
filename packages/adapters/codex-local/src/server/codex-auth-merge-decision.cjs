@@ -1,7 +1,7 @@
 const fs = require("fs");
 
 // Co-change notice: parseAuth below mirrors hasUsableAuthPayload in
-// packages/adapters/codex-local/src/server/codex-home.ts. If the auth format
+// packages/adapters/codex-local/src/server/codex-auth-payload.ts. If the auth format
 // changes (new shape, renamed field), update both sites together.
 function parseAuth(filePath) {
   let parsed;
