@@ -348,13 +348,13 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     expect(resumed).toHaveBeenCalledOnce();
   }, 90_000);
 
-  it("still settles a recovery whose claim merely expired without a shutdown suspension", async () => {
+  it("still settles a recovery whose expired claim another actor recorded on, without a shutdown suspension", async () => {
     const f = await seedRecoverableRun("EXPIRED-NOT-SUSPENDED");
     const dying = vi.fn(() => { throw new Error("An expired claim must not open a provider session"); });
     const heartbeat = heartbeatService(f.db, {
       nativeSessionBackendFactory: dying,
       beforeNativeRuntimeSelection: async () => {
-        await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) })
+        await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0), recoveryState: "awaiting_evidence" })
           .where(eq(nativeRunFinalizations.runId, f.runId));
       },
     });
@@ -365,6 +365,23 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     expect(dying).not.toHaveBeenCalled();
     const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     expect(run.status).toBe("failed");
+  }, 60_000);
+
+  it("dispatches its own restart claim whose lease lapsed untouched before dispatch (host sleep)", async () => {
+    const f = await seedRecoverableRun("EXPIRED-UNTOUCHED");
+    const reached = vi.fn(() => { throw new Error("provider reached after the untouched claim was taken back"); });
+    const heartbeat = heartbeatService(f.db, {
+      nativeSessionBackendFactory: reached,
+      beforeNativeRuntimeSelection: async () => {
+        await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) })
+          .where(eq(nativeRunFinalizations.runId, f.runId));
+      },
+    });
+    try {
+      const { claims } = await heartbeat.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
+      expect(claims).toEqual([expect.objectContaining({ runId: f.runId })]);
+    } finally { await heartbeat.drainActiveRunExecutions(); }
+    expect(reached).toHaveBeenCalled();
   }, 60_000);
 
 
