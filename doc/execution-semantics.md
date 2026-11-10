@@ -1803,7 +1803,8 @@ the settled holds (`completedTurnCleanupSettlement.blockedStatus`):
   unfinished blocker task. The task moves to `todo`, and that hold records one
   durable continuation (`continuationDelivery: "pending"`). The
   execution-continuation worker delivers it once, as a fresh session, through
-  normal admission.
+  normal admission. When saved user input waits for the task, that input owns
+  the continuation and no second one is recorded.
 - `dependency_wait`: the task also waits on an unfinished blocker task. It stays
   Blocked, and the blocker's completion wakes it.
 - `not_owned`: a newer decision owns the Blocked status, or the task changed

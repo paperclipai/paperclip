@@ -1,5 +1,5 @@
 import { and, eq, isNull, or, sql, type SQL } from "drizzle-orm";
-import { heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { ExecutionReconciliation } from "@paperclipai/shared";
 import { logActivity } from "../activity-log.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
@@ -43,7 +43,8 @@ import { NATIVE_SESSION_CLEANUP_QUARANTINED } from "./completed-turn-cleanup.js"
  * transaction, a Blocked status that a settled hold of the run still owns
  * (`holdOwnsBlockedStatus`) is released to `todo`, and one durable
  * continuation is recorded on that hold (`continuationDelivery: "pending"`).
- * The execution-continuation worker delivers it as a fresh session. A task
+ * The execution-continuation worker delivers it as a fresh session. Saved user
+ * input owns the continuation instead, so the task never starts two turns. A task
  * that still waits on unfinished blocker tasks stays Blocked; their completion
  * wakes it. A Blocked status that a newer decision owns is kept. Holds that the
  * previous release settled without this decision are listed again until it is
@@ -198,10 +199,26 @@ async function decideBlockedStatus(tx: Db, input: { companyId: string; now: Date
   const readiness = ownsTask ? await issueService(tx).listDependencyReadiness(companyId, [issue.id], tx) : null;
   const decision: BlockedStatusDecision = !ownsTask ? "not_owned"
     : readiness?.get(issue.id)?.isDependencyReady === true ? "released" : "dependency_wait";
+  // Saved user input continues the task itself through normal admission (the
+  // registered resumer). Recording a second continuation would start another
+  // turn after it, so the input owns the continuation.
+  const [waitingInput] = decision === "released" ? await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+    .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      eq(agentWakeupRequests.requestedByActorType, "user"), sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`))
+    .limit(1) : [];
+  const continuationHoldId = decision === "released" && !waitingInput ? owner!.id : null;
+  // Register the work before the writes it describes.
+  if (decision === "released") {
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+    await notifyStatusCardIssueChange(tx, companyId);
+    await notifyRoutineExecutionStatus(tx, issue.id, companyId);
+  }
   const reconciliation: ExecutionReconciliation = { runId: run.id, providerStopped: true, actionOutcome: "completed",
     outcomeEvidence: CONTINUATION_EVIDENCE, workspaceRepairEvidence: WORKSPACE_EVIDENCE };
   for (const hold of settledHolds) {
-    const continuation = decision === "released" && hold.id === owner!.id;
+    const continuation = hold.id === continuationHoldId;
     const marked = sql`jsonb_set(${issueRecoveryActions.evidence}, '{completedTurnCleanupSettlement,blockedStatus}', ${JSON.stringify(decision)}::jsonb)`;
     await tx.update(issueRecoveryActions).set({ updatedAt: now,
       ...(continuation ? {
@@ -218,11 +235,6 @@ async function decideBlockedStatus(tx: Db, input: { companyId: string; now: Date
   await logActivity(tx, { companyId, actorType: "system", actorId: "system", action: "issue.updated",
     entityType: "issue", entityId: issue.id, agentId: run.agentId, runId: run.id,
     details: { status: "todo", previousStatus: "blocked", reason: "native_completed_turn_cleanup_continued",
-      recoveryActionId: owner!.id, _previous: { status: "blocked" } } });
-  await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
-  await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
-  await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
-  await notifyStatusCardIssueChange(tx, companyId);
-  await notifyRoutineExecutionStatus(tx, issue.id, companyId);
+      recoveryActionId: owner!.id, continuation: continuationHoldId ? "recorded" : "saved_input", _previous: { status: "blocked" } } });
   return true;
 }
