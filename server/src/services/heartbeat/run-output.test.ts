@@ -13,6 +13,9 @@ import { createHeartbeatRunOutput, isNewRunLog } from "./run-output.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import { generateKeyPairSync } from "node:crypto";
+import { reportStorageOutageWaitsTo, runInOwnStorageScope } from "../../storage/storage-unavailable.js";
+import { clearAllHeartbeatRunRuntimeStatuses, getHeartbeatRunRuntimeStatus } from "../heartbeat-run-runtime-status.js";
+import { createStorageWaitNotice, STORAGE_WAIT_PHASE } from "./storage-wait-notice.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 
@@ -87,6 +90,51 @@ describe("claiming the run log during a storage outage (storage chaos ST1)", () 
     const begin = vi.fn(async () => (++calls < 2 ? outage() : { store: "s3_segments" as const, logRef: "company/agent/run" }));
     await output(begin).begin({ ...newRunRow } as Run);
     expect(begin).toHaveBeenCalledTimes(2);
+  }, 30_000);
+
+  it("shows the wait as live status and writes nothing to the run while its log claim waits", async () => {
+    clearAllHeartbeatRunRuntimeStatuses();
+    const row = { ...newRunRow, contextSnapshot: { issueId: "issue-1" } } as Partial<Run>;
+    const writes: Partial<Run>[] = [];
+    const db = createRunRowDb(row);
+    const update = db.update.bind(db);
+    (db as { update: unknown }).update = (table: unknown) => {
+      const pending = (update as (t: unknown) => { set: (v: Partial<Run>) => unknown })(table);
+      return { set: (values: Partial<Run>) => { writes.push(values); return pending.set(values); } };
+    };
+    const appendRunEvent = vi.fn(async () => undefined);
+    const authority = vi.fn(async () => undefined);
+    const seen: Array<{ writes: number; events: number; phase: string | undefined; message: string | undefined }> = [];
+    let calls = 0;
+    const begin = vi.fn(async (input: { assertWriterAuthority?: () => Promise<void> }) => {
+      const status = getHeartbeatRunRuntimeStatus("run-1", { companyId: "company-1", agentId: "agent-1" });
+      seen.push({ writes: writes.length, events: appendRunEvent.mock.calls.length, phase: status?.phase, message: status?.message });
+      if (++calls < 3) return outage();
+      await input.assertWriterAuthority?.();
+      return { store: "s3_segments" as const, logRef: "company/agent/run" };
+    });
+    const recorder = createHeartbeatRunOutput(db, { run: row as Run, runId: "run-1", issueId: "issue-1",
+      runLogStore: { begin, append: async () => 0, enqueue: async () => ({ committed: Promise.resolve(0) }), flush: async () => undefined },
+      identityRedactor: { chunk: (_stream, chunk) => chunk, redact: value => value }, secretKeys: new Set(),
+      appendRunEvent: appendRunEvent as never, getCurrentUserRedactionOptions: async () => ({ enabled: false }),
+      assertWriterAuthority: authority });
+    await runInOwnStorageScope(async () => {
+      reportStorageOutageWaitsTo(createStorageWaitNotice({ run: row as Run, appendRunEvent: appendRunEvent as never }));
+      await recorder.begin(row as Run);
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    expect(begin).toHaveBeenCalledTimes(3);
+    expect(authority).toHaveBeenCalledTimes(1);
+    expect(seen.slice(1)).toEqual([
+      expect.objectContaining({ writes: 0, events: 0, phase: STORAGE_WAIT_PHASE, message: expect.stringContaining("before starting the run log") }),
+      expect.objectContaining({ writes: 0, events: 0, phase: STORAGE_WAIT_PHASE }),
+    ]);
+    expect(writes).toEqual([expect.objectContaining({ logStore: "s3_segments", logRef: "company/agent/run" })]);
+    expect(appendRunEvent).toHaveBeenCalledTimes(1);
+    expect(appendRunEvent).toHaveBeenCalledWith(row, expect.objectContaining({ eventType: "lifecycle",
+      message: expect.stringMatching(/^Waited \d+s for file storage before starting the run log\.$/),
+      payload: expect.objectContaining({ reason: "storage_outage_wait", recovered: true }) }));
+    expect(getHeartbeatRunRuntimeStatus("run-1", { companyId: "company-1", agentId: "agent-1" })?.phase).toBe("run_activity");
   }, 30_000);
 
   it("stops waiting as soon as the run is stopped", async () => {
