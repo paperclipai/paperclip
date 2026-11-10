@@ -150,6 +150,9 @@ describe("Retry after native finalization runs out of retries", () => {
       sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
       sql`${agentWakeupRequests.status} <> 'coalesced' or ${agentWakeupRequests.payload}#>>'{taskRetry,strategy}' <> 'finalize_result'`));
     await expect(providerRetries()).resolves.toHaveLength(0);
+    // The Retry visibly took effect while the saved result is applied.
+    await expect(presentation(issueId)).resolves.toMatchObject({ state: "working", canRetry: false,
+      recoveryStep: "finishing_recovery" });
 
     await refinalizeSavedNativeResult(db, { companyId, runId });
     // A stale click after the result applied also joins; nothing new runs.
@@ -166,6 +169,7 @@ describe("Retry after native finalization runs out of retries", () => {
       .resolves.toMatchObject({ status: "succeeded", nativePhase: "committed" });
     const settled = await presentation(issueId);
     expect(settled?.canRetry ?? false).toBe(false);
+    expect(settled?.state ?? "resolved").toBe("resolved");
     await expect(db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.sourceIssueId, issueId),
       eq(issueRecoveryActions.status, "active"), eq(issueRecoveryActions.ownerType, "board")))).resolves.toHaveLength(0);
   });
@@ -198,6 +202,7 @@ describe("Retry after native finalization runs out of retries", () => {
       failureCode: "native_finalization_invalid" });
     await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(rows => rows[0]?.resultJson))
       .resolves.toMatchObject({ finalizationFailureCount: 1 });
+    await expect(presentation(issueId)).resolves.toMatchObject({ state: "working", canRetry: false });
     await exhaustFinalization(runId);
     await expectStuckButRetryable(issueId, runId);
     expect(await runCount(issueId)).toBe(1);

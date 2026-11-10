@@ -4924,7 +4924,9 @@ the same coordinator with a fresh finalization budget, records
 `exhausted_finalization_retry` in its `recoveryHistory`, resolves the board
 card, writes a coalesced `task_retry` receipt with strategy `finalize_result`,
 and runs the finalizer for the same run. It starts no provider run and keeps
-the provider attempt count. If that finalization fails, the normal bounded
+the provider attempt count. Later clicks join that Retry. Until the result
+commits or the budget runs out again, the task shows work in progress
+("Finishing recovery of saved work"). If that finalization fails, the normal bounded
 finalization retries and recovery card apply, and Retry is offered again once
 they run out. Coordinators that older builds left in this state qualify with or
 without `finalizationFailureCount`; no migration is needed.

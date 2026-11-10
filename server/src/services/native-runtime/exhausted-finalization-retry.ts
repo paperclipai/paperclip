@@ -35,6 +35,21 @@ export function exhaustedNativeFinalizationCondition(): SQL<boolean> {
 }
 
 /**
+ * True while a saved-result Retry of this succeeded run is still being applied
+ * (including its bounded automatic retries). The task shows work in progress.
+ * The finalizer ends it by committing or by going terminal again.
+ */
+export function savedResultRetryPendingCondition(): SQL<boolean> {
+  return sql<boolean>`(${heartbeatRuns.runtimeMode} = 'native' and ${heartbeatRuns.status} = 'succeeded'
+    and exists (select 1 from ${nativeRunFinalizations}
+      where ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
+        and ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
+        and ${nativeRunFinalizations.resultId} is not null
+        and ${nativeRunFinalizations.phase} not in ('committed', 'terminal_failure')
+        and ${nativeRunFinalizations.recoveryHistory} @> ${JSON.stringify([{ kind: EXHAUSTED_FINALIZATION_RETRY_KIND }])}::jsonb))`;
+}
+
+/**
  * Caller holds the task lock and has proven `runId` is the task's latest run
  * by its current assignee. Reopens the coordinator for the same saved result
  * with a fresh finalization budget.

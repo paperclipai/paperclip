@@ -464,6 +464,11 @@ describe("saved result that ran out of finalization retries", () => {
       paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: true, observedRunId: "run" });
   });
 
+  it("shows the saved result being applied after Retry", () => {
+    expect(projectTaskInterruption(review, { run: { ...succeeded, nativeFinalizationRetryPending: true }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "working", canRetry: false, recoveryStep: "finishing_recovery" });
+  });
+
   it("keeps ordinary succeeded and failed runs unchanged", () => {
     expect(projectTaskInterruption(review, { run: succeeded, agent, paused: false, approval: false }))
       .toMatchObject({ state: "resolved", canRetry: false });
