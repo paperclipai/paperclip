@@ -293,27 +293,17 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
         errorMessage: NATIVE_PROVIDER_OVERLOADED_MESSAGE,
         diagnostic: { ...NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC },
       };
-      if (turnId === missingModelTurnId) return {
-        errorCode: "native_provider_model_rejected" as const,
-        errorMessage: NATIVE_MODEL_REJECTION_MESSAGE,
-        diagnostic: { ...NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC },
-      };
-      if (turnId !== rejectedTurnId) {
-        // A driver's closed category marks a rejected model for any provider. Only an
-        // action-required rejection qualifies; a transient one may succeed on retry.
-        if (!modelUnavailableTurn(turnId)) return null;
-        const failure = providerFailures.get(turnId)!;
-        return {
-          errorCode: "native_provider_model_rejected" as const,
-          errorMessage: NATIVE_MODEL_REJECTION_MESSAGE,
-          diagnostic: failedTurns.get(turnId) ?? { provider: failure.provider, category: failure.category },
-        };
-      }
-      return {
-        errorCode: "native_provider_model_rejected" as const,
-        errorMessage: NATIVE_MODEL_REJECTION_MESSAGE,
-        diagnostic: { ...NATIVE_MODEL_REJECTION_DIAGNOSTIC },
-      };
+      // Every model rejection shares one result; only its closed diagnostic differs.
+      const modelRejection = <T>(diagnostic: T) => ({
+        errorCode: "native_provider_model_rejected" as const, errorMessage: NATIVE_MODEL_REJECTION_MESSAGE, diagnostic,
+      });
+      if (turnId === missingModelTurnId) return modelRejection({ ...NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC });
+      if (turnId === rejectedTurnId) return modelRejection({ ...NATIVE_MODEL_REJECTION_DIAGNOSTIC });
+      // A driver's closed category marks a rejected model for any provider. Only an
+      // action-required rejection qualifies; a transient one may succeed on retry.
+      if (!modelUnavailableTurn(turnId)) return null;
+      const failure = providerFailures.get(turnId)!;
+      return modelRejection(failedTurns.get(turnId) ?? { provider: failure.provider, category: failure.category });
     },
     /** Diagnostics only: the failed turn that `forTerminal` did not classify. */
     unclassifiedTurnFailure(turnId: string | null | undefined, terminal: PrpTerminalState) {
