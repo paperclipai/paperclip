@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planReviewIdentityCases } from "./identity-plan-review.js";
+import { markdownFirstLine, planReviewIdentityCases } from "./identity-plan-review.js";
 import type { IdentityObservation, Interaction } from "./identity-support.js";
 function valid(scenarioId: string): IdentityObservation {
   const review = scenarioId.endsWith("review-plan");
@@ -47,4 +47,14 @@ describe("versioned approval and revised publication scope", () => {
     o.documents[0] = { ...o.documents[0]!, body: "# Research Notes\nA calmer place for your team's experiments." }; expect(d.grade(o).passed).toBe(true);
     o.documents[0] = { ...o.documents[0]!, id: "plan" }; expect(d.grade(o).passed).toBe(false); });
   it("rejects an otherwise real draft revision written by an unrelated run", () => { const d = planReviewIdentityCases[1]!; const o = valid(d.scenarioId); o.revisions[0]!.createdByRunId = "unrelated-run"; expect(d.grade(o).passed).toBe(false); });
+});
+
+describe("the opened draft's first rendered line", () => {
+  it("reads Markdown the way the document view renders it", () => {
+    expect(markdownFirstLine("# [Acorn Notes](https://example.com)\nBody")).toBe("Acorn Notes");
+    expect(markdownFirstLine("\n## **Launch** _plan_\n")).toBe("Launch plan");
+    expect(markdownFirstLine("- ![logo](/a.png) Acorn")).toBe("Acorn");
+    expect(markdownFirstLine("![logo](/a.png)\nAcorn notes")).toBe("Acorn notes");
+    expect(markdownFirstLine("> See <https://example.com>")).toBe("See https://example.com");
+  });
 });

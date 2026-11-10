@@ -4,11 +4,12 @@ import type { Issue, IssueRecoveryAction } from "../../../packages/shared/src/ty
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
 import { collectRunEvents } from "../run-observations.js";
+import { readRecord, recordParams } from "./api-read-receipts.js";
 import { checks, hasLink, type Entity } from "./internal-support.js";
 import { busyRuntimeWorker, releaseRuntimeWorker } from "./runtime-busy-worker.js";
 import { faultOwnedNativeProcess, NATIVE_INFRASTRUCTURE_FAULT_CODES, type NativeFaultRun } from "./runtime-native-fault.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent, type RuntimeObservation } from "./runtime-support.js";
-export const INFRASTRUCTURE_RECOVERY_ORACLE = "paperclip.chat-catalog.runtime.infrastructure-recovery.v3";
+export const INFRASTRUCTURE_RECOVERY_ORACLE = "paperclip.chat-catalog.runtime.infrastructure-recovery.v4";
 const objectRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 /**
  * The chat run read the source task's saved recovery record through a product
@@ -16,7 +17,15 @@ const objectRecord = (value: unknown): Record<string, unknown> => value && typeo
  * whose execution blocker names that failed run. Tool outputs
  * are product data and are matched exactly; the agent's wording never is.
  */
-export function readSourceRecoveryRecord(events: readonly Record<string, unknown>[], taskId: string, failedRunId: string) {
+export function readSourceRecoveryRecord(events: readonly Record<string, unknown>[], taskId: string, failedRunId: string, identifier?: string | null) {
+  // call_api bodies are redacted before saving: bind those reads by their input digest and a successful result.
+  const task = recordParams("id", taskId, identifier);
+  if (taskId && failedRunId && readRecord(events, [
+    { operationId: "GET /api/issues/{id}/recovery-actions", pathParams: task, paged: true },
+    { operationId: "GET /api/issues/{id}/runs", pathParams: task, paged: true },
+    { operationId: "GET /api/issues/{id}", pathParams: task },
+    { operationId: "GET /api/heartbeat-runs/{runId}", pathParams: recordParams("runId", failedRunId) },
+  ])) return true;
   return !!taskId && !!failedRunId && events.some(row => {
     const envelope = objectRecord(objectRecord(row.payload).prpEvent), payload = objectRecord(envelope.payload);
     const output = typeof payload.output === "string" ? payload.output : "";
@@ -29,10 +38,10 @@ export function readSourceRecoveryRecord(events: readonly Record<string, unknown
   });
 }
 /** Whether one controller run read the recovery record; computed from its own retained events. */
-export async function controllerReadRecovery(ctx: ChatCatalogContext, runId: string | undefined, taskId: string, failedRunId: string) {
+export async function controllerReadRecovery(ctx: ChatCatalogContext, runId: string | undefined, taskId: string, failedRunId: string, identifier?: string | null) {
   if (!runId) return false;
   const events = await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=1000`));
-  return readSourceRecoveryRecord(events, taskId, failedRunId);
+  return readSourceRecoveryRecord(events, taskId, failedRunId, identifier);
 }
 /** The reply links the original task, where its recovery and Retry controls live. */
 export function linksSourceTask(o: RuntimeObservation, task: Entity) { return hasLink(o, "issues", task); }
@@ -119,13 +128,13 @@ function infrastructureCase(id: "recovery.explain-stall" | "recovery.source-acti
       c.add("lead-ready", lead.lifecycleState === "ready" && ["active", "idle"].includes(lead.status ?? ""), "The actual controller remains independently admitted.");
       c.add("real-native-infrastructure-exhaustion", !!action && action.id === (state.recoveryBefore as IssueRecoveryAction).id, "The saved native run really exhausted its own three attempts.");
       c.add("original-source-action-owner", action?.sourceIssueId === task.id && action.ownerType === "board" && action.recoveryIssueId == null, "The original task exposes the real operator-owned recovery without a separate repair task."); return c.result(); },
-    sourceFiles: ["chat-catalog-domains/runtime-infrastructure.ts", "chat-catalog-domains/runtime-native-fault.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "../../server/src/services/hot-restart.ts", "../../server/src/vendor/paperclip-runner/index.ts", "chat-scenarios/recovery.yaml"],
+    sourceFiles: ["chat-catalog-domains/runtime-infrastructure.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/runtime-native-fault.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "../../server/src/services/hot-restart.ts", "../../server/src/vendor/paperclip-runner/index.ts", "chat-scenarios/recovery.yaml"],
     async act(ctx, state) {
       await pollUntil({ label: "Canonical source explanation while native infrastructure remains failed", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150_000),
         load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },
         accept: v => chatCatalogNativePhaseIsTimely(ctx) && (v.source?.conversationState === "waiting" && v.runs.length === 2 && v.runs.some(row => row.id === state.workerRunId && row.status === "failed") && v.runs.some(row => row.agentId === ctx.input.fixtures.agent.id && row.status === "succeeded")) });
       const answered = await observeRuntime(ctx, state); state.queryReply = answered.reply;
-      state.queryRecoveryRead = await controllerReadRecovery(ctx, answered.runs.find(row => row.agentId === ctx.input.fixtures.agent.id)?.id, (state.task as Issue).id, String(state.workerRunId));
+      state.queryRecoveryRead = await controllerReadRecovery(ctx, answered.runs.find(row => row.agentId === ctx.input.fixtures.agent.id)?.id, (state.task as Issue).id, String(state.workerRunId), (state.task as Issue).identifier);
       const source = ctx.input.page.url(), task = state.task as Issue;
       await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" });
       await expect(ctx.input.page.getByRole("heading", { name: task.title, exact: true }).first()).toBeVisible();

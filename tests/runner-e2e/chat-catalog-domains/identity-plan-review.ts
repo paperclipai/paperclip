@@ -54,6 +54,17 @@ interface PlanComment { id: string; authorAgentId?: string | null; authorUserId?
 const stamp = (value: unknown) => typeof value === "string" ? Date.parse(value) : NaN;
 /** Counts every actual turn. A second CEO turn is permitted only as the server's
  * distinct, settled completion delivery for this source's exact delegated work. */
+/** The first line of rendered text in a Markdown body: block markers, images, link syntax, autolinks, HTML tags and emphasis removed. */
+export function markdownFirstLine(body: string) {
+  return body.split("\n").map(line => line
+    .replace(/^\s*(?:[#>]+|[-*+]|\d+[.)])\s*/, "")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/<((?:https?:\/\/|mailto:)[^>]+)>/g, "$1")
+    .replace(/<[^>]+>/g, "")
+    .replace(/[*_`~]+/g, "")
+    .trim()).find(Boolean) ?? "";
+}
 export function planDecisionSourceComplete(value: unknown) {
   const o = identityObservation(value); if (!o || typeof o.state.sourceId !== "string" || !o.state.sourceId || !Array.isArray(o.state.planDecisionComments) || !o.runs.length || o.runs.length > 3 || new Set(o.runs.map(run => run.id)).size !== o.runs.length) return false;
   const comments = o.state.planDecisionComments as PlanComment[], humans = comments.filter(row => !row.authorAgentId);
@@ -143,7 +154,7 @@ export const planReviewIdentityCases: readonly ChatCatalogCase[] = ["questions-a
       supersedeOnUserComment: false, target: { type: "issue_document", issueId: source.id, documentId: plan.id, key: "plan", revisionId: plan.latestRevisionId, revisionNumber: plan.latestRevisionNumber } } }));
   await ctx.input.page.reload({ waitUntil: "domcontentloaded" }); return { sourceId: source.id, personId: session.user.id, worker, plan, original, scopeMarker };
 }, gradePlanReview, {
-  sourceFiles: [...sources, "../../server/src/services/chat-completion-delivery.ts"], authentication: "human-session", oracleVersion: "paperclip.chat-catalog.plan-review.v4", expectedRunCount: 3, minimumRunCount: scenarioId.endsWith("review-plan") ? 2 : 1, attemptTimeoutMs: 600_000,
+  sourceFiles: [...sources, "../../server/src/services/chat-completion-delivery.ts"], authentication: "human-session", oracleVersion: "paperclip.chat-catalog.plan-review.v5", expectedRunCount: 3, minimumRunCount: scenarioId.endsWith("review-plan") ? 2 : 1, attemptTimeoutMs: 600_000,
   runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },
   async act(ctx, state) {
     const originalDeadline = ctx.observationDeadlineAt;
@@ -195,7 +206,7 @@ export const planReviewIdentityCases: readonly ChatCatalogCase[] = ["questions-a
     if (!reviewLink) throw new Error("Actual draft review link missing from reply");
     await ctx.input.page.locator(`[id^="comment-"] a[href=${JSON.stringify(reviewLink)}]`).first().click();
     // The opened view must show the saved draft itself: its first line of text.
-    const firstLine = doc.body!.split("\n").map(line => line.replace(/^[#>*\-\s]+|[*_`]+/g, "").trim()).find(Boolean)!;
+    const firstLine = markdownFirstLine(doc.body!);
     await expect(ctx.input.page.getByText(firstLine, { exact: false }).first()).toBeVisible();
   },
 }));

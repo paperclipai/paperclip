@@ -16,6 +16,13 @@ export function exactFailedRunLink(href: string | null, origin: string, companyP
       && parts[4] === "runs" && parts[5] === runId;
   } catch { return false; }
 }
+/** The reply's own link to the failed attempt's run page: the company's prefix, the worker, then the run. */
+function failedRunHref(o: { origin: string; links: string[]; state: Record<string, unknown> }) {
+  const failed = o.state.failedRun as { id?: string } | undefined, worker = o.state.worker as Entity | undefined;
+  const prefix = String((o.state.task as Entity | undefined)?.identifier ?? "").split("-")[0] ?? "";
+  if (!failed?.id || !worker?.id || !prefix) return undefined;
+  return o.links.find(href => exactFailedRunLink(href, o.origin, prefix, worker as { id: string; urlKey?: string }, failed.id!));
+}
 export function gradeFailedAttempt(value: unknown) {
   const c = checks(); const o = runtimeObservation(value);
   c.add("actual-failed-and-successful-native-history", !!o, "An actually admitted native failure and a later real successful execution must remain separately readable."); if (!o) return c.result();
@@ -30,8 +37,7 @@ export function gradeFailedAttempt(value: unknown) {
   // and log fields) and by an exact link to that attempt, not the later success.
   c.add("read-failed-run-evidence", o.state.failedRunRead === true,
     "The chat run read the failed attempt's recorded details (or the task's run history) through a product tool before answering.");
-  c.add("real-run-source-link", !!failed && o.links.some(href => { try { const url = new URL(href, o.origin), parts = url.pathname.split("/").map(decodeURIComponent);
-    return url.origin === o.origin && parts.at(-2) === "runs" && parts.at(-1) === failed.id; } catch { return false; } }),
+  c.add("real-run-source-link", !!failed && !!failedRunHref(o),
   "The failure explanation links the actual retained failed run, not only the later success.");
   // Absence guard only: an unrecorded cost must not be reported as a dollar
   // zero. How the reply describes unavailable data is not matched.
@@ -80,8 +86,8 @@ export const runtimeFailedRunCases = [runtimeDefinition("runs-adapters.inspect-f
   await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
   return { worker, task: done.task, ...failure, successfulRun, successArtifactVerified: true, failureLogAvailable };
 }, gradeFailedAttempt, {
-  sourceFiles: ["chat-catalog-domains/runtime-failed-runs.ts", "chat-catalog-domains/runtime-native-failure.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/internal-run-history.ts", "chat-scenarios/runs-adapters.yaml", "../../ui/src/components/TaskChatThread.tsx", "../../ui/src/components/task-chat/TaskChatMarker.tsx", "../../ui/src/components/task-chat/TaskChatThreadView.tsx", "../../ui/src/pages/AgentDetail.tsx"],
-  oracleVersion: "paperclip.chat-catalog.runtime.inspect-failed-run.v3", expectedRunCount: 3, attemptTimeoutMs: 720_000,
+  sourceFiles: ["chat-catalog-domains/runtime-failed-runs.ts", "chat-catalog-domains/runtime-native-failure.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/internal-run-history.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-scenarios/runs-adapters.yaml", "../../ui/src/components/TaskChatThread.tsx", "../../ui/src/components/task-chat/TaskChatMarker.tsx", "../../ui/src/components/task-chat/TaskChatThreadView.tsx", "../../ui/src/pages/AgentDetail.tsx"],
+  oracleVersion: "paperclip.chat-catalog.runtime.inspect-failed-run.v4", expectedRunCount: 3, attemptTimeoutMs: 720_000,
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { failed: 1, succeeded: 2 } },
   async observe(ctx, state) {
     state.retainedFailure = await ctx.input.api.get(`/api/heartbeat-runs/${(state.failedRun as { id: string }).id}`);
@@ -89,14 +95,17 @@ export const runtimeFailedRunCases = [runtimeDefinition("runs-adapters.inspect-f
     let failedRunRead = false;
     for (const run of o.runs.filter(row => row.agentId === o.leadId && row.contextSnapshot?.issueId === ctx.issue()?.id)) {
       const events = await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`));
-      failedRunRead = failedRunRead || readTaskRunHistory(events, taskId, [failedId]);
+      failedRunRead = failedRunRead || readTaskRunHistory(events, taskId, [failedId], (state.task as Entity).identifier);
     }
     o.state.failedRunRead = failedRunRead;
     return o;
   },
-  async verifyResult(ctx, state) {
-    const source = ctx.input.page.url(); const failed = state.failedRun as { id: string }; const worker = state.worker as Entity;
-    await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/agents/${worker.id}/runs/${failed.id}`, { waitUntil: "domcontentloaded" });
+  async verifyResult(ctx, state, value) {
+    const source = ctx.input.page.url(); const failed = state.failedRun as { id: string };
+    // Follow the reply's own link, so a route the person cannot open fails here.
+    const o = runtimeObservation(value), href = o && failedRunHref(o);
+    if (!href) throw new Error("Reply did not link the failed attempt's run page");
+    await ctx.input.page.goto(new URL(href, ctx.input.api.baseURL).href, { waitUntil: "domcontentloaded" });
     await expect(ctx.input.page.getByText(/failed/i).first()).toBeVisible();
     const actual = await ctx.input.api.get<HeartbeatRun>(`/api/heartbeat-runs/${failed.id}`);
     if (actual.id !== failed.id || actual.status !== "failed") throw new Error("Failure result UI did not retain the intended failed attempt");

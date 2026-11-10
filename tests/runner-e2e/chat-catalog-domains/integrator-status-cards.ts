@@ -2,36 +2,49 @@ import { chatCatalogNativePhaseDeadline, chatCatalogNativePhaseIsTimely, chatCat
 import { uploadFactualQueryAttachment, factualContextQueryAttachment } from "../chat-query-attachments.js";
 import type { StatusCard, StatusCardUpdate, StatusCardSummaryRevision } from "../../../packages/shared/src/validators/status-card.js";
 import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contract.js";
+import { expect } from "@playwright/test";
 import { pollUntil } from "../api.js";
 import { checks, observation, project, task, sameTask, hasLink, type Entity, type InternalObservation } from "./internal-support.js";
 import { prepareCardChecklist, updateCardChecklistSource, observeCardChecklistSuccess, observeCardWork, failCardChecklist, genuineCardWorkFailure, genuineCardChecklistSuccess, cardAccountingReady, cleanupCardChecklist, type CardRecipe, type CardWorkEvidence } from "./status-card-work-failure.js";
 import { readAgentResource, cleanupIdentityProbes, remainingIdentityObservationBudget } from "./identity-support.js";
 import { fixtureWorker } from "./internal-definition.js";
 import { collectRunEvents } from "../run-observations.js";
+import { apiReadDigests, apiReadStatuses, recordParams } from "./api-read-receipts.js";
 import { integratorDefinition, inspectResult, resultHref, observeInternal } from "./integrator-support.js";
 interface CardsObservation extends InternalObservation { cards: StatusCard[]; updates: Record<string, StatusCardUpdate[]>; summaries: Record<string, StatusCardSummaryRevision[]>; cardsEnabled: boolean; cardWork?: CardWorkEvidence; sourceReads?: SourceReads; cardOperations?: Record<string, string[]> }
 /** What the responding agent actually got back when it read the source task, split by chat turn. */
 export interface SourceReads { initialLive: boolean; laterUnavailable: boolean; laterLive: boolean }
 const objectRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-/** Classifies completed runner task reads. A 404 body is redacted, so an unavailable read cannot name its task id. */
-/** Status-card API operations a run started, from its own tool-call events (call_api inputs keep operationId when the payload is redacted). */
-export function statusCardOperations(events: readonly Record<string, unknown>[]): string[] {
-  const operations: string[] = [];
-  for (const row of events) {
-    if (row.eventType !== "item.started") continue;
-    const item = objectRecord(objectRecord(objectRecord(objectRecord(row.payload).prpEvent).payload).item), operation = objectRecord(item.input).operationId;
-    if (item.type === "tool_use" && typeof operation === "string" && /\/status-cards(?:\/|$)/.test(operation)) operations.push(operation);
-  }
-  return operations;
+/** Reads that return the card's saved state: the company list and the card both carry state, failureReason and lastGeneratedAt. */
+const CARD_STATE_READS = ["GET /api/companies/{companyId}/status-cards", "GET /api/status-cards/{id}"];
+/**
+ * Status-card reads a run completed successfully for this card (or its company's card list). call_api
+ * payloads are redacted before saving, so each read is bound by its input digest and its paired result;
+ * a started, failed or other-card request does not count.
+ */
+export function statusCardOperations(events: readonly Record<string, unknown>[], cardId: string, companyId: string): string[] {
+  const card = recordParams("id", cardId), company = [...recordParams("companyId", companyId), undefined];
+  const digests = apiReadDigests([
+    { operationId: "GET /api/companies/{companyId}/status-cards", pathParams: company, queries: [{ archived: true }, { archived: "true" }, { archived: false }, { archived: "false" }] },
+    { operationId: "GET /api/status-cards/{id}", pathParams: card },
+    { operationId: "GET /api/status-cards/{id}/summary-revisions", pathParams: card, paged: true },
+    { operationId: "GET /api/status-cards/{id}/updates", pathParams: card, paged: true },
+  ]);
+  return apiReadStatuses(events, digests).filter(read => read.ok && read.status >= 200 && read.status < 300).map(read => read.operationId);
 }
-export function sourceTaskReads(events: readonly Record<string, unknown>[], sourceId: string) {
-  let live = false, unavailable = false;
+/**
+ * Classifies this run's reads of the source task. call_api reads are bound to the source by their saved
+ * input digest: a successful result is a live read and a 404 is an unavailable one. An unredacted
+ * dedicated-tool output naming the source also counts as live.
+ */
+export function sourceTaskReads(events: readonly Record<string, unknown>[], sourceId: string, identifier?: string | null) {
+  const reads = apiReadStatuses(events, apiReadDigests([{ operationId: "GET /api/issues/{id}", pathParams: recordParams("id", sourceId, identifier) }]));
+  let live = reads.some(read => read.ok && read.status >= 200 && read.status < 300), unavailable = reads.some(read => read.status === 404);
   for (const row of events) {
     const envelope = objectRecord(objectRecord(row.payload).prpEvent), payload = objectRecord(envelope.payload);
     const output = typeof payload.output === "string" ? payload.output : "";
     if (row.eventType !== "tool.execution.completed" || envelope.sourceKind !== "runner" || payload.status !== "completed" || !output.includes("GET /api/issues/{id}")) continue;
-    if (/\\*"status\\*":404\b/.test(output)) unavailable = true;
-    else if (!/\\*"ok\\*":false/.test(output) && output.includes(sourceId)) live = true;
+    if (!/\\*"ok\\*":false/.test(output) && !/\\*"status\\*":404\b/.test(output) && output.includes(sourceId)) live = true;
   }
   return { live, unavailable };
 }
@@ -48,25 +61,23 @@ async function observeCards(ctx: ChatCatalogContext, state: Record<string, unkno
   const cardWork = ctx.scenario.id === "status-cards.refresh-card" && state.cardRecipe && typeof state.failedGenerationIssueId === "string"
     ? await observeCardWork(ctx, state.cardRecipe as CardRecipe, state.failedGenerationIssueId) : undefined;
   const sourceReads = ctx.scenario.id === "status-cards.explain-card" && state.sourceUnavailable === true ? await observeSourceReads(ctx, base, state) : undefined;
-  const cardOperations = ctx.scenario.id === "status-cards.refresh-card" && options.runEvents !== false ? await observeCardOperations(ctx, base) : undefined;
+  const cardOperations = ctx.scenario.id === "status-cards.refresh-card" && options.runEvents !== false ? await observeCardOperations(ctx, base, (state.card as StatusCard).id) : undefined;
   return { ...base, cards, updates, summaries, cardsEnabled: settings.enableStatusCards, ...(cardWork ? { cardWork } : {}), ...(sourceReads ? { sourceReads } : {}), ...(cardOperations ? { cardOperations } : {}) };
 }
-async function observeCardOperations(ctx: ChatCatalogContext, base: InternalObservation): Promise<Record<string, string[]>> {
+async function observeCardOperations(ctx: ChatCatalogContext, base: InternalObservation, cardId: string): Promise<Record<string, string[]>> {
   return Object.fromEntries(await Promise.all(base.runs.filter(run => run.agentId === base.leadId).map(async run => [run.id,
-    statusCardOperations(await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`)))])));
+    statusCardOperations(await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`)), cardId, ctx.input.fixtures.company.id)])));
 }
-/** Reads that return the card's saved state: the company list and the card both carry state, failureReason and lastGeneratedAt. */
-const CARD_STATE_READS = ["GET /api/companies/{companyId}/status-cards", "GET /api/status-cards/{id}"];
 /** True when one of the lead's runs in this turn read the card's saved state. */
 function turnReadCard(o: CardsObservation, runIds: readonly string[], operations: readonly string[]) {
   return runIds.some(id => o.cardOperations?.[id]?.some(operation => operations.includes(operation)));
 }
 async function observeSourceReads(ctx: ChatCatalogContext, base: InternalObservation, state: Record<string, unknown>): Promise<SourceReads> {
-  const sourceId = (state.sourceTasks as Entity[])[0]?.id ?? ""; const initialRuns = new Set(((state.accessCheckpoint as InternalObservation | undefined)?.runs ?? []).map(run => run.id));
+  const source = (state.sourceTasks as Entity[])[0], sourceId = source?.id ?? ""; const initialRuns = new Set(((state.accessCheckpoint as InternalObservation | undefined)?.runs ?? []).map(run => run.id));
   const reads: SourceReads = { initialLive: false, laterUnavailable: false, laterLive: false };
   for (const run of base.runs.filter(row => row.agentId === base.leadId)) {
     const events = await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`));
-    const found = sourceTaskReads(events, sourceId);
+    const found = sourceTaskReads(events, sourceId, source?.identifier);
     if (initialRuns.has(run.id)) reads.initialLive ||= found.live;
     else { reads.laterUnavailable ||= found.unavailable; reads.laterLive ||= found.live; }
   }
@@ -82,11 +93,18 @@ function authorProfileLinked(o: InternalObservation, author: Entity | undefined)
     return url.origin === new URL(o.origin).origin && index >= 0 && [author.id, author.urlKey].filter(Boolean).includes(parts[index + 1]); } catch { return false; } });
 }
 function cardLink(o: InternalObservation, id: string) { return resultHref(o, id, "status") ?? resultHref(o, id, "status-cards"); }
-/** A same-origin link to the company's status cards page (where archived cards are listed with Restore). */
-function statusBoardLinked(o: InternalObservation) {
-  return o.links.some(href => { try { const url = new URL(href, o.origin); const parts = url.pathname.split("/").filter(Boolean);
-    return url.origin === new URL(o.origin).origin && parts.length === 2 && parts[1] === "status"; } catch { return false; } });
+/** The company's issue prefix, from its own saved task identifiers. */
+function companyPrefix(o: InternalObservation) {
+  const prefixes = new Set(o.tasks.map(row => typeof row.identifier === "string" ? row.identifier.replace(/-\d+$/, "") : "").filter(Boolean));
+  return prefixes.size === 1 ? [...prefixes][0]! : undefined;
 }
+/** A same-origin link to this company's status cards page (where archived cards are listed with Restore). */
+function statusBoardHref(o: InternalObservation) {
+  const prefix = companyPrefix(o); if (!prefix) return undefined;
+  return o.links.find(href => { try { const url = new URL(href, o.origin); const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+    return url.origin === new URL(o.origin).origin && parts.length === 2 && parts[0] === prefix && parts[1] === "status"; } catch { return false; } });
+}
+const statusBoardLinked = (o: InternalObservation) => !!statusBoardHref(o);
 function freshSummary(o: CardsObservation, card: StatusCard) {
   return !!card.lastGeneratedAt && !!card.summaryBody && o.updates[card.id]?.some(row => row.kind !== "compile" && row.status === "ok" && !!row.runId
     && o.runs.some(run => run.id === row.runId && run.status === "succeeded") && row.generationIssueId != null)
@@ -202,7 +220,15 @@ export function gradeIntegratorCards(value: unknown) {
 }
 async function verifyCard(ctx: ChatCatalogContext, _state: Record<string, unknown>, value: unknown) {
   const o = cardsObservation(value); const card = o && (o.state.card ? o.cards.find(row => row.id === (o.state.card as StatusCard).id) : o.cards[0]); if (!card) throw new Error("Missing saved card");
-  await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/status/${card.id}`, card.title ?? card.interestPrompt, cardLink(o!, card.id));
+  const href = cardLink(o!, card.id), board = !href ? statusBoardHref(o!) : undefined;
+  if (board) {
+    // The reply linked only the board: follow that rendered link to this company's status page.
+    const source = ctx.input.page.url(), link = ctx.input.page.locator(`[id^="comment-"] a[href=${JSON.stringify(board)}]`).first();
+    await expect(link).toBeVisible(); await link.click();
+    await expect(ctx.input.page).toHaveURL(url => url.pathname === `/${ctx.input.fixtures.company.issuePrefix}/status`);
+    await ctx.input.page.goto(source); await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible();
+  }
+  await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/status/${card.id}`, card.title ?? card.interestPrompt, href);
 }
 // These three prerequisite waits consumed a generic180s allowance before the
 // query, although the unchanged whole-case clock is installed before setup.
@@ -303,10 +329,10 @@ function define(id: string, seed: "none" | "ceo" | "morgan", extra: Partial<Chat
 }
 export const integratorStatusCardsCases: readonly ChatCatalogCase[] = [
   define("status-cards.create-card", "none", { oracleVersion: "paperclip.chat-catalog.status-card.create.v2" }),
-  define("status-cards.archive-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.archive.v2", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 3, attemptTimeoutMs: 720_000 }),
+  define("status-cards.archive-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.archive.v3", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 3, attemptTimeoutMs: 720_000 }),
   define("status-cards.other-authors-card", "morgan", { oracleVersion: "paperclip.chat-catalog.status-card.other-authors.v2", expectedRunCount: 5, minimumRunCount: 2 }),
-  define("status-cards.explain-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.explain.v3", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 5, minimumRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
-    sourceFiles: ["chat-catalog-domains/integrator-status-cards.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "run-observations.ts", "chat-scenarios/status-cards.yaml"],
+  define("status-cards.explain-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.explain.v4", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 5, minimumRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
+    sourceFiles: ["chat-catalog-domains/integrator-status-cards.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "run-observations.ts", "chat-scenarios/status-cards.yaml"],
     async act(ctx, state) {
       // The lead may refresh its own stale card while answering; wait for that generation to settle
       // before deleting the source so the access change cannot race the refresh.
@@ -330,8 +356,8 @@ export const integratorStatusCardsCases: readonly ChatCatalogCase[] = [
   }),
   define("status-cards.refresh-card", "ceo", { expectedRunCount: 7, expectedHumanMessageCount: 4, attemptTimeoutMs: 1_200_000,
     runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 7 } },
-    oracleVersion: "paperclip.chat-catalog.status-card.required-work-failure.v5",
-    sourceFiles: ["chat-catalog-domains/integrator-status-cards.ts", "chat-catalog-domains/status-card-work-failure.ts", "chat-catalog-domains/external-provider.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/status-cards.yaml"],
+    oracleVersion: "paperclip.chat-catalog.status-card.required-work-failure.v6",
+    sourceFiles: ["chat-catalog-domains/integrator-status-cards.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/status-card-work-failure.ts", "chat-catalog-domains/external-provider.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/status-cards.yaml"],
 
     async act(ctx, state) {
       const first = await pollUntil({ label: "initial actual refresh acknowledgement", deadlineAt: Date.now() + 180_000, intervalMs: 1000,

@@ -66,6 +66,25 @@ describe("real manual invocation and delivery distinction", () => {
   });
 });
 
+import { callApiInputDigest } from "./api-read-receipts.js";
+describe("call_api reads whose bodies the port redacts", () => {
+  const apiRead = (runId: string, at: string, input: Record<string, unknown>, status = 200) =>
+    ({ runId, name: "call_api", at, output: "", apiRead: { inputSha256: callApiInputDigest(input), operationId: String(input.operationId), ok: status === 200, status } });
+  const redacted = (task: Record<string, unknown>, project: Record<string, unknown>, status = 200) => {
+    const o = valid(); o.toolReads = [apiRead("output-run", "2026-01-01T00:01:30.000Z", project), apiRead("follow-up-run", "2026-01-01T00:03:00.000Z", task, status)] as typeof o.toolReads; return o;
+  };
+  const project = { operationId: "GET /api/projects/{id}", pathParams: { id: "project" } };
+  it("accepts reads of the project and the result task bound by their saved input digests", () => {
+    expect(gradeIntegratorRoutineInvocation(redacted({ operationId: "GET /api/issues/{id}", pathParams: { id: "ACN-2" } }, project)).passed).toBe(true);
+    expect(gradeIntegratorRoutineInvocation(redacted({ operationId: "GET /api/issues/{id}", pathParams: { id: "task" } }, project)).passed).toBe(true);
+  });
+  it("rejects reads of another record or a failed read", () => {
+    expect(gradeIntegratorRoutineInvocation(redacted({ operationId: "GET /api/issues/{id}", pathParams: { id: "ACN-1" } }, project)).passed).toBe(false);
+    expect(gradeIntegratorRoutineInvocation(redacted({ operationId: "GET /api/issues/{id}", pathParams: { id: "task" } }, { ...project, pathParams: { id: "other" } })).passed).toBe(false);
+    expect(gradeIntegratorRoutineInvocation(redacted({ operationId: "GET /api/issues/{id}", pathParams: { id: "task" } }, project, 404)).passed).toBe(false);
+  });
+});
+
 import { launchSummaryRoutineInput } from "./integrator-routine-invocation.js";
 import { createRoutineSchema } from "../../../packages/shared/src/validators/routine.js";
 it("validates the real project-name prerequisite as required public text, not unsupported string", () => {

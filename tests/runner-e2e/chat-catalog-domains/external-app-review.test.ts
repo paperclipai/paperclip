@@ -250,6 +250,9 @@ it("grades each reply only for naming or linking the reviewed connection record"
   expect(reviewReplyNamesRecord("See [the notes app](/COM/apps/connection/permissions).", connection)).toBe(true);
   expect(reviewReplyNamesRecord("See [the notes app](/COM/apps/other-connection).", connection)).toBe(false);
   expect(reviewReplyNamesRecord("See [the notes app](https://elsewhere.test/COM/apps/connection).", connection)).toBe(false);
+  // An absolute link to the app's own origin is the same page as its relative form.
+  expect(reviewReplyNamesRecord("See [the notes app](http://127.0.0.1:3100/COM/apps/connection).", connection, "http://127.0.0.1:3100")).toBe(true);
+  expect(reviewReplyNamesRecord("See [the notes app](http://127.0.0.1:3999/COM/apps/connection).", connection, "http://127.0.0.1:3100")).toBe(false);
   expect(reviewReplyNamesRecord("The notes app returned an error.", connection)).toBe(false);
   expect(reviewReplyNamesRecord("Synthetic Launch Notes", undefined)).toBe(false);
   expect(launchUpdateFact("Public launch: 2030-11-08")).toBe(true);

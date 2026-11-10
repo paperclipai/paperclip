@@ -1,5 +1,5 @@
-import { expect, it } from "vitest";
-import { ownedNativeExecutablePath, matchesOwnedNativeIdentity, type NativeFaultBinding } from "./runtime-native-fault.js";
+import { describe, expect, it } from "vitest";
+import { ownedNativeExecutablePath, matchesOwnedNativeIdentity, retainedFaultCode, type NativeFaultBinding } from "./runtime-native-fault.js";
 function valid() {
   return { identity: { pid: 940123, uid: 501, group: 940123, startedAt: "2026-10-26T12:00:00Z", executable: "/qualified/runnerd", commandRunId: "run", commandRunnerId: "runner", runtimeRoot: "/owned/attempt/state/runner" },
     run: { id: "run", companyId: "company", agentId: "morgan", status: "running", runtimeMode: "native", nativeIssueId: "website", runnerInstanceId: "runner", processPid: 940123, processGroupId: 940123, processStartedAt: new Date("2026-10-26T12:00:00.123Z") } as NativeFaultBinding,
@@ -21,4 +21,15 @@ it("uses Linux kernel executable identity without trusting a ps basename, preser
   expect(ownedNativeExecutablePath(987654, "/owned/bin/runner", "darwin")).toBe("/owned/bin/runner");
   for (const platform of ["darwin", "win32"] as const) expect(() => ownedNativeExecutablePath(987654, "node", platform)).toThrow();
   for (const pid of [0, 1, process.pid, 12.5]) expect(() => ownedNativeExecutablePath(pid, "/owned/bin/runner", "linux")).toThrow();
+});
+
+describe("fault cause retained after same-run recovery", () => {
+  it("reads the infrastructure code from the attempt's own failure events", () => {
+    const message = "Notification transport failed closed: native_runner_process_exited: runnerd exited unexpectedly";
+    expect(retainedFaultCode([{ eventType: "turn.failed", payload: { error: { code: "notification_transport_failed", message } } }])).toBe("native_runner_process_exited");
+    expect(retainedFaultCode([{ eventType: "error", message }])).toBe("native_runner_process_exited");
+    expect(retainedFaultCode([{ eventType: "harness.diagnostic", message }])).toBeNull();
+    expect(retainedFaultCode([{ eventType: "error", message: "model said native_runner_process_exited_maybe" }])).toBeNull();
+    expect(retainedFaultCode([])).toBeNull();
+  });
 });

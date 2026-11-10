@@ -65,7 +65,7 @@ describe("CLI public-state oracles", () => {
     const o = { ...base, tasks: [], reply: command("paperclipai context use acorn\npaperclipai context show --json"),
       state: { initialProfile: "birch", finalProfile: "acorn", selectedCompanyId: target.company, selectedApiBase: target.apiBase,
         selectedPersona: "board", actualScopedCompanyId: target.company, contextCommandsExecuted: true,
-        otherProfilePreserved: true, onlyOwnedContextWritten: true, operatorUserId: "synthetic-person", identityIncludesSelectedCompany: true } };
+        otherProfilePreserved: true, onlyOwnedContextWritten: true, operatorUserId: "synthetic-person", identityIsBoardUser: true, identityIncludesSelectedCompany: true } };
     expect(gradeChooseCliContext(o).passed).toBe(true);
     // The profile name is the model's choice; selecting the other (birch) profile is not.
     expect(gradeChooseCliContext({ ...o, state: { ...o.state, finalProfile: "acorn-company" } }).passed).toBe(true);

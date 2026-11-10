@@ -3,6 +3,7 @@ import { expect } from "@playwright/test";
 import type { ChatCatalogCase } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
 import { collectRunEvents } from "../run-observations.js";
+import { readRecord, recordParams } from "./api-read-receipts.js";
 import { fixtureWorker, makeDefinition } from "./internal-definition.js";
 import { startRunBriefGate } from "./internal-run-brief.js";
 import { checks, entity, hasLink, observation, observeInternal, project, task, type Entity, type InternalObservation } from "./internal-support.js";
@@ -14,7 +15,12 @@ const objectRecord = (value: unknown): Record<string, unknown> => value && typeo
  * answering. Tool outputs are product data, so they are matched exactly; the
  * agent's own wording is never matched.
  */
-export function readTaskRunHistory(events: readonly Record<string, unknown>[], taskId: string, runIds: readonly string[]) {
+export function readTaskRunHistory(events: readonly Record<string, unknown>[], taskId: string, runIds: readonly string[], identifier?: string | null) {
+  // call_api payloads are redacted before saving; bind the read by its input digest and a successful result.
+  if (taskId && readRecord(events, [
+    { operationId: "GET /api/issues/{id}/runs", pathParams: recordParams("id", taskId, identifier), paged: true },
+    { operationId: "GET /api/heartbeat-runs/{runId}", pathParams: recordParams("runId", ...runIds) },
+  ])) return true;
   return !!taskId && events.some(row => {
     const envelope = objectRecord(objectRecord(row.payload).prpEvent), payload = objectRecord(envelope.payload);
     const output = typeof payload.output === "string" ? payload.output : "";
@@ -84,9 +90,9 @@ function findRuns(): ChatCatalogCase {
     await ctx.input.evidence("chat-catalog-real-interrupted-continuation.json", state); return state;
     } catch (error) { await gate.close(); gate = undefined; throw error; }
   }, gradeRunHistory);
-  return { ...base, oracleVersion: "paperclip.chat-catalog.run-history.v2", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 660_000,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.run-history.v3", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 660_000,
     runPolicy: { kind: "terminal-counts", terminalStatusCounts: { cancelled: 1, succeeded: 2 } },
-    sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-run-history.ts", "chat-catalog-domains/internal-run-brief.ts", "../e2e/fetch-allowed-port.ts", "run-observations.ts"],
+    sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-run-history.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/internal-run-brief.ts", "../e2e/fetch-allowed-port.ts", "run-observations.ts"],
     async observe(ctx, state): Promise<RunHistory> {
       if (!key) throw new Error("Run read probe was not created during setup"); const o = await observeInternal(ctx, state);
       const agentRunReadStatuses = await Promise.all(["interruptedRun", "continuationRun"].map(async name => {
@@ -97,7 +103,7 @@ function findRuns(): ChatCatalogCase {
       let runHistoryRead = false;
       for (const run of o.runs.filter(row => row.agentId === o.leadId && row.contextSnapshot?.issueId === ctx.issue()?.id)) {
         const events = await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`));
-        runHistoryRead = runHistoryRead || readTaskRunHistory(events, taskId, runIds);
+        runHistoryRead = runHistoryRead || readTaskRunHistory(events, taskId, runIds, entity(state, "task").identifier);
       }
       return { ...o, agentRunReadStatuses, runHistoryRead, currentTask: await ctx.input.api.get<OwnedTask>(`/api/issues/${entity(state, "task").id}`) };
     },

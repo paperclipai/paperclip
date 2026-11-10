@@ -100,12 +100,13 @@ export function gradeChooseCliContext(value: unknown) {
     "The answer supplies supported context/profile commands for the intended API and company instead of invented context flags.");
   c.add("actual-profile-selected", o.state.initialProfile === "birch" && typeof o.state.finalProfile === "string" && o.state.finalProfile !== o.state.initialProfile
     && o.state.selectedCompanyId === o.companyId && o.state.selectedApiBase === o.origin
-    && o.state.selectedPersona === "board" && o.state.actualScopedCompanyId === o.companyId && o.state.contextCommandsExecuted === true,
+    // `--persona` is an optional label; who runs the commands is graded from the authenticated identity below.
+    && o.state.selectedPersona !== "agent" && o.state.actualScopedCompanyId === o.companyId && o.state.contextCommandsExecuted === true,
     "Supported CLI commands select a profile, other than the person's other one, holding the real Acorn company at its actual API base; the profile name is the model's choice.");
   c.add("other-profile-preserved", o.state.otherProfilePreserved === true && o.state.onlyOwnedContextWritten === true,
     "The other configured profile is byte-equivalent semantically, and only the explicit owned context path is used.");
   c.add("identity-readback", typeof o.state.operatorUserId === "string" && !!o.state.operatorUserId
-    && o.state.identityIncludesSelectedCompany === true,
+    && o.state.identityIsBoardUser === true && o.state.identityIncludesSelectedCompany === true,
     "An actual authenticated CLI read confirms the human identity and membership before future writes.");
   return c.result();
 }
@@ -141,14 +142,15 @@ const context = privilegedDefinition("cli-operations.choose-cli-context", "privi
     state.selectedPersona = selected.profile.persona; state.actualScopedCompanyId = scopedCompany.id;
     state.otherProfilePreserved = JSON.stringify(selected.profiles.birch) === JSON.stringify(state.otherProfile);
     state.onlyOwnedContextWritten = selected.contextPath === `${state.operatorDirectory}/context.json`;
-    state.operatorUserId = identity.userId; state.identityIncludesSelectedCompany = identity.companyIds?.includes(ctx.input.fixtures.company.id) === true;
+    state.operatorUserId = identity.userId; state.identityIsBoardUser = !!identity.user && identity.user.id === identity.userId;
+    state.identityIncludesSelectedCompany = identity.companyIds?.includes(ctx.input.fixtures.company.id) === true;
     await ctx.input.evidence("chat-catalog-cli-context-readback.json", { ...state, persona: "authenticated-human" });
   }, grade: gradeChooseCliContext,
   async verifyResult(ctx) { await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible(); },
 });
 context.sourceFiles = [...context.sourceFiles, "chat-catalog-domains/privileged-cli-support.ts", "../../cli/src/index.ts",
   "../../cli/src/commands/client/context.ts", "../../cli/src/commands/client/company.ts", "../../cli/src/commands/client/auth.ts", "../../cli/src/client/context.ts"];
-context.oracleVersion = "paperclip.chat-catalog.cli-context.v3";
+context.oracleVersion = "paperclip.chat-catalog.cli-context.v4";
 create.oracleVersion = "paperclip.chat-catalog.cli-create.v2";
 context.cleanup = cleanupOwnedCli;
 export const privilegedCliCases: ChatCatalogCase[] = [create, context];

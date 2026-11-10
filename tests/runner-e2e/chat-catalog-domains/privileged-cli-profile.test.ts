@@ -52,12 +52,14 @@ it("actual production partial profile update preserves configured API and Birch 
   expect(after.currentProfile).toBe("acorn"); expect(after.profiles.acorn).toEqual({ apiBase: fixture.apiBase, companyId: fixture.company, persona: "board" });
   expect(after.profiles.birch).toEqual(before.profiles.birch);
 });
-it("requires independently executed context, actual scoped company and board persona rather than grammar alone", () => {
+it("requires independently executed context, actual scoped company and a board identity rather than grammar alone", () => {
   const o = { scenarioId: "cli", origin: fixture.apiBase, companyId: fixture.company, leadId: "lead", projects: [], tasks: [], goals: [], comments: [], activity: [], documents: [], revisions: [], links: [], humanQueries: ["canonical"], runs: [{id:"native",status:"succeeded"}], reply: fence(exact),
     state: { initialProfile: "birch", finalProfile: "acorn", selectedCompanyId: fixture.company, selectedApiBase: fixture.apiBase, selectedPersona: "board", actualScopedCompanyId: fixture.company,
-      contextCommandsExecuted: true, otherProfilePreserved: true, onlyOwnedContextWritten: true, operatorUserId: "person", identityIncludesSelectedCompany: true } };
+      contextCommandsExecuted: true, otherProfilePreserved: true, onlyOwnedContextWritten: true, operatorUserId: "person", identityIsBoardUser: true, identityIncludesSelectedCompany: true } };
   expect(gradeChooseCliContext(o).passed).toBe(true);
-  for (const delta of [{ selectedPersona: "agent" }, { selectedPersona: undefined }, { actualScopedCompanyId: "foreign" }, { actualScopedCompanyId: undefined },
+  // The optional persona label may be left unset: the authenticated identity decides who runs the commands.
+  expect(gradeChooseCliContext({ ...o, state: { ...o.state, selectedPersona: undefined } }).passed).toBe(true);
+  for (const delta of [{ selectedPersona: "agent" }, { identityIsBoardUser: false }, { actualScopedCompanyId: "foreign" }, { actualScopedCompanyId: undefined },
     { contextCommandsExecuted: false }, { identityIncludesSelectedCompany: false }, { otherProfilePreserved: false }])
     expect(gradeChooseCliContext({ ...o, state: { ...o.state, ...delta } }).passed).toBe(false);
 });
@@ -74,7 +76,7 @@ it.each([fixture.company, "foreign"])("owning act executes unmodified returned c
     if (index <= commands.length) return "{}";
     if (argv[0] === "context") return JSON.stringify({ currentProfile: "acorn", contextPath: "/owned/context.json", profile, profiles: { acorn: profile, birch: otherProfile } });
     if (argv[0] === "company") return JSON.stringify({ id: savedCompany });
-    return JSON.stringify({ userId: "person", companyIds: [fixture.company] });
+    return JSON.stringify({ user: { id: "person", name: "Person", email: "person@example.test" }, userId: "person", companyIds: [fixture.company] });
   });
   const ctx = { observationDeadlineAt: Date.now() + 10_000, input: { api: { baseURL: fixture.apiBase }, fixtures: { company: { id: fixture.company } }, evidence: vi.fn() } } as unknown as ChatCatalogContext;
   const state: Record<string, unknown> = { initialProfile: "birch", operatorDirectory: "/owned", otherProfile };

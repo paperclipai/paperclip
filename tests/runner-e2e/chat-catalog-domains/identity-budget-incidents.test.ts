@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { budgetIncidentIdentityCases, budgetHoldSurvivesChat, incidentSourceFundingReady } from "./identity-budget-incidents.js";
+import { budgetIncidentIdentityCases, budgetHoldSurvivesChat, budgetPage, incidentSourceFundingReady } from "./identity-budget-incidents.js";
 import type { IdentityObservation } from "./identity-support.js";
 function valid(scenarioId: string): IdentityObservation {
   const resolve = scenarioId.endsWith("resolve-budget"); const task = { id: "task", companyId: "acorn", title: "Unfinished website", status: "backlog", assigneeAgentId: "morgan" };
@@ -48,4 +48,11 @@ it("requires source/company funding without clearing or funding the target incid
   expect(incidentSourceFundingReady({ ...budget, policies: budget.policies.map(p => p.scopeId === "company" ? { ...p, unpricedUsagePolicy: "block" } : p) }, "company", "ceo")).toBe(false);
   expect(incidentSourceFundingReady({ ...budget, activeIncidents: [...budget.activeIncidents, { ...budget.activeIncidents[0]!, scopeId: "ceo" }] }, "company", "ceo")).toBe(false);
   expect(incidentSourceFundingReady({ ...budget, policies: budget.policies.filter(p => p.scopeId !== "ceo") }, "company", "ceo")).toBe(false);
+});
+
+it("accepts the Budgets page the catalog guidance links, and the Costs page", () => {
+  expect(budgetPage("/RUN/activity/budgets")).toBe(true);
+  expect(budgetPage("/RUN/activity/costs")).toBe(true);
+  expect(budgetPage("/RUN/activity/runs")).toBe(false);
+  expect(budgetPage("/RUN/activity/budgets/extra")).toBe(false);
 });

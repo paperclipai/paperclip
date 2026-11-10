@@ -228,7 +228,7 @@ function isWebsiteTeamGoal(row: Entity): boolean {
 }
 /** A positive progress figure for goals created moments ago is fabricated; 0% is truthful. */
 function claimsInventedProgress(reply: string): boolean {
-  return /(?<![\d.,])[1-9]\d*(?:[.,]\d+)?\s*%\s*(?:complete|done|progress|of the way)|\balready\s+(?:at\s+|reached\s+|have\s+)?[1-9][\d,]*\s+(?:sign[- ]?ups?|users|customers)/i.test(reply);
+  return /(?<![\d.,])(?=[\d.,]*[1-9])(?:\d+(?:[.,]\d+)?|[.,]\d+)\s*%\s*(?:complete|done|progress|of the way)|\balready\s+(?:at\s+|reached\s+|have\s+)?[1-9][\d,]*\s+(?:sign[- ]?ups?|users|customers)/i.test(reply);
 }
 
 function validGoalOwners(o: InternalObservation): boolean {
@@ -270,7 +270,7 @@ export async function inspectGoalHierarchy(ctx: ChatCatalogContext, state: Recor
 }
 function createGoalTree(): ChatCatalogCase {
   const base = retryDefinition("goals.create-goal-tree", grade_goals, initialGoalTreeCreation, observeGoalPhases);
-  return { ...base, oracleVersion: "paperclip.chat-catalog.goal-hierarchy.v3", observe: observeGoalPhases, async setup(ctx) {
+  return { ...base, oracleVersion: "paperclip.chat-catalog.goal-hierarchy.v4", observe: observeGoalPhases, async setup(ctx) {
     await ctx.input.api.patch(`/api/companies/${ctx.input.fixtures.company.id}`, { description: "Our mission is to grow product adoption and help new teams sign up." });
     return base.setup(ctx);
   }, async act(ctx, state) {

@@ -4,17 +4,27 @@ import type { Issue } from "../../../packages/shared/src/types/issue.js";
 import type { HeartbeatRun } from "../../../packages/shared/src/types/heartbeat.js";
 import { pollUntil } from "../api.js";
 import { collectRunEvents } from "../run-observations.js";
+import { readRecord, recordParams } from "./api-read-receipts.js";
 import { sendChatMessage } from "../chat-flow.js";
 import { checks, type Entity } from "./internal-support.js";
 import { runtimeDefinition, runtimeWorker, runtimeObservation, observeRuntime } from "./runtime-support.js";
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-/** Whether a run re-read saved task state through a completed product tool call (its own retained events, never reply text). */
-export function readTaskState(events: readonly Record<string, unknown>[]) {
+/**
+ * Whether a run re-read Website's saved state (its own retained events, never reply text): a successful
+ * call_api read of the task, its documents or the company task list, bound by its saved input digest
+ * (bodies are redacted before saving), or a completed dedicated task tool whose output names the task.
+ */
+export function readTaskState(events: readonly Record<string, unknown>[], task: { id?: string; identifier?: string | null; companyId?: string | null }) {
+  const params = recordParams("id", task.id, task.identifier);
+  if (task.id && readRecord(events, [
+    ...["GET /api/issues/{id}", "GET /api/issues/{id}/documents", "GET /api/issues/{id}/work-products"].map(operationId => ({ operationId, pathParams: params })),
+    { operationId: "GET /api/companies/{companyId}/issues", pathParams: [...recordParams("companyId", task.companyId), undefined], paged: true },
+  ])) return true;
   return events.some(row => {
     const envelope = record(record(row.payload).prpEvent), payload = record(envelope.payload), output = typeof payload.output === "string" ? payload.output : "";
     return row.eventType === "tool.execution.completed" && envelope.sourceKind === "runner" && payload.status === "completed"
-      && (["paperclip_get_task", "paperclip_search_tasks"].includes(String(payload.name))
-        || /apiOperationId\\*"\s*:\s*\\*"GET \/api\/(?:issues\/\{id\}|companies\/\{companyId\}\/issues)\\*"/.test(output));
+      && ["paperclip_get_task", "paperclip_search_tasks"].includes(String(payload.name))
+      && [task.id, task.identifier].some(id => !!id && output.includes(id));
   });
 }
 async function chooseStatus(page: Page, status: "Todo" | "Done") {
@@ -51,8 +61,8 @@ export const runtimeDependencyCases = [runtimeDefinition("task-coordination.bloc
     description: `Implement the approved Design as a small website plan. Once eligible, read the actual Design task and save a task document with the exact reference ${marker}, accessible labels and a clear primary action, then finish normally. Do not deploy, create other tasks or invent approval.` });
   return { worker, task, design, marker };
 }, gradeDesignDependency, {
-  expectedHumanMessageCount: 2, expectedRunCount: 3, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.block-on-design.v3",
-  sourceFiles: ["chat-catalog-domains/runtime-dependency.ts", "chat-catalog-domains/runtime-support.ts", "run-observations.ts", "chat-scenarios/task-coordination.yaml"],
+  expectedHumanMessageCount: 2, expectedRunCount: 3, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.block-on-design.v4",
+  sourceFiles: ["chat-catalog-domains/runtime-dependency.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/runtime-support.ts", "run-observations.ts", "chat-scenarios/task-coordination.yaml"],
   async act(ctx, state) {
     await pollUntil({ label: "Saved dependency and canonical reply before human approval", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150_000),
       load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },
@@ -105,7 +115,7 @@ export const runtimeDependencyCases = [runtimeDefinition("task-coordination.bloc
     const detail = await ctx.input.api.get<{ runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${run.id}`);
     state.finalReplyAttributed = human.length === 1 && replies.length > 0 && detail.runnerProfileJson?.nativeExecutionInput?.task?.prompt?.includes(human[0]!.id) === true;
     state.finalReply = replies.map(row => row.body).join("\n");
-    state.finalReadTaskState = readTaskState(await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`)));
+    state.finalReadTaskState = readTaskState(await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`)), task);
   },
   async observe(ctx, state) {
     const o = await observeRuntime(ctx, state);

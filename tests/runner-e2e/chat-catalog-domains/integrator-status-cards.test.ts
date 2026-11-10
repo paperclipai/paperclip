@@ -6,7 +6,7 @@ function valid(id: string) {
   const card = { id: "card", companyId: "company", createdByAgentId: id === "status-cards.other-authors-card" ? "morgan" : "ceo", title: "Launch blockers", interestPrompt: "Launch's biggest blockers", agentId: "morgan", queries: [{ projectId: "project" }], fingerprint: { source: { status: "blocked" } }, refreshPolicy: { mode: "manual" }, archivedAt: archive ? "2026-10-26T12:00:00Z" : null, archivedByAgentId: archive ? "ceo" : null, summaryBody: "Payment approval blocks Launch.", lastGeneratedAt: "2026-10-26T11:00:00Z" };
   const update = { id: "update", kind: "full", status: "ok", runId: "worker-run", generationIssueId: "generation-task" };
   const summary = { id: "summary", body: card.summaryBody };
-  const source = { id: "source", companyId: "company", title: "Payment approval blocks launch", status: "blocked" };
+  const source = { id: "source", identifier: "ACORN-1", companyId: "company", title: "Payment approval blocks launch", status: "blocked" };
   const result = { scenarioId: id, origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: { project: { id: "project" }, worker: { id: "morgan" }, sourceTasks: [structuredClone(source)], ...(creation ? {} : { card: { ...card, archivedAt: null, archivedByAgentId: null }, originalUpdates: [structuredClone(update)], originalSummaries: [structuredClone(summary)], ...(archive ? { otherCard: { ...card, id: "other", interestPrompt: "Research blockers", archivedAt: null, archivedByAgentId: null } } : {}) }) },
     tasks: [source], projects: [], goals: [], comments: [], documents: [], revisions: [], humanQueries: [], links: ["/ACORN/status/card"],
     runs: [{ id: "source-run", agentId: "ceo", status: "succeeded" }, { id: "worker-run", agentId: "morgan", status: "succeeded" }],
@@ -71,6 +71,8 @@ describe("saved card state and truthful generation controls", () => {
     expect(gradeIntegratorCards({ ...o, summaries: { card: [] } }).passed).toBe(false);
     expect(gradeIntegratorCards({ ...o, links: [] }).passed).toBe(false);
     expect(gradeIntegratorCards({ ...o, links: ["/ACORN/status/other", "https://foreign.test/ACORN/status/card"] }).passed).toBe(false);
+    // Another company's status page cannot list this company's archived card.
+    expect(gradeIntegratorCards({ ...o, links: ["/OTHER/status"] }).passed).toBe(false);
     expect(gradeIntegratorCards({ ...o, cards: o.cards.map(row => row.id === "card" ? { ...row, archivedAt: null, archivedByAgentId: null } : row) }).passed).toBe(false);
     const altered = structuredClone(o); altered.tasks[0]!.status = "done";
     expect(gradeIntegratorCards(altered).passed).toBe(false);
@@ -160,15 +162,20 @@ describe("saved card state and truthful generation controls", () => {
 });
 
 import { sourceTaskReads, statusCardOperations } from "./integrator-status-cards.js";
-it("reads the status-card operations a run started from its tool-call events", () => {
-  const started = (name: string, input: Record<string, unknown>) => ({ eventType: "item.started", payload: { prpEvent: { payload: { item: { id: "1", name, type: "tool_use", input } } } } });
-  expect(statusCardOperations([
-    started("call_api", { data: "***REDACTED***", operationId: "GET /api/status-cards/{id}" }),
-    started("call_api", { operationId: "GET /api/issues/{id}" }),
-    started("search_api", { query: "status card" }),
-    started("call_api", { operationId: "GET /api/companies/{companyId}/status-cards" }),
-    { eventType: "item.completed", payload: { prpEvent: { payload: { item: { type: "tool_use", input: { operationId: "GET /api/status-cards/{id}/updates" } } } } } },
-  ])).toEqual(["GET /api/status-cards/{id}", "GET /api/companies/{companyId}/status-cards"]);
+import { savedCall } from "./api-read-receipts.test-fixtures.js";
+it("counts only successful status-card reads bound to this card or company, as the port saves them", () => {
+  const ops = (...events: Record<string, unknown>[][]) => statusCardOperations(events.flat(), "card", "company");
+  expect(ops(savedCall({ operationId: "GET /api/status-cards/{id}", pathParams: { id: "card" } }, 200, "1"),
+    savedCall({ operationId: "GET /api/companies/{companyId}/status-cards", pathParams: { companyId: "company" }, query: { archived: "true" } }, 200, "2"),
+    savedCall({ operationId: "GET /api/status-cards/{id}/updates", pathParams: { id: "card" }, query: { limit: 20 } }, 200, "3")))
+    .toEqual(["GET /api/status-cards/{id}", "GET /api/companies/{companyId}/status-cards", "GET /api/status-cards/{id}/updates"]);
+  // A failed request, a different card, or a request that never completed is not proof of a read.
+  expect(ops(savedCall({ operationId: "GET /api/status-cards/{id}", pathParams: { id: "card" } }, 404, "1"))).toEqual([]);
+  expect(ops(savedCall({ operationId: "GET /api/status-cards/{id}", pathParams: { id: "other-card" } }, 200, "1"))).toEqual([]);
+  expect(ops(savedCall({ operationId: "GET /api/status-cards/{id}", pathParams: { id: "card" } }, 200, "1").slice(0, 1))).toEqual([]);
+  // The result must pair with the same run's tool use.
+  expect(ops(savedCall({ operationId: "GET /api/status-cards/{id}", pathParams: { id: "card" } }, 200, "1", "run-a").slice(0, 1),
+    savedCall({ operationId: "GET /api/status-cards/{id}", pathParams: { id: "other" } }, 200, "1", "run-b").slice(1))).toEqual([]);
 });
 it("grades a created card by saved state and its link, not by the reply's wording", () => {
   const o = valid("status-cards.create-card");
@@ -210,16 +217,20 @@ it("accepts a lead-requested refresh of its own stale card only when the origina
   const lostHistory = structuredClone(refreshed); lostHistory.summaries.card = lostHistory.summaries.card.filter(row => row.id !== "summary");
   expect(gradeIntegratorCards(lostHistory).passed).toBe(false);
 });
-it("classifies live and unavailable task reads from runner tool output", () => {
+it("classifies live and unavailable source reads by their redacted saved receipts", () => {
+  const read = (id: string, status: number) => savedCall({ operationId: "GET /api/issues/{id}", pathParams: { id } }, status);
+  expect(sourceTaskReads(read("source", 200), "source", "ACORN-1")).toEqual({ live: true, unavailable: false });
+  expect(sourceTaskReads(read("ACORN-1", 200), "source", "ACORN-1")).toEqual({ live: true, unavailable: false });
+  expect(sourceTaskReads(read("source", 404), "source", "ACORN-1")).toEqual({ live: false, unavailable: true });
+  expect(sourceTaskReads(read("other", 200), "source", "ACORN-1")).toEqual({ live: false, unavailable: false });
+  expect(sourceTaskReads(read("other", 404), "source", "ACORN-1")).toEqual({ live: false, unavailable: false });
+  // An unredacted dedicated-tool output naming the source still counts as a live read.
   const event = (output: string, status = "completed") => ({ eventType: "tool.execution.completed", payload: { prpEvent: { sourceKind: "runner", payload: { name: "paperclip_get_task", status, output } } } });
   const live = event(JSON.stringify({ text: JSON.stringify({ apiOperationId: "GET /api/issues/{id}", data: { id: "source", status: "done" } }) }));
-  const gone = event(JSON.stringify({ text: JSON.stringify({ apiOperationId: "GET /api/issues/{id}", ok: false, status: 404, data: "***REDACTED***" }) }));
-  const other = event(JSON.stringify({ text: JSON.stringify({ apiOperationId: "GET /api/issues/{id}", data: { id: "other" } }) }));
   expect(sourceTaskReads([live], "source")).toEqual({ live: true, unavailable: false });
-  expect(sourceTaskReads([gone], "source")).toEqual({ live: false, unavailable: true });
-  expect(sourceTaskReads([other], "source")).toEqual({ live: false, unavailable: false });
   expect(sourceTaskReads([event(JSON.parse(JSON.stringify(live.payload.prpEvent.payload.output)), "running")], "source")).toEqual({ live: false, unavailable: false });
 });
+
 
 import type { StatusCard } from "../../../packages/shared/src/validators/status-card.js";
 import { updateIssueSchema } from "../../../packages/shared/src/validators/issue.js";

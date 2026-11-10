@@ -66,6 +66,7 @@ it.each([
 });
 it("accepts a truthful zero-progress note on newly created goals", () => {
   expect(grade_goals(retitled("Reach 1,000 signups", "Launch the website", "Created both goals; progress is 0% complete so far.")).passed).toBe(true);
+  expect(grade_goals(retitled("Reach 1,000 signups", "Launch the website", "Created both goals; each is 0.0% complete.")).passed).toBe(true);
 });
 it.each([
   ["Reach 100 signups", "Launch the website"],
@@ -75,7 +76,7 @@ it.each([
 ])("rejects goals whose saved subject is not the requested one: %s / %s", (root, child) => {
   expect(grade_goals(retitled(root, child)).passed).toBe(false);
 });
-it.each(["We are already at 250 signups.", "The website goal is 40% complete."])("rejects invented progress: %s", reply => {
+it.each(["We are already at 250 signups.", "The website goal is 40% complete.", "The website goal is 0.5% complete.", "Signups are .5% done."])("rejects invented progress: %s", reply => {
   expect(grade_goals(retitled("Reach 1,000 signups", "Launch the website", reply)).passed).toBe(false);
 });
 it("does not allow a retry to repair an invalid first parent or first foreign owner", () => {

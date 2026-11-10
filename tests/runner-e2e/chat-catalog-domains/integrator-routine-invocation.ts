@@ -4,19 +4,30 @@ import type { RoutineDetail, RoutineRunSummary } from "../../../packages/shared/
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
 import { collectRunEvents } from "../run-observations.js";
+import { apiReadDigests, recordParams, type ApiRead } from "./api-read-receipts.js";
 import { checks, hasLink, observation, project, type Entity, type InternalObservation } from "./internal-support.js";
 import { integratorDefinition, observeInternal, inspectResult, resultHref } from "./integrator-support.js";
 
-/** One completed product tool execution, as recorded in the run's durable event stream. */
-export interface InvocationToolRead { runId: string; name: string; at: string; output: string }
+/**
+ * One completed product tool execution, as recorded in the run's durable event stream. A call_api
+ * result's body is redacted before saving, so it is kept as its input digest, operation and status.
+ */
+export interface InvocationToolRead { runId: string; name: string; at: string; output: string; apiRead?: { inputSha256: string; operationId: string; ok: boolean; status: number } }
 interface InvocationObservation extends InternalObservation { routine: RoutineDetail; invocations: RoutineRunSummary[]; outputComments: Entity[]; toolReads?: InvocationToolRead[] }
 async function invocationToolReads(ctx: ChatCatalogContext, runs: InternalObservation["runs"]): Promise<InvocationToolRead[]> {
   const reads: InvocationToolRead[] = [];
   for (const run of runs) {
     const events = await collectRunEvents<{ seq?: number; createdAt?: string; payload?: Record<string, unknown> | null }>((afterSeq, limit) =>
       ctx.input.api.getRunObservation(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
+    const uses = new Map<string, { inputSha256: string; operationId: string }>();
     for (const event of events) {
-      const prp = event.payload?.prpEvent as { eventType?: string; payload?: { name?: unknown; status?: unknown; output?: unknown } } | undefined;
+      const prp = event.payload?.prpEvent as { eventType?: string; payload?: { name?: unknown; status?: unknown; output?: unknown; item?: Record<string, any> } } | undefined;
+      const item = prp?.payload?.item;
+      if (item?.type === "tool_use" && item.name === "call_api" && item.input?.apiPayloadRedacted === true && typeof item.input.operationId === "string")
+        uses.set(String(item.id), { inputSha256: String(item.input.apiPayloadSha256), operationId: item.input.operationId });
+      const use = item?.type === "tool_result" ? uses.get(String(item.tool_use_id)) : undefined;
+      if (use && item?.result?.apiOperationId === use.operationId && typeof item.result.status === "number")
+        reads.push({ runId: run.id, name: "call_api", at: event.createdAt ?? "", output: "", apiRead: { ...use, ok: item.result.ok === true, status: item.result.status } });
       if (prp?.eventType !== "tool.execution.completed" || prp.payload?.status !== "completed" || typeof prp.payload.name !== "string") continue;
       const output = typeof prp.payload.output === "string" ? prp.payload.output : JSON.stringify(prp.payload.output ?? "");
       reads.push({ runId: run.id, name: prp.payload.name, at: event.createdAt ?? "", output: output.slice(0, 8192) });
@@ -43,10 +54,12 @@ function prematureCompletionClaim(reply: string) {
     /\b(?:summary|execution|task|run)\b[^.!?\n]{0,50}\b(?:completed|finished|succeeded|is ready|is done)\b/i.test(sentence)
     && !/\bnot\b|n't\b|\b(?:pending|waiting|will|once|when|after|until|should|expected|queued|started|in progress)\b/i.test(sentence));
 }
-/** The run read a product record naming `id` at or after `since`. Call-API payloads are redacted
- * in run evidence, so only tool outputs that expose the record count as proof of the read. */
-function readRecordAfter(o: InvocationObservation, runId: string | undefined, id: string | undefined, since?: string | null) {
-  return !!runId && !!id && (o.toolReads ?? []).some(row => row.runId === runId && row.output.includes(id)
+/** The run read a product record naming `id` at or after `since`: an unredacted tool output exposing the
+ * record, or a successful call_api read whose saved input digest names it (the body itself is redacted). */
+function readRecordAfter(o: InvocationObservation, runId: string | undefined, id: string | undefined, since: string | null | undefined, reads: readonly ApiRead[]) {
+  const digests = apiReadDigests(reads);
+  return !!runId && !!id && (o.toolReads ?? []).some(row => row.runId === runId
+    && (row.output.includes(id) || !!row.apiRead && row.apiRead.ok && row.apiRead.status >= 200 && row.apiRead.status < 300 && digests.has(row.apiRead.inputSha256))
     && (!since || Date.parse(row.at) >= Date.parse(since)));
 }
 export function gradeIntegratorRoutineInvocation(value: unknown) {
@@ -70,14 +83,15 @@ export function gradeIntegratorRoutineInvocation(value: unknown) {
   const outputRun = o.runs.find(run => run.contextSnapshot?.issueId === task?.id && run.agentId === o.leadId && run.status === "succeeded" && run.runtimeMode === "native");
   const output = o.outputComments.filter(row => row.authorAgentId === o.leadId && row.createdByRunId === outputRun?.id && (row.body ?? "").trim().length > 0);
   c.add("actual-completed-summary", !!task && invocation?.status === "completed" && task.status === "done" && !!outputRun && output.length > 0
-    && readRecordAfter(o, outputRun?.id, projectId),
+    && readRecordAfter(o, outputRun?.id, projectId, undefined, [{ operationId: "GET /api/projects/{id}", pathParams: recordParams("id", projectId) }]),
   "The routine's own native task run read the actual Launch project, saved its summary on the task and completed normally.");
   // The follow-up answer comes from a chat run that did not exist at the first reply and is not the routine's own task run.
   const followUp = o.runs.find(run => run.agentId === o.leadId && run.status === "succeeded" && run.contextSnapshot?.issueId !== task?.id
     && !!first && !first.runs.some(row => row.id === run.id));
   const later = first && o.reply.startsWith(first.reply) ? o.reply.slice(first.reply.length).trim() : "";
   c.add("later-actual-result-and-task-link", !!task && hasLink(o, "issues", task) && later.length > 0 && !!followUp
-    && readRecordAfter(o, followUp?.id, task.id, invocation?.completedAt ? new Date(invocation.completedAt).toISOString() : undefined),
+    && readRecordAfter(o, followUp?.id, task.id, invocation?.completedAt ? new Date(invocation.completedAt).toISOString() : undefined,
+      ["GET /api/issues/{id}", "GET /api/issues/{id}/comments"].map(operationId => ({ operationId, pathParams: recordParams("id", task.id, task.identifier), paged: true, queries: [{ order: "asc" }, { order: "desc" }] }))),
   "The explicit later request is answered by a new chat run that read the completed result task after the invocation finished, and the conversation links that task.");
   return c.result();
 }
@@ -96,8 +110,8 @@ export const integratorRoutineInvocationCases = [integratorDefinition("routines"
   if (!o || !task) throw new Error("Missing actual routine result task");
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, task.title!, resultHref(o, task.identifier ?? task.id, "issues") ?? resultHref(o, task.id, "issues"));
 }, {
-  oracleVersion: "paperclip.chat-catalog.integrator.routine-invocation.v2",
-  sourceFiles: ["chat-catalog-domains/integrator-routine-invocation.ts", "run-observations.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/routines.yaml"],
+  oracleVersion: "paperclip.chat-catalog.integrator.routine-invocation.v3",
+  sourceFiles: ["chat-catalog-domains/integrator-routine-invocation.ts", "chat-catalog-domains/api-read-receipts.ts", "run-observations.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/routines.yaml"],
   expectedRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
   async act(ctx, state) {
     const first = await pollUntil({ label: "routine invocation first actual reply", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 180_000), intervalMs: 1000,

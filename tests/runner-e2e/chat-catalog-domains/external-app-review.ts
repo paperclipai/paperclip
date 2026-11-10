@@ -230,7 +230,7 @@ export function gradeAppReview(value: unknown) {
       o.phaseReplies.some(
         (reply) =>
           reply.runId === phase.replyRunId &&
-          reviewReplyNamesRecord(reply.body, reviewedConnection(o.connections, o.state.connectionId)) &&
+          reviewReplyNamesRecord(reply.body, reviewedConnection(o.connections, o.state.connectionId), o.origin) &&
           o.runs.some(
             (run) =>
               run.id === reply.runId &&
@@ -364,7 +364,7 @@ export const appReviewExternalCases = [
     gradeAppReview,
     {
       authentication: "human-session",
-      oracleVersion: "paperclip.chat-catalog.app-review.v7",
+      oracleVersion: "paperclip.chat-catalog.app-review.v8",
       queryAttachments: [{ stateKey: "factualContextAttachment", filename: "launch-update.md" }],
       expectedRunCount: 6,
       minimumRunCount: 6,
@@ -659,7 +659,7 @@ export const appReviewExternalCases = [
             body =
               observed.phaseReplies.find((row) => row.runId === reply.id)
                 ?.body ?? "";
-          if (!reviewReplyNamesRecord(body, reviewedConnection(observed.connections, state.connectionId)))
+          if (!reviewReplyNamesRecord(body, reviewedConnection(observed.connections, state.connectionId), observed.origin))
             throw new Error(
               "Actual model continuation did not name or link the reviewed app connection",
             );

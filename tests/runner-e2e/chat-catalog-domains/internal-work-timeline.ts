@@ -6,6 +6,7 @@ import { agentStatus, cleanupPrivacyProbes } from "./internal-privacy.js";
 import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
 import { startTimelineVerifier, type VerificationReceipt } from "./internal-timeline-verifier.js";
 import { collectRunEvents } from "../run-observations.js";
+import { readRecord, recordParams } from "./api-read-receipts.js";
 import { localDay } from "./internal-routine-audit.js";
 import { checks, entity, hasLink, observation, observeInternal, project, task, type Entity, type InternalObservation } from "./internal-support.js";
 interface Timeline extends InternalObservation { verification: VerificationReceipt[]; hiddenStatus: number; timelineEvents: Entity[]; savedTimelineRead?: boolean }
@@ -29,10 +30,14 @@ export function timelineStatusMilestone(row: Entity, task: Entity, run: Entity, 
 }
 /**
  * The chat run read the launch task's saved activity, comments or history
- * through a product tool before answering. Tool outputs are product data, so
- * this is checked exactly; the agent's own wording is never matched.
+ * through a product tool before answering. A call_api read is bound to the task
+ * by its saved input digest and a successful result, because the port redacts
+ * API bodies before saving; an unredacted dedicated-tool output must name the
+ * task. The agent's own wording is never matched.
  */
-export function readSavedTaskTimeline(events: readonly Record<string, unknown>[], taskId: string) {
+export function readSavedTaskTimeline(events: readonly Record<string, unknown>[], taskId: string, identifier?: string | null) {
+  const params = recordParams("id", taskId, identifier);
+  if (taskId && readRecord(events, ["GET /api/issues/{id}/activity", "GET /api/issues/{id}/comments"].map(operationId => ({ operationId, pathParams: params, paged: true, queries: [{ order: "asc" }, { order: "desc" }] })))) return true;
   return !!taskId && events.some(row => {
     const envelope = objectRecord(objectRecord(row.payload).prpEvent), payload = objectRecord(envelope.payload);
     const output = typeof payload.output === "string" ? payload.output : "";
@@ -100,14 +105,14 @@ function timeline(): ChatCatalogCase {
     const state = { worker, repairWorker, project: p, task: second.t, prepTask, hiddenTask, firstRun, secondRun, blockedTask: first.t, blockedEventId: blockedEvent.id, handoffEventId: handoff.id, doneEventId: done.id, timezone, today, zoneLabel, personId: session.user.id, personName: session.user.name };
     await ctx.input.evidence("chat-catalog-real-launch-timeline.json", { ...state, verification: verifier.receipts, events }); return state;
   }, gradeWorkTimeline);
-  return { ...base, oracleVersion: "paperclip.chat-catalog.work-timeline.v14", authentication: "human-session", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 720000,
-    sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-work-timeline.ts", "chat-catalog-domains/internal-timeline-verifier.ts", "chat-catalog-domains/internal-privacy.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/internal-routine-audit.ts", "../e2e/fetch-allowed-port.ts", "../../server/src/services/native-runtime/status-decision-committer.ts", "../../server/src/services/work-timeline.ts","../../server/src/services/native-runtime/runner-api-catalog.ts"],
+  return { ...base, oracleVersion: "paperclip.chat-catalog.work-timeline.v15", authentication: "human-session", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 720000,
+    sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-work-timeline.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/internal-timeline-verifier.ts", "chat-catalog-domains/internal-privacy.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/internal-routine-audit.ts", "../e2e/fetch-allowed-port.ts", "../../server/src/services/native-runtime/status-decision-committer.ts", "../../server/src/services/work-timeline.ts","../../server/src/services/native-runtime/runner-api-catalog.ts"],
     async observe(ctx, state): Promise<Timeline> {
       const o = await observeInternal(ctx, state), taskId = entity(state, "task").id ?? "";
       let savedTimelineRead = false;
       for (const run of o.runs.filter(row => row.agentId === o.leadId && row.contextSnapshot?.issueId === ctx.issue()?.id)) {
         const events = await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`));
-        savedTimelineRead = savedTimelineRead || readSavedTaskTimeline(events, taskId);
+        savedTimelineRead = savedTimelineRead || readSavedTaskTimeline(events, taskId, entity(state, "task").identifier);
       }
       return { ...o, savedTimelineRead, verification: structuredClone(verifier?.receipts ?? []), timelineEvents: await ctx.input.api.get(`/api/issues/${taskId}/activity`), hiddenStatus: await agentStatus(ctx, ctx.input.fixtures.agent.id, `/api/issues/${entity(state, "hiddenTask").id}`) };
     },

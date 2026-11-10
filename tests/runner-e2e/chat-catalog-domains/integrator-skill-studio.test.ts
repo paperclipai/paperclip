@@ -58,6 +58,10 @@ describe("one real inspectable Studio test", () => {
     expect(check(foreign, "reply-links-saved-result")).toBe(false);
     const studio = valid(); studio.sourceComments[1]!.body = "Open the [Studio run](/COM/skills/studio/skill?run=test).";
     expect(check(studio, "reply-links-saved-result")).toBe(true);
+    const absolute = valid(); absolute.sourceComments[1]!.body = "Saved in [COM-2](https://fixture.test/COM/issues/COM-2).";
+    expect(check(absolute, "reply-links-saved-result")).toBe(true);
+    const elsewhere = valid(); elsewhere.sourceComments[1]!.body = "Saved in [COM-2](https://elsewhere.test/COM/issues/COM-2).";
+    expect(check(elsewhere, "reply-links-saved-result")).toBe(false);
     const failed = valid(); failed.studioRuns[0]!.status = "failed";
     expect(gradeIntegratorSkillStudio(failed).passed).toBe(false);
   });

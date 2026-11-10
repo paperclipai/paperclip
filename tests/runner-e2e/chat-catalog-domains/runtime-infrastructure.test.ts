@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { exhaustedSourceRecovery, gradeInfrastructureRecovery, readSourceRecoveryRecord, sameRecoveryAction } from "./runtime-infrastructure.js";
+import { savedCall } from "./api-read-receipts.test-fixtures.js";
 function valid(id = "recovery.explain-stall") {
   const recovery = { id: "recovery", companyId: "company", sourceIssueId: "website", kind: "active_run_watchdog", cause: "native_session_retry_exhausted", ownerType: "board", ownerAgentId: null,
     returnOwnerAgentId: "morgan", recoveryIssueId: null, evidence: { runId: "run", coordinatorAttempt: 3, recoveryDisposition: "native_session_retry_exhausted" }, maxAttempts: 3, wakePolicy: null, nextAction: "Inspect the provider trace and explicitly choose a replacement run or provider configuration; automatic provider work is stopped." };
@@ -20,6 +21,15 @@ it("rejects a foreign source action", () => { const o = valid(); o.state.recover
 it("does not grade reply wording", () => { const o = valid(); o.state.queryReply = "Short answer: see the task."; expect(gradeInfrastructureRecovery(o).passed).toBe(true); });
 it("rejects an answer whose run never read the saved recovery record", () => { const o = valid(); o.state.queryRecoveryRead = false; expect(gradeInfrastructureRecovery(o).passed).toBe(false); });
 it("rejects an answer that does not link the original task", () => { const o = valid(); o.links = ["/COM/issues/COM-9"]; expect(gradeInfrastructureRecovery(o).passed).toBe(false); });
+it("accepts a genuine call_api recovery read after the port redacts its body, bound to the source task or failed run", () => {
+  const read = (operationId: string, pathParams: Record<string, string>, status = 200) => savedCall({ operationId, pathParams }, status, "3", "run-1", { sourceIssueId: "website", runId: "run" });
+  expect(readSourceRecoveryRecord(read("GET /api/issues/{id}/recovery-actions", { id: "website" }), "website", "run", "COM-1")).toBe(true);
+  expect(readSourceRecoveryRecord(read("GET /api/issues/{id}", { id: "COM-1" }), "website", "run", "COM-1")).toBe(true);
+  expect(readSourceRecoveryRecord(read("GET /api/heartbeat-runs/{runId}", { runId: "run" }), "website", "run", "COM-1")).toBe(true);
+  expect(readSourceRecoveryRecord(read("GET /api/issues/{id}", { id: "COM-2" }), "website", "run", "COM-1")).toBe(false);
+  expect(readSourceRecoveryRecord(read("GET /api/heartbeat-runs/{runId}", { runId: "other" }), "website", "run", "COM-1")).toBe(false);
+  expect(readSourceRecoveryRecord(read("GET /api/issues/{id}/recovery-actions", { id: "website" }, 403), "website", "run", "COM-1")).toBe(false);
+});
 it("reads the recovery record only from exact product tool output", () => {
   const event = (output: string, status = "completed") => ({ eventType: "tool.execution.completed", payload: { prpEvent: { sourceKind: "runner", payload: { status, output } } } });
   const actions = '{"apiOperationId":"GET /api/issues/{id}/recovery-actions","body":{"active":{"sourceIssueId":"website"}}}';

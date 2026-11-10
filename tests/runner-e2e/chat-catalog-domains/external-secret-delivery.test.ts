@@ -1,10 +1,10 @@
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { pluginManifestV1Schema } from "../../../packages/shared/src/validators/plugin.js";
 import {
   custodyManifest,
   custodyRoundtrip,
 } from "./external-instance-custody.js";
-import { gradeSecretDelivery } from "./external-secret-delivery.js";
+import { gradeSecretDelivery, secretScanRoots } from "./external-secret-delivery.js";
 import { validSecretScopeReceipt } from "./external-secret-endpoint.js";
 function valid() {
   const receipt = (
@@ -321,4 +321,15 @@ it("validates the genuine finite lifecycle package and requires exact public res
       boundKey: "deployment-api-key",
     }),
   ).toBe(true);
+});
+
+describe("secret scan coverage", () => {
+  it("covers a top-level worker task the chat created, its descendants, and the chat itself", () => {
+    const tasks = [
+      { id: "worker", parentId: null, originIssueId: "chat" },
+      { id: "worker-child", parentId: "worker", originIssueId: null },
+      { id: "unrelated", parentId: null, originIssueId: "other-chat" },
+    ];
+    expect([...secretScanRoots("chat", tasks)].sort()).toEqual(["chat", "worker", "worker-child"]);
+  });
 });

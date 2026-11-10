@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { gradeDesignDependency, readTaskState } from "./runtime-dependency.js";
+import { savedCall } from "./api-read-receipts.test-fixtures.js";
 function valid() { return { scenarioId: "task-coordination.block-on-design", companyId: "company", leadId: "ceo", agents: [], links: [], humanQueries: [], reply: "",
   tasks: [{ id: "website", assigneeAgentId: "morgan", status: "done" }, { id: "design", status: "done" }], runs: ["save-edge", "implement", "report"].map(id => ({ id, status: "succeeded", agentId: id === "implement" ? "morgan" : "ceo" })),
   activity: [{ id: "edge", action: "issue.blockers_updated", entityId: "website", agentId: "ceo", details: { addedBlockedByIssueIds: ["design"] } }],
@@ -20,11 +21,17 @@ it("rejects pre-approval prose substituted for the later result phase", () => { 
 it("accepts reworded replies because saved state, not wording, proves the outcome", () => { const o = valid(); o.state.queryReply = "OK — COM-2 now waits on COM-1."; o.state.finalReply = "COM-2 is in its final state; see the saved plan."; expect(gradeDesignDependency(o).passed).toBe(true); });
 it("rejects a final answer given without re-reading saved task state", () => { const o = valid(); o.state.finalReadTaskState = false; expect(gradeDesignDependency(o).passed).toBe(false); });
 it("rejects an empty final reply", () => { const o = valid(); o.state.finalReply = " "; expect(gradeDesignDependency(o).passed).toBe(false); });
-it("reads saved task state only from completed product tool events", () => {
+it("reads Website's saved state only from completed product reads tied to Website", () => {
+  const website = { id: "website", identifier: "COM-2", companyId: "company" };
   const event = (name: string, output: string, status = "completed") => ({ eventType: "tool.execution.completed", payload: { prpEvent: { sourceKind: "runner", payload: { name, status, output } } } });
-  expect(readTaskState([event("paperclip_get_task", "{}")])).toBe(true);
-  expect(readTaskState([event("paperclip_call_api", '{"text":"{\\"apiOperationId\\":\\"GET /api/issues/{id}\\",\\"ok\\":true}"}')])).toBe(true);
-  expect(readTaskState([event("paperclip_get_task", "{}", "failed")])).toBe(false);
-  expect(readTaskState([event("paperclip_call_api", '{"apiOperationId":"GET /api/issues/{id}/comments"}')])).toBe(false);
-  expect(readTaskState([{ eventType: "item.completed", payload: { prpEvent: { sourceKind: "runner", payload: { text: "I read paperclip_get_task" } } } }])).toBe(false);
+  expect(readTaskState([event("paperclip_get_task", '{"id":"website","status":"done"}')], website)).toBe(true);
+  expect(readTaskState([event("paperclip_search_tasks", '{"tasks":[{"identifier":"COM-2"}]}')], website)).toBe(true);
+  expect(readTaskState([event("paperclip_get_task", '{"id":"design"}')], website)).toBe(false);
+  expect(readTaskState([event("paperclip_get_task", '{"id":"website"}', "failed")], website)).toBe(false);
+  // call_api bodies are redacted before saving: the read is bound by its saved input digest.
+  expect(readTaskState(savedCall({ operationId: "GET /api/issues/{id}", pathParams: { id: "COM-2" } }, 200), website)).toBe(true);
+  expect(readTaskState(savedCall({ operationId: "GET /api/issues/{id}", pathParams: { id: "COM-1" } }, 200), website)).toBe(false);
+  expect(readTaskState(savedCall({ operationId: "GET /api/issues/{id}", pathParams: { id: "website" } }, 404), website)).toBe(false);
+  expect(readTaskState([{ eventType: "item.completed", payload: { prpEvent: { sourceKind: "runner", payload: { text: "I read paperclip_get_task website" } } } }], website)).toBe(false);
 });
+

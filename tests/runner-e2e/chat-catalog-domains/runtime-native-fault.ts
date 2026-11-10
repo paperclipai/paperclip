@@ -8,6 +8,7 @@ import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { readProcessStartedAt } from "../../../server/src/services/hot-restart.js";
 import { defaultCapabilityRunnerdBinary } from "../../../server/src/vendor/paperclip-runner/index.js";
 import { pollUntil } from "../api.js";
+import { collectRunEvents } from "../run-observations.js";
 // The public full-run route selects these persisted native fields; the legacy
 // shared HeartbeatRun DTO does not yet declare them. Keep this exact projection.
 export type NativeFaultRun = HeartbeatRun & Pick<typeof heartbeatRuns.$inferSelect, "runtimeMode" | "nativeIssueId" | "runnerInstanceId" | "nativePhase" | "nativeSessionId" | "runnerProfileJson">;
@@ -50,6 +51,17 @@ async function processIdentity(run: NativeFaultRun): Promise<OwnedNativeIdentity
 /** Codes the product records for a lost Runner, or for its cleanup quarantine. */
 export const NATIVE_INFRASTRUCTURE_FAULT_CODES = ["native_runner_process_exited", "native_session_interrupted", "native_session_retry_exhausted", "provider_transport_failed",
   "provider_stdout_closed", "provider_process_output_closed", "native_session_cleanup_quarantined"];
+/** The infrastructure fault code a run's own failure events name (the failed attempt's error, turn or session failure). */
+export function retainedFaultCode(events: readonly Record<string, unknown>[]): string | null {
+  for (const row of events) {
+    if (!["error", "turn.failed", "session.failed"].includes(String(row.eventType))) continue;
+    const payload = (row.payload ?? {}) as Record<string, any>, prp = (payload.prpEvent?.payload ?? {}) as Record<string, any>;
+    const messages = [row.message, payload.error?.message, prp.message, prp.error?.message].filter((value): value is string => typeof value === "string");
+    const code = NATIVE_INFRASTRUCTURE_FAULT_CODES.find(candidate => messages.some(message => new RegExp(`(?:^|[\\s:])${candidate}(?::|$)`).test(message)));
+    if (code) return code;
+  }
+  return null;
+}
 /** `failed` once the run settled failed; `resumed` once a new Runner process serves the same run. */
 export function nativeFaultOutcome(run: Pick<NativeFaultRun, "status" | "finishedAt" | "errorCode" | "processPid">, killedPid: number): "failed" | "resumed" | null {
   if (run.status === "failed" && !!run.finishedAt && !!run.errorCode) return "failed";
@@ -84,7 +96,9 @@ export async function faultOwnedNativeProcess(ctx: ChatCatalogContext, binding: 
     load, accept: run => nativeFaultOutcome(run, confirmed.pid) !== null,
     reject: run => ["cancelled", "succeeded", "timed_out"].includes(run.status) ? "The real process fault did not produce a failed or resumed native infrastructure run" : undefined });
   const outcome = nativeFaultOutcome(settled, confirmed.pid)!;
-  const errorCode = outcome === "failed" ? settled.errorCode : settled.execution?.cause ?? null;
+  // Same-run recovery clears the current row's cause; the attempt's own failure events retain it.
+  const errorCode = outcome === "failed" ? settled.errorCode : settled.execution?.cause
+    ?? retainedFaultCode(await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${settled.id}/events?afterSeq=${afterSeq}&limit=1000`)));
   await ctx.input.evidence("runtime-owned-native-process-failure.json", { runId: settled.id, status: settled.status, outcome, errorCode, finishedAt: settled.finishedAt,
     nativePhase: settled.nativePhase ?? null, execution: settled.execution ?? null });
   if (!NATIVE_INFRASTRUCTURE_FAULT_CODES.includes(errorCode ?? ""))
