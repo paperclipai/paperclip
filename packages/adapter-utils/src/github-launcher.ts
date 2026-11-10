@@ -253,7 +253,9 @@ ${options.hostGitHub ? String.raw`
           response = await fetch(url, {
             method: 'POST', redirect: 'error', signal: AbortSignal.timeout(strictGitHub ? 45000 : 10000),
             headers: { authorization: 'Bearer ' + (env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY || env.PAPERCLIP_GITHUB_BROKER_TOKEN),
-              'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN, 'content-type': 'application/json' },
+              ...((env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY) &&
+                (env.PAPERCLIP_GITHUB_BRIDGE_TOKEN || env.PAPERCLIP_API_KEY) !== env.PAPERCLIP_GITHUB_BROKER_TOKEN
+                ? { 'x-paperclip-github-capability': env.PAPERCLIP_GITHUB_BROKER_TOKEN } : {}), 'content-type': 'application/json' },
             body: repositoryUrl ? JSON.stringify({ repositoryUrl }) : '{}',
           });
           if (response.status === 409 && conflicts < 29) {

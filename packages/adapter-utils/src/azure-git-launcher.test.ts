@@ -25,6 +25,7 @@ const fakeGit = `#!${process.execPath}
 const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const args = process.argv.slice(2);
+if (args.includes('ls-remote') && args.includes('--get-url')) { process.stdout.write(args[args.length - 1]); process.exit(0); }
 if (args.includes('remote') && args.includes('get-url')) {
   process.stdout.write(process.env.PAPERCLIP_TEST_REMOTE_URL || '');
   process.exit(0);
@@ -128,7 +129,7 @@ integration("Azure Git authorization through the shared managed launcher", () =>
     for (const item of f.requests) {
       expect(item.body).toEqual({ repositoryUrl: azureUrl });
       expect(item.headers.authorization).toBe(`Bearer ${capability}`);
-      expect(item.headers["x-paperclip-github-capability"]).toBe(capability);
+      expect(item.headers["x-paperclip-github-capability"]).toBeUndefined();
     }
     const allFiles = await readFile(f.capture, "utf8");
     expect(allFiles).not.toContain(pat);

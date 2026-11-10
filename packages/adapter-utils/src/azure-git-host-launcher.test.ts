@@ -164,6 +164,15 @@ it("brokers Azure clone and push-origin while excluding host credentials", async
   }
 });
 
+it("sends a long capability only once in request headers", async () => {
+  const f = await fixture({ hostGitHub: true });
+  const capability = "capability-" + "x".repeat(9000);
+  await exec(process.execPath, [f.launcher, "clone", azureUrl], { cwd: f.root,
+    env: f.env({ PAPERCLIP_GITHUB_BROKER_TOKEN: capability }) });
+  expect(f.requests[0]?.headers.authorization).toBe(`Bearer ${capability}`);
+  expect(f.requests[0]?.headers["x-paperclip-github-capability"]).toBeUndefined();
+});
+
 it("stops a denied Azure operation without falling back to the host credential store", async () => {
   const f = await fixture({ hostGitHub: true });
   f.setResponse(403, { error: `provider denied ${hostGithubCredential}` });
@@ -278,6 +287,12 @@ it("resolves a named remote after a shallow fetch option", async () => {
     env: f.env({ PAPERCLIP_TEST_REMOTE_MAP: JSON.stringify({ origin: azureUrl }) }) }).catch(error => error as Error & { code?: number });
   expect(result).toMatchObject({ code: 1 });
   expect(f.requests[0]?.body).toEqual({ repositoryUrl: azureUrl });
+});
+
+it("accepts an explicit GitHub URL after a shallow fetch option", async () => {
+  const f = await fixture({ hostGitHub: true });
+  await exec(process.execPath, [f.launcher, "fetch", "--depth", "1", githubUrl], { cwd: f.root, env: f.env() });
+  expect(f.requests).toEqual([]);
 });
 
 it("does not enable host GitHub mode from an environment variable alone", async () => {
