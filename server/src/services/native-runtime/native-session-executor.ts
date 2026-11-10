@@ -51,7 +51,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notificati
 import { writeExecutionControl } from "../execution-control-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { createRunUsageRecorder } from "../usage-receipts.js";
-import { registerPluginTaskCredentialHandoff, type PluginTaskCredentialWritebackBinding } from "../plugin-task-credential-writeback.js";
+import { syncPluginTaskCredentialHandoff, registerPluginTaskCredentialHandoff, type PluginTaskCredentialWritebackBinding } from "../plugin-task-credential-writeback.js";
 import { resolvePluginTaskResume } from "../environment-task-runtime.js";
 import { environmentTaskOperationSchema, environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
@@ -14885,7 +14885,20 @@ async function createRunnerdBackendWithinSessionClaim(
     const ownerInput: Parameters<typeof createPluginRunnerTaskOwner>[0] = { ...credentials, taskId: description.taskId,
       executionContext: input.executionContext?.pluginSupported ? input.executionContext : undefined,
       // Warm retirement can outlive the run's temporary credential home; complete uses the durable handoff.
-      onCredentials: input.execution.session.lifecyclePolicy.mode === "warm" ? undefined : credentials.onCredentials,
+      onCredentials: input.managedAiCredentialWriteback || input.execution.session.lifecyclePolicy.mode === "warm" ? undefined : credentials.onCredentials,
+      onCredentialsUpdated: event => appendNativeCredentialUpdate(input.db, {
+        companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+        normalizedSessionId: nativeSessionKey(input.execution),
+        runnerInstanceId: adoptionIdentity?.runnerInstanceId ?? prior?.runnerInstanceId ?? effectiveRunnerInstanceId,
+        event,
+        synchronizeCredentials: event.payload.provider === "codex" ? () => syncPluginTaskCredentialHandoff(input.db, {
+          companyId: input.execution.binding.companyId, leaseId: remoteTarget.leaseId!, expectedTaskId: description.taskId,
+        }, async accountIdentity => {
+          const snapshot = environmentTaskResultSchema.parse(await pluginTask({ kind: "credentials", accountIdentity }, { expectedTaskId: description.taskId }));
+          if (snapshot.kind !== "credentials") throw new Error("Plugin Runner credential snapshot unavailable");
+          return snapshot.credential;
+        }) : undefined,
+      }),
       warmTaskVersion: description.warmTaskVersion,
       releaseResumeVersion: description.releaseResumeVersion,
       authorityRunId: description.releaseResumeVersion === 1 ? input.execution.binding.runId : undefined,
@@ -14956,6 +14969,7 @@ async function createRunnerdBackendWithinSessionClaim(
         measureOperation: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? measureRunnerOperation : undefined,
         recordTimingReceipt: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? recordRunnerTimingReceipt : undefined,
         ...owner.driver, get authorityRunId() { return owner.driver.authorityRunId; }, runnerArtifact: input.controllerPersistence?.runnerArtifact ?? description.runner,
+        onCredentialsUpdated: event => owner.credentialsUpdated(event),
         controlPlaneRegistration: input.controllerPersistence ? async (authority, identity, signal) => {
           await nativeRunnerCheckpointRegistration({
             ...nativeRunnerCheckpointPersistence(input.db, input.controllerPersistence!.bootId,

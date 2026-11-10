@@ -9,6 +9,7 @@ export async function appendNativeCredentialUpdate(db: Db, input: {
   normalizedSessionId: string;
   runnerInstanceId: string;
   event: PrpEvent;
+  synchronizeCredentials?: () => Promise<unknown>;
 }): Promise<void> {
   const parsed = validatePrpEvent(input.event);
   if (!parsed.ok || parsed.event.eventType !== "auth.credentials.updated"
@@ -42,4 +43,5 @@ export async function appendNativeCredentialUpdate(db: Db, input: {
       },
     });
   });
+  await input.synchronizeCredentials?.();
 }

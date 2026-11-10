@@ -5208,3 +5208,21 @@ failure remains retryable even when the clone directory already exists. Later
 workspace saves retain repository coverage only for directories present in the
 captured archive. Deleted checkouts lose coverage and can be acquired again.
 A failed batch upload marks the affected repository rows as needing repair.
+
+### Plugin Runner credential refreshes
+
+Core handles PRP `auth.credentials.updated` notifications for plugin Runner tasks.
+After validating the company, agent, run, session, and Runner binding, it exports
+the selected Codex account through the task provider and writes newer credentials
+directly to the tenant secret. The durable lease handoff supplies grant, secret,
+version-selector, and session-epoch authority; no invocation temporary home is
+needed. A warm owner's handler rebinds with its current lease. Revoked grants and
+explicit reconnects cannot be overwritten by an old Runner refresh.
+
+The notification is acknowledged only after writeback succeeds or the generation
+is intentionally discarded. Failed exports or saves replay through PRP. Unchanged
+turns make no extra credential export request. The task provider must support
+account-bound exports while the task is running. Keep retirement writeback as the
+fallback for older Runners and interrupted sessions; its saved outcome records a
+rotation, unchanged credential, changed binding, undispatched task, or null export. No secrets
+are carried in PRP events or lease metadata.
