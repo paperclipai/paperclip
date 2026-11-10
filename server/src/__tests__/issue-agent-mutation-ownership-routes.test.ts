@@ -3167,6 +3167,30 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(reassign);
     });
 
+    it("accepts a deferred goal hand-off that confirms the stop", async () => {
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send({
+        ...reassign,
+        deferWakeForGoal: true,
+        confirmLiveRunStop: true,
+      });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(ownerRunId, "Cancelled before issue reassignment",
+        expect.objectContaining({ errorCode: "issue_reassigned" }));
+      expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(reassign);
+    });
+
+    it("still refuses a deferred goal hand-off that does not confirm the stop", async () => {
+      const res = await request(createApp(boardActor())).patch(`/api/issues/${issueId}`).send({
+        ...reassign,
+        deferWakeForGoal: true,
+      });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.code).toBe("live_run_active");
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    });
+
     it("accepts the reassignment without the flag when no run is live", async () => {
       mockHeartbeatService.getRun.mockResolvedValue({ ...liveRun, status: "succeeded" });
       mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);

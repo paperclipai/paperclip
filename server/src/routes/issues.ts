@@ -14915,6 +14915,7 @@ export function issueRoutes(
                 "assigneeAgentId",
                 "assigneeUserId",
                 "deferWakeForGoal",
+                "confirmLiveRunStop",
               ].includes(key),
           ))
       ) {

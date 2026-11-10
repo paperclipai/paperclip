@@ -78,7 +78,7 @@ Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId
 
 For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUID or the agent shortname/urlKey within the same company.
 
-Changing the assignee stops the issue's live run and keeps the tokens that run already spent. When a live run would be stopped, the update is refused with `409` and code `live_run_active` unless the request sets `confirmLiveRunStop: true`; the refusal stops no goal and cancels no run. The response carries `liveRunId` and `liveRunsPath` so the caller can read `GET /api/issues/{issueId}/live-runs` first. A request that also sets `interrupt: true` needs no flag, because it already asked for the run to stop.
+Changing the assignee stops the issue's live run and keeps the tokens that run already spent. When a live run would be stopped, the update is refused with `409` and code `live_run_active` unless the request sets `confirmLiveRunStop: true`; the refusal stops no goal and cancels no run. The response carries `liveRunId` and `liveRunsPath` so the caller can read `GET /api/issues/{issueId}/live-runs` first. A request that also sets `interrupt: true` needs no flag, because it already asked for the run to stop. A deferred goal hand-off (`deferWakeForGoal: true`) is an assignment-only update, so it must carry `confirmLiveRunStop: true` as well when a live run would be stopped.
 
 ```json
 {
