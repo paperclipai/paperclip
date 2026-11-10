@@ -3150,8 +3150,17 @@ these differences:
   cannot be compared keeps the rejection, for example
   `retirement_refused=runner_process_alive`. A later Retry checks again.
 
+A warm sandbox owner gets the same retirement when the next run starts in a
+new or replacement sandbox. A warm Runner stays `ready` in its own sandbox
+after its turn, so that the next turn can adopt it live. When a restart or
+deploy replaces its controller and the next run receives a different sandbox,
+nothing can adopt that Runner any more. Live adoption then steps aside, and
+admission applies the same checks as for a per-turn owner. The journal of a
+warm owner has no `runner.suspend` command. A local warm Runner and a resumed
+sandbox that still holds the Runner keep the live adoption path.
+
 The provider session then follows the normal resume-or-replace policy. A
-resumed sandbox, a warm session, a plugin task, a restart claim, or any
+resumed sandbox, a local warm session, a plugin task, a restart claim, or any
 missing proof keeps the existing `prior_owner_terminal_state_indeterminate`
 rejection. When admission attempted the retirement, the error names the first
 proof that failed, for example
@@ -3301,6 +3310,14 @@ no native result, no provider outcome
 is unknown. The completed copyback receipt then releases the hold for the stopped
 run's own agent as well, so the user's redirect continues once. The hold row and
 its evidence are unchanged.
+
+A run can restore a committed save and then fail before it saves anything else,
+for example before provider work after a restart. Its restore hold then may
+have no recovery receipt. When its saved reference names the exact snapshot
+that its own succeeded `remote_workspace_restore` loaded, at the same epoch, it
+left no unsaved files. A later continuation into another workspace skips that
+source instead of failing with `remote_workspace_recovery_receipt_invalid`. A
+source that saved any other snapshot still needs the canonical receipt.
 
 A queued turn for the same task that never started is not a workspace writer for
 automatic recovery. The hold gates its dispatch until the recovery receipt is
@@ -4548,7 +4565,17 @@ backup verification and provider resume checks still run; this refresh does
 not start a new provider session or declare a continuity break. A marker that
 already names the exact selected identity only rehydrates its own controller
 state. The existing retained-sandbox binding and suspended Runner read still
-govern that same-source resume. A current-run marker rehydrates only that run's
+govern that same-source resume.
+
+The Runner saves `suspended` and a terminal fence for its `runner.suspend`
+result before it sends that result. When a restart stops the controller first,
+the fence stays in the Runner state although the suspension finished. The
+suspended Runner read accepts this one fence: the fence names
+`runner.suspend` with lifecycle `suspended`, it is the Runner's last controller
+command, and the restored journal does not name that command differently. A
+later authorized Runner process reconciles the receipt. Any other fence, a
+provider cleanup, unsent events or a warm transition still fail with
+`native_controller_recovery_missing_evidence:runner_not_settled`. A current-run marker rehydrates only that run's
 own checkpoint before the existing bootstrap retry checks. A missing current
 checkpoint never selects an older turn instead.
 

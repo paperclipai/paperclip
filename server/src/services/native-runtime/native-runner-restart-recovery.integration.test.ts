@@ -644,10 +644,9 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         (controller as ReturnType<typeof spawn>).kill("SIGKILL");
         await exited;
         controller = undefined;
-        if (!resumedAfterSuspension) await expect(executePaperclipNativeSession({ ...nextOptions,
-          runnerExecutionTarget: { ...nextOptions.runnerExecutionTarget,
-            sandboxLeaseAcquisition: { outcome: "replacement", providerLeaseId: "unrelated-sandbox" } },
-        })).rejects.toThrow("prior_owner_terminal_state_indeterminate");
+        // A replacement sandbox would now retire this finished owner and start
+        // a new Runner (native-recovered-owner-followup.test.ts), which this
+        // continuity scenario must not do before resuming the same sandbox.
       }
       if (scenario === "legacy") {
         const checkpoints = resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner", "sessions");
