@@ -110,8 +110,10 @@ export function outageWindows(faults: readonly FaultReceipt[]): OutageWindow[] {
       const end = freeze?.serverExitedAfterThaw ? fault.healthyAt : freeze?.thawedAt ?? null;
       return freeze?.frozenAt !== undefined && end !== null && end > freeze.frozenAt ? [{ startedAt: freeze.frozenAt, readyAt: end }] : [];
     }
+    // MS3 stops the primary only once the second server is ready; the primary served until then.
     const ready = primaryRestartReadyAt(fault);
-    return ready === null ? [] : [{ startedAt: fault.startedAt, readyAt: ready }];
+    const stopping = multi.secondary?.readyAt ?? fault.startedAt;
+    return ready === null || ready <= stopping ? [] : [{ startedAt: stopping, readyAt: ready }];
   });
 }
 
@@ -350,6 +352,9 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
   const timing: Array<{ id: string; createdAt: number; finishedAt: number | null }> = [];
   const errors: string[] = [];
   const windows = outageWindows(faults);
+  // A freeze is downtime to remove, but only a restart makes a run a restart-phase run: a frozen-then-thawed
+  // primary (MS2) keeps its runs in their cold or warm budgets, with the freeze removed.
+  const restartWindows = outageWindows(faults.filter(fault => !fault.multiServer || primaryRestartReadyAt(fault) !== null));
   const storageWindows = storageFaultWindows(storageReceipts, now);
   const outage = { adjusted: 0, removedMs: 0, windows, storageWindows, storageRemovedMs: 0 };
   const perTask = tasks.map(task => {
@@ -370,7 +375,7 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
           errors.push(`${run.id}: ${error instanceof Error ? error.message : String(error)}`);
         }
         if (run.retryOfRunId && faultHit.has(run.retryOfRunId)) raw.phase = "restart";
-        if (faultBeforeFirstActivity(raw, windows, Date.parse(run.createdAt!))) raw.phase = "restart";
+        if (faultBeforeFirstActivity(raw, restartWindows, Date.parse(run.createdAt!))) raw.phase = "restart";
         // Stamp provider load starts from raw offsets before outage removal rewrites them.
         const stamped = stampProviderLoadStarts(raw);
         const restartOnly = withoutOutage(stamped, windows);
