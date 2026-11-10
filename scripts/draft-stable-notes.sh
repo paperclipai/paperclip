@@ -127,16 +127,8 @@ subjects="$(git -C "$repo_dir" log --no-merges --format='%s' "$range")"
 # subject line, so the skeleton is a genuinely thorough raw document at
 # creation time instead of a bare commit list. Prefers the PR template's
 # "What Changed" bullets, falls back to the first prose lines. Degrades
-# silently when gh, jq, or the network is unavailable (tests, offline runs);
+# silently when gh or the network is unavailable (tests, offline runs);
 # set DRAFT_NOTES_SKIP_PR_ENRICHMENT=1 to disable explicitly.
-#
-# A beta range can reference well over a thousand PRs, and one `gh pr view`
-# per PR does not finish inside the release job's timeout. The bodies are
-# fetched up front instead, PR_BATCH_SIZE per GraphQL query, into a cache
-# directory that enrich_pr reads. The raw response is parsed with jq rather
-# than `gh --jq`: when any number in a batch does not resolve to a PR, gh
-# exits non-zero and prints the unfiltered response, while the rest of the
-# batch's data is still usable.
 PR_BATCH_SIZE=50
 pr_cache=""
 
@@ -165,7 +157,7 @@ prefetch_pr_bodies() {
     [ -n "$pr_num" ] && pr_nums+=("$pr_num")
   done < <(printf '%s\n' "$subjects" | grep -oE '\(#[0-9]+\)$' | tr -dc '0-9\n' | sort -un || true)
   [ "${#pr_nums[@]}" -gt 0 ] || return 0
-  pr_cache="$(mktemp -d)"
+  pr_cache="$(mktemp -d)" || { pr_cache=""; return 0; }
   trap 'rm -rf "$pr_cache"' EXIT
   local start=0
   while [ "$start" -lt "${#pr_nums[@]}" ]; do

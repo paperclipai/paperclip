@@ -9,8 +9,6 @@ const repoRoot = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const script = join(repoRoot, "scripts", "draft-stable-notes.sh");
 const hasJq = spawnSync("jq", ["--version"]).status === 0;
 const needsJq = { skip: !hasJq && "jq is not installed" };
-// Range tests must not reach GitHub through a gh that happens to be
-// installed and authenticated on the machine running them.
 const offlineEnv = { ...process.env, DRAFT_NOTES_SKIP_PR_ENRICHMENT: "1" };
 
 function git(dir, ...args) {
@@ -46,11 +44,6 @@ function runDraft(dir, betaVersion, extraArgs = [], env = offlineEnv) {
   return { stdout, body: readFileSync(out, "utf8") };
 }
 
-// A fake gh that answers `gh api graphql` like GitHub: aliased PR lookups
-// resolve from `bodies` (a null body is a PR with an empty description),
-// and an unknown number comes back null with an error and a non-zero exit,
-// the way gh reports a partially failed query. Any other subcommand fails,
-// so a per-PR `gh pr view` fallback would show up as missing excerpts.
 function installFakeGh(dir, bodies, { unavailable = false, failBatchContaining = null } = {}) {
   const binDir = join(dir, "fake-bin");
   mkdirSync(binDir, { recursive: true });
@@ -241,7 +234,6 @@ test("fetches PR bodies in batched GraphQL queries, not one lookup per PR", need
 
   const { body } = runDraft(dir, "2026.100.0-beta.0", [], gh.env);
 
-  // 120 distinct PRs at 50 per query; the repeated #1000 is fetched once.
   const calls = gh.calls();
   assert.equal(calls.length, 3);
   for (const call of calls) assert.deepEqual(call.slice(0, 2), ["api", "graphql"]);
@@ -273,7 +265,6 @@ test("a failed batch drops only its own excerpts", needsJq, () => {
     bodies[pr] = whatChanged(`Summary of ${pr}`);
   }
   git(dir, "tag", "beta/v2026.100.0-beta.0");
-  // The second batch (#51-#60) fails outright.
   const gh = installFakeGh(dir, bodies, { failBatchContaining: 55 });
 
   const { body } = runDraft(dir, "2026.100.0-beta.0", [], gh.env);
@@ -282,6 +273,20 @@ test("a failed batch drops only its own excerpts", needsJq, () => {
   assert.match(body, /- fix: change 50 \(#50\)\n  > - Summary of 50\n/);
   assert.match(body, /- fix: change 51 \(#51\)\n- fix: change 50 \(#50\)/);
   assert.doesNotMatch(body, /Summary of 5[1-9]|Summary of 60/);
+});
+
+test("drafts without summaries when the PR cache cannot be created", needsJq, () => {
+  const dir = makeFixtureRepo();
+  commit(dir, "feat: plain work (#7)");
+  git(dir, "tag", "beta/v2026.100.0-beta.0");
+  const gh = installFakeGh(dir, { 7: whatChanged("Should not appear") });
+  writeFileSync(join(dir, "fake-bin", "mktemp"), "#!/usr/bin/env bash\nexit 1\n", { mode: 0o755 });
+
+  const { body } = runDraft(dir, "2026.100.0-beta.0", [], gh.env);
+
+  assert.equal(gh.calls().length, 0);
+  assert.match(body, /- feat: plain work \(#7\)\n/);
+  assert.doesNotMatch(body, /Should not appear/);
 });
 
 test("skeleton stays clean when enrichment is unavailable", () => {
