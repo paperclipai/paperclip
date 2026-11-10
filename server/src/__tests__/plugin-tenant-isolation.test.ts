@@ -525,4 +525,266 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
     expect(err).toBeInstanceOf(Error);
     expect((err as { cause?: { code?: string } }).cause?.code).toBe("23505");
   });
+
+  it("pluginRegistryService.listEntities scopes by companyId and scopeId — never returns another company's records", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const companyB = await seedCompany();
+
+    const registry = pluginRegistryService(db);
+
+    await registry.upsertEntity(pluginId, {
+      scopeKind: "company",
+      scopeId: companyA,
+      entityType: "lead",
+      externalId: "lead-1",
+      title: "Lead A",
+      status: "open",
+      data: { name: "Alice" },
+    });
+
+    await registry.upsertEntity(pluginId, {
+      scopeKind: "company",
+      scopeId: companyB,
+      entityType: "lead",
+      externalId: "lead-2",
+      title: "Lead B",
+      status: "open",
+      data: { name: "Bob" },
+    });
+
+    const listA = await registry.listEntities(pluginId, {
+      scopeKind: "company",
+      scopeId: companyA,
+    });
+    expect(listA).toHaveLength(1);
+    expect(listA[0]?.externalId).toBe("lead-1");
+    expect(listA[0]?.companyId).toBe(companyA);
+
+    const listB = await registry.listEntities(pluginId, {
+      scopeKind: "company",
+      scopeId: companyB,
+    });
+    expect(listB).toHaveLength(1);
+    expect(listB[0]?.externalId).toBe("lead-2");
+    expect(listB[0]?.companyId).toBe(companyB);
+  });
+
+  it("resolves and backfills legacy records with NULL company_id during list and upsert", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const registry = pluginRegistryService(db);
+
+    // Seed a legacy row where companyId is NULL, but scopeKind = 'company' and scopeId = companyA
+    await db.insert(pluginEntities).values({
+      pluginId,
+      companyId: null,
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "legacy-lead-1",
+      title: "Legacy Lead",
+      status: "open",
+      data: { name: "Legacy" },
+    });
+
+    // 1. Querying by companyId or scopeId should find the legacy row
+    const list = await registry.listEntities(pluginId, { companyId: companyA });
+    expect(list).toHaveLength(1);
+    expect(list[0]?.externalId).toBe("legacy-lead-1");
+
+    // 2. Querying by externalId with companyA should find the legacy row
+    const legacyByExt = await registry.getEntityByExternalId(pluginId, "lead", "legacy-lead-1", companyA);
+    expect(legacyByExt).not.toBeNull();
+    expect(legacyByExt?.externalId).toBe("legacy-lead-1");
+
+    // 3. Upserting the legacy row should update it and backfill companyId without creating duplicates
+    const updated = await registry.upsertEntity(pluginId, {
+      companyId: companyA,
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "legacy-lead-1",
+      title: "Legacy Lead Updated",
+      status: "qualified",
+      data: { name: "Legacy", updated: true },
+    });
+    expect(updated?.id).toBe(list[0]?.id);
+    expect(updated?.companyId).toBe(companyA);
+    expect(updated?.title).toBe("Legacy Lead Updated");
+
+    const all = await db.select().from(pluginEntities);
+    expect(all).toHaveLength(1);
+    expect(all[0]?.companyId).toBe(companyA);
+  });
+
+  it("buildHostServices entities.upsert and entities.list isolate entities between two companies", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const companyB = await seedCompany();
+
+    const services = buildHostServices(db, pluginId, "tenant-isolation-test", createEventBusStub());
+
+    // Company A upserts an entity with scopeKind company and scopeId companyA
+    await services.entities.upsert({
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "shared-lead",
+      title: "Lead A",
+      status: "open",
+      data: { name: "Alice" },
+    });
+
+    // Company B upserts an entity with the same externalId under companyB
+    await services.entities.upsert({
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyB,
+      externalId: "shared-lead",
+      title: "Lead B",
+      status: "qualified",
+      data: { name: "Bob" },
+    });
+
+    // Listing for companyA should return only Lead A
+    const listA = await services.entities.list({
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyA,
+    });
+    expect(listA).toHaveLength(1);
+    expect(listA[0]?.title).toBe("Lead A");
+    expect(listA[0]?.companyId).toBe(companyA);
+
+    // Listing for companyB should return only Lead B
+    const listB = await services.entities.list({
+      entityType: "lead",
+      scopeKind: "company",
+      scopeId: companyB,
+    });
+    expect(listB).toHaveLength(1);
+    expect(listB[0]?.title).toBe("Lead B");
+    expect(listB[0]?.companyId).toBe(companyB);
+  });
+  it("buildHostServices entities.list with companyId: null returns only instance-level entities and excludes company records", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const services = buildHostServices(db, pluginId, "tenant-isolation-test", createEventBusStub());
+
+    await services.entities.upsert({
+      entityType: "system-config",
+      scopeKind: "instance",
+      companyId: null,
+      externalId: "global-conf",
+      title: "Global Config",
+      status: "active",
+      data: { key: "global" },
+    });
+
+    await services.entities.upsert({
+      entityType: "system-config",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "company-conf",
+      title: "Company Config",
+      status: "active",
+      data: { key: "company" },
+    });
+
+    const instanceList = await services.entities.list({
+      entityType: "system-config",
+      companyId: null,
+    });
+    expect(instanceList).toHaveLength(1);
+    expect(instanceList[0]?.title).toBe("Global Config");
+    expect(instanceList[0]?.companyId).toBeNull();
+  });
+
+  it("0448 backfill migration merges conflicting legacy entities without unique key errors while preserving links", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const olderTime = new Date("2026-01-01T00:00:00Z");
+    const newerTime = new Date("2026-02-01T00:00:00Z");
+
+    // 1. Conflicting pair: legacy row (company_id = NULL) and company row (company_id = companyA)
+    // Legacy row is newer but has clientExternalId: null; target company row has the clientExternalId link
+    await db.insert(pluginEntities).values({
+      pluginId,
+      companyId: null,
+      entityType: "crm_request",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "req-conflict",
+      title: "Newer Legacy Title",
+      status: "open",
+      data: { paperclipIssueId: "issue-123", clientExternalId: null, legacyNote: "keep me" },
+      createdAt: olderTime,
+      updatedAt: newerTime,
+    });
+
+    await db.insert(pluginEntities).values({
+      pluginId,
+      companyId: companyA,
+      entityType: "crm_request",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "req-conflict",
+      title: "Older Target Title",
+      status: "in_progress",
+      data: { clientExternalId: "client-target-link", operatorComment: "older note" },
+      createdAt: olderTime,
+      updatedAt: olderTime,
+    });
+
+    // 2. Non-conflicting legacy row
+    await db.insert(pluginEntities).values({
+      pluginId,
+      companyId: null,
+      entityType: "crm_request",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "req-non-conflict",
+      title: "Non-conflict Request",
+      status: "open",
+      data: { clientExternalId: "client-456" },
+      createdAt: olderTime,
+      updatedAt: olderTime,
+    });
+
+    // Execute the migration statements from 0448
+    const migrationSql = await (await import("node:fs/promises")).readFile(
+      new URL("../../../packages/db/src/migrations/0448_backfill_plugin_entities_company_id.sql", import.meta.url),
+      "utf8",
+    );
+    const statements = migrationSql.split(/-->\s*statement-breakpoint/g).map(s => s.trim()).filter(Boolean);
+    for (const stmt of statements) {
+      await (db as any).execute(stmt);
+    }
+
+    // Verify no NULL company_id remains for company scope
+    const allRows = await db.select().from(pluginEntities).where(eq(pluginEntities.pluginId, pluginId));
+    expect(allRows).toHaveLength(2);
+    expect(allRows.every(r => r.companyId === companyA)).toBe(true);
+
+    // Verify conflicting entity merged properly: preserved links and newer edits
+    const merged = allRows.find(r => r.externalId === "req-conflict");
+    expect(merged).toBeDefined();
+    expect(merged?.title).toBe("Newer Legacy Title");
+    expect(merged?.status).toBe("open");
+    expect(merged?.data).toMatchObject({
+      paperclipIssueId: "issue-123",
+      clientExternalId: "client-target-link",
+      legacyNote: "keep me",
+      operatorComment: "older note",
+    });
+
+    // Verify non-conflicting entity was backfilled
+    const nonConflict = allRows.find(r => r.externalId === "req-non-conflict");
+    expect(nonConflict).toBeDefined();
+    expect(nonConflict?.companyId).toBe(companyA);
+    expect(nonConflict?.data).toMatchObject({
+      clientExternalId: "client-456",
+    });
+  });
 });

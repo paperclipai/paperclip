@@ -306,6 +306,8 @@ export interface PluginEntityUpsert {
   scopeKind: PluginStateScopeKind;
   /** Optional scope ID. */
   scopeId?: string;
+  /** Optional company scope ID. */
+  companyId?: string | null;
   /** External identifier in the remote system (e.g. Linear issue ID). */
   externalId?: string;
   /** Human-readable title for display in the Paperclip UI. */
@@ -324,6 +326,8 @@ export interface PluginEntityUpsert {
 export interface PluginEntityRecord {
   /** UUID primary key. */
   id: string;
+  /** Company ID, if any. */
+  companyId?: string | null;
   /** Plugin-defined entity type. */
   entityType: string;
   /** Scope kind. */
@@ -348,6 +352,8 @@ export interface PluginEntityRecord {
  * Query parameters for `ctx.entities.list()`.
  */
 export interface PluginEntityQuery {
+  /** Filter by company ID. */
+  companyId?: string | null;
   /** Filter by entity type. */
   entityType?: string;
   /** Filter by scope kind. */
@@ -702,6 +708,23 @@ export interface PluginHttpClient {
  *
  * @see PLUGIN_SPEC.md §22 — Secrets
  */
+export interface PluginSecretVerifySignatureParams {
+  /** Shared secret reference object from company-scoped plugin config. */
+  secretRef: string | EnvSecretRefBinding;
+  /** Company ID that owns the secret binding. */
+  companyId?: string;
+  /** Config path that produced this ref. */
+  configPath?: string;
+  /** Data to verify against the signature. */
+  data: string;
+  /** Signature or list of acceptable signatures. */
+  signature: string | string[];
+  /** HMAC algorithm to use (defaults to "sha256"). */
+  algorithm?: "sha256";
+  /** Signature digest encoding (defaults to "hex"). */
+  encoding?: "hex" | "base64";
+}
+
 export interface PluginSecretsClient {
   /**
    * Resolve a secret reference to its current value.
@@ -719,6 +742,10 @@ export interface PluginSecretsClient {
     secretRef: string | EnvSecretRefBinding,
     options?: { companyId?: string; configPath?: string },
   ): Promise<string>;
+  /**
+   * Verify an HMAC signature against a secret reference without exposing the secret to the worker.
+   */
+  verifySignature(params: PluginSecretVerifySignatureParams): Promise<boolean>;
 }
 
 /**

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { createIssueThreadInteractionSchema, pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import type {
   PaperclipPluginManifestV1,
@@ -957,6 +957,30 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         requireCapability(manifest, capabilitySet, "secrets.read-ref");
         return `resolved:${secretRef}`;
       },
+      async verifySignature(params) {
+        requireCapability(manifest, capabilitySet, "secrets.read-ref");
+        const secret = await this.resolve(params.secretRef, {
+          companyId: params.companyId,
+          configPath: params.configPath,
+        });
+        const algorithm = params.algorithm ?? "sha256";
+        const encoding = params.encoding ?? "hex";
+        const computed = createHmac(algorithm, secret)
+          .update(params.data)
+          .digest();
+        const signatures = Array.isArray(params.signature) ? params.signature : [params.signature];
+        return signatures.some((sig) => {
+          try {
+            const trimmed = sig.trim();
+            if (encoding === "hex" && !/^[0-9a-fA-F]+$/.test(trimmed)) return false;
+            const sigBuf = Buffer.from(trimmed, encoding);
+            if (computed.length !== sigBuf.length) return false;
+            return timingSafeEqual(computed, sigBuf);
+          } catch {
+            return false;
+          }
+        });
+      },
     },
     activity: {
       async log(entry) {
@@ -985,6 +1009,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           : null;
         const existingId = externalKey ? entityExternalIndex.get(externalKey) : undefined;
         const existing = existingId ? entities.get(existingId) : undefined;
+        const recordCompanyId = input.companyId !== undefined ? input.companyId : (input.scopeKind === "company" && input.scopeId ? input.scopeId : null);
         const now = new Date().toISOString();
         const previousExternalKey = existing?.externalId
           ? `${existing.entityType}|${existing.scopeKind}|${existing.scopeId ?? ""}|${existing.externalId}`
@@ -992,6 +1017,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const record: PluginEntityRecord = existing
           ? {
             ...existing,
+            companyId: recordCompanyId !== undefined ? recordCompanyId : (existing.companyId ?? null),
             entityType: input.entityType,
             scopeKind: input.scopeKind,
             scopeId: input.scopeId ?? null,
@@ -1003,6 +1029,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           }
           : {
             id: randomUUID(),
+            companyId: recordCompanyId,
             entityType: input.entityType,
             scopeKind: input.scopeKind,
             scopeId: input.scopeId ?? null,
@@ -1023,6 +1050,11 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       async list(query) {
         let out = [...entities.values()];
         if (query.entityType) out = out.filter((r) => r.entityType === query.entityType);
+        if (query.companyId !== undefined) {
+          out = out.filter((r) => query.companyId === null ? r.companyId === null : r.companyId === query.companyId || (r.scopeKind === "company" && r.scopeId === query.companyId));
+        } else if (query.scopeKind === "company" && query.scopeId) {
+          out = out.filter((r) => r.companyId === query.scopeId || (r.scopeKind === "company" && r.scopeId === query.scopeId));
+        }
         if (query.scopeKind) out = out.filter((r) => r.scopeKind === query.scopeKind);
         if (query.scopeId) out = out.filter((r) => r.scopeId === query.scopeId);
         if (query.externalId) out = out.filter((r) => r.externalId === query.externalId);

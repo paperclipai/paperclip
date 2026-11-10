@@ -1715,6 +1715,7 @@ export interface WorkerToHostMethods {
       entityType: string;
       scopeKind: PluginStateScopeKind;
       scopeId?: string;
+      companyId?: string | null;
       externalId?: string;
       title?: string;
       status?: string;
@@ -1722,6 +1723,7 @@ export interface WorkerToHostMethods {
     },
     result: {
       id: string;
+      companyId?: string | null;
       entityType: string;
       scopeKind: PluginStateScopeKind;
       scopeId: string | null;
@@ -1738,12 +1740,14 @@ export interface WorkerToHostMethods {
       entityType?: string;
       scopeKind?: PluginStateScopeKind;
       scopeId?: string;
+      companyId?: string | null;
       externalId?: string;
       limit?: number;
       offset?: number;
     },
     result: Array<{
       id: string;
+      companyId?: string | null;
       entityType: string;
       scopeKind: PluginStateScopeKind;
       scopeId: string | null;
@@ -1778,6 +1782,18 @@ export interface WorkerToHostMethods {
   "secrets.resolve": [
     params: { secretRef: string | EnvSecretRefBinding; companyId?: string; configPath?: string },
     result: string,
+  ];
+  "secrets.verifySignature": [
+    params: {
+      secretRef: string | EnvSecretRefBinding;
+      companyId?: string;
+      configPath?: string;
+      data: string;
+      signature: string | string[];
+      algorithm?: "sha256";
+      encoding?: "hex" | "base64";
+    },
+    result: boolean,
   ];
 
   // Activity

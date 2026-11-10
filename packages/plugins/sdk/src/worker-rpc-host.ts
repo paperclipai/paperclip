@@ -674,6 +674,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             configPath: options.configPath,
           });
         },
+        async verifySignature(params): Promise<boolean> {
+          return callHost("secrets.verifySignature", params);
+        },
       },
 
       activity: {
@@ -724,6 +727,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             entityType: input.entityType,
             scopeKind: input.scopeKind,
             scopeId: input.scopeId,
+            companyId: input.companyId !== undefined ? input.companyId : (input.scopeKind === "company" && input.scopeId ? input.scopeId : undefined),
             externalId: input.externalId,
             title: input.title,
             status: input.status,
@@ -736,6 +740,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             entityType: query.entityType,
             scopeKind: query.scopeKind,
             scopeId: query.scopeId,
+            companyId: query.companyId !== undefined ? query.companyId : (query.scopeKind === "company" && query.scopeId ? query.scopeId : undefined),
             externalId: query.externalId,
             limit: query.limit,
             offset: query.offset,

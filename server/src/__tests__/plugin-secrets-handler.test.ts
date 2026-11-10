@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -209,5 +209,168 @@ describeEmbeddedPostgres("createPluginSecretsHandler shared vault integration", 
       .from(secretAccessEvents)
       .where(eq(secretAccessEvents.secretId, foreignSecret.id));
     expect(events).toHaveLength(0);
+  });
+
+  it("verifies signatures and does not consume resolution rate limit on invalid deliveries", async () => {
+    await seedPlugin();
+    const companyId = await seedCompany("Webhook Co");
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `webhook-secret-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "super-secret-key",
+    });
+    await svc.syncSecretRefsForTarget(companyId, { targetType: "plugin", targetId: pluginId }, [
+      { secretId: secret.id, configPath: "apiKey" },
+    ], { replaceAll: true });
+
+    const handler = createPluginSecretsHandler({ db, pluginId });
+    const payload = '{"hello":"world"}';
+    const validSignature = createHmac("sha256", "super-secret-key").update(payload).digest("hex");
+
+    // Valid signature verification succeeds (both lowercase and uppercase hex)
+    await expect(
+      handler.verifySignature({
+        companyId,
+        secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        data: payload,
+        signature: validSignature,
+      }),
+    ).resolves.toBe(true);
+
+    await expect(
+      handler.verifySignature({
+        companyId,
+        secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        data: payload,
+        signature: validSignature.toUpperCase(),
+        encoding: "hex",
+      }),
+    ).resolves.toBe(true);
+
+    // 35 invalid delivery attempts do not exhaust resolution allowance
+    for (let i = 0; i < 35; i++) {
+      const valid = await handler.verifySignature({
+        companyId,
+        secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        data: payload,
+        signature: `invalid-sig-${i}`,
+      });
+      expect(valid).toBe(false);
+    }
+
+    // Both verification and secret resolution still succeed
+    await expect(
+      handler.verifySignature({
+        companyId,
+        secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        data: payload,
+        signature: validSignature,
+      }),
+    ).resolves.toBe(true);
+
+    await expect(
+      handler.resolve({
+        companyId,
+        secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+      }),
+    ).resolves.toBe("super-secret-key");
+  });
+
+  it("verifies signatures against rotated secrets immediately", async () => {
+    await seedPlugin();
+    const companyId = await seedCompany("Rotate Co");
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `rotate-secret-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "initial-secret",
+    });
+    await svc.syncSecretRefsForTarget(companyId, { targetType: "plugin", targetId: pluginId }, [
+      { secretId: secret.id, configPath: "apiKey" },
+    ], { replaceAll: true });
+
+    const handler = createPluginSecretsHandler({ db, pluginId });
+    const payload = '{"rotate":true}';
+    const initialSig = createHmac("sha256", "initial-secret").update(payload).digest("hex");
+
+    await expect(
+      handler.verifySignature({
+        companyId,
+        secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        data: payload,
+        signature: initialSig,
+      }),
+    ).resolves.toBe(true);
+
+    // Rotate secret
+    await svc.rotate(secret.id, { value: "rotated-secret" });
+    const rotatedSig = createHmac("sha256", "rotated-secret").update(payload).digest("hex");
+
+    // Old signature fails; new signature succeeds immediately
+    await expect(
+      handler.verifySignature({
+        companyId,
+        secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        data: payload,
+        signature: initialSig,
+      }),
+    ).resolves.toBe(false);
+
+    await expect(
+      handler.verifySignature({
+        companyId,
+        secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        data: payload,
+        signature: rotatedSig,
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it("enforces dedicated verification attempt budget and stops resolving secrets after budget is exhausted", async () => {
+    await seedPlugin();
+    const companyId = await seedCompany("Budget Co");
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `budget-secret-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "budget-key",
+    });
+    await svc.syncSecretRefsForTarget(companyId, { targetType: "plugin", targetId: pluginId }, [
+      { secretId: secret.id, configPath: "apiKey" },
+    ], { replaceAll: true });
+
+    const handler = createPluginSecretsHandler({ db, pluginId, maxVerifyAttempts: 5 });
+    const payload = '{"test":true}';
+
+    // 5 attempts allowed
+    for (let i = 0; i < 5; i++) {
+      await expect(
+        handler.verifySignature({
+          companyId,
+          secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+          data: payload,
+          signature: `sig-${i}`,
+        }),
+      ).resolves.toBe(false);
+    }
+
+    // 6th attempt exceeds rate limit
+    await expect(
+      handler.verifySignature({
+        companyId,
+        secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        data: payload,
+        signature: "sig-6",
+      }),
+    ).rejects.toThrow(/Rate limit exceeded for webhook signature verification/i);
+
+    // Resolve allowance is untouched and still works
+    await expect(
+      handler.resolve({
+        companyId,
+        secretRef: { type: "secret_ref", secretId: secret.id, version: "latest" },
+      }),
+    ).resolves.toBe("budget-key");
   });
 });

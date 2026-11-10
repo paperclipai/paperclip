@@ -150,12 +150,16 @@ export interface HostServices {
     fetch(params: WorkerToHostMethods["http.fetch"][0]): Promise<WorkerToHostMethods["http.fetch"][1]>;
   };
 
-  /** Provides `secrets.resolve`. */
+  /** Provides `secrets.resolve` and `secrets.verifySignature`. */
   secrets: {
     resolve(
       params: WorkerToHostMethods["secrets.resolve"][0],
       context?: WorkerHostCallContext,
     ): Promise<string>;
+    verifySignature?(
+      params: WorkerToHostMethods["secrets.verifySignature"][0],
+      context?: WorkerHostCallContext,
+    ): Promise<boolean>;
   };
 
   /** Provides `activity.log`. */
@@ -419,6 +423,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
 
   // Secrets
   "secrets.resolve": "secrets.read-ref",
+  "secrets.verifySignature": "secrets.read-ref",
 
   // Activity
   "activity.log": "activity.log.write",
@@ -793,6 +798,13 @@ export function createHostClientHandlers(
     "secrets.resolve": gated("secrets.resolve", async (params, context) => {
       const companyId = resolveRequiredCompanyId("secrets.resolve", params, context);
       return services.secrets.resolve({ ...params, companyId }, context);
+    }),
+    "secrets.verifySignature": gated("secrets.verifySignature", async (params, context) => {
+      const companyId = resolveRequiredCompanyId("secrets.verifySignature", params, context);
+      if (!services.secrets.verifySignature) {
+        throw new Error("secrets.verifySignature is not supported by this host");
+      }
+      return services.secrets.verifySignature({ ...params, companyId }, context);
     }),
 
     // Activity

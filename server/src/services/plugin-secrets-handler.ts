@@ -3,6 +3,7 @@
  * `secret_ref` config bindings only with an explicit company context.
  */
 
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companySecretBindings } from "@paperclipai/db";
@@ -166,10 +167,28 @@ export interface PluginSecretsResolveParams {
 export interface PluginSecretsHandlerOptions {
   db: Db;
   pluginId: string;
+  maxResolveAttempts?: number;
+  maxVerifyAttempts?: number;
+  rateLimitWindowMs?: number;
+}
+
+export interface PluginSecretsVerifyParams {
+  secretRef: string | EnvSecretRefBinding;
+  companyId?: string;
+  configPath?: string;
+  data: string;
+  signature: string | string[];
+  algorithm?: "sha256";
+  encoding?: "hex" | "base64";
+  actorType?: "agent" | "user" | "system" | "plugin";
+  actorId?: string | null;
+  issueId?: string | null;
+  heartbeatRunId?: string | null;
 }
 
 export interface PluginSecretsService {
   resolve(params: PluginSecretsResolveParams): Promise<string>;
+  verifySignature(params: PluginSecretsVerifyParams): Promise<boolean>;
 }
 
 function createRateLimiter(maxAttempts: number, windowMs: number) {
@@ -192,7 +211,12 @@ export function createPluginSecretsHandler(
   options: PluginSecretsHandlerOptions,
 ): PluginSecretsService {
   const { db, pluginId } = options;
-  const rateLimiter = createRateLimiter(30, 60_000);
+  const maxResolveAttempts = options.maxResolveAttempts ?? 30;
+  const maxVerifyAttempts = options.maxVerifyAttempts ?? 120;
+  const windowMs = options.rateLimitWindowMs ?? 60_000;
+
+  const resolveRateLimiter = createRateLimiter(maxResolveAttempts, windowMs);
+  const verifyRateLimiter = createRateLimiter(maxVerifyAttempts, windowMs);
 
   async function lookupBinding(input: {
     companyId: string;
@@ -230,7 +254,7 @@ export function createPluginSecretsHandler(
 
       const companyId = requireCompanyId(params.companyId);
 
-      if (!rateLimiter.check(`${companyId}:${pluginId}`)) {
+      if (!resolveRateLimiter.check(`${companyId}:${pluginId}`)) {
         const err = new Error("Rate limit exceeded for secret resolution");
         err.name = "RateLimitExceededError";
         throw err;
@@ -279,6 +303,87 @@ export function createPluginSecretsHandler(
           heartbeatRunId: params.heartbeatRunId ?? null,
           pluginId,
         },
+      });
+    },
+
+    async verifySignature(params: PluginSecretsVerifyParams): Promise<boolean> {
+      if (typeof params.secretRef === "string") {
+        throw invalidSecretRef(params.secretRef.trim() || "<empty>");
+      }
+
+      const bindingRef = parseSecretRefBinding(params.secretRef);
+      if (!bindingRef) throw invalidSecretRef(params.secretRef);
+
+      const companyId = requireCompanyId(params.companyId);
+
+      if (!verifyRateLimiter.check(`${companyId}:${pluginId}`)) {
+        const err = new Error("Rate limit exceeded for webhook signature verification");
+        err.name = "RateLimitExceededError";
+        throw err;
+      }
+
+      const versionSelector = bindingRef.version ?? "latest";
+      const bindings = await lookupBinding({
+        companyId,
+        secretId: bindingRef.secretId,
+        versionSelector,
+        configPath: params.configPath,
+      });
+
+      if (bindings.length === 0) {
+        throw unprocessable(
+          `Secret is not bound to plugin:${pluginId}${params.configPath ? ` at ${params.configPath}` : ""}`,
+          { code: "binding_missing" },
+        );
+      }
+      if (bindings.length > 1) {
+        throw unprocessable(
+          "Plugin secret reference is ambiguous; pass configPath when resolving this secret",
+          { code: "binding_ambiguous" },
+        );
+      }
+
+      const binding = bindings[0]!;
+      const secretValue = await secretService(db).resolveSecretValue(companyId, bindingRef.secretId, versionSelector, {
+        bindingContext: {
+          consumerType: "plugin",
+          consumerId: pluginId,
+          configPath: binding.configPath,
+          actorType: params.actorType ?? "plugin",
+          actorId: params.actorId ?? pluginId,
+          issueId: params.issueId ?? null,
+          heartbeatRunId: params.heartbeatRunId ?? null,
+          pluginId,
+        },
+        accessContext: {
+          consumerType: "plugin_worker",
+          consumerId: pluginId,
+          configPath: binding.configPath,
+          actorType: params.actorType ?? "plugin",
+          actorId: params.actorId ?? pluginId,
+          issueId: params.issueId ?? null,
+          heartbeatRunId: params.heartbeatRunId ?? null,
+          pluginId,
+        },
+      });
+
+      const algorithm = params.algorithm ?? "sha256";
+      const encoding = params.encoding ?? "hex";
+      const computed = createHmac(algorithm, secretValue)
+        .update(params.data)
+        .digest();
+
+      const signatures = Array.isArray(params.signature) ? params.signature : [params.signature];
+      return signatures.some((sig) => {
+        try {
+          const trimmed = sig.trim();
+          if (encoding === "hex" && !/^[0-9a-fA-F]+$/.test(trimmed)) return false;
+          const sigBuf = Buffer.from(trimmed, encoding);
+          if (computed.length !== sigBuf.length) return false;
+          return timingSafeEqual(computed, sigBuf);
+        } catch {
+          return false;
+        }
       });
     },
   };
