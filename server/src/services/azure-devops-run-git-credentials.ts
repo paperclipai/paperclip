@@ -14,7 +14,7 @@ import { canBrowseProjectRepositoryGrant } from "./project-repositories.js";
 
 /** Resolve only the run's own connection and verify the exact remote with Azure. */
 export async function resolveAzureDevOpsRunGitCredentials(
-  db: Db, input: { companyId: string; runId: string; agentId: string; repoUrl: string; projectId?: string },
+  db: Db, input: { companyId: string; runId: string; agentId: string; repoUrl: string; projectId?: string; expectedRepositoryId?: string },
   deps: { request?: (url: string, init: RequestInit) => Promise<Response> } = {},
 ) {
   const unavailable = () => forbidden("Azure DevOps repository authorization is unavailable. Reconnect an authorized account.");
@@ -61,7 +61,8 @@ export async function resolveAzureDevOpsRunGitCredentials(
     return [...new Map(selected.map((row) => [row.grant.id, row])).values()];
   };
   const unique = await eligibleGrants();
-  let expectedRepositoryId: string | null = null;
+  let expectedRepositoryId: string | null = input.expectedRepositoryId ?? null;
+  if (expectedRepositoryId && !expectedRepositoryId.startsWith(`azure-devops:${org}:`)) throw unavailable();
   const selectGrant = async (available = unique, forceConsent = false) => {
     if (available.length === 1 && !forceConsent && !input.projectId) return available[0]!;
     if (!available.length) throw unavailable();

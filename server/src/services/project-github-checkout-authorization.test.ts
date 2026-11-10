@@ -79,6 +79,14 @@ describe("project GitHub checkout authorization", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it("allows multiple workspace rows with the same repository identity", async () => {
+    const workspace = { repoUrl: input.repoUrl, metadata: { repositoryProvider: "github", repositoryId: "123" } };
+    const { db } = checkoutDb([[workspace, workspace], [workspace, workspace]]);
+    const resolve = vi.fn().mockResolvedValue(available());
+    const request = vi.fn().mockResolvedValue(liveRepositoryResponse(123)) as unknown as typeof fetch;
+    await expect(authorizeProjectGitHubCheckout(db, input, resolve, request)).resolves.toMatchObject({ grantId: "grant-test" });
+  });
+
   it("checks a URL-only workspace against the live grant catalog and GitHub", async () => {
     const workspace = { repoUrl: input.repoUrl, metadata: null };
     const { db } = checkoutDb([[workspace], [workspace]]);

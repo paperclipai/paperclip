@@ -32,11 +32,11 @@ export function projectForAzureRepository(repositoryUrl: string, bindings: Azure
 /** Revalidate an admitted task repository when it has no project repository binding. */
 export async function projectForAzureRuntimeRepository(db: Db, input: {
   companyId: string; agentId: string; runId: string; repositoryUrl: string; bindings: AzureProjectRepositoryBinding[] | undefined;
-}): Promise<string | undefined> {
+}): Promise<{ projectId?: string; expectedRepositoryId?: string }> {
   const { repositoryUrl, bindings } = input;
   const canonical = azureDevOpsGitInvocation(repositoryUrl, { kind: 'pat', token: 'validation' }).repositoryAuthority!.url.toLowerCase();
   if (!bindings || bindings.some(binding => binding.repositoryUrl.toLowerCase() === canonical)) {
-    return projectForAzureRepository(repositoryUrl, bindings);
+    return { projectId: projectForAzureRepository(repositoryUrl, bindings) };
   }
   const unavailable = () => forbidden('Azure DevOps repository is not authorized for this run.');
   const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
@@ -49,11 +49,12 @@ export async function projectForAzureRuntimeRepository(db: Db, input: {
     eq(executionWorkspaceRepositories.companyId, input.companyId),
     eq(executionWorkspaceRepositories.executionWorkspaceId, issue.executionWorkspaceId),
     eq(executionWorkspaceRepositories.requestedByIssueId, issueId), eq(executionWorkspaceRepositories.state, 'ready')));
-  const admitted = rows.some(row => {
+  const admitted = rows.filter(row => {
     if (!row.catalogRepositoryId?.startsWith('azure-devops:') || !row.pinnedCommit) return false;
     try { return azureDevOpsGitInvocation(row.repoUrl, { kind: 'pat', token: 'validation' }).repositoryAuthority!.url.toLowerCase() === canonical; }
     catch { return false; }
   });
-  if (!admitted) throw unavailable();
-  return undefined;
+  const ids = [...new Set(admitted.map(row => row.catalogRepositoryId!))];
+  if (ids.length !== 1) throw unavailable();
+  return { expectedRepositoryId: ids[0] };
 }

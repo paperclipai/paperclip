@@ -27,6 +27,7 @@ const fakeGit = `#!${process.execPath}
 const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const args = process.argv.slice(2);
+if (args.includes('ls-remote') && args.includes('--get-url')) { process.stdout.write(args[args.length - 1]); process.exit(0); }
 if (args.includes('symbolic-ref')) {
   process.stdout.write(process.env.PAPERCLIP_TEST_BRANCH || '');
   process.exit(process.env.PAPERCLIP_TEST_BRANCH ? 0 : 1);
@@ -244,6 +245,12 @@ it("resolves the configured push destination before using host credentials", asy
   expect(result).toMatchObject({ code: 1 });
   expect(f.requests[0]?.body).toEqual({ repositoryUrl: azureUrl });
   await expect(readFile(f.capture, "utf8")).rejects.toThrow();
+});
+
+it("accepts an explicit non-Azure URL without contacting the Azure broker", async () => {
+  const f = await fixture({ hostGitHub: true });
+  await exec(process.execPath, [f.launcher, "ls-remote", githubUrl], { cwd: f.root, env: f.env() });
+  expect(f.requests).toEqual([]);
 });
 
 it("does not enable host GitHub mode from an environment variable alone", async () => {

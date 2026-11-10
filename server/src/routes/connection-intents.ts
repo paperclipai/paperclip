@@ -87,11 +87,11 @@ export function runtimeConnectionIntentRoutes(db: Db) {
       throw forbidden("Git repository authorization is unavailable");
     const binding = { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id,
       repositoryUrl: body.repositoryUrl, bindings: claims.azure_project_repositories };
-    const projectId = await projectForAzureRuntimeRepository(db, binding);
+    const authority = await projectForAzureRuntimeRepository(db, binding);
     const result = await resolveAzureDevOpsRunGitCredentials(db, {
-      companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id, repoUrl: body.repositoryUrl, projectId,
+      companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id, repoUrl: body.repositoryUrl, ...authority,
     });
-    if (projectId !== await projectForAzureRuntimeRepository(db, binding)) throw forbidden("Git repository authorization is unavailable");
+    if (JSON.stringify(authority) !== JSON.stringify(await projectForAzureRuntimeRepository(db, binding))) throw forbidden("Git repository authorization is unavailable");
     res.setHeader("Cache-Control", "no-store");
     res.json({ status: "available", env: result.env });
   });
