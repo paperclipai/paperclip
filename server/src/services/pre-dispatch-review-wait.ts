@@ -24,15 +24,18 @@ const staleDispatchReconciliationExemptions = {
   // This code requires its own executionWait receipt in pre-dispatch-execution-wait.ts.
   execution_reconciliation_required: false,
 } satisfies Record<QueuedRunStalenessErrorCode, boolean>;
-const staleDispatchErrorCodes = Object.entries(staleDispatchReconciliationExemptions)
-  .filter(([, exempt]) => exempt).map(([errorCode]) => errorCode);
+const dispatchCancellationErrorCodes = [
+  ...Object.entries(staleDispatchReconciliationExemptions)
+    .filter(([, exempt]) => exempt).map(([errorCode]) => errorCode),
+  "queued_comment_discarded",
+];
 
 /** A dispatch cancellation is not an interrupted provider attempt. Historical
  * rows need no new receipt, but every retained execution reference must agree. */
 export function neverStartedDispatchCancellationPredicate() {
   return and(
     eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.status, "cancelled"),
-    inArray(heartbeatRuns.errorCode, staleDispatchErrorCodes),
+    inArray(heartbeatRuns.errorCode, dispatchCancellationErrorCodes),
     isNotNull(heartbeatRuns.finishedAt),
     noRetainedExecutionPredicate(),
   );
@@ -70,7 +73,7 @@ export function isPreDispatchReviewWait(
  * checked against the same evidence that gates explicit user admission. */
 export async function isPreDispatchReviewWaitVerified(db: Db, run: Run): Promise<boolean> {
   if (run.runtimeMode === "legacy" && run.status === "cancelled" && run.finishedAt !== null &&
-      staleDispatchErrorCodes.some(errorCode => errorCode === run.errorCode) &&
+      dispatchCancellationErrorCodes.some(errorCode => errorCode === run.errorCode) &&
       [run.startedAt, run.runtimeModeResolvedAt, run.processPid, run.processGroupId, run.processStartedAt,
         run.nativeIssueId, run.nativeSessionId, run.sessionIdAfter, run.controllerBootId,
         run.controllerLeaseExpiresAt, run.executionStage].every(value => value === null) &&
