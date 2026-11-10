@@ -532,8 +532,11 @@ retain the existing refresh fallback. Run transitions, activity events, and
 reconnect recovery still refresh their affected data.
 
 Task run queries stop interval polling only after a successful empty response
-and an open shared live connection for the current company and session. Initial
-reads, active work, errors, connection setup, and disconnections retain their
+and an open shared live connection for the current company and session. With
+that connection open, a successful active response (a run list or one run)
+polls only every 15 seconds. Lifecycle and progress events keep it current; the
+slow read only bounds drift in fields that have no event. Initial reads,
+unrecognized data, errors, connection setup, and disconnections retain their
 existing polling cadence. Company or session changes require a new connection.
 Views without an assigned agent retain polling. Matching run lifecycle events
 refresh the displayed task's run queries independently of route and window
@@ -545,6 +548,18 @@ request settles. Connection readiness also reconciles the displayed run
 queries after any older request. Follow-up reads belong to the current mounted
 scope and stop when it changes or unmounts. The first open and reconnect still
 reconcile missed events.
+
+Live events refresh company-wide lists and projections through a slower
+invalidation lane. These are task lists and summaries, the agent list, run
+lists, badges, the dashboard, costs and the company activity feed. The lane
+flushes at most once every 5 seconds. After 5 quiet seconds, an event refreshes
+them after the normal batch interval. An event inside the 5-second window waits
+until the window ends. Task detail, comments, runs, browsers and other
+per-entity queries keep the fast lane. A task's browser list stops interval
+polling while the live connection is open and no browser can still change
+state. Browser lifecycle activity on that task refreshes it. If a browser read
+is in flight, one shared follow-up read runs after it settles. A list that no
+view observes becomes stale, so the next view reads it.
 
 Bundled skill release checks read the current stored version ID and a SHA-256
 fingerprint of its file inventory. A per-database memo keeps at most 64 verified
