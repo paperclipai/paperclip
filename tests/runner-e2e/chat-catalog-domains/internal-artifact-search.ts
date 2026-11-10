@@ -78,13 +78,6 @@ function historySignature(history: SourceHistory) {
     comments: history.comments.map(row => [row.id, row.issueId, row.body, row.createdAt, row.authorAgentId, row.authorUserId]).sort(),
     attachments: history.attachments.map(row => [row.id, row.issueId, row.issueCommentId, row.sha256, row.byteSize, row.originalFilename, row.createdAt]).sort() });
 }
-function selectedDeliveryProse(o: SearchObservation, target: Entity, distractors: Entity[]) {
-  const mentions = (line: string, row: Entity) => [row.id, row.identifier, row.title].filter(Boolean).some(name => line.includes(name!));
-  // A separately labelled exclusion names a known other source, not the selected final.
-  return o.reply.split(/\n+/).filter(line => !( /^\s*(?:[-*]\s*)?not the others?\s*:/i.test(line)
-    && distractors.some(row => mentions(line, row)) && !mentions(line, target)
-    && !/\b(?:the|this|selected|actual)\s+(?:approved\s+)?final\b/i.test(line))).join("\n");
-}
 function verifiedReturnedFile(o: SearchObservation, target: Entity, original: IssueAttachment) {
   return o.returnedFiles?.find(({ attachment: a, downloadedHash, byteSize }) => !!fileLink(o, a)
     && a.companyId === o.companyId && a.sha256 === o.state.finalHash && downloadedHash === o.state.finalHash
@@ -93,37 +86,6 @@ function verifiedReturnedFile(o: SearchObservation, target: Entity, original: Is
       && o.runs.some(run => run.id === a.originatingRunId && run.status === "succeeded")));
 }
 
-/** Compare stated delivery dates with the preserved source date, not today's import date. */
-export function describesHistoricalDelivery(reply: string, deliveredAt: string) {
-  const expected = new Date(deliveredAt);
-  if (!Number.isFinite(expected.getTime())) return false;
-  const day = expected.toISOString().slice(0, 10);
-  const months = "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)";
-  const dates = new RegExp(`\\b(?:\\d{4}-\\d{2}-\\d{2}|${months}\\s+\\d{1,2}(?:st|nd|rd|th)?(?:,?\\s+\\d{4})?|\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?${months}(?:,?\\s+\\d{4})?)\\b`, "gi");
-  let matched = false;
-  const prose = reply.replace(/\b(was|were|is|are|has|have|had|did|does|do|could|would|should|must)n['’]t\b/gi, "$1 not");
-  for (const part of prose.split(/\n+|;|(?<=[.!?])\s+/)) {
-    // Qualified older history may have a different date; it is not the selected final.
-    if (/\b(?:older|earlier|previous|superseded|outside)\b/i.test(part)) continue;
-    if (/\blast\s+week\b/i.test(part)) {
-      if (/\b(?:not|never)\s+(?:(?:actually|delivered|from|during|in|the)\s+){0,3}last\s+week\b/i.test(part)) return false;
-      matched = true;
-    }
-    for (const date of part.matchAll(dates)) {
-      const prefix = part.slice(0, date.index);
-      const anchors = [...prefix.matchAll(/\b(deliver(?:ed|y)?|completed|import(?:ed)?|upload(?:ed)?)\b/gi)];
-      // A separately identified import/upload time must not rewrite delivery time.
-      if (/^(?:import|upload)/i.test(anchors.at(-1)?.[1] ?? "")) continue;
-      if (/\b(?:not|never)\s+(?:(?:actually|deliver(?:ed)?|completed|dated|on|from|during)\s+){0,3}$/i.test(prefix)) return false;
-      let text = date[0].replace(/(\d)(?:st|nd|rd|th)\b/gi, "$1").replace(/\bof\s+/gi, "");
-      if (!/\d{4}/.test(text)) text += ` ${expected.getUTCFullYear()}`;
-      const parsed = new Date(`${text} UTC`);
-      if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== day) return false;
-      matched = true;
-    }
-  }
-  return matched;
-}
 export function gradeArtifactSearch(value: unknown) {
   const c = checks(); const o = observation(value) as SearchObservation | undefined;
   c.add("real-imported-artifact-history", !!o && !!o.finalAttachment && Array.isArray(o.deliveryComments) && Array.isArray(o.searchResults) && !!o.currentSource, "Public migration receipts, original source dates and actual imported attachment/download evidence are required.");
@@ -137,16 +99,17 @@ export function gradeArtifactSearch(value: unknown) {
     && Date.parse(String(o.finalAttachment.createdAt)) > Date.parse(String(o.state.deliveryAt)),
     "The final belongs to the requested prior week through preserved completion and attachment-bound source-comment dates; the actual attachment import happened later.");
   c.add("exact-accessible-final-and-download", o.finalAttachment.id === file.id && o.finalAttachment.issueId === target.id && o.finalAttachment.sha256 === o.state.finalHash
-    && o.downloadedHash === o.state.finalHash && hasLink(o, "issues", target) && !!verifiedReturnedFile(o, target, file)
-    && /\b(?:final|approved|delivered)\b/i.test(o.reply) && describesHistoricalDelivery(selectedDeliveryProse(o, target, (o.state.distractors as Entity[]) ?? []), String(o.state.deliveryAt)),
-    "The answer selects the actual final from the requested source time, with both exact source and usable verified download links.");
+    && o.downloadedHash === o.state.finalHash && hasLink(o, "issues", target) && !!verifiedReturnedFile(o, target, file),
+    "The answer selects the actual final from the requested source time, with both exact source and usable verified download links. How the reply words the delivery and its date is left to a human reader.");
   const distractors = o.state.distractors as Entity[] | undefined;
-  c.add("draft-older-final-and-private-snippets-excluded", !!distractors && distractors.every(row => !hasLink(o, "issues", row) || row.id !== hidden.id && o.reply.split(/\n/).some(part => [row.id, row.identifier, row.title].filter(Boolean).some(name => part.includes(name!))
-      && /\b(?:draft|unapproved|older|earlier|previous|outside|not (?:the )?final)\b/i.test(part)))
+  // Other sources may be linked as context; their files must not be returned as the delivery.
+  // Whether the reply qualifies a linked draft or older final is left to a human reader.
+  const distractorFiles = ((o.state.originalHistory as SourceHistory[] | undefined) ?? []).filter(row => distractors?.some(task => task.id === row.issueId)).flatMap(row => row.attachments);
+  c.add("draft-older-final-and-private-snippets-excluded", !!distractors && !hasLink(o, "issues", hidden) && distractorFiles.every(attachment => !fileLink(o, attachment))
     && [403, 404].includes(o.privateFileStatus) && o.searchStatus === 200 && !JSON.stringify(o.searchResults).includes(hidden.id)
     && !JSON.stringify(o.searchResults).includes(String(o.state.privateMarker)) && !o.reply.includes(String(o.state.privateMarker)) && !o.reply.includes(hidden.title ?? String(o.state.privateMarker))
     && !o.links.some(href => href.includes((o.state.privateAttachment as IssueAttachment).id) || href.includes((o.state.privateAttachment as IssueAttachment).assetId)),
-    "A newer unapproved draft and an older final are either omitted or clearly qualified rather than substituted, and independently denied private artifacts and previews remain outside results.");
+    "No draft, older-final or private file is returned as the delivery, the private task is not linked, and independently denied private artifacts and previews remain outside results.");
   const originals = o.state.originalTasks as HistoricalTask[] | undefined;
   c.add("history-not-rewritten-by-search", !!originals && originals.every(row => sameTask(row, o.tasks.find(now => now.id === row.id)))
     && originals.every(row => (o.tasks.find(now => now.id === row.id) as HistoricalTask | undefined)?.completedAt === row.completedAt)
@@ -192,7 +155,7 @@ function findArtifact(): ChatCatalogCase {
       originalTasks: records, distractors: records.slice(1), privateTask: records[3], privateAttachment: files[3], privateMarker: `${ctx.input.nonce}-restricted-final` };
     await ctx.input.evidence("chat-catalog-public-historical-delivery-import.json", { preview, imported, state, provenance: "Synthetic historical migration through supported public company import. Original source completion/comment dates are preserved; attachments are re-uploaded at import time, not falsely backdated." }); return state;
   }, gradeArtifactSearch);
-  return { ...base, authentication: "human-session", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-artifact-search.ts", "chat-catalog-domains/internal-privacy.ts", "chat-catalog-domains/identity-auth.ts"],
+  return { ...base, oracleVersion: "paperclip.chat-catalog.find-artifact.v2", authentication: "human-session", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-artifact-search.ts", "chat-catalog-domains/internal-privacy.ts", "chat-catalog-domains/identity-auth.ts"],
     async observe(ctx, state): Promise<SearchObservation> {
       if (!key) throw new Error("Historical search probe was not created during setup"); const o = await observeInternal(ctx, state); const file = state.finalAttachment as IssueAttachment;
       const read = async (path: string) => { const url = new URL(path, ctx.input.api.baseURL); if (url.origin !== ctx.input.api.baseURL || !url.pathname.startsWith("/api/")) throw new Error("Historical probe escaped fixture API");

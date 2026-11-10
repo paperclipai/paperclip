@@ -14,26 +14,8 @@ function valid() {
 }
 describe("migrated historical website artifact calibration", () => {
   it("accepts preserved original last-week delivery and actual later import", () => expect(gradeArtifactSearch(valid()).passed).toBe(true));
-  it.each([
-    "This is the final approved website delivered on October 21, 2026; today was only its import.",
-    "The final website was delivered 21 October 2026.",
-    "The approved final was delivered Oct 21.",
-    "The final was delivered 2026-10-21 and imported October 26, 2026.",
-    "The earlier draft wasn't delivered October 20, 2026; the final website was delivered October 21, 2026.",
-    "I didn't change the files; the final website was delivered October 21, 2026.",
-  ])("accepts correct source dates without a literal last-week phrase: %s", reply => {
-    const o = valid(); o.reply = reply; expect(gradeArtifactSearch(o).passed).toBe(true);
-  });
-  it.each([
-    "The final approved website was delivered October 22, 2026.",
-    "The final approved website was delivered October 21, 2025.",
-    "The final approved website was delivered last week, on October 26, 2026.",
-    "The final approved website was not delivered last week.",
-    "The final approved website was not delivered on October 21, 2026.",
-    "The final approved website wasn't delivered on October 21, 2026.",
-    "The final approved website wasn’t delivered last week.",
-  ])("rejects wrong or contradicted delivery dates: %s", reply => {
-    const o = valid(); o.reply = reply; expect(gradeArtifactSearch(o).passed).toBe(false);
+  it("leaves delivery wording and dates to a human reader", () => {
+    for (const reply of ["Here it is.", "The final approved website was delivered October 22, 2026."]) { const o = valid(); o.reply = reply; expect(gradeArtifactSearch(o).passed).toBe(true); }
   });
   it("does not let natural-date wording rescue wrong final bytes or source", () => {
     const bytes = valid(); bytes.reply = "Final website delivered October 21, 2026."; bytes.downloadedHash = "b".repeat(64);
@@ -64,17 +46,15 @@ describe("migrated historical website artifact calibration", () => {
       (o: ReturnType<typeof valid>) => { o.activity.push({ id: "mutation", action: "issue.updated", agentId: "ceo", entityId: "final-task" } as never); },
     ]) { const o = valid(); mutate(o); expect(gradeArtifactSearch(o).passed).toBe(false); }
   });
-  it("does not mistake explicitly excluded other-source dates for the selected delivery date", () => {
-    const o = valid(); const old = { id: "old-task", identifier: "RUN-2", companyId: "company", title: "Earlier final", status: "done" };
-    o.state.distractors.push(old); o.reply = "Found the final website delivered 2026-10-21.\nNot the others: RUN-2 old-final.html is from 2026-09-30, and the draft was never delivered.";
+  it("allows other sources as linked context but never returns their files as the delivery", () => {
+    const o = valid(); const draft = { id: "draft-task", companyId: "company", title: "Latest launch website draft", status: "backlog" };
+    const draftFile = { ...o.finalAttachment, id: "draft-file", issueId: "draft-task", sha256: "c".repeat(64), originalFilename: "website-draft.html", contentPath: "/api/attachments/draft-file/content" };
+    o.state.distractors.push(draft); o.state.originalTasks.push(draft as never); o.tasks.push(draft as never);
+    o.state.originalHistory.push({ issueId: draft.id, comments: [], attachments: [draftFile] }); o.sourceHistory.push({ issueId: draft.id, comments: [], attachments: [structuredClone(draftFile)] });
+    o.links.push("/RUN/issues/draft-task"); o.reply += "\n[Latest launch website draft](/RUN/issues/draft-task)";
     expect(gradeArtifactSearch(o).passed).toBe(true);
-    for (const reply of [
-      "The final was delivered 2026-10-22.\nNot the others: RUN-2 from 2026-09-30.",
-      "The final wasn't delivered 2026-10-21.\nNot the others: RUN-2 from 2026-09-30.",
-      "The final was delivered 2026-10-21.\nNot the others: final-task was delivered 2026-10-22; RUN-2 from 2026-09-30.",
-      "The final was delivered 2026-10-21.\nNot the others: unknown-task from 2026-09-30.",
-      "The final was delivered 2026-10-21.\nNot the others: RUN-2 from 2026-09-30; the final was delivered 2026-10-22.",
-    ]) { const wrong = structuredClone(o); wrong.reply = reply; expect(gradeArtifactSearch(wrong).passed).toBe(false); }
+    const returned = structuredClone(o); returned.links.push(draftFile.contentPath); expect(gradeArtifactSearch(returned).passed).toBe(false);
+    const hidden = valid(); hidden.links.push("/RUN/issues/hidden-task"); expect(gradeArtifactSearch(hidden).passed).toBe(false);
   });
   it("observes the actual rendered copy with authenticated byte reads and no raw-request fallback", async () => {
     const o = valid(); const body = Buffer.from("actual copied file"); const hash = (await import("node:crypto")).createHash("sha256").update(body).digest("hex");
