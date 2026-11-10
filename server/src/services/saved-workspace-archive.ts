@@ -10,6 +10,8 @@ const ARCHIVE_MAGIC = Buffer.from("PCWS1\n");
 const ARCHIVE_SCHEMA = "paperclip.remote-workspace-archive.v1";
 const MAX_MANIFEST_BYTES = 64 * 1024 * 1024;
 const DEFAULT_INDEX_CACHE_BYTES = 128 * 1024 * 1024;
+const MAX_INDEX_ENTRIES = 500_000;
+const INDEX_ENTRY_BYTES = 256;
 
 export type SavedArchiveEntry = {
   path: string; name: string; type: "directory" | "file" | "symlink"; size: number; sha256: string | null; offset: number;
@@ -20,7 +22,8 @@ export interface SavedWorkspaceArchive {
   savedAt: string;
   byteSize: number;
   entry(relativePath: string): SavedArchiveEntry | undefined;
-  children(relativePath: string): SavedArchiveEntry[];
+  children(relativePath: string): readonly SavedArchiveEntry[];
+  cachedIndexBytes(): number;
   read(entry: SavedArchiveEntry, start: number, length: number, signal?: AbortSignal): Promise<Readable>;
   close(): void;
 }
@@ -29,7 +32,7 @@ export type OpenSavedWorkspaceArchive = (input: {
   companyId: string; workspaceId: string; snapshotId: string; signal?: AbortSignal;
 }) => Promise<SavedWorkspaceArchive>;
 
-type ArchiveIndex = { entries: Map<string, SavedArchiveEntry>; children: Map<string, SavedArchiveEntry[]>; manifestBytes: number };
+type ArchiveIndex = { entries: Map<string, SavedArchiveEntry>; children: Map<string, SavedArchiveEntry[]>; charge: number };
 
 function invalid(reason: string): never { throw new Error(`remote_workspace_archive_${reason}`); }
 
@@ -37,10 +40,11 @@ const unsafePath = (relative: unknown) => typeof relative !== "string" || !relat
   || relative.startsWith("/") || /[\\\u0000-\u001f\u007f]/u.test(relative)
   || relative.split("/").some(part => !part || part === "." || part === "..");
 
-function buildIndex(manifestBytes: Buffer, archiveBytes: number): ArchiveIndex {
+function buildIndex(manifestBytes: Buffer, archiveBytes: number, maxEntries: number): ArchiveIndex {
   let manifest: { schema?: unknown; entries?: unknown };
   try { manifest = JSON.parse(manifestBytes.toString("utf8")); } catch { invalid("manifest_mismatch"); }
   if (manifest.schema !== ARCHIVE_SCHEMA || !Array.isArray(manifest.entries)) invalid("manifest_mismatch");
+  if (manifest.entries.length > maxEntries) invalid("entry_limit");
   const entries = new Map<string, SavedArchiveEntry>(), children = new Map<string, SavedArchiveEntry[]>([["", []]]);
   let offset = ARCHIVE_MAGIC.length + 4 + manifestBytes.length;
   for (const raw of manifest.entries as Array<Record<string, unknown>>) {
@@ -64,7 +68,8 @@ function buildIndex(manifestBytes: Buffer, archiveBytes: number): ArchiveIndex {
     children.get(parent)!.push(entry);
   }
   if (!Number.isSafeInteger(offset) || offset !== archiveBytes) invalid("size_mismatch");
-  return { entries, children, manifestBytes: manifestBytes.length };
+  for (const list of children.values()) list.sort((a, b) => a.name.localeCompare(b.name));
+  return { entries, children, charge: manifestBytes.length + entries.size * INDEX_ENTRY_BYTES };
 }
 
 async function readAll(stream: Readable, limit: number): Promise<Buffer> {
@@ -82,17 +87,20 @@ async function readAll(stream: Readable, limit: number): Promise<Buffer> {
 }
 
 export function createSavedWorkspaceArchiveOpener(db: Db, storage: StorageService = getStorageService(), options: {
-  indexCacheBytes?: number;
+  indexCacheBytes?: number; idleTimeoutMs?: number; maxIndexEntries?: number;
 } = {}): OpenSavedWorkspaceArchive {
+  const maxEntries = Math.min(options.maxIndexEntries ?? MAX_INDEX_ENTRIES, MAX_INDEX_ENTRIES);
   const cacheBudget = options.indexCacheBytes ?? DEFAULT_INDEX_CACHE_BYTES;
   const cache = new Map<string, ArchiveIndex>();
   let cachedBytes = 0;
   const remember = (key: string, index: ArchiveIndex) => {
-    if (index.manifestBytes > cacheBudget) return;
-    cache.delete(key); cache.set(key, index); cachedBytes += index.manifestBytes;
+    const existing = cache.get(key);
+    if (existing) { cache.delete(key); cachedBytes -= existing.charge; }
+    if (index.charge > cacheBudget) return;
+    cache.set(key, index); cachedBytes += index.charge;
     for (const [oldest, value] of cache) {
       if (cachedBytes <= cacheBudget) break;
-      cache.delete(oldest); cachedBytes -= value.manifestBytes;
+      cache.delete(oldest); cachedBytes -= value.charge;
     }
   };
   return async input => {
@@ -102,7 +110,8 @@ export function createSavedWorkspaceArchiveOpener(db: Db, storage: StorageServic
       eq(executionWorkspaceSnapshots.id, input.snapshotId), eq(executionWorkspaceSnapshots.status, "committed")));
     const saved = row ? await getWorkspaceSnapshot(db, input) : null;
     if (!row || !saved) throw new Error("remote_workspace_snapshot_unavailable");
-    const ranges = await openWorkspaceSnapshotRanges({ storage, reference: saved, signal: input.signal });
+    const ranges = await openWorkspaceSnapshotRanges({ storage, reference: saved, signal: input.signal,
+      ...(options.idleTimeoutMs ? { idleTimeoutMs: options.idleTimeoutMs } : {}) });
     try {
       const key = `${saved.companyId}/${saved.workspaceId}/${saved.id}/${saved.manifestDigest}`;
       let index = cache.get(key);
@@ -118,7 +127,7 @@ export function createSavedWorkspaceArchiveOpener(db: Db, storage: StorageServic
         if (manifest.length !== manifestSize || createHash("sha256").update(manifest).digest("hex") !== saved.manifestDigest) {
           invalid("manifest_mismatch");
         }
-        index = buildIndex(manifest, ranges.plaintextBytes);
+        index = buildIndex(manifest, ranges.plaintextBytes, maxEntries);
         remember(key, index);
       }
       const built = index;
@@ -128,6 +137,7 @@ export function createSavedWorkspaceArchiveOpener(db: Db, storage: StorageServic
         byteSize: saved.byteSize,
         entry: relativePath => built.entries.get(relativePath),
         children: relativePath => built.children.get(relativePath) ?? [],
+        cachedIndexBytes: () => cachedBytes,
         read: (entry, start, length, signal) => {
           if (entry.type !== "file" || start < 0 || length < 0 || start + length > entry.size) invalid("range_invalid");
           return ranges.read(entry.offset + start, length, signal);

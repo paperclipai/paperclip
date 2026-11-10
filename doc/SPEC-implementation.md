@@ -2840,8 +2840,14 @@ verified manifest. Reading or downloading one file range-reads and decrypts only
 that file's bytes into a private temporary file, verifies them against the
 file's manifest SHA-256, and only then serves them. No browse request downloads or
 extracts the whole archive, so archive size does not limit saved Files access.
-The process keeps parsed manifests of recent snapshots, up to 128 MiB of
-manifest bytes. Manifests are limited to 64 MiB, the archive format's limit.
+A preview decrypts and verifies the file in memory, within its preview size limit.
+A download reserves the file's size against a 4 GiB per-process budget and checks
+free temporary disk with a 256 MiB margin before writing. Cleanup releases the
+reservation. A file larger than the budget reports `too_large`. A storage read
+that sends no bytes for five minutes is closed. The process keeps parsed
+manifests of recent snapshots, charged by manifest size plus their entries, up
+to 128 MiB. Manifests are limited to 64 MiB, the archive format's limit, and
+500,000 entries; a larger saved copy reports `too_large`.
 Saved files carry no modification times, so the recent view of a saved copy is
 ordered by path. Availability batches share one verified access per execution
 workspace within the request and allow at most eight remote workspace accesses.

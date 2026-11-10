@@ -74,6 +74,7 @@ export interface RemoteWorkspaceFileOptions {
     signal?: AbortSignal;
   }): Promise<SavedWorkspaceFiles>;
   openSavedWorkspaceArchive?: OpenSavedWorkspaceArchive;
+  savedFileDownloadLimits?: Partial<SavedFileDownloadLimits>;
 }
 
 export interface RemoteWorkspaceFiles {
@@ -347,9 +348,11 @@ function archiveList(archive: SavedWorkspaceArchive, requested: RemoteWorkspaceF
   const queue = [{ relative: start, depth: 0 }];
   scan: while (queue.length) {
     const current = queue.shift()!;
-    const children = [...archive.children(current.relative)].sort((a, b) => immediate && (a.type === "directory") !== (b.type === "directory")
-      ? (a.type === "directory" ? -1 : 1) : a.name.localeCompare(b.name));
-    for (const child of children) {
+    const sorted = archive.children(current.relative);
+    const passes = immediate ? [(entry: { type: string }) => entry.type === "directory", (entry: { type: string }) => entry.type !== "directory"]
+      : [() => true];
+    for (const include of passes) for (const child of sorted) {
+      if (!include(child)) continue;
       if (++scannedCount > maxScanned) { truncated = true; break scan; }
       const relative = current.relative ? `${current.relative}/${child.name}` : child.name;
       if (archiveDeniedPath(relative) || child.type === "symlink" || /[\\\u0000-\u001f\u007f]/u.test(relative)) continue;
@@ -367,13 +370,49 @@ function archiveList(archive: SavedWorkspaceArchive, requested: RemoteWorkspaceF
     truncated: truncated || entries.length > offset + limit };
 }
 
-async function archiveDownload(archive: SavedWorkspaceArchive, relativePath: string, expected: RemoteWorkspaceFileEntry,
-  checkCurrent: () => Promise<void>, signal?: AbortSignal): Promise<RemoteWorkspaceDownload> {
+export type SavedFileDownloadLimits = { maxReservedBytes: number; freeSpaceMarginBytes: number; availableBytes: () => Promise<bigint> };
+const SAVED_FILE_DOWNLOAD_LIMITS: SavedFileDownloadLimits = {
+  maxReservedBytes: 4 * 1024 * 1024 * 1024, freeSpaceMarginBytes: 256 * 1024 * 1024,
+  availableBytes: async () => { const disk = await fs.statfs(os.tmpdir(), { bigint: true }); return disk.bavail * disk.bsize; },
+};
+let savedFileDownloadReservedBytes = 0;
+
+async function archiveRead(archive: SavedWorkspaceArchive, relativePath: string, expected: RemoteWorkspaceFileEntry, maxBytes: number,
+  signal?: AbortSignal): Promise<Buffer> {
   const entry = archive.entry(relativePath);
   if (!entry || entry.type !== "file" || entry.size !== expected.byteSize) throw fileFailure("file_changed");
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-saved-file-"));
-  const cleanup = async () => { await fs.rm(directory, { recursive: true, force: true }); };
+  if (entry.size > maxBytes) throw fileFailure("too_large");
+  const chunks: Buffer[] = [], hash = createHash("sha256");
+  let size = 0;
+  for await (const chunk of await archive.read(entry, 0, entry.size, signal)) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += bytes.length;
+    if (size > entry.size) throw fileFailure("file_changed");
+    hash.update(bytes); chunks.push(bytes);
+  }
+  if (size !== entry.size || hash.digest("hex") !== entry.sha256) throw fileFailure("file_changed");
+  return Buffer.concat(chunks);
+}
+
+async function archiveDownload(archive: SavedWorkspaceArchive, relativePath: string, expected: RemoteWorkspaceFileEntry,
+  checkCurrent: () => Promise<void>, limits: SavedFileDownloadLimits, signal?: AbortSignal): Promise<RemoteWorkspaceDownload> {
+  const entry = archive.entry(relativePath);
+  if (!entry || entry.type !== "file" || entry.size !== expected.byteSize) throw fileFailure("file_changed");
+  if (entry.size > limits.maxReservedBytes) throw fileFailure("too_large");
+  if (savedFileDownloadReservedBytes + entry.size > limits.maxReservedBytes
+    || await limits.availableBytes() < BigInt(savedFileDownloadReservedBytes + entry.size + limits.freeSpaceMarginBytes)) {
+    throw fileFailure("workspace_unavailable");
+  }
+  savedFileDownloadReservedBytes += entry.size;
+  let released = false;
+  const release = () => { if (!released) { released = true; savedFileDownloadReservedBytes -= entry.size; } };
+  let directory: string | undefined;
+  const cleanup = async () => {
+    try { if (directory) await fs.rm(directory, { recursive: true, force: true }); }
+    finally { release(); }
+  };
   try {
+    directory = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-saved-file-"));
     const file = path.join(directory, "file");
     await pipeline(await archive.read(entry, 0, entry.size, signal), createWriteStream(file, { flags: "wx", mode: 0o600 }),
       ...(signal ? [{ signal }] : []));
@@ -431,6 +470,7 @@ export function createRemoteWorkspaceFiles(db: Db, options: RemoteWorkspaceFileO
           try { archive = await options.openSavedWorkspaceArchive(scope); }
           catch (error) {
             if (error instanceof HttpError) throw error;
+            if (error instanceof Error && error.message === "remote_workspace_archive_entry_limit") throw fileFailure("too_large");
             if (error instanceof Error && /^remote_workspace_(snapshot|archive)_/.test(error.message)) throw fileFailure("workspace_unavailable");
             throw error;
           }
@@ -522,7 +562,8 @@ export function createRemoteWorkspaceFiles(db: Db, options: RemoteWorkspaceFileO
       const download = async (relativePath: string): Promise<RemoteWorkspaceDownload> => {
         const expected = await execute<RemoteWorkspaceFileEntry>("stat", { relativePath, withHash: true });
         if (expected.kind !== "file") throw fileFailure("not_regular_file");
-        if (archive) return archiveDownload(archive, relativePath, expected, checkCurrent, input.signal);
+        if (archive) return archiveDownload(archive, relativePath, expected, checkCurrent,
+          { ...SAVED_FILE_DOWNLOAD_LIMITS, ...options.savedFileDownloadLimits }, input.signal);
         if (saved) {
           await checkCurrent();
           const file = path.join(root, ...relativePath.split("/"));
@@ -547,6 +588,11 @@ export function createRemoteWorkspaceFiles(db: Db, options: RemoteWorkspaceFileO
           const expected = await stat(relativePath);
           if (expected.kind !== "file") throw fileFailure("not_regular_file");
           if (expected.byteSize! > readOptions.maxBytes) throw fileFailure("too_large");
+          if (archive) {
+            const bytes = await archiveRead(archive, relativePath, expected, readOptions.maxBytes, input.signal);
+            await checkCurrent();
+            return bytes;
+          }
           const transfer = await download(relativePath);
           try {
             const chunks: Buffer[] = [];

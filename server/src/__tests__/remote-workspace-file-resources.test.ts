@@ -469,6 +469,79 @@ describeDatabase("remote workspace ordinary file routes", () => {
     } finally { await boundedAccess?.close(); }
   });
 
+  it("reserves bounded temporary disk for saved downloads and releases it after each one", async () => {
+    const f = await savedFileFixture(false, richWorkspace);
+    const scope = { companyId: f.ids.company, workspaceId: f.ids.workspace }, opener = createSavedWorkspaceArchiveOpener(db, f.storage);
+    const files = (limits: NonNullable<Parameters<typeof createRemoteWorkspaceFiles>[1]>["savedFileDownloadLimits"]) =>
+      createRemoteWorkspaceFiles(db, { openSavedWorkspaceArchive: opener, savedFileDownloadLimits: limits });
+    const attempt = async (limits: Parameters<typeof files>[0]) => {
+      const access = await files(limits).open(scope);
+      try {
+        const download = await access!.download("docs/big.bin");
+        let size = 0; for await (const chunk of download.stream) size += chunk.length; await download.cleanup();
+        return size;
+      } finally { await access?.close(); }
+    };
+    await expect(attempt({ maxReservedBytes: 1024 })).rejects.toMatchObject({ status: 422, details: { code: "too_large" } });
+    await expect(attempt({ availableBytes: async () => 0n })).rejects.toMatchObject({ status: 422, details: { code: "workspace_unavailable" } });
+    const fitsOne = { maxReservedBytes: 256 * 1024, freeSpaceMarginBytes: 0 };
+    expect(await attempt(fitsOne)).toBe(256 * 1024);
+    expect(await attempt(fitsOne)).toBe(256 * 1024);
+    const access = await files(fitsOne).open(scope);
+    try {
+      const held = await access!.download("docs/big.bin");
+      await expect(access!.download("docs/big.bin")).rejects.toMatchObject({ status: 422, details: { code: "workspace_unavailable" } });
+      held.stream.destroy(); await held.cleanup();
+    } finally { await access?.close(); }
+    const preview = await (await files(fitsOne).open(scope))!.read("docs/result.md", { maxBytes: 1024 });
+    expect(preview.toString()).toBe("Remote useful result\n");
+  });
+
+  it("closes the storage stream when a saved range read is abandoned or stalls", async () => {
+    const f = await savedFileFixture(false, richWorkspace);
+    const getObject = f.storage.getObject.bind(f.storage), sources: Array<import("node:stream").Readable> = [];
+    let stall = false;
+    vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
+      const object = await getObject(...args);
+      if (stall && args[2]?.range && args[2].range.end - args[2].range.start > 1024) {
+        object.stream.destroy();
+        const { PassThrough } = await import("node:stream");
+        const silent = new PassThrough();
+        sources.push(silent);
+        return { ...object, stream: silent };
+      }
+      sources.push(object.stream);
+      return object;
+    });
+    const opener = createSavedWorkspaceArchiveOpener(db, f.storage, { idleTimeoutMs: 100 });
+    const archive = await opener({ companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId: f.saved.id });
+    try {
+      const entry = archive.entry("docs/big.bin")!;
+      const abandoned = await archive.read(entry, 0, entry.size);
+      await new Promise(resolve => abandoned.once("readable", resolve));
+      abandoned.destroy();
+      await vi.waitFor(() => expect(sources.at(-1)!.destroyed).toBe(true));
+      stall = true;
+      const stalled = await archive.read(entry, 0, entry.size);
+      await expect((async () => { for await (const chunk of stalled) void chunk; })()).rejects.toThrow("remote_workspace_snapshot_download_stalled");
+      await vi.waitFor(() => expect(sources.at(-1)!.destroyed).toBe(true));
+    } finally { archive.close(); }
+  });
+
+  it("charges one cached index for overlapping cold opens and names an oversized manifest", async () => {
+    const f = await savedFileFixture(false, richWorkspace);
+    const input = { companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId: f.saved.id };
+    const single = createSavedWorkspaceArchiveOpener(db, f.storage);
+    const once = await single(input); const charge = once.cachedIndexBytes(); once.close();
+    const overlapping = createSavedWorkspaceArchiveOpener(db, f.storage);
+    const opened = await Promise.all([overlapping(input), overlapping(input), overlapping(input)]);
+    expect(opened.map(archive => archive.cachedIndexBytes())).toEqual([charge, charge, charge]);
+    for (const archive of opened) archive.close();
+    const capped = createRemoteWorkspaceFiles(db, { openSavedWorkspaceArchive: createSavedWorkspaceArchiveOpener(db, f.storage, { maxIndexEntries: 3 }) });
+    await expect(capped.open({ companyId: f.ids.company, workspaceId: f.ids.workspace }))
+      .rejects.toMatchObject({ status: 422, details: { code: "too_large" } });
+  });
+
   it("keeps a production saved preview available when cleanup clears its location during archive loading", async () => {
     const f = await savedFileFixture(true);
     const requestTemp = await fs.mkdtemp(path.join(os.tmpdir(), "saved-file-location-request-"));
