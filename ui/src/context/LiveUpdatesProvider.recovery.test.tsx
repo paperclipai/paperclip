@@ -18,6 +18,8 @@ vi.mock("../api/auth", () => ({
 vi.mock("../api/health", () => ({ healthApi: { get: healthRead } }));
 import { LiveUpdatesProvider, useHasCompanyLiveConnection, useTaskRunLiveUpdates } from "./LiveUpdatesProvider";
 import { CONNECTED_ACTIVE_RUN_REFETCH_MS, liveRunRefetchInterval } from "../lib/live-runs-cache";
+import { taskBrowsersQueryKey } from "../lib/task-browsers-refresh";
+import { taskBrowsersRefetchInterval } from "../hooks/useTaskBrowsers";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -199,6 +201,33 @@ describe("LiveUpdatesProvider connection recovery", () => {
     expect(pollRead).not.toHaveBeenCalled();
     await advancePolls(Math.ceil(CONNECTED_ACTIVE_RUN_REFETCH_MS / 1000));
     expect(pollRead.mock.calls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("reads task browsers again when the connection opens during an older empty read", async () => {
+    vi.stubGlobal("WebSocket", Socket);
+    const started = [{ id: "browser-1", status: "running" }];
+    let release!: (value: unknown) => void;
+    const browsersRead = vi.fn<() => Promise<unknown>>().mockResolvedValue(started);
+    function Browsers() {
+      const connected = useHasCompanyLiveConnection("company-1");
+      useQuery({
+        queryKey: taskBrowsersQueryKey("task-1"), queryFn: browsersRead,
+        refetchInterval: (query) => taskBrowsersRefetchInterval(connected, query.state as Parameters<typeof taskBrowsersRefetchInterval>[1]),
+      });
+      return null;
+    }
+    browsersRead.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    await act(async () => root.render(
+      <QueryClientProvider client={client}><LiveUpdatesProvider><Browsers /></LiveUpdatesProvider></QueryClientProvider>,
+    ));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(browsersRead).toHaveBeenCalledTimes(1);
+    // The browser starts while the socket is closed; its activity is not replayed.
+    await act(async () => Socket.instances[0].onopen?.());
+    await act(async () => release([]));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(browsersRead).toHaveBeenCalledTimes(2);
+    expect(client.getQueryData(taskBrowsersQueryKey("task-1"))).toEqual(started);
   });
 
   it("keeps one-second polling for active work after the connection closes", async () => {

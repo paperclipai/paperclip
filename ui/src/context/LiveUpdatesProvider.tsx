@@ -3,7 +3,7 @@ import { resolveAgentAppearance, TASK_IDENTITY_CHANGED_FIELD, issueActivityChang
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { createLiveQueryRecovery } from "../lib/live-query-recovery";
 import { isLiveReconciledQuery } from "../lib/live-reconcile";
-import { refreshTaskBrowsers } from "../lib/task-browsers-refresh";
+import { refreshPendingTaskBrowserReads, refreshTaskBrowsers } from "../lib/task-browsers-refresh";
 import {
   createContext,
   useCallback,
@@ -2436,6 +2436,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
               && key !== JSON.stringify(queryKeys.auth.session) && key !== JSON.stringify(queryKeys.health);
           } : isLiveReconciledQuery,
         }, { cancelRefetch: false });
+        // Browser lists stop polling on an empty result; a reconcile that
+        // joined an older read needs one more read after it.
+        refreshPendingTaskBrowserReads(queryClient);
         reconnectAttempt = 0;
       };
 
@@ -2449,6 +2452,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           if (transcripts.receive(parsed, recoverQueries)) {
             if ((parsed as { type: string }).type === "live.resync") {
               void queryClient.invalidateQueries({ type: "active", predicate: isLiveReconciledQuery }, { cancelRefetch: false });
+              refreshPendingTaskBrowserReads(queryClient);
             }
             return;
           }

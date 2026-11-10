@@ -18,7 +18,22 @@ const queuedFollowUps = new WeakMap<object, Set<string>>();
  * that opens the task again reads it.
  */
 export function refreshTaskBrowsers(queryClient: QueryClient, issueId: string): void {
-  const queryKey = taskBrowsersQueryKey(issueId);
+  refreshTaskBrowserList(queryClient, taskBrowsersQueryKey(issueId));
+}
+
+/**
+ * Queue a follow-up for every browser list with a read in flight when the live
+ * connection opens. Events missed while it was closed are not replayed, and
+ * the connection-open reconcile can join a read that started before the
+ * missed activity. Lists without a read in flight are left to that reconcile.
+ */
+export function refreshPendingTaskBrowserReads(queryClient: QueryClient): void {
+  for (const query of queryClient.getQueryCache().findAll({ queryKey: ["task-browsers"] })) {
+    if (query.state.fetchStatus === "fetching") refreshTaskBrowserList(queryClient, query.queryKey);
+  }
+}
+
+function refreshTaskBrowserList(queryClient: QueryClient, queryKey: readonly unknown[]): void {
   const cache = queryClient.getQueryCache();
   const query = cache.find({ queryKey, exact: true });
   if (!query) return;
