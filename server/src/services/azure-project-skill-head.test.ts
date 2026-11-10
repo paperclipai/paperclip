@@ -62,6 +62,15 @@ describe('Azure DevOps project skill ref head', () => {
     expect(Object.values(env).join('\n')).not.toContain('ambient-github-secret');
   });
 
+  it('checks current repository access without treating a pinned commit as a ref pattern', async () => {
+    const resolveCredentials = vi.fn(async () => credentials());
+    const git = fakeGit({ output: `${'b'.repeat(40)}\tHEAD\n` });
+    await expect(readAzureProjectSkillHead(database, { ...input, ref: sha }, { resolveCredentials, spawn: git.spawn }))
+      .resolves.toEqual({ commitSha: sha, ref: sha });
+    expect(git.calls[0]!.args).toEqual(['ls-remote', '--exit-code', '--', repoUrl, 'HEAD']);
+    expect(resolveCredentials).toHaveBeenCalledTimes(2);
+  });
+
   it('fails closed when consent is revoked after the ref read and never exposes provider details', async () => {
     const resolveCredentials = vi.fn()
       .mockResolvedValueOnce(credentials())

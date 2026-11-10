@@ -178,11 +178,13 @@ export async function readAzureProjectSkillHead(
     if (auth.repositoryAuthority?.url !== canonicalUrl) throw unavailable();
     const env = controlledEnvironment(auth);
     signal?.throwIfAborted();
-    const output = await runLsRemote(input.repoUrl, input.ref, env, { signal, timeoutMs, spawn: spawnGit });
+    const pinned = /^[a-f0-9]{40}$/i.test(input.ref);
+    const output = await runLsRemote(input.repoUrl, pinned ? "HEAD" : input.ref, env, { signal, timeoutMs, spawn: spawnGit });
     signal?.throwIfAborted();
     await resolveCredentials(db, { companyId: input.companyId, projectId: input.projectId, repoUrl: input.repoUrl });
     signal?.throwIfAborted();
-    return parseHead(output, input.ref);
+    const head = parseHead(output, pinned ? "HEAD" : input.ref);
+    return pinned ? { commitSha: input.ref.toLowerCase(), ref: input.ref } : head;
   } catch {
     if (signal?.aborted) throw aborted();
     throw unavailable();
