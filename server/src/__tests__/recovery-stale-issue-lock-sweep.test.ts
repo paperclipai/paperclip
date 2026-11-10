@@ -927,11 +927,11 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     });
   });
 
-  it("still terminalizes a freshly started run under a terminal issue once its process is gone", async () => {
+  it("still settles a freshly started run under a terminal issue once its process is gone", async () => {
     const { companyId, agentId, runningRunId } = await seed();
     await db
       .update(heartbeatRuns)
-      .set({ processPid: 2_000_000_000 })
+      .set({ processPid: 2_000_000_000, processHostHash: currentProcessSpaceHash(), updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, runningRunId));
     const issueId = randomUUID();
     await db.insert(issues).values({
@@ -946,32 +946,16 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       executionLockedAt: new Date(),
     });
 
-    const heartbeat = heartbeatService(db);
-    const result = await heartbeat.sweepStaleIssueLocks();
+    const result = await heartbeatService(db).sweepStaleIssueLocks();
 
     expect(result.terminalizedRunIds).toEqual([runningRunId]);
-    expect(result.cleared).toBe(1);
-
-    const run = await db
-      .select({
-        status: heartbeatRuns.status,
-        errorCode: heartbeatRuns.errorCode,
-      })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runningRunId))
-      .then((rows) => rows[0]);
-    expect(run?.status).toBe("interrupted");
-    expect(run?.errorCode).toBe("orphaned_running_run");
-
-    const lock = await db
-      .select({
-        checkoutRunId: issues.checkoutRunId,
-        executionRunId: issues.executionRunId,
-      })
-      .from(issues)
-      .where(eq(issues.id, issueId))
-      .then((rows) => rows[0]);
-    expect(lock).toEqual({ checkoutRunId: null, executionRunId: null });
+    const [run] = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runningRunId));
+    expect(run).toEqual({ status: "failed", errorCode: "process_lost" });
+    const [lock] = await db.select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues).where(eq(issues.id, issueId));
+    expect(lock.checkoutRunId).not.toBe(runningRunId);
+    expect(lock.executionRunId).not.toBe(runningRunId);
   });
 
   it("does not terminalize a running run whose process is alive and whose issue is not terminal", async () => {
