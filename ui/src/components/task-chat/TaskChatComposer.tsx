@@ -453,6 +453,7 @@ export function TaskChatComposer({
     useState<HTMLElement | null>(null);
   const [pendingModeOverride, setPendingMode] = useState<IssueWorkMode | null>(null);
   const modeChoiceGeneration = useRef(0);
+  const sentModeChoice = useRef<{ attemptId: string; generation: number } | null>(null);
   const pendingMode = creation ? workMode : pendingModeOverride ?? workMode;
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
   const coordinator = useCoordinatorPresentation();
@@ -708,6 +709,13 @@ export function TaskChatComposer({
     modeChoiceGeneration.current += 1;
     setPendingMode(mode);
     if (creation) void onWorkModeChange?.(mode);
+  }
+
+  function settleSentMode(attemptId: string) {
+    const choice = sentModeChoice.current;
+    if (choice?.attemptId !== attemptId) return;
+    if (modeChoiceGeneration.current === choice.generation) setPendingMode(null);
+    sentModeChoice.current = null;
   }
 
   async function uploadImage(file: File): Promise<string> {
@@ -1091,6 +1099,7 @@ export function TaskChatComposer({
         pendingDraftRef.current = { draftKey, attemptId, submittedBody, submittedAttachmentIds: attachmentIds, request, requestOwner };
         changeBody(bodyRef.current);
       }
+      sentModeChoice.current = { attemptId, generation: submittedModeGeneration };
       if (runSettings) {
         await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, runSettings);
       } else {
@@ -1101,7 +1110,7 @@ export function TaskChatComposer({
       if (draftKey) settleDraftSubmission(draftKey, attemptId,
         mountedTaskKey.current === draftKey ? bodyRef.current : undefined);
       if (mountedTaskKey.current !== draftKey) return;
-      if (modeChoiceGeneration.current === submittedModeGeneration) setPendingMode(null);
+      settleSentMode(attemptId);
       const submittedIds = new Set(submittedAttachments.map((item) => item.id));
       setAttachments((current) =>
         current.filter((item) => !submittedIds.has(item.id)),
@@ -1153,6 +1162,7 @@ export function TaskChatComposer({
     const settlementKey = JSON.stringify([draftKey, submission.attemptId]);
     if (settledSubmissionIds.current.has(settlementKey)) return;
     settledSubmissionIds.current.add(settlementKey);
+    settleSentMode(submission.attemptId);
     const nextDraft = submission.nextDraftOffset === undefined
       ? "" : bodyRef.current.slice(submission.nextDraftOffset);
     if (draftKey) settleDraftSubmission(draftKey, submission.attemptId, nextDraft);
