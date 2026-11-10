@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
-import { isStorageUnavailableError, sendThroughStorageOutage, waitOutStorageOutages } from "../storage/storage-unavailable.js";
+import { isStorageUnavailableError, sendThroughStorageOutage, storageOutageWaitFor, waitOutStorageOutages } from "../storage/storage-unavailable.js";
 import { measureRunPhase, type ExecutionPhase } from "./execution-preparation-timing.js";
 import { collectStorageRequestStats, newStorageRequestStats, type StorageRequestStats } from "../storage/request-stats.js";
 import { constants, createReadStream, createWriteStream } from "node:fs";
@@ -200,7 +200,7 @@ type WorkspaceSnapshotUpload = {
 
 /** Upload attempts are journaled before remote I/O. The caller owns publication. */
 export async function uploadWorkspaceSnapshot(input: WorkspaceSnapshotUpload): Promise<WorkspaceSnapshotRef> {
-  return withRequestStats(input.timing, () => waitOutStorageOutages(() => uploadWorkspaceSnapshotTimed(input)));
+  return withRequestStats(input.timing, () => waitOutStorageOutages(() => storageOutageWaitFor("saving the workspace", () => uploadWorkspaceSnapshotTimed(input))));
 }
 
 async function uploadWorkspaceSnapshotTimed(input: WorkspaceSnapshotUpload): Promise<WorkspaceSnapshotRef> {
@@ -405,7 +405,7 @@ export async function loadWorkspaceSnapshotArchive(input: {
   /** Receives per-step durations and storage request counts. */
   timing?: WorkspaceSnapshotStorageTiming;
 }): Promise<void> {
-  return withRequestStats(input.timing, () => waitOutStorageOutages(() => loadWorkspaceSnapshotArchiveTimed(input)));
+  return withRequestStats(input.timing, () => waitOutStorageOutages(() => storageOutageWaitFor("restoring the workspace", () => loadWorkspaceSnapshotArchiveTimed(input))));
 }
 
 async function loadWorkspaceSnapshotArchiveTimed(input: Parameters<typeof loadWorkspaceSnapshotArchive>[0]): Promise<void> {
