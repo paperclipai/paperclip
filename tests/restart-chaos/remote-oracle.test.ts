@@ -166,6 +166,8 @@ describe("oracle for a remote workspace", () => {
     } finally { sandboxReleased = false; }
     expect(observer.record.remoteFileErrors?.[modulePath]).toMatch(/422.*workspace_unavailable/);
     expect(timeline.entries.filter(entry => entry.kind === "remote_file_read_failed" && entry.path === modulePath)).toHaveLength(1);
+    await observer.poll(observer.record.createdAt! + 9_000);
+    expect(observer.record.remoteFiles?.[modulePath]).toBe(remoteFiles[modulePath]);
     const artifacts = await observer.collectArtifacts();
     expect(artifacts.files[modulePath]).toBe(remoteFiles[modulePath]);
     expect(observer.record.remoteFileErrors?.[modulePath]).toBeUndefined();

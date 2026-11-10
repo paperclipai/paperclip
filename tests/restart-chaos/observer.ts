@@ -693,8 +693,8 @@ export class TaskObserver {
 
   private async remoteWorkspaceFile(issueId: string, relative: string): Promise<string | null> {
     const captured = this.record.remoteFiles?.[relative];
-    if (typeof captured === "string") return captured;
-    const text = await readRemoteWorkspaceFile(this.api, issueId, relative, { onError: message => this.noteRemoteFileError(relative, message) });
+    const text = typeof captured === "string" ? captured
+      : await readRemoteWorkspaceFile(this.api, issueId, relative, { onError: message => this.noteRemoteFileError(relative, message) });
     if (text !== null) delete this.record.remoteFileErrors?.[relative];
     return text;
   }
