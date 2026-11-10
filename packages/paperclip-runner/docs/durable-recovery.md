@@ -591,8 +591,18 @@ has a matching completed result-delivery command and the provider has drained.
 A callback rejected before business dispatch can report
 `semantic_tool_not_dispatched`. A callback rejected after dispatch has an
 unknown outcome; the controller must not invent a failure or execute it again.
-After controller restart, an already committed input without a result remains
-unsettled. It requires authoritative reconciliation, not an automatic retry.
+After controller restart, an already committed input without a result requires
+authoritative reconciliation, not an automatic retry. Recovery passes
+`admission` to `recoverSemanticToolInput`: `this_controller` when this
+controller instance dispatched the callback live, `earlier_controller` when it
+restored the input from an earlier controller's journal. The server replays a
+durable receipt when one exists. Otherwise `recoverToolCallback`
+(`control-plane/orphaned-tool-callback.ts`) settles an `earlier_controller`
+callback that this process is not running (`dispatchToolCallback`) as
+`tool_call_interrupted_by_restart`, an error result with an unknown outcome. The
+earlier controller can never record a result, so this is the callback's only
+settlement, and it never executes the operation again. Every other unresolved
+input stays unsettled.
 A different case is a runner crash after the controller saved the result but
 before its delivery command completed. Codex/OpenCode explicitly opt in to
 reconciling that exact `semantic_tool.result` command through their durable tool

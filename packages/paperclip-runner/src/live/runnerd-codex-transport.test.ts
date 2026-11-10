@@ -1356,7 +1356,8 @@ it.each([false, true])("uses the same API result envelope and fences handler pub
   try {
     await bundle.transport.request("thread/start", { cwd: tmpdir() });
     const call = { callId: "recovered-api", operationId: "call_api", input: { operationId: "POST /api/example" },
-      sourceEventId: "saved-event", sourceEventType: "semantic_tool.input", correlation: core.store.state.identity };
+      sourceEventId: "saved-event", sourceEventType: "semantic_tool.input", correlation: core.store.state.identity,
+      admission: "earlier_controller" as const };
     if (changedOwner) {
       owner = core.store.state.identity.runId;
       const pending = callbacks.onSemanticToolInput!(call);

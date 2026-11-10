@@ -251,6 +251,7 @@ import { createNativeCredentialUpdateOwner, appendNativeCredentialUpdate } from 
 import { canonicalNativeJson, nativeSha256 } from "./canonical.js";
 import { lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { dispatchToolCallback, recoverToolCallback, type SemanticInputAdmission } from "../../vendor/paperclip-runner/index.js";
 import { createAssignedMcpTools, getAssignedMcpGateway } from "./assigned-mcp-tools.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { NativeChatAttachmentReadScope } from "./chat-attachment-read.js";
@@ -2014,18 +2015,21 @@ class SessionAuthorityEpoch {
     return this.#authority.definitions();
   }
 
-  async recover(call: Parameters<PaperclipRunnerToolAuthority["recover"]>[0]) {
+  /** Replay a durable receipt, or settle a callback a restart orphaned
+   * (orphaned-tool-callback.ts). Never executes the tool again. */
+  async recover(call: Parameters<PaperclipRunnerToolAuthority["recover"]>[0], admission?: SemanticInputAdmission) {
     this.#assertCurrent();
-    const result = await this.#authority.recover(call);
+    const result = await recoverToolCallback({ runId: this.runId, call, admission,
+      recover: () => this.#authority.recover(call) });
     this.#assertCurrent();
     return result;
   }
 
   async execute(call: Parameters<PaperclipRunnerToolAuthority["execute"]>[0]) {
     this.#assertCurrent();
-    return this.toolTrace
+    return dispatchToolCallback(this.runId, call.callId, async () => this.toolTrace
       ? await this.toolTrace.execute(call, () => this.#authority.execute(call))
-      : await this.#authority.execute(call);
+      : await this.#authority.execute(call));
   }
 }
 
@@ -15054,7 +15058,7 @@ async function createRunnerdBackendWithinSessionClaim(
         recoverSemanticToolInput: input.controllerPersistence ? call => {
           const current = sessionToolAuthorityEpochs.get(sessionScopeId);
           if (!current || current.runId !== call.correlation.runId) throw new Error("native_tool_authority_epoch_revoked");
-          return current.recover({ tool: call.operationId, callId: call.callId, arguments: call.input });
+          return current.recover({ tool: call.operationId, callId: call.callId, arguments: call.input }, call.admission);
         } : undefined,
         ...(provider.kind === "codex" ? { disableCodexWebSearch: "webSearch" in provider && provider.webSearch === "disabled" } : {}),
         ...(provider.kind === "acpx" ? { acpxAgent: provider.agent,
@@ -15103,8 +15107,8 @@ async function createRunnerdBackendWithinSessionClaim(
         stateDirectory: root, runnerBinary: remoteDot?.runnerBinary ?? resolvePaperclipRunnerBinary(),
         runnerArtifact: input.controllerPersistence?.runnerArtifact,
         runnerReconnectGraceMs: remoteDot ? REMOTE_RUNNER_RECONNECT_GRACE_MS : undefined,
-        recoverSemanticToolInput: (call: { operationId: string; callId: string; input: unknown }) =>
-          authorityEpoch.recover({ tool: call.operationId, callId: call.callId, arguments: call.input }),
+        recoverSemanticToolInput: (call: { operationId: string; callId: string; input: unknown; admission: SemanticInputAdmission }) =>
+          authorityEpoch.recover({ tool: call.operationId, callId: call.callId, arguments: call.input }, call.admission),
         ...(remoteDot ?? {}),
         identity: { runnerInstanceId: effectiveRunnerInstanceId, environmentLeaseId: effectiveEnvironmentLeaseId,
           runId: input.execution.binding.runId, normalizedSessionId: nativeSessionKey(input.execution),
@@ -16735,7 +16739,7 @@ async function createRunnerdBackendWithinSessionClaim(
         recoverSemanticToolInput: call => {
           const current = sessionToolAuthorityEpochs.get(sessionScopeId);
           if (!current || current.runId !== call.correlation.runId) throw new Error("native_tool_authority_epoch_revoked");
-          return current.recover({ tool: call.operationId, callId: call.callId, arguments: call.input });
+          return current.recover({ tool: call.operationId, callId: call.callId, arguments: call.input }, call.admission);
         },
         codexCommand: remoteCodexBinary ?? undefined,
         sourceCodexHome: remoteTarget
