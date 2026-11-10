@@ -252,6 +252,8 @@ export interface RetryAttempt {
   error: string | null;
   via?: "ui" | "api";
   bannerText?: string | null;
+  /** Screenshot and banner HTML saved when the Retry button wait failed. */
+  diagnostics?: { screenshot: string | null; dom: string | null } | null;
 }
 
 export const UI_RETRY_BUTTON_MISSING = "ui_retry_button_missing";

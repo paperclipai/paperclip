@@ -1,4 +1,7 @@
 import { createServer, type Server } from "node:http";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { once } from "node:events";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BoardUi, UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST, isRetryRequestFor } from "./board-ui.js";
@@ -52,6 +55,23 @@ describe("BoardUi.clickRetry", () => {
       expect(await board.clickRetry("CHA-2", "i2", 1_500)).toMatchObject({ clicked: false, error: UI_RETRY_BUTTON_MISSING,
         bannerText: "Saving files from the previous attempt" });
     });
+  }, 60_000);
+
+  it("saves a screenshot and the banner's HTML when no visible Retry appears", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "chaos-retry-diagnostics-"));
+    const board = new BoardUi(baseUrl, undefined, directory);
+    try {
+      const result = await board.clickRetry("CHA-2", "i2", 1_500);
+      expect(result).toMatchObject({ clicked: false, error: UI_RETRY_BUTTON_MISSING,
+        diagnostics: { screenshot: expect.stringMatching(/\.png$/), dom: expect.stringMatching(/\.json$/) } });
+      expect((await readdir(directory)).sort()).toHaveLength(2);
+      const dom = JSON.parse(await readFile(result.diagnostics!.dom!, "utf8"));
+      expect(dom).toMatchObject({ url: expect.stringContaining("/issues/CHA-2"), retryButtons: [],
+        banners: [expect.stringContaining("Saving files from the previous attempt")] });
+    } finally {
+      await board.close();
+      await rm(directory, { recursive: true, force: true });
+    }
   }, 60_000);
 
   it("reports a Retry button whose click sends no retry request", async () => {
