@@ -683,6 +683,20 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function unstartedQueuedCancellationConditions(
+  previous: typeof heartbeatRuns.$inferSelect | null,
+  status: string,
+) {
+  if (
+    status !== "cancelled" ||
+    previous?.status !== "queued" ||
+    previous.runtimeMode === "native" ||
+    previous.startedAt ||
+    previous.processPid
+  ) return null;
+  return [eq(heartbeatRuns.status, "queued"), isNull(heartbeatRuns.startedAt), isNull(heartbeatRuns.processPid)];
+}
+
 function preserveNativeExecutionObligationsSql(incoming: Record<string, unknown> | null, setupFailure = false) {
   const projected = incoming === null ? sql`null::jsonb` : sql`${JSON.stringify(incoming)}::jsonb`;
   const result = setupFailure ? sql`case when ${heartbeatRuns.runtimeMode} = 'native'
@@ -1147,13 +1161,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     if (previousStatus && (status === "cancelled" || status === "interrupted")) {
       patch = { ...patch, resultJson: cancellationResultJson(previousStatus, status, patch?.resultJson, patch?.errorCode, patch?.error) };
     }
-    if (
-      status === "cancelled" &&
-      previousStatus?.status === "queued" &&
-      previousStatus.runtimeMode !== "native" &&
-      !previousStatus.startedAt &&
-      !previousStatus.processPid
-    ) {
+    const unstartedQueuedCancellation = unstartedQueuedCancellationConditions(previousStatus, status);
+    if (previousStatus && unstartedQueuedCancellation) {
       patch = {
         ...patch,
         resultJson: {
@@ -1171,6 +1180,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             status,
             patch,
             reconcileIfNeeded: true,
+            writeConditions: unstartedQueuedCancellation ?? undefined,
           })
         : writer
             .update(heartbeatRuns)
@@ -1181,7 +1191,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
               executionStatusDeliveryId: randomUUID(),
               updatedAt: new Date(),
             })
-            .where(eq(heartbeatRuns.id, runId))
+            .where(and(eq(heartbeatRuns.id, runId), ...(unstartedQueuedCancellation ?? [])))
             .returning()
             .then((rows) => rows[0] ?? null));
 
@@ -1257,13 +1267,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
 
     // Cancelling a queued run that never acquired provider execution is
     // positive bootstrap evidence. It must not hold unrelated queued messages.
-    if (
-      status === "cancelled" &&
-      previousStatus?.status === "queued" &&
-      previousStatus.runtimeMode !== "native" &&
-      !previousStatus.startedAt &&
-      !previousStatus.processPid
-    ) {
+    const unstartedQueuedCancellation = unstartedQueuedCancellationConditions(previousStatus, status);
+    if (previousStatus && unstartedQueuedCancellation) {
       patch = {
         ...patch,
         resultJson: {
@@ -1294,7 +1299,11 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             patch,
             fromStatuses,
             reconcileIfNeeded: true,
-            writeConditions: [nativeRunnerOwnershipNotHeldCondition(), ...(cancellationCondition ? [cancellationCondition] : [])],
+            writeConditions: [
+              nativeRunnerOwnershipNotHeldCondition(),
+              ...(unstartedQueuedCancellation ?? []),
+              ...(cancellationCondition ? [cancellationCondition] : []),
+            ],
           })
         : writer
             .update(heartbeatRuns)
@@ -1324,6 +1333,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
                   ]
                   : []),
                 ...(cancellationCondition ? [cancellationCondition] : []),
+                ...(unstartedQueuedCancellation ?? []),
                 ...(isHeartbeatRunTerminalStatus(status)
                   ? [nativeRunnerOwnershipNotHeldCondition()]
                   : []),

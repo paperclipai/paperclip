@@ -2,7 +2,7 @@ import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external
 import { randomBytes } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, subscribeDatabaseWork } from "@paperclipai/db";
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, type SQL } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import type { CurrentUserRedactionOptions } from "../../log-redaction.js";
@@ -190,6 +190,52 @@ describe.skipIf(!support.supported)("heartbeat lifecycle database wiring", () =>
     });
     expect(persisted?.processStartedAt?.toISOString()).toBe(remoteBirth);
     expect(persisted?.processPid).toBe(process.pid);
+  });
+
+  it("stamps an unclaimed queued legacy run that Stop cancels as never started", async () => {
+    const { run } = await fixture({ status: "queued", runtimeMode: "legacy" });
+    const write = await createHeartbeatLifecycle(db, callbacks(db)).setRunStatusFromLive(
+      run.id, "cancelled", ["queued", "running", "scheduled_retry"],
+      { finishedAt: new Date(), error: "Stopped", errorCode: "cancelled" },
+    );
+    expect(write.updated).toBe(true);
+    expect(write.run).toMatchObject({ status: "cancelled" });
+    expect(write.run?.resultJson?.executionRecovery).toEqual({ kind: "bootstrap", providerWorkStarted: false });
+  });
+
+  it("does not cancel or stamp a queued run that a claim moves to running after the Stop read", async () => {
+    const { run } = await fixture({ status: "queued", runtimeMode: "legacy" });
+    let claimed = false;
+    const racing = new Proxy(db, {
+      get(target, key) {
+        if (key === "select" && !claimed) {
+          return (fields?: Parameters<Db["select"]>[0]) => ({
+            from: (table: typeof heartbeatRuns) => ({
+              where: (condition: SQL | undefined) => ({
+                then: (resolve: (rows: unknown[]) => unknown, reject: (error: unknown) => unknown) =>
+                  (fields ? target.select(fields) : target.select()).from(table).where(condition).then(async rows => {
+                    claimed = true;
+                    await target.update(heartbeatRuns).set({ status: "running", startedAt: new Date() })
+                      .where(eq(heartbeatRuns.id, run.id));
+                    return rows;
+                  }).then(resolve, reject),
+              }),
+            }),
+          });
+        }
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const write = await createHeartbeatLifecycle(racing, callbacks(db)).setRunStatusFromLive(
+      run.id, "cancelled", ["queued", "running", "scheduled_retry"],
+      { finishedAt: new Date(), error: "Stopped", errorCode: "cancelled" },
+    );
+    expect(claimed).toBe(true);
+    expect(write.updated).toBe(false);
+    const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(current.status).toBe("running");
+    expect(current.resultJson?.executionRecovery).toBeUndefined();
   });
 
   it("keeps one terminal outcome and reports only the winner of competing writes", async () => {
