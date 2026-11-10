@@ -32,6 +32,11 @@ describe("planConfigWave", () => {
     expect(planConfigWave({ ...base, faults: ["CF2"], tasks: 1 })[0]).toMatchObject({ adapter: "opencode", reference: "ai_default" });
   });
 
+  it("crosses each fault kind with both restart kinds", () => {
+    const tasks = planConfigWave({ ...base, faults: ["CF1", "CF2"], tasks: 3 });
+    expect(tasks.map(task => `${task.fault}/${task.restart}`)).toEqual(["CF1/K1", "CF2/K1", "CF1/K2"]);
+  });
+
   it("offers the account default only to adapters that carry the binding", () => {
     expect(referencesFor("CF3", "codex")).not.toContain("ai_default");
     expect(referencesFor("CF3", "opencode")).toEqual([...CONFIG_REFERENCE_IDS]);

@@ -144,8 +144,8 @@ export function planConfigWave(options: ConfigWaveOptions): ConfigTaskPlan[] {
       reference = referencesFor(fault, adapter)[0]!;
     }
     tasks.push({ taskId: `t${String(index + 1).padStart(2, "0")}`, index, fault, reference, adapter,
-      // Alternate restart kinds so even a two-task wave crosses both K1 and K2.
-      restart: options.restarts[index % options.restarts.length]!, nonce: rng.hex(8) });
+      // Alternate restart kinds per fault kind, so two tasks of one fault cross both K1 and K2.
+      restart: options.restarts[tasks.filter(earlier => earlier.fault === fault).length % options.restarts.length]!, nonce: rng.hex(8) });
   }
   return tasks;
 }
