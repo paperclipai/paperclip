@@ -11061,9 +11061,9 @@ async function executePaperclipNativeSessionAttempt(
             const { resolveAzureDevOpsRunGitCredentials } = await import("../azure-devops-run-git-credentials.js");
             const { projectForAzureRuntimeRepository } = await import("../azure-project-repository-bindings.js");
             const authority = { ...binding, repositoryUrl, bindings: input.azureProjectRepositories };
-            const projectId = await projectForAzureRuntimeRepository(input.db, authority);
-            const result = await resolveAzureDevOpsRunGitCredentials(input.db, { ...binding, repoUrl: repositoryUrl, projectId });
-            if (projectId !== await projectForAzureRuntimeRepository(input.db, authority)) throw new Error("Git repository authorization is unavailable");
+            const selection = await projectForAzureRuntimeRepository(input.db, authority);
+            const result = await resolveAzureDevOpsRunGitCredentials(input.db, { ...binding, repoUrl: repositoryUrl, ...selection });
+            if (JSON.stringify(selection) !== JSON.stringify(await projectForAzureRuntimeRepository(input.db, authority))) throw new Error("Git repository authorization is unavailable");
             return { status: "available", env: result.env };
           },
           onLog: input.onLog,
@@ -11893,7 +11893,7 @@ async function executePaperclipNativeSessionAttempt(
             ),
           )
           .for("update");
-        // Issue â†’ coordinator â†’ run, as below. A lease that lapsed untouched
+        // Issue Ã¢â€ â€™ coordinator Ã¢â€ â€™ run, as below. A lease that lapsed untouched
         // (host sleep) is still this owner's to settle; see the held condition.
         await lockNativeExecutionLeaseForReacquire(tx, { ...input.execution.binding, leaseOwner, preResultOnly: true });
         await notifyExecutionRunWork(tx, { companyId: input.execution.binding.companyId });

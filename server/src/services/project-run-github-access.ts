@@ -117,7 +117,7 @@ export async function authorizeProjectGitHubCheckout(db: Db, input: {
       return typeof metadata.repositoryId === 'string' && (metadata.repositoryProvider === undefined || metadata.repositoryProvider === 'github')
         ? metadata.repositoryId : typeof metadata.githubRepositoryId === 'string' ? metadata.githubRepositoryId : null;
     }))];
-    if (matches.length !== 1 || ids.length !== 1 || (ids[0] !== null && !/^\d+$/.test(ids[0]))) throw unavailable();
+    if (!matches.length || ids.length !== 1 || (ids[0] !== null && !/^\d+$/.test(ids[0]))) throw unavailable();
     return ids[0] ?? null;
   };
   const id = await currentId();

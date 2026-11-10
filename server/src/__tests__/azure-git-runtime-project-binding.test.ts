@@ -75,7 +75,7 @@ describe("Azure Git runtime project binding", () => {
       .set("Authorization", `Bearer ${signed}`).send({ repositoryUrl });
     expect(first.status).toBe(200);
     expect(resolveGitCredentials).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
-      companyId: "company", agentId: "agent", runId: "run", repoUrl: repositoryUrl, projectId: undefined,
+      companyId: "company", agentId: "agent", runId: "run", repoUrl: repositoryUrl, expectedRepositoryId: "azure-devops:contoso:repo",
     });
     active = false;
     const revoked = await request(app(db)).post("/runtime-tools/git/credentials")

@@ -120,9 +120,9 @@ const support = await getEmbeddedPostgresTestSupport();
     return Response.json({ value: [{ id: repositoryId, name: repoName, project: { name: "Project" } }] });
   };
 
-  const resolve = (input: Awaited<ReturnType<typeof seed>>, request = provider(), options: { projectId?: string; repoUrl?: string } = {}) =>
+  const resolve = (input: Awaited<ReturnType<typeof seed>>, request = provider(), options: { projectId?: string; repoUrl?: string; expectedRepositoryId?: string } = {}) =>
     resolveAzureDevOpsRunGitCredentials(db, { companyId: input.companyId, runId: input.runId,
-      agentId: input.agentId, repoUrl: options.repoUrl ?? input.repoUrl, ...(options.projectId ? { projectId: options.projectId } : {}) }, { request });
+      agentId: input.agentId, repoUrl: options.repoUrl ?? input.repoUrl, ...(options.projectId ? { projectId: options.projectId } : {}), ...(options.expectedRepositoryId ? { expectedRepositoryId: options.expectedRepositoryId } : {}) }, { request });
   async function rejectsWithoutPat(promise: Promise<unknown>, secretId: string) {
     let error: unknown;
     try { await promise; } catch (caught) { error = caught; }
@@ -140,6 +140,14 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(JSON.stringify(result.configArgs)).not.toContain(`pat-${selected.secretId}`);
     expect(Object.values(result.env).join("\n")).toContain(`pat-${selected.secretId}`);
     expect(JSON.stringify({ ...result, env: {} })).not.toContain(`pat-${selected.secretId}`);
+  });
+
+  it("rejects a replacement repository at an admitted task URL", async () => {
+    const input = await seed();
+    const selected = await grant(input);
+    const expectedRepositoryId = "azure-devops:contoso:12345678-1234-1234-1234-1234567890ab";
+    await expect(resolve(input, provider(), { expectedRepositoryId })).resolves.toMatchObject({ source: "managed_connection" });
+    await rejectsWithoutPat(resolve(input, provider("repo", undefined, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), { expectedRepositoryId }), selected.secretId);
   });
 
   it("allows a dedicated agent grant and a company install when the run's responsible user has no personal grant", async () => {

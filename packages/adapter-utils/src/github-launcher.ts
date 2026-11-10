@@ -71,6 +71,17 @@ function azureRemote(args, env) {
   };
   const explicit = remaining.map(arg => arg.startsWith('--') && arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : arg).find(isAzure);
   if (explicit) return explicit;
+  const remoteIndex = remaining.indexOf('--remote');
+  const destination = remaining.find(arg => arg.startsWith('--remote='))?.slice('--remote='.length) ||
+    (remoteIndex >= 0 ? remaining[remoteIndex + 1] : undefined) || remaining.find(arg => !arg.startsWith('-'));
+  const explicitOther = destination && /^(?:[a-z][a-z0-9+.-]*:\/\/|[^@/\s]+@[^/:\s]+:|\/|\.\.?\/|[^\s-][^\s]*\/)/i.test(destination) ? destination : null;
+  if (explicitOther) {
+    const expanded = spawnSync(executable, [...globalOptions, 'ls-remote', '--get-url', '--', explicitOther], {
+      env, encoding: 'utf8', timeout: 5000, maxBuffer: 4096, windowsHide: true,
+    });
+    const target = expanded.status === 0 && String(expanded.stdout || '').trim() || explicitOther;
+    return isAzure(target) ? target : null;
+  }
   if (!['clone', 'fetch', 'pull', 'push', 'ls-remote', 'archive'].includes(command)) return null;
   if (command === 'archive' && !remaining.some(arg => arg === '--remote' || arg.startsWith('--remote='))) return null;
   if (command === 'clone') return null;
