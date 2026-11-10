@@ -145,7 +145,7 @@
     },
     {
       "path": "rules/company-scope-exceptions.mdc",
-      "description": "The only instance-wide data (announcement dismissals, publication-ID registry, personal workspace preferences) and the conditions that keep company boundaries intact.",
+      "description": "The known instance-wide data (announcement dismissals, publication-ID registry, personal workspace preferences, sidebar company order) and the conditions that keep company boundaries intact.",
       "scope": [
         "packages/db/src/schema/announcement_dismissals.ts",
         "packages/shared/src/announcements.ts",
@@ -155,7 +155,11 @@
         "packages/db/src/schema/user_workspace_preferences.ts",
         "packages/shared/src/workspace-preferences.ts",
         "server/src/routes/workspace-preferences.ts",
-        "server/src/services/workspace-preferences.ts"
+        "server/src/services/workspace-preferences.ts",
+        "packages/db/src/schema/user_sidebar_preferences.ts",
+        "packages/shared/src/types/sidebar-preferences.ts",
+        "server/src/routes/sidebar-preferences.ts",
+        "server/src/services/sidebar-preferences.ts"
       ]
     }
   ]
