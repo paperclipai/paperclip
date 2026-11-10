@@ -137,7 +137,13 @@ export async function runFreezeFault(input: {
     const exit = input.exitStatus();
     if (!exit) throw error;
     record.serverExitedAfterThaw = exit;
-    await input.replaceExited().catch((cleanup: unknown) => { record.cleanupError = cleanup instanceof Error ? cleanup.message : String(cleanup); });
+    try {
+      await input.replaceExited();
+    } catch (cleanup) {
+      // An old runner may still be alive and writing: fail the fault rather than start a second server beside it.
+      record.cleanupError = cleanup instanceof Error ? cleanup.message : String(cleanup);
+      throw new Error(`Exited server's process tree could not be shown stopped: ${record.cleanupError}`);
+    }
     return { stoppedAt, restartedAt, healthyAt: await input.startReplacement() };
   }
 }

@@ -205,11 +205,12 @@ describe("freeze sequence", () => {
     expect(record.cleanupError).toBeUndefined();
   });
 
-  it("keeps a cleanup failure instead of swallowing it", async () => {
-    const { input, record } = harness({ waitHealthy: async () => { throw new Error("exited"); },
+  it("fails on a cleanup failure without starting a second server", async () => {
+    const { input, calls, record } = harness({ waitHealthy: async () => { throw new Error("exited"); },
       exitStatus: () => ({ code: null, signal: "SIGKILL" }), replaceExited: async () => { throw new Error("runner 300 still alive"); } });
-    await runFreezeFault(input);
+    await expect(runFreezeFault(input)).rejects.toThrow(/could not be shown stopped: runner 300 still alive/);
     expect(record.cleanupError).toBe("runner 300 still alive");
+    expect(calls).not.toContain("replace");
   });
 
   it("fails without a replacement when a live server never answers", async () => {

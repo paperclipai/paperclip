@@ -502,7 +502,6 @@ export class ChaosSupervisor {
     receipt.stoppedAt = times.stoppedAt;
     receipt.restartedAt = times.restartedAt;
     receipt.healthyAt = times.healthyAt;
-    if (timeFault.cleanupError) throw new Error(`Exited server's process tree could not be shown stopped: ${timeFault.cleanupError}`);
   }
 
   /**

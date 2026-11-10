@@ -670,7 +670,7 @@ again.
 A freeze is a fault window like an outage, from `SIGSTOP` to ready. If a server exits by itself after
 `SIGCONT` (for example a lost-lease self-fence), the harness records `serverExitedAfterThaw`, cleans
 up the exited server's tree, starts a replacement and grades the tasks. If the cleanup cannot prove
-the old tree stopped, the harness records `cleanupError` and the fault fails as a harness error.
+the old tree stopped, the harness records `cleanupError`, starts no replacement, and the fault fails as a harness error.
 
 **Pass rule.** Each task is graded on R1–R6 and its T-oracle as usual:
 - the task reaches its correct terminal state, or a diagnosable rest;
