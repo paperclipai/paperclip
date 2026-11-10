@@ -36,9 +36,6 @@ import {
   recoveryService,
 } from "../services/recovery/service.ts";
 
-// An orphaned run is by definition one whose row *stayed* "running", so a fixture
-// standing in for one has to be older than the issue-terminal grace period. A
-// fresh row instead models the reassignment hand-off the grace period protects.
 const orphanedRunStartedAt = () =>
   new Date(Date.now() - ISSUE_TERMINAL_MIN_RUN_AGE_MS - 5_000);
 
@@ -311,8 +308,6 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     runtimeMode?: "native" | "legacy";
     variant?: "ordinary" | "cancelled" | "wrong_child" | "wrong_reason" | "wrong_agent" | "unfinished_child" | "foreign_child";
   } = {}) {
-    // The reported issue is done, so the issue-terminal authority is in play:
-    // the run has to have outlived the grace period, as a real orphan would.
     const { companyId, agentId, runningRunId } = await seed({ runningRunStartedAt: orphanedRunStartedAt() });
     const issueId = randomUUID();
     const childIssueId = randomUUID();
@@ -891,12 +886,6 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   });
 
   it("does not terminalize a freshly started run under a momentarily terminal issue (reassignment hand-off)", async () => {
-    // One request can set status=done and reassign at the same time. That starts
-    // the receiving agent's run while the issue is still terminal and still holds
-    // the lock columns. The issue-terminal authority would read that as an
-    // orphan, kill a run seconds old, and drop the checkout it just acquired.
-    // The run row carries no pid yet, which is exactly why the grace period and
-    // not the process-death authority is what has to hold here.
     const { companyId, agentId, runningRunId } = await seed();
     const issueId = randomUUID();
     await db.insert(issues).values({
@@ -922,12 +911,8 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runningRunId));
     expect(run?.status).toBe("running");
-    // Deferred, not dropped: the sweep asks to come back when the grace period ends,
-    // so a run that turns out to be orphaned is still cleaned up.
     expect(deadlines).toContain(run!.startedAt!.getTime() + ISSUE_TERMINAL_MIN_RUN_AGE_MS);
 
-    // The locks must survive too. Clearing them is what turns the receiving
-    // agent's later writes into ownership conflicts.
     const lock = await db
       .select({
         checkoutRunId: issues.checkoutRunId,
@@ -943,9 +928,6 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   });
 
   it("still terminalizes a freshly started run under a terminal issue once its process is gone", async () => {
-    // The grace period is scoped to the issue-terminal authority. Process death
-    // is observed rather than inferred, so a fresh run with a dead recorded pid
-    // must still be swept and must not keep the issue locked.
     const { companyId, agentId, runningRunId } = await seed();
     await db
       .update(heartbeatRuns)
@@ -970,8 +952,6 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(result.terminalizedRunIds).toEqual([runningRunId]);
     expect(result.cleared).toBe(1);
 
-    // The issue-terminal authority is suppressed, so the run takes the
-    // process-death outcome rather than the issue-implied "succeeded".
     const run = await db
       .select({
         status: heartbeatRuns.status,
@@ -1032,8 +1012,6 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   });
 
   it("does not terminalize or clear issue locks when an ownership hold arrives after the sweep snapshot", async () => {
-    // The race this covers starts inside the terminal write, so the run has to
-    // clear the issue-terminal grace period to reach it at all.
     const { companyId, agentId, runningRunId } = await seed({
       runningRunStartedAt: orphanedRunStartedAt(),
     });
