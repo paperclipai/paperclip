@@ -321,7 +321,7 @@ describe("S3 run log store", () => {
     const m = memory(),
       store = createObjectRunLogStore({ provider: m.provider, keyPrefix: "logs", assertWriterAuthority: async () => undefined });
     await expect(store.read({ store: "s3_segments", logRef: "company/agent/never-written", attemptId: "attempt" }))
-      .rejects.toThrow("Object run log not found");
+      .rejects.toMatchObject({ status: 404, message: "Run log not found" });
   });
   it("batches concurrent appends, confirms durability, and resumes offsets/sequence on a replacement", async () => {
     const m = memory(),

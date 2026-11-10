@@ -627,6 +627,22 @@ settlement record. The record does not imply exactly-once emission across
 controller recovery, and failure to write it is logged without changing the
 already-settled outcome.
 
+## Storage outage waits
+
+A run waits out a file-storage outage on its critical path: when it starts its
+run log, restores its saved workspace, or saves it. While it waits, the run's live
+status says so, with phase `waiting_for_storage`, for example "Waiting for file
+storage before starting the run log (45s so far)". That status lives in server
+memory and on the live-event stream only. It writes nothing to the run row or
+the run log during the wait.
+
+When the wait ends, the controller writes one record with `eventType:
+"lifecycle"`, `stream: "system"`, and `level: "warn"`. Its message is "Waited Ns
+for file storage before <step>." or, when storage stayed unavailable, "Waited Ns
+for file storage before <step>; it was still unavailable." Its payload holds
+`reason: "storage_outage_wait"`, `purpose` (the step), `waitedMs`, and
+`recovered`. The record stays in the instance run log.
+
 ## Durable storage timing
 
 A saved remote workspace is one encrypted archive in durable object storage.
