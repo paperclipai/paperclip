@@ -70,6 +70,15 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     }
     return { companyId, projectId, root, parent: members[0], leaves: members.slice(1) };
   }
+  async function aliasMembers(f: Awaited<ReturnType<typeof fixture>>, base: typeof f.parent, count: number) {
+    const tasks = await db.insert(issues).values(Array.from({ length: count - 1 }, (_, index) => ({
+      companyId: f.companyId, projectId: f.projectId, title: `Alias ${index}` }))).returning();
+    const aliases = await db.insert(executionWorkspaces).values(tasks.map(task => ({ companyId: f.companyId,
+      projectId: f.projectId, sourceIssueId: task.id, name: "Alias", mode: base.mode, strategyType: base.strategyType,
+      providerType: base.providerType, cwd: base.cwd, providerRef: base.providerRef, repoUrl: base.repoUrl, branchName: base.branchName }))).returning();
+    for (const alias of aliases) await db.update(issues).set({ executionWorkspaceId: alias.id }).where(eq(issues.id, alias.sourceIssueId!));
+    return [base, ...aliases];
+  }
   const run = (f: Awaited<ReturnType<typeof fixture>>, extra: Partial<Parameters<typeof migrateRemoteWorkspaceCohort>[0]> = {}) =>
     migrateRemoteWorkspaceCohort({ db, storage, companyId: f.companyId, workspaceIds: f.leaves.map(row => row.id),
       apply: true, concurrency: 2, signal: AbortSignal.timeout(50_000), ...extra });
@@ -213,6 +222,123 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     expect(await db.select().from(activityLog)).toHaveLength(0);
     await assertLocal(f);
     expect(await db.select().from(workspaceOperations)).toHaveLength(mode === "foreign" ? 3 : 2);
+  });
+  it.each(["fresh", "resume"] as const)("imports a larger same-root cohort with bounded work (%s)", async mode => {
+    const f = await fixture(), selected = await aliasMembers(f, f.parent, 10), workspaceIds = selected.map(row => row.id);
+    for (const child of f.leaves) await migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: child.id,
+      apply: true, signal: AbortSignal.timeout(50_000) });
+    await fs.writeFile(path.join(f.root, "root-untracked.txt"), "parent retained work\n");
+    const inspect = onlineWorkspaceSource.inspectOnlineWorkspaceSource, transaction = db.transaction.bind(db), put = storage.putFile.bind(storage);
+    let readers = 0, maximumReaders = 0, reservations = 0, maximumReservations = 0, uploads = 0, maximumUploads = 0;
+    vi.spyOn(onlineWorkspaceSource, "inspectOnlineWorkspaceSource").mockImplementation(async (...args) => {
+      readers++; maximumReaders = Math.max(maximumReaders, readers);
+      try { return await inspect(...args); } finally { readers--; }
+    });
+    vi.spyOn(db, "transaction").mockImplementation(async (...args) => {
+      reservations++; maximumReservations = Math.max(maximumReservations, reservations);
+      try { return await transaction(...args); } finally { reservations--; }
+    });
+    const capture = vi.spyOn(workspaceArchive, "captureRemoteWorkspaceDirectory");
+    let entered = 0, release!: () => void, interrupt = mode === "resume";
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const barrier = new Promise<void>(done => { release = done; });
+    vi.spyOn(storage, "putFile").mockImplementation(async input => {
+      uploads++; maximumUploads = Math.max(maximumUploads, uploads);
+      try {
+        if (interrupt && ++entered === 2) throw new Error("large_cohort_upload_interrupted");
+        if (!interrupt) {
+          if (++entered === 1) timer = setTimeout(() => release(), 5000);
+          if (entered === 8) release();
+          await barrier;
+        }
+        return await put(input);
+      } finally { uploads--; }
+    });
+    let savedOperations: Array<{ id: string; metadata: Record<string, unknown> | null }> = [], savedSnapshotIds: string[] = [];
+    try {
+      if (mode === "resume") {
+        await expect(run(f, { workspaceIds, concurrency: 1 })).rejects.toThrow("large_cohort_upload_interrupted");
+        savedOperations = (await db.select().from(workspaceOperations)).filter(row => workspaceIds.includes(row.executionWorkspaceId!));
+        savedSnapshotIds = (await db.select().from(executionWorkspaceSnapshots)).filter(row => workspaceIds.includes(row.executionWorkspaceId)).map(row => row.id);
+        expect(savedOperations).toHaveLength(10); expect(savedSnapshotIds).toHaveLength(2);
+        interrupt = false; entered = 0;
+      }
+      await expect(run(f, { workspaceIds, concurrency: 8 })).resolves.toMatchObject({ applied: true });
+    } finally { clearTimeout(timer); }
+    expect(maximumReaders).toBe(8); expect(maximumReservations).toBe(8); expect(maximumUploads).toBe(8);
+    expect(readers).toBe(0); expect(reservations).toBe(0); expect(uploads).toBe(0);
+    const operations = (await db.select().from(workspaceOperations)).filter(row => workspaceIds.includes(row.executionWorkspaceId!));
+    expect(operations).toHaveLength(10); expect(operations.every(row => row.status === "succeeded")).toBe(true);
+    if (mode === "fresh") expect(capture.mock.calls.filter(([input]) => f.leaves.some(child => input.cwd === child.cwd)
+      && path.basename(input.archivePath) === "current.pcws")).toHaveLength(4);
+    else {
+      expect(operations.map(row => row.id).sort()).toEqual(savedOperations.map(row => row.id).sort());
+      expect(operations.every(row => JSON.stringify(row.metadata!.cohortMigration) === JSON.stringify(savedOperations[0].metadata!.cohortMigration))).toBe(true);
+      expect((await db.select().from(executionWorkspaceSnapshots)).filter(row => savedSnapshotIds.includes(row.id))).toHaveLength(2);
+    }
+    await expect(run(f, { workspaceIds })).resolves.toMatchObject({ applied: true, replayed: true });
+    await fs.rename(f.root, f.root + "-original");
+    for (const workspace of selected) {
+      const [row] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+      const ref = (await getWorkspaceSnapshot(db, { companyId: f.companyId, workspaceId: row.id,
+        snapshotId: readRemoteWorkspaceAuthority(row.metadata)!.snapshotId! }))!;
+      const archivePath = path.join(home, `${row.id}.pcws`), targetDir = path.join(home, `${row.id}-cold`);
+      await loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath: archivePath });
+      await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref.manifestDigest });
+      expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("committed base\n");
+      expect(await fs.readFile(path.join(targetDir, "root-untracked.txt"), "utf8")).toBe("parent retained work\n");
+      expect(await git(targetDir, "log", "-1", "--format=%s")).toBe("Original history");
+    }
+  }, 90_000);
+  it.each(["failure", "cancel"] as const)("joins the first extended reader batch before stopping later members (%s)", async mode => {
+    const f = await fixture(), selected = await aliasMembers(f, f.parent, 10), ids = selected.map(row => row.id).sort();
+    for (const child of f.leaves) await migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: child.id,
+      apply: true, signal: AbortSignal.timeout(50_000) });
+    const operations = await db.select().from(workspaceOperations), snapshots = await db.select().from(executionWorkspaceSnapshots);
+    const inspect = onlineWorkspaceSource.inspectOnlineWorkspaceSource, calls = new Map<string, number>(), started: string[] = [];
+    let bothEntered!: () => void, release!: () => void, failed!: () => void, settled = false;
+    const both = new Promise<void>(done => { bothEntered = done; }), held = new Promise<void>(done => { release = done; });
+    const observed = new Promise<void>(done => { failed = done; }), controller = new AbortController();
+    vi.spyOn(onlineWorkspaceSource, "inspectOnlineWorkspaceSource").mockImplementation(async (...args) => {
+      const id = args[1].id, call = (calls.get(id) ?? 0) + 1; calls.set(id, call);
+      if (ids.includes(id) && call === 2) {
+        started.push(id);
+        if (id === ids[0]) {
+          await both; failed();
+          if (mode === "failure") throw new Error("extended_reader_failure");
+          controller.abort(new Error("extended_reader_cancelled"));
+        } else if (id === ids[1]) { bothEntered(); await held; }
+      }
+      return inspect(...args);
+    });
+    const put = vi.spyOn(storage, "putFile"), other = createDb(database.connectionString, { maxConnections: 1 });
+    const pending = run(f, { workspaceIds: ids, signal: controller.signal })
+      .then(value => ({ value }), error => ({ error })).finally(() => { settled = true; });
+    try {
+      await both; await observed;
+      expect(started).toContain(ids[0]); expect(started).toContain(ids[1]);
+      expect(started.every(id => ids.slice(0, 8).includes(id))).toBe(true);
+      expect(settled).toBe(false);
+      await expect(withWorkspaceSourceLocks(other, { companyId: f.companyId, projectIds: [f.projectId] }, async () => true, true))
+        .rejects.toBeInstanceOf(IsolatedRepositorySourceBusy);
+      expect(put).not.toHaveBeenCalled();
+    } finally { release(); await other.$client.end({ timeout: 1 }); }
+    expect(await pending).toMatchObject({ error: expect.objectContaining({ message: mode === "failure"
+      ? "extended_reader_failure" : "extended_reader_cancelled" }) });
+    expect(started.sort()).toEqual(ids.slice(0, 8));
+    expect(calls.get(ids[8])).toBe(1); expect(calls.get(ids[9])).toBe(1);
+    expect(await db.select().from(workspaceOperations)).toEqual(operations);
+    expect(await db.select().from(executionWorkspaceSnapshots)).toEqual(snapshots);
+    expect(put).not.toHaveBeenCalled();
+  }, 60_000);
+  it("refuses more than eight members across different canonical leaf roots", async () => {
+    const f = await fixture(), aliases = await aliasMembers(f, f.leaves[0], 8);
+    const workspaces = [f.leaves[1], ...aliases], noStorage = new Proxy(storage, { get() { throw new Error("storage_must_not_be_used"); } });
+    await expect(run(f, { storage: noStorage, workspaceIds: workspaces.map(row => row.id) }))
+      .rejects.toThrow("workspace_cohort_same_root_required");
+    expect(await db.select().from(workspaceOperations)).toHaveLength(0);
+    expect(await db.select().from(executionWorkspaceSnapshots)).toHaveLength(0);
+    await assertLocal(f);
   });
   it("resumes the same uploaded cohort after an archived companion is independently migrated", async () => {
     const f = await fixture("cohort"), held = await recoverable(f), cwd = path.join(f.root, ".paperclip", "worktrees", "retired"), closedAt = new Date();
