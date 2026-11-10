@@ -3,12 +3,36 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { TaskBrowser } from "@paperclipai/shared";
 import { browserUseApi } from "@/api/browser-use";
 import { retryTransientOnly } from "@/lib/query-client";
-export function useTaskBrowsers(issueId?: string) {
+import { useHasCompanyLiveConnection } from "@/context/LiveUpdatesProvider";
+export const TASK_BROWSERS_REFETCH_MS = 3000;
+
+/**
+ * Poll while the company live connection is closed, and while any browser can
+ * still change state. With the connection open, every browser lifecycle step
+ * (`browser.started`, `browser.ready`, `browser.run_finished`, `browser.closed`
+ * and controls) logs task activity, which invalidates this query.
+ */
+export function taskBrowsersRefetchInterval(
+  connected: boolean,
+  state: { status: "pending" | "error" | "success"; data: TaskBrowser[] | undefined },
+): number | false {
+  if (!connected || state.status !== "success" || !Array.isArray(state.data)) return TASK_BROWSERS_REFETCH_MS;
+  return state.data.some(browser => browser.status !== "closed" && browser.status !== "failed")
+    ? TASK_BROWSERS_REFETCH_MS
+    : false;
+}
+
+export function taskBrowsersQueryKey(issueId: string | undefined) {
+  return ["task-browsers", issueId] as const;
+}
+
+export function useTaskBrowsers(issueId?: string, companyId?: string | null) {
+  const connected = useHasCompanyLiveConnection(companyId);
   return useQuery({
-    queryKey: ["task-browsers", issueId],
+    queryKey: taskBrowsersQueryKey(issueId),
     queryFn: () => browserUseApi.list(issueId!),
     enabled: Boolean(issueId) && !issueId?.startsWith("chat:"),
-    refetchInterval: 3000,
+    refetchInterval: (query) => taskBrowsersRefetchInterval(connected, query.state),
     // The 3s poll cadence already retries reads; stacking the shared backoff
     // inside a tick only adds duplicate requests. The next tick refetches anyway.
 
