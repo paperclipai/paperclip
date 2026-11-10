@@ -135,7 +135,12 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       assertWriterAuthority: input.assertWriterAuthority,
       previousStore,
       signal: input.signal,
-    }), input.signal);
+    }), input.signal, undefined, ({ waitedMs }) => appendRunEvent(run, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: `File storage is unavailable. The run log will start when it is back (waited ${Math.round(waitedMs / 1000)}s).`,
+    }));
 
     outputSeq = handle.initialSequence ?? outputSeq;
     persistedLogBytes = handle.initialBytes ?? persistedLogBytes;

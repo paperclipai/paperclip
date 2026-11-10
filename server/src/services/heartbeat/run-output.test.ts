@@ -76,11 +76,24 @@ describe("claiming the run log during a storage outage (storage chaos ST1)", () 
   const outage = () => withS3FailureDiagnostics("put_object", async () => {
     throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
   });
-  const output = (begin: () => Promise<never | { store: "s3_segments"; logRef: string }>, signal?: AbortSignal) =>
+  const output = (begin: () => Promise<never | { store: "s3_segments"; logRef: string }>, signal?: AbortSignal,
+    appendRunEvent: ReturnType<typeof vi.fn> = vi.fn()) =>
     createHeartbeatRunOutput(createRunRowDb({ ...newRunRow }), { run: newRunRow as Run, runId: "run-1", issueId: null,
       runLogStore: { begin, append: async () => 0, enqueue: async () => ({ committed: Promise.resolve(0) }), flush: async () => undefined },
       identityRedactor: { chunk: (_stream, chunk) => chunk, redact: value => value }, secretKeys: new Set(),
-      appendRunEvent: vi.fn(), getCurrentUserRedactionOptions: async () => ({ enabled: false }), signal });
+      appendRunEvent: appendRunEvent as never, getCurrentUserRedactionOptions: async () => ({ enabled: false }), signal });
+
+  it("tells the run's viewers it is waiting for storage on every retry", async () => {
+    let calls = 0;
+    const appendRunEvent = vi.fn(async () => undefined);
+    const begin = vi.fn(async () => (++calls < 3 ? outage() : { store: "s3_segments" as const, logRef: "company/agent/run" }));
+    await output(begin, undefined, appendRunEvent).begin({ ...newRunRow } as Run);
+    const waits = appendRunEvent.mock.calls.map(call => (call as unknown[])[1] as { eventType: string; level: string; message: string })
+      .filter(event => /file storage/i.test(event.message));
+    expect(waits).toHaveLength(2);
+    expect(waits[0]).toMatchObject({ eventType: "lifecycle", level: "warn",
+      message: expect.stringMatching(/^File storage is unavailable\. The run log will start when it is back/) });
+  }, 30_000);
 
   it("claims the log once the store is back instead of failing the run", async () => {
     let calls = 0;

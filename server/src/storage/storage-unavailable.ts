@@ -79,15 +79,20 @@ export function endStorageOutageWaitOn(stop: AbortSignal): void {
   if (current) outageWaitScope.enterWith({ stop: current.stop ? AbortSignal.any([current.stop, stop]) : stop });
 }
 
+/** One wait between attempts while the store is unavailable. */
+export type StorageOutageWait = { waitMs: number; waitedMs: number };
+
 export function retryThroughStorageOutage<T>(send: () => Promise<T>, signal?: AbortSignal,
-  policy: { budgetMs: number; firstDelayMs: number; maxDelayMs: number } = STORAGE_OUTAGE_WAIT): Promise<T> {
+  policy: { budgetMs: number; firstDelayMs: number; maxDelayMs: number } = STORAGE_OUTAGE_WAIT,
+  onWait?: (wait: StorageOutageWait) => Promise<void> | void): Promise<T> {
   const operation = outageWaitOperation.getStore();
-  return operation ? retryWithin(operation, send, signal, policy)
-    : outageWaitOperation.run({ firstFailureAt: null }, () => retryWithin(outageWaitOperation.getStore()!, send, signal, policy));
+  return operation ? retryWithin(operation, send, signal, policy, onWait)
+    : outageWaitOperation.run({ firstFailureAt: null }, () => retryWithin(outageWaitOperation.getStore()!, send, signal, policy, onWait));
 }
 
 async function retryWithin<T>(operation: OutageWaitOperation, send: () => Promise<T>, signal: AbortSignal | undefined,
-  policy: { budgetMs: number; firstDelayMs: number; maxDelayMs: number }): Promise<T> {
+  policy: { budgetMs: number; firstDelayMs: number; maxDelayMs: number },
+  onWait?: (wait: StorageOutageWait) => Promise<void> | void): Promise<T> {
   const scopeStop = outageWaitScope.getStore()?.stop;
   const stop = signal && scopeStop ? AbortSignal.any([signal, scopeStop]) : signal ?? scopeStop;
   for (let wait = policy.firstDelayMs; ; wait = Math.min(wait * 2, policy.maxDelayMs)) {
@@ -99,6 +104,8 @@ async function retryWithin<T>(operation: OutageWaitOperation, send: () => Promis
       operation.firstFailureAt ??= now;
       if (stop?.aborted || now - operation.firstFailureAt + wait > policy.budgetMs) throw error;
       recordStorageBackoff(wait);
+      // A failed notice must not end the wait it reports.
+      await Promise.resolve().then(() => onWait?.({ waitMs: wait, waitedMs: now - operation.firstFailureAt! })).catch(() => undefined);
       await delay(wait, undefined, { signal: stop }).catch((interrupted: unknown) => {
         throw signal?.aborted && signal.reason instanceof DOMException && signal.reason.name === "TimeoutError" ? error : interrupted;
       });
