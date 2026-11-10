@@ -57,6 +57,11 @@ describe("default lifecycle for an agent that never chose one", () => {
     // Rule 2: explicit configuration wins.
     { name: "a remote-sandbox explicit per-turn choice is honored", change: { localTarget: false, remoteSandboxTarget: reusable, agentMode: "per_turn" }, expected: perTurn },
     { name: "a remote-sandbox default honors the agent's idle window", change: { localTarget: false, remoteSandboxTarget: reusable, agentIdleTimeoutMs: 900_000 }, expected: warm },
+    // The same window the environment view forwards to the provider: the environment's, then the agent's.
+    { name: "a remote-sandbox default honors an inheriting environment's idle window", change: { localTarget: false,
+      remoteSandboxTarget: { reusableLease: true, idleTimeoutMs: 900_000 }, agentIdleTimeoutMs: 600_000 }, expected: warm },
+    { name: "an explicit warm choice keeps the agent's idle window", change: { localTarget: false, agentMode: "warm",
+      remoteSandboxTarget: { reusableLease: true, idleTimeoutMs: 600_000 }, agentIdleTimeoutMs: 900_000 }, expected: warm },
     { name: "a remote-sandbox environment that pins per-turn wins", change: { localTarget: false, remoteSandboxTarget: reusable, environmentPolicy: perTurn }, expected: perTurn },
     { name: "a remote-sandbox session admitted per-turn stays per-turn", change: { localTarget: false, remoteSandboxTarget: reusable, persistedPolicy: perTurn }, expected: perTurn },
     { name: "remote-sandbox managed Claude stays per-turn", change: { localTarget: false, remoteSandboxTarget: reusable, backend: "acpx_runtime", acpxAgent: "claude", managedAiSelected: true }, expected: perTurn },

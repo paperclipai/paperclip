@@ -22,9 +22,11 @@ export function resolveHeartbeatNativeLifecyclePolicy(input: {
   /**
    * The run executes in a remote sandbox (not a plugin task). `reusableLease`
    * is true only when the acquired lease is reusable: configured, and
-   * supported by the sandbox provider.
+   * supported by the sandbox provider. `idleTimeoutMs` is the environment's
+   * configured window, which wins over the agent's for the default, as in the
+   * window the environment view forwards to the provider.
    */
-  remoteSandboxTarget?: { reusableLease: boolean };
+  remoteSandboxTarget?: { reusableLease: boolean; idleTimeoutMs?: number };
 }): NativeLifecyclePolicy {
   // An explicit choice wins. With none, a measured harness keeps its runner and
   // provider session between turns: on a local target, and on a remote sandbox
@@ -39,11 +41,13 @@ export function resolveHeartbeatNativeLifecyclePolicy(input: {
   });
   const agentMode = explicit ? input.agentMode
     : input.adapterType === "paperclip_runner" && (localDefault || remoteDefault) ? "warm" : "per_turn";
-  // An explicit warm choice and the remote default honor the agent's idle
-  // window, the same window the environment view forwards to the provider.
+  // An explicit warm choice honors the agent's idle window. The remote default
+  // uses the window the environment view forwards to the provider: the
+  // environment's, then the agent's.
   const agentPolicy: NativeLifecyclePolicy = agentMode === "warm"
-    ? { mode: "warm", idleTimeoutMs: explicit || remoteDefault
-      ? resolvePaperclipRunnerIdleTimeoutMs(input.agentIdleTimeoutMs) : PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS }
+    ? { mode: "warm", idleTimeoutMs: explicit ? resolvePaperclipRunnerIdleTimeoutMs(input.agentIdleTimeoutMs)
+      : remoteDefault ? resolvePaperclipRunnerIdleTimeoutMs(input.remoteSandboxTarget?.idleTimeoutMs ?? input.agentIdleTimeoutMs)
+        : PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS }
     : { mode: "per_turn", idleTimeoutMs: null };
   const supportsManagedWarm = input.adapterType === "paperclip_runner" && (input.taskOwned ||
     supportsManagedNativeWarmSession(profile, input.managedAiAttribution));

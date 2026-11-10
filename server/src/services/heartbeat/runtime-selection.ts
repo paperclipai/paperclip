@@ -288,7 +288,7 @@ function resolveRuntimeLifecyclePolicy(input: HeartbeatRuntimeSelectionInput): N
     taskOwned: Boolean(sandboxTarget?.runnerTask),
     localTarget: target?.kind !== "remote",
     remoteSandboxTarget: sandboxTarget && !sandboxTarget.runnerTask
-      ? { reusableLease: sandboxTargetHasReusableLease(sandboxTarget) } : undefined,
+      ? { reusableLease: sandboxTargetHasReusableLease(sandboxTarget), idleTimeoutMs: sandboxTarget.runnerIdleTimeoutMs } : undefined,
   });
 }
 
