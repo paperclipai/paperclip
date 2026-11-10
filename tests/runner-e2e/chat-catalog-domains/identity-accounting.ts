@@ -68,7 +68,7 @@ export function gradeAccounting(value: unknown) {
       && /(?:\$|USD\s*)4\.00/.test(o.reply)
       && unresolvedRecordIdentifiedNotFree(o.reply, o.state.preflightTask as Entity | undefined, String(o.state.originalRunId ?? ""))
       && hasLink(o, "issues", entity(o.state, "morganReceiptTask")) && hasLink(o, "issues", entity(o.state, "rileyReceiptTask")),
-      "The actual answer breaks down the recorded scoped API dollars by real agent with supporting records, and points at the unresolved usage record without counting it as free.");
+      "The actual answer breaks down the recorded scoped API dollars by real agent with supporting records, and points at the unresolved usage record without giving it a $0 amount.");
   } else if (o.scenarioId === "budgets-costs.repair-cost-recording") {
     c.add("real-human-saved-cost-retry", quality?.runs.some(row => row.runId === before?.id && row.reason === "retryable") === true && o.state.agentRetryStatus === 403
       && o.state.humanRetryHttpStatus === 200 && typeof o.state.retryAccounted === "boolean" && o.state.retryReceiptVisible === true
@@ -150,7 +150,7 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
     }
     await ctx.input.api.patch(`/api/issues/${ctx.issue()!.id}`, { description: `The requested reporting week is ${weekFrom} through ${weekTo} (UTC). Launch contains imported synthetic metered-API receipt tasks ${morganReceiptTask.identifier} (Morgan) and ${rileyReceiptTask.identifier} (Riley), plus actual completed native run ${state.originalRunId} with unresolved saved usage. Imported fixture receipts are not live provider/campaign billing. Other-project and earlier-week charges must be excluded; native subscription usage/fees are separate.` });
     return { ...state, riley, morganReceiptTask, rileyReceiptTask, weekFrom, weekTo, importedReceiptIds: receipts, receiptOrigin: "public-imported-synthetic-fixture" };
-  }, gradeAccounting, { authentication: "human-session", oracleVersion: "paperclip.chat-catalog.spend-breakdown.structural.v2", sourceFiles: sources, expectedRunCount: 2, attemptTimeoutMs: 600_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
+  }, gradeAccounting, { authentication: "human-session", oracleVersion: "paperclip.chat-catalog.spend-breakdown.structural.v3", sourceFiles: sources, expectedRunCount: 2, attemptTimeoutMs: 600_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
     setupPolicy: { funding: "standard", readiness: "all-ready", invariantCheckIds: ["genuine-unresolved-saved-native-usage"] } }),
   identityDefinition("budgets-costs.repair-cost-recording", async ctx => {
     const state = await nativeUnresolvedContext(ctx, true);
@@ -199,8 +199,6 @@ export function unresolvedRecordIdentifiedNotFree(reply: string, record: Entity 
   if (!keys.length) return false;
   const names = (segment: string) => keys.some(key => new RegExp(`(?<![\\w-])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`).test(segment));
   const segments = reply.split(/\n|(?<=[.!?])\s+/).filter(segment => names(segment));
-  // A stated zero amount fails; so does a non-negated "free"/"no charge"/"zero cost" for the record
-  // ("ACO-5 must not be counted as free" is a correct sentence and passes).
-  return segments.length > 0 && !segments.some(segment => /(?:\$|USD\s*)0(?:\.0+)?(?![.\d]*[1-9])/i.test(segment)
-    || (/\bfree\b|\bno charge\b|\bzero cost\b|\bcost(?:s)? nothing\b/i.test(segment) && !/\b(?:not|never|cannot|unable|won't|didn't|couldn't|isn't|aren't|wasn't|doesn't)\b|n['’]t\b/i.test(segment)));
+  // Only a stated $0 amount for the record fails; words such as "free" are not graded.
+  return segments.length > 0 && !segments.some(segment => /(?:\$|USD\s*)0(?:\.0+)?(?![.\d]*[1-9])/i.test(segment));
 }

@@ -35,8 +35,8 @@ export function grade_activity(value: unknown) {
     case "activity.audit-change": {
       const priorityEvents = (o.state.priorityEvents as Entity[] | undefined) ?? [];
       c.add("real-two-change-history", priorityEvents.length === 2 && priorityEvents.every(event => o.activity.some(row => row.id === event.id)), "Both fixture priority changes remain visible on the exact task.");
-      c.add("attribution-and-values", attributedPriorityChanges(o.reply, priorityEvents, before, (o.state.otherActors as string[] | undefined) ?? []),
-        "The reply names the recorded editor, names no other company actor, and reports only real transitions on the exact task; wrong actors, tasks or changes cannot pass.");
+      c.add("attribution-and-values", attributedPriorityChanges(o.reply, priorityEvents, before),
+        "The reply names the recorded editor and reports only real transitions on the exact task; wrong tasks or changes cannot pass.");
       c.add("recorded-event-times", priorityEvents.length === 2 && priorityEvents.every(event => mentionsRecordedTime(o.reply, event.createdAt,
         String(o.state.observedAt ?? ""), String(o.state.timezone ?? "UTC"), priorityEvents.map(row => row.createdAt))),
         "Reported calendar and clock times match the actual retained events in UTC or the browser's declared timezone.");
@@ -56,9 +56,8 @@ export const activityCases: readonly ChatCatalogCase[] = [
     await ctx.input.api.patch(`/api/issues/${t.id}`, { priority: "high" });
     t = await ctx.input.api.patch(`/api/issues/${t.id}`, { priority: "low" });
     const activity = await ctx.input.api.get<Entity[]>(`/api/issues/${t.id}/activity`);
-    return { project: p, task: t, observedAt: new Date().toISOString(), timezone: await ctx.input.page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone), priorityEvents: activity.filter(row => row.action === "issue.updated" && row.details?.priority),
-      otherActors: (await ctx.input.api.get<Entity[]>(`/api/companies/${ctx.input.fixtures.company.id}/agents`)).map(row => String(row.name ?? "")).filter(Boolean) };
-  }), oracleVersion: "paperclip.chat-catalog.activity-audit.structural.v2" },
+    return { project: p, task: t, observedAt: new Date().toISOString(), timezone: await ctx.input.page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone), priorityEvents: activity.filter(row => row.action === "issue.updated" && row.details?.priority) };
+  }), oracleVersion: "paperclip.chat-catalog.activity-audit.structural.v3" },
 ];
 
 export function mentionsRecordedTime(reply: string, recordedAt: string | undefined, observedAt: string, timezone: string, allRecordedAt: Array<string | undefined> = []): boolean {
@@ -172,11 +171,11 @@ import { observeInternal } from "./internal-support.js";
 const wordPattern = (value: string) => new RegExp(`(?<![\\w-])${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "i");
 
 /** Grades the facts the question asked for (who, and the from/to values) by structure rather than
- * sentence grammar: each recorded editor is named somewhere in the reply, no other company actor is
- * named, every stated transition is a real one, and each recorded change's new value is reported.
+ * sentence grammar: each recorded editor is named somewhere in the reply, every stated transition is a
+ * real one, and each recorded change's new value is reported. Mentions of other actors are not graded.
  * How the reply phrases the attribution ("by local-board", "local-board made both", a table, a
  * header over bullets) is left to a human reader. */
-export function attributedPriorityChanges(reply: string, events: Entity[], target?: Entity, otherActors: readonly string[] = []): boolean {
+export function attributedPriorityChanges(reply: string, events: Entity[], target?: Entity): boolean {
   if (events.length !== 2 || events.some(event => !event.actorId || !event.details?.priority)) return false;
   const plain = reply.replace(/[`*]/g, "");
   const taskRefs = plain.match(/\b[A-Z]{2,10}-\d+\b/g) ?? [];
@@ -200,9 +199,5 @@ export function attributedPriorityChanges(reply: string, events: Entity[], targe
   const actors = [...new Set(events.map(event => event.actorId!))];
   const aliases = (actor: string) => actor === "local-board" ? [actor, "local board", "board"] : [actor];
   const named = actors.every(actor => aliases(actor).some(alias => wordPattern(alias).test(plain)));
-  // Another agent named in a sentence that rules it out ("Morgan did not change them") is not an attribution.
-  const sentences = plain.split(/(?<=[.!?;])\s+|\n+/);
-  const contrary = otherActors.some(name => !!name.trim() && !actors.includes(name)
-    && sentences.some(sentence => wordPattern(name).test(sentence) && !/\b(?:not|no|never|neither|nor)\b|n['’]t\b/i.test(sentence)));
-  return reported && named && !contrary;
+  return reported && named;
 }

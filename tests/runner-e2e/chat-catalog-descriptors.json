@@ -171,7 +171,7 @@
       "chat-catalog-domains/internal-activity.ts",
       "chat-scenarios/activity.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.activity-audit.structural.v2",
+    "oracleVersion": "paperclip.chat-catalog.activity-audit.structural.v3",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
@@ -1250,7 +1250,7 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/budgets-costs.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.spend-breakdown.structural.v2",
+    "oracleVersion": "paperclip.chat-catalog.spend-breakdown.structural.v3",
     "expectedRunCount": 2,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 600000,
@@ -1988,7 +1988,7 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/companies.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.agent-observability.structural.v2",
+    "oracleVersion": "paperclip.chat-catalog.agent-observability.structural.v3",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 3,
     "turnTimeoutMs": 120000,
@@ -3226,7 +3226,7 @@
       "chat-catalog-domains/internal-goals.ts",
       "chat-scenarios/goals.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.goal-alignment.structural.v3",
+    "oracleVersion": "paperclip.chat-catalog.goal-alignment.structural.v4",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
@@ -4938,7 +4938,7 @@
       "chat-flow.ts",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v18",
+    "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v19",
     "expectedRunCount": 3,
     "minimumRunCount": 2,
     "expectedHumanMessageCount": 2,
@@ -5056,7 +5056,7 @@
       "../../server/src/services/secret-proposal-notifications.ts",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.secret-proposal.v10",
+    "oracleVersion": "paperclip.chat-catalog.secret-proposal.v11",
     "expectedRunCount": 4,
     "expectedHumanMessageCount": 2,
     "minimumRunCount": 4,
