@@ -374,6 +374,9 @@ that re-resolves its credentials after a rejection keeps going. Rotations and pu
 
 `--storage-fault-seconds 15-45` sets the window length range (5–900 s), for example to find how long
 an outage a run survives. The windows are logged in the timeline and written to `storage-faults.json`.
+The speed grade removes storage fault window time from spans and restart recoveries the same way it
+removes restart outage time (overlap counted once), and reports the removed time on its own line in
+`SUMMARY.md` and as `storageFaultRemovedMs` in `speed.json`.
 
 With `--env daytona --storage s3`, each task's workspace is a remote workspace: the controller saves
 and restores it through the store, so the faults also hit workspace save, restore and copyback. R1
