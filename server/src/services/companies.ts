@@ -1,3 +1,4 @@
+import { prepareMuseReceiverAuthorityMutation } from "../modules/external-agents/index.js";
 import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
 import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
@@ -344,6 +345,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
         const renamedPrefix = await resolveRenamedIssuePrefix(tx, id, companyPatch);
 
         if (companyPatch.status !== undefined && companyPatch.status !== existing.status) {
+          await prepareMuseReceiverAuthorityMutation(tx,{companyId:id});
           if(willReactivate)await notifyMuseContactVerification(tx,{companyId:id});
           await notifyRunDispatch(tx, { companyId: id });
           await notifyGitHubCompanyChange(tx, id);

@@ -1,3 +1,4 @@
+import { prepareMuseReceiverAuthorityMutation } from "../modules/external-agents/index.js";
 import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
 import { notifyBudgetResumeAgentReady } from "./budget-resume-continuation.js";
 import { currentControllerProcessStamp } from "./controller-process-identity.js";
@@ -60,6 +61,7 @@ export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): li
     async beforeStatusChange(tx, companyId, agentId, before, after) {
       await notifyAttentionRetentionWork(tx, { companyId });
       if (before !== after) {
+        await prepareMuseReceiverAuthorityMutation(tx,{companyId,agentId});
         await notifyStrandedAgentStatus(tx, { companyId, agentId });
         await notifyRunDispatch(tx, { companyId });
         await notifyDeferredExecutionEligibility(tx, { companyId });

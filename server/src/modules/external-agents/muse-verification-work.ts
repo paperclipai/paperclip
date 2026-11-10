@@ -1,3 +1,4 @@
+import { prepareMuseReceiverAuthorityMutation } from "./muse-hosted-projection.js";
 import { and, asc, eq, gt, isNotNull, isNull } from "drizzle-orm";
 import { agents, museAgentBindings as bindings, type Db } from "@paperclipai/db";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../services/delivery-work-notifications.js";
@@ -43,13 +44,14 @@ export async function pendingMuseContactVerifications(
 }
 
 export async function notifyMuseContactVerification(
-  tx: Pick<Db, "select">,
+  tx: Pick<Db, "select"|"insert"|"update"|"execute">,
   scope?: MuseVerificationScope,
   trigger: "authority" | "contact-persist" = "authority",
 ): Promise<number> {
   if (trigger === "contact-persist" && (!scope?.bindingId || scope.generation === undefined)) {
     throw new Error("Muse contact intent requires its exact binding generation");
   }
+  await prepareMuseReceiverAuthorityMutation(tx,scope);
   let after: string | undefined;
   let count = 0;
   while (true) {

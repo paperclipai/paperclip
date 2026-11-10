@@ -1,3 +1,4 @@
+import type { MuseReceiverRecord } from "@paperclipai/shared";
 import type { McpClientMirrorChange, McpClientMirrorRequest } from "./client-mirror-contract.js";
 import type { McpDeviceStatusEntry } from "./device-status-contract.js";
 import { mcpClientMirrorPageFits } from "./client-mirror-wire.js";
@@ -32,4 +33,15 @@ export function mcpClientMirrorDevicePages(identity: Identity, entries: McpDevic
   }
   if(page.length)pages.push(request());
   return pages;
+}
+
+export function mcpClientMirrorMusePages(identity:Identity,entries:MuseReceiverRecord[]):Extract<McpClientMirrorRequest,{operation:"append-muse-receivers"}>[] {
+ type Page=Extract<McpClientMirrorRequest,{operation:"append-muse-receivers"}>;
+ const pages:Page[]=[];let page:MuseReceiverRecord[]=[];
+ const request=():Page=>({...identity,operation:"append-muse-receivers",sequence:pages.length,entries:page});
+ for(const entry of entries){const candidate={...request(),entries:[...page,entry]};
+  if(page.length&&(page.length===200||!mcpClientMirrorPageFits(candidate))){pages.push(request());page=[];}
+  page.push(entry);if(!mcpClientMirrorPageFits(request()))throw new Error("Muse receiver record exceeds its bounded wire contract");
+ }
+ if(page.length)pages.push(request());return pages;
 }

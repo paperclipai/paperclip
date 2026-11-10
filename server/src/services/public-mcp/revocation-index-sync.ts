@@ -30,7 +30,7 @@ export function startMcpRevocationIndexSync(db: Db, coordinator: Pick<ReturnType
 
       const managed = getCloudRuntimeIdentity();
       if (!client || !managed) { requested.clear(); return; }
-      const resources = [managed.canonicalOrigin + "/mcp/paperclip", managed.canonicalOrigin + "/mcp/runner"];
+      const resources = [managed.canonicalOrigin + "/mcp/paperclip", managed.canonicalOrigin + "/mcp/runner",managed.canonicalOrigin+"/api/muse/v1"];
       const assertCurrentAuthority = () => {
         const current = getCloudRuntimeIdentity(), currentConfig = paperclipCloudConnectorConfigFromEnv();
         if (!current || current.stackId !== managed.stackId || current.canonicalOrigin !== managed.canonicalOrigin

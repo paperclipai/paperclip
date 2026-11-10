@@ -1,4 +1,8 @@
-import { mcpClientMirrorClientPages, mcpClientMirrorDevicePages } from "./client-mirror-pages.js";
+import { registerConnectionEventWake,hasConnectionEventWakeReceiver } from "../connection-event-wake.js";
+import { museReceiver } from "../muse-receiver.js";
+import { readMuseReceiverProjection,syncMuseContactCustody } from "../../modules/external-agents/index.js";
+import { museAgentBindings } from "@paperclipai/db";
+import { mcpClientMirrorClientPages, mcpClientMirrorDevicePages,mcpClientMirrorMusePages } from "./client-mirror-pages.js";
 import { getCloudRuntimeIdentity } from "../cloud-runtime-identity.js";
 import { mcpDeviceStatusEntrySchema,mcpDeviceStatusFingerprint,mcpDeviceStatusGeneration,mcpDeviceStatusKeyId } from "./device-status-contract.js";
 import { deriveLocalEncryptedInstanceSecret } from "../../secrets/local-encrypted-provider.js";
@@ -17,7 +21,7 @@ import { mcpClientMirrorGeneration, mcpClientMirrorReceiptSchema, mcpClientMirro
 export function sameMcpClientMirrorReceipt(left:McpClientMirrorReceipt,right:McpClientMirrorReceipt){
   return left.version===right.version&&left.instanceId===right.instanceId&&left.origin===right.origin
     &&left.revision===right.revision&&left.enabled===right.enabled&&left.generation===right.generation
-    &&left.dotProfile===right.dotProfile&&left.frontDoor===right.frontDoor&&(left.authorizationOrigin??left.origin)===(right.authorizationOrigin??right.origin)
+    &&JSON.stringify(left.museReceivers)===JSON.stringify(right.museReceivers)&&left.dotProfile===right.dotProfile&&left.frontDoor===right.frontDoor&&(left.authorizationOrigin??left.origin)===(right.authorizationOrigin??right.origin)
     &&left.deviceStatus?.keyId===right.deviceStatus?.keyId&&left.deviceStatus?.generation===right.deviceStatus?.generation
     &&left.deviceStatus?.count===right.deviceStatus?.count;
 }
@@ -30,8 +34,10 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
   const publish = input.publish ?? (connector ? (request:McpClientMirrorRequest) => connector.syncMcpClientMirror(JSON.stringify(request)) : undefined);
   let pending = true,refreshPublished=true,fullRecovery=false,reserveFullRevision=false;
   let boundStackId=getCloudRuntimeIdentity()?.stackId;
+  let stopImportWake=()=>{};
+  const importWakeArmed=()=>Boolean(connector&&hasConnectionEventWakeReceiver(db,{importsClientMetadata:true}));
   const worker=coordinator.register(DELIVERY_QUEUES.mcpClientMirror, {
-    retryMs:5_000,pausePassiveMaintenance:true,onSettled:()=>{pending=true;},
+    retryMs:5_000,pausePassiveMaintenance:true,onSettled:()=>{pending=true;},onStop:()=>stopImportWake(),
     async run(signal) {
       pending=false;
       const managedIdentity=getCloudRuntimeIdentity();
@@ -41,7 +47,9 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
       try {
         const experimental=await instanceSettingsService(db).getExperimentalReadOnly();
         dotProfile=experimental.enableOpenAiDot?"hosted-dot-v1":false;
-        enabled=experimental.enablePublicMcp||Boolean(dotProfile);
+        const [receiverObligation]=await db.select({id:museAgentBindings.id}).from(museAgentBindings).where(sql`${museAgentBindings.pairedAt} is not null and (${museAgentBindings.revokedAt} is null or ${museAgentBindings.detectorRemovedAt} is null)`).limit(1);
+        const museRequired=experimental.enableMuse&&experimental.enableNativeRunner||Boolean(receiverObligation);
+        enabled=experimental.enablePublicMcp||Boolean(dotProfile)||museRequired;
         const assertCurrentAuthority=()=>{
           const identity=getCloudRuntimeIdentity(),currentConfig=paperclipCloudConnectorConfigFromEnv();
           if(!identity||identity.stackId!==managedIdentity.stackId||boundStackId!==undefined&&identity.stackId!==boundStackId
@@ -51,7 +59,8 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
           boundStackId??=identity.stackId;
         };
         if(enabled)assertCurrentAuthority();
-        const publishEnabled=(request:McpClientMirrorRequest)=>{assertCurrentAuthority();publicationAttempted=true;return publish(request);};
+        if(connector&&managedIdentity&&museRequired)await syncMuseContactCustody(db,{stackId:managedIdentity.stackId,instanceId,origin},serialized=>connector.syncMuseReceiverContacts(serialized),signal);
+        const publishEnabled=(request:McpClientMirrorRequest)=>{assertCurrentAuthority();if(request.museReceivers?.contactImportWakeVersion===1&&!importWakeArmed())throw new Error("Client metadata import receiver stopped");publicationAttempted=true;return publish(request);};
         const captured=await db.transaction(async tx=>{
           await tx.execute(sql`SELECT pg_advisory_xact_lock(736721042)`);
           if(enabled)await tx.insert(state).values({id:"public",revision:0}).onConflictDoNothing();
@@ -87,8 +96,10 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
         if(deviceRows.length>1000)throw new Error("MCP retained device set exceeds canonical1000 admission bound");
         const entries=deviceRows.map(row=>mcpDeviceStatusEntrySchema.parse({requestId:row.requestId,clientId:row.clientId,resource:row.resource,ingressOwner:row.ingressOwner,status:row.status,expiresAt:row.expiresAt.getTime(),fingerprint:mcpDeviceStatusFingerprint(deviceKey,row.deviceCodeHash,row.clientId,row.resource)}));
         const deviceStatus={keyId,generation:mcpDeviceStatusGeneration({instanceId,origin,revision:captured.revision,keyId},entries),count:entries.length};
+        const museProjection=museRequired?await readMuseReceiverProjection(db,{stackId:managedIdentity.stackId,instanceId,origin},captured.revision,{enabled:experimental.enableMuse&&experimental.enableNativeRunner,contactImportWakeVersion:importWakeArmed()?1:undefined}):undefined;
+        const muse=museProjection?.complete?museProjection:undefined;
         if(baseRevision===captured.revision&&old.success){
-          if((old.data.dotProfile??false)===dotProfile&&JSON.stringify(old.data.deviceStatus)===JSON.stringify(deviceStatus)&&(old.data.authorizationOrigin??origin)===(input.authorizationOrigin??origin))return;
+          if(JSON.stringify(old.data.museReceivers)===JSON.stringify(muse?.reference)&&(old.data.dotProfile??false)===dotProfile&&JSON.stringify(old.data.deviceStatus)===JSON.stringify(deviceStatus)&&(old.data.authorizationOrigin??origin)===(input.authorizationOrigin??origin))return;
           await db.transaction(async tx=>{
             await tx.execute(sql`SELECT pg_advisory_xact_lock(736721042)`);
             const [current]=await tx.select({revision:state.revision}).from(state).where(eq(state.id,"public")).for("update");
@@ -99,12 +110,12 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
         const [count] = baseRevision===null ? await db.select({total:sql<number>`count(*)::int`}).from(clients)
           : await db.select({total:sql<number>`count(*)::int`}).from(changes).where(and(gt(changes.revision,baseRevision),lte(changes.revision,captured.revision)));
         if (!count || !Number.isSafeInteger(count.total) || count.total<0) throw new Error("Invalid MCP client mirror count");
-        const identity = {version:1 as const,...(dotProfile?{dotProfile}:{}),instanceId,origin,revision:captured.revision,baseRevision,expectedRecords:count.total,deviceStatus,...(input.authorizationOrigin?{authorizationOrigin:input.authorizationOrigin}:{})};
+        const identity = {version:1 as const,...(dotProfile?{dotProfile}:{}),instanceId,origin,revision:captured.revision,baseRevision,expectedRecords:count.total,deviceStatus,...(muse?{museReceivers:muse.reference}:{}),...(input.authorizationOrigin?{authorizationOrigin:input.authorizationOrigin}:{})};
         const [owned]=await db.update(state).set({remoteResponsibility:true}).where(and(eq(state.id,"public"),eq(state.revision,captured.revision))).returning({id:state.id});
         if(!owned){pending=true;return;}
         let result = mcpClientMirrorResponseSchema.parse(await publishEnabled({...identity,operation:"begin",deviceKey}));
         if (!result.complete) {
-          const resumeSequence=result.nextSequence,resumeDeviceSequence=result.nextDeviceSequence??0;
+          const resumeSequence=result.nextSequence,resumeDeviceSequence=result.nextDeviceSequence??0,resumeMuseSequence=result.nextMuseSequence??0;
           let cursor:string|undefined, sequence=0, sent=0;
           while (true) {
             signal.throwIfAborted();
@@ -130,6 +141,9 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
           for(const page of mcpClientMirrorDevicePages(identity,entries)){
             if(page.sequence>=resumeDeviceSequence)result=mcpClientMirrorResponseSchema.parse(await publishEnabled(page));
           }
+          if(muse)for(const page of mcpClientMirrorMusePages(identity,muse.records)){
+            if(page.sequence>=resumeMuseSequence)result=mcpClientMirrorResponseSchema.parse(await publishEnabled(page));
+          }
           signal.throwIfAborted();
           const [current]=await db.select({revision:state.revision}).from(state).where(eq(state.id,"public"));
           if(current&&Number.isSafeInteger(current.revision)&&current.revision>captured.revision){pending=true;return;}
@@ -138,6 +152,8 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
         }
         if(!result.complete||!result.receipt.enabled||(result.receipt.dotProfile??false)!==dotProfile||JSON.stringify(result.receipt.deviceStatus)!==JSON.stringify(deviceStatus)||result.receipt.instanceId!==instanceId||result.receipt.origin!==origin||result.receipt.revision!==captured.revision||result.receipt.generation!==mcpClientMirrorGeneration(result.receipt))throw new Error("MCP client mirror was not acknowledged");
         const receipt=result.receipt;
+        if(JSON.stringify(receipt.museReceivers)!==JSON.stringify(muse?.reference))throw new Error("Muse receiver publication was not acknowledged");
+        if(muse)await museReceiver(db).prepareHostedHandoff(signal);
         let retained=false;
         await db.transaction(async tx=>{
           await tx.execute(sql`SELECT pg_advisory_xact_lock(736721042)`);
@@ -167,5 +183,6 @@ export function startMcpClientMirrorSync(db: Db, coordinator: Pick<ReturnType<ty
     },
     hasPending:async()=>false,nextRunAt:()=>pending?Date.now()+5_000:null,
   });
+  if(connector&&origin&&instanceId)stopImportWake=registerConnectionEventWake(db,()=>{pending=true;worker.wake();},{importsClientMetadata:true});
   return {worker,instanceId};
 }

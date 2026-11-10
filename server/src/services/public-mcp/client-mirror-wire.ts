@@ -3,6 +3,7 @@ const digest = "f".repeat(64);
 const identity = {
   version: 1, dotProfile: "hosted-dot-v1", instanceId: "", origin: "", revision: maxInteger,
   baseRevision: maxInteger, expectedRecords: maxInteger, authorizationOrigin: "",
+  museReceivers: {profile:"hosted-muse-v1",generation:digest,count:1000},
   deviceStatus: { keyId: digest, generation: digest, count: 1000 },
 };
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "utf8");

@@ -4,7 +4,7 @@ import type { IdleMcpInspectionBudget } from "./idle-wake-proof.js";
 import { mcpClientMirrorGeneration,mcpClientMirrorReceiptSchema,type McpClientMirrorReceipt } from "./client-mirror-contract.js";
 import type { IdleDeadlineSnapshot } from "../idle-deadline-types.js";
 
-export async function readIdleMcpClientMirror(tx:Pick<Db,"select">,context:{budget:IdleMcpInspectionBudget;enabled:boolean;origin?:string;instanceId?:string;managedStackId?:string;authorizationOrigin?:string;unsupportedProfiles?:boolean;dotEnabled?:boolean}):Promise<IdleDeadlineSnapshot&{receipt?:McpClientMirrorReceipt}>{
+export async function readIdleMcpClientMirror(tx:Pick<Db,"select">,context:{budget:IdleMcpInspectionBudget;enabled:boolean;origin?:string;instanceId?:string;managedStackId?:string;authorizationOrigin?:string;unsupportedProfiles?:boolean;dotEnabled?:boolean;personalEnabled?:boolean;museEnabled?:boolean}):Promise<IdleDeadlineSnapshot&{receipt?:McpClientMirrorReceipt}>{
   if(!context.managedStackId)return{blocked:context.enabled,state:context.enabled?"unconfigured-front-door":"absent",deadlines:[]};
   await context.budget.beforeRead();
   const[row]=await tx.select().from(state).where(eq(state.id,"public"));context.budget.check();
@@ -25,6 +25,8 @@ export async function readIdleMcpClientMirror(tx:Pick<Db,"select">,context:{budg
   const dotReady = !context.dotEnabled || receipt.data.dotProfile === "hosted-dot-v1" && dot?.version === 1
     && dot.profile === "hosted-dot-v1" && dot.stackId === context.managedStackId
     && dot.instanceId === context.instanceId && dot.origin === context.origin;
-  const ready=dotReady&&receipt.data.frontDoor==="tenant-personal-v1"&&receipt.data.deviceStatus!==undefined&&row.deviceCutoverAt instanceof Date&&Number.isFinite(row.deviceCutoverAt.getTime())&&row.deviceCutoverStackId===context.managedStackId&&(receipt.data.authorizationOrigin??receipt.data.origin)===receipt.data.origin&&!context.unsupportedProfiles;
+  const museOnly=context.museEnabled&&!context.personalEnabled&&!context.dotEnabled;
+  const originalReady=receipt.data.frontDoor==="tenant-personal-v1"&&receipt.data.deviceStatus!==undefined&&row.deviceCutoverAt instanceof Date&&Number.isFinite(row.deviceCutoverAt.getTime())&&row.deviceCutoverStackId===context.managedStackId&&(receipt.data.authorizationOrigin??receipt.data.origin)===receipt.data.origin;
+  const ready=dotReady&&!context.unsupportedProfiles&&(museOnly?receipt.data.museReceivers?.profile==="hosted-muse-v1":originalReady);
   return{blocked:!ready,state:[ready?"tenant-facade-v1":"incomplete-front-door",receipt.data,row.deviceCutoverStackId,row.deviceCutoverAt?.toISOString()??null,...(context.dotEnabled?[row.dotDeviceCutover??null]:[])],receipt:receipt.data,deadlines:[]};
 }

@@ -1,9 +1,9 @@
 import { HttpError } from "../errors.js";
 import { museIdentity, inspectMuseConnectionCredential } from "./muse-identity.js";
 import { canConfigureAgentConnection } from "../modules/agent-lifecycle/index.js";
-import { pendingMuseContactVerifications, parseMuseVerificationHint, type MuseVerificationScope, pendingMuseTerminalBindings, type ExternalAgentSettlementScope } from "../modules/external-agents/index.js";
+import { recoverMuseReceiverContinuity, pendingMuseContactVerifications, parseMuseVerificationHint, type MuseVerificationScope, pendingMuseTerminalBindings, type ExternalAgentSettlementScope } from "../modules/external-agents/index.js";
 import { logger } from "../middleware/logger.js";
-import { and, asc, eq, gt, isNull, lte } from "drizzle-orm";
+import { and, asc, eq, gt, isNull, lte, sql } from "drizzle-orm";
 import { museAgentBindings as bindings, mcpOauthGrants, type Db } from "@paperclipai/db";
 import { museRunnerBroker } from "./muse-runner-broker.js";
 import { museReceiver } from "./muse-receiver.js";
@@ -33,8 +33,11 @@ export function startMuseMaintenance(
         const settlementAllowed = await canSettle();
         const inspected = new Set<string>();
         if (!startupMarked) {
+          const continuous=await recoverMuseReceiverContinuity(db,signal);
+          const owned=[...continuous].map(([id,generation])=>sql`(${bindings.id}=${id} and ${bindings.generation}=${generation})`);
           await db.update(bindings).set({ cadenceEvidenceIncompleteAt: new Date() })
-            .where(and(isNull(bindings.revokedAt), gt(bindings.qualificationExpiresAt, new Date())));
+            .where(and(isNull(bindings.revokedAt), gt(bindings.qualificationExpiresAt, new Date()),
+              owned.length?sql`not (${sql.join(owned,sql` or `)})`:undefined));
           startupMarked = true;
         }
         let failed = false;

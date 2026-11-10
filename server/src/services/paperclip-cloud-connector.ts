@@ -36,7 +36,7 @@ export const GMAIL_CONNECTOR_SCOPES = [
 export { GOOGLE_WORKSPACE_CONNECTOR_PROFILES };
 
 export type PaperclipCloudConnectorEnvironment = "development" | "test" | "staging" | "production";
-export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events" | "slack-forms" | "mcp-client-mirror" | "mcp-revocation-index" | "mcp-dot-subscription-authority";
+export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events" | "slack-forms" | "mcp-client-mirror" | "mcp-revocation-index" | "mcp-dot-subscription-authority" | "mcp-muse-contacts";
 export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager" | "github.bot";
 export type PaperclipCloudConnectorProvider = "google" | "github" | "asana" | "slack";
 
@@ -128,6 +128,7 @@ type ConnectorResponse = {
 
 const ENDPOINTS: Record<PaperclipCloudConnectorOperation, string> = {
   "mcp-client-mirror": "/v1/connector/mcp-client-mirror",
+  "mcp-muse-contacts": "/v1/connector/mcp-muse-contacts",
   "mcp-dot-subscription-authority": "/v1/connector/mcp-dot-subscription-authority",
   "mcp-revocation-index": "/v1/connector/mcp-revocation-index",
   "slack-events": "/v1/connector/slack-events",
@@ -334,7 +335,7 @@ export function createPaperclipCloudConnector(input: {
       ...(secret ? { [secret.field]: secret.value } : {}),
     };
     const encodedBody = JSON.stringify(body);
-    if (operation === "mcp-client-mirror" && secret?.field === "binding") {
+    if ((operation === "mcp-client-mirror" || operation === "mcp-muse-contacts") && secret?.field === "binding") {
       assertMcpClientMirrorEnvelope(body.request, secret.value, encodedBody);
     }
     let response: Response;
@@ -425,6 +426,10 @@ export function createPaperclipCloudConnector(input: {
 
   return {
     instanceIdentity: () => Object.freeze({ instanceId: config.instanceId, environment: config.environment }),
+    async syncMuseReceiverContacts(serialized:string):Promise<unknown> {
+      const response=await call("mcp-muse-contacts",{subject:"instance-client-metadata",companyId:"instance-client-metadata"},{field:"binding",value:serialized});
+      return response.museContactPage;
+    },
     async syncMcpClientMirror(serialized: string): Promise<unknown> {
       const response = await call("mcp-client-mirror", {subject:"instance-client-metadata",companyId:"instance-client-metadata"}, {field:"binding",value:serialized});
       return (response as ConnectorResponse & {mcpClientMirror?:unknown}).mcpClientMirror;

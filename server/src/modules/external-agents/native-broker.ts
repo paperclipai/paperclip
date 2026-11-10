@@ -33,6 +33,7 @@ interface Identity<S> {
   authorize(subject:S,assignmentId:string,settled?:boolean):Promise<Authority>;
   enabled(database:Pick<Db,"select">,provider?:"openai_dot"|"grok_bot"):Promise<boolean>;
   expectedResource?():string;
+  prepareMailboxMutation?(tx:Pick<Db,"select"|"insert"|"update"|"execute">):Promise<void>;
   assertSubjectCredential?(tx:ExternalAdmissionTransaction,subject:S):Promise<void>;
 }
 type Execution={binding:{companyId:string;agentId:string;runId:string};provider:{kind?:"openai_dot"|"grok_bot"|"muse";binding:DotBindingSnapshot}};
@@ -55,7 +56,8 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
   async function receipt(database:Database,id:string) {return (await database.execute<Receipt>(sql`select ${receiptColumns} from ${operationTable} where id=${id}::uuid`))[0];}
   async function currentBinding(database:Database,id:string,generation:number,allowFence=false) {
     const [b]=await database.execute<Binding>(sql`select ${bindingColumns} from ${bindingTable} where id=${id}::uuid and generation=${generation} and (${allowFence} or revoked_at is null) for update`);
-    if(!b)throw forbidden("External binding generation is unavailable.");return b;
+    if(!b)throw forbidden("External binding generation is unavailable.");
+    return b;
   }
   async function assertCurrentAuthority(database:Database,b:Binding,allowFence=false) {
     if(allowFence)return;
@@ -122,6 +124,9 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
         await tx.execute(sql`select id from ${bindingTable} where id=${a.bindingId}::uuid for update`);
         // A result can commit before the command acknowledgement is lost.
         // Only an actual unresolved-send transition adds an effect barrier.
+        const [unresolved]=await tx.execute(sql`select 1 from ${operationTable} where id=${row.id}::uuid and status in ('dispatched','pending') for update`);
+        if(!unresolved)return;
+        await identity.prepareMailboxMutation?.(tx);
         await notifyExternalAgentSettlement(tx, { companyId: a.companyId, bindingId: a.bindingId });
         const changed=await tx.execute(sql`update ${operationTable} set status='unknown',updated_at=now() where id=${row.id}::uuid and status in ('dispatched','pending') returning id`);
         if(changed.length)await tx.update(externalAgentHolds).set({nativeEffectsUnknown:true,releasedAt:null,updatedAt:new Date()}).where(and(eq(externalAgentHolds.provider,provider),eq(externalAgentHolds.assignmentId,a.id)));
@@ -151,6 +156,7 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
         if(command.action!=="accept"&&!a.claimedAt)throw conflict("Claim the assignment before running operations.");
         if(command.action==="accept") {
           if(a.claimedAt||!isFutureAssignmentTime(a.acceptBy))throw conflict("Assignment already claimed or claim expired.");
+          await identity.prepareMailboxMutation?.(tx);
           await tx.execute(sql`update ${assignmentTable} set status='claimed',claimed_at=now() where id=${id}::uuid`);
           await tx.insert(externalAgentHolds).values({companyId:b.companyId,agentId:b.agentId,provider,assignmentId:id,bindingId:b.id,bindingGeneration:b.generation,runId:a.runId,workerUnknown:true}).onConflictDoNothing();
         }
@@ -196,6 +202,14 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
       return (await tx.execute<Assignment>(sql`select ${assignmentColumns} from ${assignmentTable} where run_id=${b.runId}::uuid and company_id=${b.companyId}::uuid and agent_id=${b.agentId}::uuid and binding_id=${b.bindingId}::uuid and binding_generation=${b.bindingGeneration} and normalized_session_id=${b.normalizedSessionId} and turn_id=${b.turnId} and revision=${b.assignmentRevision} for update`))[0];
     }
     async function reserveRevocationEvent(tx:ExternalAdmissionTransaction,a:Assignment,sourceEventId:string,references:Record<string,unknown>) {
+      if(provider==="muse") {
+        const [old]=await tx.execute<{companyId:string;assignmentId:string|null;kind:string}>(sql`select company_id as "companyId",assignment_id as "assignmentId",kind from ${mailboxTable} where binding_id=${a.bindingId}::uuid and binding_generation=${a.bindingGeneration} and source_event_id=${sourceEventId}`);
+        if(old) {
+          if(old.companyId!==a.companyId||old.assignmentId!==a.id||old.kind!=="authority_revoked")throw conflict("Runner event identity conflicts with its durable receipt.");
+          return false;
+        }
+        await identity.prepareMailboxMutation?.(tx);
+      }
       if (provider === "openai_dot") await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, `binding:${a.bindingId}`);
       const [created]=await tx.execute(sql`insert into ${mailboxTable} (company_id,binding_id,binding_generation,assignment_id,kind,source_event_id,"references") values (${a.companyId}::uuid,${a.bindingId}::uuid,${a.bindingGeneration},${a.id}::uuid,'authority_revoked',${sourceEventId},${JSON.stringify(references)}::jsonb) on conflict do nothing returning id`);
       if(created)return true;
@@ -214,6 +228,9 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
           await db.transaction(tx=>withExecutionAdmission(tx,execution.binding.companyId,execution.binding.agentId,runId,async()=>{
             const [binding]=await tx.execute<Binding>(sql`select ${bindingColumns} from ${bindingTable} where id=${ref.bindingId}::uuid for update`);
             if(!binding||execution.provider.kind&&execution.provider.kind!==(provider==="muse"?"muse":binding.providerKind))throw forbidden("Runner controller provider does not match its binding.");
+            const [unconfirmed]=provider==="muse"&&existing
+              ? await tx.execute(sql`select 1 from ${operationTable} where assignment_id=${existing.id}::uuid and status in ('dispatched','pending') limit 1`) : [];
+            if(unconfirmed)await identity.prepareMailboxMutation?.(tx);
             await tx.execute(sql`update ${assignmentTable} set controller_generation=${owner.controllerGeneration} where run_id=${runId}::uuid and binding_generation=${ref.bindingGeneration} and controller_generation<=${owner.controllerGeneration}`);
             // Dot has target-owned replay receipts. Muse's unconfirmed sends
             // become independent unknown barriers on controller replacement.
@@ -279,6 +296,14 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
           const [old]=await tx.execute<Assignment>(sql`select ${assignmentColumns} from ${assignmentTable} where run_id=${runId}::uuid and turn_id=${b.turnId}`);
           const projection={...p,binding:b};
           if(old&&externalOperationDigest("tool",old.projection)!==externalOperationDigest("tool",projection))throw conflict("Assignment event changed its immutable projection.");
+          if(provider==="muse") {
+            const [delivered]=await tx.execute<{companyId:string;assignmentId:string|null;kind:string;references:Record<string,unknown>|null}>(sql`select company_id as "companyId",assignment_id as "assignmentId",kind,"references" from ${mailboxTable} where binding_id=${b.bindingId}::uuid and binding_generation=${b.bindingGeneration} and source_event_id=${event.sourceEventId} limit 1`);
+            if(delivered&&(!old||delivered.companyId!==b.companyId||delivered.assignmentId!==old.id||delivered.kind!=="assignment"
+              ||delivered.references?.assignmentId!==old.id||delivered.references?.runId!==runId||delivered.references?.revision!==old.revision))
+              throw conflict("Runner event identity conflicts with its durable receipt.");
+            if(old&&delivered)return;
+            await identity.prepareMailboxMutation?.(tx);
+          }
           if (!old && provider === "muse") await notifyExternalAgentSettlement(tx, { companyId: b.companyId, bindingId: b.bindingId });
           const [a]=old?[old]:await tx.execute<Assignment>(sql`insert into ${assignmentTable} (company_id,binding_id,binding_generation,run_id,agent_id,normalized_session_id,turn_id,revision,controller_generation,catalog_digest,status,projection,accept_by,expires_at) values (${b.companyId}::uuid,${b.bindingId}::uuid,${b.bindingGeneration},${runId}::uuid,${b.agentId}::uuid,${b.normalizedSessionId},${b.turnId},${b.assignmentRevision},${owner.controllerGeneration},${externalOperationDigest("tool",{tools:p.tools})},'offered',${JSON.stringify(projection)}::jsonb,${new Date(Number(p.acceptByUnixMs)).toISOString()}::timestamptz,${new Date(Number(p.expiresAtUnixMs)).toISOString()}::timestamptz) returning ${assignmentColumns}`);
           if(!a)throw conflict("Assignment creation failed.");
@@ -308,7 +333,10 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
             // the same fact must preserve later work and its original evidence.
             return;
           }
-          if (provider === "muse") await notifyExternalAgentSettlement(tx, { companyId: a.companyId, bindingId: a.bindingId });
+          if (provider === "muse") {
+            await identity.prepareMailboxMutation?.(tx);
+            await notifyExternalAgentSettlement(tx, { companyId: a.companyId, bindingId: a.bindingId });
+          }
           if (provider === "openai_dot") await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, `binding:${a.bindingId}`);
           await tx.execute(sql`update ${operationTable} set status=${provider==="muse"&&outcome.status==="rejected"?"rejected":store.completed},outcome=${JSON.stringify(outcome)}::jsonb,source_event_id=${event.sourceEventId},updated_at=now() where id=${op.id}::uuid`);
           const action=op.command.action;
@@ -344,6 +372,13 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
           const a=await eventAssignment(tx,b);if(!a||a.status==="fenced")throw forbidden("Input target authority unavailable.");
           const [old]=await tx.execute<{inputDigest:string;turnId:string}>(sql`select input_digest as "inputDigest",turn_id as "turnId" from muse_input_deliveries where assignment_id=${a.id}::uuid and request_id=${requestId}`);
           if(old&&(old.inputDigest!==inputDigest||old.turnId!==turnId))throw conflict("Input delivery changed its immutable digest.");
+          const [delivered]=await tx.execute<{companyId:string;assignmentId:string|null;kind:string;references:Record<string,unknown>|null}>(sql`select company_id as "companyId",assignment_id as "assignmentId",kind,"references" from ${mailboxTable} where binding_id=${a.bindingId}::uuid and binding_generation=${a.bindingGeneration} and source_event_id=${event.sourceEventId} limit 1`);
+          if(delivered&&(delivered.companyId!==a.companyId||delivered.assignmentId!==a.id||delivered.kind!=="input_available"
+            ||delivered.references?.assignmentId!==a.id||delivered.references?.requestId!==requestId
+            ||delivered.references?.turnId!==turnId||delivered.references?.inputDigest!==inputDigest))
+            throw conflict("Runner event identity conflicts with its durable receipt.");
+          if(old&&delivered)return;
+          await identity.prepareMailboxMutation?.(tx);
           await tx.execute(sql`insert into muse_input_deliveries (company_id,assignment_id,request_id,turn_id,input_digest,response,source_event_id) values (${a.companyId}::uuid,${a.id}::uuid,${requestId},${turnId},${inputDigest},${JSON.stringify(response)}::jsonb,${event.sourceEventId}) on conflict do nothing`);
           await tx.execute(sql`insert into ${mailboxTable} (company_id,binding_id,binding_generation,assignment_id,kind,source_event_id,"references") values (${a.companyId}::uuid,${a.bindingId}::uuid,${a.bindingGeneration},${a.id}::uuid,'input_available',${event.sourceEventId},${JSON.stringify({assignmentId:a.id,requestId,turnId,inputDigest})}::jsonb) on conflict do nothing`);
         }));

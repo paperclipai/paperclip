@@ -5,7 +5,7 @@ import { MUSE_ACCESS_TTL_MS, MUSE_REFRESH_INACTIVITY_MS, MUSE_RESOURCE_PATH, MUS
 import { instanceSettingsService } from "./instance-settings.js";
 import { musePublicOrigin } from "./muse-setup.js";
 import { unauthorized, forbidden } from "../errors.js";
-import { withExternalAdmissionGuard, type ExternalAdmissionTransaction } from "../modules/external-agents/index.js";
+import { prepareMuseReceiverMutation, withExternalAdmissionGuard, type ExternalAdmissionTransaction } from "../modules/external-agents/index.js";
 import { canConfigureAgentConnection } from "../modules/agent-lifecycle/index.js";
 export const museCredentialHash = (value: string) => createHash("sha256").update(value).digest("hex");
 const token = () => randomBytes(32).toString("base64url");
@@ -13,7 +13,7 @@ export type MuseCredentialKind = typeof credentials.$inferSelect.kind;
 export type MuseIdentityDatabase = Db | ExternalAdmissionTransaction;
 /** A scoped fence is reportable only while its exact assignment and durable
  * boundary still agree. Callers independently validate the credential lane. */
-function scopedMuseStopBoundaryIds(db:MuseIdentityDatabase,b:Pick<typeof bindings.$inferSelect,"id"|"companyId"|"agentId"|"generation"|"operatorId">,revoked:boolean,now:Date,provider="muse") {
+function scopedMuseStopBoundaryIds(db:Pick<Db,"select">,b:Pick<typeof bindings.$inferSelect,"id"|"companyId"|"agentId"|"generation"|"operatorId">,revoked:boolean,now:Date,provider="muse") {
   return db.select({id:holds.id}).from(holds)
     .innerJoin(assignments,and(eq(assignments.id,holds.assignmentId),eq(assignments.companyId,holds.companyId),eq(assignments.agentId,holds.agentId),eq(assignments.bindingId,holds.bindingId),eq(assignments.bindingGeneration,holds.bindingGeneration),eq(assignments.runId,holds.runId),eq(assignments.status,"fenced")))
     .innerJoin(bindings,and(eq(bindings.id,holds.bindingId),eq(bindings.companyId,holds.companyId),eq(bindings.agentId,holds.agentId),eq(bindings.generation,holds.bindingGeneration),eq(bindings.operatorId,b.operatorId),revoked?sql`${bindings.revokedAt} is not null`:isNull(bindings.revokedAt),revoked?gt(bindings.cleanupExpiresAt,now):inArray(bindings.status,["connected","ready"])))
@@ -28,14 +28,14 @@ function scopedMuseStopBoundaryIds(db:MuseIdentityDatabase,b:Pick<typeof binding
     .groupBy(holds.id)
     .having(revoked?sql`true`:sql`min(${mailbox.createdAt}) > ${new Date(now.getTime()-MUSE_CLEANUP_TTL_MS).toISOString()}::timestamptz and min(${mailbox.createdAt}) <= ${now.toISOString()}::timestamptz`);
 }
-export function museCleanupBoundaryIds(db:MuseIdentityDatabase,s:AgentConnectionSubject,revoked=false,now=new Date()) {
+export function museCleanupBoundaryIds(db:Pick<Db,"select">,s:AgentConnectionSubject,revoked=false,now=new Date()) {
   return scopedMuseStopBoundaryIds(db,{id:s.bindingId,companyId:s.companyId,agentId:s.agentId,generation:s.generation,operatorId:s.authorizingUserId},revoked,now,s.provider);
 }
 /** Public control selection uses persisted binding scope, never a worker subject. */
-export function museStopControlBoundaryIds(db:MuseIdentityDatabase,b:typeof bindings.$inferSelect,now=new Date()) {
+export function museStopControlBoundaryIds(db:Pick<Db,"select">,b:typeof bindings.$inferSelect,now=new Date()) {
   return scopedMuseStopBoundaryIds(db,b,false,now);
 }
-export async function assertMuseCurrentAuthority(db: MuseIdentityDatabase, b: typeof bindings.$inferSelect, allowSetup = false, allowPaused = false) {
+export async function assertMuseCurrentAuthority(db:Pick<Db,"select">, b: typeof bindings.$inferSelect, allowSetup = false, allowPaused = false) {
   const [agent] = await db.select().from(agents).where(and(eq(agents.id,b.agentId),eq(agents.companyId,b.companyId)));
   const [company] = await db.select().from(companies).where(eq(companies.id,b.companyId));
   const [user] = await db.select({id:authUsers.id}).from(authUsers).where(eq(authUsers.id,b.operatorId));
@@ -80,7 +80,7 @@ export async function assertMuseSubjectCredential(db: MuseIdentityDatabase, s: A
 }
 /** Disabled OAuth cannot refresh. Do not wake a worker for stop control when
  * no live access credential remains; resuming the feature can restore refresh. */
-export async function hasMuseStopControlAccess(db:MuseIdentityDatabase,b:typeof bindings.$inferSelect) {
+export async function hasMuseStopControlAccess(db:Pick<Db,"select">,b:typeof bindings.$inferSelect) {
   const now=new Date();
   const [access]=b.grantId
     ? await db.select({id:mcpOauthTokens.id}).from(mcpOauthTokens).where(and(eq(mcpOauthTokens.grantId,b.grantId),eq(mcpOauthTokens.kind,"access"),isNull(mcpOauthTokens.usedAt),gt(mcpOauthTokens.expiresAt,now))).limit(1)
@@ -103,7 +103,7 @@ export async function revokeMuseOAuthGrant(db: Db, grant: typeof mcpOauthGrants.
   await museRunnerBroker(db).revokeOAuthGrant({grantId:grant.id,companyId:grant.companyId,agentId:grant.agentId,authorizingUserId:grant.userId});
 }
 /** Safe lifecycle facts shared by public polling and board status; no token values. */
-export async function inspectMuseConnectionCredential(db:MuseIdentityDatabase,b:typeof bindings.$inferSelect,expectedResource?:string):Promise<{state:"pending"|"active"|"expired"|"revoked";refreshExpiresAt:string|null}> {
+export async function inspectMuseConnectionCredential(db:Pick<Db,"select">,b:typeof bindings.$inferSelect,expectedResource?:string):Promise<{state:"pending"|"active"|"expired"|"revoked";refreshExpiresAt:string|null}> {
   const now=new Date(),result=(state:"pending"|"active"|"expired"|"revoked",refreshExpiresAt:Date|null=null)=>({state,refreshExpiresAt:refreshExpiresAt?.toISOString()??null});
   if(b.revokedAt)return result("revoked");
   if(!b.pairedAt)return result(b.ticketExpiresAt&&b.ticketExpiresAt>now?"pending":"expired");
@@ -125,7 +125,7 @@ export async function inspectMuseConnectionCredential(db:MuseIdentityDatabase,b:
   return result(refresh?"active":"expired",refresh?.expiresAt??null);
 }
 /** Public polling uses persisted identity policy, never a fabricated worker subject. */
-export async function assertMuseReceiverAuthority(db:MuseIdentityDatabase,b:typeof bindings.$inferSelect,expectedResource?:string) {
+export async function assertMuseReceiverAuthority(db:Pick<Db,"select">,b:typeof bindings.$inferSelect,expectedResource?:string) {
   const credential=await inspectMuseConnectionCredential(db,b,expectedResource);
   if(credential.state!=="active")throw unauthorized("Muse receiver credential authority is unavailable; reconnect Muse.");
   return assertMuseCurrentAuthority(db,b,true,true);
@@ -162,6 +162,7 @@ export function museIdentity(db: Db) {
     return s.enableMuse && s.enableNativeRunner;
   }
   async function issue(tx: ExternalAdmissionTransaction, b: typeof bindings.$inferSelect, familyId: string=randomUUID()): Promise<MuseCredentials> {
+    await prepareMuseReceiverMutation(tx);
     const accessToken=token(), refreshToken=token(), cleanupToken=token(), detectorCleanupToken=token();
     const accessExpiresAt=new Date(Date.now()+MUSE_ACCESS_TTL_MS), refreshExpiresAt=new Date(Date.now()+MUSE_REFRESH_INACTIVITY_MS);
     await tx.insert(credentials).values(([['access',accessToken,accessExpiresAt],['refresh',refreshToken,refreshExpiresAt],['cleanup',cleanupToken,refreshExpiresAt],['detector_cleanup',detectorCleanupToken,refreshExpiresAt]] as const).map(([kind,value,expiresAt])=>({companyId:b.companyId,bindingId:b.id,bindingGeneration:b.generation,kind,familyId,tokenHash:museCredentialHash(value),expiresAt})));
@@ -175,6 +176,7 @@ export function museIdentity(db: Db) {
     }
   }
   return {
+    prepareMailboxMutation:prepareMuseReceiverMutation,
     enabled,
     async authenticateOAuthAccess(value:string,publicOrigin?:string,options:{stopControl?:boolean}={}):Promise<AgentConnectionSubject> {
       const {museOAuth}=await import("./muse-oauth.js");
@@ -187,12 +189,24 @@ export function museIdentity(db: Db) {
       const subject:AgentConnectionSubject={provider:"muse",credentialSource:"oauth",grantId:principal.grant.id,companyId:b.companyId,
         agentId:b.agentId,bindingId:b.id,generation:b.generation,authorizingUserId:b.operatorId,credentialId:principal.accessTokenId};
       const expectedResource=musePublicOrigin(publicOrigin)+MUSE_RESOURCE_PATH;
-      await assertMuseSubjectCredential(db,subject,expectedResource);await assertMuseReceiverAuthority(db,b,expectedResource);
-      if(options.stopControl&&!await enabled())await assertMuseDisabledStopControlCredential(db,subject,expectedResource);
-      await db.update(bindings).set({workerActivityAt:new Date()}).where(and(eq(bindings.id,b.id),eq(bindings.grantId,principal.grant.id),isNull(bindings.revokedAt)));
-      await db.update(mcpOauthTokens).set({expiresAt:new Date(Date.now()+MUSE_REFRESH_INACTIVITY_MS)}).where(and(eq(mcpOauthTokens.grantId,principal.grant.id),
-        eq(mcpOauthTokens.kind,"refresh"),isNull(mcpOauthTokens.usedAt),gt(mcpOauthTokens.expiresAt,new Date())));
-      return subject;
+      return db.transaction(tx=>withExternalAdmissionGuard(tx,b.companyId,b.agentId,async()=>{
+        // Same normal agent→binding order as pairing/refresh. Publish the intent
+        // before extending the credential/receiver deadline in this transaction.
+        const [current]=await tx.select().from(bindings).where(and(eq(bindings.id,b.id),eq(bindings.companyId,b.companyId),
+          eq(bindings.agentId,b.agentId),eq(bindings.operatorId,b.operatorId),eq(bindings.generation,b.generation),
+          eq(bindings.grantId,principal.grant.id),isNull(bindings.revokedAt))).for("update");
+        if(!current)throw unauthorized("Muse OAuth binding changed.");
+        await assertMuseSubjectCredential(tx,subject,expectedResource);await assertMuseReceiverAuthority(tx,current,expectedResource);
+        if(!await enabled(tx)){
+          if(!options.stopControl)throw unauthorized("Muse authority was fenced.");
+          await assertMuseDisabledStopControlCredential(tx,subject,expectedResource);
+        }
+        await prepareMuseReceiverMutation(tx);
+        await tx.update(bindings).set({workerActivityAt:new Date()}).where(eq(bindings.id,current.id));
+        await tx.update(mcpOauthTokens).set({expiresAt:new Date(Date.now()+MUSE_REFRESH_INACTIVITY_MS)}).where(and(eq(mcpOauthTokens.grantId,principal.grant.id),
+          eq(mcpOauthTokens.kind,"refresh"),isNull(mcpOauthTokens.usedAt),gt(mcpOauthTokens.expiresAt,new Date())));
+        return subject;
+      }));
     },
     async pair(ticket: string, clientVersion: string): Promise<MuseCredentials> {
       if (!await enabled()) throw forbidden("Muse is disabled for new connections.");
@@ -202,6 +216,7 @@ export function museIdentity(db: Db) {
         const [b]=await tx.select().from(bindings).where(and(eq(bindings.id,candidate.id),eq(bindings.ticketHash,museCredentialHash(ticket)),eq(bindings.status,"pairing"),isNull(bindings.revokedAt),gt(bindings.ticketExpiresAt,new Date()))).for("update");
         if (!b) throw unauthorized("Pairing ticket expired or was consumed.");
         await assertMuseCurrentAuthority(tx,b,true);
+        await prepareMuseReceiverMutation(tx);
         const [paired]=await tx.update(bindings).set({status:"connected",ticketHash:null,ticketExpiresAt:null,pairedAt:new Date(),workerActivityAt:new Date(),clientVersion,revision:b.revision+1,updatedAt:new Date()}).where(eq(bindings.id,b.id)).returning();
         return issue(tx,paired!);
       }));
@@ -218,11 +233,13 @@ export function museIdentity(db: Db) {
         const [binding]=await tx.select().from(bindings).where(eq(bindings.id,b.id)).for("update");
         const [old]=await tx.select().from(credentials).where(eq(credentials.id,candidate.id)).for("update");
         if (old?.consumedAt) {
+          await prepareMuseReceiverMutation(tx);
           await tx.update(credentials).set({revokedAt:new Date()}).where(and(eq(credentials.familyId,old.familyId),inArray(credentials.kind,["access","refresh","signal"])));
           return null;
         }
         if (!binding || binding.revokedAt || binding.generation!==old?.bindingGeneration || old.revokedAt || old.expiresAt<=new Date()) return null;
         await assertMuseCurrentAuthority(tx,binding,true,true);
+        await prepareMuseReceiverMutation(tx);
         await tx.update(credentials).set({consumedAt:new Date()}).where(eq(credentials.id,old.id));
         await tx.update(credentials).set({revokedAt:new Date()}).where(and(eq(credentials.familyId,old.familyId),eq(credentials.bindingId,binding.id),inArray(credentials.kind,["access","signal"])));
         await tx.update(bindings).set({workerActivityAt:new Date(),updatedAt:new Date()}).where(eq(bindings.id,binding.id));

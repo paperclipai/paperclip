@@ -1,4 +1,4 @@
-import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
+import { prepareMuseReceiverAuthorityMutation, notifyMuseContactVerification } from "../modules/external-agents/index.js";
 import { idleApiActivity } from "../services/idle-api-activity.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
@@ -675,6 +675,9 @@ async function resolveCloudTenantActorOnce(
           eq(companyMemberships.principalType, "user"),
           eq(companyMemberships.principalId, userId),
         )).for("update");
+        if (!existing || existing.status !== "active" || existing.membershipRole !== membershipRole) {
+          await prepareMuseReceiverAuthorityMutation(tx, { companyId, operatorId: userId });
+        }
         // Serialize authority restoration and its notice while retaining the
         // guarded upsert that leaves unchanged memberships untouched.
         if (!existing || existing.status !== "active" || existing.membershipRole === "viewer") {

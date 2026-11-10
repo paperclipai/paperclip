@@ -1,3 +1,4 @@
+import { getCloudRuntimeIdentity } from "./cloud-runtime-identity.js";
 import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
@@ -13,10 +14,14 @@ function createReceiver(db:Db) {
   const pending=new Map<string,{companyId:string;bindingId:string;bindingGeneration:number;bucketAt:Date;firstAt:Date;lastAt:Date;contacts:number;gapsAtMostSevenSeconds:number;maxGapMs:number;timestamps:string[];incomplete:boolean}>();
   const previous=new Map<string,number>();
   let flushPromise:Promise<void>|undefined;
+  const admittedSignals=new Set<Promise<{version:1;signal:{reference:string}|null}>>();
+  let stopping=false;
+  let stopPromise:Promise<void>|undefined;
   async function flush() {
     if(flushPromise)return flushPromise;
     flushPromise=(async()=>{
       const batch=[...pending.entries()];pending.clear();
+      let failures=0;
       for(const [key,bucket]of batch) {
         try {
           const current=await db.transaction(async tx=>{
@@ -31,11 +36,13 @@ function createReceiver(db:Db) {
             await museRunnerBroker(db).verify(current.companyId,current.agentId,{bindingId:current.id,generation:current.generation,expectedRevision:current.revision}).catch(()=>{});
           }
         } catch {
+          failures++;
           const newer=pending.get(key);
-          if(newer){newer.firstAt=bucket.firstAt;newer.contacts+=bucket.contacts;newer.timestamps=[...bucket.timestamps,...newer.timestamps].slice(0,60);newer.incomplete=true;}
+          if(newer){newer.firstAt=new Date(Math.min(bucket.firstAt.getTime(),newer.firstAt.getTime()));newer.lastAt=new Date(Math.max(bucket.lastAt.getTime(),newer.lastAt.getTime()));newer.contacts+=bucket.contacts;newer.gapsAtMostSevenSeconds+=bucket.gapsAtMostSevenSeconds;newer.maxGapMs=Math.max(bucket.maxGapMs,newer.maxGapMs);newer.timestamps=[...bucket.timestamps,...newer.timestamps].slice(0,60);newer.incomplete=true;}
           else pending.set(key,{...bucket,incomplete:true});
         }
       }
+      if(failures)throw new Error("Muse receiver contact persistence is incomplete.");
     })().finally(()=>{flushPromise=undefined;});return flushPromise;
   }
   function recordPublicContact(b: typeof bindings.$inferSelect, now: number) {
@@ -57,7 +64,7 @@ function createReceiver(db:Db) {
     else bucket.incomplete = true;
   }
   /** A public binding reference is presence evidence, never worker authority. */
-  async function signal(bindingId: string, expectedResource?:string) {
+  async function signalOnce(bindingId: string, expectedResource?:string) {
     const idle = { version: 1 as const, signal: null };
     const unavailable = () => new HttpError(410, "Muse receiver is unavailable.");
     const [candidate] = await db.select().from(bindings).where(eq(bindings.id, bindingId));
@@ -106,11 +113,52 @@ function createReceiver(db:Db) {
       const reference = "sha256:" + createHash("sha256").update(`${current.id}:${current.generation}:${item.item.sourceEventId}:${attempt}`).digest("hex");
       return { version: 1 as const, signal: { reference } };
     });
-    if (contacted) recordPublicContact(contacted, Date.now());
+    if (contacted) {
+      recordPublicContact(contacted, Date.now());
+      if (getCloudRuntimeIdentity()) {
+        // A warm-forward decision can outlive the hosted handoff's empty join.
+        // Never confirm that late managed contact while it exists only in RAM.
+        // The first join may be a batch captured before this contact; the next
+        // flush captures its retained bucket (or joins one that already did).
+        // Normal persistence failure keeps its original debt and rejects HTTP.
+        await flush();
+        await flush();
+      }
+    }
     return result;
   }
+  function signal(bindingId:string,expectedResource?:string) {
+    if(stopping)return Promise.reject(new HttpError(503,"Muse receiver is stopping."));
+    const admitted=signalOnce(bindingId,expectedResource);
+    admittedSignals.add(admitted);
+    void admitted.then(()=>admittedSignals.delete(admitted),()=>admittedSignals.delete(admitted));
+    return admitted;
+  }
+  async function prepareHostedHandoff(signal:AbortSignal) {
+    do {
+      signal.throwIfAborted();
+      await Promise.allSettled([...admittedSignals]);
+      await flush();
+    } while(admittedSignals.size||pending.size);
+  }
   let timer:NodeJS.Timeout|undefined;
-  function start() {if(timer)return;timer=setInterval(()=>void flush().catch(()=>{}),PERSISTENCE_LAG_MS);timer.unref();}
-  async function stop() {if(timer)clearInterval(timer);timer=undefined;await flush();}
-  return {signal,flush,start,stop,persistenceLagMs:PERSISTENCE_LAG_MS};
+  function start() {
+    if(stopPromise)throw new Error("Muse receiver shutdown is still running.");
+    stopping=false;
+    if(timer)return;
+    timer=setInterval(()=>void flush().catch(()=>{}),PERSISTENCE_LAG_MS);timer.unref();
+  }
+  function stop() {
+    if(stopPromise)return stopPromise;
+    stopping=true;
+    if(timer)clearInterval(timer);timer=undefined;
+    stopPromise=(async()=>{
+      await Promise.allSettled([...admittedSignals]);
+      // A signal admitted before stop may add a new batch while an older flush
+      // is in flight. Join both; failed persistence keeps its debt and rejects.
+      do {await flush();} while(pending.size);
+    })().finally(()=>{stopPromise=undefined;});
+    return stopPromise;
+  }
+  return {signal,flush,prepareHostedHandoff,start,stop,persistenceLagMs:PERSISTENCE_LAG_MS};
 }

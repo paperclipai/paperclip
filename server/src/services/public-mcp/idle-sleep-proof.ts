@@ -1,3 +1,6 @@
+import { MUSE_RESOURCE_PATH } from "@paperclipai/shared";
+import { hasConnectionEventWakeReceiver } from "../connection-event-wake.js";
+import { readIdleMuseReceiverProof,type IdleMuseReceiverProof } from "../../modules/external-agents/index.js";
 import { readIdleMcpDeviceStatus } from "./idle-device-status.js";
 import { getCloudRuntimeIdentity } from "../cloud-runtime-identity.js";
 import { readIdleMcpDeviceCutover } from "./idle-device-cutover.js";
@@ -21,6 +24,7 @@ export function registerIdleMcpOwners(owner: object, services: { config: PublicM
 }
 export interface IdleMcpSleepProof {
   ingress: IdleMcpWakeProof;
+  muse?:IdleMuseReceiverProof;
   subscriptions: IdleMcpSubscriptionProof;
   retries: IdleMcpEventScheduleProof;
   frontDoor: IdleDeadlineSnapshot;
@@ -37,13 +41,18 @@ export async function readIdleMcpSleepProof(tx: Pick<Db, "select">, owner: objec
   const services = owners.get(owner);
   await context.budget.beforeRead();
   const feature = await instanceSettingsService(tx as Db).getExperimentalReadOnly();
-  const frontDoor = await readIdleMcpClientMirror(tx,{budget:context.budget,enabled:feature.enablePublicMcp||feature.enableOpenAiDot||feature.enableGrokBot&&feature.enableNativeRunner,origin:services?.config?.origin,instanceId:services?.clientMirrorInstanceId,managedStackId:getCloudRuntimeIdentity()?.stackId,authorizationOrigin:services?.config?.authorizationOrigin,dotEnabled:feature.enableOpenAiDot,unsupportedProfiles:feature.enableGrokBot&&feature.enableNativeRunner});
+  const frontDoor = await readIdleMcpClientMirror(tx,{budget:context.budget,enabled:feature.enablePublicMcp||feature.enableOpenAiDot||(feature.enableMuse||feature.enableGrokBot)&&feature.enableNativeRunner,origin:services?.config?.origin,instanceId:services?.clientMirrorInstanceId,managedStackId:getCloudRuntimeIdentity()?.stackId,authorizationOrigin:services?.config?.authorizationOrigin,dotEnabled:feature.enableOpenAiDot,personalEnabled:feature.enablePublicMcp,museEnabled:feature.enableMuse&&feature.enableNativeRunner,unsupportedProfiles:feature.enableGrokBot&&feature.enableNativeRunner});
   const ingress = await readIdleMcpWakeProof(tx, { ...context,
     clientMirror:frontDoor.receipt,
+    museResource:services?.config?services.config.origin+MUSE_RESOURCE_PATH:"",
     personalResource: services?.config?.resource ?? "", dotResource: services?.config ? services.config.origin + "/mcp/runner" : "",
-    discovery: services?.config && (feature.enablePublicMcp || feature.enableOpenAiDot) ? { origin: services.config.origin, authorizationOrigin: services.config.authorizationOrigin ?? services.config.origin,
-      profiles: [...(feature.enablePublicMcp ? ["personal-mcp" as const] : []), ...(feature.enableOpenAiDot ? ["dot-mcp" as const] : [])] } : undefined,
-    personalEnabled: feature.enablePublicMcp, dotEnabled: feature.enableOpenAiDot });
+    discovery: services?.config && (feature.enablePublicMcp || feature.enableOpenAiDot || feature.enableMuse&&feature.enableNativeRunner) ? { origin: services.config.origin, authorizationOrigin: services.config.authorizationOrigin ?? services.config.origin,
+      profiles: [...(feature.enablePublicMcp ? ["personal-mcp" as const] : []), ...(feature.enableOpenAiDot ? ["dot-mcp" as const] : []),...(feature.enableMuse&&feature.enableNativeRunner?["muse-agent" as const]:[])] } : undefined,
+    personalEnabled: feature.enablePublicMcp, dotEnabled: feature.enableOpenAiDot,museEnabled:feature.enableMuse&&feature.enableNativeRunner });
+  const managedIdentity=getCloudRuntimeIdentity();
+  const muse=await readIdleMuseReceiverProof(tx,{enabled:feature.enableMuse&&feature.enableNativeRunner,contactImportWakeVersion:hasConnectionEventWakeReceiver(owner,{importsClientMetadata:true})?1:undefined,
+    namespace:managedIdentity&&services?.config&&services.clientMirrorInstanceId?{stackId:managedIdentity.stackId,origin:services.config.origin,instanceId:services.clientMirrorInstanceId}:undefined,
+    receipt:frontDoor.receipt,now:context.now,budget:context.budget});
   const absent = { revision: "absent", reconciled: false };
   const personal = services?.personal?.reconciliationSnapshot() ?? absent, dot = services?.dot?.reconciliationSnapshot() ?? absent;
   const personalDestination = services?.personal?.createIdleDestinationInspector();
@@ -55,8 +64,8 @@ export async function readIdleMcpSleepProof(tx: Pick<Db, "select">, owner: objec
   const legacyDevices=feature.enablePublicMcp||feature.enableOpenAiDot?await readIdleMcpDeviceCutover(tx,context):{blocked:false,state:"absent",deadlines:[]};
   const transfers = await readIdleMcpTransferSchedule(tx, context);
   const handoffs = await readIdleMcpAuthorizationHandoffs(tx, context);
-  const schedule = { blocked: frontDoor.blocked || deviceStatus.blocked || legacyDevices.blocked || retries.blocked || transfers.blocked || handoffs.blocked, state: [frontDoor.state,deviceStatus.state,legacyDevices.state,retries.state,transfers.state,handoffs.state], deadlines: [...legacyDevices.deadlines,...retries.deadlines,...transfers.deadlines,...handoffs.deadlines] };
+  const schedule = { blocked: muse.blocked || frontDoor.blocked || deviceStatus.blocked || legacyDevices.blocked || retries.blocked || transfers.blocked || handoffs.blocked, state: [muse.state,frontDoor.state,deviceStatus.state,legacyDevices.state,retries.state,transfers.state,handoffs.state], deadlines: [...muse.deadlines,...legacyDevices.deadlines,...retries.deadlines,...transfers.deadlines,...handoffs.deadlines] };
   context.budget.check();
-  return { ingress, subscriptions, retries, frontDoor, deviceStatus,legacyDevices, transfers, handoffs, schedule,
+  return { ingress,muse, subscriptions, retries, frontDoor, deviceStatus,legacyDevices, transfers, handoffs, schedule,
     generation: createHash("sha256").update(JSON.stringify([ingress.generation, subscriptions.generation, schedule])).digest("hex") };
 }

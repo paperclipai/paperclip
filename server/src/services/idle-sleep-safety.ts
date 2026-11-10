@@ -437,7 +437,7 @@ export async function readIdleSleepSafety(
           const replacement = deadlineProof?.blocked === false ? deadlineWorkReplacement(check.reason) : undefined;
           const mcp = incomingProof?.mcp;
           const mcpRetryQuery = mcp && deadlineProof?.blocked === false && deadlineProof.mcp === mcp.schedule
-            ? idleMcpWorkQuery(check.reason, { ingress: mcp.ingress, subscriptions: mcp.subscriptions, retries: mcp.retries }) : undefined;
+            ? idleMcpWorkQuery(check.reason, { ingress: mcp.ingress,muse:mcp.muse, subscriptions: mcp.subscriptions, retries: mcp.retries }) : undefined;
           return { ...check, query: mcpRetryQuery ?? incomingWakeWorkQuery(check.reason, incomingProof,
             deadlineProof?.githubContinuity?.connectionIds) ?? deadlineOwnerWorkReplacement(deadlineProof, check.reason) ?? (replacement ? sql.raw(replacement) : check.query) };
         });
