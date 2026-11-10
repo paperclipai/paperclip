@@ -125,7 +125,9 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     const f = await seed();
     await db.update(heartbeatRuns).set({ processPid: null, errorCode, ...(status ? { status } : {}) })
       .where(eq(heartbeatRuns.id, f.sourceRunId));
-    // A run that failed before native selection has no coordinator.
+    // A run that failed before native selection has no native issue and no
+    // coordinator. A coordinator row requires the run's native issue (foreign
+    // key), so the coordinator rows keep it and are held by that evidence.
     if (errorCode !== "native_session_cleanup_quarantined" && !coordinator) {
       await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
       await db.update(heartbeatRuns).set({ nativeIssueId: null }).where(eq(heartbeatRuns.id, f.sourceRunId));

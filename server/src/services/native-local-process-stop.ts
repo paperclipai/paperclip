@@ -254,12 +254,9 @@ export async function nativeRunNeverLaunched(db: Db, run: Pick<typeof heartbeatR
   if (run.runtimeMode !== "native" || !SETTLED_RUN_STATUSES.includes(run.status) || run.processPid || run.processGroupId) return false;
   const quarantinedBeforeLaunch = run.status === "failed" && run.errorCode === "native_session_cleanup_quarantined";
   if (!quarantinedBeforeLaunch) {
+    // A coordinator row requires the run's native issue (foreign key), so the
+    // native issue also rules out a coordinator.
     if (run.nativeSessionId || run.runnerInstanceId || run.nativeIssueId) return false;
-    // Native selection writes the session, runner instance and coordinator
-    // together. A coordinator alone still names a run that was selected.
-    const [coordinator] = await db.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
-      .where(and(eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id))).limit(1);
-    if (coordinator) return false;
   }
   const [launch] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
