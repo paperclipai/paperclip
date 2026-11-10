@@ -201,10 +201,10 @@ describe("IssueWorkspaceCard", () => {
           issue={createIssue()}
           project={{
             id: "project-1",
+            environmentId: "env-project",
             executionWorkspacePolicy: {
               enabled: true,
               defaultMode: "isolated_workspace",
-              environmentId: "env-project",
             },
           }}
           onUpdate={onUpdate}
@@ -263,10 +263,10 @@ describe("IssueWorkspaceCard", () => {
           issue={createIssue()}
           project={{
             id: "project-1",
+            environmentId: "env-project",
             executionWorkspacePolicy: {
               enabled: true,
               defaultMode: "isolated_workspace",
-              environmentId: "env-project",
             },
           }}
           onUpdate={vi.fn()}

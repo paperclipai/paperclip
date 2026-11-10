@@ -3235,6 +3235,13 @@
       "when": 1794340358740,
       "tag": "0463_gateway_token_pending_reveal",
       "breakpoints": true
+    },
+    {
+      "idx": 464,
+      "version": "7",
+      "when": 1794346237220,
+      "tag": "0464_project_environment",
+      "breakpoints": true
     }
   ]
 }
