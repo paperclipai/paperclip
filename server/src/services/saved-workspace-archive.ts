@@ -149,11 +149,16 @@ export function createSavedWorkspaceArchiveOpener(db: Db, storage: StorageServic
       ...(options.idleTimeoutMs ? { idleTimeoutMs: options.idleTimeoutMs } : {}) });
     try {
       const key = `${saved.companyId}/${saved.workspaceId}/${saved.id}/${saved.manifestDigest}`;
-      let index = cache.get(key);
-      const shared = index ? undefined : building.get(key);
-      if (index) { cache.delete(key); cache.set(key, index); }
-      else if (shared) index = await untilAborted(shared.catch(() => undefined), input.signal);
-      if (!index) {
+      let index: ArchiveIndex | undefined;
+      for (;;) {
+        index = cache.get(key);
+        if (index) { cache.delete(key); cache.set(key, index); break; }
+        const shared = building.get(key);
+        if (shared) {
+          index = await untilAborted(shared.catch(() => undefined), input.signal);
+          if (index) break;
+          continue;
+        }
         const build = withIndexBuildSlot(async () => {
           const prefixLength = ARCHIVE_MAGIC.length + 4;
           if (ranges.plaintextBytes < prefixLength) invalid("truncated");
@@ -170,6 +175,7 @@ export function createSavedWorkspaceArchiveOpener(db: Db, storage: StorageServic
         building.set(key, build);
         try { index = await build; remember(key, index); }
         finally { if (building.get(key) === build) building.delete(key); }
+        break;
       }
       const built = index;
       return {

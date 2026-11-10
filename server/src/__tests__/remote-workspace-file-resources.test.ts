@@ -593,6 +593,31 @@ describeDatabase("remote workspace ordinary file routes", () => {
     expect(reopened.entry("docs/result.md")).toBeDefined(); reopened.close();
   });
 
+  it("retries a failed shared manifest build once for all of its waiters", async () => {
+    const f = await savedFileFixture(false);
+    const getObject = f.storage.getObject.bind(f.storage);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let manifestReads = 0, failed = false;
+    vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
+      if (args[2]?.range?.start === 19) {
+        manifestReads++;
+        if (!failed) { failed = true; await gate; throw new Error("transient storage failure"); }
+      }
+      return getObject(...args);
+    });
+    const opener = createSavedWorkspaceArchiveOpener(db, f.storage);
+    const input = { companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId: f.saved.id };
+    const first = opener(input);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const waiters = [opener(input), opener(input), opener(input)];
+    await new Promise(resolve => setTimeout(resolve, 50));
+    release();
+    await expect(first).rejects.toThrow("transient storage failure");
+    for (const archive of await Promise.all(waiters)) { expect(archive.entry("docs/result.md")).toBeDefined(); archive.close(); }
+    expect(manifestReads).toBe(3);
+  });
+
   it("keeps a production saved preview available when cleanup clears its location during archive loading", async () => {
     const f = await savedFileFixture(true);
     const requestTemp = await fs.mkdtemp(path.join(os.tmpdir(), "saved-file-location-request-"));
