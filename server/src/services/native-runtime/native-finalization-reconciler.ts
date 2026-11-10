@@ -1,4 +1,5 @@
 import { sameRunResumeClaimEntry } from "./scheduled-resume-continuation.js";
+import { appendBoundedRecoveryHistory } from "./native-restart-recovery.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { currentControllerProcessStamp } from "../controller-process-identity.js";
 import { NATIVE_SESSION_RESUMPTION_ISSUE_STATUSES } from "./native-session-resumption-statuses.js";
@@ -311,23 +312,15 @@ export async function claimNativeSessionResumptions(input: {
       const leaseExpiresAt = new Date(now.getTime() + 20 * 60_000);
       await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
       const stamp = currentControllerProcessStamp();
-      const resumeClaim = JSON.stringify(sameRunResumeClaimEntry({ at: now, controllerBootId: stamp.bootId,
-        providerAttempt: row.coordinator.attempt, failureDetail: row.coordinator.failureDetail }));
+      const resumeClaim = sameRunResumeClaimEntry({ at: now, controllerBootId: stamp.bootId,
+        providerAttempt: row.coordinator.attempt, failureDetail: row.coordinator.failureDetail });
       const updated = await tx.update(nativeRunFinalizations).set({
         phase: "observed",
         leaseOwner,
         leaseExpiresAt,
         controllerBootId: stamp.bootId, controllerPid: stamp.pid, controllerHostHash: stamp.hostHash,
         controllerProcessStartedAt: stamp.processStartedAt ? new Date(stamp.processStartedAt) : null,
-        recoveryHistory: sql`(
-          select coalesce(jsonb_agg(item order by ordinal), '[]'::jsonb)
-          from jsonb_array_elements(
-            coalesce(${nativeRunFinalizations.recoveryHistory}, '[]'::jsonb) || jsonb_build_array(${resumeClaim}::jsonb)
-          ) with ordinality as history(item, ordinal)
-          where ordinal > greatest(jsonb_array_length(
-            coalesce(${nativeRunFinalizations.recoveryHistory}, '[]'::jsonb) || jsonb_build_array(${resumeClaim}::jsonb)
-          ) - 20, 0)
-        )`,
+        recoveryHistory: appendBoundedRecoveryHistory(resumeClaim),
         failureCode: null,
         failureDetail: null,
         nextAttemptAt: null,
