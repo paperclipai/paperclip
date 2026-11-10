@@ -53,6 +53,6 @@ describe("GitHub link preview boundary", () => {
     const provider = createGitHubLinkPreviewProvider(db, { fetch: fetcher, credentialProvider: () => ({ token: "instance", source: "server_env", secretName: null }) });
     expect((await provider.resolve(target, scope, new AbortController().signal)).preview).toBeNull();
     expect(fetcher).toHaveBeenCalledTimes(1);
-    expect(fetcher.mock.calls[0]?.[0]).toBe("https://api.github.com/repos/acme/web");
+    expect(fetcher).toHaveBeenCalledWith("https://api.github.com/repos/acme/web", expect.any(Object));
   });
 });
