@@ -242,6 +242,19 @@ function sideEffectIdempotencyKey(ctx: ToolAccessContext, argumentsHash: string)
   })}`;
 }
 
+const TERMINAL_TOOL_INVOCATION_STATUSES = new Set([
+  "denied",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "timed_out",
+  "rate_limited",
+]);
+
+function nextSideEffectIdempotencyKey(previousKey: string, previousInvocationId: string): string {
+  return `side_effect:${sha256({ previousKey, previousInvocationId })}`;
+}
+
 function auditOutcome(accessDecision: ToolAccessDecision): "pending" | "success" | "denied" | "timeout" {
   if (accessDecision.decision === "allow") return "success";
   if (accessDecision.decision === "require_approval") return "pending";
@@ -1410,14 +1423,19 @@ export function toolAccessPolicyService(db: Db) {
     if (!loaded.ok) throw new Error("Cannot record invocation for invalid tool access context");
     const { ctx, redaction } = loaded;
     const argumentsHash = redaction.summary.sha256 ?? sha256(input.request.arguments ?? {});
-    const idempotencyKey = input.request.idempotencyKey
+    const callerIdempotencyKey = input.request.idempotencyKey ?? null;
+    let idempotencyKey = callerIdempotencyKey
       ?? (input.request.sideEffecting ? sideEffectIdempotencyKey(ctx, argumentsHash) : null);
-    if (idempotencyKey) {
+    while (idempotencyKey) {
       const [existing] = await db.select().from(toolInvocations).where(and(
         eq(toolInvocations.companyId, input.companyId),
         eq(toolInvocations.idempotencyKey, idempotencyKey),
       ));
-      if (existing) return { invocation: existing, replayed: true, actionRequest: null };
+      if (!existing) break;
+      if (callerIdempotencyKey || !TERMINAL_TOOL_INVOCATION_STATUSES.has(existing.status)) {
+        return { invocation: existing, replayed: true, actionRequest: null };
+      }
+      idempotencyKey = nextSideEffectIdempotencyKey(idempotencyKey, existing.id);
     }
     const status = accessDecision.decision === "allow"
       ? "authorized"
@@ -1453,7 +1471,15 @@ export function toolAccessPolicyService(db: Db) {
       errorCode: accessDecision.allowed || accessDecision.decision === "require_approval" ? null : accessDecision.reasonCode,
       errorMessage: accessDecision.allowed || accessDecision.decision === "require_approval" ? null : accessDecision.explanation,
       completedAt: accessDecision.allowed || accessDecision.decision === "require_approval" ? null : new Date(),
-    }).returning();
+    }).onConflictDoNothing().returning();
+    if (!invocation && idempotencyKey) {
+      const [concurrent] = await db.select().from(toolInvocations).where(and(
+        eq(toolInvocations.companyId, input.companyId),
+        eq(toolInvocations.idempotencyKey, idempotencyKey),
+      ));
+      if (concurrent) return { invocation: concurrent, replayed: true, actionRequest: null };
+    }
+    if (!invocation) throw new Error("Failed to record tool invocation");
     let actionRequest = null;
     if (accessDecision.decision === "require_approval") {
       [actionRequest] = await db.insert(toolActionRequests).values({

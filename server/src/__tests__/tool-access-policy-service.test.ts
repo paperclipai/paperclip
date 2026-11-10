@@ -885,6 +885,44 @@ describeEmbeddedPostgres("tool access policy service", () => {
     expect(replay.invocation.id).toBe(first.invocation.id);
   });
 
+  it("creates the next implicit side-effect generation after a terminal invocation", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createTool(db, company.id);
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent.id,
+      permissionKey: "tools:use",
+      scope: { toolName: "media_generate_upload_link" },
+    });
+    const input = {
+      companyId: company.id,
+      actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+      request: {
+        connectionId: connection.id,
+        toolName: "media_generate_upload_link",
+        arguments: { contentType: "image/png", sizeBytes: 1234 },
+        sideEffecting: true,
+      },
+    };
+
+    const decision = await toolAccessPolicyService(db).decide(input);
+    const first = await toolAccessPolicyService(db).recordInvocation(input, decision);
+    await db.update(toolInvocations).set({ status: "succeeded", completedAt: new Date() })
+      .where(eq(toolInvocations.id, first.invocation.id));
+
+    const second = await toolAccessPolicyService(db).recordInvocation(input, decision);
+    const replay = await toolAccessPolicyService(db).recordInvocation(input, decision);
+
+    expect(second.replayed).toBe(false);
+    expect(second.invocation.id).not.toBe(first.invocation.id);
+    expect(second.invocation.idempotencyKey).toMatch(/^side_effect:/);
+    expect(second.invocation.idempotencyKey).not.toBe(first.invocation.idempotencyKey);
+    expect(replay).toMatchObject({ replayed: true });
+    expect(replay.invocation.id).toBe(second.invocation.id);
+  });
+
   it("enforces rate-limit policies before explicit grants", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
