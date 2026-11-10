@@ -62,6 +62,11 @@ describe("gateway token rotation oracle", () => {
     expect(safeAgentTurn([...setup, { ...pending, pendingReveal: false }], ids, "ceo", "gateway", "person")).toBe(false);
     expect(safeAgentTurn([...setup, { ...pending, responsibleUserId: "someone-else" }], ids, "ceo", "gateway", "person")).toBe(false);
     expect(safeAgentTurn([...setup, pending, { ...pending, id: "new-2" }], ids, "ceo", "gateway", "person")).toBe(false);
+    // Run 42890063226: the agent withdrew its own first draft (wrong actions) before anyone revealed it.
+    expect(safeAgentTurn([...setup, { ...pending, id: "draft", revokedAt: "2026-11-10T01:00:00.000Z" }, pending], ids, "ceo", "gateway", "person")).toBe(true);
+    // A withdrawn token that had a value, or one acting for someone else, is not a draft.
+    expect(safeAgentTurn([...setup, { ...pending, id: "draft", pendingReveal: false, revokedAt: "2026-11-10T01:00:00.000Z" }, pending], ids, "ceo", "gateway", "person")).toBe(false);
+    expect(safeAgentTurn([...setup, { ...pending, id: "draft", responsibleUserId: "someone-else", revokedAt: "2026-11-10T01:00:00.000Z" }, pending], ids, "ceo", "gateway", "person")).toBe(false);
     expect(safeAgentTurn(setup.slice(0, 1), ids, "ceo", "gateway", "person")).toBe(false);
     // Paperclip's own short-lived run token is neither a replacement nor an unsafe mutation.
     const run = token({ id: "run-token", subjectType: "heartbeat_run", subjectId: "run", createdByAgentId: "ceo", createdByUserId: null });
