@@ -121,6 +121,12 @@ const MAX_PENDING_INPUTS = 16;
 const MAX_BUFFERED_OUTPUT_BYTES = 4 * ACPX_SIDECAR_MAX_FRAME_BYTES;
 const MAX_EVENT_PAYLOAD_BYTES = 256 * 1024;
 let outputFailed = false;
+process.stdout.on("error", () => {
+  outputFailed = true;
+});
+process.stderr.on("error", () => {
+  outputFailed = true;
+});
 let goalSourceRevision = 0;
 function observedGoalProjection(...args: Parameters<typeof acpxGoalProjection>) {
   return { ...acpxGoalProjection(...args), providerRevision: ++goalSourceRevision };
