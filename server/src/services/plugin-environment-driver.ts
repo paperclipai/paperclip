@@ -133,14 +133,15 @@ export interface ReadyPluginWorkerRecovery {
   timeoutMs?: number;
 }
 
-/** Shared admission/presentation check, including recovery of a lost allocation reply. */
+/** Shared admission/presentation check for allocation, recovery, cleanup and PTY transport. */
 export function pluginSupportsLoginPty(
   driver: Pick<PluginEnvironmentDriverDeclaration, "supportsLoginPty" | "creationOperationVersion">,
   methods: readonly string[],
   requireCredentialRead = false,
 ): boolean {
   return driver.supportsLoginPty === true && driver.creationOperationVersion === 1 && [
-    "environmentInspectLease", "loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose",
+    "environmentAcquireLease", "environmentInspectLease", "environmentReleaseLease",
+    "loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose",
     ...(requireCredentialRead ? ["loginPtyReadCredential"] : []),
   ].every(method => methods.includes(method));
 }

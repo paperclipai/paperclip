@@ -91,9 +91,9 @@ describe("listReadyPluginEnvironmentDrivers sandbox capability projection", () =
 });
 
 describe("live login capability admission and presentation", () => {
-  const hooks = ["environmentInspectLease", "loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose"];
+  const hooks = ["environmentAcquireLease", "environmentInspectLease", "environmentReleaseLease", "loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose"];
   const driver = { supportsLoginPty: true, creationOperationVersion: 1 as const };
-  it("fails closed for each missing recovery or transport hook", () => {
+  it("fails closed for each missing allocation, recovery, cleanup or transport hook", () => {
     for (const missing of hooks) expect(pluginSupportsLoginPty(driver, hooks.filter(hook => hook !== missing))).toBe(false);
     expect(pluginSupportsLoginPty({ ...driver, supportsLoginPty: false }, hooks)).toBe(false);
   });
@@ -106,7 +106,7 @@ describe("live login capability admission and presentation", () => {
     expect(pluginSupportsLoginPty(driver, hooks, true)).toBe(false);
     expect(pluginSupportsLoginPty(driver, [...hooks, "loginPtyReadCredential"], true)).toBe(true);
   });
-  it.each(["complete", "missing-version", "missing-inspector"] as const)(
+  it.each(["complete", "missing-version", "environmentAcquireLease", "environmentInspectLease", "environmentReleaseLease"] as const)(
     "projects the same recovery gate for login presentation: %s", async mode => {
       mockRegistry.list.mockResolvedValue([{
         id: PLUGIN_ID, pluginKey: PLUGIN_KEY, status: "ready", manifestJson: {
@@ -115,7 +115,7 @@ describe("live login capability admission and presentation", () => {
           }],
         },
       }]);
-      const methods = [...hooks, "loginPtyReadCredential"].filter(method => mode !== "missing-inspector" || method !== "environmentInspectLease");
+      const methods = [...hooks, "loginPtyReadCredential"].filter(method => method !== mode);
       const workerManager = { isRunning: () => true, getWorker: () => ({ supportedMethods: methods }) } as unknown as PluginWorkerManager;
       const [projected] = await listReadyPluginEnvironmentDrivers({ db: {} as never, workerManager, kind: "environment_driver" });
       expect(projected.supportsLoginPty).toBe(mode === "complete");
