@@ -392,24 +392,36 @@ function createRunContextDb(
     }
     return [{ id: runAgentId, companyId: runAgentCompanyId, permissions: {}, role: "engineer", reportsTo: null }];
   };
-  const buildQuery = (selection: Record<string, unknown>, chatBindingQuery = false, settledRecoveryQuery = false) => {
+  const buildQuery = (selection: Record<string, unknown>, chatBindingQuery = false, settledRecoveryQuery = false,
+    policyTable?: "issues" | "agents") => {
+    let selectedIds: string[] = [];
+    const selectedRows = async () => {
+      if (policyTable) {
+        const getById = policyTable === "issues" ? mockIssueService.getById : mockAgentService.getById;
+        return (await Promise.all(selectedIds.map(id => getById(id))))
+          .filter(row => row && selectedIds.includes(row.id));
+      }
+      return rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery);
+    };
     const whereResult = {
-      orderBy: vi.fn(async () => []),
+      orderBy: vi.fn((): unknown => policyTable ? whereResult : Promise.resolve([])),
       limit: vi.fn(() => ({
-        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await selectedRows()),
         for: vi.fn(() => ({
-          then: async (resolve: (lockedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+          then: async (resolve: (lockedRows: unknown[]) => unknown) => resolve(await selectedRows()),
         })),
       })),
       for: vi.fn(() => ({
-        then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+        then: async (resolve: (rows: unknown[]) => unknown) => resolve(await selectedRows()),
       })),
-      then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
+      then: async (resolve: (rows: unknown[]) => unknown) => resolve(await selectedRows()),
     };
     const query = {
       innerJoin: vi.fn(() => query),
       where: vi.fn((condition: SQL) => {
         if (chatBindingQuery) chatBindingQueries.push(new PgDialect().sqlToQuery(condition));
+        if (policyTable) selectedIds = [...new Set(new PgDialect().sqlToQuery(condition).params
+          .filter((value): value is string => typeof value === "string" && value !== companyId))];
         return whereResult;
       }),
     };
@@ -437,6 +449,12 @@ function createRunContextDb(
         }
         if (getTableName(table) === "issue_thread_interactions") {
           return { where: vi.fn(() => ({ limit: vi.fn(async () => []) })) };
+        }
+        if (getTableName(table) === "issues" && "conversationAgentId" in selection) {
+          return buildQuery(selection, false, false, "issues");
+        }
+        if (getTableName(table) === "agents" && Object.keys(selection).sort().join(",") === "companyId,id,permissions") {
+          return buildQuery(selection, false, false, "agents");
         }
         return buildQuery(selection, getTableName(table) === "chat_conversations", getTableName(table) === "issue_recovery_actions");
       }),
@@ -1254,6 +1272,7 @@ describe("agent issue mutation checkout ownership", () => {
           changedFiles: 3,
         }),
       }),
+      ownerAgentId,
     );
   });
 
@@ -1283,6 +1302,7 @@ describe("agent issue mutation checkout ownership", () => {
       expect.objectContaining({
         metadata: expect.objectContaining({ additions: 11, deletions: 3, changedFiles: 2 }),
       }),
+      ownerAgentId,
     );
   });
 
@@ -1707,7 +1727,7 @@ describe("agent issue mutation checkout ownership", () => {
       expect.any(Object),
     );
     expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalled();
-    expect(mockWorkProductService.update).toHaveBeenCalledWith("product-1", { title: "Updated product" });
+    expect(mockWorkProductService.update).toHaveBeenCalledWith("product-1", { title: "Updated product" }, ownerAgentId);
   });
 
   it("preserves board mutations on active checkouts", async () => {
@@ -3482,6 +3502,7 @@ describe("agent issue mutation checkout ownership", () => {
       ancestryParentId?: string | null;
       watchdogRows?: Record<string, unknown>[];
     } = {}) {
+      const policyDb = createRunContextDb();
       const watchedIssueId = options.watchedIssueId ?? issueId;
       const runRows = [{
         id: watchdogRunId,
@@ -3530,8 +3551,13 @@ describe("agent issue mutation checkout ownership", () => {
       return {
         transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
         select: vi.fn((selection: Record<string, unknown> = {}) => ({
-          from: vi.fn((table: Parameters<typeof getTableName>[0]) => getTableName(table) === "case_handoffs"
-            ? emptyCaseHandoffQuery() : buildQuery(selection)),
+          from: vi.fn((table: Parameters<typeof getTableName>[0]) => {
+            if ((getTableName(table) === "issues" && "conversationAgentId" in selection)
+              || (getTableName(table) === "agents" && Object.keys(selection).sort().join(",") === "companyId,id,permissions")) {
+              return policyDb.select(selection).from(table);
+            }
+            return getTableName(table) === "case_handoffs" ? emptyCaseHandoffQuery() : buildQuery(selection);
+          }),
         })),
       };
     }
