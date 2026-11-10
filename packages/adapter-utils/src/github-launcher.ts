@@ -76,10 +76,17 @@ function azureRemote(args, env) {
     (remoteIndex >= 0 ? remaining[remoteIndex + 1] : undefined) || remaining.find(arg => !arg.startsWith('-'));
   const explicitOther = destination && /^(?:[a-z][a-z0-9+.-]*:\/\/|[^@/\s]+@[^/:\s]+:|\/|\.\.?\/|[^\s-][^\s]*\/)/i.test(destination) ? destination : null;
   if (explicitOther) {
+    if (command === 'push') {
+      const rewrites = spawnSync(executable, [...globalOptions, 'config', '--get-regexp', '^url\\..*\\.pushinsteadof$'], {
+        env, encoding: 'utf8', timeout: 5000, maxBuffer: 4096, windowsHide: true,
+      });
+      if (rewrites.status !== 1) return 'paperclip:unresolved-git-remote';
+    }
     const expanded = spawnSync(executable, [...globalOptions, 'ls-remote', '--get-url', '--', explicitOther], {
       env, encoding: 'utf8', timeout: 5000, maxBuffer: 4096, windowsHide: true,
     });
-    const target = expanded.status === 0 && String(expanded.stdout || '').trim() || explicitOther;
+    if (expanded.status !== 0 || !String(expanded.stdout || '').trim()) return 'paperclip:unresolved-git-remote';
+    const target = String(expanded.stdout).trim();
     return isAzure(target) ? target : null;
   }
   if (!['clone', 'fetch', 'pull', 'push', 'ls-remote', 'archive'].includes(command)) return null;
