@@ -236,6 +236,12 @@ Early context preparation also records `agent_read`, `chat_completion`,
 `conversation`, `runtime_state`, `issue_context`, `run_identity`, `trust_preset`,
 and `task_context` beneath `heartbeat.prepare`. These time the existing awaited
 operations before environment selection; they do not add reads or record content.
+The work between those phases is named too: `chat_retry_admission`,
+`workspace_selection`, `dependency_readiness`, `issue_checkout`,
+`instance_settings`, `workspace_context`, `project_context`,
+`plan_wake_routing`, `routine_environment` and `responsible_user`.
+`execution_start` times the run and agent status writes and the "run started"
+event before run output starts. A repeated read or write has its own span.
 
 Execution configuration also records separate phases for mentioned skills,
 GitHub identity selection, secret resolution, managed AI runtime preparation,
@@ -297,7 +303,9 @@ The `paperclip.native-controller` tracer records
 backend construction, connector assignments, assigned MCP discovery, tool
 authority, companion selection and Runner binary resolution. It also records
 GitHub shutdown, coordinator release, instruction checkpoints and collection,
-and warm-session release. These intervals can occur between the existing native
+and warm-session release. Before the coordinator claim it also records
+attachment staging, warm controller restore, persistence of the preparation
+spans to the run log, and Runner state migration. These intervals can occur between the existing native
 preparation, execution and settlement spans. They are controller work, not model
 turn time, and carry only the existing run hash. Nested phases overlap their
 containing backend or lifecycle intervals; do not add both durations.

@@ -202,11 +202,11 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
   if (recipe && (!recipe.restoredAt || recipe.contents && !recipe.contentsRestoredAt
     || recipe.restorePoint && !recipe.restorePoint.expiredAt && !recipe.restorePoint.appliedAt)) return null;
   const runs = await db.select({ id: heartbeatRuns.id, issueId: heartbeatRuns.nativeIssueId,
-    workspaceId: sql<string>`${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,workspaceId}'`,
-    state: sql<string>`${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,state}'` }).from(heartbeatRuns).where(and(
+    workspaceId: sql<string>`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'workspaceId'`,
+    state: sql<string>`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state'` }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, workspace.companyId),
-    inArray(sql<string>`${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,workspaceId}'`, included.map(node => node.row.id)),
-    sql`${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,state}' in ('prepared','finalized')`,
+    inArray(sql<string>`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'workspaceId'`, included.map(node => node.row.id)),
+    sql`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'->>'state' in ('prepared','finalized')`,
   )).orderBy(heartbeatRuns.id);
   const runsByWorkspace = new Map<string, CompanionRun[]>();
   for (const run of runs) {

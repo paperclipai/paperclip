@@ -1865,6 +1865,18 @@ export function parseStatusFilter(
     .filter(Boolean);
 }
 
+/** Closed, content-free phases of `issueService.list`, for response timing headers. */
+export type IssueListPhase =
+  | "query" | "labels" | "active_runs" | "user_stats" | "read_stats" | "last_activity"
+  | "archives" | "blocked_by" | "live_descendants" | "attention";
+
+export interface IssueListOptions {
+  /** Wraps each internal read so callers can report per-phase timing. */
+  timePhase?: <T>(phase: IssueListPhase, read: () => Promise<T>) => Promise<T>;
+}
+
+const untimedIssueListPhase = <T>(_phase: IssueListPhase, read: () => Promise<T>) => read();
+
 export interface IssueFilters {
   attention?: "blocked";
   status?: string | readonly string[];
@@ -8272,7 +8284,8 @@ export function issueService(db: Db) {
       )).then((unread) => unread.map((row) => row.id));
     },
 
-    list: async (companyId: string, filters?: IssueFilters) => {
+    list: async (companyId: string, filters?: IssueFilters, options?: IssueListOptions) => {
+      const timePhase = options?.timePhase ?? untimedIssueListPhase;
       if (filters?.sortField === "id" && filters.attention) {
         throw unprocessable("ID ordering is not supported for blocked attention lists");
       }
@@ -8499,15 +8512,15 @@ export function issueService(db: Db) {
           : limit === undefined
             ? baseQuery
             : baseQuery.limit(limit);
-      const rows = (await pageQuery).map((row) => ({
+      const rows = (await timePhase("query", async () => pageQuery)).map((row) => ({
         ...row,
         description: decodeDatabaseTextPreview(
           row.description,
           ISSUE_LIST_DESCRIPTION_MAX_CHARS,
         ),
       }));
-      const withLabels = await withIssueLabels(db, rows);
-      const runMap = filters?.listProjection === "index" ? new Map() : await activeRunMapForIssues(db, withLabels);
+      const withLabels = await timePhase("labels", () => withIssueLabels(db, rows));
+      const runMap = filters?.listProjection === "index" ? new Map() : await timePhase("active_runs", () => activeRunMapForIssues(db, withLabels));
       const withRuns = withActiveRuns(withLabels, runMap);
       if (withRuns.length === 0) {
         return withRuns;
@@ -8523,20 +8536,20 @@ export function issueService(db: Db) {
         liveDescendantCountByIssueId,
       ] = await Promise.all([
         contextUserId
-          ? userCommentStatsForIssues(db, companyId, contextUserId, issueIds)
+          ? timePhase("user_stats", () => userCommentStatsForIssues(db, companyId, contextUserId, issueIds))
           : Promise.resolve([]),
         contextUserId
-          ? userReadStatsForIssues(db, companyId, contextUserId, issueIds)
+          ? timePhase("read_stats", () => userReadStatsForIssues(db, companyId, contextUserId, issueIds))
           : Promise.resolve([]),
-        lastActivityStatsForIssues(db, companyId, issueIds),
+        timePhase("last_activity", () => lastActivityStatsForIssues(db, companyId, issueIds)),
         contextUserId
-          ? inboxArchiveRowsForIssues(db, companyId, contextUserId, issueIds)
+          ? timePhase("archives", () => inboxArchiveRowsForIssues(db, companyId, contextUserId, issueIds))
           : Promise.resolve([]),
         includeBlockedBy
-          ? blockedByMapForIssues(db, companyId, issueIds)
+          ? timePhase("blocked_by", () => blockedByMapForIssues(db, companyId, issueIds))
           : Promise.resolve(new Map<string, IssueRelationIssueSummary[]>()),
         includeLiveDescendantSummary
-          ? liveDescendantCountMapForIssues(db, companyId, issueIds)
+          ? timePhase("live_descendants", () => liveDescendantCountMapForIssues(db, companyId, issueIds))
           : Promise.resolve(new Map<string, number>()),
       ]);
       const statsByIssueId = new Map(
@@ -8552,13 +8565,15 @@ export function issueService(db: Db) {
         blockerAttentionByIssueId,
         reviewAttentionByIssueId,
         blockedInboxAttentionByIssueId,
-      ] = await Promise.all([
-        filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueBlockerAttention>()) : listIssueBlockerAttentionMap(db, companyId, withRuns),
-        filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueReviewAttention>()) : listIssueReviewAttentionMap(db, companyId, withRuns),
-        includeBlockedInboxAttention
-          ? listIssueBlockedInboxAttentionMap(db, companyId, withRuns)
-          : Promise.resolve(new Map<string, IssueBlockedInboxAttention>()),
-      ]);
+      ] = filters?.listProjection === "index" && !includeBlockedInboxAttention
+        ? [new Map<string, IssueBlockerAttention>(), new Map<string, IssueReviewAttention>(), new Map<string, IssueBlockedInboxAttention>()]
+        : await timePhase("attention", () => Promise.all([
+          filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueBlockerAttention>()) : listIssueBlockerAttentionMap(db, companyId, withRuns),
+          filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueReviewAttention>()) : listIssueReviewAttentionMap(db, companyId, withRuns),
+          includeBlockedInboxAttention
+            ? listIssueBlockedInboxAttentionMap(db, companyId, withRuns)
+            : Promise.resolve(new Map<string, IssueBlockedInboxAttention>()),
+        ]));
 
       if (!contextUserId) {
         return withRuns.map((row) => {

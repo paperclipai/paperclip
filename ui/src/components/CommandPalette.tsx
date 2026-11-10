@@ -9,7 +9,6 @@ import { useSidebar } from "../context/SidebarContext";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
 import { agentsApi } from "../api/agents";
-import { projectsApi } from "../api/projects";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import {
@@ -43,6 +42,7 @@ import {
   parseSearchQuery,
   type SearchQueryParserContext,
 } from "../lib/search-query-parser";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 const SEARCH_ALL_VALUE = "__paperclip-search-all__";
 
@@ -129,8 +129,7 @@ export function CommandPalette() {
   });
 
   const { data: allProjects = [] } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    ...companyProjectsQuery(selectedCompanyId!),
     enabled: !!selectedCompanyId && open,
   });
   const projects = useMemo(

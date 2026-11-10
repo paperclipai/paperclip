@@ -7,7 +7,7 @@ import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
 import { IssueRowDetailsNotice } from "../components/IssueRowDetailsNotice";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
-import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { deriveOriginatingActor, INBOX_MINE_ISSUE_STATUS_FILTER, isHeartbeatRunVisibleInMine } from "@paperclipai/shared";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { approvalsApi } from "../api/approvals";
@@ -1256,13 +1256,21 @@ function StreamlinedInbox({
     [issues, remoteIssueSearchResults],
   );
   const referencedExecutionWorkspaceIdsKey = referencedExecutionWorkspaceIds.join(",");
-  const { data: executionWorkspaces = [], isLoading: isWorkspacesLoading } = useQuery({
+  const workspaceLookupEnabled = !!selectedCompanyId && isolatedWorkspacesEnabled && referencedExecutionWorkspaceIds.length > 0;
+  const {
+    data: executionWorkspaces = [],
+    isLoading: isWorkspacesLoading,
+    isPlaceholderData: isWorkspacesPlaceholder,
+  } = useQuery({
     queryKey: queryKeys.executionWorkspaces.summaryList(selectedCompanyId ?? "__disabled__", {
       ids: referencedExecutionWorkspaceIdsKey,
     }),
     queryFn: () => executionWorkspacesApi.listSummariesByIds(selectedCompanyId!, referencedExecutionWorkspaceIds),
-    enabled: !!selectedCompanyId && isolatedWorkspacesEnabled && referencedExecutionWorkspaceIds.length > 0,
-    placeholderData: keepPreviousData,
+    enabled: workspaceLookupEnabled,
+    // Keep names visible while this company's id set changes; never carry them across companies
+    // or into a view that needs no lookup, where a placeholder would never be replaced.
+    placeholderData: (previous, previousQuery) =>
+      workspaceLookupEnabled && previousQuery?.queryKey[1] === selectedCompanyId ? previous : undefined,
   });
   const {
     summaries: externalObjectSummaryByIssueId,
@@ -2552,7 +2560,8 @@ function StreamlinedInbox({
   const initialSourcesSettled =
     ![sourceSearchView, mineIssuesView, touchedIssuesView].some(view => view.kind === "reconnecting") &&
     !isSourceSearchLoading && !isSessionLoading && !isSettingsLoading && !isDismissalsLoading && !isAgentsLoading && !isProjectsLoading && !isMembersLoading &&
-    !(workspaceDataAffectsRows && isWorkspacesLoading) &&
+    // Previous summaries stand in while a new id set loads; they may lack the new view's workspaces.
+    !(workspaceDataAffectsRows && workspaceLookupEnabled && (isWorkspacesLoading || isWorkspacesPlaceholder)) &&
     !isJoinRequestsLoading &&
     !isApprovalsLoading &&
     !isDashboardLoading &&
