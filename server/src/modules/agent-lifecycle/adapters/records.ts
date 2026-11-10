@@ -1,3 +1,4 @@
+import { preserveAgentInteractionPermissions } from "../../../lib/agent-interaction-permissions.js";
 import type { LifecycleEffects } from "./effects.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
@@ -43,6 +44,7 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
         const createdStatus=status === "pending_approval" ? "pending_approval" : status === "terminated" ? "terminated" : "paused";
         const values: typeof agents.$inferInsert = {
           ...prepared,
+          ...(setup ? { permissions: preserveAgentInteractionPermissions(setup.permissions, prepared.permissions) } : {}),
           createdByUserId: setup?.createdByUserId ?? options?.createdByUserId ?? null,
           lifecycleState,
           lifecycleVersion: setup ? setup.lifecycleVersion + 1 : 1,

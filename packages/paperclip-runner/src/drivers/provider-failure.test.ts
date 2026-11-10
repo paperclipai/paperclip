@@ -79,6 +79,23 @@ describe("provider failure boundary", () => {
       .toMatchObject({ category: "rate_limit", message: `${generic}\nClaude is temporarily rate limited.` });
   });
 
+  it("classifies Claude's rejection of the selected model as an unavailable model", () => {
+    const generic = "ACP agent reported a terminal request failure.";
+    const failed = { status: "failed", error: { code: "RUNTIME", message: generic } };
+    // The AIR sessionFailure claude-agent-acp 0.73.0 returns for an unknown model (live probe, 2026-11-10).
+    const title = "There's an issue with the selected model (chaos-missing-model-abc12345). It may not exist or you may not have access to it. Run --model to pick a different model.";
+    expect(acpxTerminalResult(failed, "claude", {}, { category: "request", title })).toMatchObject({ status: "failed", error: { providerFailure: {
+      provider: "anthropic", phase: "turn", category: "model_unavailable", retryability: "requires_action", message: `${generic}\n${title}` } } });
+    // The thrown form of the same terminal is classified the same way.
+    expect(acpxProviderFailure(new Error(generic), "claude", "turn", {}, false, { category: "request", title }))
+      .toMatchObject({ category: "model_unavailable", retryability: "requires_action" });
+    // Another category, another agent, or another request failure stays unknown.
+    for (const [agent, category, text] of [["claude", "service", title], ["codex", "request", title],
+      ["claude", "request", "Claude could not process this request."]] as const) {
+      expect(acpxTerminalResult(failed, agent, {}, { category, title: text })).toMatchObject({ error: { providerFailure: { category: "unknown" } } });
+    }
+  });
+
   it("keeps the ACPX terminal cause when the raw result exceeds its payload limit", () => {
     const terminal = acpxTerminalResult({ status: "failed", error: { ...acp,
       data: { ...acp.data, responseBody: "private-body".repeat(7000) } } }, "claude");

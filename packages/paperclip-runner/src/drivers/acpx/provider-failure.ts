@@ -49,6 +49,18 @@ function sessionLimitCategory(failure: AcpxTerminalSessionFailure | undefined): 
 }
 
 /**
+ * Claude Code reports a model it cannot run (unknown, retired, or not on the
+ * account) as an AIR `request` failure with this fixed title. The user must
+ * choose another model, so it is an unavailable model, not a generic request.
+ */
+const CLAUDE_SELECTED_MODEL_REJECTED =
+  /^There's an issue with the selected model \([^()\n]{1,200}\)\. It may not exist or you may not have access to it\./;
+function sessionModelCategory(agent: string, failure: AcpxTerminalSessionFailure | undefined): ProviderFailure["category"] | undefined {
+  return agent === "claude" && failure?.category === "request" && typeof failure.title === "string" &&
+    CLAUDE_SELECTED_MODEL_REJECTED.test(failure.title.trim()) ? "model_unavailable" : undefined;
+}
+
+/**
  * `ownMessage` keeps an error's own message when it carries no ACP error. Use
  * it only where every rejection belongs to the provider: a failed terminal
  * result or a provider session ensure. `sessionFailure` adds the provider's
@@ -72,7 +84,8 @@ export function acpxProviderFailure(error: unknown, agent: string, phase: Provid
   const code = detail.type ?? detail.code ?? data.errorType ?? data.errorKind;
   const category = (typeof code === "string" ? CATEGORIES.get(code) : undefined)
     ?? (acp?.code === ACP_AUTH_REQUIRED ? "authentication" : undefined)
-    ?? sessionLimitCategory(sessionFailure);
+    ?? sessionLimitCategory(sessionFailure)
+    ?? sessionModelCategory(agent, sessionFailure);
   return createProviderFailure({ provider: agent === "claude" ? "anthropic" : agent === "codex" ? "openai" : agent,
     phase, message, httpStatus: status, providerCode: code, requestId: data.request_id, category, environment });
 }

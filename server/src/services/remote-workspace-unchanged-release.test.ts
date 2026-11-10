@@ -123,12 +123,14 @@ describe.skipIf(!support.supported)("remote workspace writer that ended without 
       captures: () => captures };
   }
 
-  async function expectFullSave(f: Awaited<ReturnType<typeof preparedFollowUp>>) {
+  async function expectFullSave(f: Awaited<ReturnType<typeof preparedFollowUp>>, changed = false) {
     await expect(f.reserveNext()).rejects.toBeInstanceOf(RemoteWorkspaceWriterActiveError);
     const before = f.captures();
     const saved = await f.saveB();
-    expect(saved).not.toHaveProperty("unchanged");
-    expect(saved.snapshotId).not.toBe(f.savedA.snapshotId);
+    if (changed) {
+      expect(saved).not.toHaveProperty("unchanged");
+      expect(saved.snapshotId).not.toBe(f.savedA.snapshotId);
+    } else expect(saved).toMatchObject({ snapshotId: f.savedA.snapshotId, unchanged: true });
     expect(f.captures()).toBeGreaterThan(before);
     expect(await f.snapshotOperations()).toHaveLength(1);
   }
@@ -174,7 +176,7 @@ describe.skipIf(!support.supported)("remote workspace writer that ended without 
   it("keeps the full save when setup wrote into the workspace", async () => {
     const f = await preparedFollowUp({ runtimeProvisionCommand: "echo provisioned > provisioned.txt" });
     await f.end();
-    await expectFullSave(f);
+    await expectFullSave(f, true);
   });
 
   it("keeps the full save while the writer's owner may still act, and while it is still running", async () => {
@@ -183,8 +185,10 @@ describe.skipIf(!support.supported)("remote workspace writer that ended without 
     await expect(f.reserveNext()).rejects.toBeInstanceOf(RemoteWorkspaceWriterActiveError);
     await db.update(heartbeatRuns).set({ status: "running", controllerLeaseExpiresAt: null, finishedAt: null })
       .where(eq(heartbeatRuns.id, f.runB));
+    const before = f.captures();
     const saved = await f.saveB();
-    expect(saved).not.toHaveProperty("unchanged");
+    expect(saved).toMatchObject({ snapshotId: f.savedA.snapshotId, unchanged: true });
+    expect(f.captures()).toBeGreaterThan(before);
     expect(await f.snapshotOperations()).toHaveLength(1);
   });
 

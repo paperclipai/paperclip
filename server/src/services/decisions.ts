@@ -1,3 +1,4 @@
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { decisionTargetService, notifyDecisionTargetWork } from "./decision-targets.js";
 import { randomUUID } from "node:crypto";
 import { and, asc, count, desc, eq, gte, inArray, sql } from "drizzle-orm";
@@ -475,6 +476,27 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         const deniedOrigin = originAccess.find((access) => !access.allowed);
         if (!userAccess.allowed || deniedOrigin) return finish("failed", "deny_decision_intersection",
           { reason: "deny_decision_intersection", userReason: userAccess.reason, originReason: deniedOrigin?.reason ?? null });
+        const assignment = effect.type === "assign_issue" ? effect : effect.type === "create_issue" ? effect.draft : null;
+        await assertAgentInteraction(tx, {
+          companyId: decision.companyId, actorAgentId: decision.originAgentId,
+          operation: assignment ? "assign" : effect.type === "comment_on_issue" ? "comment" : "edit",
+          issueId: effect.type === "create_issue" ? undefined : target.id,
+          targetAgentId: assignment?.assigneeAgentId, assigneeUserId: assignment?.assigneeUserId,
+          parentIssueId: effect.type === "create_issue" ? effect.draft.parentId ?? target.id : undefined,
+          texts: [interpolate(JSON.stringify(effect), decision.inputValues ?? {})], lock: true,
+        });
+        const effectComment = effect.type === "cancel_issue_tree" ? effect.reasonComment
+          : "comment" in effect ? effect.comment : undefined;
+        if (effectComment) await assertAgentInteraction(tx, {
+          companyId: decision.companyId, actorAgentId: decision.originAgentId,
+          operation: "comment", issueId: target.id, texts: [interpolate(effectComment, decision.inputValues ?? {})], lock: true,
+        });
+        if (effect.type === "cancel_issue_tree") {
+          for (const child of referencedIssues.filter(item => item.id !== target.id)) {
+            await assertAgentInteraction(tx, { companyId: decision.companyId, actorAgentId: decision.originAgentId,
+              operation: "edit", issueId: child.id, lock: true });
+          }
+        }
         if (effect.staleness === "strict") {
           const staleReference = referencedIssues.some((item) => directReferencedIds.has(item.id) &&
             snapshots[item.id]?.updatedAt !== item.updatedAt.toISOString());
@@ -486,7 +508,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         const values = decision.inputValues ?? {};
         let result: Record<string, unknown>;
         if (effect.type === "comment_on_issue") {
-          const comment = await svc.addComment(target.id, interpolate(effect.bodyMarkdown, values), { userId: decidedByUserId }, undefined, tx);
+          const comment = await svc.addComment(target.id, interpolate(effect.bodyMarkdown, values), { userId: decidedByUserId, runId: decision.originRunId }, { clientRequestId: lockKey }, tx);
           result = { commentId: comment.id };
         } else if (effect.type === "update_issue_status") {
           const updated = await svc.update(
@@ -496,7 +518,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
             postCommitActivityPublications,
             postCommitIssueActions,
           );
-          if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId }, undefined, tx);
+          if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId, runId: decision.originRunId }, { clientRequestId: lockKey }, tx);
           result = { issueId: updated?.id, status: updated?.status };
         } else if (effect.type === "assign_issue") {
           const updated = await svc.update(
@@ -510,7 +532,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
             postCommitActivityPublications,
             postCommitIssueActions,
           );
-          if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId }, undefined, tx);
+          if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId, runId: decision.originRunId }, { clientRequestId: lockKey }, tx);
           result = { issueId: updated?.id };
         } else if (effect.type === "resolve_blocker") {
           const current = await tx.select({ id: issueRelations.issueId }).from(issueRelations).where(and(eq(issueRelations.companyId, decision.companyId), eq(issueRelations.relatedIssueId, target.id), eq(issueRelations.type, "blocks")));
@@ -543,7 +565,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
               postCommitIssueActions,
             );
           }
-          await svc.addComment(target.id, interpolate(effect.reasonComment, values), { userId: decidedByUserId }, undefined, tx);
+          await svc.addComment(target.id, interpolate(effect.reasonComment, values), { userId: decidedByUserId, runId: decision.originRunId }, { clientRequestId: lockKey }, tx);
           result = { cancelledIssueIds: cancelled };
         }
         const activity = await effectAudit(tx as unknown as Db, decision, execution.id, effect, "executed", decidedByUserId, originResponsibleUserId, result);

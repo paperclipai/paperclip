@@ -8487,6 +8487,34 @@ describe("native terminal-turn accounting", () => {
     }
   });
 
+  // w-20261110T100747-s20386 run 71f71d10: K1 stopped the ACPX Claude
+  // provider before the turn's final report; the restored Runner resumed the
+  // session and reported the same turn completed without it.
+  it.each([false, true])("certifies a turn completed across a session restore as a lower bound (history replay: %s)", async replay => {
+    const { rehydrateRunnerdUsageNotification } = await import("@paperclipai/paperclip-runner/live");
+    const onUsage = vi.fn(async (_receipt: import("@paperclipai/adapter-utils").AdapterUsageCheckpoint) => {});
+    const event = (eventType: string, turnId: string | undefined, sourceSeq: number, payload: object = {}) => ({
+      eventType, turnId, sourceSeq, sourceInstanceId: "provider", emittedAt: new Date().toISOString(), payload,
+    }) as unknown as PrpEvent;
+    const provisional = { kind: "usage", usage: rehydrateRunnerdUsageNotification({ provider: "acpx", runDeltaAvailable: false,
+      cumulative: { inputTokens: 0, outputTokens: 0, providerCostUsd: 0 },
+      runDelta: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, providerCostUsd: 0 } }, "session", "turn").tokenUsage };
+    const before = [event("turn.started", "turn", 7), event("item.completed", "turn", 10, provisional), event("item.completed", "turn", 113, provisional)];
+    const restored = [event("session.resumed", undefined, 119, { context: {} }), event("turn.completed", "turn", 124, { status: "completed" })];
+    state.execute.mockReset().mockImplementationOnce(async () => {
+      for (const entry of [...(replay ? [] : before), ...restored]) await accountingEvents.committed!(entry);
+      return { result: { summary: "done" }, terminal: { runTerminalState: "succeeded" }, turnId: "turn",
+        normalizedSessionId: "session", providerSessionId: null, driverKind: "acpx_runtime", driverVersion: "1",
+        nativeEventCount: 5, highestContiguousSourceSeq: 124, usage: null };
+    });
+    const result = await executePaperclipNativeSession({ db: leaseDb(execution, {}, {}, [], {}, "running", replay ? before : []),
+      execution: { ...execution, provider: { kind: "acpx", agent: "claude", model: "claude-sonnet-5" } } as NativeExecutionInput,
+      runnerInstanceId: "runner", runnerEnvironment: { ANTHROPIC_API_KEY: "fixture" }, onUsage });
+    expect(result).toMatchObject({ usageComplete: true });
+    expect(onUsage).toHaveBeenLastCalledWith(expect.objectContaining({ complete: true,
+      pricingProvenance: expect.objectContaining({ evidence: expect.any(String) }) }));
+  });
+
   it.each(["claude", "codex"].flatMap(agent =>
     ["missing", "partial", "complete_zero", "later_partial", "recovered"].map(scenario => ({ agent, scenario })),
   ))("honors runner completeness for ACPX $agent ($scenario)", async ({ agent, scenario }) => {
@@ -8670,12 +8698,25 @@ describe("native terminal-turn accounting", () => {
       expect(firstCapture).toHaveBeenCalledTimes(2);
       expect(secondCapture).toHaveBeenCalledTimes(1);
       await expect(retainedHook({ ...firstReport, runId: "unrelated-run" })).rejects.toThrow("native_usage_run_binding_mismatch");
+      // A session restore reaches the producer that owns its run, so an open
+      // turn can close as a lower bound; another run's restore is ignored.
+      const currentResume = { ...secondReport, eventType: "session.resumed" } as PrpEvent;
+      const drainingResume = { ...firstReport, eventType: "session.resumed" } as PrpEvent;
+      await retainedHook(currentResume);
+      expect(secondCapture).toHaveBeenLastCalledWith(currentResume);
+      await retainedHook(drainingResume);
+      expect(firstCapture).toHaveBeenLastCalledWith(drainingResume);
+      const [firstCalls, secondCalls] = [firstCapture.mock.calls.length, secondCapture.mock.calls.length];
+      await expect(retainedHook({ ...currentResume, runId: "unrelated-run" })).resolves.toBeUndefined();
+      expect([firstCapture.mock.calls.length, secondCapture.mock.calls.length]).toEqual([firstCalls, secondCalls]);
       const recoveryHook = state.createTransport.mock.calls.at(-1)![0].onRecoveryAccountingEvent!;
       const source = { runnerInstanceId: "warm-producer", environmentLeaseId: "warm-usage-workspace",
         runId: first.binding.runId, normalizedSessionId: first.session.normalizedSessionId!, turnId: "source-turn", itemId: "source-item" };
       await recoveryHook(firstReport, source);
-      expect(firstCapture).toHaveBeenCalledTimes(3);
-      expect(secondCapture).toHaveBeenCalledTimes(1);
+      expect(firstCapture).toHaveBeenCalledTimes(firstCalls + 1);
+      expect(secondCapture).toHaveBeenCalledTimes(secondCalls);
+      // Recovery routing stays usage-only: a source restore needs no proven source.
+      await expect(recoveryHook({ ...drainingResume, runId: "foreign-source" }, source)).resolves.toBeUndefined();
       await expect(recoveryHook({ ...firstReport, runId: "foreign-source" }, source)).rejects.toThrow("native_recovery_usage_source_unproven");
     } finally {
       if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;

@@ -1,10 +1,11 @@
+import { assertLoginEnvironmentTarget } from "./login-environment.js";
 import { writeLoginCleanup } from "./login-cleanup-notifications.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { adapterAuthSessions } from "@paperclipai/db";
+import { adapterAuthSessions, environmentLeases } from "@paperclipai/db";
 import type {
   AdapterAuthSessionFailure,
   AdapterAuthSessionInternalStatus,
@@ -34,7 +35,7 @@ import {
   type LoginPtySessionOpener,
 } from "@paperclipai/adapter-utils/login-pty-transport";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
-import { buildLoginLeaseAcquireArgs } from "./adapter-login-lease.js";
+import { buildLoginLeaseAcquireArgs, loginLeaseBoundsDeadline } from "./adapter-login-lease.js";
 import { environmentService } from "./environments.js";
 import { runDescriptorBoundAuthRead } from "./device-login-credential-read.js";
 import {
@@ -132,6 +133,8 @@ export interface LoginSessionLease {
 }
 
 export interface AcquireLoginLeaseInput {
+  agentId?: string;
+  expiresAt: Date;
   companyId: string;
   environmentId: string;
   adapterType: AgentAdapterType;
@@ -212,6 +215,7 @@ export interface LoginSessionActivityEvent {
 export type LoginSessionActivityRecorder = (event: LoginSessionActivityEvent) => void;
 
 export interface StartDeviceLoginInput {
+  agentId?: string;
   managementContext?: ConnectionManagementContext;
   aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
   companyId: string;
@@ -340,6 +344,7 @@ export interface CompareAndSetAdapterAuthSessionStatusInput
 /** The store for the login-session rows. The service inserts, transitions, and
  *  reads through it. The insert maps the active-slot conflict to a `409`. */
 export interface AdapterAuthSessionStore {
+  getLoginAgentId?(providerLeaseId: string, companyId: string, environmentId: string, sessionId: string): Promise<string | undefined>;
   insert(input: InsertAdapterAuthSessionInput): Promise<void>;
   recordLeaseAcquired(input: {
     sessionId: string;
@@ -449,13 +454,19 @@ export const ADAPTER_AUTH_PROMOTION_CLAIM_MS = 60_000;
  * provider leases that no live session references. The db-backed store
  * implements this next to {@link AdapterAuthSessionStore}.
  */
+export interface AdapterLoginLeaseReference {
+  sessionId: string;
+  environmentId: string;
+  providerLeaseId: string;
+}
+
 export interface AdapterAuthReaperStore {
   /** The non-terminal sessions with an `expiresAt` at or before `now`. */
   listExpiredActiveSessions(now: Date): Promise<AdapterAuthSessionRow[]>;
   /** The terminal sessions left in the internal `cleanup_pending` state. */
   listCleanupPendingSessions(): Promise<AdapterAuthSessionRow[]>;
-  /** Every provider lease reference a session row still holds. */
-  listLeaseReferences(): Promise<string[]>;
+  /** The exact session/environment/provider references that rows still hold. */
+  listLeaseReferences(): Promise<AdapterLoginLeaseReference[]>;
   setStatus(input: SetAdapterAuthSessionStatusInput): Promise<void>;
   /** A conditional status write. It returns true only when it changed one row. */
   compareAndSetStatus(input: CompareAndSetAdapterAuthSessionStatusInput): Promise<boolean>;
@@ -621,6 +632,10 @@ export function createDbAdapterAuthSessionStore(
       const row = rows[0];
       return row ? toRow(row) : null;
     },
+    async getLoginAgentId(providerLeaseId, companyId, environmentId, sessionId) {
+      const [lease] = await db.select({ companyId: environmentLeases.companyId, metadata: environmentLeases.metadata }).from(environmentLeases).where(and(eq(environmentLeases.providerLeaseId, providerLeaseId), eq(environmentLeases.companyId, companyId), eq(environmentLeases.environmentId, environmentId), sql`${environmentLeases.metadata}->>${LOGIN_LEASE_SESSION_TAG_KEY} = ${sessionId}`)).limit(1);
+      return lease?.companyId === companyId && lease.metadata?.purpose === "login" ? (typeof lease.metadata.agentId === "string" ? lease.metadata.agentId : undefined) : undefined;
+    },
     async getActiveByOwner(companyId, startedByUserId, adapterType) {
       // The predicate matches the same three columns as the active-slot partial
       // unique index, plus the active-status set, so at most one row can match.
@@ -682,7 +697,7 @@ export function createDbAdapterAuthSessionStore(
     },
     async listLeaseReferences() {
       const rows = await db
-        .select({ providerLeaseId: adapterAuthSessions.providerLeaseId })
+        .select({ sessionId: adapterAuthSessions.id, environmentId: adapterAuthSessions.environmentId, providerLeaseId: adapterAuthSessions.providerLeaseId })
         .from(adapterAuthSessions)
         .where(
           and(
@@ -690,9 +705,7 @@ export function createDbAdapterAuthSessionStore(
             isNotNull(adapterAuthSessions.providerLeaseId),
           ),
         );
-      return rows
-        .map((row) => row.providerLeaseId)
-        .filter((value): value is string => value != null);
+      return rows.flatMap(row => row.providerLeaseId ? [{ ...row, providerLeaseId: row.providerLeaseId }] : []);
     },
     async withCompanyAdapterPromotionLock(companyId, startedByUserId, adapterType, fn) {
       return withAdapterLoginPromotionLock(db, companyId, startedByUserId, adapterType, fn);
@@ -925,7 +938,8 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
     // caller cannot address the row by the internal id.
     const publicSessionId = randomUUID();
     const startedAt = now();
-    const ttlSeconds = input.ttlSeconds ?? resolveProfile(input.adapterType).timeoutMs / 1000;
+    const requestedTtlSeconds = input.ttlSeconds ?? resolveProfile(input.adapterType).timeoutMs / 1000;
+    const ttlSeconds = input.agentId ? Math.min(requestedTtlSeconds, DEVICE_LOGIN_TIMEOUT_MS / 1000) : requestedTtlSeconds;
     const expiresAt = new Date(startedAt.getTime() + ttlSeconds * 1000);
     const base = {
       sessionId,
@@ -964,6 +978,8 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
         environmentId: input.environmentId,
         adapterType: input.adapterType,
         sessionId,
+        agentId: input.agentId,
+        expiresAt,
         startedByUserId: input.startedByUserId,
       });
     } catch (error) {
@@ -1314,17 +1330,19 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
   // terminal transition deletes the prompt at its own write site instead (see
   // `terminate`, `abandonAfterLostClaim`, and `cancelOwnerSession`), so a
   // terminal response always carries a null prompt.
-  function buildOwnerResponse(
+  async function buildOwnerResponse(
     row: AdapterAuthSessionRow,
     requestingUserId: string,
-  ): AdapterAuthSessionOwnerResponse {
+  ): Promise<AdapterAuthSessionOwnerResponse> {
     const isOwner = row.startedByUserId === requestingUserId;
     const status = resolvePublicStatus(row);
     // The prompt map keys on the internal id, so read it by `row.id`, not the
     // public id. Only the owner principal ever reads the prompt.
     const prompt = isOwner ? promptsBySession.get(row.id) ?? null : null;
+    const agentId = isOwner && row.providerLeaseId ? await store.getLoginAgentId?.(row.providerLeaseId, row.companyId, row.environmentId, row.id) : undefined;
     return {
       sessionId: row.publicSessionId,
+      ...(agentId ? { agentId } : {}),
       ...(isOwner && row.aiConnection ? { aiConnection: row.aiConnection } : {}),
       environmentId: row.environmentId,
       status,
@@ -1472,6 +1490,7 @@ export function buildSandboxLoginDriver(deps: {
   lease: EnvironmentLease;
   sessionHome: string;
   timeoutMs: number;
+  readCredential?: () => Promise<Buffer>;
 }): SandboxLoginDriver {
   const { openPtySession, environmentRuntime, environment, lease, sessionHome, timeoutMs } = deps;
   const transport = createLoginPtyTransport(openPtySession);
@@ -1483,6 +1502,7 @@ export function buildSandboxLoginDriver(deps: {
       // The read ignores the runner path. It runs one fixed, server-controlled,
       // descriptor-bound operation against the verified session home. So a swap of
       // the credential file between a check and the read cannot steer the read.
+      if (deps.readCredential) return deps.readCredential();
       return runDescriptorBoundAuthRead({
         environmentRuntime,
         environment,
@@ -1513,6 +1533,7 @@ export interface LoginPtySessionBinding {
   providerLeaseId: string;
   /** The server-controlled session home. The opener sets `CODEX_HOME` to it. */
   sessionHome: string;
+  expiresAt?: string;
   /** The resolved environment for the acquired lease. */
   environment: Environment;
   /** The acquired environment lease. */
@@ -1572,7 +1593,7 @@ export function createWorkerBoundLoginPtyOpener(
         : {};
     const pluginId = readLeaseMetaString(metadata.pluginId);
     const driverKey =
-      readLeaseMetaString(metadata.provider) ?? readLeaseMetaString(metadata.driver);
+      readLeaseMetaString(metadata.driverKey) ?? readLeaseMetaString(metadata.provider) ?? readLeaseMetaString(metadata.driver);
     if (!binding.providerLeaseId || !pluginId || !driverKey) {
       log("[paperclip] Device login: the lease carries no sandbox worker binding.");
       throw new Error(CODEX_LOGIN_PTY_BIND_FAILED);
@@ -1599,6 +1620,7 @@ export function createWorkerBoundLoginPtyOpener(
         providerLeaseId: binding.providerLeaseId,
         loginCommandKey,
         sessionHome: binding.sessionHome,
+        expiresAt: binding.expiresAt,
       });
   };
 }
@@ -1640,7 +1662,7 @@ export function createProductionLoginSessionRuntime(
   const environmentsSvc = environmentService(deps.db);
   return {
     async acquireLoginLease(input) {
-      const environment = await environmentsSvc.getById(input.environmentId);
+      const environment = await assertLoginEnvironmentTarget(deps.db, input);
       if (!environment) {
         throw new Error(`Environment "${input.environmentId}" is not found.`);
       }
@@ -1654,11 +1676,15 @@ export function createProductionLoginSessionRuntime(
       await deps.assertProviderSupportsLoginPty(input.environmentId);
       const record = await deps.environmentRuntime.acquireRunLease(
         buildLoginLeaseAcquireArgs({
+          browserLogin: true,
           metadata: {
             companyId: input.companyId,
             environment,
             adapterType: input.adapterType,
           },
+          targetAgentId: input.agentId,
+          requestedExpiresAt: input.expiresAt,
+          assertCompanyBinding: true,
         }),
       );
       // Tag the lease with the session identifier, so the reaper resolves an
@@ -1667,6 +1693,13 @@ export function createProductionLoginSessionRuntime(
         ...(record.lease.metadata ?? {}),
         [LOGIN_LEASE_SESSION_TAG_KEY]: input.sessionId,
       }));
+      // Keep the tagged cleanup obligation even if release fails. A database
+      // deadline alone cannot stop a provider after this Core process exits.
+      if (!loginLeaseBoundsDeadline(record.lease.expiresAt, input.expiresAt.getTime())) {
+        const runtimeDriver = deps.environmentRuntime.getDriver(record.environment.driver);
+        await runtimeDriver?.releaseRunLease({ environment: record.environment, lease: record.lease, status: "failed" });
+        throw new Error("Device login failed: the acquired lease expiry does not bound the session deadline.");
+      }
       const sessionHome = sessionLoginHomePath(input.sessionId);
       const authPath = sessionCredentialPath(input.sessionId);
       const providerLeaseId = record.lease.providerLeaseId ?? record.lease.id;
@@ -1681,6 +1714,7 @@ export function createProductionLoginSessionRuntime(
             adapterType: input.adapterType,
             providerLeaseId,
             sessionHome,
+            expiresAt: record.lease.expiresAt?.toISOString(),
             environment: record.environment,
             lease: record.lease,
           })
@@ -1692,6 +1726,7 @@ export function createProductionLoginSessionRuntime(
         lease: record.lease,
         sessionHome,
         timeoutMs: DEVICE_LOGIN_TIMEOUT_MS,
+        ...(record.environment.driver === "plugin" ? { readCredential: () => deps.environmentRuntime.readLoginCredential({ environment: record.environment, lease: record.lease }) } : {}),
       });
       const driverKey = record.environment.driver;
       return {

@@ -14,6 +14,7 @@ import { recordS3BodyFailure, withS3FailureDiagnostics } from "./s3-failure.js";
 import { sendThroughStorageOutage } from "./storage-unavailable.js";
 import { addAbortSignal, Readable } from "node:stream";
 import { retryS3RequestTimeouts } from "./s3-request-timeout-retry.js";
+import { refreshS3CredentialsOnRejection } from "./s3-credential-refresh.js";
 import type { StorageProvider, GetObjectResult, HeadObjectResult } from "./types.js";
 import { notFound, unprocessable } from "../errors.js";
 
@@ -137,6 +138,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     forcePathStyle: Boolean(config.forcePathStyle),
   });
   retryS3RequestTimeouts(client);
+  refreshS3CredentialsOnRejection(client);
   // File sources carry Content-MD5 as their integrity check. Send plain bodies
   // so the backend verifies that digest directly; the default client wraps
   // bodies in aws-chunked framing with its own trailing checksum.
@@ -147,6 +149,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     requestChecksumCalculation: "WHEN_REQUIRED",
   });
   retryS3RequestTimeouts(fileClient);
+  refreshS3CredentialsOnRejection(fileClient);
 
   async function listExactVersions(key: string, signal?: AbortSignal) {
     const versions = new Set<string>(), cursors = new Set<string>();

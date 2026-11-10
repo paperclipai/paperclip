@@ -678,6 +678,41 @@ function recoveredRunAttachment(state: {
   };
 }
 
+// Committed events that show a provider turn or tool work started. Commands
+// use the control plane's shared recovery-maintenance vocabulary instead.
+const PROVIDER_WORK_EVENT_TYPES = new Set(["turn.accepted", "turn.started", "item.started", "tool.execution.started",
+  "semantic_tool.input", "runtime_request.created", "mcp_app.tool_input"]);
+
+/**
+ * The payload of this run's own `run.attach` when a restart cut it off before
+ * any provider work: the runner journaled it and then died, so the restored
+ * runner settled it as `execution_indeterminate` and will not execute it
+ * again. Attaching binds the run to its saved session and starts no turn, so a
+ * new attachment with the same payload is safe while nothing after the old one
+ * started provider work: every later command is recovery maintenance (see
+ * isRunnerRecoveryMaintenanceCommand), and no committed event shows a turn or
+ * tool work. Each runner refuses the new one unless its provider
+ * session is settled. Warm transitions and staged attachments keep their own
+ * exact replay paths and are never re-issued here.
+ */
+function cutOffRunAttachmentPayload(state: {
+  commands: readonly { type: string; status: string; controllerSeq: number; payload: Record<string, unknown>; result?: unknown }[];
+  committedEvents: readonly { eventType: string }[];
+  warmTransition?: unknown;
+  stagedRunAttachment?: unknown;
+}): Record<string, unknown> | null {
+  if (state.warmTransition != null || state.stagedRunAttachment != null) return null;
+  const attach = state.commands.findLast(command => command.type === "run.attach");
+  if (!attach || attach.payload.paperclipNextAuthority !== undefined) return null;
+  const outcomeUnknown = attach.status === "indeterminate" || (attach.status === "failed"
+    && record(record(attach.result).result).code === "execution_indeterminate");
+  if (!outcomeUnknown) return null;
+  if (state.commands.some(command => command.controllerSeq > attach.controllerSeq
+    && !isRunnerRecoveryMaintenanceCommand(command.type))) return null;
+  if (state.committedEvents.some(event => PROVIDER_WORK_EVENT_TYPES.has(event.eventType))) return null;
+  return structuredClone(attach.payload);
+}
+
 function latestProviderIdentityEventIndex(
   events: readonly { eventType: string }[],
 ): number {
@@ -7059,7 +7094,19 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     // Only a replacement executor can be restoring a cold Pi process. Share
     // one deadline across every recovery barrier; live adoption stays at 30 s.
     if (runAttachment) {
-      await this.#waitCommand("run.attach", runAttachment.commandId, admissionDeadline, true);
+      try {
+        await this.#waitCommand("run.attach", runAttachment.commandId, admissionDeadline, true);
+      } catch (error) {
+        // A restart can cut off this run's own attachment after the runner
+        // journaled it. The restored runner settles it as
+        // execution_indeterminate and never executes it again. Attach once
+        // more with a new command; the runner admits it only for a settled
+        // provider session.
+        const reattachment = cutOffRunAttachmentPayload(core.store.state);
+        if (!reattachment) throw error;
+        const retry = core.queueCommand("run.attach", reattachment, undefined, true);
+        await this.#waitCommand("run.attach", retry.commandId, admissionDeadline, true);
+      }
     }
     // A launched runner normally advanced at authentication, before run.attach
     // restores the provider. An adopted runner had no launch step.
@@ -9021,6 +9068,7 @@ export const runnerdRecoveryInternals = Object.freeze({
   providerDrainStateFromSnapshot,
   providerTurnIsActiveFromCommittedEvents,
   recoveredRunAttachment,
+  cutOffRunAttachmentPayload,
   releaseRunnerProcessOwnership,
   runnerCloseDeadlines,
   runnerCloseGraceMs,

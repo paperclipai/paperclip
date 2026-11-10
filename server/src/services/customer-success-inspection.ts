@@ -23,6 +23,7 @@ import { skillPackageStore } from "./skill-package-store.js";
 import { getRunLogStore, isRunLogStoreType } from "./run-log-store.js";
 import { createRemoteWorkspaceFiles } from "./remote-workspace-files.js";
 import { createSavedWorkspaceLoader } from "./remote-workspaces.js";
+import { createSavedWorkspaceArchiveOpener } from "./saved-workspace-archive.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
@@ -340,6 +341,7 @@ export async function readCustomerSuccessResource(
           const remoteFiles = createRemoteWorkspaceFiles(tx, {
             environmentRuntime: environmentRuntimeService(tx, { pluginWorkerManager: options.pluginWorkerManager, readOnlyInspection: true }),
             loadSavedWorkspace: createSavedWorkspaceLoader(tx, storage),
+            openSavedWorkspaceArchive: createSavedWorkspaceArchiveOpener(tx, storage),
           });
           const files = workspaceFileResourceService(tx, undefined, { remoteFiles });
           const input = { path: q.path ?? "", ...q.context, limit: q.limit, offset: q.offset };

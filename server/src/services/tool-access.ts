@@ -3,7 +3,7 @@ import { RepositoryCatalogUnavailableError, findRepositoryCatalogUnavailableErro
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import { connectionHealthSchedule } from "./tool-access/catalog/health-schedule.js";
-import { assertAgentConnectionInstallAccess, type ConnectionManagementContext } from "./connection-management.js";
+import { assertAgentConnectionInstallAccess, assertAgentToolAssignmentInteractions, type ConnectionManagementContext } from "./connection-management.js";
 import { connectionActorUserId } from "./tool-access/actor.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
 import { createConnectionCredentialValidation } from "./tool-access/connections/credential-validation.js";
@@ -3296,7 +3296,17 @@ export function toolAccessService(
         .where(and(eq(toolConnectionInstalls.companyId, companyId), eq(toolConnectionInstalls.connectionId, connection.id)));
       const companyTargets = lockedConnection.status !== "active" || !lockedConnection.enabled || (existingProfile && existingProfile.status !== "active")
         ? [{ targetType: "company", targetId: companyId }] : [];
-      await lockToolAssignmentAgents(tx, companyId, [...existingBindings, ...bindingInputs, ...existingInstalls, ...companyTargets]);
+      const sourceAgentId = actor?.managementContext?.actor.type === "agent" ? actor.managementContext.actor.agentId
+        : actor?.actorType === "agent" ? actor.actorId : null;
+      await lockToolAssignmentAgents(tx, companyId, [...existingBindings, ...bindingInputs, ...existingInstalls, ...companyTargets], sourceAgentId);
+      const requestedAgentTargets = new Set(bindingInputs.filter(target => target.targetType === "agent").map(target => target.targetId));
+      const changedAgentTargets: string[] = [];
+      for (const savedTargets of [existingBindings, ...(connection.connectionPurpose === "tool" ? [existingInstalls] : [])]) {
+        const existingAgentTargets = new Set(savedTargets.filter(target => target.targetType === "agent").map(target => target.targetId));
+        changedAgentTargets.push(...[...requestedAgentTargets].filter(id => !existingAgentTargets.has(id)));
+        if (!input.preserveExistingAccess) changedAgentTargets.push(...[...existingAgentTargets].filter(id => !requestedAgentTargets.has(id)));
+      }
+      await assertAgentToolAssignmentInteractions(tx as unknown as Db, sourceAgentId, companyId, changedAgentTargets, false);
       // A renamed connection can leave its old profile name in use. Resolve
       // names against profiles too, including when finalizing an installed draft.
       const otherProfiles = await tx

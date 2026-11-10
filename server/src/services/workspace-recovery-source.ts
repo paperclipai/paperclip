@@ -7,6 +7,7 @@ import { readNativeWorkspaceSyncReference } from "./native-runtime/native-worksp
 import { readSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
 import type { NativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { readStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
+import { isAbandonedPreparedRemoteWorkspace } from "./remote-workspace-abandoned-preparation.js";
 import { LEGACY_WORKSPACE_RECOVERY_SCHEMA, SETTLED_WORKSPACE_RESTORE_HOLD_KEY } from "./workspace-restore-recovery-state.js";
 import { ENVIRONMENT_LEASE_POLICIES, EXECUTION_RECONCILIATION_CAUSES, readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type EnvironmentLeasePolicy,
   type WorkspaceSourceVerificationFailure } from "@paperclipai/shared";
@@ -109,6 +110,7 @@ export async function inspectWorkspaceRecoverySource(db: Db, input: WorkspaceRec
     || remoteAuthority.location.remoteCwd !== remoteReference.remoteCwd
     || (remoteReference.state === "prepared" ? !remoteAuthority.dirty || remoteAuthority.writerRunId !== run.id
       : remoteAuthority.dirty || remoteAuthority.writerRunId !== null || remoteAuthority.snapshotId !== remoteReference.snapshotId))) {
+    if (await isAbandonedPreparedRemoteWorkspace(db, run)) throw new SystemRecoveryFailure("source_unavailable", "use_alternative_strategy");
     throw invalid("workspace_reference_mismatch");
   }
   if (remoteReference?.state === "saved") {

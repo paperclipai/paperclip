@@ -17,6 +17,12 @@ export function notifyRemoteWorkspaceSnapshots(transaction: object, hint?: strin
   return notifyDeliveryWork(transaction, DELIVERY_QUEUES.remoteWorkspaceSnapshots, hint);
 }
 
+function abandonedUploadOperationId(row: Snapshot) {
+  if (row.status !== "delete_requested") return null;
+  const abandoned = row.metadata?.abandonedUpload as { operationId?: unknown } | undefined;
+  return typeof abandoned?.operationId === "string" && abandoned.operationId === row.sourceOperationId ? abandoned.operationId : null;
+}
+
 async function pinned(db: ReadDb, row: Snapshot) {
   const [workspace] = await db.select({ id: executionWorkspaces.id, sourceIssueId: executionWorkspaces.sourceIssueId,
     metadata: executionWorkspaces.metadata }).from(executionWorkspaces).where(and(
@@ -37,7 +43,8 @@ async function pinned(db: ReadDb, row: Snapshot) {
       // A failed save keeps its snapshot pinned for its retry, as while it ran,
       // until the final save retires it.
       sql`(${workspaceOperations.status} = 'failed' and ${workspaceOperations.metadata} ? 'lastFailure'
-        and ${workspaceOperations.metadata}->'retiredSave' is null)`,
+        and ${workspaceOperations.metadata}->'retiredSave' is null
+        and ${workspaceOperations.id}::text is distinct from ${abandonedUploadOperationId(row)})`,
       sql`(${workspaceOperations.metadata}->'saveWork'->>'schema' = 'paperclip.remote-workspace-save-work.v1'
         and (${workspaceOperations.metadata}#>'{saveWork,unknown}' is distinct from 'false'::jsonb
           or case when jsonb_typeof(${workspaceOperations.metadata}#>'{saveWork,activeIds}') = 'array'

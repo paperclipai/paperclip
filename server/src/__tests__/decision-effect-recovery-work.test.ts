@@ -207,7 +207,15 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     expect(await service().recoverEffects(new Date(at.getTime() + 60_000))).toEqual({ resumed: 1 });
     vi.stubEnv("PAPERCLIP_DECISIONS_RECOVERY_GRACE_MS", "0");
     const second = await create(); await claim(second.id, at);
-    expect(await service().recoverEffects(at)).toEqual({ resumed: 1 }); expect(await comments()).toHaveLength(2);
+    expect(await service().recoverEffects(at)).toEqual({ resumed: 1 });
+    const saved = await comments();
+    expect(saved).toHaveLength(2);
+    expect(saved.map(comment => comment.createdByRunId)).toEqual([runId, runId]);
+    expect(saved.map(comment => comment.clientRequestId).sort()).toEqual([
+      `decision-effect:${row.id}:0`, `decision-effect:${second.id}:0`,
+    ].sort());
+    expect(await service().recoverEffects(at)).toEqual({ resumed: 0 });
+    expect(await comments()).toHaveLength(2);
   });
 
   it("joins active foreground effects when their recovery deadline arrives", async () => {

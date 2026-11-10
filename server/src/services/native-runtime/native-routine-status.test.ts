@@ -2,12 +2,13 @@ import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, completionContracts, createDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, pluginManagedResources, plugins, routineRuns, routines, workAssessments } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, completionContracts, createDb, heartbeatRuns, issueComments, issueRelations, issueThreadInteractions, issues, nativeRunFinalizations, nativeRunResults, pluginManagedResources, plugins, routineRuns, routines, statusDecisionEffects, statusDecisions, workAssessments } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { routineService } from "../routines.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION, type NativeStatusDecision } from "./status-arbiter.js";
+import { INTERACTION_DELIVERY_DENIED } from "../agent-interaction-delivery.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_ROUTINE_STATUS_TEST_DATABASE_URL");
 const support = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
@@ -72,6 +73,66 @@ if (!support.supported) console.warn(`Skipping native routine status tests: ${su
     expect(saved.completedAt !== null).toBe(status !== "in_progress");
     const replay = await commit(f, status); expect(replay.replayed).toBe(true); expect(replay.decision.id).toBe(first.decision.id);
     expect((await db.select().from(routineRuns).where(eq(routineRuns.id, f.invocationId)))[0]).toEqual(saved);
+  });
+  it("retains the native decision author when requesting a protected agent reviewer", async () => {
+    const f = await seed(), reviewer = randomUUID();
+    await db.insert(agents).values({ id: reviewer, companyId, name: "Protected reviewer", adapterType: "process", status: "active",
+      permissions: { interactions: { canReceiveAssignmentsFromAgents: false } } });
+    const requestReview = () => commitNativeStatusDecision({ db, companyId, issueId: f.issueId, runId: f.runId, assessmentId: f.assessmentId,
+      priorStatus: "in_progress", priorStatusVersion: f.priorStatusVersion, priorDecisionId: f.priorDecisionId,
+      decision: { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "preserve", toStatus: "in_progress",
+        reasonCode: "review_requested", unblockDescriptor: null, effects: [{ kind: "bind_reviewer", ownerAgentId: reviewer,
+          ownerUserId: null, prompt: "Review this work" }] },
+    });
+    await expect(requestReview()).rejects.toMatchObject({ status: 403, details: expect.objectContaining({ actorAgentId: agentId,
+      permission: "canReceiveAssignmentsFromAgents" }) });
+    expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, f.issueId))).toEqual([]);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, reviewer))).toEqual([]);
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, f.issueId))).toEqual([]);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("in_progress");
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ phase: "terminal_failure", failureCode: "agent_interaction_denied", nextAttemptAt: null });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].status).toBe("running");
+    await db.update(agents).set({ permissions: {} }).where(eq(agents.id, reviewer));
+    await expect(requestReview()).rejects.toMatchObject({ status: 403,
+      details: expect.objectContaining({ permission: "canReceiveAssignmentsFromAgents" }) });
+  });
+  it.each([false, true])("commits child completion while permanently refusing its protected parent report (dependency: %s)", async dependency => {
+    const f = await seed(), parentId = randomUUID(), parentAgentId = randomUUID();
+    const report = "PRIVATE_REPORT_TEXT: agent-authored completion instructions";
+    await db.insert(agents).values({ id: parentAgentId, companyId, name: "Protected parent", adapterType: "process", status: "active",
+      permissions: { interactions: { canReceiveCommentsFromAgents: false } } });
+    await db.insert(issues).values({ id: parentId, companyId, title: "Parent task", status: dependency ? "blocked" : "in_progress", assigneeAgentId: parentAgentId });
+    await db.update(issues).set({ parentId }).where(eq(issues.id, f.issueId));
+    await db.update(nativeRunResults).set({ resultJson: { result: { summary: report } } }).where(eq(nativeRunResults.runId, f.runId));
+    if (dependency) await db.insert(issueRelations).values({ companyId, issueId: f.issueId, relatedIssueId: parentId, type: "blocks" });
+
+    const completed = await commit(f, "done");
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("done");
+    expect((await db.select().from(routineRuns).where(eq(routineRuns.id, f.invocationId)))[0].status).toBe("completed");
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ phase: "committed", failureCode: null, nextAttemptAt: null });
+    expect((await db.select().from(issues).where(eq(issues.id, parentId)))[0].status).toBe(dependency ? "blocked" : "in_progress");
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, parentId))).toEqual([]);
+
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, parentAgentId)).orderBy(agentWakeupRequests.id);
+    const reportWake = wakes.find(wake => wake.reason === "issue_children_completed");
+    expect(reportWake).toMatchObject({ status: "skipped", error: INTERACTION_DELIVERY_DENIED, finishedAt: expect.any(Date), runId: null,
+      payload: { interactionOrigin: { actorType: "agent", actorId: agentId, operation: "comment" },
+        interactionPermissionDenials: { assignment: { permission: "canReceiveCommentsFromAgents", targetAgentId: parentAgentId } } } });
+    expect(JSON.stringify(wakes)).not.toContain(report);
+    expect(wakes).toHaveLength(dependency ? 2 : 1);
+    const dependencyWake = wakes.find(wake => wake.reason === "issue_blockers_resolved");
+    if (dependency) expect(dependencyWake).toMatchObject({ status: "queued", requestedByActorType: "system", error: null,
+      payload: { resolvedBlockerIssueId: f.issueId, blockerIssueIds: [f.issueId], interactionOrigin: { actorType: "system" } } });
+
+    const effects = await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.decisionId, completed.decision.id));
+    const reportEffect = effects.find(effect => effect.targetId === reportWake!.id);
+    expect(reportEffect).toMatchObject({ deliveryState: "skipped", lastError: INTERACTION_DELIVERY_DENIED, deliveredAt: null, nextAttemptAt: null });
+    expect(JSON.stringify(reportEffect)).not.toContain(report);
+    await db.update(agents).set({ permissions: {} }).where(eq(agents.id, parentAgentId));
+    expect((await commit(f, "done")).replayed).toBe(true);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, parentAgentId)).orderBy(agentWakeupRequests.id)).toEqual(wakes);
   });
   it.each(["ordinary", "wrong-invocation", "wrong-issue", "foreign-company"])("does not settle an invocation with %s custody", async mode => {
     const f = await seed(mode); const [before] = await db.select().from(routineRuns).where(eq(routineRuns.id, f.invocationId));

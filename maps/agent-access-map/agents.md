@@ -63,6 +63,12 @@ bypass hiring authorization. Source: [runner resolver](../../server/src/services
 Policy: Agent creation/configuration uses action grants, resource policies and change
 consent; some controls require a board actor.
 
+`GET /api/agents/{id}/interaction-permissions` follows configuration-read access.
+`PATCH /api/agents/{id}/interaction-permissions` is restricted to board-authenticated
+human permission managers (`users:manage_permissions`); agents cannot change it.
+Optional [interaction restrictions](../../doc/agent-interaction-permissions.md)
+can independently deny peer configuration despite a configure/suggest grant.
+
 `agents:read` permits redacted configuration, configured skills, instruction content,
 and configuration/instruction history reads. It does not permit changes, restore,
 or environment probes. `agents:configure` still includes read/write authority;

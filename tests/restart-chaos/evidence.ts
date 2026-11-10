@@ -83,7 +83,8 @@ export async function writeEvidenceBundle(input: {
   await write("task-record.json", record);
   await write("faults.json", relevant.length ? relevant : input.faults);
   await write("startup-phases.json", (relevant.length ? relevant : input.faults).map(fault => ({ faultId: fault.faultId, kind: fault.kind,
-    startedAt: fault.startedAt, stoppedAt: fault.stoppedAt, restartedAt: fault.restartedAt, healthyAt: fault.healthyAt, readyAt: fault.readyAt, phases: fault.phases })));
+    startedAt: fault.startedAt, stoppedAt: fault.stoppedAt, restartedAt: fault.restartedAt, healthyAt: fault.healthyAt, readyAt: fault.readyAt, phases: fault.phases,
+    ...(fault.repeatedRestart ? { repeatedRestarts: fault.repeatedRestart.restarts } : {}) })));
   await write("timeline.json", input.timeline);
   if (input.artifacts) await write("oracle-artifacts.json", input.artifacts);
   await attempt("server-log", async () => write("server-log-window.txt", await logWindow(input.serverLogPath, relevant.length ? relevant : input.faults)));

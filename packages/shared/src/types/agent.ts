@@ -17,12 +17,14 @@ import type {
 } from "../trust-policy.js";
 import type { AgentOrgChainHealth } from "../agent-eligibility.js";
 import type { AgentApiKeyScope } from "../validators/agent.js";
+import type { AgentInteractionPermissions } from "../agent-interaction-permissions.js";
 
 export interface AgentPermissions extends Record<string, unknown> {
   canCreateAgents: boolean;
   canCreateSkills?: boolean;
   trustPreset?: TrustPreset;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  interactions?: AgentInteractionPermissions;
 }
 
 export interface AgentProjectAccess {
@@ -223,6 +225,8 @@ export interface CodexAccountBindingClaim {
 // The owner read of a login session. It adds the one-time prompt to the public
 // response. Only the owner principal that started the session reads this shape.
 export interface AdapterAuthSessionOwnerResponse extends AdapterAuthSessionResponse {
+  /** The saved computer executing this login; independent of account grants. */
+  agentId?: string;
   aiConnection?: AiConnectionLoginIntent;
   prompt: AdapterAuthSessionPrompt | null;
   codexAccountBinding?: CodexAccountBindingClaim | null;
@@ -231,6 +235,7 @@ export interface AdapterAuthSessionOwnerResponse extends AdapterAuthSessionRespo
 // The request that starts a login session for one adapter in one environment.
 // The owner principal comes from the authenticated caller, not from this body.
 export interface StartAdapterAuthSessionRequest {
+  agentId?: string;
   aiConnection?: AiConnectionLoginIntent;
   environmentId: string;
   adapterType: AgentAdapterType;
@@ -306,6 +311,7 @@ export interface ClaudeSetupTokenSessionResponse {
 // the session reads this shape.
 export interface ClaudeSetupTokenSessionOwnerResponse
   extends ClaudeSetupTokenSessionResponse {
+  agentId?: string;
   aiConnection?: AiConnectionLoginIntent;
   panelMode: AdapterAuthPanelMode;
   prompt: ClaudeSetupTokenSessionPrompt | null;

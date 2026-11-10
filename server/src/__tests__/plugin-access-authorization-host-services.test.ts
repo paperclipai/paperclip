@@ -1,7 +1,9 @@
+import { withPluginInteractionOrigin } from "../services/plugin-interaction-context.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   companyMemberships,
@@ -62,6 +64,21 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
 
   afterAll(async () => {
     await tempDb?.cleanup();
+  });
+
+  it("keeps agent tool invocation origin when a plugin tries to invoke a protected peer", async () => {
+    const company = await createCompany(db, "PIO");
+    const [sender, recipient] = await db.insert(agents).values([
+      { companyId: company.id, name: "Sender", adapterType: "process" },
+      { companyId: company.id, name: "Protected", adapterType: "process", permissions: { interactions: { canReceiveAssignmentsFromAgents: false } } },
+    ]).returning();
+    const services = buildHostServices(db, pluginId, "permissions-extension", createEventBusStub());
+    try {
+      await expect(withPluginInteractionOrigin({ companyId: company.id, agentId: sender!.id, runId: randomUUID() }, () =>
+        services.agents.invoke({ companyId: company.id, agentId: recipient!.id, prompt: "Start work" })))
+        .rejects.toMatchObject({ status: 403, details: { permission: "canReceiveAssignmentsFromAgents", actorAgentId: sender!.id } });
+      expect(await db.select().from(agentWakeupRequests)).toEqual([]);
+    } finally { services.dispose(); }
   });
 
   it("rejects grant writes for principals outside the requested company", async () => {

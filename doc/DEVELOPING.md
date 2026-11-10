@@ -1140,12 +1140,19 @@ Prepare a new or updated agent worktree with one command:
 node scripts/agent-preflight.mjs
 ```
 
-It does what `pnpm install --frozen-lockfile`, the Runner's `ensure:eval-build-deps`,
-`build:rust`, `build` and `build:runner-binaries` did, and skips work whose inputs
-are unchanged:
+It does what `pnpm install --frozen-lockfile`, the plugin SDK's `ensure-build-deps`,
+the Runner's `ensure:eval-build-deps`, `build:rust`, `build` and
+`build:runner-binaries` did, and skips work whose inputs are unchanged:
 
 - **install** is skipped when the lockfile, every `package.json`, `patches/`, Node
   and pnpm match this worktree's last install.
+- **plugin SDK build** runs `scripts/ensure-plugin-build-deps.mjs`, which builds
+  `@paperclipai/plugin-sdk` and its `@paperclipai/shared` dependency and skips
+  them when their content fingerprints match the last build. Like the Runner and
+  the eval kernel, the SDK is imported through its built `dist` (plugin workers
+  load it under plain Node), so the server and the restart-chaos harness cannot
+  start without it. Both compile in about two seconds, so they do not use the
+  shared cache.
 - **Runner build** is skipped when the Runner's build stamp is current. When another
   worktree built the same inputs (the build-input digest described under
   "Reused Runner build in the server build", plus the compiler), the Runner and eval

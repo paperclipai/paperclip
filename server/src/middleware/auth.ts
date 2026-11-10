@@ -622,83 +622,90 @@ async function resolveCloudTenantActorOnce(
   // the BetterAuth session path, board API keys, and the authorization
   // service's own instanceUserRoles lookup — so actively purge them on every
   // trusted-header authentication instead of merely no longer inserting them.
-  await db
-    .delete(instanceUserRoles)
-    .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
-
-  await syncCloudTenantWrites(db, userId, syncFingerprint, async () => {
-    const now = new Date();
+  //
+  // Every request runs this path, static files included. The purge and the
+  // tenant sync stay ordered; the two reads below are independent of them, so
+  // they run concurrently. A loaded database then costs one round trip per
+  // request rather than three in a row.
+  const purgeAndSync = (async () => {
     await db
-      .insert(authUsers)
-      .values({
-        id: userId,
-        name: userName,
-        email: userEmail,
-        emailVerified: true,
-        image: null,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: authUsers.id,
-        set: { name: userName, email: userEmail, emailVerified: true, updatedAt: now },
-        setWhere: sql`${authUsers.name} is distinct from ${userName}
-          or ${authUsers.email} is distinct from ${userEmail}
-          or ${authUsers.emailVerified} is distinct from true`,
-      });
+      .delete(instanceUserRoles)
+      .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
 
-    await insertCloudTenantCompany(db, { companyId, companyName, now });
-    if (paperclipCompanyName) {
-      await repairCloudTenantCompanyName(db, {
-        companyId,
-        paperclipCompanyId,
-        paperclipCompanyName,
-        now,
-      });
-    }
-    // Derive any legacy prefix from the repaired name, preserving the helper's
-    // exact legacy-marker guards and the operator's own edits.
-    await repairCloudTenantCompanyProvisionDefaults(db, { companyId, stackId, now });
-
-    effectiveMembership = await db.transaction(async tx => {
-      const [existing] = await tx.select({
-        status: companyMemberships.status,
-        membershipRole: companyMemberships.membershipRole,
-      }).from(companyMemberships).where(and(
-        eq(companyMemberships.companyId, companyId),
-        eq(companyMemberships.principalType, "user"),
-        eq(companyMemberships.principalId, userId),
-      )).for("update");
-      // Serialize authority restoration and its notice while retaining the
-      // guarded upsert that leaves unchanged memberships untouched.
-      if (!existing || existing.status !== "active" || existing.membershipRole === "viewer") {
-        await notifyChatCompanyAuthorityChange(tx, { companyId });
-        await notifyMuseContactVerification(tx, { companyId, operatorId: userId });
-      }
-      return tx
-        .insert(companyMemberships)
-        .values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole, updatedAt: now })
-        .onConflictDoUpdate({
-          target: [companyMemberships.companyId, companyMemberships.principalType, companyMemberships.principalId],
-          set: { status: "active", membershipRole, updatedAt: now },
-          setWhere: sql`${companyMemberships.status} is distinct from 'active'
-            or ${companyMemberships.membershipRole} is distinct from ${membershipRole}`,
+    await syncCloudTenantWrites(db, userId, syncFingerprint, async () => {
+      const now = new Date();
+      await db
+        .insert(authUsers)
+        .values({
+          id: userId,
+          name: userName,
+          email: userEmail,
+          emailVerified: true,
+          image: null,
+          createdAt: now,
+          updatedAt: now,
         })
-        .returning({ companyId: companyMemberships.companyId, membershipRole: companyMemberships.membershipRole, status: companyMemberships.status })
-        // PostgreSQL returns no row for an unchanged ON CONFLICT ... WHERE.
-        // That condition itself proves the existing role/status match the input.
-        .then((rows) => rows[0] ?? { companyId, membershipRole, status: "active" });
-    });
+        .onConflictDoUpdate({
+          target: authUsers.id,
+          set: { name: userName, email: userEmail, emailVerified: true, updatedAt: now },
+          setWhere: sql`${authUsers.name} is distinct from ${userName}
+            or ${authUsers.email} is distinct from ${userEmail}
+            or ${authUsers.emailVerified} is distinct from true`,
+        });
 
-    // An unchanged membership can still lack default grants after a partial
-    // sync or an older deployment; keep this repair inside every actual sync.
-    await ensureHumanRoleDefaultGrants(db, {
-      companyId,
-      principalId: userId,
-      membershipRole: effectiveMembership.membershipRole ?? membershipRole,
-      grantedByUserId: null,
+      await insertCloudTenantCompany(db, { companyId, companyName, now });
+      if (paperclipCompanyName) {
+        await repairCloudTenantCompanyName(db, {
+          companyId,
+          paperclipCompanyId,
+          paperclipCompanyName,
+          now,
+        });
+      }
+      // Derive any legacy prefix from the repaired name, preserving the helper's
+      // exact legacy-marker guards and the operator's own edits.
+      await repairCloudTenantCompanyProvisionDefaults(db, { companyId, stackId, now });
+
+      effectiveMembership = await db.transaction(async tx => {
+        const [existing] = await tx.select({
+          status: companyMemberships.status,
+          membershipRole: companyMemberships.membershipRole,
+        }).from(companyMemberships).where(and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, userId),
+        )).for("update");
+        // Serialize authority restoration and its notice while retaining the
+        // guarded upsert that leaves unchanged memberships untouched.
+        if (!existing || existing.status !== "active" || existing.membershipRole === "viewer") {
+          await notifyChatCompanyAuthorityChange(tx, { companyId });
+          await notifyMuseContactVerification(tx, { companyId, operatorId: userId });
+        }
+        return tx
+          .insert(companyMemberships)
+          .values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole, updatedAt: now })
+          .onConflictDoUpdate({
+            target: [companyMemberships.companyId, companyMemberships.principalType, companyMemberships.principalId],
+            set: { status: "active", membershipRole, updatedAt: now },
+            setWhere: sql`${companyMemberships.status} is distinct from 'active'
+              or ${companyMemberships.membershipRole} is distinct from ${membershipRole}`,
+          })
+          .returning({ companyId: companyMemberships.companyId, membershipRole: companyMemberships.membershipRole, status: companyMemberships.status })
+          // PostgreSQL returns no row for an unchanged ON CONFLICT ... WHERE.
+          // That condition itself proves the existing role/status match the input.
+          .then((rows) => rows[0] ?? { companyId, membershipRole, status: "active" });
+      });
+
+      // An unchanged membership can still lack default grants after a partial
+      // sync or an older deployment; keep this repair inside every actual sync.
+      await ensureHumanRoleDefaultGrants(db, {
+        companyId,
+        principalId: userId,
+        membershipRole: effectiveMembership.membershipRole ?? membershipRole,
+        grantedByUserId: null,
+      });
     });
-  });
+  })();
 
   // The stack's seeded company is only where Cloud provisioned this user.
   // Companies created afterwards on the instance (imports, in-app company
@@ -706,21 +713,42 @@ async function resolveCloudTenantActorOnce(
   // the pinned primary — the same active-membership scope a locally
   // authenticated session actor carries. Strictly this user's own rows; the
   // membership-creating flows seed their own permission grants, so nothing
-  // needs seeding per request here. A read failure degrades to the pinned
-  // primary instead of blocking authentication, mirroring the fail-closed
-  // owner-elevation resolution below.
-  let additionalMemberships: { companyId: string; membershipRole: string | null; status: string }[] =
-    [];
-  try {
-    additionalMemberships = (await loadActiveUserCompanyMemberships(db, userId)).filter(
-      (row) => row.companyId !== companyId,
+  // needs seeding per request here. The sync above writes only the primary
+  // company's membership, which this read excludes, so it need not wait for
+  // the sync. A read failure degrades to the pinned primary instead of
+  // blocking authentication, mirroring the fail-closed owner-elevation
+  // resolution below.
+  const additionalMembershipsRead: Promise<{ companyId: string; membershipRole: string | null; status: string }[]> =
+    loadActiveUserCompanyMemberships(db, userId).then(
+      (rows) => rows.filter((row) => row.companyId !== companyId),
+      (err) => {
+        logger.warn(
+          { err, userId, stackId },
+          "Failed to load cloud tenant user's company memberships; scoping actor to the stack's primary company",
+        );
+        return [];
+      },
     );
-  } catch (err) {
-    logger.warn(
-      { err, userId, stackId },
-      "Failed to load cloud tenant user's company memberships; scoping actor to the stack's primary company",
-    );
-  }
+  // Computed per request, never persisted: the stack owner is elevated to
+  // instance admin of their own dedicated instance only while the
+  // `enableOwnerInstanceAdmin` flag is on. Non-owner stack roles stay
+  // company-scoped. Turning the flag off de-elevates on the next request —
+  // there is no role row to clean up.
+  const ownerInstanceAdminRead = resolveOwnerInstanceAdmin(db, stackRole);
+
+  // Settle every started statement before an error leaves: the caller stops
+  // counting authentication work for idle and drain checks when this throws,
+  // and the owner-settings read can insert the missing settings row.
+  const [synced, membershipsRead, ownerRead] = await Promise.allSettled([
+    purgeAndSync,
+    additionalMembershipsRead,
+    ownerInstanceAdminRead,
+  ]);
+  if (synced.status === "rejected") throw synced.reason;
+  if (membershipsRead.status === "rejected") throw membershipsRead.reason;
+  if (ownerRead.status === "rejected") throw ownerRead.reason;
+  const additionalMemberships = membershipsRead.value;
+  const isInstanceAdmin = ownerRead.value;
 
   return {
     type: "board",
@@ -736,12 +764,7 @@ async function resolveCloudTenantActorOnce(
       },
       ...additionalMemberships,
     ],
-    // Computed per request, never persisted: the stack owner is elevated to
-    // instance admin of their own dedicated instance only while the
-    // `enableOwnerInstanceAdmin` flag is on. Non-owner stack roles stay
-    // company-scoped. Turning the flag off de-elevates on the next request —
-    // there is no role row to clean up.
-    isInstanceAdmin: await resolveOwnerInstanceAdmin(db, stackRole),
+    isInstanceAdmin,
     canManageExperimentalSettings: stackRole === "admin",
     source: "cloud_tenant",
   };

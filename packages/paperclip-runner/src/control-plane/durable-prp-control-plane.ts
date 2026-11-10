@@ -1,3 +1,4 @@
+import { safeErrorCauseCode } from "./safe-error-cause.js";
 import { AGENT_OBSERVABILITY_ENV_KEYS } from "../drivers/agent-observability.js";
 import { configuredEnvironment } from "../configured-environment.js";
 import { spawn } from "node:child_process";
@@ -876,19 +877,6 @@ function eventSchemaIssuePaths(issues: readonly { path?: unknown }[] | undefined
   const paths = [...new Set((issues ?? []).map(issue => typeof issue.path === "string" ? issue.path : "")
     .map(path => path.replace(/[^A-Za-z0-9_./-]/g, "_").slice(0, 80)).filter(Boolean))];
   return paths.length ? paths.slice(0, 3).join(",") : "unknown";
-}
-
-function eventCommitFailureCause(error: unknown): string {
-  // Database and transport adapters wrap their coded failure in Error.cause.
-  // Read only bounded codes: messages can contain SQL, arguments or secrets.
-  let current = error;
-  for (let depth = 0; depth < 4 && isRecord(current); depth++) {
-    const code = current.code;
-    if (typeof code === "string" && /^[A-Za-z0-9_.:-]{1,80}$/.test(code)) return code;
-    current = current.cause;
-  }
-  const name = error instanceof Error ? error.name : typeof error;
-  return /^[A-Za-z0-9_.:-]{1,80}$/.test(name) ? name : "unknown_error";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -2239,7 +2227,7 @@ export class DurablePrpControlPlane {
       .then(() => connection.sendJson(frame))
       .catch(() => {
         if (checkpointFailure !== null && this.#protocolIntegrityError === null) {
-          this.#eventCommitFailed(connection, `checkpoint_flush_failed:${eventCommitFailureCause(checkpointFailure)}`);
+          this.#eventCommitFailed(connection, `checkpoint_flush_failed:${safeErrorCauseCode(checkpointFailure)}`);
         } else connection.close();
       });
     this.#sendQueues.set(connection, sending);
@@ -3836,7 +3824,7 @@ export class DurablePrpControlPlane {
     try {
       this.#store.save();
     } catch (error) {
-      this.#failEventCommit(connection, `journal_write_failed:${eventCommitFailureCause(error)}`);
+      this.#failEventCommit(connection, `journal_write_failed:${safeErrorCauseCode(error)}`);
       return;
     }
     this.#sendJson(connection, {
@@ -4330,7 +4318,7 @@ export class DurablePrpControlPlane {
       if (error instanceof NativeSessionProtocolIntegrityError) {
         this.#failProtocolIntegrity(connection, error);
       } else {
-        this.#eventCommitFailed(connection, eventCommitFailureCause(error), sourceSeq);
+        this.#eventCommitFailed(connection, safeErrorCauseCode(error), sourceSeq);
       }
       return;
     }
@@ -4383,7 +4371,7 @@ export class DurablePrpControlPlane {
       try {
         this.#store.commit(candidate, !isStreamingEvent(event));
       } catch (error) {
-        this.#failEventCommit(connection, `journal_write_failed:${eventCommitFailureCause(error)}`, sourceSeq);
+        this.#failEventCommit(connection, `journal_write_failed:${safeErrorCauseCode(error)}`, sourceSeq);
         return;
       }
     } else {
@@ -4391,7 +4379,7 @@ export class DurablePrpControlPlane {
       try {
         committed = await this.#store.commitEvent(buildCandidate, isCurrentOwner, !isStreamingEvent(event));
       } catch (error) {
-        if (isCurrentOwner()) this.#failEventCommit(connection, `journal_write_failed:${eventCommitFailureCause(error)}`, sourceSeq);
+        if (isCurrentOwner()) this.#failEventCommit(connection, `journal_write_failed:${safeErrorCauseCode(error)}`, sourceSeq);
         else connection.close();
         return;
       }
@@ -4422,7 +4410,7 @@ export class DurablePrpControlPlane {
         await this.flushCheckpoint();
       } catch (error) {
         if (this.#eventOwner === connection && this.#identity === identity) {
-          this.#eventCommitFailed(connection, `checkpoint_flush_failed:${eventCommitFailureCause(error)}`, sourceSeq);
+          this.#eventCommitFailed(connection, `checkpoint_flush_failed:${safeErrorCauseCode(error)}`, sourceSeq);
         }
         return;
       }

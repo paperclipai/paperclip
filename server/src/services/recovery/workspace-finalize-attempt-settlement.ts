@@ -9,6 +9,7 @@ import { notifyTerminalWorkspaceWork } from "../terminal-workspace-work.js";
 import { RETAINED_SOURCE_FALLBACK_CHECK_KEY } from "../workspace-recovery-fallback-discovery.js";
 import { LOCAL_WORKSPACE_COMMAND_PHASES, isOwnerStampedWorkspaceOperationLive } from "../workspace-operations.js";
 import type { InProgressRecord, SettleOutcome } from "./ownership-registry.js";
+import { retireAbandonedSaveLedgerRows } from "./remote-snapshot-ledger-settlement.js";
 
 export const ABANDONED_WORKSPACE_FINALIZE_REASON = "abandoned_workspace_finalization";
 export const ABANDONED_WORKSPACE_COMMAND_REASON = "abandoned_workspace_command";
@@ -164,6 +165,7 @@ export async function settleAbandonedRemoteSnapshotSave(db: Db, record: InProgre
     }).where(and(eq(workspaceOperations.id, operation.id), eq(workspaceOperations.status, operation.status)))
       .returning({ id: workspaceOperations.id });
     if (!row) return { settled: false, reason: "attempt_no_longer_in_progress" };
+    await retireAbandonedSaveLedgerRows(tx, { companyId: operation.companyId, operationId: operation.id, now, proof: context.proof.reason });
     if (operation.executionWorkspaceId) {
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery);
       await tx.update(issueRecoveryActions).set({

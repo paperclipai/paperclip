@@ -1,4 +1,4 @@
-import { Profiler, useEffect, useLayoutEffect, useMemo, useRef, useState, type ProfilerOnRenderCallback } from "react";
+import { Profiler, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ProfilerOnRenderCallback } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { IssueChatThread } from "../components/IssueChatThread";
@@ -63,11 +63,24 @@ export function IssueChatLongThreadPerf() {
     [],
   );
 
-  useEffect(() => () => {
-    if (publishTimerRef.current !== null) {
-      window.clearTimeout(publishTimerRef.current);
-    }
+  const schedulePublication = useCallback(() => {
+    if (publishedRef.current || publishTimerRef.current !== null) return;
+    publishTimerRef.current = window.setTimeout(() => {
+      publishTimerRef.current = null;
+      publishedRef.current = true;
+      setMetrics(metricsRef.current);
+    }, 0);
   }, []);
+
+  useEffect(() => {
+    if (metricsRef.current.commitCount > 0) schedulePublication();
+    return () => {
+      if (publishTimerRef.current !== null) {
+        window.clearTimeout(publishTimerRef.current);
+        publishTimerRef.current = null;
+      }
+    };
+  }, [schedulePublication]);
 
   useLayoutEffect(() => {
     if (publishedRef.current || metricsRef.current.commitCount > 0) return;
@@ -96,12 +109,7 @@ export function IssueChatLongThreadPerf() {
       totalActualDuration: current.totalActualDuration + actualDuration,
     };
 
-    if (publishedRef.current || publishTimerRef.current !== null) return;
-    publishTimerRef.current = window.setTimeout(() => {
-      publishTimerRef.current = null;
-      publishedRef.current = true;
-      setMetrics(metricsRef.current);
-    }, 0);
+    schedulePublication();
   };
 
   return (

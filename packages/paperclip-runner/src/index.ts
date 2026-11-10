@@ -136,3 +136,4 @@ export { archiveCursorCloudSessionCheckpoint } from "./drivers/cursor-cloud/chec
 
 export { readProviderFailure, type ProviderFailure } from "./contracts/provider-failure.generated.js";
 export { providerFailureFromError } from "./drivers/provider-failure.js";
+export { SAFE_ERROR_CAUSE_PATTERN, safeErrorCauseCode } from "./control-plane/safe-error-cause.js";

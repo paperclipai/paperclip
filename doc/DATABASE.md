@@ -122,8 +122,8 @@ original-volume anchor or filesystem read. These validations add bounded
 per-retained-scope database reads during startup. They do not add a worker or a
 poll. Missing or invalid byte evidence remains an enrollment blocker.
 
-The original-volume owner can refresh a WEB receipt whose database facts digest
-has become stale only when fresh source inspection, current-key checkpoint
+The original-volume owner can refresh a WEB or full native receipt whose database
+facts digest has become stale only when fresh source inspection, current-key checkpoint
 validation and ciphertext hash/size readback prove the preserved bindings unchanged.
 It reuses the same archive and takes the existing finalizer, task and run fences before
 comparing the prior receipt digest and replacing it. The company activity log
@@ -133,6 +133,10 @@ the exact prior proof from the unchanged current bindings before publication. No
 enter the audit delta; normal activity redaction remains enabled. Changed
 evidence, concurrent invalid receipts and active sources remain blocked; remote
 recovery obligations are unchanged.
+Full native reproof still requires canonical destroyed-provider receipts. A
+database-only legacy workspace migration marker can stale the facts digest while
+the preserved controller, skill assets and local byte proof remain unchanged;
+refresh authenticates that same object and does not upload a replacement archive.
 
 Local inode and timestamp observations may change between preservation attempts
 without changing byte coverage. Valid receipts remain idempotent after those
@@ -156,6 +160,33 @@ recovery checks, one transaction compares every journal and refreshes only the
 cohort proof for all members. Cancellation or a changed journal rolls back the
 whole refresh. Partial reservations still require the original aggregate proof.
 Archives, recovery obligations and publication checks retain their existing owners.
+
+Git cache expiration treats a saved migration marker or unfinished migration
+journal as a durable consumer. It checks this under the lifecycle lock. A failed
+migration with `lastFailure` and no `retiredSave` also keeps its source and
+snapshot retention hold after process loss.
+
+If an older server already expired members of an unpublished cohort,
+`supersedeExpiredRemoteWorkspaceMigrationCohort` accepts the exact saved cohort
+and the exact expired member IDs. This is an internal service API for a privileged
+operator with a real database handle and reviewed company/cohort inputs. It does
+not add a CLI mode or an HTTP route. An operator calls the exported owner directly;
+its test and the reviewed one-time administrative qualification use that path.
+It requires completed Git expiration and an
+unexpired restore-point recipe for each missing member. Other members must retain
+their saved source fingerprints. Fresh source, lifecycle, finalizer and row locks
+protect one transaction that fails every old journal and removes only its matched
+active marker. It does not report migration success or change task state. The
+old cohort proof, operations, snapshots and object references remain unchanged.
+The failure receipt retains those objects through the existing failed-save hold.
+The optional `sourceLockWaitMs` uses the existing bounded source-lock queue.
+The default still refuses a busy source immediately. Cancellation targets this
+waiter only. All source and recovery checks run again after lock admission.
+
+New canonical imports use the current archived recipe or current online source.
+They record the old operation and supersession IDs and reserve a snapshot
+generation above the existing ledger maximum. A successful new import does not
+retire the old hold. Release of those historical objects requires separate review.
 
 ### Original local Git sources for archived workspaces
 
@@ -2134,6 +2165,23 @@ serialization retries. A concurrent finalization is read under the lock and
 keeps the normal late-receipt reconciliation path. Other independent accounting
 operations retain their repeatable-read snapshot. Receipt identity, replay
 conflicts, company scoping and budget-work publication remain transactional.
+
+Run budget admission (`reserveRunBudget`), the final dispatch gate's accounting
+phase (resolved-interaction dispatch only), the usage recorder's receipt-source handoff and its capture-failure fence
+use the same pattern. The dispatch gate's ownership phase already ran at READ
+COMMITTED under the same issue and run locks. Retry promotion and stale-run
+cancellation keep their repeatable-read snapshot because they combine many facts
+in one decision. Admission reads all
+mutable state after the shared admission fences, the agent share lock and the
+run-row lock. Its exposure is one statement, and the per-run reservation index
+plus the run lock prevent a second hold. Run-log appends and output progress that
+update a preparing run therefore cannot exhaust admission retries. Concurrent
+admissions of different runs remain best-effort, as before. When any operation
+transaction still exhausts its retries, it raises `AccountingContentionError`. The
+error carries a bounded message, keeps the SQLSTATE in `code` and the database
+error in `cause`, and is logged with both. A run that fails this way keeps the
+generic `adapter_failed` code, so existing retry paths apply, and records that
+bounded message with the SQLSTATE as its failure cause.
 
 Upgrade all controllers/workers to this accounting contract and drain incompatible
 pre-upgrade database transactions before enabling independent writers. Do not run

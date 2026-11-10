@@ -104,7 +104,7 @@ async function readBoardMessageRetrySource(db: Db, input: {
       sql`${heartbeatRuns.resultJson}->>'stopReason' = 'adapter_failed'`,
       sql`not exists (select 1 from jsonb_object_keys(case when jsonb_typeof(${heartbeatRuns.resultJson}) = 'object'
         then ${heartbeatRuns.resultJson} else '{}'::jsonb end) key
-        where key not in ('effectiveTimeoutSec', 'executionRecovery', 'stopReason', 'timeoutConfigured', 'timeoutFired', 'timeoutSource'))`,
+        where key not in ('effectiveTimeoutSec', 'executionRecovery', 'stopReason', 'timeoutConfigured', 'timeoutFired', 'timeoutSource', 'failureCause'))`,
       sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch' = '{"adapterType":"paperclip_runner"}'::jsonb`,
       sql`not exists (select 1 from jsonb_object_keys(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object'
         then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) key

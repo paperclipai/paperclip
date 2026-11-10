@@ -41,6 +41,40 @@ They allow 45 seconds for its bounded retry window before exercising manual
 Retry. Other cases keep the normal short assertion timeout. Timing samples do
 not accelerate the browser clock.
 
+`mine-workspaces.spec.ts` guards Mine against waiting on a company-wide
+execution-workspace list. Its fixture (`workspace-fixture.ts`) adds a company
+with 6,000 execution workspaces, 4,000 of them created for finished tasks, and
+12 Mine tasks that each run in their own isolated workspace. The API cannot
+create execution workspaces, so this fixture writes those rows to the instance
+database. Set `PAPERCLIP_CONFIG` to the disposable instance's `config.json`
+(embedded PostgreSQL), or `PAPERCLIP_COLLECTION_PERF_DATABASE_URL` to its
+loopback database. The fixture is retained in
+`test-results/collections/workspace-fixture.json` with the same 404 rule as the
+main fixture. The spec routes isolated workspaces on for its own pages. It
+checks that Mine requests only `ids`-filtered workspace summaries for the
+workspaces its rows reference, that rows appear while those reads are held when
+neither the Workspace column nor workspace grouping is active, and that the
+Workspace column still shows each row's workspace name. Its timing case turns on
+the real isolated-workspaces setting, restores it, and records cold time from
+navigation start to the first Mine row (two frames after mount) over
+`PAPERCLIP_COLLECTION_PERF_TIMING_RUNS` runs (default and minimum 5). It records
+a native scenario without request interception and a separate diagnostic scenario that delays
+workspace reads by 3 seconds. The timings are attached evidence, not budgets.
+
+`recent-task-open.spec.ts` covers opening a task from the sidebar's Recents.
+It gives eight fixture tasks twelve saved comments each and seeds them as the
+account's Recents. An idle Projects page must make exactly one
+`issues/chat-bootstrap` request (at most ten tasks) and no per-task reads.
+Clicking a preloaded task must show its latest comment without any of the
+chat's first-frame reads (core issue, recent comments, comment input facts,
+recent activity, recent runs, interactions, attachments, live and active run).
+The full detail read and the task page's other side reads still follow the
+first frame; the spec records them as an annotation. Its timing cases measure
+click to the latest comment on screen over at least 5 fresh browser contexts
+(empty HTTP cache and storage apart from Recents), natively and with 150 ms
+added to every API response. They also record the idle page's API request
+count. The timings are attached evidence, not budgets.
+
 Run these focused browser checks before the full collection suite:
 
 ```sh

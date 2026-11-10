@@ -1,3 +1,4 @@
+import { currentPluginInteractionOrigin } from "../services/plugin-interaction-context.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
@@ -380,11 +381,38 @@ describe("plugin-worker-manager stderr failure context", () => {
       });
       expect(companiesGet).toHaveBeenCalledWith(
         { companyId: "company-a" },
-        { invocationScope: { companyId: "company-a" }, traceparent: undefined, providerSpanBudget: { remaining: 256 } },
+        { invocationScope: { companyId: "company-a", agentOrigin: { agentId: "agent-1", runId: "run-1" } }, traceparent: undefined, providerSpanBudget: { remaining: 256 } },
       );
     } finally {
       await handle.stop().catch(() => undefined);
     }
+  });
+
+  it("binds nested host operations to the initiating agent and refuses proactive fallback during its invocation", async () => {
+    const companiesGet = vi.fn(async () => {
+      await Promise.resolve();
+      return currentPluginInteractionOrigin();
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1,
+      proactiveCompanyScopes: ["company-a"], hostHandlers: { "companies.get": companiesGet as never },
+    });
+    try {
+      await handle.start();
+      const input = { toolName: "probe", parameters: { mode: "echo", requestedCompanyId: "company-a" },
+        runContext: { companyId: "company-a", agentId: "agent-a", runId: "run-a" } };
+      await expect(handle.call("executeTool", input as HostToWorkerMethods["executeTool"][0])).resolves.toEqual({
+        companyId: "company-a", agentId: "agent-a", runId: "run-a",
+      });
+      expect(currentPluginInteractionOrigin()).toBeUndefined();
+      const calls = companiesGet.mock.calls.length;
+      await expect(handle.call("executeTool", { ...input, parameters: { ...input.parameters, mode: "missing" } } as HostToWorkerMethods["executeTool"][0]))
+        .rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+      await expect(handle.call("executeTool", { ...input, parameters: { ...input.parameters, mode: "unknown" } } as HostToWorkerMethods["executeTool"][0]))
+        .rejects.toMatchObject({ code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED });
+      expect(companiesGet).toHaveBeenCalledTimes(calls);
+    } finally { await handle.stop().catch(() => undefined); }
   });
 
   it("passes echoed invocation scope to worker-to-host handlers", async () => {

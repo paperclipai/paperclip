@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChaosApi } from "./api.js";
-import { CHILD_WAKE_GRACE_MS, REST_CONFIRM_MS, STALL_GIVE_UP_MS, STOP_CONTINUE_AFTER_MS, TaskObserver, childSpeedTasksInTurn, childrenPending, listWorkspaceFiles } from "./observer.js";
+import { CHILD_WAKE_GRACE_MS, REST_CONFIRM_MS, STALL_GIVE_UP_MS, STOP_CONTINUE_AFTER_MS, TaskObserver, childSpeedTasksInTurn, childrenPending, listWorkspaceFiles, noteLivenessEvent, stopArmed, toRunSample } from "./observer.js";
 import { gradeTask } from "./grader.js";
 import { createFixtureRepository, type ChaosLab } from "./seed.js";
 import { Timeline } from "./timeline.js";
@@ -187,6 +187,108 @@ describe("TaskObserver", () => {
     await observer.poll(start + 2_000 + STOP_CONTINUE_AFTER_MS + 1);
     expect(observer.record.followUp).toMatchObject({ commentId: "comment-1", duringRun: false });
     expect(posted.filter(route => route.endsWith("/cancel"))).toHaveLength(1);
+  });
+
+  it("S1 with a provider fault: stops on the first live provider turn, not the wall-clock window", async () => {
+    // Waves w-20261110T082702-s212 and w-20261110T091057-s213: the agent finished
+    // before the seeded window, so the PV2 interrupt_ack fault was never injected.
+    let events: unknown[] = [];
+    let runStatus = "running";
+    const base = fakeApi({
+      "/events": () => events,
+      "/runs": () => [{ id: "r1", status: runStatus, createdAt: new Date(0).toISOString(), finishedAt: null }],
+    }, "in_progress");
+    const posted: string[] = [];
+    const api = { ...base.api, get: base.api.get.bind(base.api), async post(route: string) {
+      posted.push(route);
+      if (route === "/api/heartbeat-runs/r1/cancel") { runStatus = "cancelled"; return { id: "r1" }; }
+      return route.endsWith("/issues") ? { id: "i1", identifier: "CHA-1" } : { id: "comment-1" };
+    } } as unknown as ChaosApi;
+    const pvPlan: TaskPlan = { ...plan, workload: "S1", adapter: "claude", followUpAfterMs: 60_000,
+      providerFault: { kind: "PV2", message: "interrupt_ack" } };
+    const observer = new TaskObserver(pvPlan, api, lab, new Timeline(null), ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    // Running, but no provider turn yet: the prompt has not reached the provider.
+    await observer.poll(start + 500);
+    expect(posted.filter(route => route.endsWith("/cancel"))).toEqual([]);
+    events = [{ seq: 1, eventType: "turn.started", createdAt: new Date(start + 600).toISOString(), payload: {} }];
+    await observer.poll(start + 1_000);
+    expect(posted.filter(route => route.endsWith("/cancel"))).toEqual(["/api/heartbeat-runs/r1/cancel"]);
+    expect(observer.record.stop).toMatchObject({ runId: "r1", httpStatus: 200 });
+    // The continue comment still waits for the seeded window.
+    events = [];
+    await observer.poll(start + 1_000 + STOP_CONTINUE_AFTER_MS + 1);
+    expect(observer.record.followUp).toBeNull();
+    await observer.poll(start + 60_000 + 1);
+    expect(observer.record.followUp).toMatchObject({ commentId: "comment-1" });
+  });
+
+  it("S1 with a provider fault: does not stop after a turn terminal, and stops once when the next turn starts", async () => {
+    const events = [
+      { seq: 1, eventType: "turn.started", createdAt: new Date(1).toISOString(), payload: {} },
+      { seq: 2, eventType: "turn.completed", createdAt: new Date(2).toISOString(), payload: {} },
+    ];
+    let nextTurn: unknown[] = [];
+    const base = fakeApi({
+      "/events": route => route.includes("afterSeq=0") ? events
+        : route.includes("afterSeq=2") ? nextTurn : [],
+      "/runs": () => [{ id: "r1", status: "running", createdAt: new Date(0).toISOString(), finishedAt: null }],
+    }, "in_progress");
+    const pvPlan: TaskPlan = { ...plan, workload: "S1", adapter: "claude", followUpAfterMs: 1_000,
+      providerFault: { kind: "PV2", message: "interrupt_ack" } };
+    const observer = new TaskObserver(pvPlan, base.api, lab, new Timeline(null), ready);
+    await observer.launch();
+    await observer.poll(observer.record.createdAt! + 5_000);
+    expect(base.posted.filter(route => route.endsWith("/cancel"))).toEqual([]);
+    expect(observer.record.stop ?? null).toBeNull();
+    // The next turn re-arms the Stop, and it fires once.
+    nextTurn = [{ seq: 3, eventType: "turn.started", createdAt: new Date(3).toISOString(), payload: {} }];
+    await observer.poll(observer.record.createdAt! + 6_000);
+    nextTurn = [];
+    await observer.poll(observer.record.createdAt! + 7_000);
+    expect(base.posted.filter(route => route.endsWith("/cancel"))).toEqual(["/api/heartbeat-runs/r1/cancel"]);
+    expect(observer.record.stop).toMatchObject({ runId: "r1" });
+  });
+
+  it("S1 with a provider fault: records a missed Stop when the run ends before any live turn and the task rests after the window", async () => {
+    const base = fakeApi({ "/events": () => [],
+      "/runs": () => [{ id: "r1", status: "succeeded", createdAt: new Date(0).toISOString(), finishedAt: new Date(1).toISOString() }],
+      "/comments": () => [], "/documents/": () => null, "/workspace-operations": () => [] }, "done");
+    const timeline = new Timeline(null);
+    const pvPlan: TaskPlan = { ...plan, workload: "S1", adapter: "claude", followUpAfterMs: 1_000,
+      providerFault: { kind: "PV2", message: "interrupt_ack" } };
+    const observer = new TaskObserver(pvPlan, base.api, lab, timeline, ready);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    await observer.poll(start + 500);
+    expect(observer.record.stop ?? null).toBeNull();
+    await observer.poll(start + 2_000);
+    expect(observer.record.stop).toMatchObject({ runId: null, missed: true });
+    expect(timeline.entries.some(entry => entry.kind === "task_stop_missed")).toBe(true);
+    expect(base.posted.filter(route => route.endsWith("/cancel"))).toEqual([]);
+  });
+
+  it("noteLivenessEvent: a runner replacement or stop clears the live provider turn", () => {
+    const replaced = { seq: 0, lastAt: null, openTools: 0, process: null } as Parameters<typeof noteLivenessEvent>[0];
+    noteLivenessEvent(replaced, { eventType: "native.process_identity_recorded", payload: { targetKind: "local", processPid: 1, processStartedAt: "a" } });
+    noteLivenessEvent(replaced, { eventType: "turn.started", payload: {} });
+    expect(replaced.turnActive).toBe(true);
+    noteLivenessEvent(replaced, { eventType: "native.process_identity_recorded", payload: { targetKind: "local", processPid: 2, processStartedAt: "b" } });
+    expect(replaced.turnActive).toBe(false);
+    noteLivenessEvent(replaced, { eventType: "turn.started", payload: {} });
+    noteLivenessEvent(replaced, { eventType: "native.local_process_stopped", payload: { processPid: 2 } });
+    expect(replaced.turnActive).toBe(false);
+  });
+
+  it("stopArmed: a provider-fault Stop needs a live provider turn; others keep the window", () => {
+    const live = { id: "r1", status: "running", providerTurnActive: true } as never;
+    const idle = { id: "r1", status: "running" } as never;
+    expect(stopArmed({ now: 0, windowAt: 1_000, providerFault: true, running: live })).toBe(true);
+    expect(stopArmed({ now: 5_000, windowAt: 1_000, providerFault: true, running: idle })).toBe(false);
+    expect(stopArmed({ now: 5_000, windowAt: 1_000, providerFault: true, running: undefined })).toBe(false);
+    expect(stopArmed({ now: 0, windowAt: 1_000, providerFault: false, running: live })).toBe(false);
+    expect(stopArmed({ now: 1_000, windowAt: 1_000, providerFault: false, running: undefined })).toBe(true);
   });
 
   it("S1: holds the Stop while another task's fault has the server down or recovering", async () => {
@@ -395,3 +497,11 @@ describe("childSpeedTasksInTurn", () => {
   });
 });
 
+describe("run samples", () => {
+  it("keeps the board's failure cause for U3 and omits it for older servers", () => {
+    const base = { runId: "r1", status: "failed", errorCode: "adapter_failed" };
+    expect(toRunSample({ ...base, failureCause: "40001" }).failureCause).toBe("40001");
+    expect(toRunSample(base)).not.toHaveProperty("failureCause");
+    expect(toRunSample({ ...base, failureCause: null })).not.toHaveProperty("failureCause");
+  });
+});

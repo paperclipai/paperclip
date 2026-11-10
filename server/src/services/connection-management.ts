@@ -1,8 +1,9 @@
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { and, eq, inArray, or } from "drizzle-orm";
 import { isUuidLike } from "@paperclipai/shared";
 import { agents, agentApiKeys, heartbeatRuns, runIdentityContexts, issues, projects, toolApplications, toolCatalogEntries, toolConnections, toolConnectionInstalls, toolProfiles, toolProfileEntries, toolProfileBindings, toolMcpGateways, aiConnectionPools, connectionGrants, routines, type Db } from "@paperclipai/db";
 import { forbidden } from "../errors.js";
-import { authorizationService, canActorReadIssuePrivacy, canActorReadProjectPrivacy, type AuthorizationActor, type AuthorizationDecision } from "./authorization.js";
+import { authorizationService, authorizationDeniedDetails, canActorReadIssuePrivacy, canActorReadProjectPrivacy, type AuthorizationActor, type AuthorizationDecision } from "./authorization.js";
 import { captureRunIdentity, runIdentityTaskFields, type RunIdentityCapture } from "./run-identity.js";
 import type { LogActivityInput } from "./activity-log.js";
 import type { ConnectionManagementAction, ConnectionManagementResource } from "./connection-management-policy.js";
@@ -43,6 +44,7 @@ export function responsibleConnectionUser(actor: AuthorizationActor): string | n
 /** Installation changes require the same agent-edit authority at every entry point. */
 export async function assertAgentConnectionInstallAccess(db: Db, actor: AuthorizationActor, companyId: string, agentIds: string[]) {
   const authorization = authorizationService(db);
+  await assertAgentToolAssignmentInteractions(db, actor.type === "agent" ? actor.agentId : null, companyId, agentIds);
   for (const agentId of new Set(agentIds)) {
     const [agent] = await db.select({ id: agents.id }).from(agents)
       .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId))).limit(1);
@@ -50,7 +52,16 @@ export async function assertAgentConnectionInstallAccess(db: Db, actor: Authoriz
     const decision = await authorization.decide({
       actor, action: "agent_config:update", resource: { type: "agent", companyId, agentId }, scope: { targetAgentId: agentId },
     });
-    if (!decision.allowed) throw forbidden(`You cannot edit agent ${agentId}, so you cannot change its connection installs`);
+    if (!decision.allowed) throw forbidden(`You cannot edit agent ${agentId}, so you cannot change its connection installs`, authorizationDeniedDetails(decision));
+  }
+}
+
+export async function assertAgentToolAssignmentInteractions(db: Db, actorAgentId: string | null | undefined,
+  companyId: string, agentIds: readonly string[], lock = typeof (db as unknown as { nestedIndex?: number }).nestedIndex === "number") {
+  const targets = [...new Set(agentIds)].sort();
+  for (const [index, targetAgentId] of targets.entries()) {
+    await assertAgentInteraction(db, { companyId, actorAgentId, operation: "configure", targetAgentId,
+      lock: index === 0 && lock ? "update" : false, lockAgentIds: index === 0 ? targets : undefined });
   }
 }
 
@@ -275,14 +286,17 @@ export function connectionManagementService(db: Db) {
     if (targetAgentId) {
       const [target] = await db.select({ id: agents.id }).from(agents).where(and(eq(agents.id, targetAgentId), eq(agents.companyId, resource.companyId)));
       if (!target) throw forbidden("Target agent is outside this company");
+      if (targetAgentId === resource.targetAgentId && (prepared.options.mutation ?? action !== "connections:read")) {
+        await assertAgentToolAssignmentInteractions(db, actor.type === "agent" ? actor.agentId : null, resource.companyId, [targetAgentId]);
+      }
       // Explicitly enforce both principals even when unrelated authorization is in shadow mode.
       // Existing human routes retain their domain-specific target authority.
       // Delegation additionally checks both the acting agent and its human.
       const principals: AuthorizationActor[] = actor.type === "agent" || resource.selfServiceAgentInstalls ? [actor] : [];
       if (actor.type === "agent") principals.push({ type: "board", userId: responsibleUserId, source: "session", ignoreInstanceAdmin: true });
       for (const principal of principals) {
-        const targetDecision = await authorization.decide({ actor: principal, action: "agent_config:update", resource: { type: "agent", companyId: resource.companyId, agentId: targetAgentId }, scope: { targetAgentId } });
-        if (!targetDecision.allowed) throw forbidden(targetDecision.explanation);
+        const targetDecision = await authorization.decide({ actor: principal, action: "agent_config:update", resource: { type: "agent", companyId: resource.companyId, agentId: targetAgentId }, scope: { targetAgentId } }, { interactionPolicy: "defer_to_mutation" });
+        if (!targetDecision.allowed) throw forbidden(targetDecision.explanation, authorizationDeniedDetails(targetDecision));
       }
     }
     return decision;

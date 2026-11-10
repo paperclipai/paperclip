@@ -40,6 +40,8 @@ export function AgentProviderConnection({
   adapterType,
   environmentId,
   canLogin,
+  requiresAgent = false,
+  agentId,
   localEnvironment = false,
   onConnected,
   onDraftChanged,
@@ -53,6 +55,8 @@ export function AgentProviderConnection({
   adapterType: "claude_local" | "codex_local" | "grok_local" | "antigravity_runtime";
   environmentId: string | null;
   canLogin: boolean;
+  requiresAgent?: boolean;
+  agentId?: string;
   localEnvironment?: boolean;
   onConnected: (connection: ProviderConnection) => void;
   onDraftChanged?: () => void;
@@ -368,6 +372,8 @@ export function AgentProviderConnection({
               </OnboardingLoginCard>
             ) : needsLogin ? (
               <AdapterLoginPanel
+                requiresAgent={requiresAgent}
+                agentId={agentId}
                 companyId={companyId}
                 adapterType={adapterType}
                 environmentId={environmentId}

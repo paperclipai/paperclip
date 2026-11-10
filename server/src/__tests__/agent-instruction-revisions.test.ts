@@ -7,7 +7,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { agents, agentApiKeys, companies, authUsers, companyMemberships, principalPermissionGrants, heartbeatRuns,
   agentInstructionRevisions, agentInstructionHeads, issueThreadInteractions, issues, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { agentFileStore } from "../services/agent-file-store.js";
+import { agentFileStore, snapshotAgentFiles } from "../services/agent-file-store.js";
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 import { agentInstructionWorkingCopyService } from "../services/agent-instruction-working-copies.js";
 import { instructionBytes, instructionPath, materializeInstructionBytes, readInstructionBytes } from "../services/agent-instruction-files.js";
@@ -65,6 +65,23 @@ describe("canonical instruction revisions", () => {
   async function save(content: string, baseRevisionId: string | null) {
     return service.commit({ ...target(), entryFile, content, baseRevisionId, source: "cleanup" }, actor);
   }
+  it("checks changed supporting instructions during bulk synchronization without rescanning historical mentions", async () => {
+    const historical = `Existing [@Target](agent://${agentId}) reference`;
+    await fs.writeFile(path.join(root, "NOTES.md"), historical);
+    await base();
+    const sourceDir = path.join(home, `incoming-${randomUUID()}`);
+    await fs.cp(root, sourceDir, { recursive: true });
+    const baseline = await snapshotAgentFiles(root);
+    await db.update(agents).set({ permissions: { interactions: { canMentionAgents: false } } }).where(eq(agents.id, actorId));
+    await fs.writeFile(path.join(sourceDir, "other.md"), "Unrelated instructions");
+    await agentFileStore(db).apply({ ...target(), sourceDir, baseline }, actor);
+    expect(await fs.readFile(path.join(root, "other.md"), "utf8")).toBe("Unrelated instructions");
+    const nextBaseline = await snapshotAgentFiles(root);
+    await fs.writeFile(path.join(sourceDir, "NOTES.md"), `${historical} changed`);
+    await expect(agentFileStore(db).apply({ ...target(), sourceDir, baseline: nextBaseline }, actor))
+      .rejects.toMatchObject({ status: 403, details: { permission: "canMentionAgents" } });
+    expect(await fs.readFile(path.join(root, "NOTES.md"), "utf8")).toBe(historical);
+  });
   it("exposes recorded creation dates and update dates for root and supporting files", async () => {
     const files = agentFileStore(db);
     const instructions = agentInstructionsService(db);

@@ -14,10 +14,11 @@ scenarios:
       Set a company goal of reaching a thousand signups, with a team goal for launching the
       website.
     expected_outcome: >-
-      The saved goals have the requested levels, valid parent relationship and appropriate
-      ownership or an explicit missing-owner question. Chat links to the hierarchy and does not
-      invent progress metrics. A retry reuses the intended goals rather than creating another
-      parallel tree.
+      The saved goals have the requested levels and a valid same-company parent relationship.
+      Ownership may remain unassigned when none was requested; any assigned owner belongs to the
+      company. The saved hierarchy is inspectable through ordinary Goals navigation and public
+      readback, without invented progress metrics. A retry reuses the intended goals rather than
+      creating another parallel tree.
   - id: goals.align-existing-work
     capabilities:
       - goals/alignment

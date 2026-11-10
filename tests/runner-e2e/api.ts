@@ -14,6 +14,33 @@ export class RunnerApiHttpError extends Error {
   constructor(readonly status: number, message: string) { super(message); this.name = "RunnerApiHttpError"; }
 }
 
+export type SkillSourceUpdateCode = "skill_source_ref_unavailable" | "skill_source_github_rate_limited" | "skill_source_github_read_failed" | "unclassified";
+export class SkillSourceUpdateReadError extends RunnerApiHttpError {
+  constructor(status: number, readonly reason: SkillSourceUpdateCode, readonly providerStatus: number | null) {
+    super(status, `Skill source update prerequisite failed (HTTP ${status}; reason=${reason}; providerStatus=${providerStatus ?? "unknown"}); body withheld`);
+    this.name = "SkillSourceUpdateReadError";
+  }
+}
+async function closedSkillUpdateFailure(response: Response): Promise<{ reason: SkillSourceUpdateCode; providerStatus: number | null }> {
+  const unknown = { reason: "unclassified" as const, providerStatus: null };
+  const reader = response.body?.getReader(); if (!reader) return unknown;
+  const chunks: Uint8Array[] = []; let bytes = 0, done = false;
+  try {
+    for (;;) {
+      const next = await reader.read(); if (next.done) { done = true; break; }
+      bytes += next.value.byteLength; if (bytes > 16_384) return unknown;
+      chunks.push(next.value);
+    }
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { code?: unknown; details?: { code?: unknown; status?: unknown } };
+    if (!body || typeof body !== "object" || Array.isArray(body)) return unknown;
+    const codes: readonly string[] = ["skill_source_ref_unavailable", "skill_source_github_rate_limited", "skill_source_github_read_failed"];
+    if (typeof body.code !== "string" || !codes.includes(body.code) || body.details?.code !== undefined && body.details.code !== body.code) return unknown;
+    const status = body.details?.status;
+    return { reason: body.code as SkillSourceUpdateCode, providerStatus: typeof status === "number" && [401, 403, 404, 422, 429, 500, 502, 503, 504].includes(status) ? status : null };
+  } catch { return unknown; }
+  finally { if (!done) await reader.cancel().catch(() => {}); reader.releaseLock(); }
+}
+
 /** Admission-only diagnostics. Never retain the rejected value or its cause. */
 export class RemoteAdmissionReadError extends Error {
   constructor(
@@ -41,9 +68,21 @@ export class RunnerApi {
   }
 
   async get<T>(path: string, options?: { timeout: number }): Promise<T> {
+    if (this.browserCookie) return this.authenticatedJson<T>("GET", path, undefined, options);
     const response = await this.request.get(path, { ...this.sessionOptions(), ...options });
     if (!response.ok()) throw new RunnerApiHttpError(response.status(), await failureMessage(response, "GET"));
     return response.json() as Promise<T>;
+  }
+
+  async getSkillSourceUpdateStatus<T>(companyId: string, skillId: string, options?: { timeout: number }): Promise<T> {
+    const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+    if (!this.browserCookie || !uuid.test(companyId) || !uuid.test(skillId)) throw new Error("Skill source update prerequisite requires the exact owned human-session endpoint");
+    const response = await this.authenticatedResponse("GET", `/api/companies/${companyId}/skills/${skillId}/update-status`, undefined, options);
+    if (!response.ok) {
+      const closed = await closedSkillUpdateFailure(response);
+      throw new SkillSourceUpdateReadError(response.status, closed.reason, closed.providerStatus);
+    }
+    try { return await response.json() as T; } catch { throw new Error("Skill source update prerequisite returned invalid JSON; body withheld"); }
   }
 
   async bytes(path: string): Promise<Buffer> {
@@ -52,7 +91,42 @@ export class RunnerApi {
     return response.body();
   }
 
+
+  /** Repeated native observation reads retain explicit snapshots, without duplicating full DTO bodies in the browser trace. */
+  async getRunObservation<T>(path: string, options?: { timeout: number }): Promise<T> {
+    const url = new URL(path, this.baseURL);
+    const uuid = "[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}";
+    const companyRuns = new RegExp(`^/api/companies/${uuid}/heartbeat-runs$`, "i").test(url.pathname)
+      && [...url.searchParams.keys()].every(key => key === "limit") && url.searchParams.get("limit") === "100";
+    const run = new RegExp(`^/api/heartbeat-runs/${uuid}$`, "i").test(url.pathname) && !url.search;
+    const events = new RegExp(`^/api/heartbeat-runs/${uuid}/events$`, "i").test(url.pathname)
+      && [...url.searchParams.keys()].every(key => ["afterSeq", "limit"].includes(key))
+      && /^\d+$/.test(url.searchParams.get("afterSeq") ?? "") && /^[1-9]\d*$/.test(url.searchParams.get("limit") ?? "");
+    // Catalog observers re-read the full company inventory and activity on every poll; tracing those bodies
+    // made large-fixture failure evidence exceed the private archive allowance, so they share this untraced path.
+    const exactQuery = (expected: Record<string, string>) => [...url.searchParams.keys()].length === Object.keys(expected).length
+      && Object.entries(expected).every(([key, value]) => url.searchParams.getAll(key).length === 1 && url.searchParams.get(key) === value);
+    const companyIssues = new RegExp(`^/api/companies/${uuid}/issues$`, "i").test(url.pathname) && exactQuery({ includeAgentCreatedTasks: "true", limit: "1000" });
+    const companyActivity = new RegExp(`^/api/companies/${uuid}/activity$`, "i").test(url.pathname) && exactQuery({ limit: "1000" });
+    if (url.origin !== this.baseURL || url.username || url.password || url.hash || !(companyRuns || run || events || companyIssues || companyActivity)) throw new Error("Run observation requires an allowlisted same-origin GET endpoint");
+    return this.authenticatedJson<T>("GET", path, undefined, options);
+  }
+
+  /** Fetch owned attachment bytes with the same authenticated actor as JSON reads. */
+  async getAttachmentContent(attachmentId: string): Promise<Buffer> {
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(attachmentId)) throw new Error("Invalid fixture attachment identity");
+    if (this.browserCookie) {
+      const path = `/api/attachments/${attachmentId}/content`; const response = await this.authenticatedResponse("GET", path);
+      if (!response.ok) { await response.body?.cancel(); throw new RunnerApiHttpError(response.status, `GET ${path} returned ${response.status}; body withheld`); }
+      try { return Buffer.from(await response.arrayBuffer()); } catch { throw new Error(`GET ${path} byte response failed; details withheld`); }
+    }
+    const response = await this.request.get(`/api/attachments/${attachmentId}/content`, this.sessionOptions());
+    if (!response.ok()) throw new RunnerApiHttpError(response.status(), await failureMessage(response, "GET"));
+    return response.body();
+  }
+
   async post<T>(path: string, data?: unknown, options?: { timeout: number }): Promise<T> {
+    if (this.browserCookie) return this.authenticatedJson<T>("POST", path, data, options);
     const response = await this.request.post(path, { data, ...this.sessionOptions(), ...options });
     if (!response.ok()) throw new Error(await failureMessage(response, "POST"));
     return response.json() as Promise<T>;
@@ -71,7 +145,11 @@ export class RunnerApi {
     return this.sensitive<T>("PUT", path, data);
   }
 
-  private async sensitive<T>(method: "POST" | "PUT", path: string, data: unknown): Promise<T> {
+  async patchSensitive<T>(path: string, data: unknown): Promise<T> {
+    return this.sensitive<T>("PATCH", path, data);
+  }
+
+  private async sensitive<T>(method: "POST" | "PUT" | "PATCH", path: string, data: unknown): Promise<T> {
     const url = new URL(path, this.baseURL);
     if (url.origin !== this.baseURL || !url.pathname.startsWith("/api/")) throw new Error("Sensitive request must use the fixture API");
     let response: Response;
@@ -86,10 +164,11 @@ export class RunnerApi {
       await response.body?.cancel();
       throw new Error(`Sensitive ${method} ${url.pathname} returned ${response.status}; response body withheld`);
     }
-    return response.json() as Promise<T>;
+    try { return await response.json() as T; } catch { throw new Error(`Sensitive ${method} ${url.pathname} returned invalid JSON; response body withheld`); }
   }
 
   async patch<T>(path: string, data: unknown): Promise<T> {
+    if (this.browserCookie) return this.authenticatedJson<T>("PATCH", path, data);
     const response = await this.request.patch(path, { data, ...this.sessionOptions() });
     if (!response.ok())
       throw new Error(await failureMessage(response, "PATCH"));
@@ -99,6 +178,15 @@ export class RunnerApi {
   /** Use the public revision fence when configuring a fixture's instruction entry. */
   async saveAgentInstructions(agentId: string, content: string): Promise<void> {
     const path = `/api/agents/${agentId}/instructions-bundle/file`;
+    if (this.browserCookie) {
+      let baseHash: string | null = null;
+      try {
+        const detail = await this.authenticatedJson<{ contentHash: string }>("GET", `${path}?path=AGENTS.md`);
+        if (typeof detail.contentHash !== "string" || !detail.contentHash) throw new Error("Existing fixture instructions have no revision hash");
+        baseHash = detail.contentHash;
+      } catch (error) { if (!(error instanceof RunnerApiHttpError) || error.status !== 404) throw error; }
+      await this.authenticatedJson("PUT", path, { path: "AGENTS.md", content, baseHash }); return;
+    }
     const current = await this.request.get(`${path}?path=AGENTS.md`);
     let baseHash: string | null = null;
     if (current.ok()) {
@@ -118,10 +206,34 @@ export class RunnerApi {
     path: string,
     options?: { allowNotFound?: boolean; timeout?: number },
   ): Promise<void> {
+    if (this.browserCookie) {
+      const response = await this.authenticatedResponse("DELETE", path, undefined, options?.timeout === undefined ? undefined : { timeout: options.timeout }); await response.body?.cancel();
+      if (response.ok || options?.allowNotFound && response.status === 404) return;
+      throw new RunnerApiHttpError(response.status, `DELETE ${new URL(path, this.baseURL).pathname} returned ${response.status}; body withheld`);
+    }
     const response = await this.request.delete(path, { ...this.sessionOptions(), timeout: options?.timeout });
     if (response.ok() || (options?.allowNotFound && response.status() === 404))
       return;
     throw new Error(await failureMessage(response, "DELETE"));
+  }
+
+  /** Explicit session cookies never become Playwright API-step parameters.
+   * Public responses remain untouched for independent product/leak oracles. */
+  private async authenticatedResponse(method: string, path: string, data?: unknown, options?: { timeout: number }): Promise<Response> {
+    const url = new URL(path, this.baseURL);
+    if (url.origin !== this.baseURL || !url.pathname.startsWith("/api/")) throw new Error("Authenticated request must use the fixture API");
+    const timeout = options?.timeout ?? 30_000;
+    try {
+      return await fetch(url, { method, redirect: "error", ...(timeout === 0 ? {} : { signal: AbortSignal.timeout(timeout) }),
+        headers: { "content-type": "application/json", ...this.sessionOptions().headers }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
+    } catch { throw new Error(`Authenticated ${method} ${url.pathname} connection request failed; details withheld`); }
+  }
+
+  private async authenticatedJson<T>(method: string, path: string, data?: unknown, options?: { timeout: number }): Promise<T> {
+    const response = await this.authenticatedResponse(method, path, data, options);
+    const endpoint = new URL(path, this.baseURL).pathname;
+    if (!response.ok) { await response.body?.cancel(); throw new RunnerApiHttpError(response.status, `${method} ${endpoint} returned ${response.status}; body withheld`); }
+    try { return await response.json() as T; } catch { throw new Error(`${method} ${endpoint} returned ${response.status} with invalid JSON; body withheld`); }
   }
 }
 

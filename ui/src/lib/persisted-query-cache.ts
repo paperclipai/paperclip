@@ -117,7 +117,9 @@ export function persistedQueryScope(key: readonly unknown[], data: unknown, user
 function clearAccountData(client: QueryClient) {
   detachInflightGets();
   const keep = (query: Query) => hashKey(query.queryKey) === hashKey(queryKeys.health) || hashKey(query.queryKey) === hashKey(queryKeys.auth.session);
-  void client.cancelQueries({ predicate: query => !keep(query) }, { revert: false });
+  // Silent: the state written below is final. A non-silent cancel settles
+  // later as a query error and would replace it with `CancelledError`.
+  void client.cancelQueries({ predicate: query => !keep(query) }, { revert: false, silent: true });
   for (const query of client.getQueryCache().getAll()) {
     if (keep(query)) continue;
     query.setState({ data: undefined, dataUpdatedAt: 0, error: null, status: "pending", fetchStatus: "idle", dataUpdateCount: 0 });
@@ -444,7 +446,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
           for (const id of issueRefs(query)) ids.add(id);
         }
         for (const id of ids) deniedIssues.add(id);
-        void client.cancelQueries({ predicate: matches }, { revert: false });
+        void client.cancelQueries({ predicate: matches }, { revert: false, silent: true });
         for (const query of client.getQueryCache().getAll().filter(matches)) query.setState({ data: undefined, dataUpdatedAt: 0,
           error: event.action.error, status: "error", fetchStatus: "idle" });
       }

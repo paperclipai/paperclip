@@ -244,7 +244,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
       Object.keys(recovery).every(key => ["kind", "providerWorkStarted"].includes(key)) &&
       run.resultJson?.stopReason === "adapter_failed" &&
       Object.keys(run.resultJson).every(key => ["executionRecovery", ...(workspaceValidation ? ["workspaceValidation"] : []), "stopReason",
-        "effectiveTimeoutSec", "timeoutConfigured", "timeoutFired", "timeoutSource"].includes(key));
+        "effectiveTimeoutSec", "timeoutConfigured", "timeoutFired", "timeoutSource", "failureCause"].includes(key));
     const diagnostic = failedRetry ? retryDiagnostic : workspacePreparation ? run.error : "reviewed_chat_execution_binding_not_authorized";
     const dispatchOnlyProfile = failedRetry || workspacePreparation;
     if (

@@ -1040,6 +1040,88 @@
             "chat-flow.ts",
             "chat-scenarios/teams.yaml"
           ]
+        },
+        {
+          "key": "agents.edit-instructions",
+          "field": "expectedOutcome",
+          "previous": "Morgan's durable instructions gain the requested rule while retaining unrelated guidance. The response links to the agent or revision and explains when future work will use it. A concurrent edit produces a visible conflict or a fresh merge rather than silently overwriting the newer instructions.",
+          "current": "Morgan's durable instructions gain the requested rule while retaining unrelated guidance. The response links to the agent or revision and explains when future work will use it. A concurrent human edit made during the run is merged: the saved result keeps the newer instructions and adds the rule rather than silently overwriting them."
+        },
+        {
+          "key": "documents-artifacts.revise-delivery",
+          "field": "expectedOutcome",
+          "previous": "The updated deliverable is linked to the same work with clear revision context, and the original remains retrievable. The library opens the intended stack or work product. The agent does not overwrite the only retained copy or label stale bytes as the new revision.",
+          "current": "The updated deliverable is a new, separately titled registered version, filed on the source work or in the conversation that requested it, and the reply links it beside a route to the original, which remains retrievable. The library opens both versions' stacks. The agent does not overwrite the only retained copy or label stale bytes as the new revision."
+        },
+        {
+          "key": "agent-chat.chat-disabled",
+          "field": "originalQuery",
+          "previous": "Open a chat with Morgan.",
+          "current": "Open the conference room so I can talk with Morgan."
+        },
+        {
+          "key": "agent-chat.chat-disabled",
+          "field": "originalContext",
+          "previous": "Agent Chat or the conference-room experiment is disabled on this target.",
+          "current": "Agent Chat is always available. The separate Conference Room experiment is off on this target, and its opt-in is not offered in settings, so the board discussion surface is unavailable. The person follows an old Conference Room link."
+        },
+        {
+          "key": "agent-chat.chat-disabled",
+          "field": "expectedOutcome",
+          "previous": "The user sees a clear unavailable-feature or supported alternative path rather than a broken route or a silently created task claiming to be chat. If changing the gate requires an operator, the response identifies that human step without altering instance settings as an ordinary agent.",
+          "current": "The person does not land on a broken route or a Conference Room that cannot work: the old link opens a working company page and navigation does not offer the Conference Room. The supported alternative, an ordinary chat with Morgan, opens from Chat. The board discussion API refuses while the experiment is off, and nothing creates a task, chat or run that claims to be the conference room. Turning the experiment on is an instance operator decision; an ordinary agent cannot change the instance setting."
+        },
+        {
+          "key": "agents.restore-instructions",
+          "field": "originalContext",
+          "previous": "Morgan has two visible instruction revisions and the latest introduced an unwanted rule.",
+          "current": "Someone just added an unwanted rule to Morgan's instructions. Paperclip keeps only the current instruction files: saving does not record earlier versions, so Morgan's history is empty and no other saved copy of the earlier text exists."
+        },
+        {
+          "key": "agents.restore-instructions",
+          "field": "expectedOutcome",
+          "previous": "The agent identifies the exact last revision and restores the previous contents through the versioned instruction path. History retains both the unwanted edit and the restoration, and chat describes what was restored without claiming to rewind tasks already executed under the old instructions.",
+          "current": "The agent checks what Paperclip actually retains instead of guessing. With no saved earlier version, it leaves Morgan's instructions unchanged, does not reconstruct or invent a previous revision, says plainly that no instruction history exists to undo from, and asks the person for the text they want (or which rule to remove). If a real retained copy of the earlier text existed, restoring exactly that would be acceptable instead."
+        },
+        {
+          "key": "access.manage-membership",
+          "field": "originalQuery",
+          "previous": "Show me Alex's company access and remove their project-management permission.",
+          "current": "Show me Alex's company access and remove their permission to approve join requests."
+        },
+        {
+          "key": "access.manage-membership",
+          "field": "originalContext",
+          "previous": "Alex is a current company member; the CEO has the specific supported company membership permission but no instance-admin authority.",
+          "current": "Alex is an active company operator with an explicit permission to approve join requests. The CEO holds the company permission to read members but no instance-admin authority. Changing a member's role, grants or status is a board action in Paperclip."
+        },
+        {
+          "key": "access.manage-membership",
+          "field": "expectedOutcome",
+          "previous": "The agent reads and changes only the authorized company permission through the supported path, with retained attribution. Chat reports the saved effect and any separate protected step. It does not remove instance membership, alter another company or assume permission-management authority from its job title.",
+          "current": "The agent reads Alex's real current company access and describes it accurately. It does not change any grant itself: it says the change is a board action and links the company Members page, where the person removes the permission. Alex's grants, other-company membership and instance access stay unchanged, and no membership write is attributed to the agent."
+        },
+        {
+          "key": "access.invite-teammate",
+          "field": "coverageGaps",
+          "previous": [
+            "The current public grant-management route rejects agent membership principals. Required users:* agent authority cannot be established through the supported API; the actual intended mutation and human acceptance/reuse callbacks are authored but remain unqualified until this setup capability is available."
+          ],
+          "current": []
+        },
+        {
+          "key": "access.manage-membership",
+          "field": "coverageGaps",
+          "previous": [
+            "The current public grant-management route rejects agent membership principals. Required users:* agent authority cannot be established through the supported API; the actual intended mutation and human acceptance/reuse callbacks are authored but remain unqualified until this setup capability is available."
+          ],
+          "current": []
+        },
+        {
+          "key": "activity.routine-audit",
+          "field": "originalContext",
+          "previous": "The daily routine was edited yesterday but did not successfully execute this morning.",
+          "current": "The daily routine's instructions were edited shortly before this morning's scheduled run, and that run did not successfully execute."
         }
       ],
       "candidateDescriptorSnapshot": "fixtures/chat-repair-candidate-descriptors.json",
@@ -2108,9 +2190,7 @@
       "surface": [
         "agent-chat"
       ],
-      "coverageGaps": [
-        "The current public grant-management route rejects agent membership principals. Required users:* agent authority cannot be established through the supported API; the actual intended mutation and human acceptance/reuse callbacks are authored but remain unqualified until this setup capability is available."
-      ],
+      "coverageGaps": [],
       "requiredCredentials": [],
       "externalInput": null,
       "installedSource": null,
@@ -2160,15 +2240,13 @@
       "surface": [
         "agent-chat"
       ],
-      "coverageGaps": [
-        "The current public grant-management route rejects agent membership principals. Required users:* agent authority cannot be established through the supported API; the actual intended mutation and human acceptance/reuse callbacks are authored but remain unqualified until this setup capability is available."
-      ],
+      "coverageGaps": [],
       "requiredCredentials": [],
       "externalInput": null,
       "installedSource": null,
-      "originalQuery": "Show me Alex's company access and remove their project-management permission.",
-      "expectedOutcome": "The agent reads and changes only the authorized company permission through the supported path, with retained attribution. Chat reports the saved effect and any separate protected step. It does not remove instance membership, alter another company or assume permission-management authority from its job title.",
-      "originalContext": "Alex is a current company member; the CEO has the specific supported company membership permission but no instance-admin authority.",
+      "originalQuery": "Show me Alex's company access and remove their permission to approve join requests.",
+      "expectedOutcome": "The agent reads Alex's real current company access and describes it accurately. It does not change any grant itself: it says the change is a board action and links the company Members page, where the person removes the permission. Alex's grants, other-company membership and instance access stay unchanged, and no membership write is attributed to the agent.",
+      "originalContext": "Alex is an active company operator with an explicit permission to approve join requests. The CEO holds the company permission to read members but no instance-admin authority. Changing a member's role, grants or status is a board action in Paperclip.",
       "capabilities": [
         "access/membership"
       ],
@@ -2529,7 +2607,7 @@
       "installedSource": null,
       "originalQuery": "Did the daily launch routine actually do anything this morning?",
       "expectedOutcome": "The agent inspects execution activity and resulting tasks, separate from definition-edit history. It reports missing, failed or completed work using evidence and links. A routine update event or enabled schedule does not count as proof of a successful run.",
-      "originalContext": "The daily routine was edited yesterday but did not successfully execute this morning.",
+      "originalContext": "The daily routine's instructions were edited shortly before this morning's scheduled run, and that run did not successfully execute.",
       "capabilities": [
         "activity/routine-audit",
         "routines/history"
@@ -2623,9 +2701,9 @@
       "requiredCredentials": [],
       "externalInput": null,
       "installedSource": null,
-      "originalQuery": "Open a chat with Morgan.",
-      "expectedOutcome": "The user sees a clear unavailable-feature or supported alternative path rather than a broken route or a silently created task claiming to be chat. If changing the gate requires an operator, the response identifies that human step without altering instance settings as an ordinary agent.",
-      "originalContext": "Agent Chat or the conference-room experiment is disabled on this target.",
+      "originalQuery": "Open the conference room so I can talk with Morgan.",
+      "expectedOutcome": "The person does not land on a broken route or a Conference Room that cannot work: the old link opens a working company page and navigation does not offer the Conference Room. The supported alternative, an ordinary chat with Morgan, opens from Chat. The board discussion API refuses while the experiment is off, and nothing creates a task, chat or run that claims to be the conference room. Turning the experiment on is an instance operator decision; an ordinary agent cannot change the instance setting.",
+      "originalContext": "Agent Chat is always available. The separate Conference Room experiment is off on this target, and its opt-in is not offered in settings, so the board discussion surface is unavailable. The person follows an old Conference Room link.",
       "capabilities": [
         "agent-chat/discovery",
         "agent-chat/conference-room",
@@ -3118,7 +3196,7 @@
       "externalInput": null,
       "installedSource": null,
       "originalQuery": "Add a rule for Morgan to run the relevant tests before handing work back.",
-      "expectedOutcome": "Morgan's durable instructions gain the requested rule while retaining unrelated guidance. The response links to the agent or revision and explains when future work will use it. A concurrent edit produces a visible conflict or a fresh merge rather than silently overwriting the newer instructions.",
+      "expectedOutcome": "Morgan's durable instructions gain the requested rule while retaining unrelated guidance. The response links to the agent or revision and explains when future work will use it. A concurrent human edit made during the run is merged: the saved result keeps the newer instructions and adds the rule rather than silently overwriting them.",
       "originalContext": "Morgan has a writable instruction bundle with a saved revision. The CEO may update it; unrelated files contain existing guidance.",
       "capabilities": [
         "agents/instructions"
@@ -3526,8 +3604,8 @@
       "externalInput": null,
       "installedSource": null,
       "originalQuery": "Undo Morgan's last instruction change.",
-      "expectedOutcome": "The agent identifies the exact last revision and restores the previous contents through the versioned instruction path. History retains both the unwanted edit and the restoration, and chat describes what was restored without claiming to rewind tasks already executed under the old instructions.",
-      "originalContext": "Morgan has two visible instruction revisions and the latest introduced an unwanted rule.",
+      "expectedOutcome": "The agent checks what Paperclip actually retains instead of guessing. With no saved earlier version, it leaves Morgan's instructions unchanged, does not reconstruct or invent a previous revision, says plainly that no instruction history exists to undo from, and asks the person for the text they want (or which rule to remove). If a real retained copy of the earlier text existed, restoring exactly that would be acceptable instead.",
+      "originalContext": "Someone just added an unwanted rule to Morgan's instructions. Paperclip keeps only the current instruction files: saving does not record earlier versions, so Morgan's history is empty and no other saved copy of the earlier text exists.",
       "capabilities": [
         "agents/instructions"
       ],
@@ -7349,7 +7427,7 @@
       "externalInput": null,
       "installedSource": null,
       "originalQuery": "Shorten the headline and give me a new version, but keep the old one available.",
-      "expectedOutcome": "The updated deliverable is linked to the same work with clear revision context, and the original remains retrievable. The library opens the intended stack or work product. The agent does not overwrite the only retained copy or label stale bytes as the new revision.",
+      "expectedOutcome": "The updated deliverable is a new, separately titled registered version, filed on the source work or in the conversation that requested it, and the reply links it beside a route to the original, which remains retrievable. The library opens both versions' stacks. The agent does not overwrite the only retained copy or label stale bytes as the new revision.",
       "originalContext": "Version one of a website is already delivered and accessible; a second revision is requested.",
       "capabilities": [
         "documents-artifacts/work-products",

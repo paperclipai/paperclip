@@ -1045,7 +1045,7 @@ async function recoverCommittedNativeChatResponseInScope(
           (!conversation && result.reportedWorkDisposition === "needs_review" && terminal.reportedWorkDisposition === "needs_review") ||
           // A conversation turn can yield while an approval, an execution
           // stage or a blocker holds its task; it still answered the person.
-          (conversation && result.reportedWorkDisposition === "yielded" && terminal.reportedWorkDisposition === "yielded")) &&
+          (currentConversation && result.reportedWorkDisposition === "yielded" && terminal.reportedWorkDisposition === "yielded")) &&
         (await resolveChatRunPresentationAuthorizationReason(tx, input)) === "internal_agent_write"
       ) {
         const rows = await tx.select({ seq: heartbeatRunEvents.seq, payload: heartbeatRunEvents.payload })
@@ -1058,7 +1058,9 @@ async function recoverCommittedNativeChatResponseInScope(
               sql`${heartbeatRunEvents.payload}->'prpEvent'->>'normalizedSessionId' = ${run.nativeSessionId}`) : undefined,
             sql`${heartbeatRunEvents.payload}->'prpEvent'->>'turnId' = ${accepted.turnId}`,
             sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,kind}' = 'agentMessage'`,
-            sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}' = 'final'`,
+            currentConversation
+              ? inArray(sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}'`, ["final", "unknown"])
+              : sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}' = 'final'`,
           )).orderBy(desc(heartbeatRunEvents.seq)).limit(200);
         const proposedItemIds = completedPlanProposalIds(await tx.select({ payload: heartbeatRunEvents.payload })
           .from(heartbeatRunEvents).where(and(
@@ -1081,10 +1083,12 @@ async function recoverCommittedNativeChatResponseInScope(
           )).orderBy(desc(issueComments.createdAt), desc(issueComments.id));
         const resolved = resolveHeartbeatRunResponse({
           resultJson: { ...record(run.resultJson), nativeResult: result },
+          nativeConversationFinalResponse: conversation,
           // The same answered rule as live run completion.
-          conversationTurnFinished: conversation && await conversationTurnPresentsAnswer({
+          conversationTurnFinished: currentConversation && await conversationTurnPresentsAnswer({
             db: tx, ...input, finalizationPhase: coordinator.phase, finalizationReasonCode: decision.reasonCode,
           }),
+          interactionOwnsResponse: conversation && await hasChatRunOwnedProviderInteraction(tx, input),
           existingComment: findHeartbeatRunCompletionComment(comments, run.resultJson),
           finalAgentMessage,
         });

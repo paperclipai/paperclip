@@ -147,8 +147,20 @@ export async function nativeCompletionFeedback(
       signals.verification.some((entry) => entry.status === "failed") ||
       signals.actionableAttentionRequests.length > 0)
   ) {
+    const toolAction = record(run.contextSnapshot?.toolAction);
+    const failedActionChat = isConversation(issue) && issue.conversationAgentId === run.agentId &&
+      run.contextSnapshot?.source === "tool_action_review" && toolAction.executionStatus === "failed" &&
+      typeof toolAction.invocationId === "string" && typeof toolAction.actionRequestId === "string";
+    const rejectionReasons = failedActionChat ? [
+      !result.completionClaim.objectiveSatisfied && "completionClaim.objectiveSatisfied.false",
+      result.completionClaim.criteria.some((entry) => entry.status !== "satisfied") && "completionClaim.criteria.unsatisfied",
+      result.completionClaim.remainingWork.some((entry) => entry.blocksCompletion) && "completionClaim.remainingWork.blocksCompletion",
+      signals.verification.some((entry) => entry.status === "failed") && "verification.failed",
+      signals.actionableAttentionRequests.length > 0 && "attentionRequests.actionable",
+    ].filter(Boolean).join(", ") : "";
     throw new Error(
-      "The done report includes unfinished work, failed verification, or an outstanding decision. Finish the work or report the concrete blocker/reviewer request. No human completion approval was created.",
+      "The done report includes unfinished work, failed verification, or an outstanding decision. Finish the work or report the concrete blocker/reviewer request. No human completion approval was created." +
+      (failedActionChat ? ` Rejection fields: ${rejectionReasons}.` + " This chat turn may finish with a truthful report of the failed approved action; that does not mean the external action succeeded. Keep the failure, observed state, and unresolved work explicit in the summary. Verify the observed state factually. Use not_run with a truthful reason only for a check that could not run or complete because its dependency was unavailable. Do not change a failed check to passed or hide incomplete work. Do not automatically replay the action or request approval again to force success; report the outcome and let the user decide whether to retry." : ""),
     );
   }
   const stage = record(issue.executionState), participant = record(stage.currentParticipant);
@@ -369,5 +381,5 @@ export async function nativeCompletionFeedback(
   const links = await savedDocumentLinks(db, run, issue);
   const documentGuidance = links.length
     ? ` When compatible with the requested response format, include these clickable links to this run's saved documents in your final response: ${links.join(" ")}` : "";
-  return "Completion report accepted. Task status will be committed after this turn and workspace finalization finish. Follow the user's explicitly requested final-response format, including an exact response when requested. Otherwise describe the completed work and any explicitly requested reviewer action. Do not claim an approval is needed unless one was requested." + documentGuidance;
+  return "Completion report accepted. Task status will be committed after this turn and workspace finalization finish. Follow the user's explicitly requested final-response format, including an exact response when requested. Otherwise describe the completed work and any explicitly requested reviewer action. Do not claim an approval is needed unless one was requested. When compatible with the requested response format, present any created or updated Paperclip resources you cite as usable Markdown links [name](href), using resourceLinks or resource hrefs actually returned by tools, not only backtick-wrapped paths. Do not guess routes or invent links when no resource href was returned." + documentGuidance;
 }

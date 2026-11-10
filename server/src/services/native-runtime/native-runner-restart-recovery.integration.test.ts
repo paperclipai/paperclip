@@ -2787,6 +2787,42 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     }
   });
 
+  it.each<[string, string[], string]>([
+    ["harness diagnostics", ["session.started", "session.capabilities.updated", "session.goal.snapshot", "harness.diagnostic",
+      "harness.diagnostic", "session.goal.snapshot"], "bootstrap_incomplete"],
+    ["a turn event", ["session.started", "harness.diagnostic", "turn.started"], "blocked"],
+  ])("classifies a drained remote session that read its goal and committed %s", async (label, eventTypes, kind) => {
+    const fixture = await seedClaimedRemoteBootstrap(`SESSION-${label.replace(/\W+/g, "-")}`, { mutate: core => {
+      openSession(core, eventTypes);
+      core.queueCommand("session.goal.get", {});
+      const goal = core.store.state.commands.at(-1)!;
+      goal.status = "completed";
+      goal.result = { goal: null } as never;
+    } });
+    const claims = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] });
+    if (kind === "blocked") {
+      expect(claims).toEqual([{ kind: "blocked", runId: fixture.runId, reason: "ambiguous_remote_recovery_evidence" }]);
+      return;
+    }
+    expect(claims).toEqual([expect.objectContaining({ kind: "bootstrap_incomplete", runId: fixture.runId, controllerGeneration: 2 })]);
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator.recoveryHistory.at(-1)).toMatchObject({ disposition: "bootstrap_incomplete",
+      reason: "remote_session_opened_without_turn" });
+    const root = resolve(runtimeRoot, `diagnostics-${fixture.runId}`);
+    try {
+      const executor = await seedClaimedRemoteBootstrap(`SESSION-${label.replace(/\W+/g, "-")}-EXECUTOR`, { mutate: core => {
+        openSession(core, eventTypes);
+      } });
+      expect(await restoreNativeRunnerCheckpoint(executor.db, { companyId, issueId: executor.issueId, runId: executor.runId },
+        root)).not.toBeNull();
+      expect(runnerdStateProvesNoRemoteProviderTurn(root)).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("lets the executor prove a drained remote session had no turn from its restored checkpoint", async () => {
     const fixture = await seedClaimedRemoteBootstrap("SESSION-OPENED-EXECUTOR", { mutate: core => openSession(core) });
     const root = resolve(runtimeRoot, `opened-${fixture.runId}`);

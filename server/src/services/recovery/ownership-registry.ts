@@ -39,6 +39,7 @@ import {
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
 import { settleAbandonedRemoteSnapshotSave, settleAbandonedWorkspaceCommandOperation, settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
 import { settlePreparationOnlyRemoteWorkspaceEpoch } from "./remote-workspace-unsaved-files-settlement.js";
+import { settleAbandonedRemoteSnapshotLedger } from "./remote-snapshot-ledger-settlement.js";
 import { LOCAL_WORKSPACE_COMMAND_PHASES, runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
 import { copybackOwnerHoldOwner, settleCopybackOwnerHold } from "./copyback-owner-hold.js";
 import { applyObservedFenceProviderProof, observedWorkspaceFenceOwner, settleObservedWorkspaceFence } from "./observed-workspace-fence.js";
@@ -946,7 +947,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   },
   {
     id: "remote_snapshot_ledger", title: "Remote snapshot ledger", obligation: "workspace_preservation",
-    storage: "database", settle: null, invariantChecks: [2],
+    storage: "database", settle: settleAbandonedRemoteSnapshotLedger, invariantChecks: [2],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaceSnapshots.id, companyId: executionWorkspaceSnapshots.companyId,
         sourceRunId: executionWorkspaceSnapshots.sourceRunId, updatedAt: executionWorkspaceSnapshots.updatedAt })

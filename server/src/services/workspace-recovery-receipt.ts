@@ -6,6 +6,8 @@ import { readNativeWorkspaceSyncReference, type NativeWorkspaceSyncReference } f
 import { readMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-migration.js";
 import { readSnapshot } from "./workspace-recovery-snapshot.js";
 import { exhaustedSystemRecoveryAction, readSystemRecovery } from "./system-recovery-state.js";
+import { verifiedWorkspaceSnapshotReuse } from "./remote-workspace-snapshot-reuse-receipt.js";
+import { isAbandonedPreparedRemoteWorkspace } from "./remote-workspace-abandoned-preparation.js";
 
 export const workspaceRecoverySchema = z.object({
   schema: z.literal("paperclip.workspace-recovery.v1"),
@@ -161,9 +163,10 @@ export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof he
     const [snapshot] = await db.select().from(executionWorkspaceSnapshots).where(and(
       eq(executionWorkspaceSnapshots.companyId, run.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, remote.workspaceId),
       eq(executionWorkspaceSnapshots.id, remote.snapshotId!), eq(executionWorkspaceSnapshots.status, "committed"),
-      eq(executionWorkspaceSnapshots.epoch, remote.epoch), eq(executionWorkspaceSnapshots.sourceRunId, run.id),
     ));
     if (!snapshot || snapshot.sha256 !== proof.sha256 || snapshot.generation !== proof.generation) return null;
+    if ((snapshot.epoch !== remote.epoch || snapshot.sourceRunId !== run.id)
+      && !await verifiedWorkspaceSnapshotReuse(db, { companyId: run.companyId, issueId, runId: run.id, reference: remote, snapshot })) return null;
   }
   const [action] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
@@ -174,7 +177,7 @@ export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof he
 }
 
 export async function hasVerifiedWorkspaceRepair(...args: Parameters<typeof verifiedWorkspaceRepairReceipt>) {
-  return (await verifiedWorkspaceRepairReceipt(...args)) !== null;
+  return (await verifiedWorkspaceRepairReceipt(...args)) !== null || await isAbandonedPreparedRemoteWorkspace(...args);
 }
 
 /** Read-only historical bytes have no execution authority. Their immutable
@@ -191,15 +194,13 @@ export async function immutableRemoteWorkspaceRecoveryAttachment(db: Db, run: Pi
   const remote = parsed.data, snapshotId = remote.snapshotId;
   if (!snapshotId) return null;
   const [saved] = await db.select({ operationId: workspaceOperations.id, metadata: workspaceOperations.metadata,
-    evidence: issueRecoveryActions.evidence, sha256: executionWorkspaceSnapshots.sha256,
-    generation: executionWorkspaceSnapshots.generation }).from(workspaceOperations)
+    evidence: issueRecoveryActions.evidence, snapshot: executionWorkspaceSnapshots }).from(workspaceOperations)
     .innerJoin(issueRecoveryActions, and(eq(issueRecoveryActions.companyId, workspaceOperations.companyId),
       eq(issueRecoveryActions.sourceIssueId, workspaceOperations.issueId),
       sql`${issueRecoveryActions.id}::text = ${workspaceOperations.metadata}->>'recoveryActionId'`))
     .innerJoin(executionWorkspaceSnapshots, and(eq(executionWorkspaceSnapshots.companyId, run.companyId),
       eq(executionWorkspaceSnapshots.executionWorkspaceId, remote.workspaceId),
-      eq(executionWorkspaceSnapshots.id, snapshotId), eq(executionWorkspaceSnapshots.sourceRunId, run.id),
-      eq(executionWorkspaceSnapshots.epoch, remote.epoch), inArray(executionWorkspaceSnapshots.status, ["committed", "superseded"])))
+      eq(executionWorkspaceSnapshots.id, snapshotId), inArray(executionWorkspaceSnapshots.status, ["committed", "superseded"])))
     .where(and(eq(workspaceOperations.companyId, run.companyId), eq(workspaceOperations.issueId, issueId),
       eq(workspaceOperations.executionWorkspaceId, remote.workspaceId), eq(workspaceOperations.heartbeatRunId, run.id),
       eq(workspaceOperations.phase, "workspace_recovery"), eq(workspaceOperations.status, "succeeded"),
@@ -207,7 +208,11 @@ export async function immutableRemoteWorkspaceRecoveryAttachment(db: Db, run: Pi
   const proof = saved?.metadata, state = readWorkspaceRecovery(saved?.evidence ?? null);
   if (!saved || !proof || state?.runId !== run.id || state.status !== "recovered"
     || proof.storage !== "remote_workspace" || proof.leaseId !== remote.leaseId || proof.providerLeaseId !== remote.providerLeaseId
-    || proof.epoch !== remote.epoch || proof.sha256 !== saved.sha256 || proof.generation !== saved.generation || !saved.sha256) return null;
+    || proof.epoch !== remote.epoch || proof.sha256 !== saved.snapshot.sha256
+    || proof.generation !== saved.snapshot.generation || !saved.snapshot.sha256) return null;
+  if ((saved.snapshot.epoch !== remote.epoch || saved.snapshot.sourceRunId !== run.id)
+    && !await verifiedWorkspaceSnapshotReuse(db, { companyId: run.companyId, issueId, runId: run.id, reference: remote,
+      snapshot: saved.snapshot })) return null;
   return { kind: "immutable_remote_workspace_attachment" as const, operationId: saved.operationId,
-    workspaceId: remote.workspaceId, snapshotId, sha256: saved.sha256, generation: saved.generation };
+    workspaceId: remote.workspaceId, snapshotId, sha256: saved.snapshot.sha256, generation: saved.snapshot.generation };
 }

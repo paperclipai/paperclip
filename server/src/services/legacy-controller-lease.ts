@@ -178,6 +178,21 @@ export async function legacyControllerProvenGone(
 }
 
 /**
+ * The boot id of a run's legacy controller whose lease has not expired yet but
+ * whose recorded process is proven gone, or null. A drained server terminalizes
+ * its runs and exits with their leases unexpired; nothing of that controller is
+ * left to unwind a Stop.
+ */
+export async function provenGoneLegacyControllerBootId(db: Db, companyId: string, runId: string): Promise<string | null> {
+  const [run] = await db.select({ runtimeMode: heartbeatRuns.runtimeMode, controllerBootId: heartbeatRuns.controllerBootId,
+    controllerProcess: heartbeatRuns.controllerProcess }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.runtimeMode, "legacy"),
+    gt(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`)));
+  if (!run?.controllerBootId) return null;
+  return await legacyControllerProvenGone(run) ? run.controllerBootId : null;
+}
+
+/**
  * Settle of the `legacy_controller_lease` ownership kind. The shared
  * reconciler calls it only after `proveOwnerGone` proved the recorded
  * controller gone. It expires exactly that controller's outstanding lease

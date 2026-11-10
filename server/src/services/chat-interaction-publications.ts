@@ -253,6 +253,9 @@ export async function enqueueIssueInteractionChatPublications(
   interaction: IssueThreadInteraction,
 ) {
   if (interaction.status !== "pending") return [];
+  if (interaction.kind === "request_confirmation"
+    && interaction.payload.target?.type === "custom"
+    && interaction.payload.target.key === "native_completion_review") return [];
   // An endpoint is one immutable provider bot identity. Never externalize a
   // user/system-authored interaction, or let one agent speak through another
   // agent's endpoint. If the interaction names a source run, verify that run's

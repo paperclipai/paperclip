@@ -5,6 +5,7 @@ import { agentsApi } from "@/api/agents";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
+import { useRecentTaskOpenWarmup } from "@/hooks/useRecentTaskOpenWarmup";
 import { useAccountIdentity } from "@/api/companies-query";
 import { useSidebar } from "@/context/SidebarContext";
 import { useOptionalToastActions } from "@/context/ToastContext";
@@ -30,7 +31,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { StatusIcon } from "./StatusIcon";
 import { SidebarSection } from "./SidebarSection";
-import { SidebarNavItem } from "./SidebarNavItem";
+import { RecentTaskNavItem } from "./RecentTaskNavItem";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const RECENT_TASK_MENU_ITEM_CLASS =
@@ -111,6 +112,7 @@ function RecentTasksList({
   const [renameValue, setRenameValue] = useState("");
   const [pendingAction, setPendingAction] = useState<"rename" | "archive" | "pause" | null>(null);
   const restartRetryStorageKey = restartWakeRetryStorageKey(companyId, userId);
+  useRecentTaskOpenWarmup({ companyId, userId, tasks: entries });
 
   if (entries.length === 0) return null;
 
@@ -250,8 +252,8 @@ function RecentTasksList({
       <SidebarSection label="Recent Tasks">
         {entries.map((entry) => (
           <div key={entry.id} className="sidebar-action-row group/recent-task relative">
-            <SidebarNavItem
-              to={`/issues/${entry.id}`}
+            <RecentTaskNavItem
+              task={entry}
               label={entry.title}
               iconNode={entry.displayStatus === "monitoring" && !liveIssueIds.has(entry.id) ? <StatusIcon {...taskStatusIconProps(entry)} /> : undefined}
               trailing={entry.status === "in_review" && entry.externalConversationState === "waiting"

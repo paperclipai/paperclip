@@ -435,3 +435,31 @@ while being read. Return canonical base64, byte size, and a SHA-256 digest in a
 before publishing it. Deliverables additionally verify the caller's expected
 size and digest. Providers without this operation fail closed; Core never falls
 back to reading remote paths on the server. Existing artifact uploads are unchanged.
+
+## Login allocations on an existing computer
+
+A login-capable environment driver can host authorization on a saved agent's
+computer. Core checks the company, environment, agent lifecycle, manifest, and
+live worker hooks before acquisition. The chosen agent is a transport target;
+it does not change the signed-in account's owner or agent grants.
+
+Core acquires this resource with `purpose: "login"`, the fixed command key, and
+an absolute expiry. The returned lease must attest an expiry no later than that
+deadline. Drivers must declare `creationOperationVersion: 1` and expose the live
+`environmentAcquireLease`, `environmentInspectLease`, and `environmentReleaseLease`
+hooks so Core can acquire, recover, and clean up the allocation.
+Core does not submit a Runner task or mount project volumes.
+The plugin keeps the computer binding in durable lease metadata. PTY close stops
+and detaches the terminal while preserving its result. Lease release/destroy
+removes only the login resources after Core commits the credential or ends the
+attempt. It must preserve the computer and unrelated tasks.
+
+The provider may assign a lease ID different from Core's creation operation ID.
+Inspection by `creationOperation` must return that exact allocation as
+`creationLease`, with its provider ID matching the observation envelope, so a
+lost acquisition reply still reaches the existing cleanup path.
+
+Claude uses the existing setup-token output parser. Codex uses the optional
+`loginPtyReadCredential` hook to read its fixed auth artifact. Both retain the
+existing owner-bound credential completion and durable cleanup. A restart
+interrupts an unfinished login; it does not resume the terminal.

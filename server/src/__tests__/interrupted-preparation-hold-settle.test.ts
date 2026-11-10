@@ -11,6 +11,7 @@ import {
   createDb,
   environmentLeases,
   environments,
+  executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
   issueRecoveryActions,
@@ -20,6 +21,8 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { settleHeldInterruptedPreparation } from "../services/interrupted-preparation-hold-settlement.js";
+import { isAbandonedPreparedRemoteWorkspace } from "../services/remote-workspace-abandoned-preparation.js";
+import { inspectWorkspaceRecoverySource } from "../services/workspace-recovery-source.js";
 import { legacyControllerBootId } from "../services/legacy-controller-lease.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 
@@ -67,6 +70,7 @@ suite("held interrupted preparations on the shared ownership path", () => {
     await db.delete(activityLog);
     await db.delete(issueRecoveryActions);
     await db.delete(environmentLeases);
+    await db.delete(executionWorkspaces);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
@@ -166,6 +170,90 @@ suite("held interrupted preparations on the shared ownership path", () => {
         workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [] } } })],
   ] as const)("keeps the hold when %s", async (_label, arrange) => {
     const f = await arrange();
+    const before = await hold(f.holdId);
+    expect((await pass())?.settled ?? 0).toBe(0);
+    expect(await hold(f.holdId)).toEqual(before);
+  });
+
+  async function preparedRemoteWorkspace(runId: string, issueId: string, options: { receipt?: Record<string, unknown>;
+    savedSnapshotId?: string | null; authority?: Record<string, unknown>; profile?: Record<string, unknown> } = {}) {
+    const workspaceId = randomUUID(), leaseId = randomUUID(), providerLeaseId = `sandbox-${leaseId}`;
+    const remoteCwd = `/home/daytona/paperclip-workspace/.paperclip-workspaces/${workspaceId}-1-${leaseId}`;
+    const location = { environmentId, leaseId, providerLeaseId, remoteCwd };
+    const source = { kind: "git", repoUrl: "https://github.com/paperclipai/paperclip.git", ref: "a".repeat(40),
+      branchMode: "create", branchName: "IPH-1-change" };
+    const authority = { schema: "paperclip.remote-workspace.v1", epoch: 2, source, location: null, dirty: false, writerRunId: null,
+      snapshotId: options.savedSnapshotId ?? null, ...options.authority };
+    const receipts = [{ schema: "paperclip.remote-workspace-abandoned-epoch.v1", epoch: 1, runId,
+      snapshotId: options.savedSnapshotId ?? null, location, providerRef: remoteCwd, abandonedAt: new Date().toISOString(), ...options.receipt }];
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, sourceIssueId: issueId, mode: "isolated_workspace",
+      strategyType: "git_worktree", name: "Remote workspace", status: "active", providerType: "git_worktree",
+      metadata: { remoteWorkspace: authority, remoteWorkspaceAbandonedEpochs: receipts } });
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" },
+      remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1", state: "prepared", workspaceId, epoch: 1, leaseId,
+        providerLeaseId, remoteCwd, snapshotId: null }, ...options.profile } }).where(eq(heartbeatRuns.id, runId));
+    return { leaseId };
+  }
+
+  const runRow = async (runId: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]!;
+
+  it("replays a restore-recovery hold saved by an older build once the workspace retired the run's epoch", async () => {
+    heartbeatService(db);
+    const f = await interruptedPreparation();
+    const { leaseId } = await preparedRemoteWorkspace(f.runId, f.issueId);
+    const restore = { workspaceRestoreFailure: "restore_failed",
+      workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [leaseId] } };
+    const run = await runRow(f.runId);
+    await db.update(heartbeatRuns).set({ resultJson: { ...run.resultJson, ...restore } }).where(eq(heartbeatRuns.id, f.runId));
+    const saved = await hold(f.holdId);
+    await db.update(issueRecoveryActions).set({ evidence: { ...saved.evidence, ...restore,
+      systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1, state: "exhausted", phase: "verify_execution",
+        sourceRunId: f.runId, attempts: 1, retriesUsed: 0, revision: 5, nextAttemptAt: null,
+        failure: { code: "source_binding_invalid", retryClass: "service_required", sourceVerification: { reason: "workspace_reference_mismatch" } } } } })
+      .where(eq(issueRecoveryActions.id, f.holdId));
+    expect(await pass()).toMatchObject({ inProgress: 1, settled: 1 });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "in_progress" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId))).toHaveLength(1);
+  });
+
+  it("reports a retired prepared epoch to workspace recovery as an unavailable source, not a binding failure", async () => {
+    const f = await interruptedPreparation();
+    await preparedRemoteWorkspace(f.runId, f.issueId);
+    await expect(inspectWorkspaceRecoverySource(db, { companyId, issueId: f.issueId, runId: f.runId, actionId: f.holdId }))
+      .rejects.toMatchObject({ code: "source_unavailable", retryClass: "use_alternative_strategy" });
+  });
+
+  const proofCases: Array<[string, { authority?: Record<string, unknown>; profile?: Record<string, unknown>; writer?: boolean }, boolean]> = [
+    ["the workspace is still at the run's epoch", { authority: { epoch: 1 } }, false],
+    ["the run is still the workspace writer", { writer: true }, false],
+    ["the run also has a native workspace sync reference", { profile: { nativeWorkspaceSync: { state: "prepared" } } }, false],
+    ["the receipt matches the run's exact epoch and allocation", {}, true],
+  ];
+  it.each(proofCases)("treats the prepared workspace as retired only when proven: %s", async (_label, options, expected) => {
+    const f = await interruptedPreparation();
+    const authority = options.writer ? { writerRunId: f.runId } : options.authority;
+    await preparedRemoteWorkspace(f.runId, f.issueId, { profile: options.profile, authority });
+    expect(await isAbandonedPreparedRemoteWorkspace(db, await runRow(f.runId))).toBe(expected);
+  });
+
+  it.each([
+    ["before its first save finished", null],
+    ["after its first save committed", randomUUID()],
+  ] as const)("replays a remote preparation whose unsaved epoch the workspace already retired %s", async (_label, savedSnapshotId) => {
+    heartbeatService(db);
+    const f = await interruptedPreparation();
+    await preparedRemoteWorkspace(f.runId, f.issueId, { savedSnapshotId });
+    expect(await pass()).toMatchObject({ inProgress: 1, settled: 1 });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "in_progress" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId))).toHaveLength(1);
+  });
+
+  it.each([
+    ["the retired epoch belongs to another run", { receipt: { runId: randomUUID() } }],
+    ["the retired epoch was another allocation", { receipt: { location: { leaseId: randomUUID() } } }],
+  ] as const)("keeps a remote preparation hold when %s", async (_label, options) => {
+    const f = await interruptedPreparation();
+    await preparedRemoteWorkspace(f.runId, f.issueId, options);
     const before = await hold(f.holdId);
     expect((await pass())?.settled ?? 0).toBe(0);
     expect(await hold(f.holdId)).toEqual(before);

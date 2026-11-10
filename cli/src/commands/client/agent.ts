@@ -6,6 +6,9 @@ import {
   updateAgentInstructionsBundleSchema,
   updateAgentInstructionsPathSchema,
   updateAgentPermissionsSchema,
+  updateAgentInteractionPermissionsSchema,
+  AGENT_INTERACTION_PERMISSION_KEYS,
+  type AgentInteractionPermissionsState,
   updateAgentPermissionGrantSchema,
   updateAgentSchema,
   upsertAgentInstructionsFileSchema,
@@ -462,6 +465,40 @@ export function registerAgentCommands(program: Command): void {
         }
       }),
   );
+
+  function printInteractionPermissions(value: AgentInteractionPermissionsState, json: boolean) {
+    if (json) return printOutput(value, { json: true });
+    for (const key of AGENT_INTERACTION_PERMISSION_KEYS) {
+      const source = Object.hasOwn(value.overrides, key) ? "explicit" : "default";
+      console.log(`${key}: ${value.effective[key]} (${source})`);
+    }
+  }
+
+  addCommonClientOptions(agent.command("interaction-permissions")
+    .description("Show individual interaction restrictions and their defaults")
+    .argument("<agentId>", "Agent UUID")
+    .action(async (agentId: string, opts: BaseClientOptions) => {
+      try {
+        const ctx = resolveCommandContext(opts);
+        const value = await ctx.api.get<AgentInteractionPermissionsState>(apiPath`/api/agents/${agentId}/interaction-permissions`);
+        if (!value) throw new Error("Agent interaction permissions not found");
+        printInteractionPermissions(value, ctx.json);
+      } catch (err) { handleCommandError(err); }
+    }));
+
+  addCommonClientOptions(agent.command("interaction-permissions:update")
+    .description("Set individual interaction restrictions; null restores a default (human permission managers only)")
+    .argument("<agentId>", "Agent UUID")
+    .requiredOption("--payload-json <json>", "Partial interaction permissions map: true, false, or null")
+    .action(async (agentId: string, opts: AgentJsonPayloadOptions) => {
+      try {
+        const ctx = resolveCommandContext(opts);
+        const payload = updateAgentInteractionPermissionsSchema.parse(parseJson(opts.payloadJson));
+        const value = await ctx.api.patch<AgentInteractionPermissionsState>(apiPath`/api/agents/${agentId}/interaction-permissions`, payload);
+        if (!value) throw new Error("Agent interaction permissions not found");
+        printInteractionPermissions(value, ctx.json);
+      } catch (err) { handleCommandError(err); }
+    }));
 
   for (const [command, enabled] of [["permission:grant", true], ["permission:revoke", false]] as const) {
     addCommonClientOptions(

@@ -44,3 +44,13 @@ Connection management always intersects the current human's authority, including
 See [the authorization and qualification record](plans/2026-10-13-connection-api-parity.md) and the operation-reviewed [agent access maps](../maps/agent-access-map/connection-setup.md). Human consent, credential entry and identity confirmation remain bounded handoffs to saved setup.
 
 Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.
+
+## Individual interaction restrictions
+
+Optional incoming and outgoing [interaction permissions](agent-interaction-permissions.md)
+can narrow assignments, mentions, comments, task edits, and peer configuration.
+Missing settings preserve these defaults; no existing agent is backfilled and
+new agents do not persist default overrides. A human permission manager sets
+individual controls with `agent interaction-permissions:update`; explicit `true`
+does not override another authorization denial. These controls are separate from
+principal grants, `canAssignTasks`, and low-trust presets.

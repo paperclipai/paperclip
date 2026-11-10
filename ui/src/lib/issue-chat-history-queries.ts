@@ -81,6 +81,18 @@ export async function fetchRecentIssueRunWindow(
     const existingRunIds = new Set(recent.map((run) => run.runId));
     previous = previous.filter((run) => existingRunIds.has(run.runId));
   }
+  return buildRecentIssueRunWindow(recent, previous, !reconciledFullHistory && previousWindow?.hasEarlierRuns === true);
+}
+
+/**
+ * The run window for a `/runs?view=recent` answer. `previous` holds runs
+ * already observed while the task is open; a cold open passes none.
+ */
+export function buildRecentIssueRunWindow(
+  recent: RunForIssue[],
+  previous: RunForIssue[] = [],
+  previouslyHadEarlierRuns = false,
+): RecentIssueRunWindow {
   // The second row refreshes a just-finished predecessor. Start with only
   // the latest run, then keep every run observed while this task is open.
   const visible = new Set([...previous.map((run) => run.runId), ...recent.slice(0, 1).map((run) => run.runId)]);
@@ -89,7 +101,7 @@ export async function fetchRecentIssueRunWindow(
     // A first run is already visible. The disclosure needs evidence of an
     // omitted run, and must retain that evidence as later turns arrive.
     hasEarlierRuns: recent.some((run) => !visible.has(run.runId))
-      || (!reconciledFullHistory && recent.length >= 2 && previousWindow?.hasEarlierRuns === true),
+      || (recent.length >= 2 && previouslyHadEarlierRuns),
   };
 }
 

@@ -6,6 +6,7 @@ import type { StorageProvider } from "../storage/types.js";
 
 const MAX_INDEX_LEVEL = 52;
 const MAX_OBJECT_BYTES = 4 * 1024 * 1024;
+const HEAD_VISIBILITY_WAIT_MS = 60_000;
 const offset = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const referenceSchema = z
   .object({
@@ -475,7 +476,8 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
     if (!Number.isSafeInteger(sourceCursor) || sourceCursor < writer.head.sourceCursor)
       throw new Error("object_journal_invalid_source_prefix_cursor");
     const current = await head(signal);
-    if (!current || current.etag !== writer.etag || current.head.closed || current.head.deleted)
+    if (!current) throw new ObjectJournalSourcePrefixProofUnavailableError(writer);
+    if (current.etag !== writer.etag || current.head.closed || current.head.deleted)
       throw new ObjectJournalConflictError();
     // One-time verification can repair legacy max-cursor metadata, never payload bytes.
     if (sourceCursor !== writer.head.sourceCursor)
@@ -539,7 +541,21 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
     assertAuthority: () => Promise<void>;
     signal?: AbortSignal;
   }) {
-    const current = await head(input.signal);
+    const deadline = Date.now() + HEAD_VISIBILITY_WAIT_MS;
+    for (let wait = 250; ; wait = Math.min(wait * 2, 4_000)) {
+      const current = await head(input.signal);
+      try {
+        return await claimFrom(current, input);
+      } catch (error) {
+        if (current || !(error instanceof ObjectJournalConflictError) || Date.now() + wait > deadline) throw error;
+        await delay(wait, undefined, { signal: input.signal });
+      }
+    }
+  }
+  async function claimFrom(current: ObjectJournalWriter | null, input: {
+    assertAuthority: () => Promise<void>;
+    signal?: AbortSignal;
+  }) {
     if (current?.head.deleted) throw new ObjectJournalConflictError();
     await input.assertAuthority();
     await qualifyConditionalWrites(provider, prefix, input.signal);

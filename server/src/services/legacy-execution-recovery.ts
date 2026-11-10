@@ -31,6 +31,7 @@ import { isSupersededConversationRun } from "./agent-conversations.js";
 import { issueService } from "./issues.js";
 import { isInterruptedNativePreparation, isInterruptedNativePreparationCandidate } from "./cancelled-native-startup.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
+import { recordLegacyShutdownBeforeDispatch, SERVER_SHUTDOWN_INTERRUPTED_CODE } from "./legacy-shutdown-before-dispatch.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
@@ -169,6 +170,12 @@ export async function terminalizeLegacyExecution(input: {
       )
       .returning();
     if (!updated) return null;
+    // A graceful shutdown that stopped setup before adapter admission did no
+    // provider work: certify it here, under the run lock, so the process-loss
+    // retry resumes it instead of parking it for reconciliation.
+    if (!input.recordRestoreFailureOnly && current.status === "running" && updated.status === "interrupted"
+        && updated.errorCode === SERVER_SHUTDOWN_INTERRUPTED_CODE)
+      updated = await recordLegacyShutdownBeforeDispatch(tx as unknown as Db, updated) ?? updated;
     const retainedLeaseIds = await preserveLegacyWorkspaceRestoreSources(tx as unknown as Db,
       input.recordRestoreFailureOnly ? { ...updated, status: "failed" } : updated, input.workspaceRestoreSource);
     if (retainedLeaseIds.length) {

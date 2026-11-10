@@ -24,7 +24,7 @@ const requestSchema = z.object({
   toolRoot: z.string().min(1).max(4096),
   source: z.object({ commit, deploymentId: z.string().uuid() }).strict(),
   companyId: z.string().uuid(),
-  workspaceIds: z.array(z.string().uuid()).min(1).max(8),
+  workspaceIds: z.array(z.string().uuid()).min(1).max(32),
   mode: z.enum(["inspect", "single", "cohort", "resume"]),
   operationId: z.string().uuid().optional(),
   snapshotId: z.string().uuid().optional(),

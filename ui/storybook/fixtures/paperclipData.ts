@@ -1080,6 +1080,26 @@ export const storybookIssueRuns: RunForIssue[] = [
     lastUsefulActionAt: null,
     nextAction: "Implement issue-management stories in the next heartbeat.",
   },
+  {
+    runId: "run-storybook-adapter-cause",
+    status: "failed",
+    agentId: "agent-codex",
+    adapterType: "codex_local",
+    startedAt: recent(260).toISOString(),
+    finishedAt: recent(255).toISOString(),
+    createdAt: recent(260).toISOString(),
+    invocationSource: "scheduler",
+    errorCode: "adapter_failed",
+    failureCause: "40001",
+    usageJson: { costCents: 6, inputTokens: 2100, outputTokens: 140 },
+    resultJson: { stopReason: "adapter_failed" },
+    logBytes: 2400,
+    livenessState: "failed",
+    livenessReason: "The run failed before it produced concrete action evidence.",
+    continuationAttempt: 0,
+    lastUsefulActionAt: null,
+    nextAction: "Retry after the database conflict clears.",
+  },
 ];
 
 export const storybookApprovals: Approval[] = [

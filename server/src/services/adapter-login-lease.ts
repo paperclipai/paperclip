@@ -1,3 +1,4 @@
+import { resolveLoginCommandKey } from "./login-command.js";
 import type { Environment } from "@paperclipai/shared";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
 
@@ -8,9 +9,14 @@ import type { EnvironmentRuntimeService } from "./environment-runtime.js";
  */
 export type AcquireLoginLeaseArgs = Parameters<EnvironmentRuntimeService["acquireRunLease"]>[0];
 
+/** A requested deadline is safe only when the provider attests an expiry at or before it. */
+export function loginLeaseBoundsDeadline(expiresAt: Date | null | undefined, deadline: number): boolean {
+  const expiresAtMs = expiresAt instanceof Date ? expiresAt.getTime() : Number.NaN;
+  return Number.isFinite(expiresAtMs) && Number.isFinite(deadline) && expiresAtMs <= deadline;
+}
+
 /**
- * The lease metadata that identifies the login sandbox. The helper copies these
- * fields to the acquire arguments without a change.
+ * The company, environment, and provider adapter selected for this allocation.
  */
 export interface LoginLeaseMetadata {
   companyId: string;
@@ -24,42 +30,44 @@ export interface LoginLeaseMetadata {
  * and passes each option through to the acquire arguments.
  */
 export interface BuildLoginLeaseAcquireArgsOptions {
-  /** The lease metadata that identifies the login sandbox. */
+  /** The environment and adapter selected by the caller. */
   metadata: LoginLeaseMetadata;
   /**
-   * The agent that owns the login. The codex flow passes null. The setup-token
-   * flow passes the target agent.
+   * The saved computer that executes the command, independently of account
+   * ownership. Temporary sandbox logins omit this target.
    */
   targetAgentId?: string | null;
+  /** Explicit browser login; ordinary probes keep their execution allocation. */
+  browserLogin?: boolean;
   /**
    * Re-check the environment company binding inside the lease insert
    * transaction. The setup-token flow sets this to true.
    */
   assertCompanyBinding?: boolean;
   /**
-   * The latest time the acquired lease may stay active. The setup-token flow
-   * passes the session deadline. The codex flow passes nothing.
+   * The latest time the allocation may stay active. Both browser-login flows
+   * pass their absolute session deadline.
    */
   requestedExpiresAt?: Date | null;
 }
 
 /**
- * Build the fixed sandbox lease arguments for a login service. Both login
- * services acquire a lease with a null issue, a null heartbeat run, and a null
- * execution workspace, and both apply the active custom-image template. This
- * helper sets those fixed arguments in one place and passes the caller options
- * through without a change to the lease behavior.
+ * Build a one-off allocation without a task run or execution workspace. Browser
+ * login callers opt into the login purpose; verification probes retain their
+ * ordinary execution allocation. Sandbox callers keep the image-template path.
  */
 export function buildLoginLeaseAcquireArgs(
   options: BuildLoginLeaseAcquireArgsOptions,
 ): AcquireLoginLeaseArgs {
+  const pluginLogin = options.browserLogin === true && options.metadata.environment.driver === "plugin";
   return {
+    ...(pluginLogin ? { purpose: "login" as const, loginCommandKey: resolveLoginCommandKey(options.metadata.adapterType ?? "") } : {}),
     companyId: options.metadata.companyId,
     environment: options.metadata.environment,
-    adapterType: options.metadata.adapterType ?? null,
+    adapterType: pluginLogin ? "paperclip_runner" : options.metadata.adapterType ?? null,
     agentId: options.targetAgentId ?? null,
     // A null issue, a null heartbeat run, and a null execution workspace disable
-    // lease reuse, so the login session always runs in a fresh sandbox.
+    // lease reuse, so this allocation has its own cleanup ownership.
     issueId: null,
     heartbeatRunId: null,
     persistedExecutionWorkspace: null,

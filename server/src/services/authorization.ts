@@ -1,5 +1,7 @@
 import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { agentInteractionDenial, type AgentInteractionDenial, type AgentInteractionOperation } from "./agent-interaction-policy.js";
+import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { withHumanDirectedWork } from "./human-directed-work.js";
 import { hasOwnerChatInstructionAuthority } from "./owner-chat-instruction-authority.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
@@ -135,7 +137,8 @@ export type AuthorizationDecision = {
   action: AuthorizationAction;
   explanation: string;
   inboxPolicyMode?: InboxAgentPolicyMode | "grant_override";
-  code?: "RESPONSIBLE_USER_UNAUTHORIZED" | "RESPONSIBLE_USER_UNAVAILABLE";
+  code?: "RESPONSIBLE_USER_UNAUTHORIZED" | "RESPONSIBLE_USER_UNAVAILABLE" | "agent_interaction_denied";
+  interactionDenial?: AgentInteractionDenial;
   reason:
     | "allow_low_trust_boundary"
     | "allow_local_board"
@@ -164,6 +167,7 @@ export type AuthorizationDecision = {
     | "deny_missing_consent"
     | "deny_no_grant"
     | "deny_policy_restricted"
+    | "deny_agent_interaction"
     | "deny_low_trust_boundary"
     | "deny_issue_private"
     | "deny_project_private"
@@ -762,6 +766,7 @@ function scopeBoolean(scope: Record<string, unknown> | null | undefined, key: st
 
 export function authorizationDeniedDetails(decision: AuthorizationDecision) {
   return {
+    ...decision.interactionDenial,
     ...(decision.code ? { code: decision.code } : {}),
     reason: decision.reason,
   };
@@ -2861,10 +2866,33 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     action: AuthorizationAction;
     resource: AuthorizationResource;
     scope?: Record<string, unknown> | null;
-  }): Promise<AuthorizationDecision> {
+  }, options?: { interactionPolicy: "defer_to_mutation" }): Promise<AuthorizationDecision> {
     const agentDecision = await measureWorkspaceAuthorization("authorization.base", () => decideBase(input));
     const responsibleDecision = await measureWorkspaceAuthorization("authorization.responsible_user", () => applyResponsibleUserIntersection(input, agentDecision));
     const intersectedDecision = await measureWorkspaceAuthorization("authorization.authorizing_user", () => applyAuthorizingUserIntersection(input, responsibleDecision));
+    const interactionActorId = currentPluginInteractionOrigin()?.agentId
+      ?? (input.actor.type === "agent" ? input.actor.agentId : undefined);
+    if (intersectedDecision.allowed && interactionActorId && options?.interactionPolicy !== "defer_to_mutation") {
+      const operation: AgentInteractionOperation | null = input.action === "tasks:assign" && input.resource.type === "issue" ? "assign"
+        : input.action === "issue:comment" && input.resource.type === "issue" ? "comment"
+        : (input.action === "issue:mutate" || input.action === "project:write_workspace") && input.resource.type === "issue" ? "edit"
+        : input.action === "agent_config:update" || input.action === "agent_instructions:update" ? "configure"
+        : null;
+      if (operation) {
+        const resource = input.resource;
+        const denial = await agentInteractionDenial(db, {
+          companyId: resource.companyId, actorAgentId: interactionActorId, operation,
+          ...(resource.type === "issue" ? {
+            issueId: resource.issueId, parentIssueId: operation === "assign" && !resource.issueId ? resource.parentIssueId : undefined,
+            targetAgentId: operation === "assign" ? resource.assigneeAgentId : undefined,
+            assigneeUserId: operation === "assign" ? resource.assigneeUserId : undefined,
+          } : resource.type === "agent" ? { targetAgentId: resource.agentId } : {}),
+        });
+        if (denial) return { allowed: false, action: input.action, reason: "deny_agent_interaction",
+          code: denial.code, interactionDenial: denial,
+          explanation: `Agent interaction is disabled by ${denial.permission}. A human permission manager can change this setting.` };
+      }
+    }
     if (
       input.action === "project:read"
       && input.resource.type === "project"

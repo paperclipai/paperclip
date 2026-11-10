@@ -495,6 +495,15 @@ server-authored event among these three types; provider
 source events cannot supply stop authority. These records stay in the local run
 log and do not add Telemetry or OpenTelemetry data.
 
+The server writes `native.prior_owner_fence_refused` when its runner-state
+check refuses a run before any launch, because the conversation's saved runner
+state belongs to an earlier run that cannot be proven finished. The payload
+holds only the closed refusal `reason` (for example
+`prior_owner_terminal_state_indeterminate`). Continuation admission reads it,
+with no launch, identity, `adapter.invoke` or runner-sourced event, as proof
+that the failed run never had a runner, so Retry and new input need no stop
+record for it.
+
 Explicit continuation writes `native.stopped_conversation_verified` after it
 verifies the retained worker and provider processes stopped. Its payload binds
 the requesting `runId`, retained `ownerRunId`, native session, runner instance,
@@ -617,6 +626,22 @@ also includes time spent queued. `outcome` is the actual terminal status, such a
 settlement record. The record does not imply exactly-once emission across
 controller recovery, and failure to write it is logged without changing the
 already-settled outcome.
+
+## Storage outage waits
+
+A run waits out a file-storage outage on its critical path: when it starts its
+run log, restores its saved workspace, or saves it. While it waits, the run's live
+status says so, with phase `waiting_for_storage`, for example "Waiting for file
+storage before starting the run log (45s so far)". That status lives in server
+memory and on the live-event stream only. It writes nothing to the run row or
+the run log during the wait.
+
+When the wait ends, the controller writes one record with `eventType:
+"lifecycle"`, `stream: "system"`, and `level: "warn"`. Its message is "Waited Ns
+for file storage before <step>." or, when storage stayed unavailable, "Waited Ns
+for file storage before <step>; it was still unavailable." Its payload holds
+`reason: "storage_outage_wait"`, `purpose` (the step), `waitedMs`, and
+`recovered`. The record stays in the instance run log.
 
 ## Durable storage timing
 
@@ -1002,3 +1027,24 @@ the bounded stall policy, and operator recovery requirements stay unchanged.
 
 A later successful continuation does not establish the cause of an earlier
 failure that recorded only `Error`.
+
+### Failure cause of generic run failures
+
+A run that fails with a generic code (`adapter_failed`, `setup_failed`) keeps
+that code, because callers compare against it, and records
+`resultJson.failureCause`: one identifier of at most 80 characters
+(`[A-Za-z0-9_.:-]`). For a thrown error it is the provider's HTTP status
+(`provider_http_429`) or category, else the first safe code in the error and up
+to three nested `cause` objects (`40001`, `ECONNRESET`, the same extraction as
+the Runner's event commit stall diagnostics), else the error's class name. For
+an adapter result without a code it is the error family, `signal_<name>`,
+`process_cancellation_failed`, `exit_code_<n>` or `adapter_reported_error`. It
+never copies message text. The server's failure log line carries the same
+cause, and the board's run list shows it, for example "adapter failed (40001)".
+Older rows have no cause and read as before.
+
+Run error text keeps SQL statements off the board: a Drizzle `Failed query:`
+statement and its parameters, or unwrapped statement text with `$n`
+placeholders, is replaced with "Database query failed (<cause>)". The wrapper
+text before the statement is kept.
+

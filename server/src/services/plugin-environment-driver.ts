@@ -133,6 +133,19 @@ export interface ReadyPluginWorkerRecovery {
   timeoutMs?: number;
 }
 
+/** Shared admission/presentation check for allocation, recovery, cleanup and PTY transport. */
+export function pluginSupportsLoginPty(
+  driver: Pick<PluginEnvironmentDriverDeclaration, "supportsLoginPty" | "creationOperationVersion">,
+  methods: readonly string[],
+  requireCredentialRead = false,
+): boolean {
+  return driver.supportsLoginPty === true && driver.creationOperationVersion === 1 && [
+    "environmentAcquireLease", "environmentInspectLease", "environmentReleaseLease",
+    "loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose",
+    ...(requireCredentialRead ? ["loginPtyReadCredential"] : []),
+  ].every(method => methods.includes(method));
+}
+
 export interface ReadyPluginEnvironmentDriver {
   pluginId: string;
   pluginKey: string;
@@ -150,6 +163,7 @@ export interface ReadyPluginEnvironmentDriver {
    * matches the acquisition guard, which also verifies the same methods live.
    */
   reusableLeaseMethodsVerified: boolean;
+  supportsCodexLogin?: boolean;
   supportsInteractiveSetup?: PluginEnvironmentDriverDeclaration["supportsInteractiveSetup"];
   interactiveSetupConnectionTypes?: PluginEnvironmentDriverDeclaration["interactiveSetupConnectionTypes"];
   supportsTemplateCapture?: PluginEnvironmentDriverDeclaration["supportsTemplateCapture"];
@@ -323,6 +337,7 @@ export async function resolvePluginSandboxProviderDriverById(input: {
 }
 
 export async function listReadyPluginEnvironmentDrivers(input: {
+  kind?: "sandbox_provider" | "environment_driver";
   db: Db;
   workerManager?: PluginWorkerManager;
   recoverMissingWorker?: ReadyPluginWorkerRecovery;
@@ -374,7 +389,7 @@ export async function listReadyPluginEnvironmentDrivers(input: {
     );
     rows.push(
       ...(plugin.manifestJson.environmentDrivers ?? [])
-        .filter((driver) => driver.kind === "sandbox_provider")
+        .filter((driver) => driver.kind === (input.kind ?? "sandbox_provider"))
         .map((driver) => ({
           pluginId: plugin.id,
           pluginKey: plugin.pluginKey,
@@ -391,7 +406,8 @@ export async function listReadyPluginEnvironmentDrivers(input: {
           templateRefKind: driver.templateRefKind,
           templateConfigBinding: driver.templateConfigBinding,
           supportsTemplateDelete: driver.supportsTemplateDelete,
-          supportsLoginPty: driver.supportsLoginPty,
+          supportsLoginPty: driver.kind === "environment_driver" ? pluginSupportsLoginPty(driver, [...workerMethods]) : driver.supportsLoginPty,
+          supportsCodexLogin: pluginSupportsLoginPty(driver, [...workerMethods], true),
         })),
     );
   }

@@ -577,3 +577,116 @@ fn restores_a_turn_lost_to_a_runner_upgrade_under_the_new_launch_profile() {
     assert_eq!(saved["launchProfileDigest"], upgraded_digest);
     restored.shutdown().unwrap();
 }
+
+#[test]
+fn a_lost_cancellation_reply_still_settles_the_turn_and_suspends_the_runner() {
+    // Restart-chaos PV2 interrupt_ack on Claude: the sidecar's reply to
+    // turn.cancel is lost. The runner must stay responsive, publish the
+    // provider's own terminal, and reach a proven suspension. Before the fix it
+    // blocked for the 30 s request bound, then failed the transport, and
+    // runner.suspend refused because provider exit was unconfirmed.
+    let fixture =
+        Fixture(std::env::temp_dir().join(format!("acpx-cancel-lost-{}", uuid::Uuid::new_v4())));
+    fs::create_dir_all(&fixture.0).unwrap();
+    fs::set_permissions(&fixture.0, fs::Permissions::from_mode(0o700)).unwrap();
+    let sidecar = fixture.0.join("sidecar");
+    fs::copy(env!("CARGO_BIN_EXE_fake-acpx-sidecar"), &sidecar).unwrap();
+    fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o700)).unwrap();
+    let args = vec![
+        "--mode".to_owned(),
+        "turns".to_owned(),
+        "--profile-digest".to_owned(),
+        PROFILE_DIGEST.to_owned(),
+        "--cancel-reply".to_owned(),
+        "lost".to_owned(),
+    ];
+    let config = DurableRunnerConfig {
+        connect_url: "ws://127.0.0.1/runner".to_owned(),
+        ca_bundle_path: None,
+        state_dir: fixture.0.clone(),
+        runner_instance_id: "runner-1".to_owned(),
+        environment_lease_id: "lease-1".to_owned(),
+        run_id: "run-1".to_owned(),
+        normalized_session_id: "session-1".to_owned(),
+        turn_id: "turn-1".to_owned(),
+        item_id: "item-1".to_owned(),
+        runner_version: "0.0.0".to_owned(),
+        runner_digest: format!("sha256:{}", "a".repeat(64)),
+        acpx_launch_profile: Some(AcpxLaunchProfile {
+            candidate_admission: None,
+            authority_digest: format!("sha256:{}", "d".repeat(64)),
+            command: sidecar.clone(),
+            args: args.clone(),
+            artifacts: vec![QualifiedLaunchArtifact {
+                path: sidecar.clone(),
+                sha256: format!("sha256:{:x}", Sha256::digest(fs::read(&sidecar).unwrap())),
+            }],
+        }),
+        opencode_launch_profile: None,
+        cursor_cloud_launch_profile: None,
+        max_outbox_bytes: 1024 * 1024,
+        p0_reserve_bytes: 64 * 1024,
+        max_frame_bytes: 1024 * 1024,
+        reconnect_delay: Duration::from_millis(1),
+        reconnect_grace: None,
+        max_runtime: Duration::from_secs(60),
+        turn_scoped: false,
+    };
+    let descriptor = json!({
+        "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
+        "providerVersion": "0.13.1", "agent": "codex", "model": "gpt-5.6-sol",
+        "acpxVersion": "0.13.1", "agentServerPackage": "@agentclientprotocol/codex-acp",
+        "agentServerVersion": "1.6.2", "agentRuntimePackage": "@openai/codex",
+        "agentRuntimeVersion": "0.160.0", "commandDigest": PROFILE_DIGEST,
+        "sidecarCommand": sidecar, "sidecarArgs": args, "runtimeDirectory": fixture.0,
+        "normalizedSessionId": "session-1", "runId": "run-1", "cwd": fixture.0,
+        "instructions": "Complete the supplied work.",
+        "permissionMode": "approve-all", "permissionModePinned": true,
+    });
+    let mut executor = AcpxCommandExecutor::with_runner_config(&fixture.0, &config);
+    executor
+        .execute(&command(1, "run.prepare", json!({"provider": descriptor})))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"turnId": "provider-turn-1", "text": "Ask one question."}),
+        ))
+        .unwrap();
+    let started = std::time::Instant::now();
+    let interrupted = executor
+        .execute(&command(4, "turn.interrupt", json!({})))
+        .unwrap();
+    assert_eq!(interrupted.result["status"], "interrupt_requested");
+    assert!(started.elapsed() < Duration::from_secs(10));
+    let polled_until = std::time::Instant::now() + Duration::from_secs(5);
+    let mut events = executor.poll_events().unwrap();
+    while !events
+        .iter()
+        .any(|event| event.event_type == "run.terminal")
+    {
+        assert!(std::time::Instant::now() < polled_until, "no turn terminal");
+        events.extend(executor.poll_events().unwrap());
+    }
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "turn.interrupted"));
+    assert!(!events.iter().any(|event| event.event_type == "turn.failed"));
+    let terminal = events
+        .iter()
+        .find(|event| event.event_type == "run.terminal")
+        .unwrap();
+    assert_eq!(terminal.payload["runTerminalState"], "cancelled");
+    executor
+        .execute(&command(5, "turn.stop", json!({})))
+        .unwrap();
+    let suspended = executor
+        .execute(&command(6, "runner.suspend", json!({})))
+        .unwrap();
+    assert_eq!(suspended.result["status"], "completed");
+    executor.shutdown().unwrap();
+}

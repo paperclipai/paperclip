@@ -4,6 +4,8 @@ use std::time::{Duration, Instant};
 use paperclip_runner_core::acpx_sidecar_transport::{
     AcpxSidecarTransport, AcpxSidecarTransportConfig,
 };
+#[cfg(unix)]
+use paperclip_runner_core::generated_acpx_sidecar_contract::GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION;
 use paperclip_runner_core::generated_acpx_sidecar_contract::{
     GeneratedAcpxSidecarCommand, GeneratedAcpxSidecarEventType,
 };
@@ -520,4 +522,94 @@ fn pi_ordinary_request_timeout_still_retires_the_sidecar() {
     sidecar
         .shutdown()
         .expect("timeout cleanup remains idempotent");
+}
+
+#[test]
+#[cfg(unix)]
+fn managed_claude_broker_transport_reaches_the_sidecar_without_host_credentials() {
+    const CHILD: &str = "PAPERCLIP_TEST_MANAGED_BROKER_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        for (agent, launcher) in [
+            ("claude", "/managed"),
+            ("claude", ""),
+            ("claude", "  "),
+            ("codex", "/managed"),
+            ("cursor", "/managed"),
+        ] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "managed_claude_broker_transport_reaches_the_sidecar_without_host_credentials",
+                ])
+                .env_clear()
+                .env(CHILD, agent)
+                .env("PATH", "/usr/bin:/bin")
+                .env("BASH_ENV", "/managed/.bashrc")
+                .env("ZDOTDIR", "/managed")
+                .env("GH_CONFIG_DIR", "/managed")
+                .env("PAPERCLIP_GITHUB_LAUNCHER_DIR", launcher)
+                .env("PAPERCLIP_GITHUB_BROKER_URL", "http://127.0.0.1:3210")
+                .env("PAPERCLIP_GITHUB_BROKER_TOKEN", "session-capability")
+                .env("PAPERCLIP_GITHUB_BRIDGE_TOKEN", "bridge-capability")
+                .env("GH_TOKEN", "unbound-secret")
+                .env("GITHUB_TOKEN", "unbound-secret")
+                .env("UNRELATED_SECRET", "unbound-secret")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "agent={agent}, launcher={launcher:?}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
+        return;
+    }
+    let agent = std::env::var(CHILD).unwrap();
+    let names = [
+        "BASH_ENV",
+        "ZDOTDIR",
+        "GH_CONFIG_DIR",
+        "PAPERCLIP_GITHUB_LAUNCHER_DIR",
+        "PAPERCLIP_GITHUB_BROKER_URL",
+        "PAPERCLIP_GITHUB_BROKER_TOKEN",
+        "PAPERCLIP_GITHUB_BRIDGE_TOKEN",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "UNRELATED_SECRET",
+    ];
+    let arguments = names.map(|name| format!("\"${name}\"")).join(" ");
+    let response = json!({
+        "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+        "id": 1, "ok": true, "result": { "environment": vec!["%s"; names.len()] },
+    });
+    let config = AcpxSidecarTransportConfig {
+        command: PathBuf::from("/bin/sh"),
+        args: vec![
+            "-c".into(),
+            format!("IFS= read -r request; printf '{response}\\n' {arguments}; IFS= read -r next"),
+        ],
+        verified_launch: None,
+        request_timeout: Duration::from_secs(1),
+        shutdown_grace: Duration::from_millis(100),
+    };
+    let mut transport = AcpxSidecarTransport::start_for_agent(&config, &agent).unwrap();
+    let managed = agent == "claude"
+        && !std::env::var("PAPERCLIP_GITHUB_LAUNCHER_DIR")
+            .unwrap()
+            .trim()
+            .is_empty();
+    let response = transport
+        .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+        .expect("sidecar should report its launch environment");
+    for (index, name) in names.iter().enumerate() {
+        let value = response["environment"][index].as_str().unwrap();
+        let expected = if (index < 4 && agent == "claude") || ((4..7).contains(&index) && managed) {
+            std::env::var(name).unwrap()
+        } else {
+            String::new()
+        };
+        assert_eq!(value, expected, "sidecar environment: {name}");
+    }
+    transport.shutdown().unwrap();
 }

@@ -4,6 +4,12 @@ Product map: [Task creation and lifecycle](../feature-map/tasks.md).
 
 Feature ID: `tasks`.
 
+Optional [agent interaction restrictions](../../doc/agent-interaction-permissions.md)
+add sender and recipient checks to assignments, comments, task mutations and
+structured mentions. Current assignment establishes ownership. Self-claim and
+reassignment also check the previous owner; child placement checks the parent.
+These restrictions add no grants and leave absent settings unrestricted.
+
 Source revision: `3bbc2104b65caf9f7763938a01260a5673e12f7a`.
 
 Review depth and executed proof are separate. The operation records enumerate the named behavior and access boundaries. Their evidence states describe the reviewed sources; run results and environment limits belong in the PR or verification artifacts. A listed API or source test does not establish a live authorized journey. Follow the [map contract](../README.md).

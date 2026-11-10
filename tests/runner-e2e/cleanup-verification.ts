@@ -60,3 +60,7 @@ export async function runCleanupWithObservers(input: {
   try { await input.teardown(); } catch (error) { errors.push(error); }
   return { checks: verification.checks, errors };
 }
+
+export function ownedActiveCleanupRunIds(runs: readonly { id: string; companyId?: string; status: string }[], companyId: string, terminal: ReadonlySet<string>) {
+  return [...new Set(runs.filter(run => run.companyId === companyId && !terminal.has(run.status)).map(run => run.id).filter(Boolean))];
+}

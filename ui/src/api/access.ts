@@ -1,5 +1,5 @@
 import type { AgentAdapterType, JoinRequest, PermissionKey } from "@paperclipai/shared";
-import { api } from "./client";
+import { api, type RequestOptions } from "./client";
 
 export type HumanCompanyRole = "owner" | "admin" | "operator" | "viewer";
 
@@ -311,16 +311,18 @@ export const accessApi = {
     companyId: string,
     status: "pending_approval" | "approved" | "rejected" = "pending_approval",
     requestType?: "human" | "agent",
+    options?: RequestOptions,
   ) =>
     api.get<CompanyJoinRequest[]>(
       `/companies/${companyId}/join-requests?status=${status}${requestType ? `&requestType=${requestType}` : ""}`,
+      options,
     ),
 
   listMembers: (companyId: string) =>
     api.get<CompanyMembersResponse>(`/companies/${companyId}/members`),
 
-  listUserDirectory: (companyId: string) =>
-    api.get<CompanyUserDirectoryResponse>(`/companies/${companyId}/user-directory`),
+  listUserDirectory: (companyId: string, options?: RequestOptions) =>
+    api.get<CompanyUserDirectoryResponse>(`/companies/${companyId}/user-directory`, options),
 
   updateMember: (
     companyId: string,

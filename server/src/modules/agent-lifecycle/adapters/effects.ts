@@ -16,6 +16,7 @@ export interface LifecycleEffects {
   beforeConnectionEligibilityRestore?(db: Db, companyId: string, agentId: string): Promise<void>;
   reportFailure(context: LifecycleFailure, error: unknown): void;
   deleteDependencies(db: Db, companyId: string, agentId: string): Promise<void>;
+  lockConfigurationInteractions(db: Db, id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions): Promise<UpdateAgentOptions | undefined>;
   prepareConfiguration(db: Db, current: AgentConfigurationRecord, data: AgentConfigurationPatch, options?: UpdateAgentOptions): Promise<AgentConfigurationPatch>;
   completeConfiguration(db: Db, before: AgentConfigurationRecord, after: AgentConfigurationRecord, patch: AgentConfigurationPatch, options: UpdateAgentOptions | undefined, publications: ActivityPublication[]): Promise<void>;
   transaction<T>(db: Db, companyId: string, work: (tx: Db, publications: ActivityPublication[]) => Promise<T>): Promise<T>;

@@ -66,6 +66,7 @@ export function createProductionSetupTokenReaper(
 ): SetupTokenReaper {
   const environments = environmentService(deps.db);
   const sandbox = createProductionSetupTokenSandboxProvider({
+    db: deps.db,
     environments,
     environmentRuntime: deps.environmentRuntime,
     log: deps.log,
