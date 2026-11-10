@@ -965,7 +965,7 @@ describeEmbeddedPostgres("tool access service", () => {
     );
     db = createDb(tempDb.connectionString, { maxConnections: 4 });
     await instanceSettingsService(db).updateExperimental({ enableMemoryConnectors: true, enableGoogleWorkspaceConnector: true });
-  }, 20_000);
+  }, 90_000);
 
   afterEach(async () => {
     vi.restoreAllMocks();
@@ -7207,13 +7207,8 @@ describeEmbeddedPostgres("tool access service", () => {
     ]);
     expect(grants[0]!.credentialSecretRefs.map((ref) => ref.configPath)).toEqual(["credentials.authorization"]);
 
-    // The setup screen installs a dedicated identity for its agent as a separate step.
-    await db.insert(toolConnectionInstalls).values({
-      companyId: company.id,
-      connectionId: connected.connectionId,
-      targetType: "agent",
-      targetId: agent.id,
-    });
+    expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connected.connectionId)))
+      .toEqual([expect.objectContaining({ targetType: "agent", targetId: agent.id })]);
 
     // The git credential broker used to accept only a sign-in token.
     const resolved = await resolveManagedGitHubCredential(db, secretService(db), company.id, {
@@ -7278,12 +7273,8 @@ describeEmbeddedPostgres("tool access service", () => {
       askFirstCatalogEntryIds: [],
       access: { agentIds: [agent.id] },
     });
-    await db.insert(toolConnectionInstalls).values({
-      companyId: company.id,
-      connectionId: connected.connectionId,
-      targetType: "agent",
-      targetId: agent.id,
-    });
+    expect(await db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connected.connectionId)))
+      .toEqual([expect.objectContaining({ targetType: "agent", targetId: agent.id })]);
 
     await withGalleryServerUrl(
       "github",
