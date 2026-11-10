@@ -2095,6 +2095,71 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  async function seedStoppedLegacyReview() {
+    const fixture = await seedCompany();
+    const { companyId, coderId, sourceIssueId } = fixture;
+    const runId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId, issueId: sourceIssueId, status: "cancelled" });
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, sourceIssueId));
+    const [action] = await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId, kind: "active_run_watchdog", status: "resolved", outcome: "blocked",
+      ownerType: "board", returnOwnerAgentId: coderId, cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${runId}`, nextAction: "Preserve recorded work without replay.",
+      evidence: { runId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+    }).returning();
+    return { ...fixture, runId, action: action!, body: {
+      actionId: action!.id, outcome: "restored", sourceIssueStatus: "todo",
+      executionReconciliation: { runId, providerStopped: true, actionOutcome: "not_performed",
+        outcomeEvidence: "The stopped run logs and external receipts confirm that no action was performed." },
+    } };
+  }
+
+  it("returns a durable board review receipt for a cancelled legacy no-replay hold", async () => {
+    const { sourceIssueId, companyId, coderId, runId, action, body } = await seedStoppedLegacyReview();
+    const app = createApp();
+    const before = await request(app).get(`/api/issues/${sourceIssueId}/recovery-actions`).expect(200);
+    expect(before.body.active).toBeNull();
+    expect(before.body.actions).toEqual([expect.objectContaining({ id: action.id })]);
+    const result = await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`).send(body).expect(200);
+    expect(result.body.issue).toMatchObject({ id: sourceIssueId, companyId, status: "todo", assigneeAgentId: coderId });
+    expect(result.body.recoveryAction).toMatchObject({ id: action.id, status: "resolved", evidence: {
+      runId, executionReconciliation: { ...body.executionReconciliation, actorId: expect.any(String), recordedAt: expect.any(String) },
+      continuationDelivery: "pending",
+    } });
+    expect(result.body.recoveryAction.evidence).not.toHaveProperty("automaticRecovery");
+    const after = await request(app).get(`/api/issues/${sourceIssueId}/recovery-actions`).expect(200);
+    expect(after.body.actions).toEqual([]);
+    const duplicate = await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`).send(body).expect(200);
+    expect(duplicate.body.recoveryAction).toEqual(result.body.recoveryAction);
+    // Resolution records a delivery intent; these API calls cannot replay a provider action.
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toEqual([]);
+  });
+
+  it.each(["agent", "run", "owner", "active recovery", "live provider", "unknown outcome", "unverified stop", "short evidence"] as const)(
+    "preserves a settled legacy no-replay hold after a rejected %s review", async guard => {
+      const { sourceIssueId, companyId, coderId, managerId, runId, action, body } = await seedStoppedLegacyReview();
+      if (guard === "run") body.executionReconciliation.runId = randomUUID();
+      if (guard === "owner") await db.update(issues).set({ assigneeAgentId: managerId }).where(eq(issues.id, sourceIssueId));
+      if (guard === "active recovery") await db.insert(issueRecoveryActions).values({
+        companyId, sourceIssueId, kind: "missing_disposition", status: "active", ownerType: "board",
+        cause: "new_incident", fingerprint: "newer", nextAction: "Review the newer incident.",
+      });
+      if (guard === "live provider") await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, runId));
+      if (guard === "unknown outcome") body.executionReconciliation.actionOutcome = "unknown";
+      if (guard === "unverified stop") body.executionReconciliation.providerStopped = false;
+      if (guard === "short evidence") body.executionReconciliation.outcomeEvidence = "unverified";
+      const [issueBefore] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+      const app = guard === "agent" ? createApp({ type: "agent", source: "agent_jwt", companyId, agentId: coderId, runId }) : createApp();
+      const expectedStatus = guard === "agent" ? 403 : ["unknown outcome", "unverified stop", "short evidence"].includes(guard) ? 400 : 409;
+      const response = await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`).send(body).expect(expectedStatus);
+      if (guard === "agent") expect(response.body.error).toBe("Board access required");
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0]).toEqual(action);
+      expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0]).toEqual(issueBefore);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toEqual([]);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toEqual([]);
+    },
+  );
+
   it.each(["resolved", "cancelled"])("omits %s recovery instructions when the original worker resumes", async (status) => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     const action = await issueRecoveryActionService(db).upsertSourceScoped({

@@ -491,6 +491,16 @@ historical duplicate holds share the verified decision and one continuation
 delivery owner. Separate workspace or system recovery obligations and records
 with an existing reconciliation remain unchanged.
 
+The task's stopped-run notice offers **Review stopped run** to board operators,
+including when the recovery action has settled but still retains a no-replay
+hold. The review shows the exact run and accepts a verified action outcome with
+supporting evidence. Unknown outcomes stay held. **Save and continue** uses the
+existing recovery-resolution endpoint, which independently verifies provider
+stop, task ownership and execution gates. The UI rechecks access and the current
+action before submission and confirms the exact reconciliation receipt and
+continuation-delivery marker before showing success. A saved review requests
+continuation; it does not prove that another run has started.
+
 A queued legacy run denied by that final gate is still a wait. Its matching
 dispatch-gate receipt, task identity, and absence of runtime selection, execution
 ownership, environment leases, coordinator, or execution events prove that it

@@ -1,5 +1,5 @@
 import { describeError } from "../api/errors";
-import type { IssueRelationIssueSummary, TaskInterruptionPresentation } from "@paperclipai/shared";
+import type { ExecutionBlocker, IssueRelationIssueSummary, TaskInterruptionPresentation } from "@paperclipai/shared";
 import { AlertCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
@@ -9,6 +9,7 @@ import { useSecondTick } from "../hooks/useSecondTick";
 import { TaskProjectAccessNotice } from "./TaskProjectAccessNotice";
 import { ProviderFailureNotice } from "./ProviderFailureNotice";
 import { LockedIssueChip, isLockedIssueStub } from "./LockedIssueChip";
+import { hasStoppedRunReview, StoppedRunRecovery } from "./StoppedRunRecovery";
 
 const recoveryStepText: Record<NonNullable<TaskInterruptionPresentation["recoveryStep"]>, string> = {
   checking_previous_run: "Checking that the previous attempt stopped",
@@ -23,8 +24,10 @@ const blockerAction: Record<string, string> = {
 };
 
 /** One ordinary interruption surface. Technical records remain in diagnostics. */
-export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimistic, takingLonger, error, className, issueId, agentName, projectName, blockers }: {
+type ExecutionBlockerNoticeProps = {
   presentation: TaskInterruptionPresentation | null | undefined;
+  executionBlocker?: ExecutionBlocker | null;
+  companyId?: string;
   blockers?: IssueRelationIssueSummary[];
   canRetry: boolean;
   onRetry: () => void;
@@ -35,7 +38,18 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
   issueId?: string;
   agentName?: string;
   projectName?: string;
-}) {
+};
+
+export function ExecutionBlockerNotice(props: ExecutionBlockerNoticeProps) {
+  const { issueId, companyId, executionBlocker, className } = props;
+  return <>
+    {issueId && companyId ? <StoppedRunRecovery key={`${companyId}:${issueId}`} issueId={issueId} companyId={companyId}
+      blocker={executionBlocker} className={className} /> : null}
+    {issueId && companyId && hasStoppedRunReview(executionBlocker) ? null : <OrdinaryExecutionBlockerNotice {...props} />}
+  </>;
+}
+
+function OrdinaryExecutionBlockerNotice({ presentation, canRetry, onRetry, optimistic, takingLonger, error, className, issueId, agentName, projectName, blockers }: ExecutionBlockerNoticeProps) {
   useSecondTick(presentation?.state === "retry_scheduled");
   if (presentation?.projectAccess && !optimistic && !takingLonger) return <TaskProjectAccessNotice
     access={presentation.projectAccess} issueId={issueId} agentName={agentName} projectName={projectName}
