@@ -510,6 +510,11 @@ longer than that is therefore a drop (wave w-20261110T040202-s202: 18 s held, ne
 still passed its Q1 oracle). Sweep Claude PV1 below that window, for example
 `--provider-fault-delays 1,3`.
 
+G1 grades the board decision after a restart, so G1 with a provider fault needs
+`--provider-fault-restart K1`. On a board Stop (S1) the runner ends Codex without waiting for its terminal:
+in wave w-20261110T050407-s206 Codex exited 1.5 s after `turn/interrupt` with no `turn/completed`, so a
+`terminal` rule never applies there and the task fails `provider_fault_applied`. Use `interrupt_ack` for S1.
+
 | Adapter | `terminal` | `interrupt_ack` |
 | --- | --- | --- |
 | Codex | the `turn/completed` after a `turn/interrupt` | the response to that `turn/interrupt` |

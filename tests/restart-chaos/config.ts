@@ -210,6 +210,8 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     if (delays && !providerFaults.includes("PV1")) throw new Error("--provider-fault-delays sets PV1 delays; add PV1 to --faults");
     if (delays) options.providerFaultDelaysMs = delays;
     Object.assign(options, parseProviderFaultRestart(values["provider-fault-restart"], values["provider-fault-restart-after-seconds"], providerFaults, delays));
+    // G1's oracle requires the board's decision to come after a restart (board_decided_after_restart).
+    if (options.workloads.includes("G1") && !options.providerFaultRestart) throw new Error("G1 grades the board decision after a restart; with provider faults add --provider-fault-restart K1");
   } else if (values["provider-fault-message"] !== undefined || values["provider-fault-delays"] !== undefined
     || values["provider-fault-restart"] !== undefined || values["provider-fault-restart-after-seconds"] !== undefined) {
     throw new Error("--provider-fault-message, --provider-fault-delays and --provider-fault-restart need a provider fault (PV1, PV2 or PV3) in --faults");

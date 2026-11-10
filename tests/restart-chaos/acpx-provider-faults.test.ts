@@ -241,6 +241,8 @@ describe("provider faults across a restart", () => {
       "--provider-fault-restart", "K1", "--provider-fault-restart-after-seconds", "6"])).toThrow(/shorter than every PV1 delay/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV2", "--provider-fault-restart", "K2"])).toThrow(/K1/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "K1", "--provider-fault-restart", "K1"])).toThrow(/provider fault/);
+    expect(() => parseCommand(["--adapters", "codex", "--workloads", "G1", "--faults", "PV2"])).toThrow(/G1 grades the board decision after a restart/);
+    expect(parseCommand(["--adapters", "codex", "--workloads", "G1", "--faults", "PV2", "--provider-fault-restart", "K1"]).mode).toBe("wave");
     expect(parseProviderFaultRestart(undefined, undefined, ["PV2"], undefined)).toEqual({});
     expect(() => parseProviderFaultRestart(undefined, "3", ["PV2"], undefined)).toThrow(/needs --provider-fault-restart/);
   });
