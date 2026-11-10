@@ -1,5 +1,6 @@
 import { createContext, useContext, type ReactNode } from "react";
 import { NavLink } from "@/lib/router";
+import type { IssueNavigationPrefetchHandlers } from "@/hooks/useIssueNavigationPrefetch";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { useSidebar } from "../context/SidebarContext";
@@ -66,6 +67,8 @@ interface SidebarNavItemProps {
   trailingLabel?: string;
   /** Rendered inside the right-aligned status cluster, before the live dot. */
   liveAccessory?: ReactNode;
+  /** Extra link handlers, such as a task's open-intent prefetch. */
+  linkHandlers?: Partial<IssueNavigationPrefetchHandlers>;
 }
 
 export function SidebarNavItem({
@@ -87,6 +90,7 @@ export function SidebarNavItem({
   trailing,
   trailingLabel,
   liveAccessory,
+  linkHandlers,
 }: SidebarNavItemProps) {
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   // A contextual takeover forces full labels even when the saved global app
@@ -120,6 +124,7 @@ export function SidebarNavItem({
       state={SIDEBAR_SCROLL_RESET_STATE}
       end={end}
       aria-label={railAriaLabel}
+      {...linkHandlers}
       onClick={() => { if (isMobile) setSidebarOpen(false); }}
       className={({ isActive }) =>
         cn(

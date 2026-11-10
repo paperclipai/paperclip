@@ -1,8 +1,10 @@
+import { Worker } from "node:worker_threads";
+
 /**
  * A portable, streaming workspace archive. This function is intentionally
  * self-contained: the same implementation runs locally and in a sandbox.
  */
-async function workspaceArchive(input: {
+export async function workspaceArchive(input: {
   kind: "capture" | "restore";
   cwd?: string;
   archivePath: string;
@@ -662,8 +664,81 @@ async function workspaceArchive(input: {
   }
 }
 
+type ArchiveInput = Parameters<typeof workspaceArchive>[0];
+let activeArchiveWorkers = 0;
+const archiveWaiters: Array<() => void> = [];
+
+async function archiveWorkerSlot(signal?: AbortSignal): Promise<() => void> {
+  signal?.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const start = () => {
+      signal?.removeEventListener("abort", abort);
+      activeArchiveWorkers++;
+      resolve();
+    };
+    const abort = () => {
+      const index = archiveWaiters.indexOf(start);
+      if (index >= 0) archiveWaiters.splice(index, 1);
+      reject(signal!.reason);
+    };
+    if (activeArchiveWorkers < 8) start();
+    else {
+      archiveWaiters.push(start);
+      signal?.addEventListener("abort", abort, { once: true });
+    }
+  });
+  return () => { activeArchiveWorkers--; archiveWaiters.shift()?.(); };
+}
+
+async function runArchiveWorker(input: ArchiveInput): ReturnType<typeof workspaceArchive> {
+  const release = await archiveWorkerSlot(input.signal);
+  let workerScratch: string | undefined;
+  const fs = await import("node:fs/promises");
+  try {
+    input.signal?.throwIfAborted();
+    const path = await import("node:path"), os = await import("node:os");
+    workerScratch = await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-archive-worker-"));
+    await fs.chmod(workerScratch, 0o700);
+    const { signal, ...parameters } = input;
+    const source = workspaceArchive.toString().replaceAll("__vite_ssr_dynamic_import__", "import");
+    const worker = new Worker(`const {parentPort,workerData}=require("node:worker_threads");
+const __name=value=>value;
+const controller=new AbortController();
+parentPort.on("message",()=>controller.abort());
+const archive=${source};
+archive({...workerData,signal:controller.signal}).then(result=>parentPort.postMessage({result}),error=>parentPort.postMessage({error:{...error,name:error.name,message:error.message}})).finally(()=>parentPort.close());`, {
+      eval: true, workerData: parameters, execArgv: [], stdout: true, stderr: true,
+      env: { ...process.env, TMPDIR: workerScratch, TMP: workerScratch, TEMP: workerScratch },
+      resourceLimits: { maxOldGenerationSizeMb: 1024, maxYoungGenerationSizeMb: 64, stackSizeMb: 4 },
+    });
+    worker.stdout.resume(); worker.stderr.resume();
+    const abort = () => worker.postMessage("abort");
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    try {
+      return await new Promise<Awaited<ReturnType<typeof workspaceArchive>>>((resolve, reject) => {
+        let result: Awaited<ReturnType<typeof workspaceArchive>> | undefined, failure: Error | undefined;
+        worker.once("message", (message: { result?: typeof result; error?: Record<string, unknown> }) => {
+          result = message.result;
+          if (message.error) failure = Object.assign(new Error(String(message.error.message)), message.error);
+        });
+        worker.once("error", error => { failure = error; });
+        worker.once("exit", code => {
+          if (signal?.aborted) reject(signal.reason);
+          else if (failure) reject(failure);
+          else if (code === 0 && result) resolve(result);
+          else reject(new Error("remote_workspace_archive_worker_failed"));
+        });
+      });
+    } finally { signal?.removeEventListener("abort", abort); }
+  } finally {
+    try { if (workerScratch) await fs.rm(workerScratch, { recursive: true, force: true }); }
+    finally { release(); }
+  }
+}
+
 export function captureRemoteWorkspaceDirectory(input: { cwd: string; archivePath: string; manifestPath?: string; exclude?: string[]; requireNoGit?: boolean; gitSourceRoots?: string[]; signal?: AbortSignal }) {
-  return workspaceArchive({ ...input, kind: "capture" });
+  return runArchiveWorker({ ...input, kind: "capture" });
 }
 
 export async function readRemoteWorkspaceArchiveDirectories(archivePath: string, expectedManifestDigest: string) {
@@ -691,7 +766,7 @@ export async function readRemoteWorkspaceArchiveDirectories(archivePath: string,
 }
 
 export function restoreRemoteWorkspaceArchive(input: { archivePath: string; targetDir: string; expectedManifestDigest: string; signal?: AbortSignal; maxEntries?: number; maxManifestBytes?: number }) {
-  return workspaceArchive({ ...input, kind: "restore" });
+  return runArchiveWorker({ ...input, kind: "restore" });
 }
 
 export function remoteWorkspaceCaptureFailureMessage(error: unknown): string | null {

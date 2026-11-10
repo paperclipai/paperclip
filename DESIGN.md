@@ -124,6 +124,13 @@ starts this queued turn stays in history, including when it reopens an older
 task. This placement is not a consumption receipt. Later follow-ups remain in
 the composer queue with their existing edit, order and discard controls.
 
+Queued messages render Markdown and show compact local attachment thumbnails.
+Keep paragraph boundaries and wrap thumbnails and controls within narrow rows.
+Omit inline images from the compact text preview. On
+submit, move the text and attachment previews out of the composer together.
+Retain upload receipts while saving so a rejected or uncertain send restores
+the draft without discarding files added for the next message.
+
 Stream the provider's final reply as the conversational answer. Completion-tool
 reports remain inspectable run data while work continues. Use their summary as
 an answer fallback only after the run ends and its final transcript fetch

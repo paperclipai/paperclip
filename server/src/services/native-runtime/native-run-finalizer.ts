@@ -45,6 +45,7 @@ import {
   heartbeatRuns,
   heartbeatRunEvents,
   issueComments,
+  issueExecutionDecisions,
   issueThreadInteractions,
   issues,
   nativeRunFinalizations,
@@ -161,6 +162,29 @@ export function resolveNativeFinalizerStatus(
 }
 
 export { pendingNativeGovernance } from "./native-governance.js";
+
+/**
+ * Whether this run recorded the approval that completed the issue's final
+ * execution-policy stage. Read from the saved decision row, never from the
+ * model's report.
+ */
+export async function executionStageApprovedByRun(
+  db: Db,
+  run: { id: string; companyId: string; agentId: string },
+  issue: { id: string; executionState: unknown },
+): Promise<boolean> {
+  const state = record(issue.executionState);
+  if (state.status !== "completed" || state.lastDecisionOutcome !== "approved" || typeof state.lastDecisionId !== "string") return false;
+  const [decision] = await db.select({ id: issueExecutionDecisions.id }).from(issueExecutionDecisions).where(and(
+    eq(issueExecutionDecisions.id, state.lastDecisionId),
+    eq(issueExecutionDecisions.companyId, run.companyId),
+    eq(issueExecutionDecisions.issueId, issue.id),
+    eq(issueExecutionDecisions.outcome, "approved"),
+    eq(issueExecutionDecisions.actorAgentId, run.agentId),
+    eq(issueExecutionDecisions.createdByRunId, run.id),
+  )).limit(1);
+  return Boolean(decision);
+}
 
 async function acceptedInteractionFromRun(input: {
   db: Db;
@@ -1021,7 +1045,7 @@ async function recoverCommittedNativeChatResponseInScope(
           (!conversation && result.reportedWorkDisposition === "needs_review" && terminal.reportedWorkDisposition === "needs_review") ||
           // A conversation turn can yield while an approval, an execution
           // stage or a blocker holds its task; it still answered the person.
-          (conversation && result.reportedWorkDisposition === "yielded" && terminal.reportedWorkDisposition === "yielded")) &&
+          (currentConversation && result.reportedWorkDisposition === "yielded" && terminal.reportedWorkDisposition === "yielded")) &&
         (await resolveChatRunPresentationAuthorizationReason(tx, input)) === "internal_agent_write"
       ) {
         const rows = await tx.select({ seq: heartbeatRunEvents.seq, payload: heartbeatRunEvents.payload })
@@ -1034,7 +1058,9 @@ async function recoverCommittedNativeChatResponseInScope(
               sql`${heartbeatRunEvents.payload}->'prpEvent'->>'normalizedSessionId' = ${run.nativeSessionId}`) : undefined,
             sql`${heartbeatRunEvents.payload}->'prpEvent'->>'turnId' = ${accepted.turnId}`,
             sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,kind}' = 'agentMessage'`,
-            sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}' = 'final'`,
+            currentConversation
+              ? inArray(sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}'`, ["final", "unknown"])
+              : sql`${heartbeatRunEvents.payload} #>> '{prpEvent,payload,channel}' = 'final'`,
           )).orderBy(desc(heartbeatRunEvents.seq)).limit(200);
         const proposedItemIds = completedPlanProposalIds(await tx.select({ payload: heartbeatRunEvents.payload })
           .from(heartbeatRunEvents).where(and(
@@ -1057,10 +1083,12 @@ async function recoverCommittedNativeChatResponseInScope(
           )).orderBy(desc(issueComments.createdAt), desc(issueComments.id));
         const resolved = resolveHeartbeatRunResponse({
           resultJson: { ...record(run.resultJson), nativeResult: result },
+          nativeConversationFinalResponse: conversation,
           // The same answered rule as live run completion.
-          conversationTurnFinished: conversation && await conversationTurnPresentsAnswer({
+          conversationTurnFinished: currentConversation && await conversationTurnPresentsAnswer({
             db: tx, ...input, finalizationPhase: coordinator.phase, finalizationReasonCode: decision.reasonCode,
           }),
+          interactionOwnsResponse: conversation && await hasChatRunOwnedProviderInteraction(tx, input),
           existingComment: findHeartbeatRunCompletionComment(comments, run.resultJson),
           finalAgentMessage,
         });
@@ -1548,6 +1576,7 @@ export async function finalizeNativeRun(input: {
     const qualityReview = await readRequiredQualityReview(input.db, authoritativeIssue);
     const statusInput: Parameters<typeof resolveNativeFinalizerStatus>[0] = {
       requiredQualityReviewSatisfied: qualityReview.satisfied,
+      executionStageApprovedByRun: await executionStageApprovedByRun(input.db, run, authoritativeIssue),
       caseHandoffAuthorized: Boolean(await assertNativeCaseHandoffResult(input.db, run.id, authoritativeIssue.id, result)),
       monitorWaitDispatched: monitorDelivery !== null,
       monitorWaitPreserved: preservedMonitorWait !== null,

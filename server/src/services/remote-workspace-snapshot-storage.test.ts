@@ -16,6 +16,8 @@ import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.j
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { createStorageService } from "../storage/service.js";
 import type { StorageService } from "../storage/types.js";
+import { withS3FailureDiagnostics } from "../storage/s3-failure.js";
+import { isStorageUnavailableError, reportStorageOutageWaitsTo, runInOwnStorageScope, sendThroughStorageOutage } from "../storage/storage-unavailable.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, newWorkspaceSnapshotStorageTiming, recoverWorkspaceSnapshotArchive, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
@@ -453,6 +455,48 @@ suite("remote workspace snapshot storage", () => {
       await expect(fs.access(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
     } finally { temp.mockRestore(); }
   });
+  it("tells the run it is waiting for storage while a save or a restore waits out an outage", async () => {
+    const f = await fixture();
+    const outage = () => withS3FailureDiagnostics("put_object", async () => {
+      throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
+    });
+    let puts = 0, gets = 0, restoring = false;
+    const flaky = { ...storage,
+      putFile: (input: Parameters<StorageService["putFile"]>[0]) => sendThroughStorageOutage(async () => (++puts < 2 ? outage() : storage.putFile(input))),
+      getObject: vi.fn(async (...args: Parameters<StorageService["getObject"]>) => (restoring && ++gets < 2 ? outage() : storage.getObject(...args))),
+    } as StorageService;
+    const waiting = vi.fn(), ended = vi.fn();
+    await runInOwnStorageScope(async () => {
+      reportStorageOutageWaitsTo({ waiting, ended });
+      const ref = await uploadWorkspaceSnapshot({ ...f.upload, storage: flaky });
+      restoring = true;
+      await loadWorkspaceSnapshotArchive({ storage: flaky, reference: ref, targetPath: path.join(root, "waited.pcws") });
+    });
+    expect(waiting.mock.calls.map(([wait]) => wait.purpose)).toEqual(["saving the workspace", "restoring the workspace"]);
+    expect(ended.mock.calls.map(([wait]) => [wait.purpose, wait.recovered])).toEqual([["saving the workspace", true], ["restoring the workspace", true]]);
+  }, 30_000);
+  it("keeps a storage outage as the cause when the download deadline ends its wait", async () => {
+    const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
+    let requested!: () => void;
+    const firstRequest = new Promise<void>(resolve => { requested = resolve; });
+    const unavailable = { ...storage, getObject: vi.fn(async () => {
+      requested();
+      return withS3FailureDiagnostics("get_object", async () => {
+        throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
+      });
+    }) } as StorageService;
+    const scratch = path.join(root, "outage-scratch"); await fs.mkdir(scratch);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const result = loadWorkspaceSnapshotArchive({ storage: unavailable, reference: ref, targetPath: path.join(root, "outage.pcws"),
+      temporaryParent: scratch }).then(() => ({ succeeded: true }), (error: unknown) => error);
+    try {
+      await firstRequest;
+      await vi.advanceTimersByTimeAsync(300_001);
+      const outcome = await Promise.race([result, wait(2_000).then(() => ({ pending: true }))]);
+      expect(isStorageUnavailableError(outcome)).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
   it.each(["headers", "body"])("closes a stalled S3 %s request before returning a retryable download failure", async phase => {
     const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
     const ciphertext = await fs.readFile(path.join(root, "objects", ref.objectKey));

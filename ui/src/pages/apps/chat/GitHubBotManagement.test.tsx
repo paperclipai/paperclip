@@ -324,7 +324,7 @@ describe("GitHub bot management", () => {
     const editor = container.querySelector('[role="region"] form')!;
     const [project, workspace] = [...editor.querySelectorAll("select")];
     await vi.waitFor(() => expect(workspace.disabled).toBe(false));
-    expect(mocks.projects).toHaveBeenCalledWith("company");
+    expect(mocks.projects).toHaveBeenCalledWith("company", { includeArchived: true });
     expect(mocks.workspaces).toHaveBeenCalledWith("company", { selectableForTask: true });
     expect(project.value).toBe("inherit");
     expect(workspace.value).toBe("inherit");
