@@ -64,7 +64,9 @@ export const NATIVE_TURN_LOST_ON_RESTORE = "provider_turn_lost_on_restore";
 const LOST_ON_RESTORE = NATIVE_TURN_LOST_ON_RESTORE;
 
 export function createNativeTurnAccounting(provider: NativeExecutionInput["provider"]) {
-  const turns = new Map<string, { usage: Record<string, unknown> | null; terminal: boolean; lost?: boolean }>();
+  const turns = new Map<string, { usage: Record<string, unknown> | null; terminal: boolean; lost?: boolean;
+    /** Open when the provider session was restored after process loss. */
+    restored?: boolean }>();
   const sequences = new Map<string, number>();
   let currentTurn: string | undefined;
   const terminalTypes = ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"];
@@ -96,19 +98,29 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
     const current = currentTurn ? turns.get(currentTurn) : undefined;
     return { usage: { runDelta, accountingCostIncomplete: costIncomplete, ...(usageLost ? { accountingUsageLost: true } : {}),
       ...(retainCost ? { accountingCostUsdExact: `${cost / 1_000_000_000n}.${String(cost % 1_000_000_000n).padStart(9, "0")}` } : {}) },
-      turnId: current && normalizeNativeUsage(current.usage) ? currentTurn : undefined, complete };
+      // A turn closed as lost still names the terminal turn the executor must match.
+      turnId: current && (normalizeNativeUsage(current.usage) || (current.lost && current.terminal)) ? currentTurn : undefined, complete };
   };
   return {
     observe(event: PrpEvent) {
       if (!event) return false;
       const payload = record(event.payload);
       const terminal = terminalTypes.includes(event.eventType);
-      if (payload.kind !== "usage" && event.eventType !== "turn.started" && !terminal) return false;
+      const resumed = event.eventType === "session.resumed";
+      if (payload.kind !== "usage" && event.eventType !== "turn.started" && !terminal && !resumed) return false;
       // Historical replay can revisit an earlier report after restoration.
       // Re-persist its aggregate, but never rewind or count that report twice.
       if (event.sourceInstanceId && Number.isSafeInteger(event.sourceSeq)) {
         if (event.sourceSeq <= (sequences.get(event.sourceInstanceId) ?? -1)) return true;
         sequences.set(event.sourceInstanceId, event.sourceSeq);
+      }
+      // A restore after process loss ends the provider process that would
+      // have sent an open turn's final report. Mark those turns; a terminal
+      // event for one without a complete report closes it as a lower bound,
+      // like a turn the Runner fails as lost on restore.
+      if (resumed) {
+        for (const turn of turns.values()) if (!turn.terminal) turn.restored = true;
+        return false;
       }
       const key = event.turnId ?? "unattributed";
       const turn = turns.get(key) ?? { usage: null, terminal: false };
@@ -117,6 +129,7 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
         turn.usage = null;
         turn.terminal = false;
         turn.lost = false;
+        turn.restored = false;
       } else if (payload.kind === "usage" && (!currentTurn || !turns.has(key))) currentTurn = event.turnId;
       if (payload.kind === "usage") {
         const usage = record(payload.usage);
@@ -125,6 +138,7 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
       }
       if (terminal) turn.terminal = true;
       if (event.eventType === "turn.failed" && record(payload.error).code === LOST_ON_RESTORE) turn.lost = true;
+      if (terminal && turn.restored) turn.lost = true;
       turns.set(key, turn);
       return true;
     },

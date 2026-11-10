@@ -550,6 +550,14 @@ G1 grades the board decision after a restart, so G1 with a provider fault needs
 `--provider-fault-restart K1`. On a board Stop (S1) the runner ends Codex without waiting for its terminal:
 in wave w-20261110T050407-s206 Codex exited 1.5 s after `turn/interrupt` with no `turn/completed`, so a
 `terminal` rule never applies there and the task fails `provider_fault_applied`. Use `interrupt_ack` for S1.
+An S1 task with a provider fault clicks Stop on the first poll that shows a live provider turn
+(`turn.started` with no turn terminal yet), not after the seeded follow-up window. A fast agent used to
+finish before that window, so the fault was never injected (waves w-20261110T082702-s212 and
+w-20261110T091057-s213, t03: `applied=0`). The continue comment still waits for the window. If the
+run ends before any live turn is seen, the Stop is recorded as missed once the task rests after the window.
+A live turn is seen only when a poll (`--poll-ms`, 2–5 s) lands inside it, so a turn shorter than the
+poll interval can still be missed. A runner replacement or stop clears the live-turn mark, as it does for
+an open tool.
 
 | Adapter | `terminal` | `interrupt_ack` |
 | --- | --- | --- |
@@ -826,8 +834,16 @@ moment the replacement reports healthy, it stops that replacement and starts ano
 
 The gaps are seeded per task (`restartSteps` in `plan.json`), and drawn only for RR tasks, so the plans
 of existing seeds do not change. `--rr-gap-seconds <n>` or `<min>-<max>` (1–300) replaces every RR
-gap: for example `--rr-gap-seconds 5` for a stop that always lands in recovery, or `30-60` for a slow
-deploy loop. RR faults do not combine with `--storm-minutes`, whose faults carry no planned steps.
+gap: for example `--rr-gap-seconds 5` for a short deploy-loop gap, or `30-60` for a slow
+deploy loop. To stop inside recovery, use `--rr-stop-on recovering` (below). RR faults do not combine with `--storm-minutes`, whose faults carry no planned steps.
+
+`--rr-stop-on recovering` replaces the gap: each follow-up stop fires on the first `/api/ready` poll
+(every 50 ms, from the replacement's spawn) that reports `recovering`, the K6 phase poll. Use it to
+land the stops inside recovery. In the first live waves `/api/ready` reported `recovering` only
+15–80 ms before `/api/health` answered, and `ready` 0.25–0.5 s after it, so every gap from health
+(even 1 s) landed after recovery. A replacement that goes straight to `ready` is stopped there and
+records `ready`. The receipt records `stopOn`, and each follow-up entry has `gapMs: null`; only the last
+replacement is waited on to health, so the earlier entries have no `healthyAt`. The first replacement (of the K1 kill) is also watched from its spawn, not from its health.
 
 **Evidence.** Each stop and replacement (the first kill included) is recorded with its signal, planned
 gap, stopped PID, the `/api/ready` status just before the stop (`recovering` means it landed inside

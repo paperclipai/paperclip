@@ -51,6 +51,10 @@ explicit token.
    reads the row before the owner takes the lease back and writes afterwards,
    a live run carries an ownership-unverified error. This needs two server
    processes on one database, and the timing that strands a run is as rare as before.
+   Closed without the epoch (2026-11-10): the sweep now writes its marker under the
+   coordinator row lock and only while no executor lease on the run is live
+   (`setRunStatusFromLive` option `onlyWhileNativeLeaseLapsed`). Test:
+   `server/src/__tests__/heartbeat-native-orphan-sweep-lease-race.test.ts`.
 3. **Shared-workspace holder detection** (`remote-workspace-writer-hold.ts`
    `runOwnerFenceHeldSql`). This is a read. A run silent past the stale threshold
    with both leases lapsed stops counting as the holder, and nothing is claimed.
