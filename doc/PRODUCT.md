@@ -324,7 +324,7 @@ Canonical mode design and command expectations live in `doc/DEPLOYMENT-MODES.md`
 
 ## Further Detail
 
-See [SPEC.md](./SPEC.md) for the full technical specification and [TASKS.md](./TASKS.md) for the task management data model.
+See [TASKS.md](./TASKS.md) for the task management data model.
 
 ---
 
