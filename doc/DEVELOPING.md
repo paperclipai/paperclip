@@ -1148,8 +1148,8 @@ the Runner's `ensure:eval-build-deps`, `build:rust`, `build` and
   and pnpm match this worktree's last install.
 - **plugin SDK build** runs `scripts/ensure-plugin-build-deps.mjs`, which builds
   `@paperclipai/plugin-sdk` and its `@paperclipai/shared` dependency and skips
-  them when their content fingerprints match the last build. The SDK is the one
-  workspace package the server imports through its built `dist` (plugin workers
+  them when their content fingerprints match the last build. Like the Runner and
+  the eval kernel, the SDK is imported through its built `dist` (plugin workers
   load it under plain Node), so the server and the restart-chaos harness cannot
   start without it. Both compile in about two seconds, so they do not use the
   shared cache.

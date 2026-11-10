@@ -103,9 +103,10 @@ function installStep(root, options, toolchain) {
 
 // --- plugin SDK build -----------------------------------------------------
 
-// @paperclipai/plugin-sdk is the one workspace package the server imports
-// that exports its built dist rather than its TypeScript source, so plugin
-// workers can load it under plain Node. The server (and anything that imports
+// @paperclipai/plugin-sdk exports its built dist rather than its TypeScript
+// source, so plugin workers can load it under plain Node. Apart from the
+// Runner and eval kernel, which the Runner build step covers, it is the only
+// workspace package the server imports that way. The server (and anything that imports
 // server modules, such as the restart-chaos harness) cannot start without it.
 // ensure-plugin-build-deps builds it and its @paperclipai/shared dependency,
 // skips both when its content fingerprints show the outputs are current, and
