@@ -6,7 +6,7 @@ import { heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@papercl
 import { remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { captureLegacyDurablePrpCheckpoint, inspectDurablePrpCheckpointHeader, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
-import { findNativeSessionResumeRun } from "./native-session-resume.js";
+import { findNativeSessionResumeRun, isNativeSessionId } from "./native-session-resume.js";
 import { nativeControllerMigrationDescriptor } from "./native-session-executor.js";
 import { hasNativeRunnerCheckpoint, loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { importNativeControllerRecovery, readNativeControllerRecovery } from "./native-controller-recovery.js";
@@ -182,6 +182,25 @@ async function preservedDatabaseOnlyFailedCheckpoint(selected: Selected,
   return true;
 }
 
+async function preservedWarmMarker(db: Db, selected: Selected,
+  source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>, markerIdentity: Record<string, unknown>) {
+  if (!isNativeSessionId(markerIdentity.runId) || markerIdentity.runId === source.id) return false;
+  const [prior] = await db.execute<{ id: string }>(sql`
+    select r.id from heartbeat_runs r join heartbeat_runs current on current.id=${source.id}::uuid and current.company_id=r.company_id
+    join native_run_finalizations f on f.run_id=r.id and f.company_id=r.company_id and f.issue_id=r.native_issue_id
+    join native_run_results result on result.id=f.result_id and result.run_id=r.id and result.company_id=r.company_id
+      and result.issue_id=r.native_issue_id and result.completion_contract_id=r.completion_contract_id and result.schema_status='accepted'
+    where r.id=${markerIdentity.runId}::uuid and r.company_id=${selected.companyId}::uuid and r.agent_id=${selected.agentId}::uuid
+      and r.native_issue_id=${selected.issueId}::uuid and r.native_session_id=${selected.sessionId}::uuid
+      and r.runner_instance_id=${source.runnerInstanceId} and r.runtime_mode='native' and r.status='succeeded'
+      and r.created_at<current.created_at and r.finished_at is not null and r.finished_at<=coalesce(current.started_at,current.created_at)
+      and f.phase='committed' and f.lease_owner is null and f.recovery_state is null and f.failure_code is null`);
+  if (!prior) return false;
+  const checkpoint = await loadNativeRunnerCheckpoint(db, { companyId: selected.companyId, issueId: selected.issueId, runId: prior.id }).catch(() => null);
+  const header = checkpoint && inspectDurablePrpCheckpointHeader(checkpoint.records.get("header") ?? "");
+  return Boolean(header && nativeSha256(header) === nativeSha256(markerIdentity));
+}
+
 async function preservedActiveCheckpoint(db: Db, selected: Selected,
   source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>, paths: Awaited<ReturnType<typeof localPaths>>) {
   if (source.status !== "running" || source.runtimeMode !== "native") return false;
@@ -196,7 +215,11 @@ async function preservedActiveCheckpoint(db: Db, selected: Selected,
   const checkpoint = await loadNativeRunnerCheckpoint(db, binding).catch(() => null);
   const header = checkpoint && inspectDurablePrpCheckpointHeader(checkpoint.records.get("header") ?? "");
   if (!header || header.runId !== source.id || header.runnerInstanceId !== source.runnerInstanceId
-    || header.normalizedSessionId !== selected.sessionId || nativeSha256(header) !== nativeSha256(marker.identity)) return false;
+    || header.normalizedSessionId !== selected.sessionId) return false;
+  const exact = nativeSha256(header) === nativeSha256(marker.identity), markerIdentity = record(marker.identity);
+  if (!exact && (paths.execution.session.lifecyclePolicy.mode !== "warm"
+    || ["runnerInstanceId", "normalizedSessionId", "environmentLeaseId"].some(field => markerIdentity[field] !== header[field as keyof typeof header])
+    || !await preservedWarmMarker(db, selected, source, markerIdentity))) return false;
   const [current] = await db.execute<{ workspace: unknown; remoteWorkspace: unknown; hasRemoteWorkspace: boolean; pluginLeaseId: string | null; liveOwner: boolean }>(sql`
     select r.runner_profile_json->'nativeWorkspaceSync' as workspace,
       r.runner_profile_json->'remoteWorkspace' as "remoteWorkspace",
@@ -224,7 +247,7 @@ async function preservedActiveCheckpoint(db: Db, selected: Selected,
     : current.pluginLeaseId ?? readNativeWorkspaceSyncReference(current.workspace)?.workspaceId;
   return workspaceId === header.environmentLeaseId
     && (current.pluginLeaseId !== null || paths.execution.binding.executionWorkspaceId === workspaceId)
-    && (current.liveOwner || hasMatchingControllerRecovery(selected, source, checkpoint))
+    && (current.liveOwner || exact && hasMatchingControllerRecovery(selected, source, checkpoint))
     && bytes === await readPrivateSource(paths.controlFile, 4096);
 }
 

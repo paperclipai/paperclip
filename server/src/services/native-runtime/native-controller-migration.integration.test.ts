@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterEach, expect, it, vi } from "vitest";
-import { agentTaskSessions, environmentLeases, environments, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
+import { agents, agentTaskSessions, environmentLeases, environments, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { captureLegacyDurablePrpCheckpoint, DurablePrpControlPlane, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
 import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
@@ -25,7 +25,7 @@ import { legacyNativeControllerArchive } from "./native-controller-archive.js";
 import { restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 
 describeEmbeddedPostgres.each(["archive_online", "archive_online_owned", "archive_online_changed", "archive_online_commit", "archive_online_active", "archive_online_foreign",
-  "source_scan", "active_durable", "online_success", "online_owned", "online_same_source", "online_busy", "online_changed", "online_evidence", "import", "archive", "success", "batch", "durable_failed", "durable_inline_failed",
+  "active_warm", "source_scan", "active_durable", "online_success", "online_owned", "online_same_source", "online_busy", "online_changed", "online_evidence", "import", "archive", "success", "batch", "durable_failed", "durable_inline_failed",
   "stale_confirmed", "stale_foreign", "stale_changed", "stale_queued", "stale_overlap", "stale_success", "stale_busy", "stale_durable", "stale_durable_absent",
   "stale_durable_runner", "stale_durable_session", "stale_durable_snapshot",
   "controller_confirmed", "controller_foreign", "controller_thread", "controller_runner", "controller_success", "controller_busy", "controller_invalid", "controller_durable",
@@ -93,6 +93,90 @@ describeEmbeddedPostgres.each(["archive_online", "archive_online_owned", "archiv
       taskKey: f.issueId, lastRunId: f.runId }).returning();
     return { ...f, companyId, agentId, paperclipHome, runtimeRoot, paths, file, source, profile, session, queuedId, identity, snapshot };
   }
+  if (scenario === "active_warm") it("preserves an active warm rotation only with its exact older committed authority", async () => {
+    const f = await fixture(0, true, true), controller = await currentNativeControllerIdentity();
+    const binding = { companyId: f.companyId, issueId: f.issueId, runId: f.runId };
+    const owner = { controllerBootId: controller.bootId, controllerGeneration: 1, leaseOwner: "warm-checkpoint-writer",
+      leaseExpiresAt: new Date(Date.now() + 60_000), phase: "observed", resultId: null, failureCode: null, recoveryState: null } as const;
+    await f.db.update(nativeRunFinalizations).set(owner).where(eq(nativeRunFinalizations.runId, f.runId));
+    const core = new DurablePrpControlPlane({ stateDirectory: join(f.paths.root, "control-plane"), identity: f.identity,
+      expectedRunnerVersion: "migration-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    let writer = nativeRunnerCheckpointWriter(f.db, { ...binding, bootId: controller.bootId, leaseOwner: owner.leaseOwner,
+      generation: 1, authorityRunId: f.runId });
+    core.setCheckpointPersistence(value => writer(value));
+    try {
+      await core.flushCheckpoint();
+      const marker = await readFile(f.file, "utf8"), [prior] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const [result] = await f.db.insert(nativeRunResults).values({ ...binding, completionContractId: prior.completionContractId!,
+        serverFingerprint: "warm-source-result", schemaStatus: "accepted", resultJson: {}, canonicalSha256: nativeSha256({}) }).returning();
+      const finishedAt = new Date();
+      await f.db.update(heartbeatRuns).set({ status: "succeeded", finishedAt }).where(eq(heartbeatRuns.id, f.runId));
+      await f.db.update(nativeRunFinalizations).set({ phase: "committed", resultId: result.id, leaseOwner: null,
+        leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, f.runId));
+      const next = { ...f.identity, runId: randomUUID(), turnId: randomUUID(), itemId: randomUUID() };
+      const execution = parseNativeExecutionInput({ ...f.profile.nativeExecutionInput,
+        binding: { ...f.profile.nativeExecutionInput.binding, runId: next.runId } });
+      const profile = { ...f.profile, nativeExecutionInput: execution, sessionCheckpoint: null };
+      expect(nativeControllerMigrationDescriptor(execution, f.profile.nativeToolContractFingerprint).root).toBe(f.paths.root);
+      await f.db.insert(heartbeatRuns).values({ id: next.runId, companyId: f.companyId, agentId: f.agentId, issueId: f.issueId,
+        nativeIssueId: f.issueId, nativeSessionId: f.native.normalizedSessionId, runnerInstanceId: f.native.runnerInstanceId,
+        runtimeMode: "native", status: "running", nativePhase: "observed", processPid: process.pid, processStartedAt: new Date(),
+        createdAt: new Date(finishedAt.getTime() + 1), startedAt: new Date(finishedAt.getTime() + 2), runnerProfileJson: profile,
+        completionContractId: prior.completionContractId });
+      await f.db.insert(nativeRunFinalizations).values({ ...owner, ...binding, runId: next.runId });
+      await f.db.update(issues).set({ executionRunId: next.runId, checkoutRunId: null }).where(eq(issues.id, f.issueId));
+      await f.db.update(agentTaskSessions).set({ lastRunId: next.runId }).where(eq(agentTaskSessions.id, f.session.id));
+      writer = nativeRunnerCheckpointWriter(f.db, { ...binding, runId: next.runId, authorityRunId: next.runId,
+        bootId: controller.bootId, leaseOwner: owner.leaseOwner, generation: 1 });
+      core.rotateRunIdentity(next);
+      await core.flushCheckpoint();
+      expect(await readFile(f.file, "utf8")).toBe(marker);
+      expect((await loadNativeRunnerCheckpoint(f.db, { ...binding, runId: next.runId }))?.runId).toBe(next.runId);
+      const oldRows = await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId));
+      const currentRows = await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, next.runId));
+      expect(await hasLocalNativeControllerObligations(f.db)).toBe(false);
+      for (const value of [{ ...f.identity, runId: randomUUID() }, { ...f.identity, runnerInstanceId: randomUUID() },
+        { ...f.identity, normalizedSessionId: randomUUID() }, { ...f.identity, environmentLeaseId: randomUUID() },
+        { ...f.identity, turnId: randomUUID() }]) {
+        await writeFile(f.file, JSON.stringify({ schema: "paperclip.runner.external-control-plane-state.v1", identity: value }));
+        expect(await hasLocalNativeControllerObligations(f.db)).toBe(true);
+      }
+      await writeFile(f.file, marker);
+      await f.db.delete(nativeRunnerCheckpoints).where(and(eq(nativeRunnerCheckpoints.runId, f.runId), eq(nativeRunnerCheckpoints.part, "cursor")));
+      expect(await hasLocalNativeControllerObligations(f.db)).toBe(true);
+      await f.db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId));
+      await f.db.insert(nativeRunnerCheckpoints).values(oldRows);
+      await f.db.delete(nativeRunnerCheckpoints).where(and(eq(nativeRunnerCheckpoints.runId, next.runId), eq(nativeRunnerCheckpoints.part, "cursor")));
+      expect(await hasLocalNativeControllerObligations(f.db)).toBe(true);
+      await f.db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, next.runId));
+      await f.db.insert(nativeRunnerCheckpoints).values(currentRows);
+      for (const patch of [{ status: "failed" }, { createdAt: new Date(Date.now() + 60_000) },
+        { finishedAt: new Date(Date.now() + 60_000) }, { runnerInstanceId: randomUUID() }]) {
+        await f.db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, f.runId));
+        expect(await hasLocalNativeControllerObligations(f.db)).toBe(true);
+        await f.db.update(heartbeatRuns).set({ status: "succeeded", createdAt: prior.createdAt, finishedAt,
+          runnerInstanceId: prior.runnerInstanceId }).where(eq(heartbeatRuns.id, f.runId));
+      }
+      await f.db.update(nativeRunResults).set({ schemaStatus: "rejected" }).where(eq(nativeRunResults.id, result.id));
+      expect(await hasLocalNativeControllerObligations(f.db)).toBe(true);
+      await f.db.update(nativeRunResults).set({ schemaStatus: "accepted" }).where(eq(nativeRunResults.id, result.id));
+      const [foreign] = await f.db.insert(agents).values({ companyId: f.companyId, name: "Foreign owner", role: "engineer", adapterType: "paperclip_runner" }).returning();
+      await f.db.update(heartbeatRuns).set({ agentId: foreign.id }).where(eq(heartbeatRuns.id, f.runId));
+      expect(await hasLocalNativeControllerObligations(f.db)).toBe(true);
+      await f.db.update(heartbeatRuns).set({ agentId: f.agentId }).where(eq(heartbeatRuns.id, f.runId));
+      await f.db.update(heartbeatRuns).set({ runnerProfileJson: { ...profile, nativeExecutionInput: {
+        ...execution, session: { ...execution.session, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } } } } })
+        .where(eq(heartbeatRuns.id, next.runId));
+      expect(await hasLocalNativeControllerObligations(f.db)).toBe(true);
+      await f.db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, next.runId));
+      await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, next.runId));
+      expect(await hasLocalNativeControllerObligations(f.db)).toBe(true);
+      await f.db.update(nativeRunFinalizations).set(owner).where(eq(nativeRunFinalizations.runId, next.runId));
+      expect(await hasLocalNativeControllerObligations(f.db)).toBe(false);
+      expect(await readFile(f.file, "utf8")).toBe(marker);
+      expect(await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId))).toEqual(oldRows);
+    } finally { await core.stop(); }
+  });
   if (scenario === "source_scan") it("bounds retained source readers at eight and joins every started reader before a failure", async () => {
     const f = await fixture(), binding = { companyId: f.companyId, issueId: f.issueId, runId: f.runId };
     const checkpoint = captureLegacyDurablePrpCheckpoint(f.source, f.identity,
