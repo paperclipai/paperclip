@@ -1,8 +1,20 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import { environmentLeases, sandboxCreationOperations, type Db } from "@paperclipai/db";
 import { hasDeferredEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 
 export const ENVIRONMENT_CLEANUP_RETRY_MS = 5 * 60_000;
+
+export function recoverableSandboxCreationCondition() {
+  return or(eq(sandboxCreationOperations.state, "pending"), and(
+    eq(sandboxCreationOperations.state, "needs_reconciliation"),
+    sql`coalesce(${sandboxCreationOperations.metadata}->>'creationReconciliationReason', '') <> 'company_deleted'`,
+    sql`${sandboxCreationOperations.metadata}->>'runnerTaskLease' = 'true'`,
+    sql`jsonb_typeof(${sandboxCreationOperations.metadata}->'runnerTaskCreationContextId') = 'string' and ${sandboxCreationOperations.metadata}->>'runnerTaskCreationContextId' <> ''`,
+    or(sql`jsonb_typeof(${sandboxCreationOperations.metadata}->'creationProviderLeaseId') = 'string' and ${sandboxCreationOperations.metadata}->>'creationProviderLeaseId' <> ''`,
+      and(sql`${sandboxCreationOperations.metadata}->>'creationOperationVersion' = '1'`,
+        sql`jsonb_typeof(${sandboxCreationOperations.metadata}->'providerMetadata') = 'object'`)),
+  ));
+}
 
 export function pendingCleanupDeadlineSql(now = Date.now()) {
   const deadline = sql`case
@@ -21,7 +33,7 @@ export async function nextEnvironmentCleanupAt(db: Db, backoffMs = ENVIRONMENT_C
     extract(epoch from ${environmentLeases.updatedAt}) * 1000 + ${backoffMs},
     ${pendingCleanupDeadlineSql()}))` }).from(environmentLeases).where(eq(environmentLeases.status, "pending_cleanup"));
   const [creation] = await db.select({ next: sql<string | null>`min(extract(epoch from ${sandboxCreationOperations.nextAttemptAt}) * 1000)` })
-    .from(sandboxCreationOperations).where(eq(sandboxCreationOperations.state, "pending"));
+    .from(sandboxCreationOperations).where(recoverableSandboxCreationCondition());
   const deadlines = [row?.next, creation?.next].filter((value): value is string => value != null).map(Number);
   const saved = deadlines.length ? Math.min(...deadlines) : null;
   const buffered = hasDeferredEnvironmentCleanup(db) ? Date.now() + backoffMs : null;

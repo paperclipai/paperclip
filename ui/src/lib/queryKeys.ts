@@ -45,6 +45,8 @@ export const queryKeys = {
   apps: {
     gallery: (companyId: string) => ["apps", companyId, "gallery"] as const,
     attention: (companyId: string) => ["apps", companyId, "attention"] as const,
+    connectionReviewCounts: (companyId: string, connectionId: string) =>
+      ["apps", companyId, "attention", "connection", connectionId, "review-counts"] as const,
   },
   chatEndpoints: {
     list: (companyId: string) => ["chat-endpoints", companyId] as const,
@@ -88,6 +90,8 @@ export const queryKeys = {
     actionRequests: (companyId: string, status: string) =>
       ["tools", companyId, "action-requests", status] as const,
     gateways: (companyId: string) => ["tools", "gateways", companyId] as const,
+    connectionProfileConfiguration: (companyId: string, connectionId: string) =>
+      ["tools", companyId, "profiles", "connection-configuration", connectionId] as const,
     profiles: (companyId: string) => ["tools", companyId, "profiles"] as const,
     profileNewTools: (profileId: string) =>
       ["tools", "profiles", profileId, "new-tools"] as const,
@@ -409,6 +413,8 @@ export const queryKeys = {
     approvals: (issueId: string) => ["issues", "approvals", issueId] as const,
     liveRuns: (issueId: string) => ["issues", "live-runs", issueId] as const,
     activeRun: (issueId: string) => ["issues", "active-run", issueId] as const,
+    contextUsage: (issueId: string, assigneeAgentId: string | null) =>
+      ["issues", "context-usage", issueId, assigneeAgentId] as const,
     runnerGoal: (issueId: string, agentId?: string | null) =>
       ["issues", "runner-goal", issueId, agentId ?? "__effective__"] as const,
     workProducts: (issueId: string) =>

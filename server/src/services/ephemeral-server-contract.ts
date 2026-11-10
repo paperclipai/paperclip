@@ -4,6 +4,8 @@ import type { Config } from "../config.js";
 import { isValidLocalEncryptedMasterKey } from "../secrets/local-encrypted-provider.js";
 import { agentInstructionsBundleMode } from "./agent-instructions.js";
 import { skillInstallationMaintenance } from "./skill-installation-maintenance.js";
+import { hasLocalNativeHarnessObligations } from "./native-runtime/native-harness-backup-migration.js";
+import { hasLocalNativeControllerObligations } from "./native-runtime/native-controller-migration.js";
 
 export const ephemeralServerEnabled = () => process.env.PAPERCLIP_EPHEMERAL_SERVER === "true";
 
@@ -64,6 +66,8 @@ export async function readEphemeralServerDataEligibility(db: Db, options: { purp
     isNull(providerTraceRecords.deletedAt), sql`${providerTraceRecords.traceRef} not like 's3-segments-v1:%'`,
   )).limit(1);
   if (localTrace) blockers.push("provider_traces_require_migration");
+  if (await hasLocalNativeHarnessObligations(db)) blockers.push("native_harness_backups_require_migration");
+  if (await hasLocalNativeControllerObligations(db)) blockers.push("native_controllers_require_migration");
   const skills = skillInstallationMaintenance(db);
   let after: string | undefined;
   for (;;) {

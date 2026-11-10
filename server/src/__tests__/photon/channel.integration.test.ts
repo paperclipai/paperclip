@@ -70,7 +70,11 @@ import { resolveExternalChatQuestionResponse } from "../../services/native-runti
 import { resolveChatRunPresentationAuthorizationReason } from "../../services/chat-run-publications.js";
 import { PhotonChatAdapter } from "../../services/photon/adapter.js";
 import { PhotonCloudClient, PhotonError } from "../../services/photon/cloud.js";
-import { photonFixture, photonEvent, photonChat, stream } from "./fixture.js";
+import { photonFixture, photonEvent as livePhotonEvent, photonChat, stream } from "./fixture.js";
+
+// The fixture always builds a message event. Its declared return type is the wider LiveEvent.
+const photonEvent = (...args: Parameters<typeof livePhotonEvent>) =>
+  livePhotonEvent(...args) as Extract<LiveEvent, { message: unknown }>;
 
 function idleStream<T>(): TypedEventStream<T> {
   let close!: () => void;
@@ -230,6 +234,7 @@ describe("iMessage Photon channel control plane", () => {
       provider: "local_disk",
       putFile: async (input) => {
         const objectKey = `${input.namespace}/${randomUUID()}`;
+        if (!Buffer.isBuffer(input.body)) throw new Error("Expected a buffered attachment body");
         objects.set(objectKey, input.body);
         return {
           provider: "local_disk",
@@ -683,7 +688,7 @@ describe("iMessage Photon channel control plane", () => {
     await t.start();
     await t.qualify();
     const group = photonChat("iMessage;+;draft-group", true);
-    group.participants.push({ address: "+15555550102", service: "iMessage" });
+    (group.participants as Array<(typeof group.participants)[number]>).push({ address: "+15555550102", service: "iMessage" });
     t.chats.set(group.guid, group);
     await t.deliver(photonEvent(3, group));
     const resource = (await t.service.listResources(t.endpoint.id)).find(
@@ -876,7 +881,7 @@ describe("iMessage Photon channel control plane", () => {
       new URL("./fixtures/synthetic.heic", import.meta.url),
     );
     const event = photonEvent(3, t.f.chat, "");
-    event.message.content.attachments.push({
+    (event.message.content.attachments as Array<(typeof event.message.content.attachments)[number]>).push({
       guid: "photo-guid",
       fileName: "photo.heic",
       mimeType: "image/heic",
@@ -903,7 +908,7 @@ describe("iMessage Photon channel control plane", () => {
       );
     expect(delivery.state).toBe("retry");
     expect(
-      delivery.normalizedEvent.message.attachments[0].recovery.locator,
+      (delivery.normalizedEvent.message as { attachments: Array<{ recovery: { locator: unknown } }> }).attachments[0]!.recovery.locator,
     ).toMatchObject({
       kind: "photon_attachment",
       messageGuid: event.message.guid,
@@ -1125,7 +1130,7 @@ describe("iMessage Photon channel control plane", () => {
     await t.start();
     await t.qualify();
     const group = photonChat("iMessage;+;native-group", true);
-    group.participants.push({ address: "+15555550102", service: "iMessage" });
+    (group.participants as Array<(typeof group.participants)[number]>).push({ address: "+15555550102", service: "iMessage" });
     t.chats.set(group.guid, group);
     await t.deliver(photonEvent(3, group));
     const resource = (await t.service.listResources(t.endpoint.id)).find(

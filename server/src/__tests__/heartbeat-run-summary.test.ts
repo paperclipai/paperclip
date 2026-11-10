@@ -9,6 +9,7 @@ import {
   isExternalChatPresentationContext,
   isChatOriginPublicationCandidate,
   mergeHeartbeatRunResultJson,
+  completedPlanProposalIds,
   readCompletedAssistantMessageCandidate,
   resolveHeartbeatRunResponse,
   selectHeartbeatRunFinalAgentMessage,
@@ -176,6 +177,29 @@ describe("readCompletedAssistantMessageCandidate", () => {
       });
     },
   );
+
+  it("leaves a recorded proposed plan to its Plan document and posts only the surrounding reply", () => {
+    const candidate = (text: string, proposed = true) => readCompletedAssistantMessageCandidate({
+      seq: 3,
+      prpEvent: { sourceEventId: "runner:plan", itemId: "msg-1", payload: { kind: "agentMessage", channel: "final", text } },
+      proposedItemIds: proposed ? new Set(["msg-1"]) : new Set(),
+    });
+    const withPlan = "Plan ready for approval.\n<proposed_plan>\n# Fix\n1. Ship\n</proposed_plan>";
+    expect(candidate(withPlan)?.text).toBe("Plan ready for approval.");
+    expect(candidate("<proposed_plan>\n# Fix\n</proposed_plan>")).toBeNull();
+    // Without a recorded proposal the reply keeps the plan text.
+    expect(candidate(withPlan, false)?.text).toBe(withPlan);
+    const documented = "Use this format:\n```\n<proposed_plan>\n# Plan\n</proposed_plan>\n```";
+    expect(candidate(documented)?.text).toBe(documented);
+    expect(candidate("Plan ready.\n<proposed_plan>\n# Fix\n1. Ship…[truncated]")?.text).toBe("Plan ready.");
+    // A fenced example in a cut-off preview keeps its text.
+    const fencedPreview = "Format:\n```\n<proposed_plan>\n# Plan…[truncated]";
+    expect(candidate(fencedPreview)?.text).toBe(fencedPreview);
+    expect(completedPlanProposalIds([
+      { payload: { prpEvent: { payload: { proposalId: "msg-1", status: "completed" } } } },
+      { payload: { prpEvent: { payload: { proposalId: "msg-2", status: "streaming" } } } },
+    ])).toEqual(new Set(["msg-1"]));
+  });
 
   it("keeps the persisted PRP v1 assistant_message alias readable", () => {
     expect(

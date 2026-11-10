@@ -9,7 +9,7 @@ import {
   promises as fs,
 } from "node:fs";
 import os from "node:os";
-import { createWorkspaceManifest, WorkspaceManifestMap, workspacePaths, workspacePathMatcher, writeWorkspacePaths, isPathManifest, type WorkspacePaths } from "./workspace-manifest.js";
+import { assertWorkspaceManifestDiskSpace, createWorkspaceManifest, WorkspaceManifestMap, workspacePaths, workspacePathMatcher, writeWorkspacePaths, isPathManifest, type WorkspacePaths } from "./workspace-manifest.js";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
@@ -451,6 +451,12 @@ export interface SandboxTransferProgressOptions {
   onProgress?: (transferredBytes: number, totalBytes: number | null) => void | Promise<void>;
 }
 
+export const MAX_SANDBOX_SYNC_TIMEOUT_MS = 30 * 60_000;
+
+export interface SandboxSyncOptions {
+  minimumTimeoutMs?: number;
+}
+
 /**
  * A single source→target file or directory transfer within a sync operation.
  * Mirrors the plugin SDK `PluginSyncFileMapping`; kept as a local structural
@@ -561,9 +567,9 @@ export interface SandboxManagedRuntimeClient {
    * orchestrator falls back to the tar + base64 `writeFile`/`run` path so
    * behavior is byte-identical to a provider that never opted in.
    */
-  syncIn?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+  syncIn?(operations: SandboxSyncOperation[], options?: SandboxSyncOptions): Promise<SandboxSyncResult>;
   /** Optional native outbound transfer. See {@link syncIn}. */
-  syncOut?(operations: SandboxSyncOperation[]): Promise<SandboxSyncResult>;
+  syncOut?(operations: SandboxSyncOperation[], options?: SandboxSyncOptions): Promise<SandboxSyncResult>;
 }
 
 /**
@@ -887,6 +893,12 @@ async function persistDurableSeedArchive(input: {
   if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) {
     throw new Error("workspace_durable_seed_root_invalid");
   }
+  const source = await fs.lstat(input.sourcePath);
+  if (source.isSymbolicLink() || !source.isFile()) {
+    throw new Error("workspace_durable_seed_invalid");
+  }
+  // A seed is a full archive copy; refuse it before it consumes the host reserve.
+  assertWorkspaceManifestDiskSpace(parent, source.size);
   const temporary = path.join(
     parent,
     `.${path.basename(input.targetPath)}.${randomUUID()}.tmp`,

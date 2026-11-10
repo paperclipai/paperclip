@@ -9,6 +9,12 @@ import type { DurableRecoveryIdentity } from "../contracts/durable-recovery.js";
  * specifications stay private to the driver; plugins receive versioned requirements.
  */
 export interface RunnerExecutionDriver {
+  /** The driver verifies a stopped, idle Codex App Server source before launch. */
+  codexSourceRecoveryVersion?: 1;
+  /** The driver verifies a stopped, idle source for the selected ACPX provider before launch. */
+  acpxSourceRecoveryVersion?: 1;
+  /** Current authenticated lease/checkpoint-writer owner; may change during warm reuse. */
+  authorityRunId?: string;
   /** Own provider configuration and file preparation in the execution environment. */
   prepareLaunch?: RunnerLaunchPreparer;
   /** Reauthorize retained resources before adoption without preparing them again.

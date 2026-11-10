@@ -88,13 +88,14 @@ postgresTests("upgrade readiness persisted execution evidence", () => {
     finally { await core.stop(); await rm(root, { recursive: true, force: true }); }
     expect(await readUpgradeReadiness(db, input)).toMatchObject({ ready: true, recoverableRuns: 1 });
     const cipher = createLocalEncryptedCipher("write");
-    // Real staging headers contain retained launch metadata around 113 KiB.
-    const representativeHeader = JSON.stringify({ ...JSON.parse(header), padding: "x".repeat(100_000) });
+    const parsedHeader = JSON.parse(header);
+    const representativeHeader = JSON.stringify({ ...parsedHeader, state: { ...parsedHeader.state,
+      runAttachTemplate: { provider: { instructions: "x".repeat(300_000) } } } });
     await db.update(nativeRunnerCheckpoints).set({ material: cipher.encrypt(JSON.stringify({ ...binding, part: "header", contents: representativeHeader })) })
       .where(eq(nativeRunnerCheckpoints.runId, runId));
     expect((await readUpgradeReadiness(db, input)).ready).toBe(true);
     for (const contents of ["{", "{}", JSON.stringify({ ...JSON.parse(header), schema: "paperclip.runner.controller-checkpoint.v1" }),
-      JSON.stringify({ ...JSON.parse(header), padding: "x".repeat(400_000) }),
+      JSON.stringify({ ...JSON.parse(header), padding: "x".repeat(1_100_000) }),
       JSON.stringify({ ...JSON.parse(header), state: { ...JSON.parse(header).state, identity: { ...JSON.parse(header).state.identity, runId: randomUUID() } } })]) {
       await db.update(nativeRunnerCheckpoints).set({ material: cipher.encrypt(JSON.stringify({ ...binding, part: "header", contents })) })
         .where(eq(nativeRunnerCheckpoints.runId, runId));

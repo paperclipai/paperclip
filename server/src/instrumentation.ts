@@ -499,6 +499,10 @@ async function bootstrapOtel(endpoint: string): Promise<void> {
     console.log(`[paperclip] OpenTelemetry service.version=${serviceVersion}`);
 
     const sdk = new NodeSDK({
+      // This integration exports traces only. NodeSDK otherwise creates
+      // default OTLP metric/log exporters even when none were configured.
+      metricReaders: [],
+      logRecordProcessors: [],
       resource: resourceFromAttributes({
         [ATTR_SERVICE_NAME]: process.env.OTEL_SERVICE_NAME || "paperclip",
         [ATTR_SERVICE_VERSION]: serviceVersion,

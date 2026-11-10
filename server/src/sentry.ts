@@ -40,12 +40,27 @@
 //     and request isolation need it) and turns the breadcrumb off with the
 //     integration's own `breadcrumbs` option.
 //
+// A failed secret-sensitive request (chat setup, provider webhooks, MCP,
+// company observability settings, and similar routes) reports only the
+// generic `Secret-sensitive request failed` error, with its own stack and
+// default grouping. `SecretSensitiveRequestError` adds `secret_route_family`,
+// `http_method`, `http_status` and `error_kind` tags, optional `errno_code`
+// and `db_error_code` tags (a Node errno name or a SQLSTATE), and a
+// `secret_sensitive_request` context. The context holds the matched Express
+// route definition and up to eight complete V8 frames from the original
+// stack. Every value is a closed label, a bounded number, or a code-shaped
+// string; anything else is dropped. The event never carries the request
+// URL, query, body, headers, or the original error name or message.
+//
 // `onUnhandledRejectionIntegration` defaults to `mode: "warn"`, which
 // registers a `process.on("unhandledRejection")` listener. Node cancels its
 // own crash-on-unhandled-rejection behavior when any listener is registered.
 // The server relies on that crash today, so the initializer passes
 // `mode: "strict"`: Sentry still captures the event, then exits the process,
 // so the existing crash-and-restart behavior stays.
+//
+// `beforeSend` adds run navigation links, then bounded provenance for the
+// dynamic-import-callback error — see `sentry-dynamic-import-provenance.ts`.
 //
 // Before it imports the package, the bootstrap checks the installed
 // `@sentry/node` version against the exact version this manifest's
@@ -56,15 +71,19 @@
 // `instrumentation.ts`.
 
 import os from "node:os";
+import type { HeartbeatRunStatus } from "@paperclipai/shared";
 import { AdapterStopTimeoutError } from "./services/adapter-stop-timeout.js";
 import { CloudPortfolioError } from "./services/cloud-portfolio-error.js";
+import { SecretSensitiveRequestError } from "./middleware/secret-sensitive-request-error.js";
 import { storageFailureDiagnosticsFor } from "./storage/failure-diagnostics.js";
+import { directoryMergeLockTimeoutDiagnosticsFor } from "@paperclipai/adapter-utils/directory-merge-lock-diagnostics";
 import type { RunFailureDiagnostics } from "./services/run-failure-diagnostics.js";
 import { readBuildCommit } from "./build-commit.js";
 import { checkExactPeerVersions } from "./peer-version-check.js";
 import { resolveSentryDsns } from "./sentry-dsn.js";
 import { readRunFailureReportingMode } from "./sentry-run-failure-policy.js";
 import { addSentryRunLinks, type SentryRunReference } from "./sentry-links.js";
+import { addDynamicImportProvenance, type ProvenanceHint } from "./sentry-dynamic-import-provenance.js";
 
 const { backend: dsn, legacyFallbackUsed } = resolveSentryDsns();
 
@@ -117,6 +136,7 @@ export function captureException(error: unknown, reference?: SentryRunReference)
       ...(reference.agentId ? { agent_id: reference.agentId } : {}),
     } : {};
     const storageFailure = storageFailureDiagnosticsFor(error);
+    const lockTimeout = directoryMergeLockTimeoutDiagnosticsFor(error);
     if (error instanceof AdapterStopTimeoutError) {
       // Event-local, fixed-shape context: no ambient scope or raw error fields.
       const exception = new Error(error.message);
@@ -134,12 +154,37 @@ export function captureException(error: unknown, reference?: SentryRunReference)
         contexts: { cloud_portfolio: { ...CloudPortfolioError.diagnosticsFor(error) } },
         fingerprint: ["{{ default }}"],
       });
+    } else if (error instanceof SecretSensitiveRequestError) {
+      // The sanitized error keeps its generic message, stack and default
+      // grouping. Only its fixed-shape diagnostics are added.
+      const diagnostics = error.diagnostics;
+      sentryHandle.captureException(error, {
+        tags: {
+          ...tags,
+          secret_route_family: diagnostics.routeFamily,
+          http_method: diagnostics.method,
+          http_status: String(diagnostics.status),
+          error_kind: diagnostics.errorKind,
+          ...(diagnostics.errnoCode ? { errno_code: diagnostics.errnoCode } : {}),
+          ...(diagnostics.databaseErrorCode ? { db_error_code: diagnostics.databaseErrorCode } : {}),
+        },
+        contexts: { secret_sensitive_request: { ...diagnostics, originFrames: [...diagnostics.originFrames] } },
+        fingerprint: ["{{ default }}"],
+      });
     } else if (storageFailure) {
       // The original error keeps its default grouping; only the normalized
       // record is added, never the provider's request or response.
       sentryHandle.captureException(error, {
         tags: { ...tags, storage_operation: storageFailure.operation, storage_error_code: storageFailure.errorCode },
         contexts: { storage_failure: { ...storageFailure } },
+        fingerprint: ["{{ default }}"],
+      });
+    } else if (lockTimeout) {
+      // Holder evidence distinguishes contention from a stuck owner. The
+      // allowlisted record omits the owner's process id.
+      sentryHandle.captureException(error, {
+        tags: { ...tags, error_code: "workspace_restore_lock_timeout" },
+        contexts: { directory_merge_lock: { ...lockTimeout } },
         fingerprint: ["{{ default }}"],
       });
     } else if (reference) {
@@ -173,7 +218,8 @@ export interface RunFailureEvent {
   /** The agent's adapter type, or `"unknown"` when the agent row is absent. */
   agentAdapter: string;
   /** The run status that triggered this report. */
-  runStatus: RunFailureStatus;
+  runStatus: HeartbeatRunStatus;
+  failureSource?: "task_interruption";
   /** Bounded, redacted diagnostics selected by the run failure reporter. */
   diagnostics?: RunFailureDiagnostics;
   /** Recorded process exit evidence, when available. Validated before capture. */
@@ -206,8 +252,12 @@ function normalizeRunSignal(value: unknown): string | null {
  * change run control flow.
  *
  */
-export function captureRunFailure(event: RunFailureEvent): void {
-  if (!sentryHandle || readRunFailureReportingMode() === "off") return;
+export function captureRunFailure(event: RunFailureEvent): boolean {
+  return captureRunFailureEvent(event) !== null;
+}
+
+function captureRunFailureEvent(event: RunFailureEvent): string | null {
+  if (!sentryHandle || readRunFailureReportingMode() === "off") return null;
   const handle = sentryHandle;
   try {
     const errorCode = event.errorCode ?? "unknown";
@@ -219,6 +269,21 @@ export function captureRunFailure(event: RunFailureEvent): void {
       diagnostics?.exceptions.at(-1)?.code;
     const rootErrorCode = typeof rootCodeCandidate === "string" && /^[a-zA-Z][a-zA-Z0-9_]{1,99}$/.test(rootCodeCandidate)
       ? rootCodeCandidate : undefined;
+    // Without a usable root code, unrelated failures that share the error code,
+    // adapter and phase would collapse into one group. Fall back to the root
+    // exception's class name plus its HTTP status or numeric code. These are
+    // bounded values; the message stays out of the fingerprint.
+    const rootFallback: string[] = [];
+    const rootException = diagnostics?.exceptions.at(-1);
+    if (!rootErrorCode && rootException) {
+      if (typeof rootException.name === "string" && /^[A-Za-z_$][A-Za-z0-9_$]{0,99}$/.test(rootException.name)) {
+        rootFallback.push(`exception:${rootException.name}`);
+      }
+      if (rootException.status !== undefined) rootFallback.push(`status:${rootException.status}`);
+      else if (typeof rootException.code === "string" && /^-?[0-9]{1,10}$/.test(rootException.code)) {
+        rootFallback.push(`code:${rootException.code}`);
+      }
+    }
     const phase = diagnostics?.execution.failurePhase;
     const failurePhase = phase === "setup" || phase === "execute" ? phase : undefined;
     const contexts: Record<string, Record<string, unknown>> = {};
@@ -267,9 +332,10 @@ export function captureRunFailure(event: RunFailureEvent): void {
       exception.stack = typeof diagnostics?.adapter.stackPreview === "string"
         ? diagnostics.adapter.stackPreview : undefined;
     }
-    handle.captureException(exception, {
+    return handle.captureException(exception, {
       tags: {
         event_kind: "run_failure",
+        ...(event.failureSource ? { failure_source: event.failureSource } : {}),
         ...(rootErrorCode ? { root_error_code: rootErrorCode } : {}),
         ...(failurePhase ? { failure_phase: failurePhase } : {}),
         run_id: event.runId,
@@ -292,11 +358,65 @@ export function captureRunFailure(event: RunFailureEvent): void {
           signal: normalizeRunSignal(event.signal),
         },
       },
-      fingerprint: [errorCode, event.agentAdapter, ...(failurePhase ? [failurePhase] : []), ...(rootErrorCode ? [rootErrorCode] : [])],
+      fingerprint: [errorCode, event.agentAdapter, ...(failurePhase ? [failurePhase] : []), ...(rootErrorCode ? [rootErrorCode] : rootFallback)],
     });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("[paperclip] Sentry captureRunFailure failed", err);
+    return null;
+  }
+}
+
+const reportedTaskInterruptions = new Set<string>();
+const MAX_REPORTED_TASK_INTERRUPTIONS = 1_000;
+const TASK_INTERRUPTION_DELIVERY_RETRY_MS = 60_000;
+const pendingTaskInterruptions = new Map<string, { eventId: string; retryAt: number }>();
+const pendingTaskInterruptionEvents = new Map<string, string>();
+
+function forgetPendingTaskInterruption(key: string) {
+  const pending = pendingTaskInterruptions.get(key);
+  if (pending && pendingTaskInterruptionEvents.get(pending.eventId) === key) {
+    pendingTaskInterruptionEvents.delete(pending.eventId);
+  }
+  pendingTaskInterruptions.delete(key);
+}
+
+function confirmTaskInterruptionDelivery(eventId: string | undefined, statusCode: number | undefined) {
+  if (!eventId || statusCode === undefined || statusCode < 200 || statusCode >= 300) return;
+  const key = pendingTaskInterruptionEvents.get(eventId);
+  if (!key) return;
+  forgetPendingTaskInterruption(key);
+  reportedTaskInterruptions.add(key);
+  if (reportedTaskInterruptions.size > MAX_REPORTED_TASK_INTERRUPTIONS) {
+    reportedTaskInterruptions.delete(reportedTaskInterruptions.values().next().value!);
+  }
+}
+
+export function captureTaskInterruptionFailure(event: Pick<RunFailureEvent,
+  "companyId" | "agentId" | "taskId" | "runId" | "runStatus" | "agentAdapter"> & { intentId: string | null }): void {
+  const key = JSON.stringify([event.companyId, event.taskId, event.runId, event.intentId]);
+  if (reportedTaskInterruptions.has(key)) return;
+  const now = Date.now();
+  if ((pendingTaskInterruptions.get(key)?.retryAt ?? 0) > now) return;
+  for (const [pendingKey, pending] of pendingTaskInterruptions) {
+    if (pending.retryAt <= now) forgetPendingTaskInterruption(pendingKey);
+  }
+  const eventId = captureRunFailureEvent({
+    companyId: event.companyId,
+    agentId: event.agentId,
+    taskId: event.taskId,
+    runId: event.runId,
+    runStatus: event.runStatus,
+    agentAdapter: event.agentAdapter,
+    errorMessage: "Couldn’t finish this attempt. Your message is saved.",
+    errorCode: "task_attempt_failed",
+    failureSource: "task_interruption",
+  });
+  if (!eventId) return;
+  pendingTaskInterruptions.set(key, { eventId, retryAt: now + TASK_INTERRUPTION_DELIVERY_RETRY_MS });
+  pendingTaskInterruptionEvents.set(eventId, key);
+  if (pendingTaskInterruptions.size > MAX_REPORTED_TASK_INTERRUPTIONS) {
+    forgetPendingTaskInterruption(pendingTaskInterruptions.keys().next().value!);
   }
 }
 
@@ -341,7 +461,14 @@ export interface SentryInitOptions {
   sendDefaultPii: boolean;
   serverName: string;
   integrations: (defaults: Array<{ name: string }>) => Array<{ name: string }>;
-  beforeSend: typeof addSentryRunLinks;
+  beforeSend: typeof enrichServerEvent;
+}
+
+type ServerEvent = Parameters<typeof addSentryRunLinks>[0] & Parameters<typeof addDynamicImportProvenance>[0];
+
+/** The server's `beforeSend`: run navigation links, then dynamic-import provenance. */
+export async function enrichServerEvent<T extends ServerEvent>(event: T, hint?: ProvenanceHint): Promise<T> {
+  return addDynamicImportProvenance(await addSentryRunLinks(event), hint);
 }
 
 /**
@@ -360,7 +487,7 @@ export function buildSentryInitOptions(
     skipOpenTelemetrySetup: true,
     tracesSampleRate: 0,
     sendDefaultPii: false,
-    beforeSend: addSentryRunLinks,
+    beforeSend: enrichServerEvent,
     serverName: process.env.SENTRY_NAME || os.hostname(),
     integrations: (defaults: Array<{ name: string }>) => {
       const kept = defaults.filter(
@@ -409,6 +536,10 @@ async function bootstrapSentry(dsn: string): Promise<void> {
     const Sentry = await import("@sentry/node");
 
     Sentry.init(buildSentryInitOptions(dsn, Sentry));
+
+    Sentry.getClient?.()?.on("afterSendEvent", (event: { event_id?: string }, response?: { statusCode?: number }) => {
+      confirmTaskInterruptionDelivery(event.event_id, response?.statusCode);
+    });
 
     sentryHandle = {
       captureException: (...args) => Sentry.captureException(...args),

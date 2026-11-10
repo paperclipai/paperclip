@@ -5,6 +5,7 @@ import { sanitizeJson } from "./redaction.js";
 import { createHash } from "node:crypto";
 import { firstTaskScenario } from "./first-task-cases.js";
 import { completionDelivery } from "./completion-updates.js";
+import { APPROVAL_HISTORY_CASE, approvalHistoryWriter, gradeApprovalHistory } from "./first-task-approval-history.js";
 export type Row = { id: string; [key: string]: any };
 export interface FirstTaskCheckpoint {
   id: string;
@@ -14,6 +15,10 @@ export interface FirstTaskCheckpoint {
     | "response"
     | "clarified"
     | "revised"
+    | "plan-accepted"
+    | "hiring-proposed"
+    | "hiring-accepted"
+    | "execution-proposed"
     | "accepted"
     | "rejected"
     | "finished";
@@ -311,7 +316,7 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
       "Propose a task for the concrete request",
       [first.id],
     );
-  if (scenario.opening === "plan" || e.caseId === "interview-plan-accept") {
+  if (scenario.opening === "plan" || ["interview-plan-accept", APPROVAL_HISTORY_CASE].includes(e.caseId)) {
     const proposal =
       e.checkpoints.find((c) => c.phase === "clarified") ?? first;
     add(
@@ -328,7 +333,9 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
       c.phase !== "opening" &&
       (!approval || Date.parse(c.at) < Date.parse(approval.at)),
   );
-  if (scenario.opening !== "ordinary") {
+  if (e.caseId === APPROVAL_HISTORY_CASE) {
+    checks.push(...gradeApprovalHistory(e, scenario.marker));
+  } else if (scenario.opening !== "ordinary") {
     add(
       "no-premature-work",
       before.every(
@@ -402,12 +409,14 @@ export function gradeFirstTask(e: FirstTaskEvidence): FirstTaskCheck[] {
       );
     } else {
       const children = extras(last);
+      const expectedAssignee = e.caseId === APPROVAL_HISTORY_CASE
+        ? last.agents.find(agent => agent.name === approvalHistoryWriter(scenario.marker))?.id : e.agentId;
       add(
         "one-scoped-subtask",
         children.length === 1 &&
           children[0].parentId === e.onboardingIssueId &&
-          children[0].assigneeAgentId === e.agentId,
-        "Exactly one approved subtask belongs to this onboarding issue and agent",
+          Boolean(expectedAssignee) && children[0].assigneeAgentId === expectedAssignee,
+        "Exactly one approved subtask belongs to this onboarding issue and its intended agent",
         [last.id],
         notReached,
       );

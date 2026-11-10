@@ -6,12 +6,13 @@ export interface AgentRunnerAvailability {
   defaultRunner: AgentRunner;
 }
 
-export function paperclipRunnerProfileForHarness(harness: string): { provider: "codex" | "opencode" } | { provider: "acpx"; acpxAgent: "claude" | "pi" | "grok" } | undefined {
+export function paperclipRunnerProfileForHarness(harness: string): { provider: "codex" | "opencode" | "cursor_cloud" } | { provider: "acpx"; acpxAgent: "claude" | "pi" | "grok" } | undefined {
   if (harness === "codex_local") return { provider: "codex" };
   if (harness === "claude_local") return { provider: "acpx", acpxAgent: "claude" };
   if (harness === "pi_local") return { provider: "acpx", acpxAgent: "pi" };
   if (harness === "grok_local") return { provider: "acpx", acpxAgent: "grok" };
   if (harness === "opencode_local") return { provider: "opencode" };
+  if (harness === "cursor_cloud") return { provider: "cursor_cloud" };
   return undefined;
 }
 

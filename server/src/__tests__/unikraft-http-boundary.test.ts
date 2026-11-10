@@ -61,7 +61,7 @@ describe("Unikraft production HTTP boundary", () => {
     expect(p.received).toHaveLength(1);
     const [received] = p.received;
     expect(received.method).toBe(method);
-    expect(received.host).toMatch(new RegExp(`^api\\.${parameters.metro ?? "fra"}\\.unikraft\\.cloud:`));
+    expect(received.host).toMatch(new RegExp(`^api\\.${"metro" in parameters ? parameters.metro : "fra"}\\.unikraft\\.cloud:`));
     expect(received.contentType).toBe("application/json");
     expect(JSON.parse(received.body)).toEqual([{ name: "web" }]);
     if (method === "GET") expect(received.url).toBe("/v1/instances/log?name=web");

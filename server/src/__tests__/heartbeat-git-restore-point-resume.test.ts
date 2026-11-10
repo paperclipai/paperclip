@@ -68,7 +68,7 @@ describe.skipIf(!support.supported)("heartbeat resume of an idle-expired workspa
     await fs.rm(root, { recursive: true, force: true });
   }, 60_000);
 
-  async function seed(options: { closedParent?: boolean } = {}) {
+  async function seed(options: { closedParent?: boolean; terminalArchive?: boolean } = {}) {
     const home = path.join(root, randomUUID());
     vi.stubEnv("PAPERCLIP_HOME", home);
     vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
@@ -120,7 +120,11 @@ describe.skipIf(!support.supported)("heartbeat resume of an idle-expired workspa
     const unpushed = git(realized.cwd, "rev-parse", "HEAD");
     await fs.writeFile(path.join(realized.cwd, "notes.md"), "uncommitted notes\n");
     const workspace = () => db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId)).then(rows => rows[0]!);
-    const expiration = await expireReconstructableGitWorkspace(db, await workspace(), {
+    const expiration = options.terminalArchive ? await (async () => {
+      await db.update(executionWorkspaces).set({ status: "archived", cleanupReason: "issue_terminal",
+        closedAt: new Date("2020-01-01T00:00:00Z") }).where(eq(executionWorkspaces.id, workspaceId));
+      return null;
+    })() : await expireReconstructableGitWorkspace(db, await workspace(), {
       dryRun: false, expireBase: false, now: new Date(), idleCutoff: options.closedParent ? undefined : new Date(Date.now() - 7 * DAY_MS),
       restorePoint: { storage: getStorageService(), notBefore: new Date(Date.now() - DAY_MS), keyDurable: true },
     });
@@ -163,6 +167,28 @@ describe.skipIf(!support.supported)("heartbeat resume of an idle-expired workspa
     const workspace = await seeded.workspace();
     expect(workspace.status).not.toBe("archived");
     expect(workspace.metadata?.reopenPendingConsumption).toBeUndefined();
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue.executionWorkspaceId).toBe(seeded.workspaceId);
+  });
+
+  it("starts a reopened task in its terminal workspace with the saved files intact", async () => {
+    const seeded = await seed({ terminalArchive: true });
+    const archived = await seeded.workspace();
+    expect(archived).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
+    expect(archived.metadata?.gitCacheExpiration).toBeUndefined();
+    await seeded.queueRun();
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    const run = await waitForRun(heartbeat, seeded.runId);
+    await heartbeat.waitForRunExecutionDrain(seeded.runId);
+
+    expect(run).toMatchObject({ status: "succeeded" });
+    expect(adapterExecute).toHaveBeenCalledTimes(1);
+    expect(adapterExecute.mock.calls[0]?.[0]).toMatchObject({ context: { executionWorkspaceId: seeded.workspaceId,
+      paperclipWorkspace: { cwd: seeded.cwd } } });
+    expect(git(seeded.cwd, "rev-parse", "HEAD")).toBe(seeded.unpushed);
+    expect(await fs.readFile(path.join(seeded.cwd, "notes.md"), "utf8")).toBe("uncommitted notes\n");
+    expect(await seeded.workspace()).toMatchObject({ status: "active", closedAt: null });
     const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
     expect(issue.executionWorkspaceId).toBe(seeded.workspaceId);
   });

@@ -1,3 +1,4 @@
+import { PRIVATE_FRAMEWORK_REPORT, validatePrivateFrameworkReport, materializePrivateFrameworkAttachments } from "./private-framework-report.js";
 import { createHash } from "node:crypto";
 import { appendFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -95,6 +96,18 @@ export async function validateSealedInventory(directory: string, inventory: stri
   }
   await visit("");
   if (actual.size !== expected.size) throw new Error("Sealed evidence is incomplete");
+  if (treeKind === "standard") for (const row of receipt.files) {
+    if (row.path === PRIVATE_FRAMEWORK_REPORT || row.path.endsWith(`/${PRIVATE_FRAMEWORK_REPORT}`)) {
+      const cell = path.join(directory, row.path.slice(0, -PRIVATE_FRAMEWORK_REPORT.length));
+      if (id !== undefined) await validatePrivateFrameworkReport(cell);
+      else {
+        const metadata = JSON.parse(await readFile(path.join(directory, row.path), "utf8"));
+        const owner = metadata.canonicalExecutionId;
+        if (!context || typeof owner !== "string" || !context.executionIds.includes(owner)) throw new Error("Unbound canonical framework evidence");
+        await validatePrivateFrameworkReport(cell, path.join(context.root, "originals", manualCellKind(owner)), owner);
+      }
+    }
+  }
   return receipt;
 }
 export async function validateSealedOriginals(root: string, id: string, context?: ManualPrivateHandoff) {
@@ -158,9 +171,20 @@ async function downloadCell(env: NodeJS.ProcessEnv) {
     const originals = await validateSealedOriginals(directory, id, { ...identity, root: directory }), summary = cellCompleteness(id, originals);
     if (hash(JSON.stringify(identity.evidenceCompleteness)) !== hash(JSON.stringify(summary))
       || hash(JSON.stringify(receipt.evidenceCompleteness)) !== hash(JSON.stringify(summary))) throw new Error("Private evidence completeness receipt differs from archive");
-    await validateSealedInventory(path.join(directory, "sealed-results", "html-report"), "../result-evidence-inventory.json", undefined, "standard", { ...identity, root: directory });
-    await cp(path.join(directory, "sealed-results", "html-report"), path.join(selected, manualCellKind(id)), { recursive: true, errorOnExist: true, force: false });
+    await stageSealedPrivateCell(directory, selected, id, { ...identity, root: directory });
     await writeFile(path.join(root, `manual-cell-completeness-${index}.json`), JSON.stringify(summary), { mode: 0o600, flag: "wx" });
+  }
+}
+export async function stageSealedPrivateCell(directory: string, selected: string, id: string, context: ManualPrivateHandoff) {
+  await validateSealedOriginals(directory, id, context);
+  const inventory = await validateSealedInventory(path.join(directory, "sealed-results", "html-report"), "../result-evidence-inventory.json", undefined, "standard", context);
+  const destination = path.join(selected, manualCellKind(id));
+  await cp(path.join(directory, "sealed-results", "html-report"), destination, { recursive: true, errorOnExist: true, force: false });
+  for (const row of inventory.files) {
+    if (row.path === PRIVATE_FRAMEWORK_REPORT || row.path.endsWith(`/${PRIVATE_FRAMEWORK_REPORT}`)) {
+      const cell = path.join(destination, row.path.slice(0, -PRIVATE_FRAMEWORK_REPORT.length));
+      await materializePrivateFrameworkAttachments(cell, path.join(directory, "originals", manualCellKind(id)), id);
+    }
   }
 }
 async function verifyDownloads(env: NodeJS.ProcessEnv) {

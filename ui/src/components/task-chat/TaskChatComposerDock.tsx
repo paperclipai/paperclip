@@ -6,11 +6,13 @@ interface TaskChatComposerDockProps {
   mobile: boolean;
   streamlined: boolean;
   concealed?: boolean;
+  placeholder?: boolean;
 }
 
-export function TaskChatComposerDock({ children, mobile, streamlined, concealed = false }: TaskChatComposerDockProps) {
+export function TaskChatComposerDock({ children, mobile, streamlined, concealed = false, placeholder = false }: TaskChatComposerDockProps) {
   const dockRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
+    if (placeholder) return;
     const dock = dockRef.current;
     const thread = dock?.closest<HTMLElement>('[data-testid="task-chat-thread"]');
     if (!dock || !thread || !thread.closest(".coordinator-workspace")) return;
@@ -42,15 +44,15 @@ export function TaskChatComposerDock({ children, mobile, streamlined, concealed 
       observer?.disconnect();
       thread.style.removeProperty("--task-composer-dock-height");
     };
-  }, []);
+  }, [placeholder]);
   return <div
     ref={dockRef}
-    data-testid="task-chat-composer-dock"
+    data-testid={placeholder ? "task-chat-loading-composer" : "task-chat-composer-dock"}
     data-conversation-typography=""
-    inert={concealed}
-    aria-hidden={concealed || undefined}
+    inert={concealed || placeholder}
+    aria-hidden={concealed || placeholder || undefined}
     className={cn(
-      "flex max-w-(--tc-shell-max-w) shrink-0 flex-col gap-2",
+      "task-chat-composer-dock flex max-w-(--tc-shell-max-w) shrink-0 flex-col gap-2",
       concealed && "invisible",
       mobile
         ? cn("w-auto px-1 pb-1", streamlined ? "-mx-2" : "mx-2")

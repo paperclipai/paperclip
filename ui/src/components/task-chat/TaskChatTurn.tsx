@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { TaskChatRunHealthBanner } from "./TaskChatRunHealthBanner";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import { Check, ChevronRight, X } from "lucide-react";
 import { MarkdownBody } from "@/components/MarkdownBody";
@@ -108,6 +109,7 @@ export function TaskChatTurn({
                 : "Worked"}
           </span> : null}
         </div> : null}
+        <TaskChatRunHealthBanner failures={item.mcpStartupFailures ?? []} />
         {item.items.length > 0 ? (
           <div
             className="flex min-w-0 flex-col gap-2 py-1"
@@ -267,6 +269,7 @@ export function TaskChatTurn({
       ) : (
         header
       )}
+      <TaskChatRunHealthBanner failures={item.mcpStartupFailures ?? []} />
       <div
         className="tc-turn-fold"
         data-folded={folded ? "true" : "false"}

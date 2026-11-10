@@ -1,7 +1,10 @@
+import type { TaskCreationProvenance } from "./services/task-creation-provenance.js";
+
 export interface SentryRunReference {
   runId: string;
   companyId?: string;
   agentId?: string;
+  includeCreationProvenance?: boolean;
 }
 
 export interface SentryRunLinks {
@@ -10,6 +13,7 @@ export interface SentryRunLinks {
   agentId: string;
   taskId: string | null;
   taskIdentifier: string | null;
+  creationProvenance?: TaskCreationProvenance;
 }
 
 export type SentryRunLinkResolver = (reference: SentryRunReference) => Promise<SentryRunLinks | null>;
@@ -17,6 +21,7 @@ export type SentryRunLinkResolver = (reference: SentryRunReference) => Promise<S
 interface LinkableEvent {
   tags?: Record<string, string | number | boolean | bigint | symbol | null | undefined>;
   contexts?: Record<string, Record<string, unknown> | null | undefined>;
+  request?: { headers?: Record<string, string> };
 }
 
 let resolveRunLinks: SentryRunLinkResolver | null = null;
@@ -30,15 +35,21 @@ export function setSentryRunLinkResolver(resolver: SentryRunLinkResolver | null)
 
 /** Enrich only events already associated with a run. Never read a request URL or body. */
 export async function addSentryRunLinks<T extends LinkableEvent>(event: T): Promise<T> {
+  if (event.request?.headers) event.request = { ...event.request, headers: Object.fromEntries(
+    Object.entries(event.request.headers).filter(([key]) => key.toLowerCase() !== "x-paperclip-source-run-token"),
+  ) };
+  const failure = event.tags?.event_kind === "run_failure";
+  if (failure) event.tags = { ...event.tags, automation_origin_status: "unknown", automation_routine_ids: "unknown", task_shareable: "unknown" };
   const runId = event.tags?.run_id ?? event.contexts?.adapter_stop?.runId;
   const resolver = resolveRunLinks;
   if (!resolver || typeof runId !== "string" || !UUID.test(runId)) return event;
-  let base: URL;
+  let base: URL | null = null;
   try {
     base = new URL(process.env.PAPERCLIP_PUBLIC_URL ?? "");
     if (!["http:", "https:"].includes(base.protocol) || base.username || base.password ||
-        base.search || base.hash || base.pathname !== "/") return event;
-  } catch { return event; }
+        base.search || base.hash || base.pathname !== "/") base = null;
+  } catch {}
+  if (!base && !failure) return event;
 
   const companyId = event.tags?.company_id;
   const agentId = event.tags?.agent_id;
@@ -50,7 +61,8 @@ export async function addSentryRunLinks<T extends LinkableEvent>(event: T): Prom
   if (pendingLookups.size >= 8) return event;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const lookup = resolver({ runId, ...(companyId ? { companyId } : {}), ...(agentId ? { agentId } : {}) });
+    const lookup = resolver({ runId, ...(companyId ? { companyId } : {}), ...(agentId ? { agentId } : {}),
+      ...(failure ? { includeCreationProvenance: true } : {}) });
     pendingLookups.add(lookup);
     void lookup.then(() => pendingLookups.delete(lookup), () => pendingLookups.delete(lookup));
     // Optional navigation metadata must not hold an error report behind a slow
@@ -59,8 +71,18 @@ export async function addSentryRunLinks<T extends LinkableEvent>(event: T): Prom
       lookup,
       new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 1_000); }),
     ]);
-    if (!links || !/^[A-Z][A-Z0-9]*$/.test(links.companyPrefix) || !UUID.test(links.agentId) ||
+    if (!links || !UUID.test(links.companyId) || !UUID.test(links.agentId) ||
         (companyId && links.companyId !== companyId) || (agentId && links.agentId !== agentId)) return event;
+    const provenance = links.creationProvenance;
+    if (failure && provenance && Array.isArray(provenance.routineIds) && provenance.routineIds.every(id => typeof id === "string" && UUID.test(id))) {
+      const routineIds = [...new Set(provenance.routineIds.map(id => id.toLowerCase()))].sort();
+      const status = provenance.status === "complete" && routineIds.length <= 5 ? "complete" : "unknown";
+      event.tags = { ...event.tags, automation_origin_status: status,
+        automation_routine_ids: routineIds.slice(0, 5).join(",") || "none",
+        task_shareable: provenance.shareable === true ? "true" : provenance.shareable === false ? "false" : "unknown" };
+      event.contexts = { ...event.contexts, paperclip_creation: { status, routineIds: routineIds.slice(0, 100), shareable: provenance.shareable } };
+    }
+    if (!base || !/^[A-Z][A-Z0-9]*$/.test(links.companyPrefix)) return event;
     const prefix = `/${links.companyPrefix}`;
     const runUrl = new URL(`${prefix}/agents/${links.agentId}/runs/${runId}`, base).href;
     const identifier = links.taskIdentifier;

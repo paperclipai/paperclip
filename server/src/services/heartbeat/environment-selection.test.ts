@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agents, companies, createDb, environments, heartbeatRuns, issues, projects, projectWorkspaces, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, type Db } from "@paperclipai/db";
@@ -125,6 +125,26 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     expect(result.persistedNativeExecutionInput?.binding.executionWorkspaceId).toBe(input.run.id);
   });
 
+  it.each(["preserved", "changed_binding", "changed_cwd"])("pins the verified Retry workspace during environment selection (%s)", async mode => {
+    const { input, issue, workspace } = await fixture();
+    const saved = await workspace();
+    await db.update(issues).set({ executionWorkspaceId: saved.id }).where(eq(issues.id, issue.id));
+    input.task.issueRef!.executionWorkspaceId = saved.id;
+    input.task.issueRef!.executionWorkspacePreference = null;
+    input.task.freshWorkspace = { mode: "resume_stopped_native_workspace", retryIntentId: randomUUID(),
+      sourceRunId: randomUUID(), workspaceId: saved.id, cwd: home };
+    if (mode === "changed_binding") input.task.issueRef!.executionWorkspaceId = (await workspace()).id;
+    if (mode === "changed_cwd") await executionWorkspaceService(db).update(saved.id, { cwd: join(home, "changed") });
+    if (mode !== "preserved") {
+      await expect(selectHeartbeatEnvironment(db, input)).rejects.toThrow("The saved Retry workspace binding changed.");
+      return;
+    }
+    const result = await selectHeartbeatEnvironment(db, input);
+    expect(result.requestedShouldReuseExisting).toBe(true);
+    expect(result.reusableExistingExecutionWorkspace).toMatchObject({ id: saved.id, cwd: home });
+    expect(result.nativeRecoveryExecutionWorkspaceId).toBeNull();
+  });
+
   it("does not make an archived issue workspace available for reuse", async () => {
     const { input, workspace } = await fixture();
     const saved = await workspace();
@@ -135,6 +155,25 @@ describe.skipIf(!support.supported)("heartbeat environment selection boundary", 
     expect(result.requestedShouldReuseExisting).toBe(true);
     expect(result.reusableExistingExecutionWorkspace).toBeNull();
     expect(result.requestedReusableExecutionWorkspaceConfig).toBeNull();
+  });
+
+  it("restores a reopened task's terminal workspace under its own admitted run", async () => {
+    const { input, issue, workspace } = await fixture();
+    const saved = await workspace();
+    await writeFile(join(home, "saved-work.txt"), "Retain the completed investigation\n");
+    await executionWorkspaceService(db).update(saved.id, { status: "archived", strategyType: "project_primary",
+      cleanupReason: "issue_terminal", closedAt: new Date("2020-01-01T00:00:00Z") });
+    await db.update(issues).set({ executionWorkspaceId: saved.id, executionWorkspacePreference: "reuse_existing" })
+      .where(eq(issues.id, issue.id));
+    input.task.issueRef!.executionWorkspaceId = saved.id;
+    input.task.issueRef!.executionWorkspacePreference = "reuse_existing";
+
+    const result = await selectHeartbeatEnvironment(db, input);
+
+    expect(result.reusableExistingExecutionWorkspace).toMatchObject({ id: saved.id, status: "active" });
+    expect(await readFile(join(home, "saved-work.txt"), "utf8")).toBe("Retain the completed investigation\n");
+    expect(await executionWorkspaceService(db).getStoredById(input.agent.companyId, saved.id))
+      .toMatchObject({ status: "active", closedAt: null, sourceIssueId: issue.id });
   });
 
   describe("workspaces removed by git cache expiration", () => {

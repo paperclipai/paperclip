@@ -106,8 +106,8 @@ function ProjectsToolbarSpecimen() {
   const [field, setField] = useState<ProjectSortField>("name");
   const [direction, setDirection] = useState<ProjectSortDir>("asc");
   const [action, setAction] = useState("");
-  return <Specimen title="Projects toolbar" source="ProjectsToolbar · shared project search, sort direction and Add Project action used by the Projects page.">
-    <ProjectsToolbar query={query} onQueryChange={setQuery} sortField={field} sortDir={direction} onSortChange={(nextField, nextDirection) => { setField(nextField); setDirection(nextDirection); }} onNewProject={() => setAction("Add Project requested · local preview only")} />
+  return <Specimen title="Projects toolbar" source="ProjectsToolbar · shared project search, sort direction and Create project action used by the Projects page.">
+    <ProjectsToolbar query={query} onQueryChange={setQuery} sortField={field} sortDir={direction} onSortChange={(nextField, nextDirection) => { setField(nextField); setDirection(nextDirection); }} onNewProject={() => setAction("Create project requested · local preview only")} />
     <output className="block text-xs" aria-live="polite">Search: {query || "All projects"} · Sort: {field} · Direction: {direction}{action ? ` · ${action}` : ""}</output>
   </Specimen>;
 }

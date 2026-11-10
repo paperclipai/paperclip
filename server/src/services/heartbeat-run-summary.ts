@@ -29,6 +29,53 @@ function readNumericField(record: Record<string, unknown>, key: string) {
   return key in record ? (record[key] ?? null) : undefined;
 }
 
+/**
+ * Splits a message around one `<proposed_plan>` block. The tags must sit on
+ * their own lines outside fenced code, so quoting or documenting the tag never
+ * creates a proposal.
+ */
+function splitProposedPlanBlock(value: string): { plan: string | null; rest: string; unclosedStart: number | null } {
+  const lines = value.split("\n");
+  let fence: string | null = null;
+  let start = -1;
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index]!.trim();
+    // Fences are tracked inside the block too, so a fenced example tag in
+    // the plan never opens or closes it.
+    const marker = /^(`{3,}|~{3,})/.exec(trimmed)?.[1];
+    if (marker) {
+      fence = fence === null ? marker[0]! : (trimmed.startsWith(fence) ? null : fence);
+      continue;
+    }
+    if (fence !== null) continue;
+    if (start < 0 && /^<proposed_plan>$/i.test(trimmed)) start = index;
+    else if (start >= 0 && /^<\/proposed_plan>$/i.test(trimmed)) {
+      return {
+        plan: lines.slice(start + 1, index).join("\n").trim(),
+        rest: [...lines.slice(0, start), ...lines.slice(index + 1)].join("\n").trim(),
+        unclosedStart: null,
+      };
+    }
+  }
+  // An opening tag outside fences that never closes: a cut-off preview.
+  return {
+    plan: null,
+    rest: value,
+    unclosedStart: start < 0 ? null : lines.slice(0, start).join("\n").length,
+  };
+}
+
+/**
+ * The posted reply leaves a proposal to its Plan document. A stored message
+ * preview can be cut inside the block; its cut-off remainder is hidden too.
+ */
+function withoutProposedPlanBlock(value: string): string {
+  const { plan, rest, unclosedStart } = splitProposedPlanBlock(value);
+  if (plan !== null) return rest;
+  if (!value.endsWith("…[truncated]") || unclosedStart === null) return value;
+  return value.slice(0, unclosedStart).trim();
+}
+
 function readCommentText(value: unknown) {
   if (typeof value !== "string") return null;
   return value.trim().length > 0 ? value : null;
@@ -229,9 +276,26 @@ export function isChatOriginPublicationCandidate(contextSnapshot: unknown): bool
  * solely for the compatibility fallback selected by the resolver. Other
  * channels and item kinds remain activity, never durable reply candidates.
  */
+/**
+ * Item ids whose `<proposed_plan>` block became a completed `plan.proposed`
+ * event. Only those replies leave the plan to its Plan document.
+ */
+export function completedPlanProposalIds(rows: readonly { payload: unknown }[]): Set<string> {
+  const ids = new Set<string>();
+  for (const row of rows) {
+    const payload = record(record(record(row.payload).prpEvent).payload);
+    if (payload.status === "completed" && typeof payload.proposalId === "string") {
+      ids.add(payload.proposalId);
+    }
+  }
+  return ids;
+}
+
 export function readCompletedAssistantMessageCandidate(input: {
   seq: number;
   prpEvent: unknown;
+  /** Item ids with a recorded proposal; other replies keep their plan text. */
+  proposedItemIds?: ReadonlySet<string>;
 }): CompletedFinalAgentMessageCandidate | null {
   const prpEvent = record(input.prpEvent);
   const payload = record(prpEvent.payload);
@@ -244,7 +308,15 @@ export function readCompletedAssistantMessageCandidate(input: {
   if (payload.channel !== "final" && payload.channel !== "unknown") {
     return null;
   }
-  const text = readCommentText(payload.text);
+  // A harness's `<proposed_plan>` block that became a recorded proposal is the
+  // task's Plan document and approval card; that reply keeps only the
+  // surrounding prose. Without a recorded proposal the reply keeps the plan.
+  const itemId = typeof prpEvent.itemId === "string" ? prpEvent.itemId
+    : typeof payload.itemId === "string" ? payload.itemId : null;
+  const proposed = itemId !== null && input.proposedItemIds?.has(itemId) === true;
+  const text = readCommentText(
+    typeof payload.text === "string" && proposed ? withoutProposedPlanBlock(payload.text) : payload.text,
+  );
   if (!text) return null;
   return {
     seq: input.seq,

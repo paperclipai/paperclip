@@ -126,6 +126,27 @@ describe("TaskChatQueuedMessages", () => {
     else expect(props.onInterrupt).toHaveBeenCalledOnce();
   });
 
+  it("shows a declined connection request as readable text, never its raw JSON receipt (BUG-08)", () => {
+    const receipt = JSON.stringify({ interactionId: "slack-1", kind: "connection_intent", status: "rejected",
+      payload: { serviceSlug: "slack", serviceName: "Slack" }, result: { outcome: "declined" } }, null, 2);
+    const entry = { ...queue.entries[0], canEdit: false, canDiscard: false,
+      comment: { ...queue.entries[0].comment, id: "slack-1", body: `Rejected: Connect Slack\n\n${receipt}` },
+      source: { kind: "interaction" as const, interactionId: "slack-1", interactionKind: "connection_intent",
+        summary: "Declined: Slack connection" } };
+    render({ queue: { ...queue, entries: [entry], steeringDisposition: "temporarily_unavailable" } });
+    const row = container.querySelector('[data-testid="task-chat-queued-message-slack-1"]')!;
+    const hoverAndLabels = [...row.querySelectorAll("[title], [aria-label]")]
+      .flatMap((element) => [element.getAttribute("title"), element.getAttribute("aria-label")])
+      .filter((text): text is string => Boolean(text));
+    expect(hoverAndLabels.length).toBeGreaterThan(0);
+    for (const text of hoverAndLabels) {
+      expect(text).not.toContain("{");
+      expect(text).not.toContain("interactionId");
+    }
+    expect(row.textContent).toContain("Declined: Slack connection");
+    expect(row.querySelector('[title="Declined: Slack connection"]')).not.toBeNull();
+  });
+
   it("reorders the complete queue and rewrites contiguous positions", () => {
     const next = reorderQueuedMessageEntries(
       queue.entries,

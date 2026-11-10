@@ -323,7 +323,7 @@ export function IssueMonitorComposerStrip({
     >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-start gap-2">
-          <Clock className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <Clock className={cn("mt-0.5 h-4 w-4 shrink-0", issue.displayStatus === "monitoring" ? "text-(--status-task-icon-monitoring)" : "text-muted-foreground")} aria-hidden="true" />
           <div className="flex min-w-0 flex-col gap-2">
             <div className="text-sm font-medium text-foreground">{copy.stripTitle}</div>
             {copy.pullRequestReview ? <IssuePullRequestLinks products={reviews} /> : null}

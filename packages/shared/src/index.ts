@@ -1,3 +1,4 @@
+export type { InboxMineSnapshot, InboxSourceError } from "./types/inbox-mine.js";
 export { CASE_HANDOFF_STATES, handoffCaseSchema, agentCaseHandoffSchema, doneCaseHandoffSchema, caseWorkflowDocumentTextSchema, caseInitialDocumentSchema, caseInitialDocumentsSchema, type CaseInitialDocument, type CaseHandoffState, type CaseHandoffDestinationKind, type AgentCaseHandoffInput, type DoneCaseHandoffInput, type HandoffCaseInput, type HandoffCaseResult, type CaseHandoff, type CaseWorkflowTransition } from "./case-handoffs.js";
 export * from "./slack-app-manifest.js";
 export { composioAppSetupSchema, composioAppsRefreshSchema, composioAppsSyncSchema, composioAppAccountSchema, type ComposioAppSetupInput, type ComposioAppSetupResult, type ComposioAppAccountInput, type ComposioAppAccount, type ComposioAppSnapshot, type ComposioAppSyncState, type ComposioAppsResponse } from "./composio-app-setup.js";
@@ -21,6 +22,7 @@ export {
   type RunnerGoalActionRequest,
   type RunnerGoalActionAccepted,
 } from "./runner-goal.js";
+export type { IssueContextCompaction, IssueContextUsage } from "./issue-context-usage.js";
 export { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./adapter-auth-check-code.js";
 export {
   CONNECTION_INTENT_AGENT_GUIDANCE,
@@ -294,7 +296,7 @@ export {
   recommendedDefaultsForApp,
   resolveConnectionMethodServerUrl,
 } from "./app-definitions.js";
-export { isConnectorFeatureEnabled } from "./connector-availability.js";
+export { isConnectorFeatureEnabled, nativeConnectorRequiresCustomerOAuthApp } from "./connector-availability.js";
 export { getAppDefinitionForApplicationKey } from "./connector-identity.js";
 export {
   connectionSetupStateForApp,
@@ -364,6 +366,7 @@ export {
   AGENT_ICON_NAMES,
   PROJECT_ICON_NAMES,
   ISSUE_STATUSES,
+  ISSUE_DISPLAY_STATUSES,
   ISSUE_SUMMARIES_MAX_IDS,
   INBOX_MINE_ISSUE_STATUSES,
   INBOX_MINE_ISSUE_STATUS_FILTER,
@@ -372,6 +375,7 @@ export {
   ISSUE_WORK_MODES,
   ISSUE_HARNESS_KINDS,
   MAX_ISSUE_REQUEST_DEPTH,
+  MAX_AGENT_TASK_HIERARCHY_DEPTH,
   SUMMARY_SLOT_SCOPE_KINDS,
   SUMMARY_SLOT_KEYS,
   SUMMARY_SLOT_STATUSES,
@@ -562,6 +566,7 @@ export {
   type AgentIconName,
   type ProjectIconName,
   type IssueStatus,
+  type IssueDisplayStatus,
   type IssuePriority,
   type IssueReviewPolicy,
   type IssueWorkMode,
@@ -1219,6 +1224,8 @@ export type {
   LegacyPlanDocument,
   IssueAttachment,
   IssueCreationSource,
+  IssueParentAdjustment,
+  IssueParentAdjustmentReason,
   IssueLabel,
   IssueTreeControlPreview,
   IssueTreeHold,
@@ -1464,6 +1471,7 @@ export type {
   ToolAppAttentionItem,
   ToolAppAttentionReason,
   ToolAppsAttentionResponse,
+  ToolConnectionReviewCounts,
   ToolActionRequestListItem,
   ToolActionRequestsResponse,
   ToolConnectionActivityResponse,
@@ -1524,6 +1532,7 @@ export type {
   ToolProfileSummary,
   ToolProfileStatus,
   ToolProfileWithDetails,
+  ToolProfileConfiguration,
   ToolRateLimitCounter,
   ToolRateLimitRule,
   ToolRateLimitWindowKind,
@@ -2879,3 +2888,8 @@ export {
   type RemoteWorkspaceAuthority,
   type RemoteWorkspaceRunReference,
 } from "./remote-workspace.js";
+
+export { readProviderFailure, type ProviderFailure } from "./provider-failure.generated.js";
+export type { BoardBootstrap, BoardBootstrapSession } from "./types/board-bootstrap.js";
+export { readBoardBootstrap } from "./board-bootstrap.js";
+export * from "./provider-rate-limits.js";

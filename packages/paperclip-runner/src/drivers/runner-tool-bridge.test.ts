@@ -11,6 +11,7 @@ import {
 } from "../contracts/completion-result.js";
 
 import {
+  RUNNER_TOOL_SCOPE_TOKEN_HEADER,
   canonicalRunnerToolName,
   startRunnerToolBridge,
   type RunnerToolBridge,
@@ -82,6 +83,33 @@ describe("runner semantic MCP bridge", () => {
         ],
       },
     });
+  });
+
+  it("checks scoped credentials again after a delayed body before dispatch", async () => {
+    let scope = "first", token = "first-scope-token", reads = 0;
+    const handler = vi.fn(async () => ({ ok: true }));
+    const bridge = await startRunnerToolBridge({ tools: [tool("documents.read")], handler,
+      sessionScope: () => scope, scopeToken: () => { reads++; return token; } });
+    bridges.push(bridge);
+    const headers = (value: string) => ({ Authorization: `Bearer ${bridge.secret}`, "content-type": "application/json", [RUNNER_TOOL_SCOPE_TOKEN_HEADER]: `Bearer ${value}` });
+    const initialize = (value: string) => fetch(bridge.url, { method: "POST", headers: headers(value), body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize" }) });
+    expect((await rpc(bridge, { id: 0, method: "initialize" })).status).toBe(401);
+    const first = await initialize(token); expect(first.status).toBe(200);
+    const firstSession = first.headers.get("mcp-session-id")!;
+    const previousReads = reads;
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "documents.read", arguments: { path: "note" } } });
+    let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+    const pending = fetch(bridge.url, { method: "POST", headers: { ...headers(token), "mcp-session-id": firstSession },
+      body: new ReadableStream<Uint8Array>({ start(controller) { bodyController = controller; controller.enqueue(new TextEncoder().encode(body.slice(0, 20))); } }),
+      duplex: "half" } as RequestInit);
+    await vi.waitFor(() => expect(reads).toBeGreaterThan(previousReads));
+    scope = "second"; token = "second-scope-token";
+    const second = await initialize(token); expect(second.status).toBe(200);
+    bodyController.enqueue(new TextEncoder().encode(body.slice(20))); bodyController.close();
+    expect((await pending).status).toBe(401);
+    expect(handler).not.toHaveBeenCalled();
+    const accepted = await fetch(bridge.url, { method: "POST", headers: { ...headers(token), "mcp-session-id": second.headers.get("mcp-session-id")! }, body });
+    expect(accepted.status).toBe(200); expect(handler).toHaveBeenCalledTimes(1);
   });
 
   it("keeps private operations callable but undiscoverable", async () => {

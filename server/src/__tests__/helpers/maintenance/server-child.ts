@@ -2,6 +2,7 @@ import { channel } from "node:diagnostics_channel";
 import { mock } from "node:test";
 import type { Db } from "@paperclipai/db";
 import type { Socket } from "node:net";
+import { observeMaintenanceIncomingHttp } from "./incoming-http-observation.js";
 
 const realTimeout = globalThis.setTimeout, realInterval = globalThis.setInterval, clearRealInterval = globalThis.clearInterval, realNow = Date.now;
 const fakeClock = process.env.PAPERCLIP_MAINTENANCE_FAKE_CLOCK === "true";
@@ -40,14 +41,42 @@ const observeRequest = () => { outgoingHttpRequests++; };
 channel("undici:request:create").subscribe(observeRequest);
 channel("http.client.request.start").subscribe(observeRequest);
 
+let workCapture: Awaited<ReturnType<typeof import('./idle-work-capture.js')['installMaintenanceIdleWorkCapture']>> | undefined;
+let databaseCapture: ReturnType<typeof import('@paperclipai/db/response-capture')['databaseResponseCaptureFromEnv']>;
+let incomingHttp: ReturnType<typeof observeMaintenanceIncomingHttp> | undefined;
 try {
+  // Must precede the announcement wrapper's first import of the real app graph.
+  if (process.env.PAPERCLIP_MAINTENANCE_IDLE_WORK_CAPTURE === '1') {
+    workCapture = await (await import('./idle-work-capture.js')).installMaintenanceIdleWorkCapture();
+  }
+  const announcement = process.env.PAPERCLIP_MAINTENANCE_ANNOUNCEMENT_FIXTURE === '1'
+    ? await (await import('./announcement-boundary.js')).installMaintenanceAnnouncementBoundary() : undefined;
   const { startServer } = await import("../../../index.js");
   const { idleWorkSnapshot, startTaskDrain, stopTaskDrain } = await import("../../../services/task-admission.js");
   const { getStartupRecoveryState } = await import("../../../startup-recovery-state.js");
   const server = await startServer();
+  if (workCapture) databaseCapture = (await import('@paperclipai/db/response-capture')).databaseResponseCaptureFromEnv();
+  const managedObservation = process.env.PAPERCLIP_MAINTENANCE_MANAGED_TENANT === '1' ? await (async () => {
+    const { loadConfig } = await import('../../../config.js');
+    const { isCloudManagedInstance } = await import('../../../services/cloud-instance.js');
+    const { idleApiActivity } = await import('../../../services/idle-api-activity.js');
+    const config = loadConfig();
+    return () => ({ isCloudManaged: isCloudManagedInstance(), deploymentMode: config.deploymentMode,
+      storageProvider: config.storageProvider, apiActivityActive: idleApiActivity.active() });
+  })() : undefined;
   const app = server.server.listeners("request")[0] as unknown as { locals: { paperclipDb: Db } };
+  try { incomingHttp = observeMaintenanceIncomingHttp(server.server); }
+  catch (error) {
+    try { await server.shutdown(); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError], "Incoming HTTP observation and owned startup cleanup failed"); }
+    throw error;
+  }
+  async function shutdownServer() {
+    try { await server.shutdown(); } finally { incomingHttp?.dispose(); }
+  }
+  try { announcement?.assertIntercepted(); } catch (error) { await shutdownServer(); throw error; }
   process.send?.({ kind: "ready", port: server.listenPort });
-  process.on("message", async (message: { id: number; command: string; ms?: number; issueUpdate?: { id: string; status: "done" }; orphanLease?: { companyId: string }; publication?: { companyId: string; scopeDigest: string; backupRoot: string; pendingRoot: string } }) => {
+  process.on("message", async (message: { id: number; command: string; ms?: number; issueUpdate?: { id: string; status: "done" }; orphanLease?: { companyId: string }; publication?: { companyId: string; scopeDigest: string; backupRoot: string; pendingRoot: string }; github?: { companyId?: string; connectionId?: string; grantId?: string } }) => {
     try {
       if (message.command === "snapshot" || message.command === "advance" || message.command === "drain" || message.command === "resume" || message.command === "freeze" || message.command === "realtime") {
         if (message.command === "freeze" && bootClock) { clearRealInterval(bootClock); bootClock = realInterval(() => mock.timers.tick(0), 10); }
@@ -59,7 +88,23 @@ try {
         if (message.command === "drain") startTaskDrain({ purpose: "idle" });
         if (message.command === "resume") stopTaskDrain();
         if (fakeClock) mock.timers.tick(0);
-        process.send?.({ id: message.id, kind: "snapshot", idle: idleWorkSnapshot(), startup: getStartupRecoveryState(), outgoingHttpRequests, network: network(), now: Date.now() });
+        process.send?.({ id: message.id, kind: "snapshot", idle: idleWorkSnapshot(), startup: getStartupRecoveryState(), outgoingHttpRequests, network: network(), incomingHttp: incomingHttp?.snapshot(), now: Date.now(), announcement: announcement?.snapshot(), managed: managedObservation?.(), workCapture: workCapture?.snapshot() });
+      } else if (message.command === "prepareGitHub" || message.command === "settleGitHub") {
+        const { prepareGitHubConfiguration, settleGitHubConfiguration } = await import("./github-configuration-producer.js");
+        const input = message.github;
+        if (!input) throw new Error("Missing GitHub fixture identity");
+        const result = message.command === "prepareGitHub"
+          ? await prepareGitHubConfiguration(app.locals.paperclipDb, input.companyId!)
+          : await settleGitHubConfiguration(app.locals.paperclipDb, { connectionId: input.connectionId!, grantId: input.grantId! });
+        process.send?.({ id: message.id, kind: "githubConfiguration", result });
+      } else if (message.command === "produceChatHistory") {
+        const { produceChatHistory } = await import("./chat-history-producer.js");
+        process.send?.({ id: message.id, kind: "chatHistory", result: await produceChatHistory(app.locals.paperclipDb) });
+      } else if (message.command === "trace") {
+        const { getStartupTracer } = await import("../../../instrumentation.js");
+        const span = getStartupTracer("paperclip.sleep-qualification").startSpan("sleep-qualification-stimulus");
+        span.end();
+        process.send?.({ id: message.id, kind: "traceEnded" });
       } else if (message.command === "createOrphanLease") {
         if (!message.orphanLease) throw new Error("Missing orphan lease fixture");
         const { environmentLeases } = await import("@paperclipai/db");
@@ -83,7 +128,20 @@ try {
         process.send?.({ id: message.id, kind: "published" });
       } else if (message.command === "shutdown") {
         if (fakeClock) runClock();
-        await server.shutdown();
+        if (workCapture) {
+          const failures: unknown[] = [];
+          let before: ReturnType<typeof workCapture.summary> | undefined;
+          try { before = workCapture.summary(); } catch (error) { failures.push(error); }
+          try { await shutdownServer(); } catch (error) { failures.unshift(error); }
+          // A passive flush failure must not replace the original shutdown error.
+          try { databaseCapture?.flush(); } catch (error) { failures.push(error); }
+          try {
+            await (await import('node:fs/promises')).writeFile((await import('node:path')).join(process.env.PAPERCLIP_HOME!, 'idle-work-capture-cleanup.json'), JSON.stringify({ before, after: workCapture.summary() }, null, 2));
+          } catch (error) { failures.push(error); }
+          finally { try { workCapture.dispose(); } catch (error) { failures.push(error); } }
+          if (failures.length > 1) throw new AggregateError(failures, 'Owned shutdown and passive evidence failed');
+          if (failures.length) throw failures[0];
+        } else await shutdownServer();
         if (bootClock) { clearRealInterval(bootClock); bootClock = undefined; }
         process.send?.({ id: message.id, kind: "stopped", outgoingHttpRequests });
         if (fakeClock) mock.timers.reset();
@@ -93,6 +151,16 @@ try {
     } catch (error) { process.send?.({ id: message.id, kind: "error", error: error instanceof Error ? error.stack : String(error) }); }
   });
 } catch (error) {
+  incomingHttp?.dispose();
+  if (workCapture) {
+    try {
+      // Existing bounded DB capture performs no SQL while flushing metadata.
+      databaseCapture ??= (await import('@paperclipai/db/response-capture')).databaseResponseCaptureFromEnv();
+      databaseCapture?.flush();
+      await (await import('node:fs/promises')).writeFile((await import('node:path')).join(process.env.PAPERCLIP_HOME!, 'idle-work-capture-startup-failure.json'), JSON.stringify(workCapture.summary(), null, 2));
+    } catch { console.warn('Passive startup evidence could not be persisted; original error preserved'); }
+    finally { try { workCapture.dispose(); } catch { console.warn('Passive capture cleanup failed; original startup error preserved'); } }
+  }
   if (bootClock) clearRealInterval(bootClock);
   process.send?.({ kind: "error", error: error instanceof Error ? error.stack : String(error) });
   process.exitCode = 1;

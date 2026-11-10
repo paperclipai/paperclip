@@ -145,3 +145,42 @@ second-line\" status=401`;
     expect(output).toContain(REDACTED_COMMAND_TEXT_VALUE);
   });
 });
+
+describe("redactCommandText on long runs", () => {
+  const jwt =
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+
+  function redactWithinTimeBudget(input: string) {
+    const startedAt = performance.now();
+    const output = redactCommandText(input);
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+    return output;
+  }
+
+  it("keeps redacting options, assignments, and tokens inside dash-separated runs", () => {
+    const cases = [
+      ["x--token flag-secret", `x--token ${REDACTED_COMMAND_TEXT_VALUE}`],
+      ["--x--token flag-secret", `--x--token ${REDACTED_COMMAND_TEXT_VALUE}`],
+      [
+        "a-b--api-key=assigned-secret --password 'quoted-secret'",
+        `a-b--api-key=${REDACTED_COMMAND_TEXT_VALUE} --password '${REDACTED_COMMAND_TEXT_VALUE}'`,
+      ],
+      ["prefix-MY_API_KEY=env-secret", `prefix-MY_API_KEY=${REDACTED_COMMAND_TEXT_VALUE}`],
+      [`--${jwt}`, `--${REDACTED_COMMAND_TEXT_VALUE}`],
+      [`session=${jwt}`, `session=${REDACTED_COMMAND_TEXT_VALUE}`],
+      ["my-token is here", "my-token is here"],
+    ];
+
+    for (const [input, expected] of cases) {
+      expect(redactCommandText(input)).toBe(expected);
+    }
+  });
+
+  it("scans long letter/digit and dash-separated runs in linear time", () => {
+    const base64Url = Buffer.from(Array.from({ length: 90_000 }, (_, index) => (index * 7919) % 256)).toString("base64url");
+    for (const run of ["a".repeat(120_000), "a-".repeat(60_000), "a--".repeat(40_000), base64Url]) {
+      expect(redactWithinTimeBudget(`${run} --token run-secret`)).toBe(`${run} --token ${REDACTED_COMMAND_TEXT_VALUE}`);
+      expect(redactWithinTimeBudget(`${run}--token run-secret`)).toBe(`${run}--token ${REDACTED_COMMAND_TEXT_VALUE}`);
+    }
+  });
+});

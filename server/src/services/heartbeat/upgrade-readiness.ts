@@ -1,7 +1,8 @@
 import type { Db } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
 import { remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
-import { inspectNativeRunnerUpgradeHeader } from "../native-runtime/native-runner-checkpoint.js";
+import { inspectNativeRunnerUpgradeHeader, NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES,
+  NATIVE_CHECKPOINT_INSPECTION_TOTAL_MAX_BYTES } from "../native-runtime/native-runner-checkpoint.js";
 import { readNativeWorkspaceSyncReference } from "../native-runtime/native-workspace-sync.js";
 import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "../native-runtime/native-runner-recovery-contract.js";
 import { currentNativeControllerIdentity } from "../native-runtime/native-restart-recovery.js";
@@ -30,7 +31,8 @@ export async function readUpgradeReadiness(db: Db, input: {
       r.runner_profile_json->'nativeWorkspaceSync' as workspace,
       r.runner_profile_json->'remoteWorkspace' as "remoteWorkspace",
       r.runner_profile_json ? 'remoteWorkspace' as "hasRemoteWorkspace", p.id as "pluginLeaseId",
-      case when pg_column_size(c.material) <= 262144 and sum(pg_column_size(c.material)) over () <= 8388608 then c.material else null end as material, (
+      case when pg_column_size(c.material) <= ${NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES}
+        and sum(pg_column_size(c.material)) over () <= ${NATIVE_CHECKPOINT_INSPECTION_TOTAL_MAX_BYTES} then c.material else null end as material, (
       r.runtime_mode = 'native' and a.adapter_type = 'paperclip_runner'
       and r.runner_instance_id is not null and r.native_session_id is not null
       and r.process_pid is not null and r.process_started_at is not null

@@ -89,8 +89,9 @@ the bounded waiting allowance is rejected without poisoning accepted batches.
 Transient network, 409, 429 and server errors receive bounded retries. A 412
 or a changed head fences the stale writer; a 409 alone does not prove ownership
 loss or conditional-write support. Live log messages and progress are published
-after storage confirmation. Finalization drains admitted writes before closing
-and hashing the stream. Logging failure reports incomplete persistence and
+after storage confirmation. Finalization rejects new enqueue calls and drains
+already-started bounded admissions, including calls waiting for capacity, before
+closing and hashing the stream. Logging failure reports incomplete persistence and
 leaves the final size/digest unknown rather than claiming a complete snapshot.
 The original progress projection remains coarsely throttled; concurrent batch
 completions share a single progress write.
@@ -239,6 +240,27 @@ chunks whose identities cannot be verified block publication as
 does not establish completeness. Publication checks that the original reference,
 completeness metadata, and source cursor have not changed. Keep the original
 volume and resolve blocked inventory before cutover.
+
+The offline ephemeral-enrollment process can also preserve unfinalized native
+local files as read-only `s3_archive` logs. This path requires
+`PAPERCLIP_EPHEMERAL_MIGRATION=true`, all old deployments stopped, no queued or
+running execution anywhere in the instance, and expired writer/finalizer leases.
+The global execution check runs at page boundaries; per-run ownership and
+metadata checks still fence every publication. New execution fails the page and
+enrollment, while verified copies remain available for a safe retry.
+It copies exact surviving bytes to a separate `<run>.archive` journal, checks
+that the local source did not change, and verifies the remote SHA-256 before
+switching the run's reference. It supports terminal `interrupted` runs as well.
+It does not treat an unproven mirror as an original file or ignore a recorded
+size/digest mismatch.
+
+An archive preserves historical evidence; it does not certify a complete native
+transcript. The run's status, canonical events, and original completion metadata
+remain unchanged. Archive readers do not append missing native events, and
+writers cannot reopen or modify the archive. Its source cursor remains zero.
+The normal background importer retains its strict native coverage checks.
+Rollbacks after enrollment require readers that support `s3_archive`.
+
 An interrupted trace import keeps an `s3-import-v1:` reference: reads still use
 the original local sidecars, while deletion and expiry retain responsibility for
 the staged object prefix. The automatic worker resumes the verified switch after restart or retry.

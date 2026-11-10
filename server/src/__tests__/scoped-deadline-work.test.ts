@@ -40,7 +40,7 @@ it("preserves a subsecond replacement deadline when the owner does not require p
 
 type Entry = { id: string; companyId: string; issueId: string; dueAt: number };
 
-function concurrentFixture(entries: Entry[], limit = 4, concurrent = true) {
+function concurrentFixture(entries: Entry[], limit = 4, concurrent = true, key?: (entry: Entry) => string | readonly string[]) {
   vi.useFakeTimers();
   const onError = vi.fn();
   const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
@@ -66,7 +66,7 @@ function concurrentFixture(entries: Entry[], limit = 4, concurrent = true) {
   coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => canRun, onError });
   const options = {
     queue: DELIVERY_QUEUES.nativeResponsePresentation,
-    concurrentChecks: concurrent ? { limit, key: (entry: Entry) => `${entry.companyId}:${entry.issueId}` } : undefined,
+    concurrentChecks: concurrent ? { limit, key: key ?? ((entry: Entry) => `${entry.companyId}:${entry.issueId}`) } : undefined,
     decodeScope: () => undefined,
     matches: () => true,
     load,
@@ -84,6 +84,88 @@ function concurrentFixture(entries: Entry[], limit = 4, concurrent = true) {
 }
 
 const entry = (id: string, issueId = id, companyId = "company"): Entry => ({ id, issueId, companyId, dueAt: 0 });
+
+it("merges transitive resource conflicts in candidate order without blocking independent work", async () => {
+  const keys: Record<string, string[]> = {
+    "1": ["issue:a", "endpoint:first", "endpoint:first"],
+    "2": ["issue:b", "endpoint:second"],
+    "3": ["issue:a", "endpoint:second"],
+    "4": ["issue:c", "endpoint:independent"],
+    "5": ["issue:without-endpoint"],
+    "6": ["issue:without-endpoint"],
+  };
+  const f = concurrentFixture([1, 2, 3, 4, 5, 6].map(id => entry(String(id))), 4, true, entry => keys[entry.id]);
+  try {
+    await vi.waitFor(() => expect(f.started).toEqual(["1", "4", "5"]), { timeout: 100 });
+    f.release("4"); f.release("5");
+    await vi.waitFor(() => expect(f.started).toContain("6"), { timeout: 100 });
+    expect(f.started).not.toContain("2");
+    f.release("1");
+    await vi.waitFor(() => expect(f.started).toContain("2"), { timeout: 100 });
+    expect(f.started).not.toContain("3");
+    f.release("2");
+    await vi.waitFor(() => expect(f.started).toContain("3"), { timeout: 100 });
+    expect(f.started.filter(id => ["1", "2", "3"].includes(id))).toEqual(["1", "2", "3"]);
+  } finally { f.releaseAll(); await f.worker.ready; }
+  expect(f.onError).not.toHaveBeenCalled();
+  expect(coordinator!.nextWakeAt()).toBeNull();
+});
+
+it("retains unstarted resource siblings through drain and resumes without reconstruction", async () => {
+  const f = concurrentFixture([entry("1"), entry("2"), entry("3")], 4, true,
+    entry => [entry.issueId, ...(entry.id === "3" ? ["independent"] : ["shared-endpoint"])]);
+  try {
+    await vi.waitFor(() => expect(f.started).toEqual(["1", "3"]), { timeout: 100 });
+    f.pause(); f.releaseAll(); await f.worker.ready;
+    expect(f.started).not.toContain("2");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(f.started).not.toContain("2");
+    f.resume(); await vi.advanceTimersByTimeAsync(1);
+    expect(f.started).toEqual(["1", "3", "2"]);
+    expect(f.load).toHaveBeenCalledOnce();
+    expect(f.onError).not.toHaveBeenCalled();
+  } finally { f.releaseAll(); await f.worker.ready; }
+});
+
+it("retains an in-flight rescope and admits a bridging newcomer once after active groups settle", async () => {
+  const keys: Record<string, string[]> = {
+    "1": ["issue:a", "endpoint:first"], "2": ["issue:b", "endpoint:second"],
+    "3": ["issue:a", "endpoint:second"],
+  };
+  const f = concurrentFixture([entry("1"), entry("2")], 4, true, entry => keys[entry.id]);
+  try {
+    await vi.waitFor(() => expect(f.started).toEqual(["1", "2"]), { timeout: 100 });
+    f.entries.push(entry("3")); f.worker.invalidate("new-scope");
+    f.release("1");
+    await vi.waitFor(() => expect(f.active.has("1")).toBe(false), { timeout: 100 });
+    expect(f.load).toHaveBeenCalledOnce();
+    expect(f.started).not.toContain("3");
+    f.release("2"); await f.worker.ready;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(f.load).toHaveBeenCalledTimes(2);
+    expect(f.started).toEqual(["1", "2", "3"]);
+  } finally { f.releaseAll(); await vi.advanceTimersByTimeAsync(1); await f.worker.ready; }
+  expect(f.started.filter(id => id === "3")).toHaveLength(1);
+  expect(f.onError).not.toHaveBeenCalled();
+});
+
+it("serializes a shared principal across endpoints while unrelated resources progress", async () => {
+  const keys: Record<string, string[]> = {
+    "1": ["issue:a", "endpoint:a", "principal:shared"],
+    "2": ["issue:b", "endpoint:b", "principal:shared"],
+    "3": ["issue:c", "endpoint:c", "principal:independent"],
+  };
+  const f = concurrentFixture([entry("1"), entry("2"), entry("3")], 4, true, entry => keys[entry.id]);
+  try {
+    await vi.waitFor(() => expect(f.started).toEqual(["1", "3"]), { timeout: 100 });
+    f.release("3");
+    await vi.waitFor(() => expect(f.active.has("3")).toBe(false), { timeout: 100 });
+    expect(f.started).not.toContain("2");
+    f.release("1");
+    await vi.waitFor(() => expect(f.started).toEqual(["1", "3", "2"]), { timeout: 100 });
+  } finally { f.releaseAll(); await f.worker.ready; }
+  expect(f.onError).not.toHaveBeenCalled();
+});
 
 it("checks independent tasks concurrently with a bounded number of active checks", async () => {
   const f = concurrentFixture(Array.from({ length: 6 }, (_, index) => entry(String(index))));
@@ -157,22 +239,23 @@ it("retains unstarted checks through drain and resumes without idle discovery re
   expect(f.onError).not.toHaveBeenCalled();
 });
 
-it("stops starting checks and awaits every admitted check during shutdown", async () => {
-  const f = concurrentFixture(Array.from({ length: 6 }, (_, index) => entry(String(index))));
+it.each(["task", "resources"] as const)("stops starting checks and awaits every admitted %s check during shutdown", async mode => {
+  const f = concurrentFixture(Array.from({ length: 6 }, (_, index) => entry(String(index))), 4, true,
+    mode === "resources" ? entry => [entry.issueId, `endpoint:${Number(entry.id) % 2}`] : undefined);
   let stopped = false;
   let stop: Promise<void> | undefined;
   try {
-    await vi.waitFor(() => expect(f.started).toHaveLength(4), { timeout: 100 });
+    await vi.waitFor(() => expect(f.started).toHaveLength(mode === "resources" ? 2 : 4), { timeout: 100 });
     stop = coordinator!.stop().then(() => { stopped = true; });
     expect(f.signals.every(signal => signal.aborted)).toBe(true);
     expect(stopped).toBe(false);
     f.release("0");
     await vi.waitFor(() => expect(f.active.has("0")).toBe(false), { timeout: 100 });
     expect(stopped).toBe(false);
-    expect(f.started).toHaveLength(4);
+    expect(f.started).toHaveLength(mode === "resources" ? 2 : 4);
   } finally { f.releaseAll(); await f.worker.ready; await stop; }
   expect(stopped).toBe(true);
-  expect(f.started).toHaveLength(4);
+  expect(f.started).toHaveLength(mode === "resources" ? 2 : 4);
 });
 
 it("keeps failures isolated and retries their deadline without repeating successful checks", async () => {
@@ -298,7 +381,7 @@ it("keeps an exact deadline and late reconstruction debt with concurrency enable
 
 it("coalesces broad reconstruction without delaying an exact object hint or saved deadline", async () => {
   vi.useFakeTimers();
-  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
   coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError: vi.fn() });
   const now = Date.now();
   let dueAt = now + 60_000;
@@ -331,4 +414,167 @@ it("coalesces broad reconstruction without delaying an exact object hint or save
   expect(coordinator.nextWakeAt()).toBeNull();
   await vi.advanceTimersByTimeAsync(120_000);
   expect(load).toHaveBeenCalledTimes(4); expect(check).toHaveBeenCalledOnce();
+});
+
+it("admits saved deadlines that come due behind a slow check without overlapping its resource", async () => {
+  vi.useFakeTimers();
+  const onError = vi.fn();
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError });
+  const now = Date.now();
+  const started: string[] = [];
+  let releaseSlow!: () => void;
+  const slow = new Promise<void>(resolve => { releaseSlow = resolve; });
+  const retries = new Map<string, number>();
+  const check = vi.fn(async (item: Entry, signal?: AbortSignal) => {
+    started.push(item.id);
+    if (item.id === "slow") { await slow; return null; }
+    // A failed attempt saves a retry 30 seconds later, three attempts in all.
+    const count = (retries.get(item.id) ?? 0) + 1;
+    retries.set(item.id, count);
+    expect(signal?.aborted).toBe(false);
+    return count < 3 ? { ...item, dueAt: Date.now() + 30_000 } : null;
+  });
+  const worker = registerScopedDeadlineWork(coordinator, {
+    queue: DELIVERY_QUEUES.nativeResponsePresentation,
+    concurrentChecks: { limit: 4, key: (item: Entry) => item.issueId, admitDueWhileActive: true },
+    decodeScope: () => undefined,
+    matches: () => true,
+    load: async () => [
+      { id: "slow", issueId: "shared", companyId: "company", dueAt: now },
+      { id: "retrying", issueId: "other", companyId: "company", dueAt: now },
+      // Same resource as the slow check: it must stay queued behind it.
+      { id: "sibling", issueId: "shared", companyId: "company", dueAt: now + 10_000 },
+    ],
+    check,
+  }, () => true);
+  try {
+    await vi.advanceTimersByTimeAsync(1);
+    expect(new Set(started)).toEqual(new Set(["slow", "retrying"]));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(retries.get("retrying")).toBe(2);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(retries.get("retrying")).toBe(3);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(started).not.toContain("sibling");
+    releaseSlow();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(started.filter(id => id === "sibling")).toHaveLength(1);
+  } finally { releaseSlow(); await worker.ready; }
+  expect(started.filter(id => id === "slow")).toHaveLength(1);
+  expect(retries.get("retrying")).toBe(3);
+  expect(onError).not.toHaveBeenCalled();
+});
+
+it("admits a later deadline when the pass starts with only one slow resource due", async () => {
+  vi.useFakeTimers();
+  const onError = vi.fn();
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError });
+  const now = Date.now();
+  const started: string[] = [];
+  let releaseSlow!: () => void;
+  const slow = new Promise<void>(resolve => { releaseSlow = resolve; });
+  const worker = registerScopedDeadlineWork(coordinator, {
+    queue: DELIVERY_QUEUES.nativeResponsePresentation,
+    concurrentChecks: { limit: 4, key: (item: Entry) => item.issueId, admitDueWhileActive: true },
+    decodeScope: () => undefined,
+    matches: () => true,
+    load: async () => [
+      { id: "slow", issueId: "a", companyId: "company", dueAt: now },
+      { id: "retry", issueId: "b", companyId: "company", dueAt: now + 30_000 },
+    ],
+    check: async (item: Entry) => { started.push(item.id); if (item.id === "slow") await slow; return null; },
+  }, () => true);
+  try {
+    await vi.advanceTimersByTimeAsync(1);
+    expect(started).toEqual(["slow"]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(started).toEqual(["slow", "retry"]);
+  } finally { releaseSlow(); await worker.ready; }
+  expect(onError).not.toHaveBeenCalled();
+});
+
+it("never admits a later entry between queued siblings that share its resource", async () => {
+  vi.useFakeTimers();
+  const onError = vi.fn();
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError });
+  const now = Date.now();
+  const started: string[] = [];
+  const active = new Set<string>();
+  const overlaps: string[] = [];
+  const releases = new Map<string, () => void>();
+  const worker = registerScopedDeadlineWork(coordinator, {
+    queue: DELIVERY_QUEUES.nativeResponsePresentation,
+    concurrentChecks: { limit: 4, key: (item: Entry) => item.issueId, admitDueWhileActive: true },
+    decodeScope: () => undefined,
+    matches: () => true,
+    load: async () => [
+      { id: "a", issueId: "x", companyId: "company", dueAt: now },
+      { id: "b", issueId: "x", companyId: "company", dueAt: now },
+      { id: "c", issueId: "x", companyId: "company", dueAt: now + 10_000 },
+      // Keeps the pass open so an idle slot waits to admit "c".
+      { id: "hold", issueId: "y", companyId: "company", dueAt: now },
+      // Finishes at once, leaving its slot idle and waiting for "c".
+      { id: "quick", issueId: "z", companyId: "company", dueAt: now },
+    ],
+    check: async (item: Entry) => {
+      if (item.id === "quick") return null;
+      started.push(item.id);
+      for (const other of active) if (other !== "hold" && item.id !== "hold") overlaps.push(`${other}+${item.id}`);
+      active.add(item.id);
+      await new Promise<void>(resolve => releases.set(item.id, resolve));
+      active.delete(item.id);
+      return null;
+    },
+  }, () => true);
+  try {
+    await vi.advanceTimersByTimeAsync(1);
+    expect(new Set(started)).toEqual(new Set(["a", "hold"]));
+    await vi.advanceTimersByTimeAsync(10_000);
+    releases.get("a")!();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(started.filter(id => id !== "hold")).toEqual(["a", "b"]);
+    releases.get("b")!();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(started.filter(id => id !== "hold")).toEqual(["a", "b", "c"]);
+    releases.get("c")!();
+  } finally { for (const resolve of releases.values()) resolve(); await vi.advanceTimersByTimeAsync(1); await worker.ready; }
+  expect(overlaps).toEqual([]);
+  expect(onError).not.toHaveBeenCalled();
+});
+
+it("wakes an idle admission slot during shutdown and starts nothing new", async () => {
+  vi.useFakeTimers();
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError: vi.fn() });
+  const now = Date.now();
+  const started: string[] = [];
+  let releaseSlow!: () => void;
+  const slow = new Promise<void>(resolve => { releaseSlow = resolve; });
+  const worker = registerScopedDeadlineWork(coordinator, {
+    queue: DELIVERY_QUEUES.nativeResponsePresentation,
+    concurrentChecks: { limit: 4, key: (item: Entry) => item.issueId, admitDueWhileActive: true },
+    decodeScope: () => undefined,
+    matches: () => true,
+    load: async () => [
+      { id: "slow", issueId: "a", companyId: "company", dueAt: now },
+      { id: "later", issueId: "b", companyId: "company", dueAt: now + 60_000 },
+    ],
+    check: async (item: Entry) => { started.push(item.id); if (item.id === "slow") await slow; return null; },
+  }, () => true);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(started).toEqual(["slow"]);
+  let stopped = false;
+  const stopping = coordinator.stop().then(() => { stopped = true; });
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(stopped).toBe(false);
+  expect(started).toEqual(["slow"]);
+  releaseSlow();
+  await vi.advanceTimersByTimeAsync(1);
+  await stopping;
+  expect(stopped).toBe(true);
+  expect(started).toEqual(["slow"]);
+  await worker.ready;
 });

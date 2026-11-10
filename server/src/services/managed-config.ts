@@ -49,7 +49,11 @@ export interface ManagedInstanceConfig {
   /** App feature-catalog version the document was validated against. */
   catalogVersion: string;
   features: Readonly<Partial<Record<ManagedExperimentalFeatureKey, boolean>>>;
-  plugins: { readonly autoInstall: readonly string[] };
+  plugins: {
+    readonly autoInstall: readonly string[];
+    readonly workerEnv?: Readonly<Record<string, readonly string[]>>;
+    readonly enabledCompanies?: Readonly<Record<string, readonly string[]>>;
+  };
   /** Sandbox environments the control plane provisions at boot (empty when the section is absent). */
   environments: readonly ManagedEnvironmentSpec[];
 }
@@ -81,6 +85,12 @@ export interface ManagedEnvironmentSpec {
  * platform-provisioned environment responses on managed instances.
  */
 export const SECRET_LIKE_CONFIG_KEY_PATTERN = /(api[-_]?key|token|secret|password|credential)/i;
+
+const WORKER_ENV_NAME_PATTERN = /^[A-Z][A-Z0-9_]*$/;
+const COMPANY_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+const WORKER_ENV_DENIED_NAME_PATTERN =
+  /(^|_)(AWS|CREDENTIAL|CREDENTIALS|DATABASE|DSN|JWT|KEY|KEYS|PASSWORD|POSTGRES|PRIVATE|SECRET|SECRETS|SIGNING|TOKEN)(_|$)|^(DB|DYLD|LD|NODE)_|^(PATH|PAPERCLIP_MANAGED_CONFIG)$/;
 
 function findSecretLikeConfigKey(value: Record<string, unknown>, path: string): string | null {
   for (const [key, child] of Object.entries(value)) {
@@ -224,8 +234,8 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
     fail(`"plugins" must be an object (got ${describeJsonValue(doc.plugins)})`);
   }
   for (const key of Object.keys(doc.plugins)) {
-    if (key !== "autoInstall") {
-      fail(`"plugins" has unknown key "${key}" (allowed: autoInstall)`);
+    if (key !== "autoInstall" && key !== "workerEnv" && key !== "enabledCompanies") {
+      fail(`"plugins" has unknown key "${key}" (allowed: autoInstall, workerEnv, enabledCompanies)`);
     }
   }
   const rawAutoInstall = doc.plugins.autoInstall;
@@ -245,6 +255,63 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
       fail(`"plugins.autoInstall" has duplicate entry "${entry}"`);
     }
     autoInstall.push(entry);
+  }
+
+  let workerEnv: Record<string, readonly string[]> | undefined;
+  if (doc.plugins.workerEnv !== undefined) {
+    if (!isPlainObject(doc.plugins.workerEnv)) {
+      fail(`"plugins.workerEnv" must be an object mapping plugin key → variable names (got ${describeJsonValue(doc.plugins.workerEnv)})`);
+    }
+    workerEnv = Object.create(null) as Record<string, readonly string[]>;
+    for (const [key, names] of Object.entries(doc.plugins.workerEnv)) {
+      if (!autoInstall.includes(key)) {
+        fail(`"plugins.workerEnv" key "${key}" is not in "plugins.autoInstall"; a grant requires its plugin to be provisioned`);
+      }
+      if (!Array.isArray(names) || names.length === 0) {
+        fail(`"plugins.workerEnv.${key}" must be a non-empty array of variable names (got ${describeJsonValue(names)})`);
+      }
+      const granted: string[] = [];
+      for (const name of names) {
+        if (typeof name !== "string" || !WORKER_ENV_NAME_PATTERN.test(name)) {
+          fail(`"plugins.workerEnv.${key}" entries must be uppercase variable names (got ${describeJsonValue(name)})`);
+        }
+        if (WORKER_ENV_DENIED_NAME_PATTERN.test(name)) {
+          fail(`"plugins.workerEnv.${key}" must not grant host credential or loader variable "${name}"`);
+        }
+        if (granted.includes(name)) {
+          fail(`"plugins.workerEnv.${key}" has duplicate entry "${name}"`);
+        }
+        granted.push(name);
+      }
+      workerEnv[key] = Object.freeze(granted);
+    }
+  }
+
+  let enabledCompanies: Record<string, readonly string[]> | undefined;
+  if (doc.plugins.enabledCompanies !== undefined) {
+    if (!isPlainObject(doc.plugins.enabledCompanies)) {
+      fail(`"plugins.enabledCompanies" must be an object mapping plugin key → company ids (got ${describeJsonValue(doc.plugins.enabledCompanies)})`);
+    }
+    enabledCompanies = Object.create(null) as Record<string, readonly string[]>;
+    for (const [key, ids] of Object.entries(doc.plugins.enabledCompanies)) {
+      if (!autoInstall.includes(key)) {
+        fail(`"plugins.enabledCompanies" key "${key}" is not in "plugins.autoInstall"; enabling a company requires its plugin to be provisioned`);
+      }
+      if (!Array.isArray(ids) || ids.length === 0) {
+        fail(`"plugins.enabledCompanies.${key}" must be a non-empty array of company ids (got ${describeJsonValue(ids)})`);
+      }
+      const companyIds: string[] = [];
+      for (const id of ids) {
+        if (typeof id !== "string" || !COMPANY_ID_PATTERN.test(id)) {
+          fail(`"plugins.enabledCompanies.${key}" entries must be lowercase company UUIDs (got ${describeJsonValue(id)})`);
+        }
+        if (companyIds.includes(id)) {
+          fail(`"plugins.enabledCompanies.${key}" has duplicate entry "${id}"`);
+        }
+        companyIds.push(id);
+      }
+      enabledCompanies[key] = Object.freeze(companyIds);
+    }
   }
 
   // `environments` is OPTIONAL, unlike `features` and `plugins`: documents
@@ -332,7 +399,11 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
     mode: "cloud",
     catalogVersion: doc.catalogVersion,
     features: Object.freeze(features),
-    plugins: Object.freeze({ autoInstall: Object.freeze(autoInstall) }),
+    plugins: Object.freeze({
+      autoInstall: Object.freeze(autoInstall),
+      ...(workerEnv ? { workerEnv: Object.freeze(workerEnv) } : {}),
+      ...(enabledCompanies ? { enabledCompanies: Object.freeze(enabledCompanies) } : {}),
+    }),
     environments: Object.freeze(environmentSpecs),
   }) as ManagedInstanceConfig;
 }

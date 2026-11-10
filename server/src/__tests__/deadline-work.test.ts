@@ -16,7 +16,7 @@ it.each([
 ])("preserves $due continuation with $spacing ms minimum spacing and disarms after settlement", async ({ due, spacing, delay }) => {
   vi.useFakeTimers();
   const onError = vi.fn();
-  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn() });
   coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError });
   const now = Date.now();
   const run = vi.fn(async () => {});
@@ -68,7 +68,7 @@ it("releases a settled first-write hold during drain and retains a probe-free re
 it("retains failed work through drain and preserves a future domain deadline", async () => {
   vi.useFakeTimers();
   let draining = false;
-  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn() });
   const run = vi.fn(async () => { if (run.mock.calls.length === 1) { draining = true; throw new Error("retry debt"); } });
   const deadline = Date.now() + 600_000;
   const next = vi.fn(async () => deadline);
@@ -87,7 +87,7 @@ it("retains failed work through drain and preserves a future domain deadline", a
 it("does no domain probes in warm standby and reconstructs after admission opens", async () => {
   vi.useFakeTimers();
   let standby = true;
-  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn() });
   const run = vi.fn(async () => {}), next = vi.fn(async () => null);
   coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => !standby, canReconcile: () => !standby, onError: vi.fn() });
   const worker = registerDeadlineWork(coordinator, DELIVERY_QUEUES.agentTimers, { run, next, canRun: () => !standby, retryMs: 30_000 });
@@ -126,7 +126,7 @@ it("does not release an ambiguous database intent while dispatch is drained", as
 it("backs off an expired deadline when only the domain is drained and resumes promptly", async () => {
   vi.useFakeTimers();
   let paused = false;
-  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn() });
   const run = vi.fn(async () => {});
   const domainCanRun = vi.fn(() => !paused);
   const deadline = Date.now() + 1_000;
@@ -155,7 +155,7 @@ it("backs off an expired deadline when only the domain is drained and resumes pr
 it("retains a prompt paused wake when a new request preempts a far-future deadline", async () => {
   vi.useFakeTimers();
   let paused = false;
-  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn() });
   const run = vi.fn(async () => {});
   const deadline = Date.now() + 86_400_000;
   coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError: vi.fn() });

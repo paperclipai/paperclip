@@ -321,6 +321,17 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents generic webhook provenance headers and accepted responses without a provider-specific endpoint", () => {
+    const spec = buildOpenApiSpec();
+    const operation = spec.paths["/api/routine-triggers/public/{publicId}/fire"].post;
+    expect(operation.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ in: "header", name: "X-Paperclip-Source-Run-Token", required: false }),
+      expect.objectContaining({ in: "header", name: "X-Paperclip-Idempotency-Scope", required: false }),
+    ]));
+    for (const status of ["202", "400", "401", "404", "409", "415", "422"]) expect(operation.responses).toHaveProperty(status);
+    expect(operation.requestBody.content).toHaveProperty("application/json");
+    expect(spec.paths).not.toHaveProperty("/api/routine-triggers/public/{publicId}/sentry-run-failures");
+  });
   it.each(["summary", "tasks"])("documents the board-only compact attention %s contract", projection => {
     const spec = buildOpenApiSpec() as any;
     const operation = spec.paths[`/api/companies/{companyId}/attention/${projection}`].get;
@@ -1416,4 +1427,22 @@ describe("heartbeat run ID OpenAPI contract", () => {
     }
     expect(checked).toBe(12);
   });
+});
+
+
+it("documents explicit owner removals in the timeline response event enum", () => {
+  const spec = buildOpenApiSpec() as any;
+  const schema = spec.paths["/api/companies/{companyId}/timeline"].get.responses["200"].content["application/json"].schema;
+  expect(schema.properties.events.items.properties.kind.enum).toEqual([
+    "created", "commented", "approved", "delegated", "assigned", "unassigned",
+  ]);
+});
+
+it("documents canonical saved-resource links in catalog team install responses", () => {
+  const operation = buildOpenApiSpec().paths["/api/companies/{companyId}/teams/catalog/{catalogId}/install"].post;
+  expect(operation.description).toContain("resourceLinks");
+  const schema = operation.responses[201].content["application/json"].schema;
+  expect(schema.required).toContain("resourceLinks");
+  expect(schema.properties.resourceLinks.items.properties.kind.enum).toEqual(["agent", "project", "routine"]);
+  expect(schema.properties.resourceLinks.items.required).toEqual(["kind", "id", "name", "href"]);
 });

@@ -751,7 +751,7 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
 
   it("coalesces repeated task writes to one retained root in a large company with the same historical agent", async () => {
     const own = await seedSession({ issueStatus: "todo" });
-    const unrelated = [];
+    const unrelated: Awaited<ReturnType<typeof seedSession>>[] = [];
     for (let index = 0; index < 80; index++) unrelated.push(await seedSession({ companyId: own.companyId,
       agentId: own.agentId, issueStatus: index % 2 ? "todo" : "done", closedDaysAgo: 2,
       runStatus: index % 3 ? "succeeded" : "running" }));

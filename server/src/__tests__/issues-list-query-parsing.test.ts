@@ -56,4 +56,30 @@ describeEmbeddedPostgres("issue list status query parsing", () => {
   it("returns every status when ?status is absent", async () => {
     expect(await listStatuses("")).toEqual(["done", "in_progress", "todo"]);
   });
+  it.each(["", "&view=compact", "&view=compact&projection=index"])("rejects unsupported creation sorting for blocked attention (%s)", async projection => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Blocked sorting");
+    await request(routeApp(ctx.db, actor, issueRoutes))
+      .get(`/api/companies/${companyId}/issues?attention=blocked&sortField=created&sortDir=asc${projection}`)
+      .expect(422);
+  });
+
+  it.each(["", "&view=compact", "&view=compact&projection=index"])("sorts routine tasks by creation time before pagination (%s)", async (projection) => {
+    const { companyId, actor } = await seedCompanyWithBoardAccess(ctx.db, "Creation sorting");
+    const ids = Array.from({ length: 4 }, (_, index) => `00000000-0000-4000-8000-00000000000${index}`);
+    await ctx.db.insert(issues).values([
+      ...ids.map((id, index) => ({ id, companyId, title: "Routine sorting", originKind: "routine_execution", status: "todo",
+        createdAt: new Date(index < 2 ? "2026-01-01" : "2026-02-01"),
+        updatedAt: new Date(index < 2 ? "2026-03-01" : "2026-02-01"), priority: index < 2 ? "critical" : "low" })),
+      { companyId, title: "Routine sorting manual", originKind: "manual", createdAt: new Date("2026-04-01") },
+    ]);
+    const app = routeApp(ctx.db, actor, issueRoutes);
+    const path = `/api/companies/${companyId}/issues?originKind=routine_execution&includeRoutineExecutions=true&sortField=created&limit=2${projection}`;
+    for (const sortDir of ["asc", "desc"]) {
+      const first = await request(app).get(`${path}&sortDir=${sortDir}`).expect(200);
+      const second = await request(app).get(`${path}&sortDir=${sortDir}&offset=2`).expect(200);
+      expect([...first.body, ...second.body].map((issue: { id: string }) => issue.id)).toEqual(sortDir === "asc" ? ids : [...ids].reverse());
+    }
+    await request(app).get(`${path}&sortDir=invalid`).expect(400);
+  });
+
 });

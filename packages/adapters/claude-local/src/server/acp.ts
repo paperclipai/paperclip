@@ -44,6 +44,7 @@ import {
   materializeRemoteClaudeConfig,
   prepareClaudeConfigSeed,
   prepareSandboxClaudeProbeRuntime,
+  resolveRemoteClaudeToolShellPrefixPath,
 } from "./claude-config.js";
 import {
   buildAdapterTestTargetCheck,
@@ -296,13 +297,15 @@ async function prepareClaudeRemoteManagedHome(
   const remoteClaudeConfigSeedDir =
     stagedRuntime.assetDirs["config-seed"] ?? path.posix.join(remoteClaudeRuntimeRoot, "config-seed");
   const remoteClaudeConfigDir = path.posix.join(remoteClaudeRuntimeRoot, "config");
+  const remoteToolShellPrefixPath = resolveRemoteClaudeToolShellPrefixPath(env, remoteClaudeRuntimeRoot);
 
   await onLog("stdout", `[paperclip] Materializing Claude auth/config into ${remoteClaudeConfigDir}.\n`);
-  await materializeRemoteClaudeConfig({
+  const { toolShellPrefixInstalled } = await materializeRemoteClaudeConfig({
     runId,
     target: executionTarget,
     remoteClaudeConfigDir,
     remoteClaudeConfigSeedDir,
+    remoteToolShellPrefixPath,
     options: {
       cwd: stagedRuntime.workspaceRemoteDir ?? input.workspaceLocalDir,
       env,
@@ -313,6 +316,9 @@ async function prepareClaudeRemoteManagedHome(
   });
   // Repoint CLAUDE_CONFIG_DIR onto the in-sandbox config dir.
   env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
+  if (toolShellPrefixInstalled && remoteToolShellPrefixPath) {
+    env.CLAUDE_CODE_SHELL_PREFIX = remoteToolShellPrefixPath;
+  }
   return { stagedRuntime, teardown: registerWorkspaceSyncBack(stagedRuntime) };
 }
 

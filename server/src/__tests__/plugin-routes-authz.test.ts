@@ -156,7 +156,7 @@ describe("plugin install and upgrade authz", () => {
 
     expect(res.status).toBe(200);
     const packageNames = res.body.map((plugin: { packageName: string }) => plugin.packageName);
-    const byPackageName = new Map(
+    const byPackageName = new Map<string, { experimental: boolean; hasBuiltEntrypoints: boolean }>(
       res.body.map((plugin: { packageName: string; experimental: boolean; hasBuiltEntrypoints: boolean }) => [plugin.packageName, plugin]),
     );
     expect(packageNames).toContain("@paperclipai/plugin-workspace-diff");

@@ -22,7 +22,17 @@ export function registerEnvironmentCleanupWork(
       onSettled: () => { requested++; },
       run: async () => {
         if (!input.canRun()) { requested++; next = null; return; }
-        if (Date.now() < earliest) { next = earliest; return; }
+        if (Date.now() < earliest) {
+          next = earliest;
+          if (queue === DELIVERY_QUEUES.historicalCleanup) {
+            // A settled metadata invalidation is not itself cleanup debt. A
+            // cheap owner read can discharge it without advancing the provider
+            // sweep cadence; later notifications keep their own generation.
+            const generation = requested;
+            if (await deadline() === null) { next = null; reconciled = generation; }
+          }
+          return;
+        }
         const generation = ++requested;
         earliest = Date.now() + minimumSpacing;
         await run();

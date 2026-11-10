@@ -1,3 +1,4 @@
+import { nativeRunMcpRoutes } from "./routes/native-run-mcp.js";
 import { connectionEventWakeRoutes } from "./routes/connection-event-wake.js";
 import { registerGitHubReviewProjectionWork } from "./services/chat-channels/github/review-projection-work.js";
 import { finishServiceShutdown } from "./shutdown.js";
@@ -12,6 +13,7 @@ import { DELIVERY_QUEUES } from "./services/delivery-work-notifications.js";
 import { createLifecycleDriver } from "./services/agent-lifecycle-driver.js";
 import { startAgentLifecycle } from "./services/agent-lifecycle.js";
 import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "./middleware/idle-admission.js";
+import { databaseOperationMiddleware } from "./middleware/database-operation.js";
 import { staticUiFiles } from "./middleware/static-ui.js";
 import { retainedUiAssets } from "./retained-ui-assets.js";
 import { createStorageProviderFromConfig } from "./storage/provider-registry.js";
@@ -470,6 +472,7 @@ export async function createApp(
   },
 ) {
   const app = express();
+  app.use(databaseOperationMiddleware);
   app.use(idleAdmissionMiddleware);
   const staticUi = express.Router();
   app.locals.paperclipDb = db;
@@ -554,6 +557,7 @@ export async function createApp(
   // must be reachable by remote adapters that intentionally do not receive an
   // agent API key. Every request revalidates the active heartbeat row.
   app.use(runtimeConnectionIntentRoutes(db));
+  app.use(nativeRunMcpRoutes());
   const hostServicesDisposers = new Map<string, () => void>();
   let lifecyclePluginsReady = false;
   const agentLifecycle = startAgentLifecycle(db, createLifecycleDriver(db, workerManager), () => lifecyclePluginsReady && !isWarmStandby() && !isIdleTaskDrainActive());

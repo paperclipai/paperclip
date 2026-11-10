@@ -1,4 +1,5 @@
 import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
+import { issueDisplayStatusSql } from "./issue-display-status.js";
 import { createHash } from "node:crypto";
 import { and, desc, eq, gt, gte, inArray, isNotNull, isNull, lte, ne, or, sql, type SQL } from "drizzle-orm";
 import {
@@ -552,6 +553,7 @@ export function statusCardService(
         identifier: issues.identifier,
         title: issues.title,
         status: issues.status,
+        displayStatus: issueDisplayStatusSql(),
         priority: issues.priority,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,

@@ -2,6 +2,7 @@ import { notifyNativeResultCommit } from "../native-result-commit-notifications.
 import { notifyNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
+import { notifyQueuedRunDispatch } from "../run-dispatch-notifications.js";
 import os from "node:os";
 import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
@@ -71,6 +72,7 @@ export async function resumeNativeWorkspaceAfterOwnerStop(input: {
     await notifyNativeResultCommit(tx, { companyId: input.companyId, issueId: input.issueId, runId: input.runId });
     await notifyNativeWorkspaceFinalization(tx, { companyId: input.companyId, issueId: input.issueId, runId: input.runId });
     await notifyNativeStatusReassessment(tx, { companyId: input.companyId, issueId: input.issueId, runId: input.runId });
+    await notifyQueuedRunDispatch(tx, { companyId: input.companyId });
     await tx.update(heartbeatRuns).set({
       runnerProfileJson: sql`${heartbeatRuns.runnerProfileJson} - ${OWNER_KEY}`, updatedAt: now,
     }).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, run.id),

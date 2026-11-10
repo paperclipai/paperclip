@@ -1,9 +1,11 @@
+import { useQueryView } from "@/components/QueryView";
 import type { AgentRunner, AgentRunnerChoice } from "@paperclipai/shared";
 import { needsClaudeSetupQualification, qualifyClaudeSetup } from "../lib/qualify-claude-setup";
 import { agentHarnessType } from "@paperclipai/shared";
 import { adaptersApi, type AdapterInfo } from "../api/adapters";
 import { AgentRunnerSelect } from "./AgentRunnerSelect";
 import { healthApi } from "@/api/health";
+import { describeError } from "@/api/errors";
 import { LocalProviderLoginInstructions } from "./AdapterLoginChrome";
 import { useLocalAiLogin } from "./ai-connections/useLocalAiLogin";
 import { aiConnectionsApi } from "@/api/ai-connections";
@@ -686,6 +688,8 @@ function OnboardingWizardInner({
    * browser. Its arrival is also what moves the step off its waiting beat.
    */
   const [connectAuthUrl, setConnectAuthUrl] = useState<string | null>(null);
+  const [retryLogin, setRetryLogin] = useState<(() => void) | null>(null);
+  const [submitLoginCode, setSubmitLoginCode] = useState<(() => void) | null>(null);
   /**
    * The key itself, held only for as long as the wizard is open. It is written
    * into the adapter config at hire time and never into the draft — a draft is
@@ -1023,6 +1027,7 @@ function OnboardingWizardInner({
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4
       && loginEnvironmentSettingsReady,
   });
+  const runnerDiscoveryView = useQueryView(runnerDiscovery);
   const {
     data: adapterModels,
     error: adapterModelsError,
@@ -1032,8 +1037,7 @@ function OnboardingWizardInner({
     queryKey: createdCompanyId ? queryKeys.agents.adapterModels(createdCompanyId, adapterType, null) : ["agents", "none", "adapter-models", adapterType, null],
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType, { environmentId: null }),
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && ONBOARDING_ADAPTER_TYPES.has(adapterType),
-    retry: false,
-  });
+    });
   // Automatic selection uses native Claude/Codex on qualified execution targets and
   // silently falls back to legacy on Windows, keeping the same onboarding UI.
   // When Windows native execution is qualified, enable it in
@@ -1047,7 +1051,7 @@ function OnboardingWizardInner({
       && runnerDiscovery.isSuccess && !runnerDiscovery.isFetching && resolvedRunner !== undefined);
   const runnerDiscoveryError = needsRunnerDiscovery && (loginEnvironmentsFailed || loginSettingsFailed || loginPolicyFailed)
     ? "Could not load execution environment settings. Retry setup."
-    : needsRunnerDiscovery && runnerDiscovery.isError
+    : needsRunnerDiscovery && (runnerDiscoveryView.kind === "error")
       ? "Could not load runner availability. Retry setup."
     : needsRunnerDiscovery && runnerDiscovery.isSuccess && resolvedRunner === undefined
       ? "Runner availability is missing for this harness. Retry setup."
@@ -1556,10 +1560,13 @@ function OnboardingWizardInner({
    */
   const connectSourceLabel = CONNECT_SOURCE_NAMES[adapterType] ?? adapterType;
   const connectCta: { label: string; icon: FooterPrimaryIcon; disabled: boolean } =
-    setupError ? { label: "Retry", icon: "arrow", disabled: false } : connectProgress
+    setupError ? { label: "Retry", icon: "arrow", disabled: false }
+      : retryLogin ? { label: "Retry sign-in", icon: "arrow", disabled: false } : connectProgress
       ? { label: adapterEnvLoading ? "Testing…" : connectProgress, icon: "spinner", disabled: true }
+      : (connectPhase === "ready" || connectPhase === "waiting") && submitLoginCode
+      ? { label: "Submit code", icon: "arrow", disabled: false }
       : connectPhase === "waiting"
-      ? { label: "Waiting for code", icon: "spinner", disabled: true }
+      ? { label: "Waiting for code…", icon: "spinner", disabled: true }
       : connectPhase === "connecting"
         ? { label: "Connecting", icon: "spinner", disabled: true }
         : connectPhase === "ready"
@@ -1599,6 +1606,8 @@ function OnboardingWizardInner({
     setLoading(false);
     setAdapterEnvLoading(false);
     setConnectAuthUrl(null);
+    setSubmitLoginCode(null);
+    setRetryLogin(null);
     connectingSinceRef.current = null;
     setConnectCredentialStored(false);
     // Where the reverse starts depends on how far the sequence got. Backing out
@@ -1616,12 +1625,31 @@ function OnboardingWizardInner({
    * a check. This one would be worse: Cmd+Enter would hire before the sign-in
    * it is meant to start, against a source with no credential.
    */
+  function openConnectAuthorization() {
+    if ((connectPhase !== "ready" && connectPhase !== "waiting") || !connectAuthUrl || retryLogin) return;
+    window.open(connectAuthUrl, "_blank", "noreferrer,noopener");
+    setConnectPhase("waiting");
+  }
+
   function handleConnectStepPrimary() {
     if (setupError) { setSetupError(false); setSetupAttempt(value => value + 1); setError(null); return; }
+    if (retryLogin) {
+      setConnectAuthUrl(null);
+      setSubmitLoginCode(null);
+      setRetryLogin(null);
+      connectingSinceRef.current = null;
+      setConnectCredentialStored(false);
+      setConnectPhase("loading");
+      retryLogin();
+      return;
+    }
+    if ((connectPhase === "ready" || connectPhase === "waiting") && submitLoginCode) {
+      submitLoginCode();
+      return;
+    }
     // Mid-sequence the button belongs to the sign-in, not to the step.
     if (connectPhase === "ready" && connectStepNeedsLogin) {
-      if (connectAuthUrl) window.open(connectAuthUrl, "_blank", "noreferrer,noopener");
-      setConnectPhase("waiting");
+      openConnectAuthorization();
       return;
     }
     // The hold owns the hire once "Connecting" is showing. That now starts at
@@ -2004,7 +2032,7 @@ function OnboardingWizardInner({
     } catch (err) {
       setError(
         err instanceof Error
-          ? `Could not store the API key: ${err.message}`
+          ? `Could not store the API key: ${describeError(err).body}`
           : "Could not store the API key.",
       );
       return false;
@@ -2645,7 +2673,7 @@ function OnboardingWizardInner({
         step === 4 &&
         agentName.trim() &&
         connectStepReady &&
-        !connectStepLoggingIn
+        (retryLogin || submitLoginCode || !connectStepLoggingIn)
       )
         handleConnectStepPrimary();
       else if (step === 5) handleLaunchToDashboard();
@@ -3172,6 +3200,11 @@ function OnboardingWizardInner({
                           // The prompt arriving is what ends the waiting beat.
                           if (url) setConnectPhase((p) => (p === "loading" ? "ready" : p));
                         }}
+                        onOpenAuthorization={openConnectAuthorization}
+                        onRetryReady={retry => {
+                          if (connectCardLive) setRetryLogin(() => retry);
+                        }}
+                        onSubmitReady={submit => setSubmitLoginCode(() => submit)}
                         onCodeSubmitted={() => {
                           // The button reacts to the paste, not to the server.
                           // Waiting for the login to be stored left about a
@@ -3248,7 +3281,7 @@ function OnboardingWizardInner({
                   {sourceSelected && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && <details className="space-y-3">
                     <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
                     <AgentRunnerSelect value={runner} disabled={loading || adapterEnvLoading}
-                      pending={runnerDiscovery.isFetching} error={runnerDiscovery.error?.message} onRetry={() => { void runnerDiscovery.refetch(); }}
+                      pending={runnerDiscovery.isFetching} error={runnerDiscovery.error ? describeError(runnerDiscovery.error).body : undefined} onRetry={() => { void runnerDiscovery.refetch(); }}
                       defaultRunner={runnerDiscovery.data?.find(item => item.type === adapterType)?.defaultRunner}
                       supportedRunners={runnerDiscovery.data?.find(item => item.type === adapterType)?.supportedRunners}
                       onChange={setRunner} />

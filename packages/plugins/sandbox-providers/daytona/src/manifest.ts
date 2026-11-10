@@ -160,7 +160,7 @@ const manifest: PaperclipPluginManifestV1 = {
           autoStopInterval: {
             type: "number",
             description:
-              "Daytona auto-stop interval in minutes. `0` disables auto-stop. Defaults to 15 when unset.",
+              "Daytona auto-stop interval in minutes. `0` disables auto-stop. Defaults to 15 when unset. A reusable sandbox that keeps a warm runner never auto-stops before the warm idle window plus 5 minutes.",
             default: 15,
           },
           autoArchiveInterval: {

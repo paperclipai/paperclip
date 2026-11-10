@@ -18,7 +18,7 @@ function readiness(): AdapterEnvironmentTestResult {
     code: "acpx_remote_runtime_unverified", level: "warn", message: "The remote platform is supported. Runtime package integrity and readiness must still be verified by the remote runner before launch.",
   }] };
 }
-const context: AdapterEnvironmentTestContext = { companyId: "company-1", adapterType: "paperclip_runner", environmentName: "Paperclip Computer",
+const context: AdapterEnvironmentTestContext = { companyId: "company-1", adapterType: "paperclip_runner", environmentName: "Paperclip Sandbox",
   config: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5", env: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-token" }, managedAiConnection: { method: "subscription" } },
   executionTarget: { kind: "remote" as const, transport: "sandbox" as const, providerKey: "daytona", leaseId: "lease-1", remoteCwd: "/workspace", runner: { execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "", stderr: "", signal: null }) } },
 };

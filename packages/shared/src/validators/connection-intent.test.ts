@@ -57,10 +57,22 @@ describe("connection intent contracts", () => {
       requestingAgentName: "CEO", phase: "requested" };
     const payload = (tools: unknown[]) => ({ ...base, accessRequest: { connectionId: agentId, connectionName: "Account", tools } });
     expect(connectionIntentPayloadSchema.safeParse(payload([tool])).success).toBe(true);
+    const catalog = Array.from({ length: 46 }, (_, i) => ({ ...tool,
+      catalogEntryId: `11111111-1111-4111-8111-${String(i).padStart(12, "0")}`, toolName: `tool_${i}` }));
+    expect(connectionIntentPayloadSchema.safeParse(payload(catalog)).success).toBe(true);
     expect(connectionIntentPayloadSchema.safeParse(payload([])).success).toBe(false);
     expect(connectionIntentPayloadSchema.safeParse(payload([tool, tool])).success).toBe(false);
     expect(connectionIntentPayloadSchema.safeParse(payload([{ ...tool, versionHash: "" }])).success).toBe(false);
     expect(connectionIntentPayloadSchema.safeParse(payload([{ ...tool, permission: "allow_all" }])).success).toBe(false);
+  });
+
+  it("binds a saved OAuth audience to a connection without accepting credentials", () => {
+    const base = { version: 1, serviceSlug: "github", serviceName: "GitHub", requestingAgentId: agentId,
+      requestingAgentName: "Onboarding", phase: "authorizing" };
+    const setupAccess = { connectionId: agentId, access: "all_agents" };
+    expect(connectionIntentPayloadSchema.parse({ ...base, setupAccess }).setupAccess).toEqual(setupAccess);
+    expect(connectionIntentPayloadSchema.safeParse({ ...base, setupAccess: { ...setupAccess, token: "secret" } }).success).toBe(false);
+    expect(connectionIntentPayloadSchema.safeParse({ ...base, setupAccess: { access: "all_agents" } }).success).toBe(false);
   });
 
   it("keeps generic interaction creation closed to the server-owned kind", () => {

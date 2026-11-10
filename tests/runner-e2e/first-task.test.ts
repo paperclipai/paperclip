@@ -1591,7 +1591,7 @@ describe("managed onboarding through the production wizard", () => {
       expect(h.api.get).toHaveBeenCalledExactlyOnceWith("/api/instance/settings");
       expect(h.api.patch).toHaveBeenLastCalledWith("/api/instance/settings", { defaultEnvironmentId: previousDefault });
       expect(h.state.experimental.enableAgentChat).toBe(true);
-      expect(h.api.delete).toHaveBeenCalledExactlyOnceWith("/api/environments/environment?destroyReusableSandboxLeases=true", { allowNotFound: true });
+      expect(h.api.delete).toHaveBeenCalledExactlyOnceWith("/api/environments/environment?destroyReusableSandboxLeases=true", { allowNotFound: true, timeout: 30_000 });
     },
   );
 
@@ -1722,7 +1722,7 @@ describe("managed onboarding through the production wizard", () => {
     expect(fixtures.setupLeases).toEqual([]);
     expect(JSON.stringify(fixtures)).not.toContain("synthetic");
     await fixtures.teardown();
-    expect(api.delete).toHaveBeenCalledExactlyOnceWith("/api/environments/environment?destroyReusableSandboxLeases=true", { allowNotFound: true });
+    expect(api.delete).toHaveBeenCalledExactlyOnceWith("/api/environments/environment?destroyReusableSandboxLeases=true", { allowNotFound: true, timeout: 30_000 });
   });
 
   it.each(["missing-key", "mutable-image", "other-cell"])("rejects %s before admitting a managed browser fixture", async mode => {

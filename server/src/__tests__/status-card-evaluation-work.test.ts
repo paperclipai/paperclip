@@ -1,4 +1,4 @@
-import { budgetService } from "../services/budgets.js";
+import { budgetService, flushBudgetEvaluationWork } from "../services/budgets.js";
 import { documentService } from "../services/documents.js";
 import { projectService } from "../services/projects.js";
 import * as companySearch from "../services/company-search.js";
@@ -254,14 +254,14 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.update(issues).set({ checkoutRunId: run!.id }).where(eq(issues.id, generation.generatingIssue!.id));
     await settled();
     const before = (await cards.getById(created.id))!;
-    const revisions = await cards.listSummaryRevisions(created.id);
+    const revisions = await cards.listSummaryRevisions(created);
     await expect(db.transaction(async tx => {
       await statusCardService(tx as unknown as typeof db).writeSummary(created.id, { markdown: "Rolled back summary", changeSummary: "Rollback", generationIssueId: generation.generatingIssue!.id }, { agentId, runId: run!.id });
       throw new Error("summary rollback");
     })).rejects.toThrow("summary rollback");
     await quiet();
     expect((await cards.getById(created.id))!).toMatchObject({ generatingIssueId: before.generatingIssueId, nextEvalAt: before.nextEvalAt, nextEvalReason: before.nextEvalReason });
-    expect(await cards.listSummaryRevisions(created.id)).toEqual(revisions);
+    expect(await cards.listSummaryRevisions(created)).toEqual(revisions);
     expect(wakeup).not.toHaveBeenCalled(); expect(errors).toEqual([]);
   });
 
@@ -870,6 +870,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const [cost] = await db.insert(costEvents).values({ companyId, agentId, provider: "openai", biller: "openai", billingType: "metered_api", model: "test",
       costCents: 200, occurredAt: new Date() }).returning();
     await budgets.evaluateCostEvent(cost!);
+    await flushBudgetEvaluationWork(db, { companyId });
     expect((await db.select().from(companies).where(eq(companies.id, companyId)))[0]?.status).toBe("paused");
     await quiet();
     await issueService(db).create(companyId, { title: "Paused blocker", status: "blocked", priority: "medium" }); await quiet();

@@ -23,7 +23,7 @@
         "runtime.phase.changed", "sandbox.metric", "workspace.ready", "workspace.change.updated", "workspace.diff.recorded", "workspace.file.referenced",
         "auth.credentials.updated",
         "runtime.activity.recorded",
-        "harness.starting", "harness.ready", "harness.exited", "harness.diagnostic", "plan.updated",
+        "harness.starting", "harness.ready", "harness.exited", "harness.diagnostic", "plan.updated", "plan.proposed",
         "tool.execution.started", "tool.execution.progressed", "tool.execution.completed", "research.started", "research.progressed", "research.completed",
         "delegation.started", "delegation.updated", "delegation.completed", "model.route.changed", "model.verification.updated", "context.compacted",
         "artifact.viewed", "artifact.generated", "review.mode.changed", "hook.started", "hook.completed", "memory.citation.referenced",

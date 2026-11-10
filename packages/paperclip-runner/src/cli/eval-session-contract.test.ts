@@ -63,6 +63,35 @@ it("rejects a stale qualified Claude SDK before provider creation", async () => 
   } finally { await rm(workspace, { recursive: true, force: true }); }
 });
 
+it("retains only closed startup failure facts in the actual CLI artifact", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "eval-startup-failure-"));
+  try {
+    const binary = join(workspace, "runnerd"), requestPath = join(workspace, "request.json"), outputPath = join(workspace, "artifact.json");
+    await writeFile(binary, "unused fake runner");
+    await writeFile(requestPath, JSON.stringify(request({
+      runnerd: { path: binary, sha256: createHash("sha256").update("unused fake runner").digest("hex") },
+      session: { workingDirectory: workspace },
+    })));
+    const error = Object.assign(new Error("Provider startup rejected"), { runnerCommandResult: { result: {
+      providerFailure: { schema: "paperclip.provider-failure.v1", provider: "codex", phase: "startup", category: "authentication",
+        httpStatus: 401, retryability: "requires_action", message: "PRIVATE-SECRET", requestId: "private-request-id" },
+    } } });
+    const exit = await runEvalSessionCli(["--request", requestPath, "--output", outputPath], {
+      serviceFactory: () => { throw error; },
+    });
+    const artifact = JSON.parse(await readFile(outputPath, "utf8"));
+    expect(exit).toBe(2);
+    expect(artifact.providerFailureDiagnostics).toEqual([{ phase: "startup", category: "authentication", httpStatus: 401, retryability: "requires_action" }]);
+    expect(JSON.stringify(artifact)).not.toMatch(/PRIVATE-SECRET|private-request-id/);
+    expect(artifact.infrastructureError).toBe("Provider startup rejected");
+  } finally {
+    for (const entry of await readdir(workspace)) {
+      if (entry.startsWith(".paperclip-eval-runtime-context-")) await chmod(join(workspace, entry, "instructions"), 0o700);
+    }
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 function agentCoreProfile(overrides: Record<string, unknown> = {}) {
   return {
     profileId: "agentcore-qualified",

@@ -25,15 +25,25 @@ export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects
   assertConfigurationFields(patch);
   const changed = ["adapterType", "adapterConfig", "runtimeConfig", "defaultEnvironmentId"].some(key =>
     Object.prototype.hasOwnProperty.call(patch, key) && !jsonEqual(patch[key as keyof typeof patch], current[key as keyof typeof current]));
+  const needsNewPlugin = ["ready", "verifying"].includes(current.lifecycleState)
+    && Object.prototype.hasOwnProperty.call(patch, "defaultEnvironmentId")
+    && patch.defaultEnvironmentId !== current.defaultEnvironmentId
+    && await effects.environmentRequiresNewPlugin(tx, patch.defaultEnvironmentId, current.lifecycleRequiredPluginIds);
+  if (needsNewPlugin && current.lifecycleState === "ready") {
+    throw new AgentLifecycleConflict("This environment needs setup for the agent. Pause the agent, change its environment, and then resume it.");
+  }
+  const prepareEnvironment = needsNewPlugin && !current.lifecycleHolds.includes("setup");
   const prepareSetup = changed && current.lifecycleHolds.length === 1 && current.lifecycleHolds[0] === "setup"
     && ["paused", "preparing", "verifying"].includes(current.lifecycleState)
     && await effects.setupRequiresPreparation(tx, current.companyId,
-      Object.prototype.hasOwnProperty.call(patch, "defaultEnvironmentId") ? patch.defaultEnvironmentId : current.defaultEnvironmentId);
+      Object.prototype.hasOwnProperty.call(patch, "defaultEnvironmentId") ? patch.defaultEnvironmentId : current.defaultEnvironmentId,
+      { adapterType: patch.adapterType ?? current.adapterType,
+        adapterConfig: Object.prototype.hasOwnProperty.call(patch, "adapterConfig") ? patch.adapterConfig : current.adapterConfig });
   const invalidate = changed && (["preparing", "verifying", "resuming"].includes(current.lifecycleState) || prepareSetup);
   if (invalidate) await effects.notifyWork(tx);
   const [updated] = await tx.update(agents).set({ ...patch, updatedAt: new Date(), ...(invalidate ? {
     lifecycleVersion: current.lifecycleVersion + 1, lifecycleError: null,
-    ...(prepareSetup ? { lifecycleState: "preparing" as const } : {}),
+    ...(prepareSetup || prepareEnvironment ? { lifecycleState: "preparing" as const } : {}),
     ...(!prepareSetup && current.lifecycleHolds.includes("setup") && ["preparing", "verifying"].includes(current.lifecycleState)
       ? { lifecycleState: "pausing" as const } : {}),
     lifecycleOperation: { ...current.lifecycleOperation!, id: randomUUID(), hostComplete: false,

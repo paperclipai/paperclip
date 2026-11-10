@@ -183,8 +183,11 @@ scope, not proof that a live journey passed.
 
 The sibling [agent access map](maps/agent-access-map/README.md) records APIs,
 agent entry points and permission boundaries using the same capability IDs.
-Follow [the map contract](maps/README.md): update affected entries when mapped
-behavior or access changes, and run `node scripts/check-maps.mjs` after map edits.
+Follow [the feature-map scope rule](rules/feature-map-scope.mdc): additions require
+substantial new features. Routine fixes, polish, refactors, and test changes do
+not require map updates. Follow [the map contract](maps/README.md) for minimal
+corrections when existing entries become materially inaccurate, and run
+`node scripts/check-maps.mjs` after map edits.
 Its structural checks do not prove live behavior or authorization.
 
 Storybook has a downstream [feature catalog](maps/storybook-map/README.md).
@@ -219,6 +222,8 @@ pnpm -r typecheck
 pnpm test:run
 pnpm build
 ```
+
+If memory is limited, use `node scripts/typecheck-low-memory.mjs` instead of `pnpm -r typecheck`. See `doc/DEVELOPING.md`.
 
 If anything cannot be run, explicitly report what was not run and why.
 

@@ -127,7 +127,7 @@
   {
     "dir": "packages/plugins/sandbox-providers/boxd",
     "name": "@paperclipai/plugin-boxd",
-    "publishFromCi": false
+    "publishFromCi": true
   },
   {
     "dir": "packages/plugins/sandbox-providers/cloudflare",

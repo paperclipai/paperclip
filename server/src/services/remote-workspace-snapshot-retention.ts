@@ -23,9 +23,21 @@ async function pinned(db: ReadDb, row: Snapshot) {
     eq(executionWorkspaces.companyId, row.companyId), eq(executionWorkspaces.id, row.executionWorkspaceId),
   ));
   if ((workspace?.metadata?.remoteWorkspace as { snapshotId?: unknown } | undefined)?.snapshotId === row.id) return true;
+  const [importedBy] = await db.select({ id: executionWorkspaceSnapshots.id }).from(executionWorkspaceSnapshots).where(and(
+    eq(executionWorkspaceSnapshots.companyId, row.companyId), ne(executionWorkspaceSnapshots.status, "deleted"),
+    sql`${executionWorkspaceSnapshots.metadata} ? 'importedWorkspaceChildren'`,
+    sql`${executionWorkspaceSnapshots.metadata}->'importedWorkspaceChildren' @> ${JSON.stringify([
+      { workspaceId: row.executionWorkspaceId, snapshotId: row.id },
+    ])}::jsonb`,
+  )).limit(1);
+  if (importedBy) return true;
   const [operation] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, row.companyId), eq(workspaceOperations.executionWorkspaceId, row.executionWorkspaceId),
     or(inArray(workspaceOperations.status, ["running", "pending"]),
+      // A failed save keeps its snapshot pinned for its retry, as while it ran,
+      // until the final save retires it.
+      sql`(${workspaceOperations.status} = 'failed' and ${workspaceOperations.metadata} ? 'lastFailure'
+        and ${workspaceOperations.metadata}->'retiredSave' is null)`,
       sql`(${workspaceOperations.metadata}->'saveWork'->>'schema' = 'paperclip.remote-workspace-save-work.v1'
         and (${workspaceOperations.metadata}#>'{saveWork,unknown}' is distinct from 'false'::jsonb
           or case when jsonb_typeof(${workspaceOperations.metadata}#>'{saveWork,activeIds}') = 'array'
@@ -138,7 +150,8 @@ export function remoteWorkspaceSnapshotRetentionService(db: Db, options: {
           .where(and(eq(executionWorkspaceSnapshots.id, claimed.id), eq(executionWorkspaceSnapshots.status, "delete_requested")));
         // A parent inspected earlier in this page can now lose its last pin.
         // Revisit it once instead of waiting for an unrelated execution event.
-        if (claimed.parentSnapshotId) rescanRequested = true;
+        if (claimed.parentSnapshotId || Array.isArray(claimed.metadata?.importedWorkspaceChildren)
+          && claimed.metadata.importedWorkspaceChildren.length > 0) rescanRequested = true;
         result.deleted++;
       } catch (error) {
         if (signal?.aborted) throw error;

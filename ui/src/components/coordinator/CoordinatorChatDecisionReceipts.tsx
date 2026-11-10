@@ -24,8 +24,7 @@ export function useCoordinatorChatDecisionReceipts(issueId: string | null, conve
       return api.get<DecisionHistoryPage>(path, { signal, cache: "no-store" });
     },
     getNextPageParam: page => page.nextCursor,
-    retry: false,
-  });
+    });
   const accessUnavailable = !!query.error && "status" in query.error && [401, 403, 404].includes(Number(query.error.status));
   const receipts = useMemo(() => {
     if (!enabled || !conversationMode || accessUnavailable) return [];

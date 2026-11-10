@@ -33,7 +33,7 @@
         "auth.credentials.updated",
         "runtime.activity.recorded",
         "harness.starting", "harness.ready", "harness.exited", "harness.diagnostic",
-        "plan.updated",
+        "plan.updated", "plan.proposed",
         "tool.execution.started", "tool.execution.progressed", "tool.execution.completed",
         "research.started", "research.progressed", "research.completed",
         "delegation.started", "delegation.updated", "delegation.completed",
@@ -73,6 +73,7 @@
   "allOf": [
     { "if": { "properties": { "eventType": { "const": "auth.credentials.updated" } } }, "then": { "properties": { "sourceKind": { "const": "runner" }, "priority": { "const": 0 }, "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/auth-credentials.schema.json" } } } },
     { "if": { "properties": { "eventType": { "const": "plan.updated" } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/plan" } } } },
+    { "if": { "properties": { "eventType": { "const": "plan.proposed" } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/planProposal" } } } },
     { "if": { "properties": { "eventType": { "enum": ["tool.execution.started", "tool.execution.progressed", "tool.execution.completed"] } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/toolExecution" } } } },
     { "if": { "properties": { "eventType": { "enum": ["research.started", "research.progressed", "research.completed"] } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/research" } } } },
     { "if": { "properties": { "eventType": { "enum": ["delegation.started", "delegation.updated", "delegation.completed"] } } }, "then": { "properties": { "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/delegation" } } } },

@@ -1563,7 +1563,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
         value: "expiry-race-secret",
         justification: "Exercise the approval boundary",
       });
-    let approvalPromise: Promise<{ status: number; body: Record<string, unknown> }> | null = null;
+    let approvalPromise = null as Promise<{ status: number; body: Record<string, unknown> }> | null;
 
     await db.transaction(async (tx) => {
       await tx.select().from(companySecretProposals)

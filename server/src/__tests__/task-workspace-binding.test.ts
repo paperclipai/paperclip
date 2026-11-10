@@ -242,7 +242,8 @@ const support = await getEmbeddedPostgresTestSupport();
         await expect(assertGitSensitiveAdapterWorkspaceValid({
           adapterType: "codex_local", agentId: randomUUID(), issue: task,
           resolvedWorkspace: { cwd: workspace!.cwd!, source: "task_session", projectId: null, workspaceId: null,
-            repoUrl: null, repoRef: null, workspaceHints: [], warnings: [] },
+            repoUrl: null, repoRef: null, workspaceHints: [], warnings: [], baseCwdFallback: false,
+            materializationFailures: [], additionalWorkspaces: [], referencedProjectFailures: [] },
           executionWorkspace: { cwd: workspace!.cwd!, baseCwd: workspace!.cwd!, source: "task_session", projectId: null,
             workspaceId: null, repoUrl: null, repoRef: null, strategy: "project_primary", branchName: null,
             worktreePath: null, warnings: [], created: false, branchCreatedByRuntime: false },

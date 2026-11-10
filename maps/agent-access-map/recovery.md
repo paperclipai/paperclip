@@ -4,6 +4,11 @@ Product map: [Recovery](../feature-map/recovery.md).
 
 Feature ID: `recovery`.
 
+Fresh native retry session publication remains server-owned. Goal source
+replacement requires the current task execution lock and assignee, a terminal
+predecessor, and an absent or completed saved goal. It grants no agent API or
+permission to start another executor or replay an unknown external outcome.
+
 Native finalization deadline reconciliation records unfinished workspace
 preservation through the existing server-owned recovery path. It grants no
 additional agent API, provider-stop authority or permission to replay work.
@@ -124,6 +129,17 @@ the runner retains its admitted artifact and active turn. Saved tool receipts
 can restore responses, safe reads recheck current authority, and uncertain
 mutations remain pending. The [remote continuity recipe](../../doc/testing-native-remote-continuity.md#replacing-the-main-server)
 separates real-process/scripted-provider evidence from hosted Daytona qualification.
+
+Pending run-only Stop cleanup uses the server's exact audited intent and unfinished
+coordinator. It grants no agent retry or new provider-turn authority. An existing
+remote-session claim can reuse its original held reservation during budget pause;
+fresh startup, dead-runner resume, foreign owners and missing audit proof remain
+fenced. Cleanup transport retains pending semantic input without a tool dispatch
+or reply, and grants no attachment staging or warm-owner retirement authority.
+Closing with unanswered input still requires confirmed provider exit, durable
+event drain, and exact runner suspension.
+Local PostgreSQL tests exercise the cancellation producer and late usage
+settlement. They do not prove hosted provider termination or deployed recovery.
 
 ### `observe-automatic-attempt`
 
@@ -288,8 +304,8 @@ no external inbound authority or permission to replay a terminal result; an
 uncertifiable source directs the user to send a new task message. The real
 HTTP/queue regression proves this boundary locally, not hosted provider recovery.
 
-For external chat, the same canonical Retry owner may certify the structured
-isolated-directory binding failure that occurs before environment allocation.
+For external chat, the same canonical Retry owner may certify an isolated-directory
+binding failure or a fully recorded setup failure before provider dispatch.
 It requires exact task/source authority and trusted settlement with no process,
 lease, native result or unknown execution evidence. Other validation reasons and
 the older direct chat-retry entry point remain denied. Local HTTP/dispatch proof
@@ -325,6 +341,12 @@ Each workspace repair/export/reconstruction/physical-owner operation has its own
 API: `present` — POST /api/issues/{id}/recovery-actions/recover-workspace with actionId/runId/idempotencyKey.
 
 Agent access: `restricted` — board task-read and issue:mutate; not runtime:manage. Agents denied through REST/native fallback.
+
+An explicit request may also preserve a cancelled export-repair action that a
+newer failure superseded. It retains the exact original source checks, current
+writer exclusion and bounded maintenance budget. It does not change the newer
+task workspace or recovery owner, apply an older result over newer execution,
+or admit a provider turn. A cancelled record without that request is ineligible.
 
 Policy: Exact terminal retained source/lease/reference; independent stop and physical ownership checks; no newer writer. Bounded queued repair preserves newer files and has retry state. Matching key/recovered state dedupes; permanent blocked source refuses. Recovery starts no provider turn. For native export repair, a reusable lease is eligible only with its exact descriptor and the finalizer-selected accepted successful result under the same company/task/run/completion contract. This does not change actor access or permit another allocation owner or host writer. Invalid Git metadata is a non-retryable persistence failure requiring service repair; it cannot use unsafe-archive omission to complete the result. Run-detail/activity projections retain the allowlisted code, including bounded large-result retrieval, and cancelled-preservation discovery honors the same hold.
 

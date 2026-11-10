@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { targetSha, model, hash, validateSelection, validRunCount, reject } from './chat-completion-testops-contract.mjs';
+import { model, hash, validateSelection, validRunCount, reject, catalogDefinition } from './chat-completion-testops-contract.mjs';
 
 async function inventory(root, relative = '') {
   const found = []; const entries = await readdir(path.join(root, relative));
@@ -21,12 +21,13 @@ async function inventory(root, relative = '') {
 
 export async function readPilotExport(root, context, selection) {
   const selected = validateSelection(selection, context, selection.allureJobRunId);
+  const { targetSha } = catalogDefinition(context);
   const stat = await lstat(root);
   if (!stat.isDirectory() || stat.isSymbolicLink() || await realpath(root) !== path.resolve(root)) reject('export_path');
   const files = await inventory(root);
   if (!files.includes('binding.json')) reject('export_binding');
   const bindingBytes = await readFile(path.join(root, 'binding.json'));
-  if (bindingBytes.length > 32_768) reject('export_binding');
+  if (bindingBytes.length > (context.catalog === 'full' ? 262_144 : 32_768)) reject('export_binding');
   const binding = JSON.parse(bindingBytes);
   if (binding.schema !== 'paperclip.chat-completion-testops-export/v1' || binding.runId !== context.runId || binding.attempt !== '1'
     || binding.workflowSha !== context.workflowSha || binding.targetSha !== targetSha || binding.campaignId !== `gha-${context.runId}-1`
@@ -47,7 +48,7 @@ export async function readPilotExport(root, context, selection) {
     retained.set(row.path, bytes);
   }
   const normalized = retained.get('normalized-results.json');
-  if (normalized.length > 2_000_000) reject('export_inventory');
+  if (normalized.length > (context.catalog === 'full' ? 16_000_000 : 2_000_000)) reject('export_inventory');
   const campaign = JSON.parse(normalized);
   if (campaign.schema !== 'paperclip.runner-e2e.campaign/v2' || campaign.campaignId !== binding.campaignId || campaign.retries !== 0
     || !Array.isArray(campaign.results) || campaign.results.length !== selected.length
@@ -65,7 +66,7 @@ export async function readPilotExport(root, context, selection) {
     if (!evidence || ![true, false, null].includes(evidence.requiredEvidenceComplete)
       || evidence.finalScreenshot !== null && (!/^[a-f0-9]{64}$/.test(evidence.finalScreenshot?.sha256 ?? '')
         || !Number.isSafeInteger(evidence.finalScreenshot.bytes) || evidence.finalScreenshot.bytes < 24 || evidence.finalScreenshot.bytes > 12 * 1024 * 1024)) reject('private_evidence_receipt');
-    if (row.status === 'passed' && (row.cleanup !== 'passed' || row.matcherResults.length !== expected.checks
+    if (row.status === 'passed' && (row.cleanup !== 'passed' || (expected.checks == null ? row.matcherResults.length < 1 : row.matcherResults.length !== expected.checks)
       || row.matcherResults.some(check => !check.passed) || !validRunCount(row.runIds, expected)
       || evidence.requiredEvidenceComplete !== true || evidence.finalScreenshot === null)) reject('export_incomplete_pass');
   }
@@ -74,6 +75,7 @@ export async function readPilotExport(root, context, selection) {
 
 export async function exportPilotAllure(root, output, context, selection) {
   const { campaign, selected, privateEvidence } = await readPilotExport(root, context, selection);
+  const { targetSha } = catalogDefinition(context);
   await mkdir(output, { mode: 0o700 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
   const stat = await lstat(output);
   if (!stat.isDirectory() || stat.isSymbolicLink() || process.getuid && stat.uid !== process.getuid() || (await readdir(output)).length) reject('allure_output');
@@ -105,14 +107,14 @@ export async function exportPilotAllure(root, output, context, selection) {
       archiveKind: `manual-cell-${hash(result.executionId)}`,
       note: 'Only this availability receipt and checksum are attached. Original screenshots and diagnostics require authenticated private-history retrieval.' };
     await attach('Private evidence receipt', 'application/json', Buffer.from(JSON.stringify(evidenceReceipt, null, 2)), 'json');
-    const value = { uuid: randomUUID(), name: selectedCase.name, fullName: selectedCase.fullName,
-      testCaseId: hash(`${JSON.stringify(selectedCase.fullName)}\n`),
-      historyId: hash(JSON.stringify([selectedCase.fullName, 'runner-opencode', model, 'local'])), status, stage: 'finished',
+    const value = { uuid: randomUUID(), name: selectedCase.name, fullName: selectedCase.registeredFullName ?? selectedCase.fullName,
+      testCaseId: hash(`${JSON.stringify(selectedCase.registeredFullName ?? selectedCase.fullName)}\n`),
+      historyId: hash(JSON.stringify([selectedCase.registeredFullName ?? selectedCase.fullName, 'runner-opencode', model, 'local'])), status, stage: 'finished',
       statusDetails: { message: status === 'passed' ? 'Real Product E2E assertions and cleanup passed' : 'Original evaluation or cleanup failed' },
       labels: [{ name: 'AS_ID', value: String(selectedCase.caseId) }, { name: 'parentSuite', value: 'Product E2E' },
         { name: 'suite', value: 'chat-features' }, { name: 'area', value: 'Chat and collaboration' },
         { name: 'framework', value: 'Paperclip Evals' }, { name: 'tag', value: 'chat-completion-testops' }],
-      parameters: [{ name: 'canonicalScenario', value: selectedCase.scenario }, { name: 'model', value: model },
+      parameters: [{ name: 'canonicalScenario', value: selectedCase.canonicalScenario ?? selectedCase.scenario }, { name: 'model', value: model },
         { name: 'environment', value: 'GitHub Actions / AWS' }],
       links: [{ name: 'GitHub Actions run', type: 'custom', url: `https://github.com/paperclipai/paperclip/actions/runs/${context.runId}` },
         { name: 'Evaluated source', type: 'custom', url: `https://github.com/paperclipai/paperclip/commit/${targetSha}` }],

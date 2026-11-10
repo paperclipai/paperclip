@@ -17,9 +17,13 @@ vi.mock("../../vendor/paperclip-runner/index.js", () => ({ normalizePrpResultSig
 const result = { reportedWorkDisposition: "done", summary: "EXACT_PRIVATE_MARKER", completionClaim: { objectiveSatisfied: true, criteria: [], remainingWork: [] } } as unknown as PrpStructuredRunResult;
 function database(options: { interaction?: boolean; approval?: boolean; review?: boolean } = {}): Db {
   // Pure query double: no client, PostgreSQL process, or network is created.
-  return { select: () => ({ from: (table: unknown) => {
-    const rows = table === heartbeatRuns ? [{ id: "run", companyId: "company", nativeIssueId: "issue", contextSnapshot: {} }]
-      : table === issues ? [{ id: "issue", companyId: "company", status: "in_progress", ...(options.review ? { executionState: { status: "pending" } } : {}) }]
+  const run = { id: "run", companyId: "company", agentId: "agent", nativeIssueId: "issue", runtimeMode: "native", status: "running", contextSnapshot: {} };
+  const issue = { id: "issue", companyId: "company", status: "in_progress", assigneeAgentId: "agent", executionRunId: "run", ...(options.review ? { executionState: { status: "pending" } } : {}) };
+  return { select: (fields?: { run?: unknown }) => ({ from: (table: unknown) => {
+    const rows = table === heartbeatRuns ? fields?.run
+      ? [{ run, issueAssigneeAgentId: issue.assigneeAgentId, issueExecutionRunId: issue.executionRunId }]
+      : [run]
+      : table === issues ? [issue]
       : table === issueThreadInteractions && options.interaction ? [{ id: "request", kind: "request_confirmation", title: "Decision" }]
       : table === issueApprovals && options.approval ? [{ id: "approval" }] : [];
     const query = { where: () => query, limit: () => query, orderBy: () => query, innerJoin: () => query, then: (resolve: (value: unknown[]) => unknown) => Promise.resolve(rows).then(resolve) };

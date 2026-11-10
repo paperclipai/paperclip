@@ -1,3 +1,4 @@
+import { describeError } from "@/api/errors";
 import { useMemo, useState } from "react";
 import { agentHarnessType, agentRunner, type AgentRunnerChoice } from "@paperclipai/shared";
 import { adaptersApi } from "@/api/adapters";
@@ -192,7 +193,7 @@ export function ConfigureBuiltInAgentModal({
           {["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && <details className="space-y-3">
             <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
             <AgentRunnerSelect value={runner ?? (state.agent ? agentRunner(state.agent.adapterType) : "auto")}
-              pending={adapters.isFetching} error={adapters.error?.message} onRetry={() => { void adapters.refetch(); }}
+              pending={adapters.isFetching} error={adapters.error ? describeError(adapters.error).body : undefined} onRetry={() => { void adapters.refetch(); }}
               defaultRunner={runnerAvailability?.defaultRunner} supportedRunners={runnerAvailability?.supportedRunners}
               onChange={setRunner} />
           </details>}

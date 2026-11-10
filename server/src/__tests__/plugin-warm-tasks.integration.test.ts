@@ -16,7 +16,7 @@ const external=resolveExternalTestDatabaseUrl("PAPERCLIP_PLUGIN_WARM_TASKS_TEST_
 const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("retained Codex plugin task leases",()=>{
  let db:ReturnType<typeof createDb>,stop:()=>Promise<void>;
- beforeAll(async()=>{if(external){await applyPendingMigrations(external);db=createDb(external);stop=()=>db.$client.end({timeout:1});return;}const started=await startEmbeddedPostgresTestDatabase("plugin-warm-tasks");db=createDb(started.connectionString);stop=started.stop;});
+ beforeAll(async()=>{if(external){await applyPendingMigrations(external);db=createDb(external);stop=()=>db.$client.end({timeout:1});return;}const started=await startEmbeddedPostgresTestDatabase("plugin-warm-tasks");db=createDb(started.connectionString);stop=started.cleanup;});
  afterAll(async()=>{await stop?.();});
  async function fixture(initialProjects:string[]=[],initialExpiry?:string,deadline?:Date){
   const companyId=randomUUID(),agentId=randomUUID(),issueId=randomUUID(),environmentId=randomUUID(),pluginId=randomUUID();

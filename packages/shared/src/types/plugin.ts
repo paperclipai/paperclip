@@ -720,6 +720,7 @@ export interface PaperclipPluginManifestV1 {
     /** Supports bounded run completion separately from removal-safety inspection. */
     finalizationVersion?: 1;
     supportsMergeAncestry?: boolean;
+    recoveryPullRequestVersion?: 1;
     freshWorkspaceVersion?: 1;
     modes: Array<"shared_workspace" | "isolated_workspace" | "operator_branch">;
     strategies: Array<"project_primary" | "git_worktree">;

@@ -11,7 +11,7 @@ import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.j
 import { createStorageService } from "../storage/service.js";
 import type { StorageService } from "../storage/types.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
-import { beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
+import { beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, recoverWorkspaceSnapshotArchive, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
 
 const externalDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 if (externalDatabaseUrl && !/^remote_workspace_[a-z_]*test$/.test(new URL(externalDatabaseUrl).pathname.slice(1))) {
@@ -75,6 +75,21 @@ suite("remote workspace snapshot storage", () => {
     expect(row?.status).toBe("pending"); expect((row?.metadata?.uploads as unknown[]).length).toBe(1);
     await expect(uploadWorkspaceSnapshot({ ...f.upload, manifestDigest: "b".repeat(64) })).rejects.toThrow("operation_content_changed");
   });
+  it("authenticates a lost-reply archive without publishing its pending upload", async () => {
+    const f = await fixture(), put = storage.putFile.bind(storage);
+    storage.putFile = async input => { await put(input); throw new Error("lost upload reply"); };
+    await expect(uploadWorkspaceSnapshot(f.upload)).rejects.toThrow("lost upload reply");
+    await fs.rm(f.archivePath);
+    const targetPath = path.join(root, "recovered.pcws");
+    const ref = await recoverWorkspaceSnapshotArchive({ ...f.upload, targetPath });
+    expect(ref?.manifestDigest).toBe(f.captured.manifestDigest);
+    expect((await db.select().from(executionWorkspaceSnapshots))[0]?.status).toBe("pending");
+    expect(await getWorkspaceSnapshot(db, { ...f, snapshotId: f.row.id })).toBeNull();
+    await restoreRemoteWorkspaceArchive({ archivePath: targetPath, targetDir: path.join(root, "restored"), expectedManifestDigest: ref!.manifestDigest });
+    expect(await fs.readFile(path.join(root, "restored", "saved.txt"), "utf8")).toBe("acknowledged workspace content\n");
+    await expect(recoverWorkspaceSnapshotArchive({ ...f.upload, companyId: randomUUID(), targetPath: path.join(root, "wrong-company.pcws") }))
+      .rejects.toThrow("remote_workspace_snapshot_missing");
+  });
   it("keeps operation identity and company/workspace scope exact", async () => {
     const f = await fixture();
     expect((await beginWorkspaceSnapshot(db, { ...f, generation: 1, epoch: 3 })).id).toBe(f.row.id);
@@ -86,7 +101,12 @@ suite("remote workspace snapshot storage", () => {
   it("rejects object corruption and leaves the requested plaintext path unpublished", async () => {
     const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
     const objectPath = path.join(root, "objects", ref.objectKey), object = await fs.open(objectPath, "r+");
-    try { await object.write(Buffer.from("X"), 0, 1, 15); } finally { await object.close(); }
+    try {
+      const byte = Buffer.alloc(1);
+      expect((await object.read(byte, 0, 1, 15)).bytesRead).toBe(1);
+      byte[0] = byte[0]! ^ 1;
+      await object.write(byte, 0, 1, 15);
+    } finally { await object.close(); }
     const targetPath = path.join(root, "corrupted.pcws");
     await expect(loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath })).rejects.toThrow("object_hash_mismatch");
     await expect(fs.access(targetPath)).rejects.toMatchObject({ code: "ENOENT" });

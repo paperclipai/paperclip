@@ -190,6 +190,17 @@ export interface AiManagedConnectionSummary {
   unavailableReason?: string;
   usageProbeSupported?: boolean;
 }
+/** Safe provider account details for one authorized saved credential. */
+export interface AiConnectionAccountIdentity {
+  connectionId: string;
+  grantId: string;
+  status: "available" | "unavailable" | "error";
+  checkedAt: string;
+  accountLabel: string | null;
+  organizationLabel: string | null;
+  errorCode?: "unsupported" | "connection_unavailable" | "authentication_required" | "permission_denied" | "rate_limited" | "provider_unavailable" | "invalid_response";
+  message?: string;
+}
 export interface AiConnectionList {
   currentUserId: string;
   pools?: import("./ai-connection-router.js").AiConnectionPool[];

@@ -74,8 +74,23 @@ jobs:
       - name: Refresh pnpm lockfile
         run: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
 
+      # A verified Dependabot lockfile merged to master is trusted lock content.
+      # Report its hash so the proof refresh can admit it.
+      - name: Identify a verified Dependabot lockfile on master
+        id: trusted_lock
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/lockfile-trust.mjs merged
+
       - name: Refresh reviewed eval report dependency proof
-        run: node tests/runner-e2e/prepare-report-lock.mjs --refresh
+        env:
+          TRUSTED_LOCK_SHA256: ${{ steps.trusted_lock.outputs.trusted_lock_sha256 }}
+        run: |
+          if [ -n "$TRUSTED_LOCK_SHA256" ]; then
+            node tests/runner-e2e/prepare-report-lock.mjs --refresh --trusted-lock-sha256 "$TRUSTED_LOCK_SHA256"
+          else
+            node tests/runner-e2e/prepare-report-lock.mjs --refresh
+          fi
 
       - name: Fail on unexpected file changes
         run: |
@@ -97,8 +112,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO_OWNER: ${{ github.repository_owner }}
         run: |
-          if git diff --quiet -- pnpm-lock.yaml; then
-            echo "Lockfile unchanged, nothing to do."
+          # A verified Dependabot lockfile that already resolves changes only
+          # the reporting-lock proof. Commit that proof too.
+          if git diff --quiet -- pnpm-lock.yaml tests/runner-e2e/report-lock.json tests/runner-e2e/report-lock.patch; then
+            echo "Lockfile and reporting-lock proof unchanged, nothing to do."
             echo "pr_url=" >> "$GITHUB_OUTPUT"
             echo "head_sha=" >> "$GITHUB_OUTPUT"
             exit 0

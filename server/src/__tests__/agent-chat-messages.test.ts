@@ -147,7 +147,7 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     const locked = new Promise<number>(resolve => { ready = resolve; });
     const release = new Promise<void>(resolve => { unlock = resolve; });
     const gate = server.db.transaction(async tx => {
-      const [{ pid }] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid() as pid`);
+      const [{ pid }] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
       await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, receipt.conversationId)).for("update");
       ready(pid); await release;
     });
@@ -263,7 +263,7 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     const locked = new Promise<number>(resolve => { ready = resolve; });
     const release = new Promise<void>(resolve => { unlock = resolve; });
     const gate = server.db.transaction(async tx => {
-      const [{ pid }] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid() as pid`);
+      const [{ pid }] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
       await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, f.agentId)).for("update");
       ready(pid);
       await release;
@@ -369,11 +369,11 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     expect((await f.snapshot()).issues.filter(i => i.conversationAgentId)).toHaveLength(0);
   });
 
-  it("rejects forged destinations and server-owned provenance, and respects the feature gate", async () => {
+  it("rejects forged destinations and server-owned provenance while ignoring the retired flag", async () => {
     const f = await fixture();
     expect((await httpSend(f, { ...input, agentId: f.agentId })).status).toBe(400);
     await instanceSettingsService(server.db).updateExperimental({ enableAgentChat: false });
-    try { expect((await httpSend(f)).status).toBe(404); }
+    try { expect((await httpSend(f)).status).toBe(201); }
     finally { await instanceSettingsService(server.db).updateExperimental({ enableAgentChat: true }); }
     const receipt = await send(f);
     const [comment] = await server.db.select().from(issueComments).where(eq(issueComments.id, receipt!.commentId));

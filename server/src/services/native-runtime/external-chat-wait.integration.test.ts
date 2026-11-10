@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { and, eq, ne, sql } from "drizzle-orm";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentWakeupRequests,
@@ -922,7 +922,7 @@ describe("native external-chat response wait", () => {
       await authorizeChatConversationForBoundRun(db, fixture, contextSnapshot, "read");
       const observed = createDb(temporary?.connectionString ?? externalTestDatabaseUrl!);
       const events: Array<Record<string, unknown>> = [], now = Date.now();
-      const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+      const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
       installDatabaseResponseCapture(observed, { issues, heartbeatRuns }, capture);
       try {
         expect(await listExternalReviewWaits(observed, fixture.companyId, [fixture.issueId])).toEqual(governed ? [] : [
@@ -5462,7 +5462,7 @@ describe("native external-chat response wait", () => {
     if (reply) await db.update(chatActions).set({ result: { ...reply.result, savedProviderOutput: payload } }).where(eq(chatActions.id, reply.id));
     const observed = createDb(temporary?.connectionString ?? externalTestDatabaseUrl!);
     const events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns, chatActions }, capture);
     try {
       const context = await new PaperclipRunnerToolAuthority(observed, fixture)

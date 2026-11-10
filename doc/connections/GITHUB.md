@@ -77,6 +77,12 @@ repeat an existing instance approval.
 
 ## Identity resolution
 
+Fresh setup does not reuse an archived personal connection found by name and
+provider. It creates a separate application and connection with an available
+name, such as `GitHub (2)`. The archived identity, credentials, grants, and
+history stay unchanged. An explicit reconnect or application-targeted setup
+continues the existing identity and requires its personal owner.
+
 Every MCP call, `gh` invocation, native Git operation, checkout, health check,
 and webhook binding uses the same order:
 
@@ -123,6 +129,25 @@ Only an unrecoverable provider invalidation marks a grant
 installation-health failure, not as token expiry.
 
 ## Repository access
+
+GitHub can return `403 Resource not accessible by integration` inside an MCP tool
+error even when the connection itself is healthy. A failed tool approval shows
+**GitHub access needed** and **Manage GitHub access**, which opens that connection's
+Permissions page. Check the connected account and the App's access to the intended
+account and repository there. The original provider error remains in the action's
+error details and diagnostic record. Paperclip does not replay the write or hide
+other working tools. Saved GitHub approval errors receive the same presentation.
+The agent's continuation wake carries server-written next steps and tells it
+not to retry until access is repaired. It must never automatically replay a
+stored approval.
+Deferred historical errors receive the same guidance as their saved cards.
+For an App connection's `create_repository`, the agent
+asks the user to create the repository on GitHub, give the App access, and select
+**Refresh access**, then continues with that repository. Token connections ask
+the user to check token permissions and repository selection, then update or
+replace that token. If the method is unavailable, the agent asks the user to
+check the connection's authentication method. GitHub's text stays in the
+untrusted result.
 
 OAuth completion verifies `/user`, every page of `/user/installations`, and every
 page of each installation's accessible repositories. Setup remains incomplete

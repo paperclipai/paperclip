@@ -587,7 +587,7 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
       api.use(activityRoutes(db));
       const execute = createPublicMcpExecutor(db, oauth, createMcpApiDispatch(api));
       const args = { companyId: f.company.id, requestId: randomUUID(), title: "Write a durable report", description: "Research the supplied material", assigneeAgentId: agent!.id };
-      const result = await execute(f.tokens.access_token, "paperclip_create_task", args);
+      const result: Record<string, unknown> = await execute(f.tokens.access_token, "paperclip_create_task", args);
       expect(result).toHaveProperty("task");
       const task = result.task as { id: string; status: string };
       expect(task.status).toBe("todo");
@@ -616,7 +616,7 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
       // Human assignment to a paused agent is deliberate and allowed by existing routes.
       // Creating its queued task must neither unpause the agent nor claim execution started.
       await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agent!.id));
-      const paused = await execute(f.tokens.access_token, "paperclip_create_task", { ...args, requestId: randomUUID(), title: "Wait for the paused researcher" });
+      const paused: Record<string, unknown> = await execute(f.tokens.access_token, "paperclip_create_task", { ...args, requestId: randomUUID(), title: "Wait for the paused researcher" });
       expect(paused).toHaveProperty("task.status", "todo");
       expect(paused.scheduling).toContain("does not guarantee execution has started");
       expect((await db.select().from(agents).where(eq(agents.id, agent!.id)))[0]?.status).toBe("paused");
@@ -669,7 +669,7 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
     const transfers = createPublicMcpTransfers(db, oauth, dispatch, storage);
     const execute = createPublicMcpExecutor(db, oauth, dispatch, transfers);
     const [issue] = await db.insert(issues).values({ companyId: f.company.id, title: "Work", status: "backlog" }).returning();
-    const call = (name: string, a: Record<string, unknown> = {}) => execute(f.tokens.access_token, name, { companyId: f.company.id, ...a });
+    const call = (name: string, a: Record<string, unknown> = {}): Promise<Record<string, unknown>> => execute(f.tokens.access_token, name, { companyId: f.company.id, ...a });
     return { ...f, issue: issue!, call, dispatch, transfers, storage, cleanup: () => rm(storageDir, { recursive: true, force: true }) };
   }
 

@@ -183,7 +183,7 @@ describe("durable inbound chat scheduler receipts", () => {
         wakeCommentId: durableChatRequest.commentId,
         durableChatRequest,
         rethrowOnError: true,
-      });
+      }) as Promise<Awaited<ReturnType<typeof heartbeat.wakeup>>> | undefined;
     return {
       companyId,
       agentId,

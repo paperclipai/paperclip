@@ -1,4 +1,4 @@
-import { and, asc, eq, exists, gt, inArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, exists, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import type { ProviderResourceDisposition } from "../environment-runtime.js";
 import { nextRunLeaseReleaseAt, pendingRunLeaseReleaseCondition } from "../environment-lease-release-state.js";
@@ -7,6 +7,9 @@ import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import type { NativeEnvironmentSettlementScope } from "../native-environment-settlement-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
+import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
+import { hasConfirmedSandboxStopAndRetain } from "../sandbox-stop-and-retain.js";
+import { settleStoppedObservedWorkspace } from "./native-observed-workspace-preservation.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect, "runnerProfileJson" | "resultJson">;
 export function nativeEnvironmentSettlementDisposition(run: Run, succeeded: boolean): ProviderResourceDisposition {
@@ -38,17 +41,23 @@ export function nativeEnvironmentSettlementWork(db: Db, settle: (input: Settleme
     }).from(nativeRunFinalizations)
       .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
         eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId), eq(heartbeatRuns.nativeIssueId, nativeRunFinalizations.issueId)))
-      .innerJoin(nativeRunResults, and(eq(nativeRunResults.id, nativeRunFinalizations.resultId),
+      .leftJoin(nativeRunResults, and(eq(nativeRunResults.id, nativeRunFinalizations.resultId),
         eq(nativeRunResults.runId, nativeRunFinalizations.runId), eq(nativeRunResults.companyId, nativeRunFinalizations.companyId),
         eq(nativeRunResults.issueId, nativeRunFinalizations.issueId), eq(nativeRunResults.schemaStatus, "accepted")))
       .where(and(eq(heartbeatRuns.runtimeMode, "native"),
         inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"]),
-        or(eq(nativeRunFinalizations.phase, "committed"),
-          and(eq(nativeRunFinalizations.phase, "terminal_failure"),
-            sql`${nativeRunFinalizations.failureDetail} ? 'workspaceFinalizeAttempt'`)),
-        exists(db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
-          eq(environmentLeases.companyId, heartbeatRuns.companyId), eq(environmentLeases.heartbeatRunId, heartbeatRuns.id),
-          pendingRunLeaseReleaseCondition(true)))),
+        or(and(isNotNull(nativeRunResults.id),
+          or(eq(nativeRunFinalizations.phase, "committed"),
+            and(eq(nativeRunFinalizations.phase, "terminal_failure"),
+              sql`${nativeRunFinalizations.failureDetail} ? 'workspaceFinalizeAttempt'`)),
+          exists(db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+            eq(environmentLeases.companyId, heartbeatRuns.companyId), eq(environmentLeases.heartbeatRunId, heartbeatRuns.id),
+            pendingRunLeaseReleaseCondition(true))))),
+          and(eq(heartbeatRuns.status, "failed"), eq(nativeRunFinalizations.phase, "observed"),
+            isNull(nativeRunFinalizations.resultId), isNotNull(nativeRunFinalizations.leaseOwner),
+            lte(nativeRunFinalizations.leaseExpiresAt, new Date()),
+            sql`${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,schema}' = 'paperclip.remote-workspace-run.v1'`,
+            sql`${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,state}' = 'prepared'`)),
         scope ? eq(heartbeatRuns.companyId, scope.companyId) : undefined,
         scope?.issueId ? eq(nativeRunFinalizations.issueId, scope.issueId) : undefined,
         scope?.runId ? eq(heartbeatRuns.id, scope.runId) : undefined,
@@ -56,6 +65,12 @@ export function nativeEnvironmentSettlementWork(db: Db, settle: (input: Settleme
       )).orderBy(asc(heartbeatRuns.id)).limit(100);
   }
   async function entry(row: Awaited<ReturnType<typeof candidates>>[number]): Promise<Entry | null> {
+    if (row.phase === "observed") {
+      const leases = await db.select().from(environmentLeases).where(and(
+        eq(environmentLeases.companyId, row.companyId), eq(environmentLeases.heartbeatRunId, row.id)));
+      return leases.length === 1 && leases.every(lease => hasRemoteTerminationReceipt(lease) && hasConfirmedSandboxStopAndRetain(lease))
+        ? { id: row.id, companyId: row.companyId, issueId: row.issueId, dueAt: 0 } : null;
+    }
     const dueAt = await nextRunLeaseReleaseAt(db, row.companyId, row.id,
       nativeEnvironmentSettlementDisposition(row, row.phase === "committed"));
     if (dueAt === null) { retryFloors.delete(row.id); return null; }
@@ -86,6 +101,10 @@ export function nativeEnvironmentSettlementWork(db: Db, settle: (input: Settleme
     const scope = { companyId: current.companyId, issueId: current.issueId, runId: current.id };
     const [row] = await candidates(scope);
     if (!row) { retryFloors.delete(current.id); return null; }
+    if (row.phase === "observed") {
+      await settleStoppedObservedWorkspace(db, current.companyId, current.id);
+      return null;
+    }
     const pending = await entry(row);
     if (!pending || pending.dueAt > Date.now()) return pending;
     if (signal?.aborted) throw new Error("Native environment settlement stopped");

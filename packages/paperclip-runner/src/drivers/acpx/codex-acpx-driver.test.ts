@@ -442,6 +442,34 @@ describe("Codex ACPX harness driver", () => {
     });
   });
 
+  it("keeps Claude status banners out of the answer as status notices", async () => {
+    const fixture = driverFixture({ agent: "claude", model: "claude-sonnet-5" }, {
+      runtimeEvents: [
+        { type: "text_delta", stream: "output", messageId: "m1", text: "Reading the worker." },
+        { type: "text_delta", stream: "output", tag: "agent_message_chunk", text: "Compacting..." },
+        { type: "text_delta", stream: "output", tag: "agent_message_chunk", text: "\n\nCompacting completed." },
+        { type: "text_delta", stream: "output", tag: "agent_message_chunk", text: "**Warning:** Stop hook blocked continuation" },
+        { type: "text_delta", stream: "output", messageId: "m1", text: " Fixed it." },
+      ],
+    });
+    const session = await fixture.driver.openSession({ runId: "run-claude-banners", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
+    await session.startTurn({ message: { text: "Fix it" } });
+    fixture.finishTurn({ status: "completed" });
+    const events = await collectUntil(session.events(), "turn.completed");
+    for (const event of events) validatePrpEvent(event);
+    const notices = events.filter(e => e.eventType === "provider.notice.recorded").map(e => e.payload);
+    expect(notices).toEqual([
+      expect.objectContaining({ category: "context_compaction", details: [{ name: "Phase", value: "running" }] }),
+      expect.objectContaining({ category: "context_compaction", details: [{ name: "Phase", value: "completed" }] }),
+      expect.objectContaining({ category: "provider_informational", severity: "warning", summary: "Stop hook blocked continuation" }),
+    ]);
+    expect(notices[0].noticeId).toBe(notices[1].noticeId);
+    const final = events.find(e => e.eventType === "item.completed" && e.payload.channel === "final");
+    expect(final?.payload.text).toBe("Reading the worker. Fixed it.");
+    expect(events.filter(e => e.eventType === "item.delta").map(e => e.payload.text).join("")).toBe("Reading the worker. Fixed it.");
+    await session.close({ reason: "banners classified" });
+  });
+
   it("opens the qualified Claude profile through the shared driver", async () => {
     const fixture = driverFixture({
       agent: "claude",

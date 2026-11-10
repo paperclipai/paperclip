@@ -188,6 +188,9 @@ export const mcpAttachmentUploads = pgTable("mcp_attachment_uploads", {
   storageProvider: text("storage_provider").notNull(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
   cleanedAt: timestamp("cleaned_at", { withTimezone: true }),
+  // Written only after storage deletion and an authoritative absence readback.
+  // Legacy cleanedAt can predate truthful local filesystem error handling.
+  cleanupVerifiedAt: timestamp("cleanup_verified_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("mcp_attachment_upload_request_uq").on(t.companyId, t.userId, t.requestId),

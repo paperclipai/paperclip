@@ -182,6 +182,30 @@ describe("actionable cost data quality", () => {
     expect((await costDataQualityReport(db, owner.companyId, true, undefined, now)).runs[0].reason).toBe("retryable");
   });
 
+  it("exposes acknowledged late receipt debt through existing run and retry metadata", async () => {
+    const owner = await company(), other = await company();
+    const pending = await run(owner, { costAccountedAt: now, accountingLastError: "late_usage_requires_reconciliation",
+      usageJson: { accountingReceiptReady: true, accountingLateReceiptPending: true,
+        accountingLateReceiptId: randomUUID(), privateProviderPayload: "PRIVATE LATE RECEIPT" } });
+    const report = await costDataQualityReport(db, owner.companyId, true, undefined, now);
+    expect(report.canRetry).toBe(true);
+    expect(report.runs).toEqual([expect.objectContaining({ id: pending.id, runId: pending.id, reason: "retryable" })]);
+    expect(JSON.stringify(report)).not.toContain("PRIVATE LATE RECEIPT");
+    expect((await costDataQualityReport(db, owner.companyId, false, undefined, now)).canRetry).toBe(false);
+    expect((await costDataQualityReport(db, other.companyId, true, undefined, now)).runs).toEqual([]);
+    const summary = await costService(db).summary(owner.companyId, { from: new Date("2026-10-01T00:00:00Z"), to: now });
+    expect(summary.pendingRunCount).toBe(1);
+    expect(summary.pricingComplete).toBe(false);
+    const health = await accountingIntegrityService(db).health(owner.companyId);
+    expect(health.pendingRunCount).toBe(1);
+    expect(health.items).toEqual([expect.objectContaining({ runId: pending.id, state: "retryable",
+      lastError: "late_usage_requires_reconciliation" })]);
+    const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, pending.id));
+    expect(saved.costAccountedAt?.toISOString()).toBe(now.toISOString());
+    expect(saved.costAccountingPending).toBe(true);
+    expect(saved.usageJson?.accountingLateReceiptPending).toBe(true);
+  });
+
   it("bounds each category independently and reports truncation", async () => {
     const owner = await company();
     for (let i = 0; i < 26; i++) {

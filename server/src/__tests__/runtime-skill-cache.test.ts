@@ -33,7 +33,11 @@ describe("runtime skill revision cache", () => {
     skill = { id: randomUUID(), companyId: randomUUID(), sourceType: "github", sourceLocator: "https://github.com/org/repo",
       sourceRef: "a".repeat(40), slug: "test", markdown: contents["SKILL.md"], metadata: { owner: "org", repo: "repo", repoSkillDir: "skills/test" },
       fileInventory: [{ path: "SKILL.md", kind: "skill" }, { path: "references/a.md", kind: "reference" }],
-    } as CompanySkill;
+      key: "org/repo/test", name: "Test", description: null, trustLevel: "markdown_only", compatibility: "compatible",
+      iconUrl: null, color: null, tagline: null, authorName: null, homepageUrl: null, categories: [], sharingScope: "company",
+      publicShareToken: null, forkedFromSkillId: null, forkedFromCompanyId: null, starCount: 0, installCount: 0, forkCount: 0,
+      currentVersionId: null, createdAt: new Date(0), updatedAt: new Date(0),
+    };
   });
   afterEach(async () => { await makeWritable(root); await fs.rm(root, { recursive: true, force: true }); });
   const reader = () => vi.fn(async (file: string) => contents[file]);

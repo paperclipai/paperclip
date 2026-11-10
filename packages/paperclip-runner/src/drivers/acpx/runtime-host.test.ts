@@ -1778,6 +1778,7 @@ describe("ACPX runtime host", () => {
     const onElicitation = vi.fn();
     const onExtensionRequest = vi.fn();
     const onExtensionNotification = vi.fn();
+    const onTerminalSessionFailure = vi.fn();
     const runtime = runtimePort({ startTurn });
     const host = await AcpxRuntimeHost.open(
       {
@@ -1797,6 +1798,7 @@ describe("ACPX runtime host", () => {
         onElicitation,
         onExtensionRequest,
         onExtensionNotification,
+        onTerminalSessionFailure,
       }),
     ).toMatchObject({ requestId: turn.requestId, result: turn.result });
     expect(startTurn).toHaveBeenCalledWith({
@@ -1805,6 +1807,7 @@ describe("ACPX runtime host", () => {
       onElicitation,
       onExtensionRequest,
       onExtensionNotification,
+      onTerminalSessionFailure,
     });
     expect(() =>
       host.startTurn({ text: "Concurrent", requestId: "turn-2" }),
@@ -1986,6 +1989,7 @@ describe("ACPX runtime host", () => {
 
   it("retains a settled turn when shutdown cleanup must be retried", async () => {
     const fixture = await hostFixture();
+    const credential = credentialLeaseFixture(fixture.root);
     let settleTurn!: (value: { stopReason: string }) => void;
     const turn = {
       ...runtimeTurn(),
@@ -2000,6 +2004,8 @@ describe("ACPX runtime host", () => {
         if (failRuntimeClose) throw new Error("runtime cleanup failed");
       },
     });
+    const dependencies = fixture.dependencies({ openRuntime: async () => runtime });
+    dependencies.stageCredential = vi.fn(async () => credential);
     const host = await AcpxRuntimeHost.open(
       {
         ...fixture.options,
@@ -2008,7 +2014,7 @@ describe("ACPX runtime host", () => {
         permissionMode: "approve-reads",
         environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}" },
       },
-      fixture.dependencies({ openRuntime: async () => runtime }),
+      dependencies,
     );
     host.startTurn({ text: "Complete the task.", requestId: "turn-1" });
 
@@ -2016,6 +2022,8 @@ describe("ACPX runtime host", () => {
     settleTurn({ stopReason: "end_turn" });
     await expect(firstClose).rejects.toThrow(/cleanup failed/);
     expect(turn.cancel).toHaveBeenCalledOnce();
+    expect(credential.close).not.toHaveBeenCalled();
+    expect(host.isClosed()).toBe(false);
 
     failRuntimeClose = false;
     await expect(
@@ -2023,6 +2031,8 @@ describe("ACPX runtime host", () => {
     ).resolves.toBeUndefined();
     expect(turn.cancel).toHaveBeenCalledTimes(2);
     expect(runtime.close).toHaveBeenCalledTimes(2);
+    expect(credential.close).toHaveBeenCalledOnce();
+    expect(host.isClosed()).toBe(true);
   });
 
   it("closes a command lease that resolves after admission is aborted", async () => {
@@ -2307,7 +2317,7 @@ describe("ACPX runtime host", () => {
   }, ACPX_LONG_WAIT_TEST_TIMEOUT_MS);
 });
 
-// Deadline tests exercise runtime admission and cleanup, not kernel lease
+// Runtime lifecycle tests exercise admission and cleanup, not kernel lease
 // acquisition. Keep their credential owner deterministic: real lease staging
 // uses hashed loopback ports that unrelated parallel tests can occupy. The
 // credential and retained-owner integration tests still use real leases.

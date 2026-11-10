@@ -22,7 +22,7 @@ import { StatusIcon } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { Identity } from "./Identity";
-import type { Issue, IssueStatus } from "@paperclipai/shared";
+import type { Issue, IssueDisplayStatus, IssueStatus } from "@paperclipai/shared";
 import { AlertTriangle } from "lucide-react";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 import { collectSubtreeLiveCounts } from "../lib/liveIssueIds";
@@ -43,11 +43,12 @@ export const boardStatuses = [
   "backlog",
   "todo",
   "in_progress",
+  "monitoring",
   "in_review",
   "blocked",
   "done",
   "cancelled",
-] as const satisfies readonly IssueStatus[];
+] as const satisfies readonly IssueDisplayStatus[];
 
 const defaultKanbanColumnTone = {
   rail: "border-border bg-muted/20",
@@ -62,7 +63,7 @@ const defaultKanbanColumnTone = {
 // Every column carries a status-hued tint (matching the app-wide status
 // vocabulary: gray backlog, amber todo, blue in-progress, violet review,
 // red blocked, green done) so no column reads as accidentally unstyled.
-export const kanbanColumnTones: Partial<Record<IssueStatus, typeof defaultKanbanColumnTone>> = {
+export const kanbanColumnTones: Partial<Record<IssueDisplayStatus, typeof defaultKanbanColumnTone>> = {
   backlog: {
     rail: "border-border bg-muted/30",
     railOver: "bg-muted/50 ring-1 ring-neutral-400/25",
@@ -128,8 +129,8 @@ export const kanbanColumnTones: Partial<Record<IssueStatus, typeof defaultKanban
   },
 };
 
-export function getKanbanColumnTone(status: IssueStatus) {
-  return kanbanColumnTones[status] ?? defaultKanbanColumnTone;
+export function getKanbanColumnTone(status: IssueDisplayStatus) {
+  return kanbanColumnTones[status === "monitoring" ? "in_progress" : status] ?? defaultKanbanColumnTone;
 }
 
 function statusLabel(status: string): string {
@@ -138,9 +139,10 @@ function statusLabel(status: string): string {
 
 export function resolveKanbanTargetStatus(overId: string, issues: Issue[]): IssueStatus | null {
   if ((boardStatuses as readonly string[]).includes(overId)) {
-    return overId as IssueStatus;
+    return overId === "monitoring" ? null : overId as IssueStatus;
   }
-  return issues.find((issue) => issue.id === overId)?.status ?? null;
+  const target = issues.find((issue) => issue.id === overId);
+  return target?.displayStatus === "monitoring" ? null : target?.status ?? null;
 }
 
 interface Agent {
@@ -175,7 +177,7 @@ function KanbanColumn({
   revealIncrement,
   onShowMore,
 }: {
-  status: IssueStatus;
+  status: IssueDisplayStatus;
   issues: Issue[];
   agents?: Agent[];
   liveIssueIds?: Set<string>;
@@ -186,7 +188,7 @@ function KanbanColumn({
   revealIncrement: number;
   onShowMore: () => void;
 }) {
-  const { setNodeRef, isOver } = useDroppable({ id: status });
+  const { setNodeRef, isOver } = useDroppable({ id: status, disabled: status === "monitoring" });
 
   const isEmpty = issues.length === 0;
   const visibleIssues = collapsed ? [] : issues.slice(0, visibleCount);
@@ -412,13 +414,14 @@ export function KanbanBoard({
   );
 
   const columnIssues = useMemo(() => {
-    const grouped: Record<IssueStatus, Issue[]> = {} as Record<IssueStatus, Issue[]>;
+    const grouped: Record<IssueDisplayStatus, Issue[]> = {} as Record<IssueDisplayStatus, Issue[]>;
     for (const status of boardStatuses) {
       grouped[status] = [];
     }
     for (const issue of issues) {
-      if (grouped[issue.status]) {
-        grouped[issue.status].push(issue);
+      const status = issue.displayStatus ?? issue.status;
+      if (grouped[status]) {
+        grouped[status].push(issue);
       }
     }
     return grouped;

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, fillPlaceholders } from "drizzle-orm";
 import { agents, chatActions, chatConversations, chatEndpointResources, chatEndpoints,
   chatGitHubReviews, chatMessageLinks, companies, heartbeatRuns, issueComments, issues,
   runIdentityContexts, toolApplications, toolConnections, type Db } from "@paperclipai/db";
@@ -38,7 +38,8 @@ export async function seedGitHubReviewWait(db: Db) {
     event: { event: "mention", deliveryId: reviewId, repositoryId, repository, pullNumber, title: "Review", body: "",
       baseSha: "0".repeat(40), headSha, baseBranch: "main", author: { id: "1", login: "author", isBot: false },
       sender: { id: "1", login: "author" }, draft: false, labels: [] },
-    assessment: { reviewedCommit: headSha, score: 5, complete: true, summary: "Reviewed", findings: [] } });
+    assessment: { reviewedCommit: headSha, score: 5, complete: true, summary: "Reviewed", rationale: "Reviewed",
+      coverage: { reviewedPaths: [], omittedPaths: [], limitations: [] }, findings: [] } });
   await db.insert(chatActions).values({ id: publicationId, companyId, endpointId, kind: "github_review_publication",
     providerActionId: `github_publication:${issueId}:assessment:${createHash("sha256").update(JSON.stringify(reviewId)).digest("hex")}`,
     status: "processed" });
@@ -60,6 +61,16 @@ export function captureReviewWaitQueries(db: Db, queries: CapturedReviewWaitQuer
       const builder = target.select(...fields), from = builder.from.bind(builder);
       builder.from = ((...args: Parameters<typeof from>) => {
         const selection = from(...args), execute = selection.execute.bind(selection);
+        const prepare = selection.prepare.bind(selection);
+        selection.prepare = ((...args: Parameters<typeof prepare>) => {
+          const prepared = prepare(...args), executePrepared = prepared.execute.bind(prepared);
+          prepared.execute = async (values = {}) => {
+            const query = prepared.getQuery();
+            queries.push({ sql: query.sql, params: fillPlaceholders(query.params, values) });
+            return executePrepared(values);
+          };
+          return prepared;
+        }) as typeof selection.prepare;
         selection.execute = async () => { queries.push(selection.toSQL()); return execute(); };
         return selection;
       }) as typeof builder.from;

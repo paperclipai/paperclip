@@ -95,6 +95,31 @@ export async function getWorkspaceSnapshot(db: Db, input: { companyId: string; w
   return row && ["uploaded", "committed", "superseded"].includes(row.status) ? reference(row) : null;
 }
 
+export async function recoverWorkspaceSnapshotArchive(input: {
+  db: Db; storage: StorageService; snapshotId: string; companyId: string; workspaceId: string;
+  targetPath: string; signal?: AbortSignal;
+}): Promise<WorkspaceSnapshotRef | null> {
+  const [row] = await input.db.select().from(executionWorkspaceSnapshots).where(scope(input));
+  if (!row) failure("missing");
+  if (["uploaded", "committed", "superseded"].includes(row!.status)) {
+    const ref = reference(row!);
+    await loadWorkspaceSnapshotArchive({ ...input, reference: ref });
+    return ref;
+  }
+  if (row!.status !== "pending") failure("not_writable");
+  const attempts = Array.isArray(row!.metadata?.uploads) ? row!.metadata!.uploads as UploadAttempt[] : [];
+  for (const attempt of attempts) {
+    input.signal?.throwIfAborted();
+    const ref: WorkspaceSnapshotRef = { schema: SCHEMA, ...attempt, id: row!.id, companyId: row!.companyId,
+      workspaceId: row!.executionWorkspaceId, generation: row!.generation };
+    validateReference(ref);
+    if (!(await input.storage.headObject(ref.companyId, ref.objectKey, { signal: input.signal })).exists) continue;
+    await loadWorkspaceSnapshotArchive({ ...input, reference: ref });
+    return ref;
+  }
+  return null;
+}
+
 /** Upload attempts are journaled before remote I/O. The caller owns publication. */
 export async function uploadWorkspaceSnapshot(input: {
   db: Db; storage: StorageService; snapshotId: string; companyId: string; workspaceId: string;

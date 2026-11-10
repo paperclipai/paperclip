@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback, useId } from "react";
 import { cn } from "../lib/utils";
 import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody";
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
+import { ApiError } from "../api/client";
 import { useDurableAutosave } from "../hooks/useDurableAutosave";
 import { useDraftOwner } from "../hooks/useDraftOwner";
 import { loadStructuredDraft, saveStructuredDraft } from "../lib/composer-draft";
@@ -16,6 +17,8 @@ interface InlineEditorProps {
   className?: string;
   placeholder?: string;
   multiline?: boolean;
+  /** Keep a short heading's editor as wide as its live text, preserving adjacent controls. */
+  fitContent?: boolean;
   imageUploadHandler?: (file: File) => Promise<string>;
   /** Called when a non-image file is dropped onto the editor. */
   onDropFile?: (file: File) => Promise<void>;
@@ -33,13 +36,15 @@ interface InlineEditorProps {
    * own affordance opens the editor (the description bubble's pencil, PAP-375).
    */
   defaultEditing?: boolean;
-  /** Notified when the multiline editor swaps between display and edit mode. */
+  /** Notified when the editor swaps between display and edit mode. */
   onEditingChange?: (editing: boolean) => void;
   /**
    * Keep unsaved edits in browser storage under this key, so a reload or an
    * outage does not lose them. A stored edit is restored and saved on mount.
    */
   draftKey?: string;
+  /** Fresh field read used before replaying a restored draft; cached values are display only. */
+  readCurrentValue?: () => Promise<string>;
 }
 
 /** Shared padding so display and edit modes occupy the exact same box. */
@@ -79,6 +84,7 @@ function OwnedInlineEditor({
   className,
   placeholder = "Click to edit...",
   multiline = false,
+  fitContent = false,
   nullable = false,
   imageUploadHandler,
   onDropFile,
@@ -88,14 +94,29 @@ function OwnedInlineEditor({
   defaultEditing = false,
   onEditingChange,
   draftKey,
+  readCurrentValue,
   draftOwner,
 }: InlineEditorProps & { draftOwner: string | undefined }) {
   const [editing, setEditing] = useState(false);
+  const editingChangeCallback = useRef(onEditingChange);
+  editingChangeCallback.current = onEditingChange;
+  useEffect(() => {
+    if (multiline || !editing) return;
+    const notify = editingChangeCallback.current;
+    notify?.(true);
+    // Report only an edit that actually opened. This also retires the old
+    // account's edit on unmount, without a late save notifying its new owner.
+    return () => notify?.(false);
+  }, [editing, multiline]);
   const [multilineEditing, setMultilineEditing] = useState(multiline && defaultEditing);
   const [multilineFocused, setMultilineFocused] = useState(false);
   const [draft, setDraft] = useState(value);
   const unownedDraft = useRef<StoredInlineDraft | null>(null);
   const lastPropValueRef = useRef(value);
+  const lastDraftKeyRef = useRef(draftKey);
+  const restoredBaseRef = useRef<StoredInlineDraft | null>(null);
+  const readCurrentValueRef = useRef(readCurrentValue);
+  readCurrentValueRef.current = readCurrentValue;
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const markdownRef = useRef<MarkdownEditorRef>(null);
   const autosaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -110,7 +131,19 @@ function OwnedInlineEditor({
       await onSave(next);
     },
   });
-  const { markDirty, reset, run: runAutosave } = autosave;
+  const { markDirty, clearDirty, reset, run: runAutosave } = autosave;
+  const runInlineAutosave = useCallback((next: string) => {
+    const restored = restoredBaseRef.current;
+    const readCurrent = readCurrentValueRef.current;
+    return runAutosave(next, {
+      beforeSave: restored && restored.draft.trim() === next && readCurrent ? async () => {
+        const current = await readCurrent();
+        if (current !== restored.base && current.trim() !== next) {
+          throw new ApiError("This changed since you loaded it. Your draft is kept for review.", 409, {});
+        }
+      } : undefined,
+    });
+  }, [runAutosave]);
   const autosaveState = autosave.status;
   const autosaveStateRef = useRef(autosaveState);
   autosaveStateRef.current = autosaveState;
@@ -137,6 +170,7 @@ function OwnedInlineEditor({
   }, [clearStoredDraft, storageKey, value]);
 
   const changeDraft = useCallback((next: string) => {
+    restoredBaseRef.current = null;
     setDraft(next);
     if (draftOwner === undefined) unownedDraft.current = { version: 1, draft: next, base: value };
     if (!storageKey) return;
@@ -146,14 +180,15 @@ function OwnedInlineEditor({
 
   useEffect(() => {
     const previousValue = lastPropValueRef.current;
+    const sameTarget = lastDraftKeyRef.current === draftKey;
     lastPropValueRef.current = value;
+    lastDraftKeyRef.current = draftKey;
+    if (sameTarget && previousValue === value) return;
     setDraft((currentDraft) => {
-      if (multiline && multilineFocused && currentDraft !== previousValue) {
-        return currentDraft;
-      }
+      if (sameTarget && (editing || multilineEditing) && currentDraft !== previousValue) return currentDraft;
       return value;
     });
-  }, [value, multiline, multilineFocused]);
+  }, [value, draftKey, editing, multilineEditing]);
 
   // An edit that never saved (reload, crash, outage) comes back. It saves on
   // its own only when the server value is still the one it was based on;
@@ -162,6 +197,7 @@ function OwnedInlineEditor({
   useEffect(() => {
     if (!storageKey || restoredDraftRef.current === storageKey) return;
     restoredDraftRef.current = storageKey;
+    restoredBaseRef.current = null;
     if (unownedDraft.current) {
       if (draft.trim() !== value.trim()) saveStructuredDraft(storageKey, { ...unownedDraft.current, draft });
       else clearStoredDraft();
@@ -174,6 +210,7 @@ function OwnedInlineEditor({
       clearStoredDraft();
       return;
     }
+    restoredBaseRef.current = stored;
     setDraft(stored.draft);
     if (multiline) {
       setMultilineEditing(true);
@@ -181,7 +218,7 @@ function OwnedInlineEditor({
     } else {
       setEditing(true);
     }
-    if (stored.base === value) void runAutosave(stored.draft.trim());
+    if (stored.base === value) void runInlineAutosave(stored.draft.trim());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storageKey]);
 
@@ -274,10 +311,10 @@ function OwnedInlineEditor({
       if (!multiline) setEditing(false);
       return;
     }
-    const result = await runAutosave(valueToSave);
+    const result = await runInlineAutosave(valueToSave);
     // A single-line edit stays open until it is saved, so its text is not lost.
     if (!multiline && result.kind === "saved") setEditing(false);
-  }, [clearStoredDraft, draft, draftKey, multiline, nullable, runAutosave, value]);
+  }, [clearStoredDraft, draft, draftKey, multiline, nullable, runInlineAutosave, value]);
 
   /** Multiline blur/submit: show autosave indicator when persisting */
   const finalizeMultilineBlurOrSubmit = useCallback(() => {
@@ -338,9 +375,8 @@ function OwnedInlineEditor({
     const trimmed = draft.trim();
     // Nullable: empty draft can still be a real edit (clearing); only skip debounce when unchanged or empty is invalid.
     if (trimmed === value || (!trimmed && !nullable)) {
-      if (autosaveStateRef.current !== "saved") {
-        reset();
-      }
+      if (autosaveStateRef.current === "saved") clearDirty();
+      else reset();
       return;
     }
     markDirty();
@@ -356,7 +392,7 @@ function OwnedInlineEditor({
         clearTimeout(autosaveDebounceRef.current);
       }
     };
-  }, [commit, draft, markDirty, multiline, multilineFocused, nullable, reset, value]);
+  }, [clearDirty, commit, draft, markDirty, multiline, multilineFocused, nullable, reset, value]);
 
   if (multiline) {
     const previewValue = autosaveState === "saved" || autosaveState === "idle" ? draft : value;
@@ -471,12 +507,14 @@ function OwnedInlineEditor({
   }
 
   if (editing) {
-
-    return (
+    const editor = (
       <textarea
         ref={inputRef}
         value={draft}
+        aria-invalid={autosaveState === "error" || undefined}
+        aria-description={autosaveState === "error" ? autosave.label ?? undefined : undefined}
         rows={1}
+        aria-label={placeholder}
         onChange={(e) => {
           changeDraft(e.target.value);
           autoSize(e.target);
@@ -492,6 +530,12 @@ function OwnedInlineEditor({
         )}
       />
     );
+    return fitContent ? (
+      <span className="inline-editor-fit">
+        <span aria-hidden className={cn("invisible whitespace-pre", pad, className)}>{draft || " "}</span>
+        {editor}
+      </span>
+    ) : editor;
   }
 
   // Use div instead of Tag when rendering markdown to avoid invalid nesting

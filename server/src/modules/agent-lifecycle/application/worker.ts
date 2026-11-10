@@ -33,8 +33,12 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
       renewal.unref?.();
       try {
         const operation = agent.lifecycleOperation!;
-        const pluginIds = agent.lifecycleRequiredPluginIds ?? await runStep("select_plugins", () => driver.requiredPluginIds(agent));
-        if (agent.lifecycleRequiredPluginIds === null && !await runStep("save_plugins", () => store.setRequiredPlugins(agent, owner, pluginIds))) continue;
+        const saved = agent.lifecycleRequiredPluginIds;
+        const selecting = saved === null || (["preparing", "resuming"].includes(agent.lifecycleState)
+          && !operation.hostComplete && operation.completedPluginIds.length === 0);
+        const pluginIds = !selecting ? saved
+          : [...new Set([...(saved ?? []), ...await runStep("select_plugins", () => driver.requiredPluginIds(agent))])];
+        if ((saved === null || pluginIds.length !== saved.length) && !await runStep("save_plugins", () => store.setRequiredPlugins(agent, owner, pluginIds))) continue;
         if (!canRun()) {
           await runStep("defer", () => store.defer(agent, owner, null, new Date()));
           return;

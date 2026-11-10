@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
+import { appearanceForPalette } from "@paperclipai/shared";
 import { AgentChatPicker, type AgentChatPickerProps } from "./AgentChatPicker";
 
 const agents = [
@@ -41,6 +42,24 @@ afterEach(async () => {
 });
 
 describe("AgentChatPicker", () => {
+  it("shows saved custom avatars and default avatars in agent choices", async () => {
+    await render({ agents: [
+      { ...agents[0], appearance: { ...appearanceForPalette("deep-tide"), customAvatarAssetId: "22222222-2222-4222-8222-222222222222" } },
+      agents[1],
+    ] });
+    const customImage = options()[0].querySelector("img");
+    expect(customImage?.getAttribute("src")).toBe("/api/assets/22222222-2222-4222-8222-222222222222/content");
+    expect(customImage?.getAttribute("width")).toBe("32");
+    expect(options()[1].querySelector("img")?.getAttribute("src")).toMatch(/^\/api\/agent-avatars\/cap-v1\//);
+  });
+
+  it("lets a custom renderer replace the default avatar", async () => {
+    await render({ renderAgentIcon: agent => <span>{agent.title} marker</span> });
+    expect(options()[0].textContent).toContain("Engineering Lead marker");
+    expect(options()[1].textContent).toContain("Product Designer marker");
+    expect(options().flatMap(option => [...option.querySelectorAll("img")])).toHaveLength(0);
+  });
+
   it("does not close a reopened picker when an earlier selection finishes", async () => {
     let finish!: () => void;
     await render({ onSelect: () => new Promise<void>(resolve => { finish = resolve; }) });

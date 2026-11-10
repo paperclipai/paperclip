@@ -914,6 +914,62 @@ describe("claude_local ACP lane", () => {
     );
     // C4 — no XDG_* variable is introduced for in-sandbox credential discovery.
     expect(Object.keys(meta[0]?.env ?? {}).filter((key) => key.startsWith("XDG_"))).toEqual([]);
+    const toolShellPrefix = String(meta[0]?.env?.CLAUDE_CODE_SHELL_PREFIX ?? "");
+    expect(toolShellPrefix).toBe(path.posix.join(path.posix.dirname(remappedConfigDir), "tool-shell-prefix.sh"));
+    expect((await fs.stat(toolShellPrefix)).mode & 0o777).toBe(0o700);
+  });
+
+  it("keeps an operator CLAUDE_CODE_SHELL_PREFIX and installs no tool shell prefix", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-operator-prefix-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    const sharedClaudeConfig = path.join(root, "shared-claude-config");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(sharedClaudeConfig, { recursive: true });
+    await fs.writeFile(path.join(sharedClaudeConfig, "CLAUDE.md"), "# shared guidance\n", "utf8");
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip-home");
+    process.env.PAPERCLIP_INSTANCE_ID = "test";
+    process.env.CLAUDE_CONFIG_DIR = sharedClaudeConfig;
+
+    const meta: AdapterInvocationMeta[] = [];
+    const execute = createClaudeAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never,
+    });
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          promptTemplate: "Do the assigned work.",
+          env: { CLAUDE_CODE_SHELL_PREFIX: "/opt/operator/audit-shell.sh" },
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner(),
+        } as never,
+        authToken: "real-run-jwt",
+        onMeta: async (payload: AdapterInvocationMeta) => {
+          meta.push(payload);
+        },
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(meta[0]?.env?.CLAUDE_CODE_SHELL_PREFIX).toBe("/opt/operator/audit-shell.sh");
+    const remoteConfigDir = String(meta[0]?.env?.CLAUDE_CONFIG_DIR ?? "");
+    await expect(
+      fs.stat(path.join(path.dirname(remoteConfigDir), "tool-shell-prefix.sh")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("test_claude_acp_seam_registers_workspace_sync_back", async () => {

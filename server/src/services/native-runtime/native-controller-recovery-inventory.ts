@@ -1,6 +1,7 @@
 import type { Db } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
-import { inspectNativeRunnerUpgradeHeader } from "./native-runner-checkpoint.js";
+import { inspectNativeRunnerUpgradeHeader, NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES,
+  NATIVE_CHECKPOINT_INSPECTION_TOTAL_MAX_BYTES } from "./native-runner-checkpoint.js";
 
 /** An explicit, paginated diagnostic. Never called by an idle/background scan.
  * This inventories selected retained task-session pointers, not all history.
@@ -23,7 +24,8 @@ export async function readNativeControllerRecoveryInventory(db: Db, input: { aft
       r.native_session_id as "sessionId", r.runner_instance_id as "runnerId",
       case when pg_column_size(r.runner_profile_json->'nativeControllerRecovery') <= 4096
         then r.runner_profile_json->'nativeControllerRecovery' else null end as metadata,
-      case when pg_column_size(c.material) <= 262144 and sum(pg_column_size(c.material)) over () <= 8388608
+      case when pg_column_size(c.material) <= ${NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES}
+        and sum(pg_column_size(c.material)) over () <= ${NATIVE_CHECKPOINT_INSPECTION_TOTAL_MAX_BYTES}
         then c.material else null end as material,
       (r.finished_at is null or r.status not in ('succeeded', 'failed', 'cancelled', 'interrupted', 'timed_out')
         or f.run_id is null or f.lease_owner is not null or f.recovery_state is not null

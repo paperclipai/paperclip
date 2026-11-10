@@ -151,6 +151,12 @@ provider; restart recovery preserves files until retirement is proven.
    the host. Retry an unstable checkpoint up to three times; if it cannot be
    validated, close the owned provider and perform the stopped collector. Other
    execution paths retain their stopped-provider collection boundary.
+
+   File preparation uses the same admitted lifecycle policy as native execution.
+   An inherited environment policy can use the agent's warm default. For a new
+   admission, an explicit per-turn environment policy still wins. A persisted
+   admission keeps its pinned policy. A policy change does not mark an old
+   pending copy saved or grant access to a stopped or replaced lease.
 4. Recheck the responsible user's current authorization. Under the same agent
    lock used by editor writes, apply only files changed or deleted relative to
    the last acknowledged baseline. For a competing edit or deletion of the same

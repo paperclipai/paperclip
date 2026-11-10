@@ -71,7 +71,7 @@ describe("agent commentary browsing", () => {
     await db.insert(agents).values({ id: agentId, companyId: pagedCompanyId, name: "Writer", role: "engineer", adapterType: "codex_local" });
     await db.insert(heartbeatRuns).values({ id: runId, companyId: pagedCompanyId, agentId, status: "succeeded" });
     await db.insert(agentCommentary).values(Array.from({ length: 58 }, (_, index) => ({
-      companyId: pagedCompanyId, agentId, runId, kind: "suggestion", body: `Message ${index}`,
+      companyId: pagedCompanyId, agentId, runId, kind: "suggestion" as const, body: `Message ${index}`,
       idempotencyKey: String(index), payloadHash: "hash",
     })));
     const first = await reader.list(pagedCompanyId, query(), sql`true`);

@@ -1226,7 +1226,8 @@ export const providerDescriptorSchema = {
         "acpx",
         "openai_dot",
         "grok_bot",
-        "muse"
+        "muse",
+        "cursor_cloud"
       ]
     },
     "driver": {
@@ -1238,7 +1239,8 @@ export const providerDescriptorSchema = {
         "acpx_runtime",
         "openai_dot_mcp",
         "grok_bot_mcp",
-        "muse_external"
+        "muse_external",
+        "cursor_cloud_api"
       ]
     },
     "model": {
@@ -1534,6 +1536,19 @@ export const providerDescriptorSchema = {
               "const": "remote_service"
             }
           }
+        },
+        {
+          "properties": {
+            "provider": {
+              "const": "cursor_cloud"
+            },
+            "driver": {
+              "const": "cursor_cloud_api"
+            },
+            "executionKind": {
+              "const": "local_process"
+            }
+          }
         }
       ]
     },
@@ -1808,6 +1823,9 @@ export const providerEventSchema = {
       "$ref": "#/$defs/plan"
     },
     {
+      "$ref": "#/$defs/planProposal"
+    },
+    {
       "$ref": "#/$defs/toolExecution"
     },
     {
@@ -1965,6 +1983,42 @@ export const providerEventSchema = {
       },
       "additionalProperties": false
     },
+    "planProposal": {
+      "type": "object",
+      "description": "A provider-authored proposed plan document awaiting human approval (Codex plan item, Claude ExitPlanMode). Paperclip may synchronize a completed proposal into the issue's durable Plan document; it is distinct from the within-turn plan.updated checklist.",
+      "required": [
+        "schema",
+        "proposalId",
+        "status",
+        "markdown",
+        "source"
+      ],
+      "properties": {
+        "schema": {
+          "const": "paperclip.plan.proposed.v1"
+        },
+        "proposalId": {
+          "$ref": "#/$defs/id"
+        },
+        "status": {
+          "enum": [
+            "streaming",
+            "completed"
+          ]
+        },
+        "markdown": {
+          "type": "string",
+          "maxLength": 60000
+        },
+        "source": {
+          "enum": [
+            "codex_plan_item",
+            "claude_exit_plan_mode"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "toolExecution": {
       "type": "object",
       "required": [
@@ -2050,6 +2104,15 @@ export const providerEventSchema = {
         "progress": {
           "$ref": "#/$defs/nullableShortText"
         },
+        "subject": {
+          "$ref": "#/$defs/nullableShortText"
+        },
+        "description": {
+          "$ref": "#/$defs/nullableShortText"
+        },
+        "blockedReason": {
+          "$ref": "#/$defs/nullableShortText"
+        },
         "output": {
           "type": [
             "string",
@@ -2070,6 +2133,71 @@ export const providerEventSchema = {
             "null"
           ],
           "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "parentItemId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fileChanges": {
+          "description": "Files changed by this one edit call, each with a bounded patch. Paths are workspace-relative.",
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "operation",
+              "previousPath",
+              "additions",
+              "deletions",
+              "diff",
+              "diffTruncated"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+              },
+              "operation": {
+                "enum": [
+                  "create",
+                  "modify",
+                  "delete",
+                  "rename"
+                ]
+              },
+              "previousPath": {
+                "$ref": "#/$defs/safePath"
+              },
+              "additions": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "deletions": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "diff": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 32768
+              },
+              "diffTruncated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false
@@ -2226,6 +2354,12 @@ export const providerEventSchema = {
                 "$ref": "#/$defs/nullableShortText"
               },
               "activitySummary": {
+                "$ref": "#/$defs/nullableShortText"
+              },
+              "prompt": {
+                "$ref": "#/$defs/nullableShortText"
+              },
+              "result": {
                 "$ref": "#/$defs/nullableShortText"
               }
             },
@@ -2510,7 +2644,9 @@ export const providerEventSchema = {
             "running",
             "completed",
             "failed",
-            "cancelled"
+            "cancelled",
+            "blocked",
+            "stopped"
           ]
         },
         "blocking": {
@@ -2525,6 +2661,34 @@ export const providerEventSchema = {
         },
         "summary": {
           "$ref": "#/$defs/nullableShortText"
+        },
+        "outcome": {
+          "enum": [
+            "running",
+            "passed",
+            "context",
+            "feedback",
+            "blocked",
+            "stopped",
+            "failed"
+          ]
+        },
+        "message": {
+          "$ref": "#/$defs/nullableShortText"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 160
+        },
+        "toolName": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 160
         }
       },
       "additionalProperties": false
@@ -2605,11 +2769,60 @@ export const providerEventSchema = {
             "allowed",
             "denied",
             "user_required",
+            "timed_out",
+            "aborted",
             "unknown"
           ]
         },
         "summary": {
           "$ref": "#/$defs/nullableShortText"
+        },
+        "actionKind": {
+          "enum": [
+            "command",
+            "execve",
+            "writeStdin",
+            "applyPatch",
+            "networkAccess",
+            "mcpToolCall",
+            "requestPermissions",
+            "unknown"
+          ]
+        },
+        "action": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 1000
+        },
+        "riskLevel": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical",
+            null
+          ]
+        },
+        "userConsent": {
+          "enum": [
+            "unknown",
+            "low",
+            "medium",
+            "high",
+            null
+          ]
+        },
+        "rationale": {
+          "$ref": "#/$defs/nullableShortText"
+        },
+        "decidedBy": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 160
         }
       },
       "additionalProperties": false
@@ -2917,6 +3130,10 @@ export const workspaceDiffSchema = {
               "null"
             ],
             "maxLength": 262144
+          },
+          "diffTruncated": {
+            "description": "The producer shortened or omitted this file's patch; additions and deletions still cover all of it.",
+            "type": "boolean"
           }
         },
         "additionalProperties": false
@@ -3456,6 +3673,25 @@ export const usageSchema = {
     },
     "runDelta": {
       "$ref": "#/$defs/measurement"
+    },
+    "context": {
+      "description": "Live context-window occupancy for the provider session after this usage, when the provider reports it.",
+      "type": "object",
+      "required": [
+        "usedTokens",
+        "windowTokens"
+      ],
+      "properties": {
+        "usedTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "windowTokens": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false,
@@ -4780,6 +5016,7 @@ export const eventSchema = {
         "harness.exited",
         "harness.diagnostic",
         "plan.updated",
+        "plan.proposed",
         "tool.execution.started",
         "tool.execution.progressed",
         "tool.execution.completed",
@@ -4945,6 +5182,22 @@ export const eventSchema = {
         "properties": {
           "payload": {
             "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/plan"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "plan.proposed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "https://paperclip.dev/schemas/prp/v1/provider-event.schema.json#/$defs/planProposal"
           }
         }
       }
@@ -5545,6 +5798,7 @@ export const eventV2Schema = {
         "harness.exited",
         "harness.diagnostic",
         "plan.updated",
+        "plan.proposed",
         "tool.execution.started",
         "tool.execution.progressed",
         "tool.execution.completed",
@@ -5877,6 +6131,7 @@ export const eventV3Schema = {
         "harness.exited",
         "harness.diagnostic",
         "plan.updated",
+        "plan.proposed",
         "tool.execution.started",
         "tool.execution.progressed",
         "tool.execution.completed",

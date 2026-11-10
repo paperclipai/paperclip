@@ -8,7 +8,7 @@ import { notifyInstructionCollection } from "./instruction-collection-notificati
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { randomUUID } from "node:crypto";
 import { logger } from "../middleware/logger.js";
-import { and, eq, isNotNull, lte, sql } from "drizzle-orm";
+import { and, asc, eq, isNotNull, lte, sql } from "drizzle-orm";
 import {
   agents,
   heartbeatRuns,
@@ -22,17 +22,25 @@ import { hasLiveLegacyController } from "./legacy-controller-lease.js";
 import { reportRunFailure } from "./run-failure-report.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
 import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
+import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./execution-control-deadline.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { NATIVE_STARTUP_CLEANUP_PENDING, readNativeStartupContext, promoteNativeStartupCleanup } from "./native-runtime/native-startup-cleanup.js";
 
 /** Only newly recorded control deadlines are eligible. Upgrades never replay ambiguous historical runs. */
 export async function reconcileAbandonedExecutionControl(
   db: Db,
   now = new Date(),
+  options: { startupCleanup?: (scope: { companyId: string; runId: string }) => Promise<unknown> } = {},
 ) {
   const nativeDue = await db
     .select({
       runId: nativeRunFinalizations.runId,
       issueId: nativeRunFinalizations.issueId,
       companyId: nativeRunFinalizations.companyId,
+      failureCode: nativeRunFinalizations.failureCode,
+      leaseOwner: nativeRunFinalizations.leaseOwner,
+      controllerGeneration: nativeRunFinalizations.controllerGeneration,
+      attempt: nativeRunFinalizations.attempt,
     })
     .from(nativeRunFinalizations)
     .where(
@@ -41,20 +49,28 @@ export async function reconcileAbandonedExecutionControl(
         lte(nativeRunFinalizations.controlDeadlineAt, now),
       ),
     )
+    .orderBy(asc(nativeRunFinalizations.controlDeadlineAt), asc(nativeRunFinalizations.runId))
     .limit(50);
   const controlDue = await db
     .select({
       runId: heartbeatRuns.id,
       companyId: heartbeatRuns.companyId,
       context: heartbeatRuns.contextSnapshot,
+      nativeIssueId: nativeRunFinalizations.issueId,
+      failureCode: nativeRunFinalizations.failureCode,
+      leaseOwner: nativeRunFinalizations.leaseOwner,
+      controllerGeneration: nativeRunFinalizations.controllerGeneration,
+      attempt: nativeRunFinalizations.attempt,
     })
     .from(heartbeatRuns)
+    .leftJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
     .where(
       and(
         isNotNull(heartbeatRuns.executionControlDeadlineAt),
         lte(heartbeatRuns.executionControlDeadlineAt, now),
       ),
     )
+    .orderBy(asc(heartbeatRuns.executionControlDeadlineAt), asc(heartbeatRuns.id))
     .limit(50);
   const due = [
     ...new Map(
@@ -62,10 +78,10 @@ export async function reconcileAbandonedExecutionControl(
         ...nativeDue,
         ...controlDue.map((row) => ({
           ...row,
-          issueId:
+          issueId: row.nativeIssueId ?? (
             typeof row.context?.issueId === "string"
               ? row.context.issueId
-              : null,
+              : null),
         })),
       ].map((row) => [row.runId, row]),
     ).values(),
@@ -78,6 +94,25 @@ export async function reconcileAbandonedExecutionControl(
     while (nextCandidate < due.length) {
       const candidate = due[nextCandidate++]!;
       try {
+        if (candidate.failureCode === NATIVE_STARTUP_CLEANUP_PENDING) {
+          if (!options.startupCleanup) continue;
+          try {
+            await options.startupCleanup({ companyId: candidate.companyId, runId: candidate.runId });
+          } finally {
+            await db.transaction(async tx => {
+              if (candidate.issueId) await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, candidate.issueId)).for("update");
+              const [owner] = await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, candidate.runId)).for("update");
+              if (owner?.failureCode !== NATIVE_STARTUP_CLEANUP_PENDING || !owner.controlDeadlineAt || owner.controlDeadlineAt > now ||
+                  owner.leaseOwner !== candidate.leaseOwner || owner.controllerGeneration !== candidate.controllerGeneration || owner.attempt !== candidate.attempt) return;
+              const cleanupRetryAt = new Date(Math.max(now.getTime(), Date.now()) + EXECUTION_RECONCILIATION_INTERVAL_MS);
+              await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionFinalization);
+              await tx.update(nativeRunFinalizations).set({ controlDeadlineAt: cleanupRetryAt }).where(eq(nativeRunFinalizations.runId, candidate.runId));
+              await tx.update(heartbeatRuns).set({ executionControlDeadlineAt: cleanupRetryAt }).where(and(eq(heartbeatRuns.id, candidate.runId),
+                isNotNull(heartbeatRuns.executionControlDeadlineAt), lte(heartbeatRuns.executionControlDeadlineAt, now)));
+            });
+          }
+          continue;
+        }
         // Set inside the transaction only when the write below genuinely
         // transitions the run into "failed". Read after the transaction
         // commits, so a rolled-back write never reports a false failure.
@@ -128,6 +163,18 @@ export async function reconcileAbandonedExecutionControl(
             ].some((deadline) => deadline && deadline <= now)
           )
             return false;
+          if (coordinator?.failureCode === NATIVE_STARTUP_CLEANUP_PENDING) return false;
+          const startupContext = coordinator && readNativeStartupContext(run, coordinator);
+          if (startupContext) {
+            if (!await promoteNativeStartupCleanup(tx as unknown as Db, run, coordinator!, now)) {
+              const retryAt = new Date(Math.max(now.getTime() + EXECUTION_RECONCILIATION_INTERVAL_MS,
+                startupContext.deadlineAtMs, coordinator!.leaseExpiresAt?.getTime() ?? 0));
+              await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionFinalization);
+              await tx.update(nativeRunFinalizations).set({ controlDeadlineAt: retryAt }).where(eq(nativeRunFinalizations.runId, run.id));
+              await tx.update(heartbeatRuns).set({ executionControlDeadlineAt: retryAt }).where(eq(heartbeatRuns.id, run.id));
+            }
+            return false;
+          }
           await tx
             .update(heartbeatRuns)
             .set({ executionControlDeadlineAt: null })
@@ -172,6 +219,11 @@ export async function reconcileAbandonedExecutionControl(
           const cause = "execution_finalization_deadline_exceeded";
           const nextAction =
             "Inspect the failed run and verify its provider has stopped. Reconcile any uncertain external action before explicitly continuing this task.";
+          // The deadline replaces the run's error code. Keep the earlier
+          // diagnosis as its root cause, as the native finalizer does.
+          const priorFailureCode = coordinator?.failureCode ?? run.errorCode;
+          const recordsOriginalFailure = Boolean(priorFailureCode) && priorFailureCode !== cause &&
+            typeof run.resultJson?.originalFailureCode !== "string";
           if (coordinator)
             await tx
               .update(nativeRunFinalizations)
@@ -209,6 +261,9 @@ export async function reconcileAbandonedExecutionControl(
               errorCode: cause,
               error: nextAction,
               nextAction,
+              ...(recordsOriginalFailure
+                ? { resultJson: { ...run.resultJson, originalFailureCode: priorFailureCode } }
+                : {}),
               updatedAt: now,
             })
             .where(eq(heartbeatRuns.id, run.id))

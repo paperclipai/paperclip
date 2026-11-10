@@ -179,7 +179,6 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
-    retry: false,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const { orderedCompanies, persistOrder } = useCompanyOrder({

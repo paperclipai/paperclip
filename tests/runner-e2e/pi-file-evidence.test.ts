@@ -1,3 +1,4 @@
+import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
@@ -206,7 +207,7 @@ describe("Pi edit, validation and public artifact oracle", () => {
         expect(prompt).toContain(`title ${artifact.name},`);
       }
     }
-    expect(runnerMatrix.filter(c => c.profile.qualificationCandidate === "pi")).toHaveLength(26);
+    expect(runnerMatrix.filter(c => !isRollingWebDeployment(c) && c.profile.qualificationCandidate === "pi")).toHaveLength(26);
   });
   it.each(["local", "daytona"] as const)("seeds once and collects public %s evidence", async environment => {
     const root = await mkdtemp(join(tmpdir(), "pi-file-evidence-"));

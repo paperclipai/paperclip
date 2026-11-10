@@ -90,6 +90,12 @@ export const agentWakeupRequests = pgTable(
     toolActionDeliveryIdempotencyUq: uniqueIndex("agent_wakeup_requests_tool_action_delivery_uq")
       .on(table.companyId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} LIKE 'tool-action-response:%' AND ${table.status} NOT IN ('skipped', 'failed', 'cancelled')`),
+    // A subtree pause owes its interrupted run one resume wake, ever. A stale
+    // dispatcher that saves late must not repeat work a takeover already ran.
+    treeHoldResumeIdempotencyUq: uniqueIndex("agent_wakeup_requests_tree_hold_resume_uq")
+      .on(table.companyId, table.idempotencyKey)
+      .concurrently()
+      .where(sql`${table.idempotencyKey} LIKE 'tree-hold-resume:%' AND ${table.status} <> 'skipped'`),
     chatCompletionIdempotencyUq: uniqueIndex("agent_wakeup_requests_chat_completion_uq")
       .on(table.companyId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} LIKE 'chat-completion:%'`),
