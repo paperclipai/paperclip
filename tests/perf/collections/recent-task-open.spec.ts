@@ -148,7 +148,7 @@ test("clicking a preloaded recent task shows its chat without first-frame reads"
 // Native loopback, then a diagnostic scenario that adds latency to every API
 // response, as a slow hosted database would. Timings are evidence, not budgets.
 for (const apiDelayMs of [0, 150]) {
-  test(`timing: click on a recent task to first chat frame (+${apiDelayMs} ms API latency)`, async ({ browser, request }) => {
+  test(`timing: click on a recent task to first chat frame (+${apiDelayMs} ms API latency)`, async ({ browser, request, baseURL }) => {
     const runs = Math.max(5, Number(process.env.PAPERCLIP_COLLECTION_PERF_TIMING_RUNS ?? 5));
     const timings: number[] = [];
     const idleCounts: number[] = [];
@@ -156,7 +156,8 @@ for (const apiDelayMs of [0, 150]) {
     for (let run = 0; run < runs; run += 1) {
       // A fresh context per run: empty HTTP cache, memory cache and storage,
       // except the seeded Recents history.
-      const context = await browser.newContext();
+      // browser.newContext() does not inherit the project `use` options.
+      const context = await browser.newContext({ baseURL, serviceWorkers: "block", viewport: { width: 1440, height: 900 } });
       const page = await context.newPage();
       if (apiDelayMs) {
         await page.route("**/api/**", async route => {

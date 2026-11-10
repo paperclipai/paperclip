@@ -5,6 +5,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TASK_COLLECTION_PAINTED_EVENT } from "@/lib/issue-detail-preload-events";
+import type { Issue } from "@paperclipai/shared";
+import { seedIssueChatBootstrap, type IssueChatBootstrapEntry } from "@/lib/issueChatBootstrapCache";
 import { queryKeys } from "@/lib/queryKeys";
 import { resetRecentTaskChatPreloadForTests, useRecentTaskOpenWarmup, type RecentTaskOpenWarmupTask } from "./useRecentTaskOpenWarmup";
 
@@ -17,14 +19,14 @@ vi.mock("@/api/issues", () => ({ issuesApi: { chatBootstrap } }));
 const tasks = (count: number): RecentTaskOpenWarmupTask[] =>
   Array.from({ length: count }, (_, index) => ({ id: `id-${index}`, identifier: `PAP-${index}` }));
 
-function bootstrapItem(index: number, companyId = "company-1") {
+function bootstrapItem(index: number, companyId = "company-1"): IssueChatBootstrapEntry {
   return {
     ref: `id-${index}`,
     issue: {
       id: `id-${index}`, identifier: `PAP-${index}`, companyId, title: `Task ${index}`, status: "todo", priority: "medium",
       workMode: "standard", projectId: null, parentId: null, description: null, assigneeAgentId: null, assigneeUserId: null,
       executionRunId: null, issueNumber: index, requestDepth: 0, createdAt: new Date(0), updatedAt: new Date(0),
-    },
+    } as Issue,
     recentComments: { comments: [], hasMore: false, oldestCommentId: null, latestCommentId: null },
     commentInputFacts: [], recentActivity: [], recentRuns: [], interactions: [], attachments: [], liveRuns: [], activeRun: null,
   };
@@ -124,15 +126,18 @@ describe("useRecentTaskOpenWarmup", () => {
   });
 
   it("skips tasks whose first frame is cached and fresh, and makes no request when none is left", async () => {
-    for (const ref of ["PAP-0", "id-1"]) {
-      queryClient.setQueryData([...queryKeys.issues.detail(ref), "core"], { id: ref });
-      queryClient.setQueryData([...queryKeys.issues.comments(ref), "recent"], { comments: [] });
-    }
+    // A full first frame for two tasks (as an earlier open or preload leaves it)...
+    seedIssueChatBootstrap(queryClient, bootstrapItem(0), { companyId: "company-1", requestedAt: Date.now() });
+    seedIssueChatBootstrap(queryClient, bootstrapItem(1), { companyId: "company-1", requestedAt: Date.now() });
+    // ...and a light warm (a brief hover) for the third, which is not a first frame.
+    queryClient.setQueryData([...queryKeys.issues.detail("PAP-2"), "core"], bootstrapItem(2).issue);
+    queryClient.setQueryData([...queryKeys.issues.comments("PAP-2"), "recent"], bootstrapItem(2).recentComments);
     render({ tasks: tasks(3) });
     await settle();
     expect(chatBootstrap).toHaveBeenCalledTimes(1);
     expect(chatBootstrap.mock.calls[0]![1]).toEqual(["id-2"]);
 
+    // Now all three are cached in full: no request at all.
     resetRecentTaskChatPreloadForTests();
     chatBootstrap.mockClear();
     act(() => root.unmount());

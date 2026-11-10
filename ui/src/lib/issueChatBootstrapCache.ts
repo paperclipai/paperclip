@@ -1,5 +1,5 @@
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
-import type { IssueChatBootstrap } from "@paperclipai/shared";
+import type { IssueChatBootstrap, IssueRecentComments } from "@paperclipai/shared";
 import type { RunForIssue } from "@/api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "@/api/heartbeats";
 import { seedIssueIdBatch } from "@/hooks/useIssueIdBatches";
@@ -32,15 +32,36 @@ function recentCommentsKey(ref: string): QueryKey {
   return [...queryKeys.issues.comments(ref), "recent"];
 }
 
-/** True when a task's first chat frame is already in cache and fresh under one of its refs. */
+function isFresh(queryClient: QueryClient, key: QueryKey, now: number) {
+  const state = queryClient.getQueryState(key);
+  return state?.data !== undefined && !state.isInvalidated && now - state.dataUpdatedAt < ISSUE_CHAT_BOOTSTRAP_FRESH_MS;
+}
+
+/**
+ * True when every read that gates a task's first chat frame is cached and
+ * fresh under one of its refs. A light warm (core issue and recent comments
+ * only) is not a first frame: the task still needs the preload.
+ */
 export function hasFreshIssueChatFirstFrame(queryClient: QueryClient, refs: readonly string[], now = Date.now()) {
   return refs.some((ref) => {
-    const core = queryClient.getQueryState(coreKey(ref));
-    const comments = queryClient.getQueryState(recentCommentsKey(ref));
-    return core?.data !== undefined && comments?.data !== undefined
-      && !core.isInvalidated && !comments.isInvalidated
-      && now - core.dataUpdatedAt < ISSUE_CHAT_BOOTSTRAP_FRESH_MS
-      && now - comments.dataUpdatedAt < ISSUE_CHAT_BOOTSTRAP_FRESH_MS;
+    const keys = [
+      coreKey(ref),
+      recentCommentsKey(ref),
+      recentIssueActivityQueryKey(ref),
+      recentIssueRunWindowQueryKey(ref),
+      queryKeys.issues.interactions(ref),
+      queryKeys.issues.attachments(ref),
+      queryKeys.issues.liveRuns(ref),
+    ];
+    if (!keys.every((key) => isFresh(queryClient, key, now))) return false;
+    // The input facts of every saved recent comment, in the batches the chat reads.
+    const comments = queryClient.getQueryData<IssueRecentComments>(recentCommentsKey(ref))?.comments ?? [];
+    const factsKey = issueCommentInputFactsQueryKey(ref);
+    const batches = queryClient.getQueryData<string[][]>([...factsKey, "batch-ids"]) ?? [];
+    return issueInputCommentIds(comments).every((id) => {
+      const batch = batches.find((ids) => ids.includes(id));
+      return !!batch && isFresh(queryClient, [...factsKey, "batch", batch], now);
+    });
   });
 }
 

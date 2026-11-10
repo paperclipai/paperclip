@@ -129,13 +129,29 @@ describe("seedIssueChatBootstrap", () => {
 });
 
 describe("hasFreshIssueChatFirstFrame", () => {
-  it("is true only while the core issue and recent comments are cached, valid and fresh", () => {
+  it("is true only while every first-frame read is cached, valid and fresh", () => {
     const qc = client();
     expect(hasFreshIssueChatFirstFrame(qc, [ID], REQUESTED_AT)).toBe(false);
     seedIssueChatBootstrap(qc, item(), { companyId: "company-1", requestedAt: REQUESTED_AT });
     expect(hasFreshIssueChatFirstFrame(qc, [IDENTIFIER], REQUESTED_AT + 29_999)).toBe(true);
     expect(hasFreshIssueChatFirstFrame(qc, [IDENTIFIER], REQUESTED_AT + 30_000)).toBe(false);
     qc.invalidateQueries({ queryKey: commentsKey(IDENTIFIER) });
+    expect(hasFreshIssueChatFirstFrame(qc, [IDENTIFIER], REQUESTED_AT + 1)).toBe(false);
+  });
+
+  it("is false after a light warm that cached only the core issue and recent comments", () => {
+    const qc = client();
+    const entry = item();
+    qc.setQueryData(coreKey(IDENTIFIER), entry.issue, { updatedAt: REQUESTED_AT });
+    qc.setQueryData(commentsKey(IDENTIFIER), entry.recentComments, { updatedAt: REQUESTED_AT });
+    expect(hasFreshIssueChatFirstFrame(qc, [ID, IDENTIFIER], REQUESTED_AT + 1)).toBe(false);
+  });
+
+  it("is false while a recent comment's input facts are missing", () => {
+    const qc = client();
+    seedIssueChatBootstrap(qc, item(), { companyId: "company-1", requestedAt: REQUESTED_AT });
+    const factsKey = issueCommentInputFactsQueryKey(IDENTIFIER);
+    qc.removeQueries({ queryKey: [...factsKey, "batch", ["c1", "c2"]], exact: true });
     expect(hasFreshIssueChatFirstFrame(qc, [IDENTIFIER], REQUESTED_AT + 1)).toBe(false);
   });
 });
