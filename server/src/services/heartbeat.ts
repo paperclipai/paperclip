@@ -4498,19 +4498,17 @@ export function heartbeatService(
       recovery.registerActiveRunSilenceWork(coordinator, () => canRun() && readTaskDrain(new Date()) === null,
         async scope => recovery.scanSilentActiveRuns({ ...scope, issueCreatedAtGte: await getWorktreeExecutionCutoff() }),
         async () => !(await getSchedulingSuppression(true)).suppressed),
-    registerDeferredReceiptWork: (coordinator: Parameters<typeof registerDeferredReceiptWork>[1], canRun: () => boolean) => {
-      const work = registerDeferredReceiptWork(db, coordinator, {
+    registerDeferredReceiptWork: (coordinator: Parameters<typeof registerDeferredReceiptWork>[1], canRun: () => boolean) =>
+      registerDeferredReceiptWork(db, coordinator, {
         resume: scope => heartbeatQueue.resumeDeferredExecutionReceipts(scope),
         settleTaskChat: scope => reconcileTaskChatRetryReceipts(db, { ...scope, settleOnly: true }),
         createNativeBatch: heartbeatQueue.createNativeStatusWakeBatch,
         schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
-      }, () => canRun() && readTaskDrain(new Date()) === null);
-      const unsubscribe = [subscribeTaskDrainChanges(work.wake), subscribeTaskDrainExpiry(work.wake)];
-      return { ...work, async stop() {
-        for (const stop of unsubscribe) stop();
-        await work.stop();
-      } };
-    },
+        subscribeRefresh: refresh => {
+          const unsubscribe = [subscribeTaskDrainChanges(refresh), subscribeTaskDrainExpiry(refresh)];
+          return () => { for (const stop of unsubscribe) stop(); };
+        },
+      }, () => canRun() && readTaskDrain(new Date()) === null),
     readIdleWatchdogSchedule: taskWatchdogs.readIdleSchedule,
     registerIssueStateRecoveryWork: (coordinator: Parameters<typeof registerIssueRecoveryWork>[1], canRun: () => boolean) =>
       registerIssueRecoveryWork(db, coordinator, {

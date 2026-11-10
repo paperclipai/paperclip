@@ -408,7 +408,7 @@ describe("deferred receipt durable dispatch", () => {
   });
   it("dispatches an operator Retry ahead of a backlog of passive waits", async () => {
     const f = await fixture();
-    await db.insert(agentWakeupRequests).values(Array.from({ length: 30 }, (_, index) => ({
+    await db.insert(agentWakeupRequests).values(Array.from({ length: 120 }, (_, index) => ({
       id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, companyId: f.companyId, agentId: f.agent.id,
       source: "automation", status: "deferred_issue_execution", requestedByActorType: "system",
       payload: { executionWait: { reason: "recovery" } }, updatedAt: new Date(Date.now() - 60_000),
@@ -425,8 +425,35 @@ describe("deferred receipt durable dispatch", () => {
     await registerDeferredReceiptWork(db, coordinator, { resume, settleTaskChat: vi.fn(), createNativeBatch: () => vi.fn(),
       schedulingSuppressed: async () => false }, () => !drain).ready;
     expect(order[0]).toBe(retry.id);
-    await waitForReal(() => expect(order).toHaveLength(31), { timeout: 10_000 });
+    await waitForReal(() => expect(order).toHaveLength(121), { timeout: 30_000 });
     await quiet();
+  });
+  it("reloads a held Retry without a pending notification as soon as a drain ends, right after a full scan", async () => {
+    const f = await fixture();
+    let refresh: (() => void) | undefined;
+    const resume = vi.fn(async (scope: { requestId?: string }) => {
+      await db.update(agentWakeupRequests).set({ status: "skipped" }).where(eq(agentWakeupRequests.id, scope.requestId!));
+    });
+    await registerDeferredReceiptWork(db, coordinator, { resume, settleTaskChat: vi.fn(), createNativeBatch: () => vi.fn(),
+      schedulingSuppressed: async () => false, subscribeRefresh: listener => { refresh = listener; return () => {}; } },
+    () => !drain).ready;
+    const [retry] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
+      source: "on_demand", status: "deferred_issue_execution", reason: "task_retry", requestedByActorType: "user",
+      requestedByActorId: f.actorId, payload: { issueId: f.issue.id } }).returning();
+    refresh!();
+    await waitForReal(() => expect(resume).toHaveBeenCalledWith(expect.objectContaining({ requestId: retry.id })),
+      { timeout: 5_000 });
+    await quiet();
+  });
+  it("removes its task-drain refresh listener when the coordinator stops", async () => {
+    let refresh: (() => void) | undefined;
+    const unsubscribe = vi.fn();
+    await registerDeferredReceiptWork(db, coordinator, { resume: vi.fn(), settleTaskChat: vi.fn(),
+      createNativeBatch: () => vi.fn(), schedulingSuppressed: async () => false,
+      subscribeRefresh: listener => { refresh = listener; return unsubscribe; } }, () => !drain).ready;
+    expect(refresh).toBeTypeOf("function");
+    await coordinator.stop();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
   async function blockedRetry(gate: "budget" | "project budget" | "paused agent", conversation = false) {
     const f = await fixture(), lifecycle = createAgentLifecycle(db), budgets = budgetService(db);

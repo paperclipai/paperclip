@@ -34,6 +34,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     mergeEntry?(pending: Entry, loaded: Entry): Entry;
     priority?(entry: Entry): number;
     check(entry: Entry, signal?: AbortSignal): Promise<Entry | null>;
+    onStop?(): void;
   },
   canRun: () => boolean,
 ) {
@@ -74,7 +75,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
   const worker = coordinator.register(options.queue, {
     retryMs: 30_000,
     pausePassiveMaintenance: true,
-    onStop: () => { stopped = true; revision++; },
+    onStop: () => { stopped = true; revision++; options.onStop?.(); },
     onSettled: hints => { revision++; for (const hint of hints ?? ["*"]) {
       dirty.add(hint); versions.set(hint, (versions.get(hint) ?? 0) + 1);
     } },
@@ -277,6 +278,11 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     nextRunAt: next,
     nextRunAtOnError: next,
   });
+  function invalidate(hint = "*") {
+    revision++;
+    dirty.add(hint); versions.set(hint, (versions.get(hint) ?? 0) + 1);
+    worker.wake();
+  }
   return { ...worker,
     reconciliationSnapshot: (): DeadlineReconciliationSnapshot => ({
       revision: `${ownerRevision}:${revision}`,
@@ -284,10 +290,10 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
         && failures.size === 0 && scopeFailures.size === 0,
     }),
     wake() { revision++; worker.wake(); },
-    invalidate(hint = "*") {
-      revision++;
-      dirty.add(hint); versions.set(hint, (versions.get(hint) ?? 0) + 1);
-      worker.wake();
+    invalidate,
+    refresh(hint = "*") {
+      reconstructAfter.delete(hint);
+      invalidate(hint);
     },
   };
 }
