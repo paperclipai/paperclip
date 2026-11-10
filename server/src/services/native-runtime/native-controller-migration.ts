@@ -3,6 +3,7 @@ import { lstat, open, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { captureLegacyDurablePrpCheckpoint, inspectDurablePrpCheckpointHeader, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
 import { findNativeSessionResumeRun } from "./native-session-resume.js";
@@ -76,7 +77,7 @@ async function hasConfirmedOlderController(db: Db, selected: Selected,
   } catch { return false; }
 }
 
-async function* retainedSources(db: Db, signal?: AbortSignal) {
+async function* retainedSources(db: Db, signal?: AbortSignal, concurrency = 1) {
   let after: string | undefined;
   for (;;) {
     signal?.throwIfAborted();
@@ -86,12 +87,18 @@ async function* retainedSources(db: Db, signal?: AbortSignal) {
         and r.company_id = s.company_id and r.agent_id = s.agent_id
       where s.adapter_type = 'paperclip_runner' and r.native_issue_id is not null and r.native_session_id is not null
         ${after ? sql`and s.id > ${after}::uuid` : sql``} order by s.id limit 100`);
-    for (const selected of rows) {
+    for (let offset = 0; offset < rows.length; offset += concurrency) {
       signal?.throwIfAborted();
-      const source = await findNativeSessionResumeRun(db, { companyId: selected.companyId, agentId: selected.agentId,
-        issueId: selected.issueId, normalizedSessionId: selected.sessionId,
-        beforeCreatedAt: new Date(selected.createdAt), includeProgressBarrier: true });
-      if (source) yield { selected, source };
+      const batch = await Promise.allSettled(rows.slice(offset, offset + concurrency).map(async selected => ({
+        selected, source: await findNativeSessionResumeRun(db, { companyId: selected.companyId, agentId: selected.agentId,
+          issueId: selected.issueId, normalizedSessionId: selected.sessionId,
+          beforeCreatedAt: new Date(selected.createdAt), includeProgressBarrier: true }),
+      })));
+      for (const result of batch) {
+        signal?.throwIfAborted();
+        if (result.status === "rejected") throw result.reason;
+        if (result.value.source) yield { selected: result.value.selected, source: result.value.source };
+      }
     }
     if (rows.length < 100) return;
     after = rows.at(-1)!.id;
@@ -175,18 +182,68 @@ async function preservedDatabaseOnlyFailedCheckpoint(selected: Selected,
   return true;
 }
 
+async function preservedActiveCheckpoint(db: Db, selected: Selected,
+  source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>, paths: Awaited<ReturnType<typeof localPaths>>) {
+  if (source.status !== "running" || source.runtimeMode !== "native") return false;
+  let marker: Record<string, unknown>, bytes: string | undefined;
+  try {
+    bytes = await readPrivateSource(paths.controlFile, 4096);
+    marker = record(JSON.parse(bytes ?? "null"));
+  } catch { return false; }
+  if (marker.schema !== "paperclip.runner.external-control-plane-state.v1"
+    || Object.keys(marker).sort().join(",") !== "identity,schema") return false;
+  const binding = { companyId: selected.companyId, issueId: selected.issueId, runId: source.id };
+  const checkpoint = await loadNativeRunnerCheckpoint(db, binding).catch(() => null);
+  const header = checkpoint && inspectDurablePrpCheckpointHeader(checkpoint.records.get("header") ?? "");
+  if (!header || header.runId !== source.id || header.runnerInstanceId !== source.runnerInstanceId
+    || header.normalizedSessionId !== selected.sessionId || nativeSha256(header) !== nativeSha256(marker.identity)) return false;
+  // This is preservation evidence, not permission to adopt the live writer.
+  // Do not require the read-only inspector's process boot to own that writer.
+  const [current] = await db.execute<{ workspace: unknown; remoteWorkspace: unknown; hasRemoteWorkspace: boolean; pluginLeaseId: string | null; liveOwner: boolean }>(sql`
+    select r.runner_profile_json->'nativeWorkspaceSync' as workspace,
+      r.runner_profile_json->'remoteWorkspace' as "remoteWorkspace",
+      r.runner_profile_json ? 'remoteWorkspace' as "hasRemoteWorkspace", p.id as "pluginLeaseId",
+      (r.native_phase='observed' and r.process_pid is not null and r.process_started_at is not null
+       and i.execution_run_id=r.id and i.assignee_agent_id=r.agent_id
+       and f.controller_boot_id is not null and f.controller_boot_id<>'' and f.controller_generation>0
+       and f.lease_owner is not null and f.lease_owner<>'' and f.lease_expires_at>clock_timestamp()
+       and f.phase='observed' and f.result_id is null and f.failure_code is null) is true as "liveOwner"
+    from heartbeat_runs r left join native_run_finalizations f on f.run_id=r.id and f.company_id=r.company_id and f.issue_id=r.native_issue_id
+    left join issues i on i.id=r.native_issue_id and i.company_id=r.company_id
+    left join lateral (select l.id from environment_leases l where l.company_id=r.company_id and l.heartbeat_run_id=r.id
+      and l.issue_id=r.native_issue_id and l.status='active' and l.released_at is null and l.cleanup_status is null
+      and (l.expires_at is null or l.expires_at>clock_timestamp()) and l.metadata->>'agentId'=r.agent_id::text
+      and l.metadata->>'runnerTaskLease'='true' and l.metadata->>'runnerTaskDispatched'='true'
+      and coalesce(l.metadata->>'runnerTaskExecutionStopped','false')!='true'
+      and coalesce(l.metadata->>'runnerTaskRetiring','false')!='true' order by l.created_at desc limit 1) p on true
+    where r.id=${source.id}::uuid and r.company_id=${selected.companyId}::uuid and r.agent_id=${selected.agentId}::uuid
+      and r.native_issue_id=${selected.issueId}::uuid and r.native_session_id=${selected.sessionId}::uuid
+      and r.runner_instance_id=${source.runnerInstanceId} and r.runtime_mode='native' and r.status='running'`);
+  if (!current) return false;
+  const remote = remoteWorkspaceRunReferenceSchema.safeParse(current.remoteWorkspace);
+  const workspaceId = current.hasRemoteWorkspace
+    ? remote.success && !current.pluginLeaseId ? remote.data.workspaceId : null
+    : current.pluginLeaseId ?? readNativeWorkspaceSyncReference(current.workspace)?.workspaceId;
+  return workspaceId === header.environmentLeaseId
+    && (current.pluginLeaseId !== null || paths.execution.binding.executionWorkspaceId === workspaceId)
+    && (current.liveOwner || hasMatchingControllerRecovery(selected, source, checkpoint))
+    && bytes === await readPrivateSource(paths.controlFile, 4096);
+}
+
 export async function hasLocalNativeControllerObligations(db: Db, storage?: StorageService | null): Promise<boolean> {
   const roots = await readdir(nativeHarnessStateBase()).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return [] as string[]; throw error;
   });
   if (!roots.length) return false;
-  for await (const { selected, source } of retainedSources(db)) {
+  for await (const { selected, source } of retainedSources(db, undefined, 8)) {
     const binding = { companyId: selected.companyId, issueId: selected.issueId, runId: source.id };
-    if (readNativeControllerRecovery(source.runnerProfileJson.nativeControllerRecovery, source.runnerProfileJson.sessionCheckpoint)
+    if (source.status !== "running"
+      && readNativeControllerRecovery(source.runnerProfileJson.nativeControllerRecovery, source.runnerProfileJson.sessionCheckpoint)
       && await hasNativeRunnerCheckpoint(db, binding)) continue;
     if (source.status === "failed" && source.runnerProfileJson.sessionCheckpoint == null
       && preservedFailedCheckpoint(source, selected.sessionId, await loadNativeRunnerCheckpoint(db, binding))) continue;
     const paths = await localPaths(source);
+    if (await preservedActiveCheckpoint(db, selected, source, paths)) continue;
     const present = await lstat(paths.controlFile).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return undefined; throw error;
     });
