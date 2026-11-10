@@ -331,7 +331,7 @@ export const integratorStatusCardsCases: readonly ChatCatalogCase[] = [
   define("status-cards.create-card", "none", { oracleVersion: "paperclip.chat-catalog.status-card.create.v2" }),
   define("status-cards.archive-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.archive.v3", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 3, attemptTimeoutMs: 720_000 }),
   define("status-cards.other-authors-card", "morgan", { oracleVersion: "paperclip.chat-catalog.status-card.other-authors.v2", expectedRunCount: 5, minimumRunCount: 2 }),
-  define("status-cards.explain-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.explain.v4", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 5, minimumRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
+  define("status-cards.explain-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.explain.v5", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 5, minimumRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
     sourceFiles: ["chat-catalog-domains/integrator-status-cards.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "run-observations.ts", "chat-scenarios/status-cards.yaml"],
     async act(ctx, state) {
       // The lead may refresh its own stale card while answering; wait for that generation to settle
@@ -356,7 +356,7 @@ export const integratorStatusCardsCases: readonly ChatCatalogCase[] = [
   }),
   define("status-cards.refresh-card", "ceo", { expectedRunCount: 7, expectedHumanMessageCount: 4, attemptTimeoutMs: 1_200_000,
     runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 7 } },
-    oracleVersion: "paperclip.chat-catalog.status-card.required-work-failure.v6",
+    oracleVersion: "paperclip.chat-catalog.status-card.required-work-failure.v7",
     sourceFiles: ["chat-catalog-domains/integrator-status-cards.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/status-card-work-failure.ts", "chat-catalog-domains/external-provider.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/status-cards.yaml"],
 
     async act(ctx, state) {

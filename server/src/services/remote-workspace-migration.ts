@@ -496,7 +496,8 @@ function createMigrationChildVerifier(input: MigrationInput, onlineSource: Onlin
 }
 
 async function captureMigration(input: MigrationInput, reserved: ReservedMigration, onlineSource?: OnlineWorkspaceSource,
-  childVerifier?: ReturnType<typeof createMigrationChildVerifier>) {
+  childVerifier?: ReturnType<typeof createMigrationChildVerifier>,
+  captureArchive = captureRemoteWorkspaceDirectory) {
   let operation = reserved.operation!;
   if (canonical(operation.metadata?.legacyRecoverySources ?? []) !== canonical(reserved.legacyRecoverySources)) {
     const [refreshed] = await input.db.update(workspaceOperations).set({ metadata: { ...operation.metadata,
@@ -553,7 +554,7 @@ async function captureMigration(input: MigrationInput, reserved: ReservedMigrati
     }
     if (sourceRoot) await assertArchivedRepositoryIntents(sourceRoot, reserved.archivedRepositoryIntents);
     const exclude = nested.map(child => child.relativePath);
-    const captured = await captureRemoteWorkspaceDirectory({ cwd: sourceRoot!, archivePath, exclude, requireNoGit: onlineSource?.kind === "ordinary",
+    const captured = await captureArchive({ cwd: sourceRoot!, archivePath, exclude, requireNoGit: onlineSource?.kind === "ordinary",
       gitSourceRoots: onlineSource?.gitSourceRoots, signal: input.signal, singlePass: true });
     const ref = await uploadWorkspaceSnapshot({ db: input.db, storage: input.storage, snapshotId: snapshot.id,
       companyId: input.companyId, workspaceId: input.workspaceId, archivePath, manifestDigest: captured.manifestDigest, signal: input.signal,
@@ -568,6 +569,36 @@ async function captureMigration(input: MigrationInput, reserved: ReservedMigrati
   } catch (error) { await removeTaskDirectoryTree(scratch); throw error; }
 }
 type CapturedMigration = Awaited<ReturnType<typeof captureMigration>>;
+
+function createCohortArchiveCapture() {
+  type Options = Parameters<typeof captureRemoteWorkspaceDirectory>[0];
+  type Capture = Awaited<ReturnType<typeof captureRemoteWorkspaceDirectory>>;
+  const pending = new Map<string, { key: string; capture: Promise<{ archivePath: string; captured: Capture }> }>(), scratch: string[] = [];
+  return {
+    scratch,
+    async capture(input: Options): Promise<Capture> {
+      const { archivePath, signal, ...options } = input;
+      const root = await fs.realpath(input.cwd), key = canonical({ ...options, cwd: root });
+      let shared = pending.get(root);
+      if (shared && shared.key !== key) return captureRemoteWorkspaceDirectory(input);
+      if (!shared) {
+        const capture = (async () => {
+          const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-cohort-capture-")));
+          scratch.push(directory);
+          const sharedPath = path.join(directory, "workspace.pcws");
+          return { archivePath: sharedPath, captured: await captureRemoteWorkspaceDirectory({ ...input, archivePath: sharedPath }) };
+        })();
+        shared = { key, capture };
+        pending.set(root, shared);
+      }
+      const saved = await shared.capture;
+      signal?.throwIfAborted();
+      await fs.copyFile(saved.archivePath, archivePath, fs.constants.COPYFILE_FICLONE | fs.constants.COPYFILE_EXCL);
+      signal?.throwIfAborted();
+      return saved.captured;
+    },
+  };
+}
 
 async function validateMigrationPublication(tx: MigrationTransaction, input: MigrationInput, reserved: ReservedMigration,
   captured: CapturedMigration, onlineSource?: OnlineWorkspaceSource, cohort?: WorkspaceMigrationCohort) {
@@ -891,12 +922,16 @@ export async function migrateRemoteWorkspaceCohort(input: {
     }
     const captures: Array<CapturedMigration | undefined> = Array(plans.length);
     const childVerifier = createMigrationChildVerifier(plans[0].input, plans[0].onlineSource, lock, true);
+    const sharedArchive = createCohortArchiveCapture();
+    const duplicateRoots = new Set(plans.filter(plan => plans.some(other => other !== plan
+      && other.onlineSource!.root === plan.onlineSource!.root)).map(plan => plan.onlineSource!.root));
     let next = 0, failure: unknown;
     const worker = async () => {
       while (!signal.aborted && next < plans.length) {
         const index = next++, plan = plans[index];
         try {
-          const captured = await captureMigration(plan.input, plan.reserved, plan.onlineSource, childVerifier);
+          const captured = await captureMigration(plan.input, plan.reserved, plan.onlineSource, childVerifier,
+            duplicateRoots.has(plan.onlineSource!.root) ? sharedArchive.capture : undefined);
           captures[index] = captured;
           if (plan.onlineSource && !plan.reserved.archivedRepositoryIntents.length) {
             await fs.rm(path.join(captured.scratch, "workspace.pcws"), { force: true });
@@ -942,10 +977,11 @@ export async function migrateRemoteWorkspaceCohort(input: {
       return { companyId, cohortId: cohort.id, applied: true, replayed: false, members: results };
     } catch (error) { failure = error; throw error; }
     finally {
-      await childVerifier?.close();
-      const cleanup = await mapCohortMembers(captures.filter((capture): capture is CapturedMigration => Boolean(capture)),
-        capture => removeTaskDirectoryTree(capture.scratch).then(() => [], error => [error]));
-      const errors = cleanup.flat();
+      const errors: unknown[] = [];
+      try { await childVerifier?.close(); } catch (error) { errors.push(error); }
+      const cleanup = await mapCohortMembers([...captures.flatMap(capture => capture ? [capture.scratch] : []), ...sharedArchive.scratch],
+        scratch => removeTaskDirectoryTree(scratch).then(() => [], error => [error]));
+      errors.push(...cleanup.flat());
       if (errors.length) throw new AggregateError(failure ? [failure, ...errors] : errors, "workspace_cohort_cleanup_failed");
       if (!failure) signal.throwIfAborted();
     }

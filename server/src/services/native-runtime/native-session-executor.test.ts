@@ -14035,7 +14035,7 @@ describe("native session bounded recovery", () => {
     }
   });
 
-  it("persists actionable operator recovery without an automatic cleanup wake", async () => {
+  it("persists plain cleanup recovery without an automatic cleanup wake", async () => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> =
       [];
     const failure = new NativeSessionCleanupQuarantinedError();
@@ -14066,7 +14066,7 @@ describe("native session bounded recovery", () => {
         nextAttemptAt: null,
         failureDetail: {
           nextAction: expect.stringContaining(
-            "Clearing a task session does not resolve this quarantine",
+            "it starts once the previous session has stopped",
           ),
         },
       });
@@ -14077,7 +14077,7 @@ describe("native session bounded recovery", () => {
           ownerType: "board",
           wakePolicy: null,
           nextAction: expect.stringContaining(
-            "Clearing a task session does not resolve this quarantine",
+            "it starts once the previous session has stopped",
           ),
         }),
       );
@@ -14086,6 +14086,45 @@ describe("native session bounded recovery", () => {
         { status: "blocked" },
         expect.anything(),
       );
+    } finally {
+      service.mockRestore();
+    }
+  });
+
+  // Remote native run shape: the provider turn completed and its work was
+  // saved; a same-run recovery was then refused by the cleanup gate. The task
+  // disposition can still be missing, so the hold stays; the wording names the
+  // saved work and a message, never an administrator.
+  it("explains a cleanup refusal after a completed turn without asking an operator", async () => {
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const failure = new NativeSessionCleanupQuarantinedError();
+    state.execute.mockReset().mockRejectedValueOnce(failure);
+    state.upsertRecoveryAction.mockReset().mockResolvedValue({});
+    const updateIssue = vi.fn(async () => ({ status: "blocked", statusVersion: 7 }));
+    const service = vi.spyOn(issueServiceModule, "issueService")
+      .mockReturnValue({ update: updateIssue } as unknown as ReturnType<typeof issueServiceModule.issueService>);
+    const completedCheckpoint = { sessionCheckpoint: {
+      activeTurnId: null, semanticResult: null, cursor: "818",
+      identity: { runId: execution.binding.runId, agentId: execution.binding.agentId,
+        issueId: execution.binding.issueId, companyId: execution.binding.companyId, sessionId: "session" },
+      terminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded",
+        turnTerminalState: "completed", reportedWorkDisposition: "yielded" },
+    } };
+    try {
+      await expect(executePaperclipNativeSession({
+        db: leaseDb(execution, {}, {}, updates, completedCheckpoint), execution, runnerInstanceId: "runner",
+      })).rejects.toBe(failure);
+      const terminal = updates.find(entry => entry.table === nativeRunFinalizations
+        && entry.values.phase === "terminal_failure")?.values;
+      // Still a permanent, named refusal: no provider work is replayed.
+      expect(terminal).toMatchObject({ failureCode: "native_session_cleanup_quarantined", nextAttemptAt: null });
+      const nextAction = String((terminal?.failureDetail as Record<string, unknown>).nextAction);
+      expect(nextAction).toMatch(/finished its work and saved it/);
+      expect(nextAction).not.toMatch(/operator|admin|Clearing a task session/i);
+      expect(state.upsertRecoveryAction).toHaveBeenCalledWith(expect.objectContaining({
+        cause: "native_session_cleanup_quarantined", wakePolicy: null,
+        nextAction: expect.stringMatching(/finished its work and saved it/),
+      }));
     } finally {
       service.mockRestore();
     }
@@ -16948,14 +16987,19 @@ describe("runnerd provider runtime wiring", () => {
     } finally {owner.mockRestore();await rm(home,{recursive:true,force:true});}
   });
 
-  it.each((["codex", "claude"] as const).flatMap(provider => [[false, false, false, false], [true, false, false, false], [false, true, false, false], [false, false, true, false], ...(provider === "codex" ? [[false, false, false, true]] : [])].map(([unknown, shutdown, journalFailure, deadline]) => [provider, unknown, shutdown, journalFailure, deadline] as const)))(
-    "releases settled %s only under its current owner and detaches its cache locally (unknown=%s, shutdown=%s, journalFailure=%s, deadline=%s)", async (provider, unknown, shutdown, journalFailure, deadline) => {
+  it.each((["codex", "claude"] as const).flatMap(provider => [
+    ...[[false, false, false, false], [true, false, false, false], [false, true, false, false], [false, false, true, false], ...(provider === "codex" ? [[false, false, false, true]] : [])]
+      .map(([unknown, shutdown, journalFailure, deadline]) => [provider, unknown, shutdown, journalFailure, deadline, "idle timeout"] as const),
+    ...(["controller restart", "detach failure", "environment deletion"] as const)
+      .map(retirement => [provider, false, false, false, false, retirement] as const),
+  ]))(
+    "releases settled %s only under its current owner and retires its cache (unknown=%s, shutdown=%s, journalFailure=%s, deadline=%s, retirement=%s)", async (provider, unknown, shutdown, journalFailure, deadline, retirement) => {
       await closeIdleWarmNativeSessionsForRestart();
       expect(readNativeSessionIdleWork()).toBe("none");
       const previousHome = process.env.PAPERCLIP_HOME;
       process.env.PAPERCLIP_HOME = isolatedStateDirectory;
       const current = scopedNativeExecution(`released-${provider}-${unknown}`);
-      current.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: unknown ? 750 : 250 };
+      current.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: retirement === "idle timeout" ? unknown ? 750 : 250 : 60_000 };
       if (provider === "claude") current.provider = { kind: "acpx", agent: "claude", model: "fixture", permissionMode: "deny-all" } as never;
       const source = { runnerInstanceId: "released-runner", environmentLeaseId: "released-lease", runId: current.binding.runId,
         normalizedSessionId: current.session.normalizedSessionId!, turnId: "settled-turn", itemId: "settled-item" };
@@ -17093,7 +17137,28 @@ describe("runnerd provider runtime wiring", () => {
           expect(state.execute).toHaveBeenCalledTimes(1);
           expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toEqual(envelope.releasedRunner);
         }
-        await vi.waitFor(() => expect(detachControllerForRestart).toHaveBeenCalledOnce());
+        if (retirement === "environment deletion") {
+          expect(await closeWarmNativeSessionsForEnvironment({ environmentId: target.environmentId, reason: "environment deleted" }))
+            .toEqual({ closed: 1, busy: 0, failed: 0 });
+          expect(close).toHaveBeenCalledExactlyOnceWith({ reason: "environment deleted" });
+          expect(detachControllerForRestart).not.toHaveBeenCalled();
+          return;
+        }
+        if (retirement === "detach failure") {
+          detachControllerForRestart.mockRejectedValue(new Error("fixture journal drain failed"));
+          for (let attempt = 0; attempt < 2; attempt++) {
+            expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 0, busy: 0, failed: 1 });
+            expect(close).not.toHaveBeenCalled();
+            expect(readNativeSessionIdleWork()).toBe("present");
+            expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toEqual(envelope.releasedRunner);
+          }
+          detachControllerForRestart.mockResolvedValue(undefined);
+        }
+        if (retirement !== "idle timeout") {
+          expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0 });
+          expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 0, busy: 0, failed: 0 });
+        } else await vi.waitFor(() => expect(detachControllerForRestart).toHaveBeenCalledOnce());
+        expect(readNativeSessionIdleWork()).toBe("none");
         expect(close).not.toHaveBeenCalled();
         expect(task.mock.calls.map(([operation]) => (operation as { kind: string }).kind)).toEqual(["describe"]);
         expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toEqual(envelope.releasedRunner);
@@ -17126,6 +17191,7 @@ describe("runnerd provider runtime wiring", () => {
         await expect(owners.mock.calls.at(-1)![0].onResumed!(source)).rejects.toThrow("released_source_mismatch");
         expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toEqual(replacement.releasedRunner);
       } finally {
+        detachControllerForRestart.mockResolvedValue(undefined);
         allowRelease(); allowPhysicalStop(); await execute.catch(() => undefined); await closeIdleWarmNativeSessionsForRestart(); owners.mockRestore();
         if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
       }

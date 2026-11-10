@@ -1726,6 +1726,18 @@ Projectless runs use their run ID as a transient workspace placeholder. That
 placeholder cannot authorize managed workspace reuse; those successors keep the
 existing fresh-workspace preparation path while retaining the old directory.
 
+The cleanup gate (`native_session_cleanup_quarantined`) never asks a person to
+act. Release of the run's environment settles it: remote lease termination
+receipts, or the local stop proof above, retire the quarantined owner. When the
+run's own saved checkpoint records a completed provider turn (for example, a
+same-run disposition recovery that the gate refused), the work is saved. If the
+task waits on unresolved blocker tasks, the task view shows that wait and no
+failure banner. Otherwise the missing task disposition stays visible with plain
+wording. Every quarantined run keeps Retry hidden, because the retry route refuses
+it; a new message continues once the previous session has stopped. These rules
+read only `errorCode` and `runnerProfileJson.sessionCheckpoint`, so runs that
+earlier releases quarantined are shown the same way without a migration.
+
 A continuation cancelled by the queued-run gate while waiting for review did not start a provider. Its matching dispatch-gate receipt and unclaimed execution fields keep this deliberate wait out of unknown-action reconciliation. Pending review and decision gates still apply. If an older server already created a recovery hold for this exact state, Retry or a new user message can request one fresh turn after the server verifies there is no provider, coordinator, or unfinished cleanup. Saved user input is reconsidered through the same admission path; the cancelled turn is not replayed.
 
 Other legacy queued-run gate cancellations also stay out of unknown-action reconciliation when the terminal run has no retained execution authority, session, workspace recovery, resources, or execution events. The same proof removes the effect of an old false recovery hold only for its exact company, task, and run; the audit row remains. Started or conflicting work retains its hold. Review waits retain their guarded Retry path. New work still passes the current approval, dependency, budget, pause, and ownership gates.
@@ -2652,7 +2664,12 @@ Retained-file recovery verifies the recorded source strictly, including the
 reusable-lease chain of its sandbox. When that verification refuses the source
 permanently (`allocation_ownership_ambiguous`, `source_binding_invalid`,
 `source_unavailable` or `historical_source_missing`), retrying repeats the
-refusal. The recovery worker then continues the task from its last committed
+refusal. This applies to export holds and to the no-replay hold of a native run
+that failed before provider work (`native_continuation_requires_reconciliation`,
+recorded resolved with outcome `blocked`); holds saved by earlier releases are
+discovered without migration. Its Blocked receipt is the recorded
+`nativeFailureBlock` status version. The refusal text never asks anyone to
+wait for a Paperclip update. The recovery worker then continues the task from its last committed
 workspace save, with the named outcome
 `retained_source_unverifiable_continued_from_last_saved`. The unverified files
 are never applied. When the retained root can still be read, the worker copies it
@@ -4468,6 +4485,13 @@ admitted lifecycle, including when recovery acquires a lease after the agent or
 environment lifecycle setting changes. Recovery uses the persisted execution
 input for both lease acquisition and lifecycle validation.
 
+Controller shutdown and warm idle expiry detach confirmed released plugin
+Runners without stopping them. The host owns parked Runner retention. The next
+turn uses the existing adoption and process-configuration checks to decide
+reuse. A failed detach keeps the local owner fenced and reports failure; it
+does not authorize a stop fallback. Unreleased sessions still checkpoint on
+shutdown, and explicit environment deletion still retires idle Runners.
+
 A warm sandbox's shared workspace binding persists independently of the
 experimental isolated-workspaces UI. Ordinary workspace updates remain gated;
 the runtime can bind only a validated shared workspace in the issue's company
@@ -5182,7 +5206,15 @@ and invalidate the session when the selected keys, versions and bytes are unchan
 
 For per-turn direct sandbox recovery, the executor reads the retained Runner's
 suspended lifecycle through the recorded sandbox lease and validates its complete
-identity and lack of pending delivery/cleanup. Only a lifecycle projection is
+identity and lack of pending delivery/cleanup. The read uses the directory the
+retained Runner's own lease recorded. A workspace can move to a new allocation of
+the same sandbox, for example after its previous epoch was abandoned and the last
+save was restored into a fresh root. That root is a sibling under the sandbox's
+`.paperclip-workspaces` with the same execution-workspace ID, and the read still
+binds to the source's directory. Such a moved source must be suspended; a Runner
+left in the old allocation is never adopted live. Any other directory (another
+workspace, another parent, a non-canonical path) stays refused with
+`native_controller_recovery_missing_evidence:retained_sandbox_binding`. Only a lifecycle projection is
 cached locally; provider files remain on the execution host. Prepared tasks use
 their existing `read_state` contract. The normal snapshot rebinder, tool-contract
 checks and current admission authority still govern the next turn.

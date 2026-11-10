@@ -620,6 +620,7 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0455_pending_budget_cancellation_index.sql",
   "0456_chat_review_lookup_indexes.sql",
   "0457_native_session_run_index.sql",
+  "0458_chat_admission_issue_index.sql",
 
 
   "0384_funny_adam_warlock.sql",
