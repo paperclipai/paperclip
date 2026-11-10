@@ -764,7 +764,10 @@ export function projectRoutes(db: Db) {
       }
       const mergeRepositoryMetadata = typeof req.body.repoUrl === "string" && isAzureDevOpsRemote(req.body.repoUrl);
       const clearRepositoryMetadata = req.body.repoUrl !== undefined && !mergeRepositoryMetadata;
-      const workspace = await svc.updateWorkspace(id, workspaceId, await authorizeWorkspaceRepository(req, existing.companyId, req.body), { mergeRepositoryMetadata, clearRepositoryMetadata });
+      const input = await authorizeWorkspaceRepository(req, existing.companyId, req.body);
+      const workspace = mergeRepositoryMetadata || clearRepositoryMetadata
+        ? await svc.updateWorkspace(id, workspaceId, input, { mergeRepositoryMetadata, clearRepositoryMetadata })
+        : await svc.updateWorkspace(id, workspaceId, input);
       if (!workspace) {
         res.status(422).json({ error: "Invalid project workspace payload" });
         return;
