@@ -2218,7 +2218,7 @@ export async function unidentifiedLocalRunnerProvenAbsent(input: { runId: string
     try {
       const state = readRunnerdControlPlaneState(candidate);
       if (record(state.identity).runId === input.runId && !runnerdStateIsFailedSessionBeforeTurn(
-        state, readRunnerdBootstrapJournal(candidate), { localProcesses: true,
+        state, readRunnerdBootstrapJournal(candidate), { localProcesses: process.platform !== "win32",
           processGone: (id, group) => localProcessDefinitelyGone(id, group) })) return false;
     } catch {
       return false;
@@ -6412,7 +6412,7 @@ export function runnerdStateProvesIncompleteBootstrap(
     const state = readRunnerdControlPlaneState(root);
     const journal = readRunnerdBootstrapJournal(root);
     return runnerdStateIsIncompleteBootstrap(state, journal) ||
-      runnerdStateIsFailedSessionBeforeTurn(state, journal, { localProcesses: options.localProcesses,
+      runnerdStateIsFailedSessionBeforeTurn(state, journal, { localProcesses: options.localProcesses && process.platform !== "win32",
         processGone: (id, group) => localProcessDefinitelyGone(id, group) }) ||
       runnerdStateIsOpenedSessionBeforeTurn(state, journal, {
         localProcesses: options.localProcesses,

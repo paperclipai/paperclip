@@ -2080,7 +2080,7 @@ describe("native incomplete-bootstrap evidence", () => {
     fixture.controlPlane.ackedSourceSeq = 3;
     fixture.runner.nextSourceSeq = 4;
     fixture.runner.ackedSourceSeq = 3;
-    expect(await provesLocally(fixture)).toBe(true);
+    expect(await provesLocally(fixture)).toBe(process.platform !== "win32");
     (fixture.controlPlane.commands as unknown[]).push({ type: "turn.start", status: "pending" });
     expect(await provesLocally(fixture)).toBe(false);
     (fixture.controlPlane.commands as unknown[]).pop();
