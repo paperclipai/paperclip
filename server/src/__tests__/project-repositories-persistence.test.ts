@@ -91,7 +91,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(updated?.codebase.repoUrl).toBe(renamed.url);
   });
 
-  it("creates projects only from repository URLs in the caller's active catalog and persists their IDs", async () => {
+  it("preserves legacy GitHub URL registration without a catalog connection", async () => {
     const catalog = vi.fn().mockResolvedValue({ repositories: [
       { id: "201", provider: "github", fullName: "org/selected", url: "https://github.com/org/selected", private: true, connections: ["github-connection"] },
     ], connections: [{ id: "github-connection", name: "GitHub" }], connectionCount: 1, failedConnectionCount: 0 });
@@ -132,12 +132,18 @@ const support = await getEmbeddedPostgresTestSupport();
     app.use(errorHandler);
 
     const created = await request(app).post(`/api/companies/${companyId}/projects`).send({
-      name: `Workspace catalog project ${Date.now()}`, workspace: { name: "Source", repoUrl: "https://github.com/org/workspace.git" },
+      name: `Workspace catalog project ${Date.now()}`, workspace: { name: "Source", repoUrl: "https://github.com/org/workspace.git", metadata: { githubRepositoryId: "202", repositoryId: "202", repositoryProvider: "github", retainedSetting: "keep" } },
     });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     expect(created.body.workspaces?.[0] ?? (await projectService(db).getById(created.body.id))?.workspaces[0]).toMatchObject({
       repoUrl: "https://github.com/org/workspace.git",
     });
+    const existingWorkspace = (await projectService(db).getById(created.body.id))!.workspaces[0]!;
+    const changed = await request(app).patch(`/api/projects/${created.body.id}/workspaces/${existingWorkspace.id}`).send({ repoUrl: "https://github.com/org/another" });
+    expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+    expect(changed.body.metadata).toMatchObject({ retainedSetting: "keep" });
+    expect(changed.body.metadata).not.toHaveProperty("githubRepositoryId");
+    expect(changed.body.metadata).not.toHaveProperty("repositoryId");
 
     catalog.mockResolvedValueOnce({ repositories: [], connections: [], connectionCount: 0, failedConnectionCount: 0 });
     const denied = await request(app).post(`/api/companies/${companyId}/projects`).send({
