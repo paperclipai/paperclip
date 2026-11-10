@@ -13,7 +13,7 @@ import { getHeartbeatRunReadDecisions, redactHeartbeatRunListRow } from "../serv
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
-import { issueChatBootstrapQuerySchema, issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
+import { ISSUE_SUMMARIES_MAX_IDS, issueChatBootstrapQuerySchema, issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/shared";
 import { readIssueChatBootstrapItems } from "../services/issue-chat-bootstrap.js";
 import { issueRunPresenceService } from "../services/issue-run-presence.js";
 import { activityService } from "../services/activity.js";
@@ -41,6 +41,7 @@ import { setIssueTitle } from "../services/issue-title.js";
 import { setIssueTitleSchema } from "@paperclipai/shared";
 import { resolveConfirmationFromComment } from "../services/confirmation-comment-resolution.js";
 import { createIssueReadTiming } from "../services/issue-read-timing.js";
+import { createInboxMineTiming, type InboxMinePhaseDurations } from "../services/inbox-mine-timing.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
 import { confirmNativeControllerStopped, NATIVE_CONTROLLER_HOST_UNVERIFIED } from "../services/native-runtime/native-controller-host-recovery.js";
@@ -226,6 +227,7 @@ import {
   issueService,
   type ActivityPublication,
   type IssueFilters,
+  type IssueListOptions,
   clampIssueListLimit,
   documentService,
   documentAnnotationService,
@@ -3043,7 +3045,7 @@ export const ISSUE_LIST_NEXT_OFFSET_HEADER = "X-Paperclip-Next-Offset";
 export const ISSUE_LIST_NEXT_AFTER_ID_HEADER = "X-Paperclip-Next-After-Id";
 
 type IssueListPreparedResponse =
-  | { kind: "inbox"; body: unknown }
+  | { kind: "inbox"; body: unknown; serverTimingPhases?: InboxMinePhaseDurations }
   | {
       kind: "compact";
       body: CompactIssue[];
@@ -8572,13 +8574,13 @@ export function issueRoutes(
     }
     const parsed = issueSummariesQuerySchema.safeParse(req.query);
     if (!parsed.success) {
-      res.status(400).json({ error: "ids must be the only query parameter and contain one to five comma-separated UUIDs" });
+      res.status(400).json({ error: `ids must be the only query parameter and contain one to ${ISSUE_SUMMARIES_MAX_IDS} comma-separated UUIDs` });
       return;
     }
     const rows = await listIssueSummaries(db, companyId, parsed.data.ids, await issueReadSqlCondition(db, req.actor));
     const visible = await filterIssuesForActor(req, rows);
     // Blocked rows carry glyph-only blocker state so every task view resolves
-    // the same glyph (covered → "in queue") as the task pane. At most five IDs.
+    // the same glyph (covered → "in queue") as the task pane. At most ISSUE_SUMMARIES_MAX_IDS IDs.
     const blockerAttention = await listIssueStatusBlockerAttention(db, companyId, visible, async (ids) => new Set(
       (await filterIssuesForActor(req, await listIssueSummaries(db, companyId, ids, await issueReadSqlCondition(db, req.actor))))
         .map((row) => row.id),
@@ -8706,7 +8708,7 @@ export function issueRoutes(
     companyId: string,
     listFilters: IssueFilters,
     view: string | undefined,
-    options: { reportPagination?: boolean } = {},
+    options: { reportPagination?: boolean; listOptions?: IssueListOptions } = {},
   ): Promise<IssueListPreparedResponse> {
     const compactView = view === "compact" || view === "index" || view === "rows";
     const canReadCompanyScope = await actorCanReadCompanyScope(req, companyId);
@@ -8720,6 +8722,7 @@ export function issueRoutes(
     const probedResult = await svc.list(
       companyId,
       pageLimit === null ? listFilters : { ...listFilters, limit: pageLimit + 1 },
+      options.listOptions,
     );
     const hasMore = pageLimit !== null && probedResult.length > pageLimit;
     const rawResult = hasMore ? probedResult.slice(0, pageLimit!) : probedResult;
@@ -8816,6 +8819,7 @@ export function issueRoutes(
 
   router.get("/companies/:companyId/inbox/mine", async (req, res) => {
     const startedAt = Date.now();
+    const timing = createInboxMineTiming();
     const companyId = req.params.companyId as string;
     assertBoard(req);
     assertCompanyAccess(req, companyId);
@@ -8825,35 +8829,34 @@ export function issueRoutes(
     }
     const userId = req.actor.userId;
     if (!userId) throw new HttpError(401, "A signed-in board user is required");
-    const readCondition = await issueReadSqlCondition(db, req.actor);
+    const readCondition = await timing.time("access", () => issueReadSqlCondition(db, req.actor));
     const listFilters: IssueFilters = {
-      readCondition, touchedByUserId: userId, inboxArchivedByUserId: userId,
+      readCondition, touchedByUserId: userId, touchedCandidates: "participation", inboxArchivedByUserId: userId,
       status: INBOX_MINE_ISSUE_STATUS_FILTER, listProjection: "index",
       sortField: "updated", sortDir: "desc", limit: 100,
       includeRoutineExecutions: true, includeLiveDescendantSummary: true,
     };
-    const readCompact = async (filters: IssueFilters, projection: "index" | "rows") => {
-      const prepared = await prepareIssueListForActor(req, companyId, filters, projection);
+    const readCompact = async (filters: IssueFilters, projection: "index" | "rows", listOptions?: IssueListOptions) => {
+      const prepared = await prepareIssueListForActor(req, companyId, filters, projection, { listOptions });
       if (prepared.kind !== "compact") throw new Error("Expected compact inbox rows");
       return prepared.body;
     };
     const requestKey = issueListRequestKey({ req, companyId, normalizedQuery: { view: "mine-snapshot" }, route: "GET /api/companies/:companyId/inbox/mine" });
     const coordinated = await coordinateIssueListGet({
       req, companyId, requestKey, allowTtlCache: false, retireOnCompanyChange: true, diagnostics: opts.issueListDiagnostics,
-      compute: async () => ({
-        kind: "inbox",
-        body: { userId, ...await readInboxMine({
-          loadIssues: () => readCompact(listFilters, "index"),
-          loadFailures: async () => {
+      compute: async () => {
+        const body = { userId, ...await readInboxMine({
+          loadIssues: () => timing.time("issues", () => readCompact(listFilters, "index", { timePhase: timing.listPhases })),
+          loadFailures: () => timing.time("failures", async () => {
             const permission = await access.decide({ actor: req.actor, action: "company_scope:read", resource: { type: "company", companyId } });
             if (!permission.allowed) throw new HttpError(403, "Run telemetry is outside this actor's authorization boundary");
             const runs = latestFailedRunsByAgent(await heartbeat.list(companyId, undefined, 200, { summary: true }));
             const decisions = await getHeartbeatRunReadDecisions(db, access, req.actor, runs);
             return runRedactions.redactForRuns(companyId, runs.map((run, index) => decisions[index] ? run : redactHeartbeatRunListRow(run)), getActorInfo(req).actorId);
-          },
-          loadContext: (ids, projection) => readCompact({
+          }),
+          loadContext: (ids, projection) => timing.time(projection === "index" ? "parents" : "failure_context", () => readCompact({
             readCondition, issueIds: ids, listProjection: projection, limit: 100, includeRoutineExecutions: true,
-          }, projection),
+          }, projection)),
           sourceError: (error, source) => {
             logger.warn({ err: error, companyId, source }, "inbox source read failed");
             return {
@@ -8862,11 +8865,16 @@ export function issueRoutes(
                 : source === "failures" ? "Could not load failed runs" : "Could not load task context",
             };
           },
-        }) },
-      }),
+        }) };
+        // Requests that coalesce onto this read report its phases too.
+        return { kind: "inbox" as const, body, serverTimingPhases: timing.phases() };
+      },
     });
     res.setHeader("Cache-Control", "private, no-store");
     res.setHeader("X-Paperclip-Request-Cache", coordinated.cacheStatus);
+    res.setHeader("Server-Timing", timing.header(
+      coordinated.response?.kind === "inbox" ? coordinated.response.serverTimingPhases : undefined,
+    ));
     if (!coordinated.response) {
       res.setHeader("Retry-After", String(coordinated.retryAfterSeconds ?? 1));
       res.status(429).json({ error: "Too many concurrent issue-list requests for this actor/client", retryAfterSeconds: coordinated.retryAfterSeconds ?? 1 });
@@ -14540,12 +14548,21 @@ export function issueRoutes(
    * Conversation tasks are excluded: a conversation turn settles from its final
    * reply (nativeConversationReplyResult), not from a runner tool, so a reply
    * that moves the conversation to review still settles without the lock.
+   *
+   * The one status-shaped request a run must be able to send is the active
+   * review/approval participant's approval (`status: "done"` with its decision
+   * comment): no runner tool records a stage decision, so refusing it leaves
+   * the stage pending forever. With `allowStageApproval` the guard returns
+   * "defer_final_status" for that request instead of refusing it. The caller
+   * records the decision and keeps the task (and the run's lock) in review;
+   * the run's own paperclip_finish report then sets the final status.
    */
   async function assertNativeRunKeepsOwnExecutionLock(
     req: Request,
-    issue: { companyId: string; status: string; parentId: string | null; assigneeAgentId: string | null; assigneeUserId: string | null; checkoutRunId: string | null; executionRunId: string | null; conversationAgentId?: string | null; conversationUserId?: string | null },
+    issue: { companyId: string; status: string; parentId: string | null; assigneeAgentId: string | null; assigneeUserId: string | null; checkoutRunId: string | null; executionRunId: string | null; conversationAgentId?: string | null; conversationUserId?: string | null; executionState?: unknown },
     requestedStatus: unknown = req.body.status,
-  ) {
+    options: { allowStageApproval?: boolean } = {},
+  ): Promise<"defer_final_status" | undefined> {
     const runId = req.actor.type === "agent" ? req.actor.runId : null;
     if (!runId || !req.actor.agentId || req.actor.agentId !== issue.assigneeAgentId) return;
     if (runId !== issue.executionRunId && runId !== issue.checkoutRunId) return;
@@ -14558,6 +14575,10 @@ export function issueRoutes(
     const run = await heartbeat.getRun(runId);
     if (!run || run.runtimeMode !== "native" || run.status !== "running"
       || run.agentId !== req.actor.agentId || run.companyId !== issue.companyId) return;
+    if (options.allowStageApproval && requestedStatus === "done" && issue.status === "in_review" &&
+        activeExecutionParticipantAgentId(issue) === req.actor.agentId) {
+      return "defer_final_status";
+    }
     // A blocker that the dependency rules reject anyway keeps its specific
     // error; otherwise the run reports the block with paperclip_block.
     if (Array.isArray(req.body.blockedByIssueIds) && req.body.blockedByIssueIds.length > 0) {
@@ -14566,7 +14587,11 @@ export function issueRoutes(
         blockedByIssueIds: req.body.blockedByIssueIds, parentIssueId: issue.parentId,
       });
     }
-    throw conflict(
+    throw nativeRunStatusReportedByFinish(requestedStatus);
+  }
+
+  function nativeRunStatusReportedByFinish(requestedStatus: unknown) {
+    return conflict(
       "This run owns the task's execution, so it cannot change the task status directly; doing so would end its access to the task before it reports. " +
         "Report the outcome with paperclip_finish instead: reportedWorkDisposition \"needs_review\" for review, \"done\" when complete, or \"yielded\" with continuation.kind \"monitor\" to wait on a scheduled monitor. " +
         "Use paperclip_block for a blocker. Paperclip sets the task status from that report.",
@@ -14682,7 +14707,7 @@ export function issueRoutes(
       );
       if (!existing) return;
       if (!(await assertIssueReadAllowed(req, res, existing))) return;
-      await assertNativeRunKeepsOwnExecutionLock(req, existing);
+      const nativeStageApproval = await assertNativeRunKeepsOwnExecutionLock(req, existing, req.body.status, { allowStageApproval: true });
       if (req.body.expectedStatusVersion !== undefined && (
         existing.statusVersion !== req.body.expectedStatusVersion || existing.status !== "backlog"
       )) {
@@ -15233,6 +15258,18 @@ export function issueRoutes(
         throw unprocessable("Snapshot-guarded policy updates cannot change task status or ownership");
       }
       Object.assign(updateFields, transition.patch);
+      let deferredNativeStageApproval = false;
+      if (nativeStageApproval === "defer_final_status") {
+        // Only the final stage's approval is deferred. Anything else this
+        // request would do (an intermediate approval that hands the task to the
+        // next participant, or no decision at all) keeps the ordinary refusal.
+        const finalApproval = transition.decision?.outcome === "approved" && updateFields.status === "done" &&
+          (transition.patch.assigneeAgentId === undefined || transition.patch.assigneeAgentId === existing.assigneeAgentId) &&
+          transition.patch.assigneeUserId === undefined;
+        if (!finalApproval) throw nativeRunStatusReportedByFinish(req.body.status);
+        delete updateFields.status;
+        deferredNativeStageApproval = true;
+      }
 
       const nextStatus = updateFields.status ?? existing.status;
       if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
@@ -15659,10 +15696,13 @@ export function issueRoutes(
         const lockedPolicyChangeRequested =
           req.body.reviewPolicy !== undefined &&
           req.body.reviewPolicy !== lockedExisting.reviewPolicy;
+        // A deferred native approval is still a review verdict even though
+        // its status write is left to the run's finish report.
         const lockedReviewVerdictRequested =
           lockedExisting.status === "in_review" &&
           (updateFields.status === "done" ||
-            updateFields.status === "cancelled");
+            updateFields.status === "cancelled" ||
+            deferredNativeStageApproval);
         if (
           (lockedReviewVerdictRequested || lockedPolicyChangeRequested) &&
           lockedExisting.reviewPolicy != null &&

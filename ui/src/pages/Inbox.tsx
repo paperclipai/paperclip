@@ -147,6 +147,7 @@ import {
   getInboxWorkItems,
   getInboxSearchSupplementIssues,
   getLatestFailedRunsByAgent,
+  collectReferencedExecutionWorkspaceIds,
   matchesInboxIssueSearch,
   getRecentTouchedIssues,
   isInboxEntityDismissed,
@@ -202,6 +203,8 @@ import { taskStatusIconProps } from "@/lib/task-status-presentation";
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
 const INBOX_ISSUE_LIST_LIMIT = 100;
 const INBOX_HOT_PATH_STALE_MS = 30_000;
+// Stable fallback so memos over unloaded or disabled issue reads do not rerun on every render.
+const NO_ISSUES: Issue[] = [];
 const INBOX_COLLECTION_KEY = "inbox";
 
 type StreamlinedInboxViewState = InboxFilterPreferences & {
@@ -930,13 +933,6 @@ function StreamlinedInbox({
   });
   const isolatedWorkspacesEnabled = experimentalSettings?.enableIsolatedWorkspaces === true;
   const externalObjectsEnabled = experimentalSettings?.enableExternalObjects === true;
-  const { data: executionWorkspaces = [], isLoading: isWorkspacesLoading } = useQuery({
-    queryKey: selectedCompanyId
-      ? queryKeys.executionWorkspaces.summaryList(selectedCompanyId)
-      : ["execution-workspaces", "__disabled__"],
-    queryFn: () => executionWorkspacesApi.listSummaries(selectedCompanyId!),
-    enabled: !!selectedCompanyId && isolatedWorkspacesEnabled,
-  });
 
   useEffect(() => {
     setBreadcrumbs([{ label: surfaceLabel }]);
@@ -1026,7 +1022,7 @@ function StreamlinedInbox({
         error && isTransientError(new ApiError(error.message, error.status, null))) ? 5_000 : false;
     },
   });
-  const { data: mineIssuesRaw = [], isLoading: isMineIssuesLoading, error: mineIssuesError } = mineIssuesQuery;
+  const { data: mineIssuesRaw = NO_ISSUES, isLoading: isMineIssuesLoading, error: mineIssuesError } = mineIssuesQuery;
   const mineIssuesView = useQueryView(mineIssuesQuery);
   const mineIssuesQueryKey = [...queryKeys.issues.listMineByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT, currentUserId] as const;
   // Mine owns one coherent response: broadcasting only its task array would
@@ -1050,7 +1046,7 @@ function StreamlinedInbox({
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
-  const { data: touchedIssuesRaw = [], isLoading: isTouchedIssuesLoading, error: touchedIssuesError, dataUpdatedAt: touchedIssuesUpdatedAt } = touchedIssuesQuery;
+  const { data: touchedIssuesRaw = NO_ISSUES, isLoading: isTouchedIssuesLoading, error: touchedIssuesError, dataUpdatedAt: touchedIssuesUpdatedAt } = touchedIssuesQuery;
   const touchedIssuesView = useQueryView(touchedIssuesQuery);
   const touchedIssuesQueryKey = [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
   const sharedTouchedIssues = useSharedPollingQuery<Issue[]>({
@@ -1219,7 +1215,7 @@ function StreamlinedInbox({
   const shouldUseIssueSearchSupplement =
     !!selectedCompanyId
     && normalizedSearchQuery.length > 0;
-  const { data: remoteIssueSearchResults = [] } = useQuery({
+  const { data: remoteIssueSearchResults = NO_ISSUES } = useQuery({
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedSearchQuery, undefined, 25),
       "compact",
@@ -1254,6 +1250,28 @@ function StreamlinedInbox({
     for (const issue of remoteIssueSearchResults) issueIds.add(issue.id);
     return [...issueIds];
   }, [mineIssues, remoteIssueSearchResults, touchedIssues]);
+  // Only the workspaces these rows reference; a company-wide list can be thousands of rows.
+  const referencedExecutionWorkspaceIds = useMemo(
+    () => collectReferencedExecutionWorkspaceIds(issues, remoteIssueSearchResults),
+    [issues, remoteIssueSearchResults],
+  );
+  const referencedExecutionWorkspaceIdsKey = referencedExecutionWorkspaceIds.join(",");
+  const workspaceLookupEnabled = !!selectedCompanyId && isolatedWorkspacesEnabled && referencedExecutionWorkspaceIds.length > 0;
+  const {
+    data: executionWorkspaces = [],
+    isLoading: isWorkspacesLoading,
+    isPlaceholderData: isWorkspacesPlaceholder,
+  } = useQuery({
+    queryKey: queryKeys.executionWorkspaces.summaryList(selectedCompanyId ?? "__disabled__", {
+      ids: referencedExecutionWorkspaceIdsKey,
+    }),
+    queryFn: () => executionWorkspacesApi.listSummariesByIds(selectedCompanyId!, referencedExecutionWorkspaceIds),
+    enabled: workspaceLookupEnabled,
+    // Keep names visible while this company's id set changes; never carry them across companies
+    // or into a view that needs no lookup, where a placeholder would never be replaced.
+    placeholderData: (previous, previousQuery) =>
+      workspaceLookupEnabled && previousQuery?.queryKey[1] === selectedCompanyId ? previous : undefined,
+  });
   const {
     summaries: externalObjectSummaryByIssueId,
     isLoading: externalObjectSummariesLoading,
@@ -2534,9 +2552,16 @@ function StreamlinedInbox({
     showWorkItemsSection ? "work_items" : null,
   ].filter((key): key is SectionKey => key !== null);
 
+  // Workspace names change what rows show (grouping, the Workspace column) or which rows match a
+  // search, so wait for them only then; otherwise rows reveal without the workspace read.
+  const workspaceDataAffectsRows = groupBy === "workspace"
+    || (visibleIssueColumnSet.has("workspace") && availableIssueColumnSet.has("workspace"))
+    || normalizedSearchQuery.length > 0;
   const initialSourcesSettled =
     ![sourceSearchView, mineIssuesView, touchedIssuesView].some(view => view.kind === "reconnecting") &&
-    !isSourceSearchLoading && !isSessionLoading && !isSettingsLoading && !isDismissalsLoading && !isAgentsLoading && !isProjectsLoading && !isMembersLoading && !isWorkspacesLoading &&
+    !isSourceSearchLoading && !isSessionLoading && !isSettingsLoading && !isDismissalsLoading && !isAgentsLoading && !isProjectsLoading && !isMembersLoading &&
+    // Previous summaries stand in while a new id set loads; they may lack the new view's workspaces.
+    !(workspaceDataAffectsRows && workspaceLookupEnabled && (isWorkspacesLoading || isWorkspacesPlaceholder)) &&
     !isJoinRequestsLoading &&
     !isApprovalsLoading &&
     !isDashboardLoading &&

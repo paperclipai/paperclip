@@ -1,5 +1,5 @@
 {
-  "id": "9de6ee58-419c-437c-bfc0-911b0128dbf5",
+  "id": "f98af245-4a2e-4c3d-b89e-6ed3e81a074c",
   "prevId": "d54bfeb4-dedb-4f8b-9195-a4d4aa67d71f",
   "version": "7",
   "dialect": "postgresql",
@@ -34552,6 +34552,34 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "heartbeat_run_events_retry_exhausted_idx": {
+          "name": "heartbeat_run_events_retry_exhausted_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_run_events\".\"event_type\" = 'lifecycle' and \"heartbeat_run_events\".\"message\" like 'Bounded retry exhausted%'",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -35860,21 +35888,6 @@
               "expression": "coalesce(\n        \"native_issue_id\"::text,\n        nullif(\"context_snapshot\"->>'issueId', ''),\n        nullif(\"context_snapshot\"->>'taskId', ''),\n        nullif(\"context_snapshot\"->>'taskKey', '')\n      )",
               "asc": true,
               "isExpression": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": true,
-          "method": "btree",
-          "with": {}
-        },
-        "heartbeat_runs_wakeup_request_id_idx": {
-          "name": "heartbeat_runs_wakeup_request_id_idx",
-          "columns": [
-            {
-              "expression": "wakeup_request_id",
-              "isExpression": false,
-              "asc": true,
               "nulls": "last"
             }
           ],
