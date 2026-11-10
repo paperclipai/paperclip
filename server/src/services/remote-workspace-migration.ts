@@ -61,8 +61,9 @@ const gitSourceProof = (source: ArchivedGitMigrationSource | null) => source ? {
 
 async function isUnmaterializedRepositoryRequest(workspace: Workspace,
   repository: typeof executionWorkspaceRepositories.$inferSelect) {
-  if (!workspace.cwd || repository.state !== "pending" || repository.pinnedCommit
-    || repository.branchName || repository.failureCode) return false;
+  const unprepared = repository.state === "pending" && !repository.failureCode
+    || repository.state === "needs_repair" && repository.failureCode === "repository_preparation_failed";
+  if (!workspace.cwd || !unprepared || repository.pinnedCommit || repository.branchName) return false;
   const relative = repository.relativePath;
   if (!relative || relative.includes("\\") || path.posix.isAbsolute(relative)
     || path.posix.normalize(relative) !== relative || relative.split("/").some(part => !part || part === "." || part === "..")) return false;
@@ -300,7 +301,7 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
   const repositories = await db.select().from(executionWorkspaceRepositories).where(and(eq(executionWorkspaceRepositories.companyId, workspace.companyId),
     eq(executionWorkspaceRepositories.executionWorkspaceId, workspace.id)));
   for (const repository of repositories.filter(repository => repository.state !== "ready")) {
-    if (!input.writersStopped || !await isUnmaterializedRepositoryRequest(workspace, repository)) reasons.push("repository_preparation_unresolved");
+    if ((!input.writersStopped && !input.onlineSource) || !await isUnmaterializedRepositoryRequest(workspace, repository)) reasons.push("repository_preparation_unresolved");
   }
   const source: RemoteWorkspaceSource = workspace.repoUrl ? { kind: "git", repoUrl: workspace.repoUrl,
     ref: archivedGitSource?.commit ?? workspace.baseRef, branchName: workspace.branchName } : { kind: "empty" };

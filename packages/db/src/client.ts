@@ -616,6 +616,8 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0447_legacy_controller_process.sql",
   "0450_petite_frightful_four.sql",
   "0453_curious_ben_parker.sql",
+  "0454_lumpy_ronan.sql",
+  "0455_pending_budget_cancellation_index.sql",
 
 
   "0384_funny_adam_warlock.sql",
