@@ -285,6 +285,21 @@ describe("safeguards", () => {
     expect(client.getQueryData([...queryKeys.issues.detail("ABC-3"), "core"])).toBeUndefined();
   });
 
+  it("binds an early answer adopted before the session loaded to the first account that uses it", async () => {
+    (window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL] = { ref: "ABC-3", startedAt: Date.now(), promise: Promise.resolve(item("ABC-3")) };
+    // The page renders the task before its first session read finishes.
+    await startIssueChatBootstrap(client, null, "ABC-3");
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const ownRead = vi.fn();
+    await expect(readFromIssueChatBootstrap(client, ["unread"], "ABC-3", (bootstrap) => bootstrap.recentActivity, ownRead)).resolves.toEqual([{ id: "event-3" }]);
+    expect(ownRead).not.toHaveBeenCalled();
+    // Once used by user-1, another account cannot use it.
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+    const read = vi.fn().mockResolvedValue([]);
+    await readFromIssueChatBootstrap(client, ["unread"], "ABC-3", (bootstrap) => bootstrap.recentActivity, read);
+    expect(read).toHaveBeenCalledOnce();
+  });
+
   it("stamps an early answer with its request time and ignores one that is already stale", async () => {
     const startedAt = Date.now() - 5_000;
     (window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL] = { ref: "ABC-3", startedAt, promise: Promise.resolve(item("ABC-3")) };
