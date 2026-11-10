@@ -230,10 +230,9 @@ export function environmentRunOrchestrator(
     adapterType: string | null;
     warmRunnerIdleTimeoutMs?: number;
     runnerReconnectGraceMs?: number;
-    assertCompanyBinding: true;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
-      return await environmentRuntime.acquireRunLease(input);
+      return await environmentRuntime.acquireRunLease({ ...input, assertCompanyBinding: true });
     } catch (err) {
       // A transient provider refusal (HTTP 5xx/429/timeout) is retried by the
       // setup path with its bounded bootstrap budget. Saved-sandbox resume and
@@ -363,7 +362,6 @@ export function environmentRunOrchestrator(
       adapterType: input.adapterType ?? null,
       warmRunnerIdleTimeoutMs,
       runnerReconnectGraceMs,
-      assertCompanyBinding: true as const,
     };
     let leaseRecord: EnvironmentRuntimeLeaseRecord;
     if (input.reattachRemoteLease) {

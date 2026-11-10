@@ -4,4 +4,4 @@ ALTER TABLE "projects" ADD CONSTRAINT "projects_environment_id_environments_id_f
 UPDATE "projects" p
 SET "environment_id" = e."id", "execution_workspace_policy" = p."execution_workspace_policy" - 'environmentId'
 FROM "environments" e
-WHERE p."execution_workspace_policy" ->> 'environmentId' = e."id"::text;
+WHERE lower(p."execution_workspace_policy" ->> 'environmentId') = e."id"::text;

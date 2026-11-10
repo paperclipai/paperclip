@@ -1003,8 +1003,17 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         const normalized = parseProjectExecutionWorkspacePolicy(projectData.executionWorkspacePolicy);
         projectData.executionWorkspacePolicy = normalized ? { ...normalized } : null;
       }
-      const requestedStorage = parseProjectExecutionWorkspacePolicy(projectData.executionWorkspacePolicy)?.storageProviderPluginId;
       const currentStorage = parseProjectExecutionWorkspacePolicy(existingProject.executionWorkspacePolicy)?.storageProviderPluginId;
+      if (currentStorage && projectData.executionWorkspacePolicy !== undefined) {
+        const requestedStorage = parseProjectExecutionWorkspacePolicy(projectData.executionWorkspacePolicy)?.storageProviderPluginId;
+        if (requestedStorage !== undefined && requestedStorage !== currentStorage) {
+          throw conflict("A plugin-backed project stays attached to its storage plugin");
+        }
+        if (requestedStorage === undefined) {
+          projectData.executionWorkspacePolicy = { enabled: true, ...projectData.executionWorkspacePolicy, storageProviderPluginId: currentStorage };
+        }
+      }
+      const requestedStorage = parseProjectExecutionWorkspacePolicy(projectData.executionWorkspacePolicy)?.storageProviderPluginId;
       const storageChanged = requestedStorage !== undefined && requestedStorage !== currentStorage;
       const selectedEnvironmentId = projectData.environmentId === undefined && storageChanged
         ? existingProject.environmentId : projectData.environmentId;
@@ -1014,19 +1023,8 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
           { environmentId: selectedEnvironmentId, expectedStorageProviderPluginId });
         projectData.executionWorkspacePolicy = selected.executionWorkspacePolicy as typeof projectData.executionWorkspacePolicy;
       }
-      if (projectData.executionWorkspacePolicy !== undefined) {
-        const attachedPluginId = parseProjectExecutionWorkspacePolicy(existingProject.executionWorkspacePolicy)?.storageProviderPluginId;
-        const requestedPluginId = parseProjectExecutionWorkspacePolicy(projectData.executionWorkspacePolicy)?.storageProviderPluginId;
-        if (attachedPluginId) {
-          if (requestedPluginId !== undefined && requestedPluginId !== attachedPluginId) {
-            throw conflict("A plugin-backed project stays attached to its storage plugin");
-          }
-          if (requestedPluginId === undefined) {
-            projectData.executionWorkspacePolicy = { enabled: true, ...projectData.executionWorkspacePolicy, storageProviderPluginId: attachedPluginId };
-          }
-        } else if (requestedPluginId) {
-          await retireRemovedPluginWorkspaceDependents(db, id);
-        }
+      if (!currentStorage && requestedStorage) {
+        await retireRemovedPluginWorkspaceDependents(db, id);
       }
       if (ids && ids.length > 0) {
         await assertGoalsBelongToCompany(db, existingProject.companyId, ids);

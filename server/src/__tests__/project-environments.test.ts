@@ -126,18 +126,30 @@ describe.skipIf(!support.supported)("project environment compatibility", () => {
     expect((await svc.getById(second.id))?.environmentId).toBe(f.sandbox.id);
   });
 
-  it("migrates a saved legacy project selection without changing its checkout policy", async () => {
+  it.each([{ enabled: true }, null])("preserves the storage owner before validating a combined environment/policy edit (%j)", async policy => {
+    const f = await fixture();
+    const svc = projectService(db);
+    const project = await svc.create(f.companyId, { name: "Managed project" }, { environmentId: f.computer.id });
+    await expect(svc.update(project.id, { environmentId: f.local.id, executionWorkspacePolicy: policy }))
+      .rejects.toMatchObject({ status: 409 });
+    const saved = await svc.getById(project.id);
+    expect(saved?.environmentId).toBe(f.computer.id);
+    expect(saved?.executionWorkspacePolicy?.storageProviderPluginId).toBe(f.pluginId);
+  });
+
+  it.each([false, true])("migrates a saved legacy project selection without changing its checkout policy (uppercase=%s)", async uppercase => {
     const f = await fixture();
     const migration = await readFile(new URL("../../../packages/db/src/migrations/0464_project_environment.sql", import.meta.url), "utf8");
     const project = await projectService(db).create(f.companyId, { name: "Existing project" });
+    const [target] = await db.insert(environments).values({ id: "abcdefab-cdef-4abc-8def-abcdefabcdef", name: "Legacy target", driver: "ssh", config: { host: "legacy.example.test" } }).returning();
     await expect(db.transaction(async tx => {
-      await tx.update(projects).set({ executionWorkspacePolicy: { enabled: false, environmentId: f.ssh.id } }).where(eq(projects.id, project.id));
+      await tx.update(projects).set({ executionWorkspacePolicy: { enabled: false, environmentId: uppercase ? target.id.toUpperCase() : target.id } }).where(eq(projects.id, project.id));
       await tx.execute(sql`alter table projects drop column environment_id`);
       for (const statement of migration.split("--> statement-breakpoint").filter(value => value.trim())) {
         await tx.execute(sql.raw(statement));
       }
       const [saved] = await tx.select().from(projects).where(eq(projects.id, project.id));
-      expect(saved.environmentId).toBe(f.ssh.id);
+      expect(saved.environmentId).toBe(target.id);
       expect(saved.executionWorkspacePolicy).toEqual({ enabled: false });
       throw new Error("rollback migration fixture");
     })).rejects.toThrow("rollback migration fixture");
@@ -148,7 +160,7 @@ describe.skipIf(!support.supported)("project environment compatibility", () => {
     const svc = projectService(db);
     const first = await svc.create(f.companyId, { name: "Legacy editor" });
     const second = await svc.create(f.companyId, { name: "Other project" });
-    const saved = await svc.update(first.id, { executionWorkspacePolicy: { enabled: false, environmentId: f.ssh.id } });
+    const saved = await svc.update(first.id, { executionWorkspacePolicy: { enabled: false, environmentId: f.ssh.id.toUpperCase() } });
     expect(saved?.environmentId).toBe(f.ssh.id);
     expect(saved?.executionWorkspacePolicy).toEqual({ enabled: false });
     expect((await svc.getById(second.id))?.environmentId).toBe(f.sandbox.id);

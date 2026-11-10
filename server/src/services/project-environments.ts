@@ -74,7 +74,7 @@ export async function resolveProjectEnvironment(db: Db, companyId: string, rawPo
   const policy = parseProjectExecutionWorkspacePolicy(rawPolicy);
   if (policy?.storageProviderPluginId !== undefined && !actor.environmentId && actor.expectedStorageProviderPluginId === undefined) return { environmentId: null, executionWorkspacePolicy: rawPolicy };
   const options = await projectEnvironmentOptions(db, companyId, actor);
-  const environmentId = actor.environmentId ?? options.defaultEnvironmentId;
+  const environmentId = actor.environmentId?.toLowerCase() ?? options.defaultEnvironmentId;
   const group = options.groups.find(value => value.environments.some(environment => environment.id === environmentId));
   if (actor.environmentId && !group) throw conflict("The selected environment is unavailable for this project. Select an available environment.", { code: "project_environment_unavailable" });
   if (!actor.environmentId && options.error) throw conflict(options.error, { code: "project_environment_unavailable" });
