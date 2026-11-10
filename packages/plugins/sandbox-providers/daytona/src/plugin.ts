@@ -654,30 +654,66 @@ function isSandboxStateChangeInProgress(error: unknown): boolean {
  */
 export const STUCK_STOPPING_FORCE_AFTER_MS = 30_000;
 const STUCK_STOPPING_FORCE_STOP_SECONDS = 30;
+/** One forced stop per sandbox in this window, whichever caller sends it. */
+export const FORCED_STOP_COOLDOWN_MS = 10 * 60_000;
 
-async function waitOutSandboxTransition(sandbox: Sandbox, deadline: number, readTimeoutMs: number): Promise<void> {
-  if (!SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "")) return;
+// Forced stops are owned by the sandbox, not by a caller. Several callers can
+// wait on one stuck sandbox at once (execute, sync, realize, resume). Only one
+// of them sends the forced stop, and no caller starts the sandbox while that
+// request is unsettled: a late stop would otherwise kill a sandbox another
+// caller has just restarted. The entry outlives its liveness timeout until
+// the SDK request itself settles.
+const forcedSandboxStops = new Map<string, { issuedAt: number; pending: Promise<void> | null }>();
+
+function forcedStopInFlight(key: string): Promise<void> | null {
+  return forcedSandboxStops.get(key)?.pending ?? null;
+}
+
+function claimForcedStop(key: string, now: number): boolean {
+  const previous = forcedSandboxStops.get(key);
+  if (previous && (previous.pending || now - previous.issuedAt < FORCED_STOP_COOLDOWN_MS)) return false;
+  forcedSandboxStops.set(key, { issuedAt: now, pending: null });
+  return true;
+}
+
+async function sendForcedStop(sandbox: Sandbox, key: string, deadline: number): Promise<void> {
+  const remainingSeconds = Math.max(1, Math.floor((deadline - Date.now()) / 1_000));
+  const stopSeconds = Math.min(STUCK_STOPPING_FORCE_STOP_SECONDS, remainingSeconds);
+  const entry = forcedSandboxStops.get(key)!;
+  // `request` settles only when the SDK call does, even past the liveness bound.
+  const request = Promise.resolve().then(() => sandbox.stop(stopSeconds, true));
+  entry.pending = request.then(() => undefined, () => undefined)
+    .finally(() => { if (forcedSandboxStops.get(key) === entry) entry.pending = null; });
+  try {
+    await traceLeaseStep("lease.force_stop", () => withLivenessTimeout("sandbox.stop",
+      stopSeconds * 1_000 + LIVENESS_START_TIMEOUT_MARGIN_MS, () => request));
+  } catch {
+    // Keep waiting within the same deadline; the next read reports the state.
+  }
+}
+
+async function waitOutSandboxTransition(sandbox: Sandbox, scope: SandboxScope, deadline: number,
+  readTimeoutMs: number): Promise<void> {
+  const key = sandboxHandleCacheKey(scope);
+  const mustWait = () => SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "") || forcedStopInFlight(key) !== null;
+  if (!mustWait()) return;
   await traceLeaseStep("lease.wait_transition", async () => {
     let stoppingSince: number | null = null;
-    let forcedStop = false;
-    while (SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "") && Date.now() + SANDBOX_TRANSITION_POLL_MS < deadline) {
+    while (mustWait() && Date.now() + SANDBOX_TRANSITION_POLL_MS < deadline) {
       stoppingSince = sandbox.state === "stopping" ? stoppingSince ?? Date.now() : null;
-      if (stoppingSince !== null && !forcedStop && Date.now() - stoppingSince >= STUCK_STOPPING_FORCE_AFTER_MS) {
-        // The sandbox is about to be started, so killing what holds the stop
-        // loses nothing a graceful stop would keep: the disk survives a stop.
-        // One attempt only. A refusal leaves the plain wait unchanged.
-        forcedStop = true;
-        const remainingSeconds = Math.max(1, Math.floor((deadline - Date.now()) / 1_000));
-        const stopSeconds = Math.min(STUCK_STOPPING_FORCE_STOP_SECONDS, remainingSeconds);
-        try {
-          await traceLeaseStep("lease.force_stop", () => withLivenessTimeout("sandbox.stop",
-            stopSeconds * 1_000 + LIVENESS_START_TIMEOUT_MARGIN_MS, () => sandbox.stop(stopSeconds, true)));
-        } catch {
-          // Keep waiting within the same deadline; the next read reports the state.
-        }
+      // The sandbox is about to be started, so killing what holds the stop
+      // loses nothing a graceful stop would keep: the disk survives a stop.
+      // A refusal leaves the plain wait unchanged.
+      if (stoppingSince !== null && Date.now() - stoppingSince >= STUCK_STOPPING_FORCE_AFTER_MS
+        && claimForcedStop(key, Date.now())) {
+        await sendForcedStop(sandbox, key, deadline);
         continue;
       }
-      await new Promise(resolve => setTimeout(resolve, SANDBOX_TRANSITION_POLL_MS));
+      const pending = forcedStopInFlight(key);
+      await Promise.race([
+        new Promise(resolve => setTimeout(resolve, SANDBOX_TRANSITION_POLL_MS)),
+        ...(pending ? [pending] : []),
+      ]);
       await withLivenessTimeout("sandbox.refreshData", Math.min(readTimeoutMs, Math.max(1, deadline - Date.now())),
         () => sandbox.refreshData());
     }
@@ -690,8 +726,9 @@ async function ensureSandboxStarted(sandbox: Sandbox, timeoutSeconds: number, sc
   const deadline = Date.now() + timeoutSeconds * 1_000;
   const readTimeoutMs = Math.min(scope.config.livenessTimeoutMs, 30_000);
   for (;;) {
-    await waitOutSandboxTransition(sandbox, deadline, readTimeoutMs);
-    if (SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "") || Date.now() >= deadline) {
+    await waitOutSandboxTransition(sandbox, scope, deadline, readTimeoutMs);
+    if (SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "") || forcedStopInFlight(sandboxHandleCacheKey(scope))
+      || Date.now() >= deadline) {
       throw new Error(`Daytona sandbox ${sandbox.id} is still ${sandbox.state ?? "changing state"} at its start deadline`);
     }
     const remainingSeconds = Math.max(1, Math.ceil((deadline - Date.now()) / 1_000));
@@ -1888,6 +1925,7 @@ export function __resetDaytonaSandboxHandleCacheForTest(): void {
   sandboxHandleActivityGates.reset();
   sandboxHandleLeaseAdmissionStates.reset();
   sandboxHandleWritableDirs.reset();
+  forcedSandboxStops.clear();
   sandboxHandleSessionStore.reset();
   runnerIngressGenerationStore.reset();
   retiredDaytonaDuplexChannelByRoute.clear();

@@ -364,6 +364,37 @@ describe("Daytona idle eligibility", () => {
       expect(sandbox.start).toHaveBeenCalledTimes(1);
     });
 
+    it("sends one forced stop for parallel callers and starts nothing until it settles", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.refreshData.mockImplementation(async () => {});
+      let finishStop!: () => void;
+      sandbox.stop.mockImplementation(() => new Promise<void>(resolve => {
+        finishStop = () => { sandbox.state = "stopped"; resolve(); };
+      }));
+      sandbox.start.mockImplementation(async () => { sandbox.state = "started"; });
+      vi.useFakeTimers();
+      try {
+        const first = realize();
+        const second = realize();
+        await vi.advanceTimersByTimeAsync(STUCK_STOPPING_FORCE_AFTER_MS + 5_000);
+        expect(sandbox.stop).toHaveBeenCalledTimes(1);
+        // The forced stop outlives its own liveness bound; no caller may start
+        // the sandbox while that request could still land.
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(sandbox.stop).toHaveBeenCalledTimes(1);
+        expect(sandbox.start).not.toHaveBeenCalled();
+        finishStop();
+        await vi.advanceTimersByTimeAsync(2_000);
+        await expect(first).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+        await expect(second).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sandbox.stop).toHaveBeenCalledTimes(1);
+      expect(sandbox.start.mock.invocationCallOrder[0]!).toBeGreaterThan(sandbox.stop.mock.invocationCallOrder[0]!);
+    });
+
     it("keeps waiting to the deadline when the forced stop is refused", async () => {
       const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
       mockGet.mockResolvedValue(sandbox);

@@ -2018,8 +2018,10 @@ call: `started`, `stopped`, `archived`, `error`, a transition (`starting`,
 host restrict this value; no provider error text or resource identity is sent.
 `lease.wait_transition` covers polling a sandbox that is changing state before a
 start; its state attribute is the state it found. A start that finds the sandbox
-`stopping` for more than 30 s forces the stop once (`lease.force_stop`) and keeps
-waiting within the same start deadline if Daytona refuses.
+`stopping` for more than 30 s forces the stop (`lease.force_stop`) and keeps
+waiting within the same start deadline if Daytona refuses. The forced stop belongs
+to the sandbox: parallel callers send one, and none of them starts the sandbox
+until that request settles.
 
 Fresh acquisition emits `lease.create`, `lease.workspace`, `lease.shell`,
 `lease.expiry`, and `lease.sentinel`. `lease.create` covers the existing creation
