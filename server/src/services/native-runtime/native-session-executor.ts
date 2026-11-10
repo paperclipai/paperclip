@@ -7050,8 +7050,8 @@ export async function restoreRemoteSuspendedRunnerCheckpoint(input: {
  * fence stays: the suspension finished, and only its acknowledgement is
  * missing. A later authorized Runner process reconciles that receipt, so it
  * does not hold the suspended state. Any other fence (a turn's terminal, a
- * provider cleanup, unsent events) or a journal that names the command
- * differently still refuses. */
+ * provider cleanup, unsent events), or a journal that lacks the command,
+ * names it differently or holds a later command still refuses. */
 function isUndeliveredSuspendReceipt(state: Record<string, unknown>, root: string): boolean {
   const pending = record(state.pendingTerminalDelivery);
   if (pending.commandType !== "runner.suspend" || pending.lifecycle !== "suspended"
@@ -7062,8 +7062,11 @@ function isUndeliveredSuspendReceipt(state: Record<string, unknown>, root: strin
     const control = record(JSON.parse(readBoundedNativeFile(resolve(root, "control-plane", "control-plane-state.json"),
       NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "runner_durable_identity_too_large").toString("utf8")));
     const commands = Array.isArray(control.commands) ? control.commands.map(record) : [];
-    return commands.every(command => command.commandId !== pending.commandId
-      || (command.type === "runner.suspend" && command.controllerSeq === pending.controllerSeq));
+    const matching = commands.filter(command => command.commandId === pending.commandId);
+    // The suspend must be journaled exactly once and be the controller's last command.
+    return matching.length === 1 && matching[0]!.type === "runner.suspend"
+      && matching[0]!.controllerSeq === pending.controllerSeq
+      && commands.every(command => !(Number(command.controllerSeq) > Number(pending.controllerSeq)));
   } catch {
     return false;
   }

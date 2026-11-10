@@ -4572,7 +4572,8 @@ result before it sends that result. When a restart stops the controller first,
 the fence stays in the Runner state although the suspension finished. The
 suspended Runner read accepts this one fence: the fence names
 `runner.suspend` with lifecycle `suspended`, it is the Runner's last controller
-command, and the restored journal does not name that command differently. A
+command, and the restored journal holds that exact command once and no later
+command. A
 later authorized Runner process reconciles the receipt. Any other fence, a
 provider cleanup, unsent events or a warm transition still fail with
 `native_controller_recovery_missing_evidence:runner_not_settled`. A current-run marker rehydrates only that run's

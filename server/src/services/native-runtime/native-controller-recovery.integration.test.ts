@@ -454,6 +454,8 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     { name: "suspend receipt with unsent events", accepted: false, runner: { outbox: [{ sourceSeq: 9 }] } },
     { name: "suspend receipt behind a later command", accepted: false, runner: { lastControllerCommandSeq: 8 } },
     { name: "journal names the command differently", accepted: false, journal: "turn.stop" },
+    { name: "journal without the suspend command", accepted: false, journalCommands: [] },
+    { name: "journal with a later command", accepted: false, laterCommand: true },
   ] as const)("reads a resumed sandbox's suspended Runner with an $name", async variant => {
     const fixture = await seed(), environmentId = randomUUID(), workspaceId = randomUUID(), runId = randomUUID();
     const providerLeaseId = randomUUID(), base = join(root, `sandbox-${runId}`, "paperclip-workspace");
@@ -502,7 +504,10 @@ describe.skipIf(!recoveryPostgresSupport.supported)("native controller durable d
     await mkdir(join(controller, "control-plane"), { recursive: true });
     await writeFile(join(controller, "control-plane", "control-plane-state.json"), JSON.stringify({
       schema: "paperclip.runner.durable.control-plane-state.v2", identity,
-      commands: [{ ...suspend, type: "journal" in variant ? variant.journal : "runner.suspend", status: "pending" }] }));
+      commands: "journalCommands" in variant ? variant.journalCommands : [
+        { ...suspend, type: "journal" in variant ? variant.journal : "runner.suspend", status: "pending" },
+        ...("laterCommand" in variant ? [{ commandId: randomUUID(), controllerSeq: 8, type: "turn.stop", status: "pending" }] : []),
+      ] }));
     const target = { kind: "remote", transport: "sandbox", environmentId, leaseId: randomUUID(), providerKey: "daytona",
       remoteCwd: cwd, sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId }, runner: { execute } } as const;
     const restore = () => restoreRemoteSuspendedRunnerCheckpoint({ db, execution, runnerExecutionTarget: target as never }, controller);
