@@ -164,9 +164,13 @@ checkpoint's recovery policy, and stops the run for an operator.
 A restart can kill the runner after it journaled a run's own cold `run.attach`
 and before the attachment finished. The restored runner settles that command as
 `execution_indeterminate` and never executes it again. When the journal shows no
-provider work after it (only runner drain, suspend, shutdown or snapshot
-commands, and no turn, item, tool-input or runtime-request event), the
+provider work after it, the
 controller's same-run resume queues a new `run.attach` with the same payload.
+"No provider work" means that every later command is recovery maintenance as
+`isRunnerRecoveryMaintenanceCommand` defines it (`session.snapshot`,
+`session.goal.get`, `runner.drain`, `runner.suspend`, `runner.shutdown` and
+`turn.stop`, none of which starts a turn), and that no turn, item, tool-input or
+runtime-request event is committed.
 Attaching starts no turn, and the runner admits the new command only for a
 settled session, so the run continues instead of failing on the old command.
 Warm transitions and staged attachments keep their exact replay paths.
