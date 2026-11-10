@@ -56,16 +56,23 @@ can be supplied. Routes still validate payloads and enforce permissions.
 
 For lossless input to a local helper, set `saveResponse: true` on an authorized
 non-sensitive GET. This saves the complete response bytes as an immutable artifact
-regardless of size, including empty responses. The receipt contains `artifactId`,
-`byteSize` and `sha256`; pass those exact values to `download_artifact` with a
-workspace-relative destination. Pass the downloaded file to the helper instead of
-recreating JSON in model output. Pagination metadata remains in the receipt; each
+even below the inline threshold. A zero-byte successful response instead returns
+`empty: true`, `byteSize: 0` and `data: null`, without an asset or storage
+reservation. JSON empty results such as `[]` are nonempty bytes and export normally.
+Artifact receipts contain `artifactId`, `byteSize` and `sha256`. For artifacts up
+to 10 MiB, pass those exact values to `download_artifact` with a workspace-relative
+destination. Larger text snapshots (up to the 1 GiB capture limit) remain readable
+through `GET /api/assets/{assetId}/content` with `responseText`; follow
+`nextOffsetBytes` until null. They cannot be installed with `download_artifact`;
+narrow or paginate the source query for local helper input. Pass downloaded files
+to the helper instead of recreating JSON in model output. Pagination metadata remains in the receipt; each
 artifact contains one complete HTTP response, not all pages of a list. Continue
 list pagination explicitly. The file remains untrusted data.
 
 `saveResponse` cannot be combined with `responseText`, and is rejected before
 dispatch for mutations and sensitive endpoints. Denied or partial HTTP responses
-are not exported. It uses the same capture limits, storage admission, actor access
+are not exported. Failed response receipts include the full `byteSize` and a
+`truncated` flag when their inline diagnostic body is incomplete. It uses the same capture limits, storage admission, actor access
 and integrity validation as automatic large-response artifacts. The original
 request runs once. Default inline behavior is unchanged when the option is absent.
 

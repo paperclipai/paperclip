@@ -32,7 +32,7 @@ describe("explicit read response artifacts", () => {
 });
 
 describe("complete authorized read export", () => {
-  it.each(["", "[]", "null", "{\n \"body\": \"é🧭\\n\\\"quoted\\\"\"\n}", ...[RUNNER_API_INLINE_BYTES - 1, RUNNER_API_INLINE_BYTES, RUNNER_API_INLINE_BYTES + 1, 100000].map(n => "x".repeat(n))])("preserves source bytes and integrity for response %#", async source => {
+  it.each(["[]", "null", "{\n \"body\": \"é🧭\\n\\\"quoted\\\"\"\n}", ...[RUNNER_API_INLINE_BYTES - 1, RUNNER_API_INLINE_BYTES, RUNNER_API_INLINE_BYTES + 1, 100000].map(n => "x".repeat(n))])("preserves source bytes and integrity for response %#", async source => {
     const bytes = Buffer.from(source);
     const fetcher = vi.fn(async () => new Response(bytes, { headers: { "content-type": "text/plain", "x-paperclip-has-more": "true", "x-paperclip-next-offset": "2" } }));
     const reserve = vi.fn(async () => vi.fn(async () => {}));
@@ -43,6 +43,17 @@ describe("complete authorized read export", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(reserve).toHaveBeenCalledTimes(1);
     await expect(reserve.mock.results[0].value).resolves.toHaveBeenCalledWith(bytes.length, true);
+  });
+
+  it.each([403, 500])("marks a truncated HTTP %s error body without exporting it", async status => {
+    const source = "é".repeat(RUNNER_API_INLINE_BYTES);
+    const saveResponse = vi.fn(io(fetch).saveResponse);
+    const result = await executeRunnerApi({ operationId: projects, saveResponse: true }, context, {
+      ...io(async () => new Response(source, { status })), saveResponse,
+    });
+    expect(result).toMatchObject({ ok: false, status, byteSize: Buffer.byteLength(source), truncated: true });
+    expect(result).not.toHaveProperty("artifact");
+    expect(saveResponse).not.toHaveBeenCalled();
   });
 
   it.each([403, 404, 500, 206])("does not export an HTTP %s response", async status => {

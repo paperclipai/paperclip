@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { assets } from "@paperclipai/db";
+import { assets, runnerApiResponseReservations } from "@paperclipai/db";
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-server.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
@@ -18,6 +18,24 @@ describe("authorized read artifacts through real routes and storage", () => {
     await server?.close();
     if (oldSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     else process.env.PAPERCLIP_AGENT_JWT_SECRET = oldSecret;
+  });
+
+  it.each([200, 204])("returns an explicit empty HTTP %s receipt without storage or quota reservations", async status => {
+    const fixture = await server.fixture();
+    const authority = new PaperclipRunnerToolAuthority(server.db, { ...fixture, storage: server.storage, workspaceRoot: fixture.workspace });
+    const before = await server.db.select().from(assets).where(eq(assets.companyId, fixture.companyId));
+    // Inject only the upstream empty response; storage and reservation writes
+    // remain real so production's empty-file rejection cannot be hidden.
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status }));
+    try {
+      const receipt = await authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+        operationId: "GET /api/issues/{id}", pathParams: { id: fixture.issueId }, saveResponse: true,
+      } });
+      expect(receipt).toMatchObject({ ok: true, status, empty: true, byteSize: 0, data: null });
+      expect(receipt).not.toHaveProperty("artifact");
+    } finally { spy.mockRestore(); }
+    expect(await server.db.select().from(assets).where(eq(assets.companyId, fixture.companyId))).toEqual(before);
+    expect(await server.db.select().from(runnerApiResponseReservations).where(eq(runnerApiResponseReservations.companyId, fixture.companyId))).toEqual([]);
   });
 
   it("preserves exact HTTP bytes in the immutable asset and downloaded helper input", async () => {
