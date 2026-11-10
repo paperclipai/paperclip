@@ -271,6 +271,15 @@ impl AcpxSidecarTransport {
             keys.push("PAPERCLIP_ACPX_CREDENTIAL_BINDING");
         }
         if agent == "claude" {
+            if std::env::var("PAPERCLIP_GITHUB_LAUNCHER_DIR")
+                .is_ok_and(|directory| !directory.trim().is_empty())
+            {
+                keys.extend_from_slice(&[
+                    "PAPERCLIP_GITHUB_BROKER_URL",
+                    "PAPERCLIP_GITHUB_BROKER_TOKEN",
+                    "PAPERCLIP_GITHUB_BRIDGE_TOKEN",
+                ]);
+            }
             keys.extend_from_slice(&[
                 // Launcher/controller-owned helper paths; credentials stay behind the broker.
                 "BASH_ENV",
@@ -1292,42 +1301,82 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn managed_claude_helpers_reach_the_sidecar_without_host_credentials() {
-        const CHILD: &str = "PAPERCLIP_TEST_MANAGED_HELPER_CHILD";
+    fn managed_claude_broker_transport_reaches_the_sidecar_without_host_credentials() {
+        const CHILD: &str = "PAPERCLIP_TEST_MANAGED_BROKER_CHILD";
         if std::env::var_os(CHILD).is_none() {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "acpx_sidecar_transport::tests::managed_claude_helpers_reach_the_sidecar_without_host_credentials"])
-                .env_clear()
-                .env(CHILD, "1")
-                .env("PATH", "/usr/bin:/bin")
-                .env("BASH_ENV", "/managed/.bashrc")
-                .env("ZDOTDIR", "/managed")
-                .env("GH_CONFIG_DIR", "/managed")
-                .env("PAPERCLIP_GITHUB_LAUNCHER_DIR", "/managed")
-                .env("GH_TOKEN", "unbound-secret")
-                .env("PAPERCLIP_GITHUB_BROKER_TOKEN", "unbound-capability")
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stdout)
-            );
+            for (agent, launcher) in [
+                ("claude", "/managed"),
+                ("claude", ""),
+                ("claude", "  "),
+                ("codex", "/managed"),
+                ("cursor", "/managed"),
+            ] {
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "acpx_sidecar_transport::tests::managed_claude_broker_transport_reaches_the_sidecar_without_host_credentials"])
+                    .env_clear()
+                    .env(CHILD, agent)
+                    .env("PATH", "/usr/bin:/bin")
+                    .env("BASH_ENV", "/managed/.bashrc")
+                    .env("ZDOTDIR", "/managed")
+                    .env("GH_CONFIG_DIR", "/managed")
+                    .env("PAPERCLIP_GITHUB_LAUNCHER_DIR", launcher)
+                    .env("PAPERCLIP_GITHUB_BROKER_URL", "http://127.0.0.1:3210")
+                    .env("PAPERCLIP_GITHUB_BROKER_TOKEN", "session-capability")
+                    .env("PAPERCLIP_GITHUB_BRIDGE_TOKEN", "bridge-capability")
+                    .env("GH_TOKEN", "unbound-secret")
+                    .env("GITHUB_TOKEN", "unbound-secret")
+                    .env("UNRELATED_SECRET", "unbound-secret")
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "agent={agent}, launcher={launcher:?}: {} {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                );
+            }
             return;
         }
+        let agent = std::env::var(CHILD).unwrap();
+        let names = [
+            "BASH_ENV",
+            "ZDOTDIR",
+            "GH_CONFIG_DIR",
+            "PAPERCLIP_GITHUB_LAUNCHER_DIR",
+            "PAPERCLIP_GITHUB_BROKER_URL",
+            "PAPERCLIP_GITHUB_BROKER_TOKEN",
+            "PAPERCLIP_GITHUB_BRIDGE_TOKEN",
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "UNRELATED_SECRET",
+        ];
+        let arguments = names.map(|name| format!("\"${name}\"")).join(" ");
         let config = AcpxSidecarTransportConfig {
             command: PathBuf::from("/bin/sh"),
-            args: vec!["-c".into(), "printf '%s|%s|%s|%s|%s|%s\\n' \"$BASH_ENV\" \"$ZDOTDIR\" \"$GH_CONFIG_DIR\" \"$PAPERCLIP_GITHUB_LAUNCHER_DIR\" \"$GH_TOKEN\" \"$PAPERCLIP_GITHUB_BROKER_TOKEN\"".into()],
+            args: vec!["-c".into(), format!("printf '%s\\n' {arguments}")],
             verified_launch: None,
             request_timeout: Duration::from_secs(1),
             shutdown_grace: Duration::from_millis(100),
         };
-        let mut transport = AcpxSidecarTransport::start_for_agent(&config, "claude").unwrap();
-        let line = transport
-            .receive_stdout_line(Duration::from_secs(2), "managed-helper test")
-            .unwrap()
-            .expect("sidecar did not report its environment");
-        assert_eq!(line, "/managed/.bashrc|/managed|/managed|/managed||");
+        let mut transport = AcpxSidecarTransport::start_for_agent(&config, &agent).unwrap();
+        let managed = agent == "claude"
+            && !std::env::var("PAPERCLIP_GITHUB_LAUNCHER_DIR")
+                .unwrap()
+                .trim()
+                .is_empty();
+        for (index, name) in names.iter().enumerate() {
+            let line = transport
+                .receive_stdout_line(Duration::from_secs(2), "managed-broker test")
+                .unwrap()
+                .expect("sidecar did not report its environment");
+            let expected =
+                if (index < 4 && agent == "claude") || ((4..7).contains(&index) && managed) {
+                    std::env::var(name).unwrap()
+                } else {
+                    String::new()
+                };
+            assert_eq!(line, expected, "sidecar environment: {name}");
+        }
     }
 
     #[test]
