@@ -19,6 +19,7 @@ import { StorageChaos, planStorageFaults, replayStorageWindows, type StorageFaul
 import { startStorageFaultProxy } from "./storage-proxy.js";
 import { needsCredentialRotation, startCredentialRotation, type CredentialRotation } from "./storage-credentials.js";
 import { describeProviderFault, installProviderFaultSeam, resolveRealCodex, withProviderFaultCheck, type ProviderFaultSeam } from "./provider-faults.js";
+import { installAcpxSidecarSeam, withAcpxSidecarHook, type AcpxSidecarSeam } from "./acpx-provider-faults.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
 import { assertControllerMatchesImage, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
 import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
@@ -251,6 +252,7 @@ async function main(): Promise<number> {
   let storageProxy: Awaited<ReturnType<typeof startStorageFaultProxy>> | null = null;
   let credentialRotation: CredentialRotation | null = null;
   let providerFaults: ProviderFaultSeam | null = null;
+  let acpxSidecarSeam: AcpxSidecarSeam | null = null;
   let speedSection: string | null = null;
   let harnessError: unknown;
   process.on("uncaughtException", error => {
@@ -292,12 +294,22 @@ async function main(): Promise<number> {
     }
     if (plan.tasks.some(task => task.providerFault)) {
       // PV1–PV3: route the server's Codex launches through the fault shim (no product change).
-      const realCodex = resolveRealCodex(repositoryRoot);
+      // The provider the server actually runs: `--server-from` serves another checkout.
+      const realCodex = resolveRealCodex(plan.options.serverFrom ?? repositoryRoot);
       providerFaults = await installProviderFaultSeam({ root: supervisor.paths.temporaryRoot, logPath: path.join(waveDir, "provider-faults.jsonl"),
         realCommand: realCodex.command, realVersion: realCodex.version, realManifestPath: realCodex.manifestPath,
         ...(process.env.NODE_OPTIONS ? { inheritedNodeOptions: process.env.NODE_OPTIONS } : {}) });
       await providerFaults.arm(plan.tasks);
       Object.assign(serverEnvironment, providerFaults.serverEnvironment);
+      if (plan.tasks.some(task => task.providerFault && task.adapter === "claude")) {
+        // Claude (ACPX): the stand-in sidecar taps the verified provider's pipe (acpx-provider-faults.ts).
+        // The seam must mirror the runner the server actually loads (`--server-from` runs another checkout).
+        acpxSidecarSeam = await installAcpxSidecarSeam({ repositoryRoot: plan.options.serverFrom ?? repositoryRoot, waveId: plan.waveId, controlPath: providerFaults.controlPath,
+          logPath: providerFaults.logPath, stateDirectory: providerFaults.stateDirectory });
+        Object.assign(serverEnvironment, acpxSidecarSeam.serverEnvironment,
+          { NODE_OPTIONS: withAcpxSidecarHook(serverEnvironment.NODE_OPTIONS) });
+        timeline.add("acpx_provider_faults_installed", { standInRoot: acpxSidecarSeam.standInRoot, realSidecar: acpxSidecarSeam.realSidecar });
+      }
       timeline.add("provider_faults_installed", { realCodex: realCodex.command, codexVersion: realCodex.version,
         rules: plan.tasks.flatMap(task => task.providerFault ? [`${task.taskId}:${describeProviderFault(task.providerFault)}`] : []) });
     }
@@ -452,6 +464,16 @@ async function main(): Promise<number> {
         if (plan.options.storageWindows && storageChaos && launched.length === 1) storageChaos.start();
         if (!next.done) active.push(next);
       }
+      // `--provider-fault-restart`: a task's K1 is armed once the shim logged its fault.
+      if (providerFaults) {
+        for (const observer of active) {
+          if (!observer.plan.providerFault?.restart || observer.record.providerFaultAppliedAt !== undefined) continue;
+          const rule = observer.plan.providerFault;
+          const applied = (await providerFaults.eventsFor(observer.plan.nonce))
+            .find(event => event.event === "applied" && event.kind === rule.kind && event.message === rule.message);
+          if (applied) observer.record.providerFaultAppliedAt = applied.at;
+        }
+      }
       await Promise.all(active.filter(observer => now - (lastPoll.get(observer) ?? 0) >= plan.options.pollMs).map(async observer => {
         lastPoll.set(observer, now);
         await observer.poll(now);
@@ -550,7 +572,8 @@ async function main(): Promise<number> {
       const graded = artifacts ? observer.definition.grade(observer.plan.nonce, artifacts, observer.workloadAgents())
         : { verdict: "fail" as const, checks: [{ name: "artifacts_collected", ok: false, detail: observer.record.launchError ?? "collection failed" }] };
       // A provider-fault task whose fault never happened tested nothing.
-      const oracle = withProviderFaultCheck(graded, observer.plan, artifacts?.providerFaultEvents ?? []);
+      const restart = faults.find(receipt => receipt.requestedBy === observer.plan.taskId && receipt.trigger === "provider");
+      const oracle = withProviderFaultCheck(graded, observer.plan, artifacts?.providerFaultEvents ?? [], restart?.startedAt ?? null);
       const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, oracle, universalByIssue ? {
         runMessages: allRunMessages, recoveryActions: universalByIssue.get(observer.record.issueId ?? "")?.recoveryActions ?? [] } : undefined);
       let evidence: string | null = null;
@@ -665,6 +688,7 @@ async function main(): Promise<number> {
       await storageProxy.close().catch(() => undefined);
     }
     await objectStore?.stop().catch(error => timeline.add("object_store_stop_failed", { error: String(error) }));
+    await acpxSidecarSeam?.remove().catch(error => timeline.add("acpx_stand_in_cleanup_failed", { error: String(error) }));
     const retention = await releaseInstance(supervisor.paths.temporaryRoot, { keep, stopFailed, remoteCleanupPending, owner: plan.waveId })
       .catch(error => { timeline.add("instance_cleanup_failed", { error: String(error) }); return null; });
     if (retention?.kept) timeline.add("instance_kept", { temporaryRoot: supervisor.paths.temporaryRoot, reason: retention.reason });

@@ -29,7 +29,8 @@ export type AdapterId = (typeof ADAPTER_IDS)[number];
 
 /** `asked` and `answered`: the journey boundaries of Q1–Q3 (journeys.ts, question-handoff.ts). */
 export const TRIGGER_IDS = ["time", "comment", "retry", "queued", "tool", "result", "approval", "paused", "stop", "asked", "answered"] as const;
-export type TriggerId = (typeof TRIGGER_IDS)[number];
+/** `provider` is not a `--triggers` choice: `--provider-fault-restart` schedules it (K1 after a provider fault applied). */
+export type TriggerId = (typeof TRIGGER_IDS)[number] | "provider";
 
 export const ENVIRONMENT_KINDS = ["local", "daytona"] as const;
 export type EnvironmentKind = (typeof ENVIRONMENT_KINDS)[number];
@@ -108,6 +109,9 @@ export interface WaveOptions {
   serverFrom?: string;
   /** TM2/TM3: how far every database timestamp is shifted back (`--time-age-hours`, default 26 h). */
   timeAgeMs?: number;
+  /** `--provider-fault-restart K1`: each PV1/PV2 task also kills -9 the control plane after its fault applied. */
+  providerFaultRestart?: "K1";
+  providerFaultRestartAfterMs?: number;
 }
 
 export interface StormFault {
@@ -368,6 +372,8 @@ export interface TaskRecord {
   question?: QuestionRecord;
   /** Q2, Q3: the board's journey actions (journey-driver.ts). */
   journey?: import("./journeys.js").JourneyRecord;
+  /** PV with `--provider-fault-restart`: when the shim logged the task's fault (arms the `provider` trigger). */
+  providerFaultAppliedAt?: number;
 }
 
 export interface TaskGrade {

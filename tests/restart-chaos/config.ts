@@ -6,6 +6,7 @@ import { takesJourneyTriggers } from "./journeys.js";
 import { STORAGE_FAULT_KINDS, type StorageFaultKind } from "./storage-chaos.js";
 import { parseTimeFaultOptions } from "./time-faults-config.js";
 import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, isProviderFault, parseProviderDelays, parseProviderMessage, type ProviderFaultKind } from "./provider-faults.js";
+import { PROVIDER_FAULT_ADAPTERS, parseProviderFaultRestart } from "./acpx-provider-faults.js";
 import {
   ADAPTER_IDS, ENVIRONMENT_KINDS, FAULT_KINDS, TRIGGER_IDS, WORKLOAD_IDS,
   type AdapterId, type EnvironmentKind, type FaultKind, type TriggerId, type WaveOptions, type WorkloadId,
@@ -113,13 +114,15 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       matrix: { type: "boolean" },
       "server-from": { type: "string" },
       "time-age-hours": { type: "string" },
+      "provider-fault-restart": { type: "string" },
+      "provider-fault-restart-after-seconds": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -194,20 +197,27 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (!crashPoint && values["crash-point-hold-ms"] !== undefined) throw new Error("--crash-point-hold-ms applies only to --crash-point");
   if (providerFaults.length) {
     if (stormMinutes) throw new Error("Provider message faults (PV*) are planned per task; do not combine them with --storm-minutes");
-    if (env !== "local") throw new Error("Provider message faults (PV*) shim the local Codex executable; run them with --env local");
-    if (adapters.some(adapter => adapter !== "codex")) throw new Error("Provider message faults (PV*) cover Codex only; pass --adapters codex");
-    // A restart kills the shim with any held message and its once-per-task claim, so the two families do not mix yet.
-    if (options.faults.length) throw new Error("Provider message faults (PV*) do not combine with restart faults (K*) yet; run them in their own wave");
+    if (env !== "local") throw new Error("Provider message faults (PV*) shim the local provider; run them with --env local");
+    if (adapters.some(adapter => !PROVIDER_FAULT_ADAPTERS.includes(adapter))) throw new Error(`Provider message faults (PV*) cover ${PROVIDER_FAULT_ADAPTERS.join(" and ")}; remove the other adapters from --adapters`);
+    // Every PV task gets its own restart through --provider-fault-restart; a planned K cell would be a different task.
+    if (options.faults.length) throw new Error("Provider message faults (PV*) do not share a wave with planned restart faults (K*); use --provider-fault-restart K1 to restart after each provider fault");
     // Every planned task gets the fault; only these workloads send the turn/interrupt the rules target.
     const idle = options.workloads.filter(id => !PROVIDER_FAULT_WORKLOADS.includes(id));
-    if (idle.length) throw new Error(`Provider message faults (PV*) need workloads that interrupt a Codex turn (${PROVIDER_FAULT_WORKLOADS.join(", ")}); remove ${idle.join(", ")} from --workloads`);
+    if (idle.length) throw new Error(`Provider message faults (PV*) need workloads that interrupt a provider turn (${PROVIDER_FAULT_WORKLOADS.join(", ")}); remove ${idle.join(", ")} from --workloads`);
     const message = parseProviderMessage(values["provider-fault-message"]);
     if (message) options.providerFaultMessage = message;
     const delays = parseProviderDelays(values["provider-fault-delays"]);
     if (delays && !providerFaults.includes("PV1")) throw new Error("--provider-fault-delays sets PV1 delays; add PV1 to --faults");
     if (delays) options.providerFaultDelaysMs = delays;
-  } else if (values["provider-fault-message"] !== undefined || values["provider-fault-delays"] !== undefined) {
-    throw new Error("--provider-fault-message and --provider-fault-delays need a provider fault (PV1, PV2 or PV3) in --faults");
+    Object.assign(options, parseProviderFaultRestart(values["provider-fault-restart"], values["provider-fault-restart-after-seconds"], providerFaults, delays));
+    // Each K1 kills the whole control plane: a second task in flight would lose its held message to the
+    // first task's restart and miss its own, so a restart wave runs one task at a time.
+    if (options.providerFaultRestart && options.concurrency !== 1) throw new Error("--provider-fault-restart kills the whole control plane per task; run it with --concurrency 1");
+    // G1's oracle requires the board's decision to come after a restart (board_decided_after_restart).
+    if (options.workloads.includes("G1") && !options.providerFaultRestart) throw new Error("G1 grades the board decision after a restart; with provider faults add --provider-fault-restart K1");
+  } else if (values["provider-fault-message"] !== undefined || values["provider-fault-delays"] !== undefined
+    || values["provider-fault-restart"] !== undefined || values["provider-fault-restart-after-seconds"] !== undefined) {
+    throw new Error("--provider-fault-message, --provider-fault-delays and --provider-fault-restart need a provider fault (PV1, PV2 or PV3) in --faults");
   }
   Object.assign(options, parseTimeFaultOptions(options, values["time-age-hours"]));
   const upgradeFrom = values["upgrade-from"];
