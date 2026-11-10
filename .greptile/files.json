@@ -120,6 +120,21 @@
         "packages/db/src/schema/agent_task_sessions.ts",
         "packages/db/src/schema/run_identity_contexts.ts"
       ]
+    },
+    {
+      "path": "rules/data-paths.mdc",
+      "description": "Separation of Telemetry, Observability, and the run log, with the review level each path requires.",
+      "scope": [
+        "packages/shared/src/telemetry/**",
+        "server/src/instrumentation.ts",
+        "doc/observability.md",
+        "packages/adapter-utils/src/duplex-observability.ts",
+        "server/src/services/duplex-observability-recorder.ts",
+        "packages/adapter-utils/src/acpx-engine/startup-timing.ts",
+        "doc/run-log-events.md",
+        "packages/db/src/schema/heartbeat_run_events.ts",
+        "server/src/services/heartbeat.ts"
+      ]
     }
   ]
 }
