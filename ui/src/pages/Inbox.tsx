@@ -35,6 +35,7 @@ import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
+import { buildMineRevealSources, mineRevealSourcesQueryKey, readMineRevealSources, type MineRevealSources } from "../lib/inbox-mine-reveal-sources";
 import { useDialogActions } from "../context/DialogContext";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
 import {
@@ -207,6 +208,7 @@ const INBOX_ISSUE_LIST_LIMIT = 100;
 const INBOX_HOT_PATH_STALE_MS = 30_000;
 // Stable fallback so memos over unloaded or disabled issue reads do not rerun on every render.
 const NO_ISSUES: Issue[] = [];
+const NO_JOIN_REQUESTS: JoinRequest[] = [];
 /** Bounds an optional read that can hold task rows hidden; a timeout reveals rows and retries in the background. */
 const INBOX_OPTIONAL_READ_TIMEOUT_MS = 10_000;
 const INBOX_COLLECTION_KEY = "inbox";
@@ -886,7 +888,6 @@ function StreamlinedInbox({
     () => loadInboxCollectionPreferences(selectedCompanyId).columns,
   );
   const { dismissed: dismissedAlerts, dismiss: dismissAlert } = useDismissedInboxAlerts();
-  const { dismissedAtByKey, dismiss: dismissInboxItem, isLoading: isDismissalsLoading, error: dismissalsError } = useInboxDismissals(selectedCompanyId);
   const { readItems, markRead: markItemRead, markUnread: markItemUnread } = useReadInboxItems();
   const { allCategoryFilter, allApprovalFilter, issueFilters } = filterPreferences;
 
@@ -918,6 +919,21 @@ function StreamlinedInbox({
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
   const mineContextQueryKey = [...queryKeys.issues.list(selectedCompanyId!), "mine-context", currentUserId] as const;
   const { data: mineSnapshot } = useQuery<InboxMineSnapshot>({ queryKey: mineContextQueryKey, enabled: false });
+  // On a returning visit the saved query cache restores Mine's snapshot and the
+  // approvals, join requests and dismissals it showed. Those stand in until the
+  // reads answer, so rows show without waiting on the network.
+  const revealSourcesQueryKey = mineRevealSourcesQueryKey(selectedCompanyId!, currentUserId);
+  const { data: savedRevealSourcesData } = useQuery<MineRevealSources>({ queryKey: revealSourcesQueryKey, enabled: false });
+  const savedRevealSources = tab === "mine" && mineSnapshot
+    ? readMineRevealSources(savedRevealSourcesData, currentUserId, selectedCompanyId) : null;
+  const {
+    dismissals: inboxDismissals,
+    dismissedAtByKey,
+    dismiss: dismissInboxItem,
+    isLoading: isDismissalsLoading,
+    hasServerData: hasServerDismissals,
+    error: dismissalsError,
+  } = useInboxDismissals(selectedCompanyId, { fallback: savedRevealSources?.dismissals });
 
 
   const { data: agents, isLoading: isAgentsLoading } = useQuery({
@@ -962,7 +978,7 @@ function StreamlinedInbox({
   }, [selectedCompanyId]);
 
   const {
-    data: approvals,
+    data: serverApprovals,
     isLoading: isApprovalsLoading,
     failureCount: approvalsFailureCount,
     error: approvalsError,
@@ -974,7 +990,7 @@ function StreamlinedInbox({
   });
 
   const {
-    data: joinRequests = [],
+    data: serverJoinRequests,
     isLoading: isJoinRequestsLoading,
     failureCount: joinRequestsFailureCount,
     error: joinRequestsError,
@@ -995,6 +1011,29 @@ function StreamlinedInbox({
     },
     enabled: !!selectedCompanyId,
     });
+
+  // Saved values stand in while a read is pending or after a transient failure;
+  // a refusal (403/404) or a server answer replaces them.
+  const savedStandsIn = (data: unknown, error: unknown) =>
+    data === undefined && savedRevealSources !== null && (!error || isTransientError(error));
+  const approvalsFromSaved = savedStandsIn(serverApprovals, approvalsError);
+  const joinRequestsFromSaved = savedStandsIn(serverJoinRequests, joinRequestsError);
+  const approvals = approvalsFromSaved ? savedRevealSources!.approvals : serverApprovals;
+  const joinRequests = serverJoinRequests ?? (joinRequestsFromSaved ? savedRevealSources!.joinRequests : NO_JOIN_REQUESTS);
+
+  // Save what Mine shows once every source has a server answer, for the next visit.
+  useEffect(() => {
+    if (tab !== "mine" || !selectedCompanyId || !currentUserId || !mineSnapshot) return;
+    if (serverApprovals === undefined || serverJoinRequests === undefined || !hasServerDismissals) return;
+    const next = buildMineRevealSources({
+      userId: currentUserId, companyId: selectedCompanyId, approvals: serverApprovals, joinRequests: serverJoinRequests,
+      dismissals: inboxDismissals, failedRunIds: mineSnapshot.failureRuns.map((run) => run.id),
+    });
+    const key = mineRevealSourcesQueryKey(selectedCompanyId, currentUserId);
+    // Each write schedules a save of the query cache; skip unchanged values.
+    if (JSON.stringify(queryClient.getQueryData(key)) === JSON.stringify(next)) return;
+    queryClient.setQueryData(key, next);
+  }, [tab, selectedCompanyId, currentUserId, mineSnapshot, serverApprovals, serverJoinRequests, hasServerDismissals, inboxDismissals, queryClient]);
 
   const dashboardQueryKey = queryKeys.dashboard(selectedCompanyId!);
   const sharedDashboard = useSharedPollingQuery({
@@ -2274,9 +2313,12 @@ function StreamlinedInbox({
       return keyIndex >= 0 ? keyIndex : resolveInboxSelectionIndex(prev, flatNavItems.length);
     });
   }, [flatNavItems]);
+  // Record the key only when the selection itself moves. Recording on a list
+  // change too would store the row now at the old index (one a refresh inserted
+  // above the selection) before the re-anchor above runs, and move the selection.
   useEffect(() => {
-    selectedNavKeyRef.current = selectedIndex >= 0 ? navEntryKey(flatNavItems[selectedIndex]) : null;
-  }, [flatNavItems, selectedIndex]);
+    selectedNavKeyRef.current = selectedIndex >= 0 ? navEntryKey(flatNavItemsRef.current[selectedIndex]) : null;
+  }, [selectedIndex]);
 
   useEffect(() => {
     setUndoableArchiveIssueIds((prev) =>
@@ -2581,8 +2623,9 @@ function StreamlinedInbox({
   // rows down. Wait for their first bounded attempt only; a failure or timeout reveals rows.
   const approvalsAffectRows = tab !== "blocked" && (tab !== "all" || showApprovalsCategory);
   const joinRequestsAffectRows = tab !== "blocked" && (tab !== "all" || showJoinRequestsCategory);
-  const isApprovalsFirstAttemptPending = isApprovalsLoading && approvalsFailureCount === 0;
-  const isJoinRequestsFirstAttemptPending = isJoinRequestsLoading && joinRequestsFailureCount === 0;
+  // Saved values from the last visit answer this wait on a returning visit.
+  const isApprovalsFirstAttemptPending = isApprovalsLoading && approvalsFailureCount === 0 && !approvalsFromSaved;
+  const isJoinRequestsFirstAttemptPending = isJoinRequestsLoading && joinRequestsFailureCount === 0 && !joinRequestsFromSaved;
   // User names only fill row text, except when they name and order assignee groups.
   const userLabelsAffectRows = groupBy === "assignee";
   const isMembersFirstAttemptPending = isMembersLoading && membersFailureCount === 0;

@@ -2,6 +2,7 @@
 
 import { CoordinatorPresentation } from "../components/coordinator/CoordinatorPresentation";
 import { queryKeys } from "../lib/queryKeys";
+import { mineRevealSourcesQueryKey, type MineRevealSources } from "../lib/inbox-mine-reveal-sources";
 import type { ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -150,15 +151,19 @@ vi.mock("../lib/inbox", async () => {
   };
 });
 
-vi.mock("../hooks/useInboxBadge", () => ({
-  useDismissedInboxAlerts: () => ({ dismissed: new Set(), dismiss: vi.fn() }),
-  useInboxDismissals: () => ({ dismissedAtByKey: new Map(), dismiss: vi.fn() }),
-  useReadInboxItems: () => ({
-    readItems: new Set(),
-    markRead: vi.fn(),
-    markUnread: vi.fn(),
-  }),
-}));
+vi.mock("../hooks/useInboxBadge", () => {
+  // Stable values, as the real hook's query data is between renders.
+  const dismissals = { dismissedAtByKey: new Map(), dismiss: vi.fn(), dismissals: [], hasServerData: true, isLoading: false, error: null };
+  return {
+    useDismissedInboxAlerts: () => ({ dismissed: new Set(), dismiss: vi.fn() }),
+    useInboxDismissals: () => dismissals,
+    useReadInboxItems: () => ({
+      readItems: new Set(),
+      markRead: vi.fn(),
+      markUnread: vi.fn(),
+    }),
+  };
+});
 
 vi.mock("../hooks/useIssueExternalObjects", () => ({
   useIssueExternalObjectSummaries: () => ({
@@ -2026,6 +2031,98 @@ describe("Inbox toolbar", () => {
         expect(document.body.textContent).toContain("Retry missing items");
         expect(document.body.textContent).not.toContain("Inbox zero.");
       } finally { await act(() => root.unmount()); client.clear(); }
+    });
+
+    describe("returning visit with saved reveal sources", () => {
+      const savedApproval = createApproval({ id: "approval-saved", payload: { name: "Saved approval" }, updatedAt: new Date("2026-03-11T00:00:01.500Z") });
+      const approvalRowCount = () => container.querySelectorAll('a[href="/approvals/approval-saved"]').length;
+      // First visit: every read answers and Mine saves what it showed. Then the
+      // optional reads leave the cache, as on a hard load that restored only
+      // the saved query cache, and the page mounts again.
+      const visitThenReturn = async (client: QueryClient, root: ReturnType<typeof createRoot>) => {
+        apiMocks.approvalsList.mockResolvedValue([savedApproval]);
+        await renderInbox(client, root);
+        await vi.waitFor(() => expect(approvalRowCount()).toBe(1));
+        await vi.waitFor(() => expect(client.getQueryData<MineRevealSources>(mineRevealSourcesQueryKey("company-1", "local-board"))?.approvals
+          .map((approval) => approval.id)).toEqual(["approval-saved"]));
+        await act(async () => root.unmount());
+        client.removeQueries({ queryKey: queryKeys.approvals.list("company-1") });
+        client.removeQueries({ queryKey: queryKeys.access.joinRequests("company-1") });
+        apiMocks.approvalsList.mockClear();
+      };
+      const client = () => new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+
+      it("reveals rows and the saved approval while the reads are pending, then keeps selection when a new approval arrives", async () => {
+        routerMock.location.pathname = "/inbox/mine";
+        twoRows();
+        const queryClient = client();
+        let root = createRoot(container);
+        try {
+          await visitThenReturn(queryClient, root);
+          let resolveApprovals: (value: Approval[]) => void = () => {};
+          apiMocks.approvalsList.mockReturnValue(new Promise((resolve) => { resolveApprovals = resolve; }));
+          apiMocks.joinRequestsList.mockReturnValue(new Promise(() => {}));
+          root = createRoot(container);
+          await renderInbox(queryClient, root);
+          await vi.waitFor(() => expect(apiMocks.approvalsList).toHaveBeenCalled());
+          expect(rowKeys().filter(Boolean)).toEqual(["PAP-4001", "PAP-4002"]);
+          expect(approvalRowCount()).toBe(1);
+          for (let press = 0; press < 3; press += 1) {
+            await act(async () => { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true })); });
+          }
+          const selectedText = () => [...container.querySelectorAll("[data-inbox-item]")]
+            .filter((row) => row.querySelector('[class~="bg-accent/50"]') || row.className.split(/\s+/).includes("bg-accent/50"))
+            .map((row) => row.textContent).join(" | ");
+          const before = selectedText();
+          expect(before).not.toBe("");
+          await act(async () => {
+            resolveApprovals([savedApproval, createApproval({ id: "approval-new", payload: { name: "Late approval" }, updatedAt: new Date("2026-03-11T00:00:05.000Z") })]);
+          });
+          await vi.waitFor(() => expect(container.querySelectorAll('a[href="/approvals/approval-new"]').length).toBe(1));
+          expect(selectedText()).toBe(before);
+        } finally { await act(() => root.unmount()); queryClient.clear(); }
+      });
+
+      it("keeps the saved approval through a transient failure and drops it after a refusal", async () => {
+        routerMock.location.pathname = "/inbox/mine";
+        twoRows();
+        const queryClient = client();
+        let root = createRoot(container);
+        try {
+          await visitThenReturn(queryClient, root);
+          apiMocks.approvalsList.mockRejectedValue(new ApiError("Busy", 503, null));
+          root = createRoot(container);
+          await renderInbox(queryClient, root);
+          await vi.waitFor(() => expect(apiMocks.approvalsList).toHaveBeenCalled());
+          await vi.waitFor(() => expect(queryClient.getQueryState(queryKeys.approvals.list("company-1"))?.status).toBe("error"));
+          expect(rowKeys().filter(Boolean)).toEqual(["PAP-4001", "PAP-4002"]);
+          expect(approvalRowCount()).toBe(1);
+          apiMocks.approvalsList.mockRejectedValue(new ApiError("No access", 403, null));
+          await act(async () => { await queryClient.refetchQueries({ queryKey: queryKeys.approvals.list("company-1") }); });
+          await vi.waitFor(() => expect(approvalRowCount()).toBe(0));
+          expect(rowKeys().filter(Boolean)).toEqual(["PAP-4001", "PAP-4002"]);
+        } finally { await act(() => root.unmount()); queryClient.clear(); }
+      });
+
+      it("ignores saved sources stamped for another user or company and waits as a first visit does", async () => {
+        routerMock.location.pathname = "/inbox/mine";
+        twoRows();
+        const queryClient = client();
+        queryClient.setQueryData(mineRevealSourcesQueryKey("company-1", "local-board"), {
+          userId: "someone-else", companyId: "company-1", approvals: [savedApproval], joinRequests: [], dismissals: [],
+        } satisfies MineRevealSources);
+        apiMocks.approvalsList.mockReturnValue(new Promise(() => {}));
+        const root = createRoot(container);
+        try {
+          await renderInbox(queryClient, root);
+          await vi.waitFor(() => {
+            const mineQueries = queryClient.getQueryCache().findAll({ queryKey: queryKeys.issues.listMineByMe("company-1") });
+            expect(mineQueries.some((query) => query.state.status === "success")).toBe(true);
+          });
+          expect(container.querySelector("[data-inbox-item]")).toBeNull();
+          expect(approvalRowCount()).toBe(0);
+        } finally { await act(() => root.unmount()); queryClient.clear(); }
+      });
     });
 
     it("bounds a stalled approvals read so rows do not stay behind a skeleton", async () => {
