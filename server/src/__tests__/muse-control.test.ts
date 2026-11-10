@@ -5,6 +5,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { mcpClientMirrorState } from "@paperclipai/db";
+import { idleAdmissionMiddleware, trackIdleRequestHandlers } from "../middleware/idle-admission.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
 import { mcpClientMirrorReceiptSchema } from "../services/public-mcp/client-mirror-contract.js";
 import { livenessDb, checkpointDb, fileStorageDb } from "@paperclipai/db";
 import { migrateCloudConfiguration } from "../services/cloud-configuration-migration.js";
@@ -1309,7 +1311,7 @@ describe("personal Muse control plane",()=>{
       // NO claimed historical App proof or current import capability. Current
       // capability/full mirror below must come from actual App registration.
       const historicalRecords=Array.from({length:96},()=>({bindingId:randomUUID(),companyId:f.company.id,agentId:randomUUID(),operatorId:f.operatorId,
-        generation:1,state:"idle",qualificationExpiresAt:null,item:null}));
+        generation:1,state:"idle",qualificationExpiresAt:null,item:null})).sort((a,b)=>Buffer.compare(Buffer.from(a.bindingId),Buffer.from(b.bindingId)));
       const reference={profile:"hosted-muse-v1",generation:museContractModule.museReceiverGeneration(namespace,0,historicalRecords),count:historicalRecords.length};
       const initial={version:1,instanceId,origin:oauthOrigin,revision:0,baseRevision:null,expectedRecords:0,museReceivers:reference};
       const oldMirror=new mirrorModule.PostgresMcpClientMirrorStore(pool,undefined,limits),scope={...namespace,companyId:f.company.id,museProfile:"hosted-muse-v1"};
