@@ -185,6 +185,22 @@ it.each([
   await expect(readFile(f.capture, "utf8")).rejects.toThrow();
 });
 
+it.each([
+  [["ls-remote", "origin"], azureUrl],
+  [["push", "origin"], `${githubUrl}\n${azureUrl}`],
+  [["push"], azureUrl],
+  [["pull"], azureUrl],
+])("does not use host credentials for unresolved or Azure destinations %j", async (args, remoteUrl) => {
+  const f = await fixture({ hostGitHub: true });
+  f.setResponse(403, { error: "denied" });
+  const result = await exec(process.execPath, [f.launcher, ...args], {
+    cwd: f.root, env: f.env({ PAPERCLIP_TEST_REMOTE_URL: remoteUrl }),
+  }).catch(error => error as Error & { code?: number });
+  expect(result).toMatchObject({ code: 1 });
+  expect(f.requests.map(item => item.path)).toEqual(["/runtime-tools/git/credentials"]);
+  await expect(readFile(f.capture, "utf8")).rejects.toThrow();
+});
+
 it("does not enable host GitHub mode from an environment variable alone", async () => {
   const f = await fixture();
   const managedGithubCredential = "broker-managed-github-token";
