@@ -197,8 +197,6 @@ async function preservedActiveCheckpoint(db: Db, selected: Selected,
   const header = checkpoint && inspectDurablePrpCheckpointHeader(checkpoint.records.get("header") ?? "");
   if (!header || header.runId !== source.id || header.runnerInstanceId !== source.runnerInstanceId
     || header.normalizedSessionId !== selected.sessionId || nativeSha256(header) !== nativeSha256(marker.identity)) return false;
-  // This is preservation evidence, not permission to adopt the live writer.
-  // Do not require the read-only inspector's process boot to own that writer.
   const [current] = await db.execute<{ workspace: unknown; remoteWorkspace: unknown; hasRemoteWorkspace: boolean; pluginLeaseId: string | null; liveOwner: boolean }>(sql`
     select r.runner_profile_json->'nativeWorkspaceSync' as workspace,
       r.runner_profile_json->'remoteWorkspace' as "remoteWorkspace",

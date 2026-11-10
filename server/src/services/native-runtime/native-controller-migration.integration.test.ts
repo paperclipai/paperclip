@@ -166,8 +166,6 @@ describeEmbeddedPostgres.each(["archive_online", "archive_online_owned", "archiv
         expect(await hasLocalNativeControllerObligations(f.db)).toBe(true);
         await f.db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId));
         await f.db.insert(nativeRunnerCheckpoints).values(rows);
-        // A completed snapshot may precede the final run-status write. Retain
-        // that existing path, but require the entire checkpoint, not one part.
         await f.db.update(nativeRunFinalizations).set({ phase: "workspace_finalizing", leaseOwner: null })
           .where(eq(nativeRunFinalizations.runId, f.runId));
         expect(await hasLocalNativeControllerObligations(f.db)).toBe(false);
@@ -197,8 +195,6 @@ describeEmbeddedPostgres.each(["archive_online", "archive_online_owned", "archiv
           nativeWorkspaceSync } }).where(eq(heartbeatRuns.id, f.runId));
         expect(await hasLocalNativeControllerObligations(f.db)).toBe(true);
       }
-      // The old prepared-reference shape remains supported; a malformed newer
-      // authority above must never fall back to this older identity.
       await f.db.update(heartbeatRuns).set({ runnerProfileJson: { ...baseProfile, sessionCheckpoint: null, nativeWorkspaceSync } })
         .where(eq(heartbeatRuns.id, f.runId));
       expect(await hasLocalNativeControllerObligations(f.db)).toBe(false);
