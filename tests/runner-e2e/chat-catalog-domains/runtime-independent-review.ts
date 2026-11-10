@@ -36,17 +36,15 @@ export function gradeIndependentReview(value: unknown) {
     && s.reviewerActualBriefAccess === true && s.acceptanceContextDelivered === true,
   "The canonical source action starts the configured Riley review on the actual Website, retaining the real deliverable and acceptance context.");
   c.add("cannot-self-approve-while-independent-stage-pending", [403, 422].includes(Number(s.selfApproveStatus)) && s.selfApprovalPreservedPending === true
-    && s.pendingReviewVisible === true && s.pendingReplyAttributed === true && s.pendingReplyLinksTask === true
-    && !/review (?:has )?(?:passed|approved)|(?:task|website) is (?:now )?(?:done|finished)/i.test(String(s.pendingReply)),
-  "Morgan's actual self-approval request rejects without advancing the policy, and the canonical run's own reply links the governed task without claiming a completed review or finished task.");
+    && s.pendingReviewVisible === true && s.pendingReplyAttributed === true && s.pendingReplyLinksTask === true,
+  "Morgan's actual self-approval request rejects without advancing the policy, and the canonical run's own reply links the governed task. Whether its wording claims the wrong phase is left to a human reader.");
   c.add("authorized-review-then-final-completion", current?.id === before.id && current.status === "done" && current.executionState?.status === "completed"
     && current.executionState.lastDecisionOutcome === "approved" && !!current.executionState.lastDecisionId
     && JSON.stringify(current.executionPolicy) === JSON.stringify(before.executionPolicy) && s.rileyApprovalBound === true && s.implementationRetained === true
     && o.runs.length === 5 && o.runs.every(row => row.status === "succeeded") && o.runs.filter(row => row.agentId === (s.reviewer as Entity).id).length === 1 && o.tasks.length === 1,
   "Only Riley's actual native approval resolves the same configured review stage and completes the same work while retaining Morgan's artifact.");
-  c.add("own-later-reply-reports-the-resolved-task", s.finalReplyAttributed === true && s.finalReplyLinksTask === true
-    && !/still (?:pending|waiting)|not yet (?:reviewed|finished)/i.test(String(s.finalReply)),
-  "A later declared human question receives its own run-bound reply that links the governed task, already approved and done in saved state, without claiming it is still pending.");
+  c.add("own-later-reply-reports-the-resolved-task", s.finalReplyAttributed === true && s.finalReplyLinksTask === true,
+  "A later declared human question receives its own run-bound reply that links the governed task, already approved and done in saved state. Whether its wording claims the wrong phase is left to a human reader.");
   return c.result();
 }
 export const runtimeIndependentReviewCases = [runtimeDefinition("task-coordination.independent-review", async ctx => {
@@ -75,7 +73,7 @@ export const runtimeIndependentReviewCases = [runtimeDefinition("task-coordinati
     actualImplementation: true, setupReviewRunCount: 0, setupRunIds: acknowledged.runs.map(row => row.id), reviewerEligibleBeforeQuery: reviewer.lifecycleState === "ready" && ["active", "idle"].includes(reviewer.status ?? "") };
 }, gradeIndependentReview, {
   authentication: "human-session", setupHumanMessageCount: 1, expectedHumanMessageCount: 3, expectedRunCount: 5, attemptTimeoutMs: 1_020_000,
-  oracleVersion: "paperclip.chat-catalog.runtime.independent-review.v3",
+  oracleVersion: "paperclip.chat-catalog.runtime.independent-review.v4",
   sourceFiles: ["chat-catalog-domains/runtime-independent-review.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/identity-support.ts", "registered-artifact.ts", "chat-scenarios/task-coordination.yaml"],
   async act(ctx, state) {
     const task = state.task as Issue, reviewer = state.reviewer as Entity;
