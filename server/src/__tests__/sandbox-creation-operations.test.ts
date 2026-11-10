@@ -25,7 +25,7 @@ describe("durable sandbox creation through the runtime entry point", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
   let companyId: string, environmentId: string, pluginId: string, runId: string, spool: string;
-  let creates: number, destroys: number, loseReply: boolean, failDestroy: boolean, pluginLogin: boolean;
+  let creates: number, destroys: number, loseReply: boolean, failDestroy: boolean, pluginLogin: boolean, generatedLoginId: boolean, foreignReceipt: boolean;
   let beforeReply: (() => Promise<void>) | undefined;
   const resources = new Map<string, string>();
   let workers: PluginWorkerManager;
@@ -36,7 +36,7 @@ describe("durable sandbox creation through the runtime entry point", () => {
   beforeEach(async () => {
     await db.execute(sql`truncate sandbox_creation_operations, companies, environments, plugins cascade`);
     companyId = randomUUID(); environmentId = randomUUID(); pluginId = randomUUID(); runId = randomUUID();
-    const agentId = randomUUID(); creates = 0; destroys = 0; loseReply = false; failDestroy = false; pluginLogin = false; beforeReply = undefined; resources.clear();
+    const agentId = randomUUID(); creates = 0; destroys = 0; loseReply = false; failDestroy = false; pluginLogin = false; generatedLoginId = false; foreignReceipt = false; beforeReply = undefined; resources.clear();
     spool = await mkdtemp(join(tmpdir(), "empty-sandbox-web-"));
     await db.insert(companies).values({ id: companyId, name: "Creation fixture", issuePrefix: "CRT" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Fixture", role: "engineer", adapterType: "codex_local" });
@@ -55,7 +55,7 @@ describe("durable sandbox creation through the runtime entry point", () => {
         if (method === "environmentAcquireLease") {
           expect(await db.select().from(sandboxCreationOperations)).toContainEqual(expect.objectContaining({ id: input.creationOperationId, state: "pending" }));
           creates++;
-          const resource = pluginLogin ? input.creationOperationId : `provider-${input.creationOperationId}`;
+          const resource = pluginLogin && !generatedLoginId ? input.creationOperationId : `provider-${input.creationOperationId}`;
           resources.set(input.creationOperationId, resource);
           await beforeReply?.();
           if (loseReply) throw new Error("Lost provider reply");
@@ -65,7 +65,7 @@ describe("durable sandbox creation through the runtime entry point", () => {
           const id = input.creationOperation.id;
           const resource = resources.get(id);
           if (pluginLogin) return resource
-            ? { providerLeaseId: resource, state: "unknown", creationLease: { providerLeaseId: resource, metadata: { purpose: "login", loginCommandKey: "codex" } } }
+            ? { providerLeaseId: resource, state: "unknown", creationLease: { providerLeaseId: foreignReceipt ? "foreign-resource" : resource, metadata: { purpose: "login", loginCommandKey: "codex" } } }
             : { providerLeaseId: id, state: "destroyed" };
           if (!resource) return { providerLeaseId: id, state: "unknown" };
           return { providerLeaseId: resource, state: "active", creationCleanup: { providerLeaseId: resource,
@@ -106,13 +106,27 @@ describe("durable sandbox creation through the runtime entry point", () => {
     return runtime().acquireRunLease({ companyId, environment: (await environmentService(db).getById(environmentId))!, heartbeatRunId: runId,
       issueId: null, persistedExecutionWorkspace: null, purpose: "login", loginCommandKey: "codex", requestedExpiresAt: new Date(Date.now() + 300000) });
   }
-  it("recovers an interrupted existing-computer login allocation through its exact lease receipt", async () => {
+  it.each([false, true])("recovers an interrupted login using its exact receipt (provider-generated ID: %s)", async generated => {
+    generatedLoginId = generated;
     loseReply = true; await expect(acquirePluginLogin()).rejects.toThrow("Lost provider reply");
     const [intent] = await db.select().from(sandboxCreationOperations);
     expect(intent.metadata).toMatchObject({ purpose: "login", loginCommandKey: "codex" });
     await due(); await runtime().flushDeferredOrphanCleanups();
     const [lease] = await db.select().from(environmentLeases);
-    expect(lease).toMatchObject({ status: "pending_cleanup", providerLeaseId: intent.id, metadata: { purpose: "login", loginCommandKey: "codex" } });
+    expect(lease).toMatchObject({ status: "pending_cleanup", providerLeaseId: generated ? `provider-${intent.id}` : intent.id, metadata: { purpose: "login", loginCommandKey: "codex" } });
+    await runtime().retryPendingSandboxTeardown({ environment: null, lease: (await environmentService(db).getLeaseById(lease.id))! });
+    expect(resources.size).toBe(0); expect(destroys).toBe(1);
+  });
+  it("retains ownership when the inspected lease and its receipt disagree", async () => {
+    generatedLoginId = true; foreignReceipt = true; loseReply = true;
+    await expect(acquirePluginLogin()).rejects.toThrow("Lost provider reply");
+    await due(); await runtime().flushDeferredOrphanCleanups();
+    expect(await db.select().from(environmentLeases)).toEqual([]);
+    expect((await db.select().from(sandboxCreationOperations))[0].state).toBe("pending");
+    expect(resources.size).toBe(1); expect(destroys).toBe(0);
+    foreignReceipt = false;
+    await due(); await runtime().flushDeferredOrphanCleanups();
+    const [lease] = await db.select().from(environmentLeases);
     await runtime().retryPendingSandboxTeardown({ environment: null, lease: (await environmentService(db).getLeaseById(lease.id))! });
     expect(resources.size).toBe(0); expect(destroys).toBe(1);
   });

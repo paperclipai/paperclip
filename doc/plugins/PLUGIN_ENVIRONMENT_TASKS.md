@@ -450,6 +450,11 @@ and detaches the terminal while preserving its result. Lease release/destroy
 removes only the login resources after Core commits the credential or ends the
 attempt. It must preserve the computer and unrelated tasks.
 
+The provider may assign a lease ID different from Core's creation operation ID.
+Inspection by `creationOperation` must return that exact allocation as
+`creationLease`, with its provider ID matching the observation envelope, so a
+lost acquisition reply still reaches the existing cleanup path.
+
 Claude uses the existing setup-token output parser. Codex uses the optional
 `loginPtyReadCredential` hook to read its fixed auth artifact. Both retain the
 existing owner-bound credential completion and durable cleanup. A restart

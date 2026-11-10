@@ -197,10 +197,12 @@ export async function recoverSandboxCreations(db: Db,
       const observation = existingCompany ? await inspect(candidate) : null;
       if (existingCompany && recoverablePluginCreation(candidate) && observation?.creationLease) {
         const lease = observation.creationLease;
+        // The inspect call is scoped to this creation operation. Providers may
+        // assign a different resource ID; require the receipt/envelope to agree,
+        // then let the durable resource record reject any changed identity.
         if (typeof lease.providerLeaseId !== "string" || lease.providerLeaseId.length === 0 || lease.providerLeaseId !== observation.providerLeaseId ||
-            (candidate.metadata.purpose === "login" && lease.providerLeaseId !== candidate.id) ||
             !lease.metadata || typeof lease.metadata !== "object" || Array.isArray(lease.metadata)) {
-          throw new Error("Task creation recovery returned foreign ownership");
+          throw new Error("Plugin allocation creation recovery returned foreign ownership");
         }
         const identity = { id: candidate.id, companyId: candidate.companyId, environmentId: candidate.originalEnvironmentId,
           providerLeaseId: lease.providerLeaseId, providerMetadata: lease.metadata };
