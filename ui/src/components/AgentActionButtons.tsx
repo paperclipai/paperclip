@@ -216,7 +216,6 @@ export function AgentActionButtons({
    * omitted, failures surface as toasts (used by the list view).
    */
   onActionError?: (message: string | null) => void;
-  /** Called when termination is accepted so callers can leave detail routes before cleanup removes the agent. */
   onTerminateSuccess?: (agent: Agent) => void;
   /** Extra content rendered just before the overflow menu (e.g. live-run link). */
   children?: React.ReactNode;
