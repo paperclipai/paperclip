@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, createDb, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { currentControllerProcessStamp } from "./controller-process-identity.js";
+import { isInterruptedNativePreparation } from "./cancelled-native-startup.js";
 import { settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
 
@@ -33,28 +34,35 @@ describe("automatic recovery after a drained legacy controller", () => {
     await db.insert(issues).values({ id: issueId, companyId, title: "Follow up", status: "in_progress", assigneeAgentId: agentId });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, status: "interrupted",
       errorCode: "server_shutdown_interrupted", runtimeMode: "legacy", executionStage: "preparing",
-      contextSnapshot: { issueId }, finishedAt: new Date(), controllerBootId: bootId, controllerProcess,
+      contextSnapshot: { issueId }, finishedAt: new Date(), runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } }, controllerBootId: bootId, controllerProcess,
       controllerLeaseExpiresAt: new Date(Date.now() + 55_000),
       resultJson: { stopReason: "interrupted", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
     const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
       status: "active", ownerType: "board", returnOwnerAgentId: agentId, cause: "legacy_execution_requires_reconciliation",
       fingerprint: `legacy-execution:${runId}`, nextAction: "Reconcile the interrupted execution.",
       evidence: { runId, originalFailureCode: "server_shutdown_interrupted" } }).returning();
-    return { actionId: action!.id };
+    return { actionId: action!.id, runId };
   }
 
   it("settles the hold at once when the drained controller process is proven gone", async () => {
-    const { actionId } = await seedDrainedRun("exited");
+    const { actionId, runId } = await seedDrainedRun("exited");
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(await isInterruptedNativePreparation(db, before!)).toBe(false);
     await settleUnrecoverableExecutions(db);
     const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actionId));
     expect(action).toMatchObject({ status: "resolved", outcome: "blocked" });
     expect(action!.evidence.automaticRecovery).toMatchObject({ policy: "preserve_without_replay_v1", replay: "blocked" });
+    const [after] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(after!.controllerLeaseExpiresAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(await isInterruptedNativePreparation(db, after!)).toBe(true);
   });
 
   it("still waits for a live controller lease held by this process", async () => {
-    const { actionId } = await seedDrainedRun("current");
+    const { actionId, runId } = await seedDrainedRun("current");
     await settleUnrecoverableExecutions(db);
     const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actionId));
     expect(action).toMatchObject({ status: "active", resolvedAt: null });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run!.controllerLeaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
   });
 });

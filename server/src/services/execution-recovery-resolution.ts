@@ -663,9 +663,15 @@ export async function settleUnrecoverableExecutions(
         }
         // A legacy executor still holding its controller lease may be unwinding
         // a Stop and can prove that no adapter started. Let it settle first,
-        // unless its recorded process is proven gone (a drained server).
-        if (run.runtimeMode === "legacy" && run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > now
-          && (goneControllerBootId === null || run.controllerBootId !== goneControllerBootId)) return;
+        // unless its recorded process is proven gone (a drained server): then
+        // expire that exact lease so every later preparation check sees it.
+        if (run.runtimeMode === "legacy" && run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > now) {
+          if (goneControllerBootId === null || run.controllerBootId !== goneControllerBootId) return;
+          await tx.update(heartbeatRuns).set({ controllerLeaseExpiresAt: now }).where(and(
+            eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+            eq(heartbeatRuns.controllerBootId, goneControllerBootId)));
+          run.controllerLeaseExpiresAt = now;
+        }
         // Adoption transfers maintenance to the retained-workspace owner.
         // This compatibility resolver must not close its hold or relabel it
         // as a user repair merely because old return-owner metadata is absent.
