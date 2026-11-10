@@ -2699,6 +2699,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
           errorCode: "process_lost",
           finishedAt: now,
+          ...(restartInterruptedBeforeDispatch && legacyControllerGone ? { controllerLeaseExpiresAt: now } : {}),
           resultJson: (() => {
             const result = mergeRunStopMetadataForAgent(
               { adapterType, adapterConfig },

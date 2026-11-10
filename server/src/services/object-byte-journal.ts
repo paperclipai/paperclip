@@ -476,7 +476,8 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
     if (!Number.isSafeInteger(sourceCursor) || sourceCursor < writer.head.sourceCursor)
       throw new Error("object_journal_invalid_source_prefix_cursor");
     const current = await head(signal);
-    if (!current || current.etag !== writer.etag || current.head.closed || current.head.deleted)
+    if (!current) throw new ObjectJournalSourcePrefixProofUnavailableError(writer);
+    if (current.etag !== writer.etag || current.head.closed || current.head.deleted)
       throw new ObjectJournalConflictError();
     // One-time verification can repair legacy max-cursor metadata, never payload bytes.
     if (sourceCursor !== writer.head.sourceCursor)

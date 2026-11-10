@@ -495,6 +495,15 @@ server-authored event among these three types; provider
 source events cannot supply stop authority. These records stay in the local run
 log and do not add Telemetry or OpenTelemetry data.
 
+The server writes `native.prior_owner_fence_refused` when its runner-state
+check refuses a run before any launch, because the conversation's saved runner
+state belongs to an earlier run that cannot be proven finished. The payload
+holds only the closed refusal `reason` (for example
+`prior_owner_terminal_state_indeterminate`). Continuation admission reads it,
+with no launch, identity, `adapter.invoke` or runner-sourced event, as proof
+that the failed run never had a runner, so Retry and new input need no stop
+record for it.
+
 Explicit continuation writes `native.stopped_conversation_verified` after it
 verifies the retained worker and provider processes stopped. Its payload binds
 the requesting `runId`, retained `ownerRunId`, native session, runner instance,
