@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { expect, it, vi } from "vitest";
 import { authUsers, companyMemberships, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations } from "@paperclipai/db";
 import { heartbeatService } from "../services/heartbeat.js";
+import { releaseLapsedNativeRestartClaim } from "../services/native-runtime/native-execution-lease.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "./helpers/native-restart.js";
 import { waitForCondition } from "./helpers/native-restart-fixture.js";
@@ -29,6 +30,27 @@ vi.mock("../services/heartbeat/preparation-timing.js", async (importOriginal) =>
 
 describeEmbeddedPostgres("restart-claim preparation that outlives its claim lease", () => {
   const fixture = nativeRestartFixture();
+
+  it.each(["live lease", "another owner", "newer generation", "other attempt", "run not running", "lapsed own claim"] as const)(
+    "releases a restart claim only when it is this exact lapsed claim (%s)", async (variant) => {
+      const f = await fixture.seedRun(`RELEASE-${variant.replace(/\W+/g, "-")}`);
+      const leaseOwner = `native-recovery:${randomUUID()}`;
+      await f.db.update(nativeRunFinalizations).set({ phase: "observed", leaseOwner, controllerGeneration: 3, attempt: 1,
+        leaseExpiresAt: new Date(Date.now() + (variant === "live lease" ? 60_000 : -1_000)) })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      if (variant === "run not running") await f.db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.runId));
+      const released = await releaseLapsedNativeRestartClaim({ db: f.db, companyId: fixture.current.companyId, runId: f.runId,
+        leaseOwner: variant === "another owner" ? `native-recovery:${randomUUID()}` : leaseOwner,
+        controllerGeneration: variant === "newer generation" ? 2 : 3, providerAttempt: variant === "other attempt" ? 2 : 1 });
+      const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      if (variant === "lapsed own claim") {
+        expect(released).toBe(true);
+        expect(owner).toMatchObject({ leaseOwner: null, leaseExpiresAt: null, phase: "observed", controllerGeneration: 3 });
+        return;
+      }
+      expect(released).toBe(false);
+      expect(owner).toMatchObject({ leaseOwner, phase: "observed", controllerGeneration: 3, attempt: 1 });
+    }, 60_000);
 
   it("hands the run straight back to restart recovery instead of leaving it running unowned", async () => {
     const f = await fixture.seedRun("LAPSED-RESTART-CLAIM");
