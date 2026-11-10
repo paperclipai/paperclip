@@ -526,6 +526,9 @@ stop, task ownership and execution gates. The UI rechecks access and the current
 action before submission and confirms the exact reconciliation receipt and
 continuation-delivery marker before showing success. A saved review requests
 continuation; it does not prove that another run has started.
+If the write response is lost, **Check saved review** reads the exact action's
+receipt without resubmitting the decision. The stopped run's agent can be a
+reviewer and is distinct from the task's return owner.
 
 A queued legacy run denied by that final gate is still a wait. Its matching
 dispatch-gate receipt, task identity, and absence of runtime selection, execution

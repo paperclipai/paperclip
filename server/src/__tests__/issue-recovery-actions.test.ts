@@ -2129,6 +2129,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(result.body.recoveryAction.evidence).not.toHaveProperty("automaticRecovery");
     const after = await request(app).get(`/api/issues/${sourceIssueId}/recovery-actions`).expect(200);
     expect(after.body.actions).toEqual([]);
+    const saved = await request(app).get(`/api/issues/${sourceIssueId}/recovery-actions`)
+      .query({ inspectSourceRunId: runId, inspectSourceActionId: action.id }).expect(200);
+    expect(saved.body.actions).toEqual([result.body.recoveryAction]);
     const duplicate = await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`).send(body).expect(200);
     expect(duplicate.body.recoveryAction).toEqual(result.body.recoveryAction);
     // Resolution records a delivery intent; these API calls cannot replay a provider action.

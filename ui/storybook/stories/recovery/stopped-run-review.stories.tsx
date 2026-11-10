@@ -23,7 +23,7 @@ const blocker: ExecutionBlocker = {
 };
 const access = { userId: "user-board", companyIds: [action.companyId], source: "session", isInstanceAdmin: false,
   memberships: [{ companyId: action.companyId, membershipRole: "operator", status: "active" }] };
-type Scenario = "review" | "loading" | "missing" | "read-error" | "rejected" | "pending" | "viewer" | "locale-fallback" | "long-labels";
+type Scenario = "review" | "loading" | "missing" | "read-error" | "rejected" | "pending" | "viewer" | "locale-fallback" | "long-labels" | "lost-response";
 
 /** Production API client and notice, with isolated in-memory HTTP responses.
  * This fixture never contacts an execution provider or a live mutation route. */
@@ -44,6 +44,7 @@ function ReviewFixture({ scenario }: { scenario: Scenario }) {
   useEffect(() => {
     const original = window.fetch;
     let saved = false;
+    let savedResult: { recoveryAction: unknown } | null = null;
     client.setQueryData(queryKeys.auth.session, { user: { id: access.userId } });
     const mockFetch: typeof window.fetch = async (input, init) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.origin);
@@ -59,10 +60,13 @@ function ReviewFixture({ scenario }: { scenario: Scenario }) {
             ...body.executionReconciliation, actorId: access.userId, recordedAt: "2026-11-08T12:00:00Z",
           } },
         } };
-        saved = true; setReceipt(result); setCurrent(null);
+        saved = true; savedResult = result; setReceipt(result);
+        if (scenario === "lost-response") return Response.json({ error: "The response was interrupted after saving." }, { status: 503 });
+        setCurrent(null);
         return Response.json(result);
       }
       if (url.pathname.endsWith("/recovery-actions")) {
+        if (url.searchParams.has("inspectSourceActionId") && savedResult) return Response.json({ active: null, actions: [savedResult.recoveryAction] });
         if (scenario === "loading") return new Promise<Response>(() => {});
         if (scenario === "read-error") return Response.json({ error: "Recovery record unavailable" }, { status: 503 });
         return Response.json({ active: null, actions: saved || scenario === "missing" ? [] : [action] });
@@ -106,6 +110,7 @@ export const ReadOnly: Story = { args: { scenario: "viewer" } };
 export const Mobile: Story = { globals: { viewport: { value: "mobile", isRotated: false } } };
 export const LocaleFallback: Story = { args: { scenario: "locale-fallback" } };
 export const LongLabels: Story = { args: { scenario: "long-labels" } };
+export const LostResponse: Story = { args: { scenario: "lost-response" } };
 export const Saved: Story = { play: async ({ canvasElement }) => {
   const canvas = within(canvasElement);
   await userEvent.click(await canvas.findByRole("button", { name: "Review stopped run" }));

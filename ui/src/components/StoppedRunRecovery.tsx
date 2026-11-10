@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { requiresExecutionReconciliation, type ExecutionBlocker, type ExecutionReconciliation, type IssueRecoveryAction } from "@paperclipai/shared";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
+import { ApiError } from "../api/client";
 import { useDraftOwner, useDraftOwnerReader } from "../hooks/useDraftOwner";
 import { useTranslation } from "../i18n";
 import { canBoardResolveRecoveryAction } from "../lib/recovery-reconcile";
@@ -51,6 +52,8 @@ function StoppedRunReview({ issueId, companyId, blocker, owner, className, onSav
   const [open, setOpen] = useState(false);
   const [outcome, setOutcome] = useState<ExecutionReconciliation["actionOutcome"] | "">("");
   const [evidence, setEvidence] = useState("");
+  const [uncertain, setUncertain] = useState(false);
+  const submitted = useRef<{ decision: ExecutionReconciliation; returnOwner: string | null } | null>(null);
   const actionId = blocker.recoveryActionId!;
   const runId = blocker.runId!;
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -67,7 +70,7 @@ function StoppedRunReview({ issueId, companyId, blocker, owner, className, onSav
     const current = data?.actions.find(item => item.id === actionId);
     if (!current || current.companyId !== companyId || current.sourceIssueId !== issueId || current.cause !== blocker.cause
       || (current.evidence.runId ?? current.evidence.sourceRunId) !== runId
-      || current.returnOwnerAgentId !== blocker.agentId || current.evidence.executionReconciliation
+      || current.evidence.executionReconciliation
       || current.evidence.workspaceRestoreRecovery) return null;
     return ["active", "escalated"].includes(current.status)
       || ["resolved", "cancelled"].includes(current.status) && asObject(current.evidence.automaticRecovery).replay === "blocked"
@@ -81,8 +84,39 @@ function StoppedRunReview({ issueId, companyId, blocker, owner, className, onSav
     void client.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId) });
     void client.invalidateQueries({ queryKey: queryKeys.runDetail(runId) });
   };
+  function confirmReceipt(receipt: IssueRecoveryAction | undefined, decision: ExecutionReconciliation, returnOwner: string | null) {
+    const recorded = asObject(receipt?.evidence?.executionReconciliation);
+    if (receipt?.id !== actionId || receipt.companyId !== companyId || receipt.sourceIssueId !== issueId
+      || receipt.cause !== blocker.cause || receipt.status !== "resolved" || receipt.returnOwnerAgentId !== returnOwner
+      || (receipt.evidence.runId ?? receipt.evidence.sourceRunId) !== runId
+      || recorded.runId !== runId || recorded.providerStopped !== true || recorded.actionOutcome !== decision.actionOutcome
+      || recorded.outcomeEvidence !== decision.outcomeEvidence || !recorded.recordedAt || !recorded.actorId
+      || asObject(receipt.evidence.automaticRecovery).replay === "blocked"
+      || !["pending", "delivered", "delegated"].includes(String(receipt.evidence.continuationDelivery))) {
+      throw new Error(unconfirmedText);
+    }
+    onSaved();
+    refreshTask();
+    void client.invalidateQueries({ queryKey: queryKeys.issues.allRecoveryActions(issueId) });
+  }
   const save = useMutation({ retry: false, // query-error-ok: explicit evidence submission; errors stay beside the retained draft.
-    mutationFn: async () => {
+    mutationFn: async (mode: "save" | "recover") => {
+      if (mode === "recover") {
+        try {
+          const freshAccess = await access.refetch();
+          if (!mounted.current || readOwner() !== owner) return;
+          if (freshAccess.error) throw freshAccess.error;
+          if (!matchesAccount(freshAccess.data)) throw new Error(t("stoppedRun.accessChanged", {
+            defaultValue: "Your board access changed. Refresh the task before continuing.",
+          }));
+          const prior = submitted.current;
+          if (!prior) throw new Error(unconfirmedText);
+          const result = await issuesApi.recoveryActions(issueId, { runId, actionId });
+          if (!mounted.current || readOwner() !== owner) return;
+          confirmReceipt(result.actions.find(item => item.id === actionId), prior.decision, prior.returnOwner);
+        } finally { busy.current = false; }
+        return;
+      }
       if (!ready || !canReview || !current) { busy.current = false; return; }
       const decision: ExecutionReconciliation = { runId, providerStopped: true,
         actionOutcome: outcome as ExecutionReconciliation["actionOutcome"], outcomeEvidence: evidence.trim() };
@@ -95,31 +129,27 @@ function StoppedRunReview({ issueId, companyId, blocker, owner, className, onSav
         }));
         if (freshSource.error) throw freshSource.error;
         const fresh = boundAction(freshSource.data);
-        if (!fresh || fresh.status !== current.status || fresh.fingerprint !== current.fingerprint) {
+        if (!fresh || fresh.status !== current.status || fresh.fingerprint !== current.fingerprint
+          || fresh.returnOwnerAgentId !== current.returnOwnerAgentId) {
           refreshTask();
           throw new Error(changedText);
         }
         // The server independently verifies terminal state, provider stop, leases,
         // ownership and admission gates. This is never a generic Retry.
+        submitted.current = { decision, returnOwner: fresh.returnOwnerAgentId };
+        setUncertain(true);
         const result = await issuesApi.resolveRecoveryAction(issueId, {
           actionId, outcome: "restored", sourceIssueStatus: "todo", executionReconciliation: decision,
+        }).catch(error => {
+          if (mounted.current && readOwner() === owner && error instanceof ApiError && error.status >= 400 && error.status < 500) {
+            submitted.current = null;
+            setUncertain(false);
+          }
+          throw error;
         });
         if (!mounted.current || readOwner() !== owner) return;
-        const receipt = result?.recoveryAction;
-        const recorded = asObject(receipt?.evidence?.executionReconciliation);
-        if (result?.issue?.id !== issueId || result.issue.companyId !== companyId || receipt?.id !== actionId
-          || receipt.companyId !== companyId || receipt.sourceIssueId !== issueId || receipt.cause !== blocker.cause
-          || receipt.status !== "resolved" || receipt.returnOwnerAgentId !== blocker.agentId
-          || (receipt.evidence.runId ?? receipt.evidence.sourceRunId) !== runId
-          || recorded.runId !== runId || recorded.providerStopped !== true || recorded.actionOutcome !== decision.actionOutcome
-          || recorded.outcomeEvidence !== decision.outcomeEvidence || !recorded.recordedAt || !recorded.actorId
-          || asObject(receipt.evidence.automaticRecovery).replay === "blocked"
-          || !["pending", "delivered", "delegated"].includes(String(receipt.evidence.continuationDelivery))) {
-          throw new Error(unconfirmedText);
-        }
-        onSaved();
-        refreshTask();
-        void client.invalidateQueries({ queryKey: queryKeys.issues.allRecoveryActions(issueId) });
+        if (result?.issue?.id !== issueId || result.issue.companyId !== companyId) throw new Error(unconfirmedText);
+        confirmReceipt(result.recoveryAction, decision, fresh.returnOwnerAgentId);
       } finally { busy.current = false; }
     },
   });
@@ -151,9 +181,9 @@ function StoppedRunReview({ issueId, companyId, blocker, owner, className, onSav
           {current ? <form className="flex flex-col gap-3" aria-busy={save.isPending}
             onSubmit={event => {
               event.preventDefault();
-              if (ready && !busy.current && !save.isPending) { busy.current = true; save.mutate(); }
+              if (ready && !uncertain && !busy.current && !save.isPending) { busy.current = true; save.mutate("save"); }
             }}>
-            <fieldset className="flex flex-col gap-2" disabled={save.isPending} aria-describedby={`${id}-help`}>
+            <fieldset className="flex flex-col gap-2" disabled={save.isPending || uncertain} aria-describedby={`${id}-help`}>
               <legend className="font-medium">{t("stoppedRun.outcome", { defaultValue: "What happened to this run’s actions?" })}</legend>
               {(["completed", "not_performed", "mixed"] as const).map(value => <label key={value} className="flex items-center gap-2 py-1">
                 <input type="radio" name={`${id}-outcome`} value={value} checked={outcome === value}
@@ -164,13 +194,13 @@ function StoppedRunReview({ issueId, companyId, blocker, owner, className, onSav
             <div className="flex flex-col gap-2">
               <label htmlFor={`${id}-evidence`} className="font-medium">{t("stoppedRun.evidence", { defaultValue: "Outcome evidence" })}</label>
               <Textarea id={`${id}-evidence`} value={evidence} onChange={event => setEvidence(event.target.value)}
-                disabled={save.isPending} rows={4} maxLength={12000} required aria-describedby={`${id}-evidence-help`} />
+                disabled={save.isPending || uncertain} rows={4} maxLength={12000} required aria-describedby={`${id}-evidence-help`} />
               <p id={`${id}-evidence-help`} className="text-foreground/80">{t("stoppedRun.evidenceHelp", { defaultValue: "Describe what you verified and link supporting records. For mixed outcomes, identify which actions completed. Use 20–12,000 characters." })}</p>
             </div>
             <p className="text-foreground/80">{t("stoppedRun.continuation", { defaultValue: "Saving checks that the previous execution has stopped and requests continuation with these outcomes. Existing approvals, blockers and execution limits still apply." })}</p>
             <div className="flex items-center justify-between gap-2">
               <Button type="button" variant="ghost" size="sm" className="h-auto min-h-9 min-w-0 shrink whitespace-normal py-2" disabled={save.isPending} onClick={close}>{t("stoppedRun.cancel", { defaultValue: "Cancel" })}</Button>
-              <Button type="submit" size="sm" className="h-auto min-h-9 min-w-0 shrink whitespace-normal py-2" disabled={!ready || save.isPending}>{save.isPending
+              <Button type="submit" size="sm" className="h-auto min-h-9 min-w-0 shrink whitespace-normal py-2" disabled={!ready || save.isPending || uncertain}>{save.isPending
                 ? t("stoppedRun.saving", { defaultValue: "Checking and saving…" }) : t("stoppedRun.save", { defaultValue: "Save and continue" })}</Button>
             </div>
           </form> : <>
@@ -183,5 +213,11 @@ function StoppedRunReview({ issueId, companyId, blocker, owner, className, onSav
         </div> : null}
       </>}
     {save.error ? <p role="alert" className="break-words font-medium">{save.error instanceof Error ? save.error.message : unconfirmedText}</p> : null}
+    {uncertain && !save.isPending ? <>
+      <p className="text-foreground/80">{t("stoppedRun.checkHelp", { defaultValue: "Check the saved record before taking further action. This check does not submit another review." })}</p>
+      <Button variant="outline" size="sm" className="h-auto min-h-9 max-w-full self-start whitespace-normal py-2"
+        onClick={() => { if (!busy.current) { busy.current = true; save.mutate("recover"); } }}>
+        {t("stoppedRun.checkSaved", { defaultValue: "Check saved review" })}</Button>
+    </> : null}
   </section>;
 }

@@ -201,6 +201,39 @@ describe("stopped-run review through the task interruption surface", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("board access changed");
   });
 
+  it("reviews a stopped reviewer separately from the task return owner", async () => {
+    const reviewerAction = { ...action, returnOwnerAgentId: "task-owner" };
+    api.list.mockResolvedValue({ active: null, actions: [reviewerAction] });
+    const result = receipt(); result.recoveryAction.returnOwnerAgentId = "task-owner";
+    api.resolve.mockResolvedValue(result);
+    await prepare(); await click("Save and continue");
+    expect(api.resolve).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Outcome review saved");
+  });
+
+  it("recovers the exact saved receipt after a lost response without resubmitting", async () => {
+    api.resolve.mockRejectedValue(new Error("Connection lost after submission"));
+    await prepare(); await click("Save and continue");
+    expect(container.textContent).not.toContain("Outcome review saved");
+    expect(button("Save and continue")!.disabled).toBe(true);
+    api.list.mockResolvedValue({ active: null, actions: [receipt().recoveryAction] });
+    await click("Check saved review");
+    expect(api.list).toHaveBeenCalledWith("issue-1", { runId: "run-1", actionId: "action-1" });
+    expect(api.resolve).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Outcome review saved");
+  });
+
+  it("does not accept another decision as the receipt for a lost response", async () => {
+    api.resolve.mockRejectedValue(new Error("Connection lost"));
+    await prepare(); await click("Save and continue");
+    const other = receipt(); other.recoveryAction.evidence.executionReconciliation.outcomeEvidence = "Someone else's evidence";
+    api.list.mockResolvedValue({ active: null, actions: [other.recoveryAction] });
+    await click("Check saved review");
+    expect(container.textContent).not.toContain("Outcome review saved");
+    expect(api.resolve).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("could not be confirmed");
+  });
+
   it.each([403, 409, 503])("announces HTTP %s rejection without discarding the evidence or auto-resubmitting", async status => {
     api.resolve.mockRejectedValue(new ApiError("The previous provider is still running.", status, null));
     await prepare(); await click("Save and continue");
