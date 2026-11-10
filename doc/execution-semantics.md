@@ -2763,7 +2763,10 @@ reason. Transient reasons are checked again after five minutes, at most twelve
 times; new input, Retry or a new recovery generation reconsiders the hold. The
 recovery worker discovers these holds itself, so holds saved by earlier releases
 take the same path after deploy. An exhausted hold whose run's files a sibling
-recovery action already saved settles as recovered.
+recovery action already saved settles as recovered. This includes a no-replay
+hold recorded resolved-but-blocked: settling it removes its replay block, so it
+stops blocking the task, and starts no turn itself; the run's own result and
+any waiting input decide what continues.
 
 An exhausted save whose last failure was `agent_stop_unconfirmed` is not a
 refusal of the saved files: its recovery window ran out before the agent's stop
