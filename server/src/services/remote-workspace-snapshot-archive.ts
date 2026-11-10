@@ -278,7 +278,7 @@ export async function workspaceArchive(input: {
   };
   const assertGitSourceFence = async (repo: string) => {
     if (!input.gitSourceRoots) return null;
-    if (!input.gitSourceRoots.length || input.gitSourceRoots.length > 384
+    if (!input.gitSourceRoots.length || input.gitSourceRoots.length > 512
       || input.gitSourceRoots.some(root => !path.isAbsolute(root) || path.resolve(root) !== root)) fail("online_source_git_requires_shared_fence");
     const directory = async (target: string) => {
       const actual = await fs.realpath(target), entry = await fs.lstat(target, { bigint: true });

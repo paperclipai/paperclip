@@ -71,6 +71,19 @@ describe("portable remote workspace archives", () => {
     const promise = new Promise<void>(done => { resolve = done; });
     return { promise, resolve };
   }
+  it.skipIf(process.platform === "win32")("accepts four source roots per admitted identity and rejects an oversized fence", async () => {
+    const cwd = await source();
+    await git(cwd, "init", "--quiet");
+    await fs.writeFile(path.join(cwd, "saved.txt"), "preserve work\n");
+    await git(cwd, "add", "."); await git(cwd, "commit", "-qm", "Saved work");
+    const canonical = await fs.realpath(root);
+    const roots = [canonical, ...Array.from({ length: 511 }, (_, i) => path.join(canonical, `owner-${i}`))];
+    await expect(captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "too-many.pcws"),
+      gitSourceRoots: [...roots, path.join(canonical, "extra")] })).rejects.toThrow("online_source_git_requires_shared_fence");
+    await expect(captureRemoteWorkspaceDirectory({ cwd, archivePath: path.join(root, "complete.pcws"), gitSourceRoots: roots }))
+      .resolves.toHaveProperty("manifestDigest");
+    expect(await fs.readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("preserve work\n");
+  });
   it.each([".", "nested"])("requires a shared Git fence before reading included %s Git storage", async location => {
     const cwd = await source(), repository = path.join(cwd, location);
     await fs.mkdir(repository, { recursive: true });
