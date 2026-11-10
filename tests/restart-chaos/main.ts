@@ -19,6 +19,7 @@ import { StorageChaos, planStorageFaults, replayStorageWindows, type StorageFaul
 import { startStorageFaultProxy } from "./storage-proxy.js";
 import { StorageAuditor, auditsStorage, storageAuditMarkdown } from "./storage-audit.js";
 import { exposedAfterLaunch, StorageTrigger, storageTriggerMarkdown, storageTriggerShortfall } from "./storage-trigger.js";
+import { NativeTrigger, nativeTriggerMarkdown, nativeTriggerShortfall } from "./native-trigger.js";
 import { needsCredentialRotation, startCredentialRotation, type CredentialRotation } from "./storage-credentials.js";
 import { describeProviderFault, installProviderFaultSeam, resolveRealCodex, withProviderFaultCheck, type ProviderFaultSeam } from "./provider-faults.js";
 import { installAcpxSidecarSeam, withAcpxSidecarHook, type AcpxSidecarSeam } from "./acpx-provider-faults.js";
@@ -254,6 +255,7 @@ async function main(): Promise<number> {
   let objectStore: ObjectStore | null = null;
   let storageChaos: StorageChaos | null = null;
   let storageTrigger: StorageTrigger | null = null;
+  let nativeTrigger: NativeTrigger | null = null;
   let storageProxy: Awaited<ReturnType<typeof startStorageFaultProxy>> | null = null;
   let credentialRotation: CredentialRotation | null = null;
   let storageAuditor: StorageAuditor | null = null;
@@ -414,6 +416,28 @@ async function main(): Promise<number> {
       });
       storageProxy.observe(storageTrigger.listener);
     }
+    if (plan.options.nativeTrigger) {
+      nativeTrigger = new NativeTrigger(plan.options.nativeTrigger, {
+        canFire: () => !interrupted && !faultsQueued && !supervisor.faultInProgress && supervisor.serverReady,
+        isOpen: taskId => observers.some(observer => observer.plan.taskId === taskId && !observer.done && observer.record.restAt === null),
+        issueId: taskId => observers.find(observer => observer.plan.taskId === taskId)?.record.issueId ?? null,
+        runs: issueId => api.get<Array<{ id: string; status: string }>>(`/api/issues/${issueId}/runs`, 5_000),
+        events: (runId, afterSeq, limit) => api.get(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=${limit}`, 5_000),
+        record: (kind, data) => timeline.add(kind, data),
+        fire: armed => {
+          faultsQueued += 1;
+          const work = (async () => {
+            const exposed = await exposedAfterLaunch(launching, launched);
+            await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
+            const queued = faultWork.length;
+            fireFault(armed.kind, armed.holdMs, armed.taskId, exposed, undefined, undefined, armed.restartSteps);
+            await faultWork[queued];
+          })().finally(() => { faultsQueued -= 1; });
+          faultWork.push(work);
+          return work;
+        },
+      });
+    }
 
     supervisor.onCrashPoint = receipt => {
       const owner = pointResults.find(result => result.token === receipt.crashPoint?.token);
@@ -467,8 +491,9 @@ async function main(): Promise<number> {
         errors: check.errors.map(error => redactKnownSecrets(error, knownSecretValues())) });
     };
 
-    while (!interrupted && (pending.length || active.length || storageTrigger?.busy)) {
+    while (!interrupted && (pending.length || active.length || storageTrigger?.busy || nativeTrigger?.busy)) {
       const now = Date.now();
+      await nativeTrigger?.tick(now);
       if (storm?.endIfDue(now)) {
         // Unlaunched pool tasks are not part of the wave; the in-flight ones drain without new faults.
         timeline.add("storm_ended", { faultsFired: storm.state.fired, inFlight: active.length, unlaunched: pending.length });
@@ -485,7 +510,7 @@ async function main(): Promise<number> {
         }
       }
       // Recheck the storm clock per launch: ensureServing or a slow launch can cross the storm's end.
-      while (!crashPoint && active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress && !storageTrigger?.busy
+      while (!crashPoint && active.length < plan.options.concurrency && pending.length && supervisor.serverReady && !supervisor.faultInProgress && !storageTrigger?.busy && !nativeTrigger?.busy
         && (!storm || storm.mayLaunch(Date.now()))
         // `--matrix`: no-fault baselines never share the server with a fault cell.
         && (!plan.options.matrix || matrixMayLaunch(pending[0]!.plan, active.filter(observer => !observer.done).map(observer => observer.plan)))) {
@@ -519,6 +544,7 @@ async function main(): Promise<number> {
         const due = observer.faultDue(Date.now());
         if (!due) continue;
         if (observer.record.restAt !== null) { timeline.add("fault_skipped_task_resting", { taskId: observer.plan.taskId, fault: due.kind }); continue; }
+        if (nativeTrigger) { nativeTrigger.arm({ taskId: observer.plan.taskId, kind: due.kind, holdMs: due.holdMs, armedAt: Date.now(), ...(due.restartSteps ? { restartSteps: due.restartSteps } : {}) }); continue; }
         if (storageTrigger) { storageTrigger.arm({ taskId: observer.plan.taskId, kind: due.kind, holdMs: due.holdMs, armedAt: Date.now(), ...(due.restartSteps ? { restartSteps: due.restartSteps } : {}) }); continue; }
         const exposed = active.filter(candidate => !candidate.done);
         await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
@@ -555,6 +581,12 @@ async function main(): Promise<number> {
       const shortfall = storageTriggerShortfall(storageTrigger.finish(faults));
       storageSection = storageTriggerMarkdown(storageTrigger.receipts);
       timeline.add("storage_trigger_settled", { shortfall, receipts: storageTrigger.receipts.length });
+      if (shortfall) harnessError ??= new Error(shortfall);
+    }
+    if (nativeTrigger) {
+      const shortfall = nativeTriggerShortfall(nativeTrigger.finish(faults));
+      storageSection = [storageSection, nativeTriggerMarkdown(nativeTrigger.receipts)].filter(Boolean).join("\n");
+      timeline.add("native_trigger_settled", { shortfall, receipts: nativeTrigger.receipts.length });
       if (shortfall) harnessError ??= new Error(shortfall);
     }
     await stopPressure();
@@ -742,6 +774,7 @@ async function main(): Promise<number> {
     if (storageProxy) {
       storageProxy.observe(null);
       if (storageTrigger) await writeFile(path.join(waveDir, "storage-trigger.json"), `${JSON.stringify(storageTrigger.finish(faults), null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
+      if (nativeTrigger) await writeFile(path.join(waveDir, "native-trigger.json"), `${JSON.stringify(nativeTrigger.finish(faults), null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
       if (storageChaos) await writeFile(path.join(waveDir, "storage-faults.json"), `${JSON.stringify(storageChaos.receipts, null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
       await writeFile(path.join(waveDir, "storage-proxy.json"), `${JSON.stringify(storageProxy.counts(), null, 2)}\n`, { mode: 0o600 }).catch(() => undefined);
       await storageProxy.close().catch(() => undefined);
