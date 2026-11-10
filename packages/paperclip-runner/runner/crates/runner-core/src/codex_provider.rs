@@ -202,6 +202,9 @@ pub(crate) enum ProviderStartupObservation {
     Failed {
         stage: ProviderStartupStage,
         child_exit: Option<ProcessExitFact>,
+        /// The provider gave no reply within the request deadline: a stalled
+        /// or frozen host, not a provider that rejected the request or exited.
+        no_reply: bool,
     },
 }
 
@@ -880,6 +883,12 @@ pub struct CodexProvider {
     completion_contract: Option<ProviderCompletionContract>,
     permission_profile: &'static str,
     exit_drain: Option<ProviderExitDrain>,
+    /// The latest synchronous request ended because its deadline passed with
+    /// the provider still running and silent (no reply, no exit).
+    last_request_got_no_reply: bool,
+    /// The latest stdout receive returned nothing because its own timeout
+    /// passed, not because stdout closed or the reader disconnected.
+    last_receive_timed_out: bool,
 }
 
 #[derive(Debug)]
@@ -1249,6 +1258,7 @@ impl CodexProvider {
                 let _ = observe(ProviderStartupObservation::Failed {
                     stage: ProviderStartupStage::Spawn,
                     child_exit: None,
+                    no_reply: false,
                 });
                 return Err(error);
             }
@@ -1261,6 +1271,7 @@ impl CodexProvider {
             let _ = observe(ProviderStartupObservation::Failed {
                 stage: ProviderStartupStage::SpawnReceipt,
                 child_exit,
+                no_reply: false,
             });
             return Err(error);
         }
@@ -1321,6 +1332,8 @@ impl CodexProvider {
             }),
             permission_profile,
             exit_drain: None,
+            last_request_got_no_reply: false,
+            last_receive_timed_out: false,
         };
         let mut stage = ProviderStartupStage::Initialize;
         let initialized_result = (|| -> Result<(), LocalRunnerError> {
@@ -1438,8 +1451,13 @@ impl CodexProvider {
             Ok(())
         })();
         if let Err(error) = initialized_result {
+            let no_reply = provider.last_request_got_no_reply;
             let child_exit = provider.retire_failed_startup();
-            let _ = observe(ProviderStartupObservation::Failed { stage, child_exit });
+            let _ = observe(ProviderStartupObservation::Failed {
+                stage,
+                child_exit,
+                no_reply,
+            });
             return Err(error);
         }
         Ok(provider)
@@ -1912,6 +1930,7 @@ impl CodexProvider {
             let _ = observe(ProviderStartupObservation::Failed {
                 stage: ProviderStartupStage::Admission,
                 child_exit,
+                no_reply: false,
             });
             replacement.expected_shutdown = false;
             *self = replacement;
@@ -1929,6 +1948,7 @@ impl CodexProvider {
                 let _ = observe(ProviderStartupObservation::Failed {
                     stage: ProviderStartupStage::Admission,
                     child_exit,
+                    no_reply: false,
                 });
                 return Err(error);
             }
@@ -3960,6 +3980,7 @@ impl CodexProvider {
         self.next_request_id = self.next_request_id.checked_add(1).ok_or_else(|| {
             ProviderRequestError::Rejected(LocalRunnerError::invalid("Codex request id exhausted"))
         })?;
+        self.last_request_got_no_reply = false;
         self.send_frame(&json!({"id": request_id, "method": method, "params": params}))
             .map_err(ProviderRequestError::Ambiguous)?;
         loop {
@@ -3967,6 +3988,7 @@ impl CodexProvider {
                 deadline.saturating_duration_since(std::time::Instant::now())
             });
             if remaining.is_zero() {
+                self.last_request_got_no_reply = true;
                 return Err(ProviderRequestError::Ambiguous(LocalRunnerError::invalid(
                     format!("Provider {method} exceeded its bounded response deadline"),
                 )));
@@ -3989,6 +4011,8 @@ impl CodexProvider {
                         exit.exit_code, exit.signal
                     )
                 } else {
+                    // Only the receive's own timeout, never a closed stdout.
+                    self.last_request_got_no_reply = self.last_receive_timed_out;
                     format!("Codex {method} response timed out{diagnostic_suffix}")
                 };
                 return Err(ProviderRequestError::Ambiguous(LocalRunnerError::invalid(
@@ -4079,10 +4103,12 @@ impl CodexProvider {
         &mut self,
         timeout: Duration,
     ) -> Result<Option<String>, LocalRunnerError> {
+        self.last_receive_timed_out = false;
         let deadline = std::time::Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
+                self.last_receive_timed_out = true;
                 return Ok(None);
             }
             match self.process.recv_timeout(remaining) {
@@ -4095,7 +4121,10 @@ impl CodexProvider {
                 }
                 Ok(ProcessOutput::StdoutClosed) => return Ok(None),
                 Ok(ProcessOutput::StderrClosed) => {}
-                Err(mpsc::RecvTimeoutError::Timeout) => return Ok(None),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.last_receive_timed_out = true;
+                    return Ok(None);
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(None),
             }
         }
@@ -5977,7 +6006,9 @@ done
                         "durable spawned receipt write failed",
                     ))
                 }
-                ProviderStartupObservation::Failed { stage, child_exit } => {
+                ProviderStartupObservation::Failed {
+                    stage, child_exit, ..
+                } => {
                     failure = Some((stage, child_exit));
                     Ok(())
                 }

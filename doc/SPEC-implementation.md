@@ -2030,7 +2030,12 @@ that every usage recorder binds is not evidence that provider work began. A nati
 turn that the restored Runner reports as lost on restore can never report its
 usage. It does not hold the run's receipt open: the receipt closes when the
 run's other turns do, and its provenance says the observed usage is a lower
-bound. Raw provider errors and credentials are excluded from
+bound. The same applies to a turn that was open when the provider session was
+restored after process loss and that the restored Runner then reports
+terminal without a complete usage report: the provider process that would have
+sent the final report was stopped. Local and remote Runners both apply it; the
+remote producer journals the restore as a receipt so a replacement controller
+rebuilds the same turn state. Raw provider errors and credentials are excluded from
 cost details. ACP usage retains the runtime-selected model, including defaults;
 conflicting before/after model IDs do not authorize a single-model estimate.
 Remote OpenCode billing uses only credentials forwarded to the execution target.

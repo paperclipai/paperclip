@@ -532,11 +532,14 @@ export async function admitExplicitNativeContinuation(input: {
       return blocked("local_cleanup", "Waiting for the previous provider session to finish cleanup. Your message will start automatically.");
     if (!remote && run.runtimeMode === "native" &&
         (run.errorCode === "native_session_cleanup_quarantined" || retainedCleanup === "operator_required")) {
-      // This is new user input, never permission to retry the interrupted turn.
-      if (retry) return blocked("cleanup_quarantined", "Send a new message after the previous provider has stopped.");
+      // Never permission to resume the interrupted turn: new input and a
+      // native Retry both start a fresh provider conversation, and only after
+      // the old runner, provider and tools are proven stopped.
       const { verifyStoppedNativeSessionForContinuation } = await import("./native-runtime/native-session-executor.js");
       const stopped = await verifyStoppedNativeSessionForContinuation(db, run);
-      if (!stopped) return blocked("local_cleanup", "Waiting for the previous provider and its tools to stop. Your message is saved.");
+      if (!stopped) return retry
+        ? blocked("cleanup_quarantined", "Send a new message after the previous provider has stopped.")
+        : blocked("local_cleanup", "Waiting for the previous provider and its tools to stop. Your message is saved.");
       stoppedSessions.push(stopped);
     }
     if (nativeQueuedSend && await hasPendingRunCleanup(db, companyId, run.id))

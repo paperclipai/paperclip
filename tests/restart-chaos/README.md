@@ -538,7 +538,9 @@ Codex app-server is late, missing or repeated. `--faults` takes them next to res
 governed wait (a saved question or approval) or a board Stop sends. `interrupt_ack` picks the
 acknowledgement of that interruption. Each rule applies once per task, to the first matching message.
 Provider faults run only with `--env local --adapters codex,claude` (either or both) and only with
-workloads that interrupt a turn (Q1, S1, G1). A PV1 task passes `provider_fault_applied` only when the
+workloads that interrupt a turn (Q1, S1). G1 does not: its agent asks for approval through `call_api`
+and ends its own turn, so no rule ever applied there (waves w-20261110T050407-s206, w-20261110T063253-s208,
+w-20261110T085554-s211) and the board waited for a restart that never came. A PV1 task passes `provider_fault_applied` only when the
 held message was released; a provider that exited first turned the delay into a drop.
 For Claude, the runner settles a cancelled turn about 3–4 s after the cancel without waiting for the
 provider's prompt response, and it later closes the sidecar with the provider. A Claude PV1 delay
@@ -546,8 +548,7 @@ longer than that is therefore a drop (wave w-20261110T040202-s202: 18 s held, ne
 still passed its Q1 oracle). Sweep Claude PV1 below that window, for example
 `--provider-fault-delays 1,3`.
 
-G1 grades the board decision after a restart, so G1 with a provider fault needs
-`--provider-fault-restart K1`. On a board Stop (S1) the runner ends Codex without waiting for its terminal:
+On a board Stop (S1) the runner ends Codex without waiting for its terminal:
 in wave w-20261110T050407-s206 Codex exited 1.5 s after `turn/interrupt` with no `turn/completed`, so a
 `terminal` rule never applies there and the task fails `provider_fault_applied`. Use `interrupt_ack` for S1.
 An S1 task with a provider fault clicks Stop on the first poll that shows a live provider turn
@@ -570,10 +571,28 @@ after its fault applied, through the `provider` trigger. That delay must be shor
 so the message is still held, and the wave runs with `--concurrency 1`, because every K1 kills the whole control plane. K1 kills the runner with its provider and the held message, so the late
 or missing terminal straddles the restart: the replacement control plane must settle the saved wait
 without it. Planned restart faults (`--faults K1,PV2`) are still rejected, and PV3 does not combine with
-a restart, since a duplicate holds nothing. Such a task passes when:
+a restart, since a duplicate holds nothing.
 
-- `provider_fault_applied`: the fault applied once, the K1 started after it, and for PV1 no release
-  came before the K1;
+`--provider-fault-restart` also takes K2 (SIGTERM, a graceful restart whose shutdown drain meets the
+held or missing message) and K4 (kill -9, then the control plane stays down for 120 s, the low end of
+the seeded K4 range). For a restart, `provider_fault_applied` requires that the held message was not
+released before the old control plane stopped (`stoppedAt`), not only before the fault started. A K2 drain took 15–20 s in wave w-20261110T092735-s213, so a PV1 that must straddle a K2 needs a
+longer delay, for example `--provider-fault-delays 40`. A comma list such as `K1,K2,K4` cycles across the PV1/PV2 tasks in plan order,
+so one wave covers several restart kinds. `--provider-fault-message` takes `WORKLOAD=message` entries
+next to the default, for example `S1=interrupt_ack,terminal`: S1 tasks fault the interrupt
+acknowledgement (Codex ends a Stop without its terminal) while Q1 tasks fault the terminal.
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads Q1,S1 --faults PV1,PV2 --provider-fault-restart K2,K4 --provider-fault-delays 40 \
+  --provider-fault-message S1=interrupt_ack,terminal --concurrency 1 --tasks 4 --seed 211
+```
+
+Such a task passes when:
+
+- `provider_fault_applied`: the fault applied once, the restart started after it, the held message was
+  not released before the old control plane stopped, and it was not discarded before the restart started
+  (a discard during a K2 shutdown is the restart stopping the provider);
 - the ordinary grade passes: R1–R6 for a restart-crossing task and the workload's T-oracle. For Q1
   that means one question, the asking run `succeeded`, no failed run, nothing started before the
   answer, and the brief carries the answer.
@@ -741,7 +760,7 @@ expires. A time fault makes deadlines lapse during a run or across a restart. No
 | Fault | What the harness does | Deadlines it crosses |
 | --- | --- | --- |
 | TM1 freeze | `SIGSTOP` the server process alone for 95–150 s, then `SIGCONT`. The runner, its provider and Postgres keep running. | Controller-instance lease (90 s), execution-control deadline (60 s), legacy run lease (60 s). The runner keeps calling a server that does not answer. |
-| TM2 sleep | `SIGSTOP` the server and every process under it for 20–45 s. While they are stopped, shift every database timestamp back by the age. Then `SIGCONT` the same processes. | Everything stored in the database: native and remote execution leases, scheduled retries, liveness and silence watchdogs, accounting closure, and pending waits. The processes' own monotonic timers barely moved. This stands in for a laptop that slept. |
+| TM2 sleep | `SIGSTOP` the server and every process under it for 20–45 s. While they are stopped, shift every database timestamp back by the age. Then `SIGCONT` the same processes. | Everything stored in the database: native and remote execution leases, scheduled retries, liveness and silence watchdogs, accounting closure, and pending waits. The pause itself is 20–45 s, not the age. A stopped process's monotonic clock keeps running (it stops only in a real system suspend), so in-process deadlines shorter than the pause, such as the runner's 30 s provider request deadline, also lapse. TM2 therefore stands in for a laptop that slept and for a long process stall at the same time. |
 | TM3 aged outage | `SIGKILL` the server tree (as K1). While it is down, shift every database timestamp back by the age. Then start a replacement. | The same deadlines, reconciled by a fresh boot that finds runs, leases, wakes and waits that look hours old. |
 
 The age is 26 hours by default; `--time-age-hours` sets 1–72. The pause and the age are the cheapest
@@ -860,6 +879,62 @@ not click Retry and no other fault fires until the last replacement is ready. A 
 task restarts again after the same gaps. A replacement that exits on its own during a gap fails the
 fault as a harness error, with the stops so far recorded.
 
+## Two servers, one database (MS1–MS3)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads B5,Q1 --faults MS1,MS2 --concurrency 1 --tasks 3 --seed 301
+```
+
+Every other fault runs one server per wave, so no wave can reach a race between two servers. #20508 fixed
+one such race with a database test only: server B's orphan sweep failed a run whose owner, server A, had
+taken its lease back.
+
+**Why this shape.** Hosted Cloud deploys by rolling overlap on one Neon database. The new server B starts
+while the old server A still serves, then A drains. The defaults are a 5 s overlap and up to 90 s of
+drain (`doc/plans/2026-10-31-zero-downtime-web-deploys.md`). B's startup recovery and periodic sweeps
+therefore run beside A's live runs. The plan's K12 names the same overlap
+(`doc/plans/2026-11-06-control-plane-restart-chaos.md`). This repository has no replica count or deploy
+strategy of its own (`docker/ecs-task-definition.json` describes one task), and the self-hosting docs do
+not describe several servers on one database.
+
+| Fault | What happens | Seeded hold |
+| --- | --- | --- |
+| MS1 | B boots on the same database and stays up beside a live A for the hold, then gets SIGTERM. A is not touched. | 60–150 s of overlap |
+| MS2 | B boots. A and its process tree are frozen (SIGSTOP, TM2's freeze without aging) past the 90 s controller lease, then thawed. B stays up 30 s more, while A takes its leases back, then stops. | 100–150 s frozen |
+| MS3 | Rolling-upgrade shape. B boots, then A gets K2 (SIGTERM) and a replacement on A's port. B is the only live server until the replacement is ready, then stops after the hold. | 20–45 s tail |
+
+B shares A's database, instance directory, local storage and secrets. It listens on its own loopback port
+and writes `<wave>/server-b.log`. The harness and the agents keep using A's port. While a fault is in
+progress the observers hold board actions (Stop, answers, follow-ups) until it ends, as for every fault.
+
+Limits:
+
+- B runs on the same host and PID namespace as A. It can check A's PIDs directly, which a Railway
+  replica cannot, so these faults are a lower bound on cross-server exposure.
+- The native executor lease is 20 minutes. MS2 outlasts the 90 s controller lease, not that one.
+- Local only: a remote runner is under neither server. No storm, crash point, K14, TM2 or TM3 in the same wave (aging would move the database times the invariant compares with real process windows).
+- B must live through its whole window. If it exits on its own, the fault fails (its tree is still cleaned up).
+
+**Cross-server invariant** (`multi-server.ts`, `<wave>/cross-server.json`). It is checked once per wave
+that fired an MS fault, over the wave database and the process windows the supervisor recorded (each
+server's pid, start, exit and freezes). A violation fails the wave.
+
+- `MS_foreign_failure`: a run failed with `process_lost` or `native_execution_ownership_unverified` while
+  its owning server was alive and not frozen. The owner comes from the run's controller boot id and
+  `controller_instances.pid`. The time is the run's `finished_at`. A freeze before the write does not
+  excuse it: that is #20508's shape. A run still `running` with
+  that code (how #20508's marker is stored) counts at its `updated_at`. The owner's own
+  `controller_lease_lost` counts only when no freeze past the lease came before it.
+- `MS_double_executor`: a run recorded a second local runner identity
+  (`native.process_identity_recorded`) before the first was shown stopped (`native.local_process_stopped`).
+- Ownership failures whose owner is not a wave server (or is unknown) are listed as `unattributed`.
+
+The usual R1–R6, U1–U4 and T checks grade every task as before. In the speed grade, MS1 and MS2 take no
+restart-recovery sample (the primary never restarts; MS2 does when the primary exited after the thaw and was
+replaced), MS3 is timed from the primary replacement's readiness, and only the time the primary could not serve
+counts as outage.
+
 ## Fault timing (`--triggers`)
 
 Each task samples one trigger with its cell. `time` (default) fires at the
@@ -904,6 +979,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `acpx-provider-faults.ts`, `provider-shim/acpx-*` | PV1–PV3 for Claude (ACPX): the stand-in runner package, the server hook, the sidecar/provider tap, and `--provider-fault-restart`. |
 | `question-handoff.ts` | Q1 saved question: the board's answer step and its oracle. |
 | `time-faults.ts`, `time-faults-config.ts` | TM1–TM3: process freezing, database aging with recorded rows, and the time-corrected API the grader reads through. |
+| `multi-server.ts` | MS1–MS3: the second server's steps, the seeded holds, and the cross-server invariant over the wave database. |
 | `repeated-restarts.ts` | RR1–RR3: seeded restart steps, `--rr-gap-seconds`, and the stop-and-replace loop the supervisor runs. |
 | `daytona-sweep.ts` | Daytona R6: read-only reconciliation of this wave's labelled sandboxes with leases; cleanup only through Paperclip. |
 
@@ -942,7 +1018,11 @@ re-arms the task's own triggered faults instead of using their offsets.
 - Speed: an aggregate p50/p95 row can breach only with at least 5 samples; a
   smaller row is reported as `insufficient sample (n < 5)`. Every cold or warm run
   over its p95 budget, and every restart recovery whose Paperclip share exceeds
-  its p95 budget, still fails the wave on its own.
+  its p95 budget, still fails the wave on its own. `speed.json` keeps each graded
+  run's own split (`runs`): `bootMs` (Paperclip: claim to the provider accepting
+  the turn), `providerFirstActivityMs` (turn accepted to first visible activity),
+  and the spans before the turn, so a breach stays attributable after the
+  temporary instance is deleted.
 - Faults are serialized; each one hits every task running at that moment.
 - A `todo` or `in_progress` task with no live run and no named wait is not a rest. The observer keeps watching it until it resumes or passes the R5 stall limit.
 - R5 also fails a run that stays `running` with no live evidence (no new run event, `lastUsefulActionAt` or `execution.lastConfirmedActivityAt`, and no start) for more than 3 minutes after the server is ready. A `running` status alone is not proof of life. A quiet run is still live while a tool it started has not ended (for example a 4-minute `bench.sh`) or while its recorded local runner process still runs with the same PID and start time.

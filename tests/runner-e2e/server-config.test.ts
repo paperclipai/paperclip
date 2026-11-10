@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, readFile, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -8,7 +8,8 @@ import {
   reserveRunnerE2EDatabasePort,
   type LoopbackPortReservation,
 } from "./ports.js";
-import { createRunnerE2ETemporaryRoot, prepareRunnerE2EServerConfig } from "./server-config.js";
+import { createRunnerE2ETemporaryRoot, prepareRunnerE2EServerConfig, prepareSupervisorServerConfig } from "./server-config.js";
+import { recordControllerDatabaseOwnership } from "./instance-isolation.js";
 
 const roots: string[] = [];
 const reservations: LoopbackPortReservation[] = [];
@@ -100,5 +101,25 @@ describe("isolated paid E2E database ports", () => {
     expect(config.secrets.strictMode).toBe(true);
     expect(await prepareRunnerE2EServerConfig(input)).toBeNull();
     expect(await readFile(configPath, "utf8")).toBe(encoded);
+  });
+
+  it("keeps a launcher-owned external database and rejects an unowned one", async () => {
+    const temporaryRoot = await createRunnerE2ETemporaryRoot();
+    roots.push(temporaryRoot);
+    const configPath = path.join(temporaryRoot, "paperclip-home", "instances", "fixture", "config.json");
+    const input = { temporaryRoot, configPath, serverPort: 3100 };
+    reservations.push((await prepareRunnerE2EServerConfig(input))!);
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    const name = `runner_e2e_${"a".repeat(32)}`, connectionString = `postgres://fixture@127.0.0.1:5432/${name}`;
+    config.database = { ...config.database, mode: "postgres", connectionString };
+    await writeFile(configPath, JSON.stringify(config));
+    await mkdir(config.database.embeddedPostgresDataDir, { recursive: true });
+    await expect(prepareSupervisorServerConfig({ ...input, database: {} })).rejects.toThrow("explicit owned lane");
+    await recordControllerDatabaseOwnership({ configPath, temporaryRoot, dataDirectory: config.database.embeddedPostgresDataDir,
+      connectionString, externalDatabaseName: name });
+    await expect(prepareSupervisorServerConfig({ ...input, database: {} })).resolves.toBeNull();
+    config.database.connectionString = "postgres://fixture@127.0.0.1:5432/postgres";
+    await writeFile(configPath, JSON.stringify(config));
+    await expect(prepareSupervisorServerConfig({ ...input, database: {} })).rejects.toThrow("explicit owned lane");
   });
 });
