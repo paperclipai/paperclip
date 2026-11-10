@@ -654,7 +654,10 @@ function isSandboxStateChangeInProgress(error: unknown): boolean {
  */
 export const STUCK_STOPPING_FORCE_AFTER_MS = 30_000;
 const STUCK_STOPPING_FORCE_STOP_SECONDS = 30;
-/** One forced stop per sandbox in this window, whichever caller sends it. */
+/**
+ * One forced stop per stuck stop, whichever caller sends it. A confirmed start
+ * ends the episode early (see {@link endForcedStopEpisode}).
+ */
 export const FORCED_STOP_COOLDOWN_MS = 10 * 60_000;
 
 // Forced stops are owned by the sandbox, not by a caller. Several callers can
@@ -667,6 +670,12 @@ const forcedSandboxStops = new Map<string, { issuedAt: number; pending: Promise<
 
 function forcedStopInFlight(key: string): Promise<void> | null {
   return forcedSandboxStops.get(key)?.pending ?? null;
+}
+
+// A confirmed start ends the stuck stop. A later stuck stop is a new episode
+// and may be forced at once. An unsettled request still blocks every start.
+function endForcedStopEpisode(key: string): void {
+  if (forcedSandboxStops.get(key)?.pending === null) forcedSandboxStops.delete(key);
 }
 
 function claimForcedStop(key: string, now: number): boolean {
@@ -734,6 +743,7 @@ async function ensureSandboxStarted(sandbox: Sandbox, timeoutSeconds: number, sc
     const remainingSeconds = Math.max(1, Math.ceil((deadline - Date.now()) / 1_000));
     try {
       await startSettledSandbox(sandbox, remainingSeconds, scope);
+      endForcedStopEpisode(sandboxHandleCacheKey(scope));
       return;
     } catch (error) {
       if (!isSandboxStateChangeInProgress(error) || Date.now() + SANDBOX_TRANSITION_POLL_MS >= deadline) throw error;

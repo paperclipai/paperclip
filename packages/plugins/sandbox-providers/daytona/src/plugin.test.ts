@@ -395,6 +395,29 @@ describe("Daytona idle eligibility", () => {
       expect(sandbox.start.mock.invocationCallOrder[0]!).toBeGreaterThan(sandbox.stop.mock.invocationCallOrder[0]!);
     });
 
+    it("forces a new stuck stop after the sandbox restarted, inside the cooldown", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.refreshData.mockImplementation(async () => {});
+      sandbox.stop.mockImplementation(async (_timeout?: number, force?: boolean) => {
+        if (force) sandbox.state = "stopped";
+      });
+      sandbox.start.mockImplementation(async () => { sandbox.state = "started"; });
+      vi.useFakeTimers();
+      try {
+        for (let cycle = 0; cycle < 2; cycle++) {
+          sandbox.state = "stopping"; // The next graceful stop is stuck again.
+          const realized = realize();
+          await vi.advanceTimersByTimeAsync(STUCK_STOPPING_FORCE_AFTER_MS + 5_000);
+          await expect(realized).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sandbox.stop).toHaveBeenCalledTimes(2);
+      expect(sandbox.start).toHaveBeenCalledTimes(2);
+    });
+
     it("keeps waiting to the deadline when the forced stop is refused", async () => {
       const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
       mockGet.mockResolvedValue(sandbox);

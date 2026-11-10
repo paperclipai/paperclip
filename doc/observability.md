@@ -2021,7 +2021,8 @@ start; its state attribute is the state it found. A start that finds the sandbox
 `stopping` for more than 30 s forces the stop (`lease.force_stop`) and keeps
 waiting within the same start deadline if Daytona refuses. The forced stop belongs
 to the sandbox: parallel callers send one, and none of them starts the sandbox
-until that request settles.
+until that request settles. A confirmed start ends that stuck stop, so a later
+one is forced again.
 
 Fresh acquisition emits `lease.create`, `lease.workspace`, `lease.shell`,
 `lease.expiry`, and `lease.sentinel`. `lease.create` covers the existing creation
