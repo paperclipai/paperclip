@@ -20,18 +20,56 @@ export function createOwnedLinuxProvider(config) {
     if (params.driverKey !== "dot-linux-qualification" || params.config.qualificationId !== "dot-owned-linux") throw new Error("owned_provider_scope_denied");
     return resource;
   };
+  // Failure-only, private diagnostic custody; never changes command admission.
+  const retainFirstExecuteFailure = async (resource, requestId, params, response, value) => {
+    const allowedErrors = new Set(["linux_node_identity_required","request_overflow","foreign_lease_request","invalid_command_request",
+      "foreign_command_cwd","command_budget_invalid","command_environment_invalid","request_identity_invalid","launch_journal_path_invalid",
+      "foreign_launch_descriptor","foreign_runner_state_root","foreign_identity_read","launch_custody_missing","marker_owner_unknown",
+      "marker_identity_mismatch","live_runner_identity_mismatch","linux_relay_failed"]);
+    const stages = new Set(["platform","decode_request","read_descriptor","validate_lease","resolve_root","validate_command","resolve_cwd",
+      "validate_budget","validate_environment","create_home","create_tmp","parse_launch","open_custody","write_intent","write_launch",
+      "spawn","join","read_identity","write_result","emit_result"]);
+    const osCodes = new Set(["EACCES","EPERM","ENOENT","ENOTDIR","EISDIR","EROFS","ENOSPC","EEXIST","EINVAL","ELOOP","ENAMETOOLONG","EBADF","EMFILE","ENFILE","ESRCH","ETIMEDOUT"]);
+    const labels = new Set(["paperclip-runner-launch","paperclip-runner-process-identity","paperclip-dot-artifact","paperclip-dot-checkpoint"]);
+    const args = Array.isArray(params.args) ? params.args : [];
+    const cwd = params.cwd ?? resource.root, home = params.env?.HOME;
+    const timeout = params.timeoutMs ?? 90000;
+    const witness = { version:1,resourceId:resource.id,requestId,
+      commandFamily:params.command === "sh" ? "sh" : params.command === path.posix.join(resource.root,".paperclip-runtime/paperclip-runner/bin/paperclip-runnerd") ? "runner" : "other",
+      commandStage:labels.has(args[2]) ? args[2] : args[0] === "--build-metadata" ? "build-metadata" : "other",
+      argumentCount:Math.min(args.length,1024),argumentCountOverflow:args.length>1024,
+      environmentKeyCount:Math.min(Object.keys(params.env ?? {}).length,1024),
+      cwdProvided:params.cwd !== undefined,cwdIsResourceRoot:cwd === resource.root,cwdLexicallyInsideResource:typeof cwd === "string" && (cwd === resource.root || cwd.startsWith(resource.root+"/")),
+      homeProvided:home !== undefined,homeLexicallyInsideResource:home === undefined || typeof home === "string" && (home === resource.root || home.startsWith(resource.root+"/")),
+      timeoutFinite:Number.isFinite(timeout),timeoutSafeInteger:Number.isSafeInteger(timeout),timeoutWithinRelayBudget:Number.isFinite(timeout)&&timeout>=1&&timeout<=90000,
+      transportExit:Number.isInteger(response.code)&&response.code>=0&&response.code<=255 ? response.code : null,
+      replyJoined:value?.joined === true,replyTimedOut:value?.timedOut === true,replyOverflow:value?.overflow === true,replySpawnError:value?.spawnError === true,replyUnknownOutcome:value?.unknownOutcome === true,
+      relayError:allowedErrors.has(value?.error) ? value.error : "other",relayStage:stages.has(value?.witness?.stage) ? value.witness.stage : "other",
+      relayOSCode:osCodes.has(value?.witness?.osCode) ? value.witness.osCode : null };
+    try {
+      // This host-only allocation directory is not writable/mounted in the guest.
+      if(resource.hostRoot !== path.join(config.root,resource.id)) throw new Error("owned_witness_destination_unknown");
+      await writeFile(path.join(resource.hostRoot,"first-execute-failure.json"),JSON.stringify(witness),{flag:"wx",mode:0o600});
+    } catch(error) {
+      // Preserve the original unknown rejection. A missing witness is INCONCLUSIVE.
+      if(error?.code !== "EEXIST") { try { console.error("owned_execute_failure_witness_unwritten"); } catch {} }
+    }
+  };
   const execute = async params => {
     const resource = await find(params);
     if (resource.status !== "active") throw new Error("owned_execution_resource_inactive");
+    const requestId=randomUUID();
     const response = await resources.cli(["exec", "-i", resource.containerId, "/usr/bin/node", "/qualification/linux-command-relay.mjs", "/descriptor/resource.json"],
-      JSON.stringify({ ...resource, providerLeaseId: resource.id, requestId: randomUUID(), command: params.command, args: params.args ?? [],
+      JSON.stringify({ ...resource, providerLeaseId: resource.id, requestId, command: params.command, args: params.args ?? [],
         cwd: params.cwd ?? resource.root, env: params.env ?? {}, stdin: params.stdin, timeoutMs: params.timeoutMs ?? 90000 }),
       Math.min(params.timeoutMs ?? 90000, 90000) + 1000);
     let value;
     try { value = JSON.parse(response.stdout); }
     catch { resources.unknown.push({ resourceId: resource.id, kind: "command_reply_invalid" }); throw new Error("owned_command_reply_invalid"); }
     if (response.code !== 0 || value.error || value.unknownOutcome || !value.joined || value.overflow || value.spawnError) {
-      resources.unknown.push({ resourceId: resource.id, kind: "command_outcome_unknown" }); throw new Error("owned_command_outcome_unknown");
+      resources.unknown.push({ resourceId: resource.id, kind: "command_outcome_unknown" });
+      await retainFirstExecuteFailure(resource,requestId,params,response,value);
+      throw new Error("owned_command_outcome_unknown");
     }
     // Fault injection is owned by the fixture AFTER a real durable checkpoint;
     // never terminate from the early marker-read/handshake frontier.
