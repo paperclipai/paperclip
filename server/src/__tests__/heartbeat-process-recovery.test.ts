@@ -273,6 +273,7 @@ import {
   readHotRestartIntent,
   readProcessStartedAt,
   resolveLegacyHotRestartIntentPath,
+  resolveHotRestartIntentPath,
   resolveHotRestartReportPath,
   writeHotRestartIntent,
 } from "../services/hot-restart.ts";
@@ -4175,11 +4176,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("captures a hot-restart shutdown snapshot without interrupting running runs", async () => {
+  it("captures a hot-restart shutdown snapshot and drains live runs (drain-on-restart)", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
     expect(child.pid).toBeGreaterThan(0);
-    const { runId, wakeupRequestId } = await seedRunFixture({
+    const { agentId, runId, wakeupRequestId } = await seedRunFixture({
       agentStatus: "running",
       processPid: child.pid ?? null,
       processGroupId: null,
@@ -4189,7 +4190,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       },
     });
 
-    await withTempPaperclipHome(async () => {
+    await withTempPaperclipHome(async (home) => {
       await writeHotRestartIntent({
         previousServerPid: process.pid,
         previousServerVersion: "old-version",
@@ -4205,27 +4206,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
       expect(result).toEqual({
         mode: "hot_restart",
-        skipDrain: true,
+        skipDrain: false,
         activeRunIds: [runId],
+        drainRunIds: [runId],
       });
       expect(mockCloseIdleWarmNativeSessionsForRestart).toHaveBeenCalledOnce();
+      // The drain itself is executed by the shutdown handler after prepare
+      // returns; the child must still be alive at this boundary.
       expect(isPidAlive(child.pid)).toBe(true);
-      const run = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, runId))
-        .then((rows) => rows[0] ?? null);
-      expect(run).toMatchObject({
-        status: "running",
-        errorCode: null,
-      });
-      const wakeup = await db
-        .select()
-        .from(agentWakeupRequests)
-        .where(eq(agentWakeupRequests.id, wakeupRequestId))
-        .then((rows) => rows[0] ?? null);
-      expect(wakeup?.status).toBe("claimed");
       const intent = await readHotRestartIntent();
+      expect(intent).toMatchObject({
+        drainRequired: true,
+        drainReason: "hot_restart_drain",
+        drainRunIds: [runId],
+      });
       expect(intent?.shutdownSnapshot).toMatchObject({
         capturedAt: "2026-03-19T00:06:00.000Z",
         signal: "SIGTERM",
@@ -4237,6 +4231,55 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             processPid: child.pid,
           },
         ],
+      });
+
+      const drain = await heartbeat.drainRunningRunsForShutdown(
+        "SIGTERM",
+        new Date("2026-03-19T00:06:01.000Z"),
+        result.drainRunIds,
+      );
+      expect(drain.interruptedRunIds).toEqual([runId]);
+      expect(drain.retryRunIds).toHaveLength(1);
+      await waitForPidExit(child.pid!);
+
+      const reconciliation = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-03-19T00:07:00.000Z"),
+      );
+      expect(reconciliation).toMatchObject({
+        mode: "reported",
+        adoptedRunIds: [],
+        finalizedWhileDownRunIds: [runId],
+        lostRunIds: [],
+        skippedRunIds: [],
+      });
+
+      const runs = await selectRecoveryRunsByAgent(agentId);
+      expect(runs.find((run) => run.id === runId)).toMatchObject({
+        status: "interrupted",
+        errorCode: "server_shutdown_interrupted",
+      });
+      expect(runs.find((run) => run.retryOfRunId === runId)).toMatchObject({
+        status: "scheduled_retry",
+        scheduledRetryAttempt: 1,
+      });
+
+      const wakeup = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeup?.status).toBe("cancelled");
+
+      const report = JSON.parse(
+        await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
+      ) as Record<string, unknown>;
+      expect(report).toMatchObject({
+        drainRequired: true,
+        drainReason: "hot_restart_drain",
+        adoptedRunIds: [],
+        finalizedWhileDownRunIds: [runId],
+        lostRunIds: [],
+        skippedRunIds: [],
       });
     });
   });
@@ -4270,16 +4313,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           new Date("2026-08-04T00:06:00.000Z"),
         ),
       ).resolves.toEqual({
-        mode: "acp_drain_required",
+        mode: "hot_restart",
         skipDrain: false,
         activeRunIds: [runId],
-        activeAcpRunIds: [runId],
         drainRunIds: [runId],
-        drainReason: "active_acp_run",
       });
       await expect(readHotRestartIntent()).resolves.toMatchObject({
         drainRequired: true,
-        drainReason: "active_acp_run",
+        drainReason: "hot_restart_drain",
         drainRunIds: [runId],
         shutdownSnapshot: {
           activeRuns: [
@@ -4320,7 +4361,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       ) as Record<string, unknown>;
       expect(report).toMatchObject({
         drainRequired: true,
-        drainReason: "active_acp_run",
+        drainReason: "hot_restart_drain",
         adoptedRunIds: [],
         finalizedWhileDownRunIds: [runId],
         lostRunIds: [],
@@ -4408,10 +4449,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
       const heartbeat = heartbeatService(db);
 
-      await heartbeat.prepareHotRestartShutdown(
+      const preparation = await heartbeat.prepareHotRestartShutdown(
         "SIGTERM",
         new Date("2026-08-04T00:16:00.000Z"),
       );
+      expect(preparation).toMatchObject({
+        mode: "hot_restart",
+        skipDrain: false,
+        drainRunIds: [runId],
+      });
+      await expect(readHotRestartIntent()).resolves.toMatchObject({
+        drainRequired: true,
+        drainReason: "hot_restart_drain",
+        drainRunIds: [runId],
+      });
 
       // Model the failure boundary precisely: termination succeeded, but the
       // interrupted status write never landed, so the durable row is running.
@@ -4444,7 +4495,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("drains only server-stdio runs and preserves detached CLI adoption in a mixed restart", async () => {
+  it("drains all live runs (server-stdio and detached) in a hot restart", async () => {
     const acpChild = spawnAliveProcess();
     const cliChild = spawnAliveProcess();
     childProcesses.add(acpChild);
@@ -4485,18 +4536,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         new Date("2026-08-04T01:06:00.000Z"),
       );
       expect(preparation).toMatchObject({
-        mode: "acp_drain_required",
+        mode: "hot_restart",
         skipDrain: false,
-        activeAcpRunIds: [acp.runId],
-        drainRunIds: [acp.runId],
-        drainReason: "active_acp_run",
       });
-      if (preparation.mode !== "acp_drain_required") {
-        throw new Error(
-          `Expected selective ACP drain, received ${preparation.mode}`,
-        );
+      if (preparation.mode !== "hot_restart") {
+        throw new Error(`Expected hot_restart drain, received ${preparation.mode}`);
       }
       expect(new Set(preparation.activeRunIds)).toEqual(
+        new Set([acp.runId, cli.runId]),
+      );
+      expect(new Set(preparation.drainRunIds)).toEqual(
         new Set([acp.runId, cli.runId]),
       );
 
@@ -4505,20 +4554,24 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         new Date("2026-08-04T01:06:01.000Z"),
         preparation.drainRunIds,
       );
-      expect(drain.interruptedRunIds).toEqual([acp.runId]);
+      expect(new Set(drain.interruptedRunIds)).toEqual(
+        new Set([acp.runId, cli.runId]),
+      );
       await waitForPidExit(acpChild.pid!);
-      expect(isPidAlive(cliChild.pid)).toBe(true);
+      await waitForPidExit(cliChild.pid!);
 
       const reconciliation = await heartbeat.reconcileHotRestartAdoption(
         new Date("2026-08-04T01:07:00.000Z"),
       );
       expect(reconciliation).toMatchObject({
         mode: "reported",
-        adoptedRunIds: [cli.runId],
-        finalizedWhileDownRunIds: [acp.runId],
+        adoptedRunIds: [],
         lostRunIds: [],
         skippedRunIds: [],
       });
+      expect(new Set(reconciliation.finalizedWhileDownRunIds)).toEqual(
+        new Set([acp.runId, cli.runId]),
+      );
 
       const originalRuns = await db
         .select()
@@ -4529,7 +4582,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         errorCode: "server_shutdown_interrupted",
       });
       expect(originalRuns.find((run) => run.id === cli.runId)).toMatchObject({
-        status: "running",
+        status: "interrupted",
+        errorCode: "server_shutdown_interrupted",
       });
 
       const report = JSON.parse(
@@ -4537,11 +4591,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       ) as Record<string, unknown>;
       expect(report).toMatchObject({
         drainRequired: true,
-        drainReason: "active_acp_run",
-        adoptedRunIds: [cli.runId],
-        finalizedWhileDownRunIds: [acp.runId],
+        drainReason: "hot_restart_drain",
+        adoptedRunIds: [],
         lostRunIds: [],
+        skippedRunIds: [],
       });
+      expect(new Set(report.finalizedWhileDownRunIds as string[])).toEqual(
+        new Set([acp.runId, cli.runId]),
+      );
     });
   });
 
@@ -4738,7 +4795,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         };
       });
     });
-    const { runId } = await seedRunFixture({
+    const { companyId, agentId, runId } = await seedRunFixture({
       adapterType: "codex_local",
       agentStatus: "idle",
       runStatus: "queued",
@@ -4792,10 +4849,27 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           previousServerVersion: "old-version",
           requestedAt: new Date("2026-07-30T07:01:00.000Z"),
         });
-        await heartbeat.prepareHotRestartShutdown(
-          "SIGTERM",
-          new Date("2026-07-30T07:02:00.000Z"),
-        );
+        // Crash-recovery shape (SAT-17773): a server that died before it could
+        // drain leaves a shutdown snapshot of live children with no drain
+        // intent. Startup adoption must still classify these before the reaper
+        // runs; the restart path itself now drains (drain-on-restart).
+        const intentPath = resolveHotRestartIntentPath(home);
+        const intent = JSON.parse(await fs.readFile(intentPath, "utf8")) as Record<string, unknown>;
+        intent.shutdownSnapshot = {
+          capturedAt: new Date("2026-07-30T07:02:00.000Z").toISOString(),
+          signal: "SIGTERM",
+          activeRuns: [{
+            runId,
+            companyId,
+            agentId,
+            adapterType: "codex_local",
+            status: "running",
+            processPid: spawnedPid,
+            processGroupId: null,
+            issueId: null,
+          }],
+        };
+        await fs.writeFile(intentPath, `${JSON.stringify(intent, null, 2)}\n`, "utf8");
 
         const adoption = await heartbeat.reconcileHotRestartAdoption(
           new Date("2026-07-30T07:03:00.000Z"),
@@ -4841,7 +4915,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
     expect(child.pid).toBeGreaterThan(0);
-    const { runId } = await seedRunFixture({
+    const { companyId, agentId, issueId, runId } = await seedRunFixture({
       agentStatus: "running",
       processPid: child.pid ?? null,
       processGroupId: null,
@@ -4858,10 +4932,27 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         previousServerVersion: "old-version",
         requestedAt: new Date("2026-03-19T00:05:00.000Z"),
       });
-      await heartbeat.prepareHotRestartShutdown(
-        "SIGTERM",
-        new Date("2026-03-19T00:06:00.000Z"),
-      );
+      // Crash-recovery shape (SAT-17773): a server that died before it could
+      // drain leaves a shutdown snapshot of live children with no drain
+      // intent. Startup adoption must still classify these before the reaper
+      // runs; the restart path itself now drains (drain-on-restart).
+      const intentPath = resolveHotRestartIntentPath(home);
+      const intent = JSON.parse(await fs.readFile(intentPath, "utf8")) as Record<string, unknown>;
+      intent.shutdownSnapshot = {
+        capturedAt: new Date("2026-03-19T00:06:00.000Z").toISOString(),
+        signal: "SIGTERM",
+        activeRuns: [{
+          runId,
+          companyId,
+          agentId,
+          adapterType: "codex_local",
+          status: "running",
+          processPid: child.pid,
+          processGroupId: null,
+          issueId,
+        }],
+      };
+      await fs.writeFile(intentPath, `${JSON.stringify(intent, null, 2)}\n`, "utf8");
 
       const adoption = await heartbeat.reconcileHotRestartAdoption(
         new Date("2026-03-19T00:07:00.000Z"),
@@ -4915,7 +5006,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       const orphan = await spawnOrphanedProcessGroup();
       cleanupPids.add(orphan.descendantPid);
       expect(isPidAlive(orphan.descendantPid)).toBe(true);
-      const { runId } = await seedRunFixture({
+      const { companyId, agentId, issueId, runId } = await seedRunFixture({
         agentStatus: "running",
         processPid: orphan.processPid,
         processGroupId: orphan.processGroupId,
@@ -4925,17 +5016,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         },
       });
 
-      await withTempPaperclipHome(async () => {
+      await withTempPaperclipHome(async (home) => {
         const heartbeat = heartbeatService(db);
         await writeHotRestartIntent({
           previousServerPid: process.pid,
           previousServerVersion: "old-version",
           requestedAt: new Date("2026-03-19T00:05:00.000Z"),
         });
-        await heartbeat.prepareHotRestartShutdown(
-          "SIGTERM",
-          new Date("2026-03-19T00:06:00.000Z"),
-        );
+        // Crash-recovery shape (SAT-17773): a server that died before it could
+        // drain leaves a shutdown snapshot of live children with no drain
+        // intent. Startup adoption must still classify these before the reaper
+        // runs; the restart path itself now drains (drain-on-restart).
+        const intentPath = resolveHotRestartIntentPath(home);
+        const intent = JSON.parse(await fs.readFile(intentPath, "utf8")) as Record<string, unknown>;
+        intent.shutdownSnapshot = {
+          capturedAt: new Date("2026-03-19T00:06:00.000Z").toISOString(),
+          signal: "SIGTERM",
+          activeRuns: [{
+            runId,
+            companyId,
+            agentId,
+            adapterType: "codex_local",
+            status: "running",
+            processPid: orphan.processPid,
+            processGroupId: orphan.processGroupId,
+            issueId,
+          }],
+        };
+        await fs.writeFile(intentPath, `${JSON.stringify(intent, null, 2)}\n`, "utf8");
 
         const adoption = await heartbeat.reconcileHotRestartAdoption(
           new Date("2026-03-19T00:07:00.000Z"),

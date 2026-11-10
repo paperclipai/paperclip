@@ -535,44 +535,39 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     };
 
     const serverStdioRuns = activeRuns.filter(isServerStdioBoundHotRestartRun);
-    if (serverStdioRuns.length > 0) {
-      const activeServerStdioRunIds = serverStdioRuns.map(({ run }) => run.id);
-      await writeHotRestartShutdownSnapshot({
-        intent: intentWithVersion,
-        signal,
-        activeRuns: snapshotRuns,
-        drainReason: "active_acp_run",
-        drainRunIds: activeServerStdioRunIds,
-        capturedAt: now,
-      });
+    const snapshotRunIds = snapshotRuns.map((run) => run.runId);
 
-      logger.warn(
-        {
-          signal,
-          previousServerPid: intent.previousServerPid,
-          activeRunIds: snapshotRuns.map((run) => run.runId),
-          activeServerStdioRunIds,
-          drainReason: "active_acp_run",
-        },
-        "server-stdio agent run prevents hot-restart adoption; using graceful drain and retry",
-      );
-
-      return {
-        mode: "acp_drain_required" as const,
-        skipDrain: false as const,
-        activeRunIds: snapshotRuns.map((run) => run.runId),
-        activeAcpRunIds: activeServerStdioRunIds,
-        drainRunIds: activeServerStdioRunIds,
-        drainReason: "active_acp_run" as const,
-      };
-    }
-
+    // Drain-on-restart (SAT-17571 / SAT-17773 decision): this server owns the
+    // stdio pipe read ends of its local child-process runs (log capture), so
+    // any child that outlives this process dies of EPIPE on its next log
+    // write. Adopting live children across a restart is therefore structurally
+    // broken on this topology; hot restarts drain every live run instead
+    // (interrupted + auto-retry, the same proven path as graceful stop). The
+    // shutdown snapshot is still captured so the startup report can classify
+    // anything the drain could not finalize (crash-recovery semantics), and
+    // adoption stays available only for genuine crash recovery (no honored
+    // drain intent on the restart path).
     await writeHotRestartShutdownSnapshot({
       intent: intentWithVersion,
       signal,
       activeRuns: snapshotRuns,
+      drainReason: "hot_restart_drain",
+      drainRunIds: snapshotRunIds,
       capturedAt: now,
     });
+
+    if (serverStdioRuns.length > 0) {
+      logger.warn(
+        {
+          signal,
+          previousServerPid: intent.previousServerPid,
+          activeRunIds: snapshotRunIds,
+          serverStdioRunIds: serverStdioRuns.map(({ run }) => run.id),
+          drainReason: "hot_restart_drain",
+        },
+        "server-stdio agent runs cannot survive a restart; draining all live runs before restart",
+      );
+    }
 
     for (const { run } of activeRuns) {
       await appendRunEvent(run, {
@@ -580,7 +575,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         stream: "system",
         level: "info",
         message:
-          "Hot restart requested; leaving child process alive for startup adoption",
+          "Hot restart requested; draining live run before restart (interrupted runs auto-retry)",
         payload: {
           signal,
           previousServerPid: intent.previousServerPid,
@@ -591,31 +586,20 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       });
     }
 
-    const nativeRunIds = activeRuns
-      .filter(
-        ({ run, adapterType }) =>
-          adapterType === "paperclip_runner" &&
-          isNativeSessionId(run.nativeSessionId),
-      )
-      .map(({ run }) => run.id);
-    for (const runId of nativeRunIds) markRunHandedOffForShutdown(runId);
-    const detachedNativeSessions =
-      await detachNativeSessionsForRestart(nativeRunIds);
-
     logger.info(
       {
         signal,
         previousServerPid: intent.previousServerPid,
-        activeRunIds: snapshotRuns.map((run) => run.runId),
-        detachedNativeSessions,
+        activeRunIds: snapshotRunIds,
       },
-      "hot-restart shutdown snapshot captured; skipping graceful run drain",
+      "hot-restart shutdown snapshot captured; draining live runs before restart",
     );
 
     return {
       mode: "hot_restart" as const,
-      skipDrain: true as const,
-      activeRunIds: snapshotRuns.map((run) => run.runId),
+      skipDrain: false as const,
+      activeRunIds: snapshotRunIds,
+      drainRunIds: snapshotRunIds,
     };
   }
 
@@ -759,27 +743,32 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         continue;
       }
 
-      const hasSelectiveAcpDrain =
-        intent.drainReason === "active_acp_run" &&
-        (intent.drainRunIds?.length ?? 0) > 0;
-      if (
-        hasSelectiveAcpDrain &&
-        intent.drainRunIds?.includes(candidate.runId)
-      ) {
-        // A selective ACP drain is expected to persist a terminal row before
-        // the new server starts. If the process was terminated but that write
-        // failed, surface the run as lost instead of hiding it as an expected
-        // drain skip.
-        classify(candidate, "lost", "selective_drain_not_finalized", patch);
-        continue;
-      }
-      if (intent.drainRequired && !hasSelectiveAcpDrain) {
-        classify(candidate, "skipped", "drain_required", patch);
+      // Native runner sessions are owned by native restart recovery (the
+      // graceful drain suspends, not interrupts, them), so they are classified
+      // before selective-drain accounting: a surviving session is not a
+      // selective-drain loss.
+      if (run.runtimeMode === "native" && adapterType === "paperclip_runner") {
+        classify(candidate, "skipped", "native_restart_recovery_owned", patch);
         continue;
       }
 
-      if (run.runtimeMode === "native" && adapterType === "paperclip_runner") {
-        classify(candidate, "skipped", "native_restart_recovery_owned", patch);
+      const hasSelectiveDrain = intent.drainRequired
+        && (intent.drainRunIds?.length ?? 0) > 0
+        && (intent.drainReason === "active_acp_run"
+          || intent.drainReason === "hot_restart_drain");
+      if (
+        hasSelectiveDrain &&
+        intent.drainRunIds?.includes(candidate.runId)
+      ) {
+        // A selective drain (active_acp_run or hot_restart_drain) is expected
+        // to persist a terminal row before the new server starts. If the
+        // process was terminated but that write failed, surface the run as
+        // lost instead of hiding it as an expected drain skip.
+        classify(candidate, "lost", "selective_drain_not_finalized", patch);
+        continue;
+      }
+      if (intent.drainRequired && !hasSelectiveDrain) {
+        classify(candidate, "skipped", "drain_required", patch);
         continue;
       }
 
