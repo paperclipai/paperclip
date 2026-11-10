@@ -3818,7 +3818,10 @@ export function heartbeatService(
           const claim = runOptions.nativeRestartRecovery;
           restartClaimLapsed = claim !== undefined && await releaseLapsedNativeRestartClaim({ db, companyId: run.companyId, runId: run.id,
             leaseOwner: claim.leaseOwner, controllerGeneration: claim.controllerGeneration, providerAttempt: claim.providerAttempt })
-            .catch(() => false);
+            .catch(releaseError => {
+              logger.warn({ err: releaseError, runId: run.id }, "lapsed native restart claim could not be released; restart recovery will reclaim it after expiry");
+              return false;
+            });
           logger.warn({ runId: run.id, err: identityRedactor.redact({ message: err instanceof Error ? err.message : String(err),
             stack: err instanceof Error ? err.stack : undefined }), restartClaim: claim?.kind ?? null, restartClaimLapsed },
             restartClaimLapsed ? "native restart claim lapsed during a failed preparation; released it for restart recovery"
