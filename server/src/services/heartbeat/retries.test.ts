@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { agents, agentTaskSessions, agentWakeupRequests, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRunEvents, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
@@ -9,7 +9,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { createRunDispatch, isResolvedInteractionContinuationWakeContext, type PostCommitEffect } from "../../modules/run-dispatch/index.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import * as legacy from "../heartbeat.js";
-import { createHeartbeatRunState } from "./run-state.js";
+import { createHeartbeatRunState, shouldResetTaskSessionForWake } from "./run-state.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import * as extracted from "./retries.js";
 import type { HeartbeatRetryDependencies } from "./retries.js";
@@ -261,6 +261,7 @@ describePostgres("heartbeat retry module database wiring", () => {
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
 
   afterEach(async () => {
+    await db.delete(agentTaskSessions);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -435,6 +436,28 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect(isResolvedInteractionContinuationWakeContext(successor!.contextSnapshot)).toBe(true);
     const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, successor!.wakeupRequestId!));
     expect(wake!.payload).toMatchObject({ mutation: "interaction", interactionId: "interaction-1", retryReason: "storage_unavailable_wait" });
+  });
+
+  it.each([
+    { name: "resumes the session that the failed run saved", savedByFailedRun: true, reconstruction: false, fresh: false },
+    { name: "keeps the fresh-session request when the failed run saved no session", savedByFailedRun: false, reconstruction: false, fresh: true },
+    { name: "keeps the fresh-session request on a workspace reconstruction retry", savedByFailedRun: true, reconstruction: true, fresh: true },
+  ])("a retry of a fresh-session run $name", async ({ savedByFailedRun, reconstruction, fresh }) => {
+    const { run, agent, companyId } = await fixture();
+    const taskRetryRequestId = randomUUID();
+    const failed = { ...run, contextSnapshot: { ...run.contextSnapshot, taskKey: "retry-task", forceFreshSession: true, taskRetryRequestId,
+      ...(reconstruction ? { workspaceReconstructionActionId: randomUUID() } : {}) } };
+    await db.insert(agentTaskSessions).values({ companyId, agentId: agent.id, adapterType: agent.adapterType, taskKey: "retry-task",
+      sessionParamsJson: { sessionId: "session-1" }, sessionDisplayId: "session-1", lastRunId: savedByFailedRun ? run.id : null });
+    const result = await boundRetries().retries.scheduleBoundedRetryForRun(failed, agent, { now, random: () => 0 });
+    expect(result.outcome).toBe("scheduled");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    if (fresh) expect(successor!.contextSnapshot).toMatchObject({ forceFreshSession: true, taskRetryRequestId });
+    else {
+      expect(successor!.contextSnapshot).not.toHaveProperty("forceFreshSession");
+      expect(successor!.contextSnapshot).not.toHaveProperty("taskRetryRequestId");
+    }
+    expect(shouldResetTaskSessionForWake(successor!.contextSnapshot)).toBe(fresh);
   });
 
   it("resolves current skills on a retry while retaining the failed attempt snapshot", async () => {

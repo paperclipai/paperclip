@@ -50,6 +50,7 @@ import {
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  agentTaskSessions,
   agentWakeupRequests,
   executionWorkspaces,
   heartbeatRuns,
@@ -723,9 +724,31 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const shouldQuarantineWorkspaceForRetry =
       workspaceValidationRetryPayload !== null &&
       Object.keys(workspaceValidationRetryPayload).length > 0;
+    const [failedAttemptSession] =
+      taskKey && typeof contextSnapshot.workspaceReconstructionActionId !== "string"
+        ? await db
+            .select({ lastRunId: agentTaskSessions.lastRunId })
+            .from(agentTaskSessions)
+            .where(
+              and(
+                eq(agentTaskSessions.companyId, agent.companyId),
+                eq(agentTaskSessions.agentId, agent.id),
+                eq(agentTaskSessions.adapterType, agent.adapterType),
+                eq(agentTaskSessions.taskKey, taskKey),
+              ),
+            )
+            .limit(1)
+        : [];
+    const {
+      forceFreshSession: _forceFreshSession,
+      taskRetryRequestId: _taskRetryRequestId,
+      ...resumedContextSnapshot
+    } = contextSnapshot;
+    const inheritedContextSnapshot =
+      failedAttemptSession?.lastRunId === run.id ? resumedContextSnapshot : contextSnapshot;
     const retryContextSnapshot: Record<string, unknown> = withRecoveryContext(
       {
-        ...contextSnapshot,
+        ...inheritedContextSnapshot,
         executionRetryAccounting: accountingForScheduledRetry(run, retryReason, schedule.attempt),
         retryOfRunId: run.id,
         wakeReason,
