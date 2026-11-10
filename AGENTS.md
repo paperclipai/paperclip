@@ -96,8 +96,8 @@ preflight", "Start Dev", "Quick Health Checks", and "Database in Dev" in
    - Budget hard-stop auto-pause behavior
    - Activity logging for mutating actions
 
-4. **Keep validation and policy at boundaries.**
-   Validate at system boundaries, trust typed data inside them, and keep provider-specific policy with the module that owns it. When you change module contracts, provider integrations, validation, error handling, or framework adapters, apply [`.agents/skills/principle-boundary-discipline/SKILL.md`](.agents/skills/principle-boundary-discipline/SKILL.md).
+4. **Keep behavior with its owning module.**
+   Provider protocols, payload parsing, and feature-specific sequencing belong to the module that owns them. Shared code uses narrow, normalized contracts. Explain any substantive change outside the owning module. See [`rules/module-boundaries.mdc`](rules/module-boundaries.mdc).
 
 ## 6. Database Changes
 
