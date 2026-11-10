@@ -228,7 +228,7 @@
     "packages/shared/src/constants.ts": "3149ee1cc5ffa34b50ecd493276b3a70fc46adc2",
     "packages/shared/src/crash-point-registry.ts": "708b1e431032ecf370fd259ab180d11e4c0b5cf3",
     "packages/shared/src/crash-points.test.ts": "804a3acfd7a51010f31dbc3fb9a4dca771562c99",
-    "packages/shared/src/crash-points.ts": "0ad6fdaeb6bb09196399881522beec6fffcb8c87",
+    "packages/shared/src/crash-points.ts": "d9f31d95c78f32290190d7728f42cd9573681fc8",
     "packages/shared/src/customer-success.ts": "a2d02aaa8223164c0eae4267b2a6da82242eaa6f",
     "packages/shared/src/decision-models.ts": "a07aefd87d2fae34283ce21a0334d57e2108aa7e",
     "packages/shared/src/decision.test.ts": "d0783d18613c73102f662e8a5da795ff6e7faed5",

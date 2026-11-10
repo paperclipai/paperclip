@@ -31,7 +31,7 @@ import {
  * is settled when its owner is proven gone, and its `onUnprovable` action is
  * surfaced when the owner is unprovable; an unprovable owner is never
  * released. Report-only kinds are never changed. Nothing is sent to Telemetry
- * (AGENTS.md §5.7).
+ * (rules/data-paths.mdc).
  */
 
 export const OWNERSHIP_INVARIANT_VIOLATION_ACTION = "recovery.invariant_violation";
