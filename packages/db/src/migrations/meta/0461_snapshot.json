@@ -1,6 +1,6 @@
 {
-  "id": "a2606b41-36c2-4eb5-a59d-28cc730bc455",
-  "prevId": "2be53987-902a-41b6-8cb4-6e89a768f8cf",
+  "id": "0ba661ff-ea99-4444-8a57-301fc2a6de89",
+  "prevId": "f93ccf18-7e86-4788-be77-b17430c86b2f",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -10185,6 +10185,40 @@
           ],
           "isUnique": true,
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "chat_actions_company_issue_kind_idx": {
+          "name": "chat_actions_company_issue_kind_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"payload\"->>'issueId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"chat_actions\".\"kind\" IN ('inbound_wakeup', 'failed_run_retry')",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         },
@@ -29133,6 +29167,22 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "environment_leases_native_backup_scope_idx": {
+          "name": "environment_leases_native_backup_scope_idx",
+          "columns": [
+            {
+              "expression": "(\"metadata\"->'nativeHarnessBackup'->>'sessionScopeSha256')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "(\"environment_leases\".\"metadata\"->'nativeHarnessBackup'->>'sessionScopeSha256') is not null",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -35708,6 +35758,28 @@
           "method": "btree",
           "with": {}
         },
+        "heartbeat_runs_company_native_session_idx": {
+          "name": "heartbeat_runs_company_native_session_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "native_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"native_session_id\" is not null",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
         "heartbeat_runs_company_issue_created_idx": {
           "name": "heartbeat_runs_company_issue_created_idx",
           "columns": [
@@ -35942,6 +36014,28 @@
           ],
           "isUnique": false,
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "heartbeat_runs_company_ctx_execution_workspace_idx": {
+          "name": "heartbeat_runs_company_ctx_execution_workspace_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"context_snapshot\" ->> 'executionWorkspaceId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"context_snapshot\" ? 'executionWorkspaceId'",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         },
@@ -64934,6 +65028,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "dot_device_cutover": {
+          "name": "dot_device_cutover",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         },
         "device_cutover_stack_id": {
           "name": "device_cutover_stack_id",
