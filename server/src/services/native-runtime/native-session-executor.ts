@@ -26,7 +26,7 @@ import { prepareRemoteOpenCodeArtifacts, type OpenCodeLaunchArtifacts } from "./
 import { rehydratePinnedSkillAssets } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeRecoveryUsageDelivery } from "./native-recovery-usage-delivery.js";
-import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent } from "./native-usage-accounting.js";
+import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent, isNativeUsageDeliveryEvent } from "./native-usage-accounting.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 export { nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage } from "./native-usage-accounting.js";
 import { measureRunnerOperation, recordRunnerTimingReceipt } from "./runner-operation-timing.js";
@@ -45,7 +45,7 @@ import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemot
 import { nativeProviderPackAdmissionPending, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
 import { type ProviderPackInstallation, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
-import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, releaseUnstartedNativeExecutionClaim, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
+import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, lockNativeExecutionLeaseForReacquire, nativeExecutionLeaseHeldCondition, releaseUnstartedNativeExecutionClaim, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
 export { renewNativeSessionExecutionLease } from "./native-execution-lease.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { writeExecutionControl } from "../execution-control-notifications.js";
@@ -115,7 +115,7 @@ import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
 import { prepareVerifiedRemoteProviderPack, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
-import { readNativeLocalProcessStop, recordedLocalExecutionStopped, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, withReleasedNativeRunProcess } from "../native-local-process-stop.js";
+import { readNativeLocalProcessStop, recordedLocalExecutionStopped, PRIOR_OWNER_FENCE_REFUSED, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, withReleasedNativeRunProcess } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
 import { connectorToolDefinitionsForSkills } from "../connector-runtime.js";
 import { NATIVE_PREPARATION_FENCING_VERSION, setNativeExecutionActive } from "./native-active-runs.js";
@@ -382,6 +382,7 @@ export class NativeControllerDetachedForRestartError extends Error {
 const activeNativeSessions = new Map<string, ActiveNativeSession>();
 // Shutdown can race provider startup before onSession publishes its handle.
 const nativeRunsDetachingForRestart = new Map<string, symbol>();
+
 /** Flushes a run's pending restart-recovery budget check when the controller
  * detaches it for another restart (its trace never finishes). */
 const nativeRunRecoveryFlushers = new Map<string, () => void>();
@@ -1968,7 +1969,9 @@ class SessionAuthorityEpoch {
   }
 
   async acceptAccountingEvent(event: PrpEvent) {
-    if (!isNativeUsageAccountingEvent(event)) return;
+    if (!isNativeUsageDeliveryEvent(event)) return;
+    // A restore carries no usage; it never fails delivery for another run.
+    if (!isNativeUsageAccountingEvent(event) && event.runId !== this.runId && event.runId !== this.#drainingRun?.runId) return;
     this.#assertCurrent();
     if (event.runId !== this.runId && event.runId !== this.#drainingRun?.runId) throw new Error("native_usage_run_binding_mismatch");
     await (event.runId === this.runId ? this.onAccountingEvent : this.#drainingRun?.capture)?.(event);
@@ -2189,10 +2192,15 @@ function runnerdStateBase(): string {
 /**
  * A runner launch requested without a recorded process identity leaves no PID
  * to verify. On this host it is proven absent when no process carries the
- * run's runner arguments and no saved runner state belongs to the run: a
- * provider starts only after its runner connects and writes that state.
+ * run's runner arguments and no saved runner state belongs to the run, or,
+ * when the caller passes `launchRequestedAt` because every earlier runner of
+ * the run was proven stopped, when that state's command journal and lineage
+ * files all predate the launch request: a provider starts only from a command
+ * the runner journals first.
  */
-export async function unidentifiedLocalRunnerProvenAbsent(input: { runId: string; execution: unknown }): Promise<boolean> {
+export async function unidentifiedLocalRunnerProvenAbsent(input: {
+  runId: string; execution: unknown; launchRequestedAt?: number | null;
+}): Promise<boolean> {
   let execution: NativeExecutionInput;
   try {
     execution = parseNativeExecutionInput(input.execution);
@@ -2216,12 +2224,29 @@ export async function unidentifiedLocalRunnerProvenAbsent(input: { runId: string
   for (const candidate of candidates) {
     if (!existsSync(resolve(candidate, "control-plane", "control-plane-state.json"))) continue;
     try {
-      if (record(readRunnerdControlPlaneState(candidate).identity).runId === input.runId) return false;
+      if (record(readRunnerdControlPlaneState(candidate).identity).runId === input.runId &&
+          !runnerStateUnchangedSince(candidate, input.launchRequestedAt)) return false;
     } catch {
       return false;
     }
   }
   return true;
+}
+
+const COARSE_FILE_TIMESTAMP_MARGIN_MS = 2_000;
+
+function runnerStateUnchangedSince(root: string, requestedAt: number | null | undefined): boolean {
+  if (typeof requestedAt !== "number" || !Number.isFinite(requestedAt)) return false;
+  const stateFile = resolve(root, "runner", "runner-state.json");
+  const lineage = resolve(root, "runner", "process-lineage");
+  const paths = [stateFile, ...existsSync(lineage) ? readdirSync(lineage).map(name => resolve(lineage, name)) : []];
+  return paths.every(path => {
+    const stats = lstatSync(path, { throwIfNoEntry: false });
+    if (path === stateFile && !stats) return true;
+    if (!stats?.isFile()) return false;
+    const coarseTimestamp = stats.mtimeMs % 1000 === 0;
+    return stats.mtimeMs + (coarseTimestamp ? COARSE_FILE_TIMESTAMP_MARGIN_MS : 0) < requestedAt;
+  });
 }
 
 /** `paperclip-runnerd` is always launched with `--run-id <runId>`. A failed or
@@ -3141,6 +3166,28 @@ export function rebaseRetainedNativeCleanupProviderHome(
  * Retain the old durable root permanently; only the exact in-memory cleanup
  * owner is retired, and the successor must use a fresh normalized session.
  */
+/** A provider launch that failed its own admission (for example a restore
+ * that refused an ambiguous turn start), whose direct child exited and whose
+ * process and process group are gone, owns nothing. Any other recorded
+ * launch may own a process that never reported its session identity. */
+function failedStartupRetired(attempt: unknown): boolean {
+  if (attempt == null) return true;
+  const startup = record(attempt);
+  return startup.phase === "initialization_failed" && startup.directChildExitObserved === true &&
+    cleanupProcessAbsent(startup.processId) &&
+    (startup.processGroupId == null || cleanupProcessAbsent(startup.processGroupId));
+}
+
+/** The session's state root, or, when only the fence's quarantine holds it,
+ * that one `identity_indeterminate` copy. Several copies are ambiguous. */
+function quarantinedOwnerStateRoot(scoped: string): string {
+  if (existsSync(scoped)) return scoped;
+  const quarantine = resolve(runnerdStateBase(), "quarantine");
+  if (!isSafeNativeStateDirectory(quarantine)) return scoped;
+  const copies = readdirSync(quarantine).filter(name => name.startsWith(`${basename(scoped)}.identity_indeterminate.`));
+  return copies.length === 1 ? resolve(quarantine, copies[0]!) : scoped;
+}
+
 export async function verifyStoppedNativeSessionForContinuation(
   db: Db,
   run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "runtimeMode" |
@@ -3163,14 +3210,21 @@ export async function verifyStoppedNativeSessionForContinuation(
       eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
     if (leases.some(lease => lease.provider !== "local" || !lease.releasedAt ||
         lease.status === "pending_cleanup" || lease.cleanupStatus === "failed")) return null;
-    const root = scopedRunnerdStateRoot(execution);
+    // A run refused at the prior-owner fence moved the owner's state to
+    // quarantine before it failed. That single exact copy is the owner's state.
+    const root = quarantinedOwnerStateRoot(scopedRunnerdStateRoot(execution));
     const providerFile = runnerProviderStateFilename(execution);
     const snapshot = cleanupStateSnapshot(root, providerFile);
     const identity = record(snapshot.control.identity);
     let owner = run;
     let ownerExecution = execution;
     if (identity.runId !== run.id) {
-      if (run.errorCode !== "native_session_cleanup_quarantined" || typeof identity.runId !== "string") return null;
+      // Only a run refused before launch can stand in for the saved state's
+      // owner: the cleanup quarantine or the prior-owner runner-state fence.
+      const [fenced] = run.errorCode === "native_session_cleanup_quarantined" ? [] : await db.select({ id: heartbeatRunEvents.id })
+        .from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+          isNull(heartbeatRunEvents.sourceEventId), eq(heartbeatRunEvents.eventType, PRIOR_OWNER_FENCE_REFUSED))).limit(1);
+      if ((run.errorCode !== "native_session_cleanup_quarantined" && !fenced) || typeof identity.runId !== "string") return null;
       const [started] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
         eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
         inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED,
@@ -3228,7 +3282,7 @@ export async function verifyStoppedNativeSessionForContinuation(
         snapshot.runner.schema !== RUNNERD_STATE_SCHEMA ||
         snapshot.provider.schema !== (execution.provider.kind === "codex" ? "paperclip.runner.codex-provider-state.v1" : ACPX_PROVIDER_STATE_SCHEMA) ||
         !["turn_active", "prepared", "suspended", "session_open"].includes(String(snapshot.provider.lifecycle)) ||
-        snapshot.provider.startupAttempt != null) return null;
+        !failedStartupRetired(snapshot.provider.startupAttempt)) return null;
     const pending = JSON.stringify([snapshot.runner.outbox, snapshot.provider.pendingEvents, snapshot.provider.queuedEvents]);
     if (/session\.(started|resumed|reconciled)/.test(pending)) return null;
     const events = snapshot.control.committedEvents.map(entry => record(record(record(entry).envelope).payload));
@@ -3288,6 +3342,8 @@ export async function verifyStoppedNativeSessionForContinuation(
       if (!cleanupProcessAbsent(pid)) return null;
       providerPids.add(pid);
     }
+    const startup = record(snapshot.provider.startupAttempt);
+    for (const pid of [startup.processId, startup.processGroupId]) if (pid != null) providerPids.add(pid as number);
     const unchanged = () => idle() && !activeNativeSessions.has(owner.id) && cleanupProcessAbsent(stopped.processPid) &&
       [...providerPids].every(cleanupProcessAbsent) && cleanupStateSnapshot(root, providerFile).fingerprint === snapshot.fingerprint;
     return {
@@ -5759,6 +5815,20 @@ async function rollBackUndeliveredAttachRotation(root: string, execution: Native
     `[paperclip-runner] Run ${execution.binding.runId} stopped before its runner received the session; resuming from the previous turn.\n`);
 }
 
+/** The fence refused this run before any launch, because another run's saved
+ * state could not be proven finished. Retry and new input read this event as
+ * proof that the run never had a runner (native-local-process-stop.ts). A
+ * failed write leaves the run held, which is the safe side. */
+async function recordPriorOwnerFenceRefusal(input: { db: Db; execution: NativeExecutionInput }, reason: string): Promise<void> {
+  const { binding } = input.execution;
+  await appendHeartbeatRunEvent(input.db, {
+    companyId: binding.companyId, runId: binding.runId, agentId: binding.agentId,
+    eventType: PRIOR_OWNER_FENCE_REFUSED, stream: "system", level: "warn",
+    message: "The saved runner state of a previous run could not be proven finished; this run started no runner.",
+    payload: { reason },
+  }).catch(() => undefined);
+}
+
 async function migrateRunnerdStateRootForExecution(input: {
   db: Db;
   execution: NativeExecutionInput;
@@ -5947,6 +6017,7 @@ async function migrateRunnerdStateRootForExecution(input: {
               : "identity_indeterminate",
           );
         }
+        await recordPriorOwnerFenceRefusal(input, `prior_owner_${verification}`);
         throw new Error(`runner_state_identity_mismatch: prior_owner_${verification}${retirementRefusal}`);
       }
     }
@@ -5988,6 +6059,7 @@ async function migrateRunnerdStateRootForExecution(input: {
           // untouched because the legacy name may still belong to them.
           quarantineRunnerdStateRoot(legacy, "identity_indeterminate");
         }
+        await recordPriorOwnerFenceRefusal(input, `legacy_prior_owner_${verification}`);
         throw new Error(`runner_state_identity_mismatch: legacy_prior_owner_${verification}`);
       }
       verifiedPriorRunId = identity.runId;
@@ -8210,6 +8282,11 @@ const NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION =
 const NATIVE_STARTUP_MODEL_REJECTED_ACTION =
   "The provider could not start the selected model before any provider work began. Choose a supported model for this agent, then retry the task. Automatic retries are stopped.";
 
+// The provider session opened, then the provider refused the selected model on
+// the turn. The task needs a model choice, not a reconciliation of session state.
+const NATIVE_TURN_MODEL_REJECTED_ACTION =
+  "The provider rejected the selected model. Choose a supported model for this agent, then retry the task. Automatic retries are stopped.";
+
 const NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE =
   "Send a new message to continue after Paperclip verifies that the previous provider and its tools have stopped. Clearing a task session does not resolve this quarantine. Automatic retries are stopped.";
 
@@ -10157,6 +10234,7 @@ async function executePaperclipNativeSessionAttempt(
             companyId: input.execution.binding.companyId, issueId: input.execution.binding.issueId,
             leaseOwner, attempt: claimedAttempt, controller,
             remote: input.runnerExecutionTarget?.kind === "remote",
+            controllerGeneration,
             confirmedDeadline: confirmedLeaseDeadline,
             onLost: () => {
               startup.providerPackSourceAbort.abort(new Error("native_session_lease_lost"));
@@ -10333,7 +10411,7 @@ async function executePaperclipNativeSessionAttempt(
     const history = await input.db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
       eq(heartbeatRunEvents.companyId, input.execution.binding.companyId), eq(heartbeatRunEvents.runId, input.execution.binding.runId),
       or(sql`${heartbeatRunEvents.payload}->'prpEvent'->'payload'->>'kind' = 'usage'`,
-        inArray(heartbeatRunEvents.eventType, ["turn.started", "turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"])),
+        inArray(heartbeatRunEvents.eventType, ["turn.started", "turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted", "session.resumed"])),
     )).orderBy(heartbeatRunEvents.seq);
     for (const row of history) {
       const event = record(row.payload).prpEvent as PrpEvent;
@@ -11187,7 +11265,7 @@ async function executePaperclipNativeSessionAttempt(
                 // Binds a later identity-less stop proof to the host that launched.
                 // The provider attempt opens that attempt's outcome window for
                 // the work-based budget (provider-attempt-outcome.ts).
-                payload: { hostname: hostname(), providerAttempt: attempt },
+                payload: { hostname: hostname(), providerAttempt: attempt, requestedAt: new Date().toISOString() },
               });
               crashPoint("native.process_start.after_requested_before_spawn");
             },
@@ -11860,6 +11938,9 @@ async function executePaperclipNativeSessionAttempt(
             ),
           )
           .for("update");
+        // Issue → coordinator → run, as below. A lease that lapsed untouched
+        // (host sleep) is still this owner's to settle; see the held condition.
+        await lockNativeExecutionLeaseForReacquire(tx, { ...input.execution.binding, leaseOwner, preResultOnly: true });
         await notifyExecutionRunWork(tx, { companyId: input.execution.binding.companyId });
         await notifyNativeFinalizationWork(tx, input.execution.binding);
         const updated = await tx
@@ -11909,6 +11990,8 @@ async function executePaperclipNativeSessionAttempt(
                     ? "The work and waiting state are saved. Confirm shutdown of the retained execution and settle that same handoff without repeating provider work."
                   : sourceFailureCode === "native_provider_model_rejected" && !recoveryEvidence.providerSessionEstablished
                     ? NATIVE_STARTUP_MODEL_REJECTED_ACTION
+                  : sourceFailureCode === "native_provider_model_rejected"
+                    ? NATIVE_TURN_MODEL_REJECTED_ACTION
                   : sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE
                     ? NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION
                   : sourceFailureCode === NATIVE_PROVIDER_SIDE_EFFECT_PENDING
@@ -11992,7 +12075,8 @@ async function executePaperclipNativeSessionAttempt(
                 nativeRunFinalizations.controllerProcessStartedAt,
                 controller.processStartedAt,
               ),
-              gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
+              nativeExecutionLeaseHeldCondition({ remote: input.runnerExecutionTarget?.kind === "remote",
+                controllerGeneration }),
             ),
           )
           .returning({ runId: nativeRunFinalizations.runId, resultId: nativeRunFinalizations.resultId })
@@ -12165,6 +12249,8 @@ async function executePaperclipNativeSessionAttempt(
                 ? "Verify that the failed provider stopped and reconcile its action outcomes. A linked continuation can proceed only after these checks succeed."
               : sourceFailureCode === "native_provider_model_rejected" && !recoveryEvidence.providerSessionEstablished
                 ? NATIVE_STARTUP_MODEL_REJECTED_ACTION
+              : sourceFailureCode === "native_provider_model_rejected"
+                ? NATIVE_TURN_MODEL_REJECTED_ACTION
               : sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE
                 ? NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION
               : sourceFailureCode === NATIVE_PROVIDER_SIDE_EFFECT_PENDING
@@ -12457,6 +12543,8 @@ async function executePaperclipNativeSessionAttempt(
       }
       const releaseNow = new Date();
       const released = await timeController("coordinator_release", () => input.db.transaction(async tx => {
+        // A lease that lapsed untouched (host sleep) is still this owner's to release.
+        await lockNativeExecutionLeaseForReacquire(tx, { ...input.execution.binding, leaseOwner });
         await notifyNativeFinalizationWork(tx, input.execution.binding);
         return tx.update(nativeRunFinalizations)
           .set({
@@ -12479,7 +12567,8 @@ async function executePaperclipNativeSessionAttempt(
                 nativeRunFinalizations.controllerProcessStartedAt,
                 controller.processStartedAt,
               ),
-              gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
+              nativeExecutionLeaseHeldCondition({ remote: input.runnerExecutionTarget?.kind === "remote",
+                controllerGeneration, relinquishAccepted: true }),
             ),
           )
           .returning({ runId: nativeRunFinalizations.runId })

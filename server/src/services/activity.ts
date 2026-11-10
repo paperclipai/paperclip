@@ -20,7 +20,7 @@ import {
   issueWorkProducts,
   workspaceOperations,
 } from "@paperclipai/db";
-import { hasWorkspaceRestoreFailure, safeWorkspaceRestorePath, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
+import { hasWorkspaceRestoreFailure, safeWorkspaceRestorePath, ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, normalizeRunFailureCause, RUN_FAILURE_CAUSE_MAX_LENGTH } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { classifyRunLiveness } from "./run-liveness.js";
@@ -477,6 +477,9 @@ export function activityService(db: Db) {
             then 'This credential is not shared with the responsible user' else null end`,
           usageJson: summarizedUsageJson,
           resultJson: summarizedResultJson(viewerUserId),
+          // Bounded cause of a generic failure code; validated below, legacy rows have none.
+          failureCause: sql<string | null>`case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'failureCause') = 'string'
+            then left(${heartbeatRuns.resultJson} ->> 'failureCause', ${RUN_FAILURE_CAUSE_MAX_LENGTH + 1}) end`,
           logBytes: heartbeatRuns.logBytes,
           retryOfRunId: heartbeatRuns.retryOfRunId,
           scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
@@ -603,6 +606,7 @@ export function activityService(db: Db) {
               : null;
         return {
           ...run,
+          failureCause: normalizeRunFailureCause(run.failureCause),
           resultJson: run.resultJson ? {
             ...run.resultJson,
             ...(Object.hasOwn(run.resultJson, "workspaceRestorePath") ? {

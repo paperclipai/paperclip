@@ -616,6 +616,26 @@ keeps the full save. The next run's reservation, cancelled-workspace
 preservation and a later final save each apply this release. A repeated save
 returns the same version.
 
+A save that requires a full capture also keeps the current saved version when
+the captured manifest, archive hash and size match the saved version. This
+comparison applies only to the same company and workspace. The saved encryption
+key must be readable. The archive must still exist with its recorded size. The save then completes its
+normal ownership checks, run receipt, repository metadata and waiter wake
+without uploading another archive. Its unused generation has no object and is
+marked deleted. A retry returns the completed receipt. An earlier upload attempt
+keeps its recovery path; it cannot be discarded by this comparison. Changed
+contents still create a new version and retain the previous version for seven
+days after replacement. Active work and recovery references can extend retention.
+
+The reused archive keeps its original source run, generation and encryption
+binding. Recovery and native replacement verify the new run's final save through
+its succeeded operation and empty retired generation, including its epoch,
+workspace, sandbox location, content hash and settled work. They do not borrow
+the old run's authority. Read-only historical attachments keep this proof after
+a later writer advances the workspace. Existing saves from earlier releases
+keep their original receipt checks. Reuse metadata requests, including retries
+and failures, count toward the save's storage request statistics.
+
 A writer stopped mid-run, for example by reassignment, keeps its unsaved files
 in its stopped sandbox. When the run used a reusable (warm) sandbox, the stop
 leaves that lease `released` under its reusable policy with a stop-and-retain
@@ -2406,7 +2426,16 @@ failed or cancelled even when the agent already reported completed work.
 The final assistant message is the visible task response. Response selection runs
 after preceding event persistence completes; the completion summary cannot replace
 an available final answer. Existing fallback and explicit-comment precedence still
-apply. Stream closure without a turn terminal is not proof of success. Event
+apply for ordinary tasks. In native standing conversations, a completed final
+response or accepted non-yielded semantic response takes precedence over earlier
+tool comments. Those comments stay in history. Identical text reuses its existing
+comment. With no qualified final, the explicit comment remains the response.
+Governed waits and interaction cards keep ownership. A server-proven finished
+conversation may still have a yielded semantic result. Its completed final reply
+remains visible; a completed unknown-channel terminal reply is used only under
+that finished-turn authority and after the explicit final and non-yielded summary.
+The presentation decision records the conversation-specific choice.
+Stream closure without a turn terminal is not proof of success. Event
 replay uses the existing source receipts and never repeats provider work merely
 to recover recorded output.
 
@@ -2768,7 +2797,7 @@ replacement behavior. When a replacement does archive remote continuity state
 and the remote move fails, the local state is not moved, and the run error keeps
 the bounded, redacted exit status and output of that move.
 
-Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. A resume after a graceful shutdown drain suspended the run for reattachment does not consume an attempt, because the run did not cause that restart. A crash restart (no drain record) consumes an attempt only when the attempt it interrupted spent provider work without progress. This is one rule over recorded outcomes, not over intents. The attempt counts as started only when the provider accepted a turn: a `turn.accepted` event or the provider's own `turn.started`. A startup still marked `beforeSpawn`, a runner that spawned but was never admitted, and a `turn.start` the provider did not accept are not charged. Progress means that an accepted turn then completed work: a tool execution or a completed item other than a usage report. An accepted turn with only usage, a failure, or no events is charged, so a resume that fails each time still uses up the budget. The first restart judges the original execution. Each later restart claim records the run's event-log position, and the next claim judges only the attempt recorded after it; a normal retry in between starts a new attempt (at its `native.process_start_requested`), so earlier work does not count for it. A reattachment adopts a provider that already started, so for it only progress counts. A resume that launches a new runner and that the controller died before starting used no provider work, so the next claim replaces it and the attempt ends at the attempt that resume was to run as. Uncharged restarts stop after 12 controller generations, so a crash loop that never starts the provider, or that makes progress and then crashes the controller each time, is still bounded. Legacy runs follow the same rule: a preparation interrupted before provider work started (`providerWorkStarted: false`) is retried in its own `interrupted_preparation` lane, which never spends the failure retry budget and is bounded at 12 retries. Exact-checkpoint resumes retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
+Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. A resume after a graceful shutdown drain suspended the run for reattachment does not consume an attempt, because the run did not cause that restart. A crash restart (no drain record) consumes an attempt only when the attempt it interrupted spent provider work without progress. This is one rule over recorded outcomes, not over intents. The attempt counts as started only when the provider accepted a turn: a `turn.accepted` event or the provider's own `turn.started`. A startup still marked `beforeSpawn`, a runner that spawned but was never admitted, and a `turn.start` the provider did not accept are not charged. Progress means that an accepted turn then completed work: a tool execution or a completed item other than a usage report. An accepted turn with only usage, a failure, or no events is charged, so a resume that fails each time still uses up the budget. The first restart judges the original execution. Each later restart claim records the run's event-log position, and the next claim judges only the attempt recorded after it; a normal retry in between starts a new attempt (at its `native.process_start_requested`), so earlier work does not count for it. A reattachment adopts a provider that already started, so for it only progress counts. A resume that launches a new runner and that the controller died before starting used no provider work, so the next claim replaces it and the attempt ends at the attempt that resume was to run as. Uncharged restarts stop after 12 controller generations, so a crash loop that never starts the provider, or that makes progress and then crashes the controller each time, is still bounded. Legacy runs follow the same rule: a preparation interrupted before provider work started (`providerWorkStarted: false`) is retried in its own `interrupted_preparation` lane, which never spends the failure retry budget and is bounded at 12 retries. This holds for a hard kill as well as a graceful drain: once the killed controller's recorded process is proven gone, restart recovery fails the run as `process_lost` with the bootstrap certificate and schedules it in that lane. A run saved by an older release without a controller process stamp cannot be proven and stays in the charged lane. Exact-checkpoint resumes retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
 
 A due failed remote retry can retain its provider PID after heartbeat completion
 releases the task execution lock. Both remote workspace reference formats and
@@ -4177,8 +4206,12 @@ through the ordinary control-plane observers without starting another model turn
 When a later heartbeat run reuses the provider session, it clears that prior
 run's wait marker along with its terminal, result and pending-request authority.
 Already-numbered cancellation acknowledgements and cancelled/expired runtime requests
-are retained during shutdown so recovery can replay a contiguous journal. They
-carry no permission to start work. Stream closure, stream failure or drain timeout
+are retained during shutdown with usage and the terminal. They carry no permission
+to start work. The drain discards the turn's other numbered events, so the retained
+journal can have sequence gaps after the trigger. Recovery accepts a gap only when
+the trigger is the first replayed event and every event after the gap is one of
+those retained facts of the same turn. Any run, session or source mismatch still
+fails closed. Stream closure, stream failure or drain timeout
 after complete usage leaves the saved wait unfinalized until execution is proven
 stopped; complete token counters alone cannot certify that boundary. Codex allows
 up to 30 seconds for its interruption terminal, matching the transport command

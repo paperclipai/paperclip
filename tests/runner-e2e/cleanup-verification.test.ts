@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { runCleanupWithObservers, verifyCleanupAssertions } from "./cleanup-verification.js";
+import { ownedActiveCleanupRunIds, runCleanupWithObservers, verifyCleanupAssertions } from "./cleanup-verification.js";
 
 it("retains a failed cleanup proof and still closes every later observer", async () => {
   let closed = 0;
@@ -36,4 +36,14 @@ it("collects remote proof before environment destruction, preserving every clean
   expect(calls).toEqual(["retire", "proof1", "proof2", "teardown"]);
   expect(result.errors.map(error => (error as Error).message)).toEqual(["cancel failed", "receipt missing", "delete failed"]);
   expect(result.checks).toContainEqual({ id: "sealed", passed: true, detail: "sealed before deletion" });
+});
+
+it("cancels only independently listed active owned-company runs", () => {
+  expect(ownedActiveCleanupRunIds([
+    { id: "owned", companyId: "attempt-company", status: "running" },
+    { id: "foreign", companyId: "other-company", status: "running" },
+    { id: "unscoped", status: "running" },
+    { id: "finished", companyId: "attempt-company", status: "succeeded" },
+    { id: "owned", companyId: "attempt-company", status: "running" },
+  ], "attempt-company", new Set(["succeeded"]))).toEqual(["owned"]);
 });

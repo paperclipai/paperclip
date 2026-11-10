@@ -1,7 +1,16 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { STORAGE_FAULT_KINDS } from "./storage-chaos.js";
+import { applyJourneyOptions } from "./journey-matrix.js";
+import { takesJourneyTriggers } from "./journeys.js";
+import { STORAGE_FAULT_KINDS, type StorageFaultKind } from "./storage-chaos.js";
+import { validateMultiServerOptions } from "./multi-server.js";
+import { parseTimeFaultOptions } from "./time-faults-config.js";
+import { parseStorageTrigger } from "./storage-trigger.js";
+import { parseNativeTrigger, parseNativeTriggerOutage } from "./native-trigger.js";
+import { parseRepeatedRestartOptions } from "./repeated-restarts.js";
+import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, isProviderFault, parseProviderDelays, parseProviderMessages, type ProviderFaultKind } from "./provider-faults.js";
+import { PROVIDER_FAULT_ADAPTERS, parseProviderFaultRestart } from "./acpx-provider-faults.js";
 import {
   ADAPTER_IDS, ENVIRONMENT_KINDS, FAULT_KINDS, TRIGGER_IDS, WORKLOAD_IDS,
   type AdapterId, type EnvironmentKind, type FaultKind, type TriggerId, type WaveOptions, type WorkloadId,
@@ -103,13 +112,26 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       storage: { type: "string" },
       "storage-faults": { type: "string" },
       "storage-fault-seconds": { type: "string" },
+      "storage-trigger": { type: "string" },
+      "native-trigger": { type: "string" },
+      "native-trigger-outage": { type: "string" },
+      "provider-fault-message": { type: "string" },
+      "provider-fault-delays": { type: "string" },
+      "db-pressure": { type: "string" },
+      matrix: { type: "boolean" },
+      "server-from": { type: "string" },
+      "time-age-hours": { type: "string" },
+      "provider-fault-restart": { type: "string" },
+      "provider-fault-restart-after-seconds": { type: "string" },
+      "rr-gap-seconds": { type: "string" },
+      "rr-stop-on": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "fault-after-seconds"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -142,14 +164,19 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   }
   if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm" && lifecycle !== "default") throw new Error("--lifecycle must be per_turn, warm or default");
   const adapters = list<AdapterId>(values.adapters, ADAPTER_IDS, "adapters", ["codex", "claude"]);
+  // `--faults` takes restart faults (K*) and provider message faults (PV*, provider-faults.ts).
+  const allFaults = list<FaultKind | ProviderFaultKind>(values.faults, [...FAULT_KINDS, ...PROVIDER_FAULT_KINDS], "faults",
+    stormMinutes ? STORM_DEFAULT_FAULTS : crashPoint ? ["K1"] : ["K1", "K2", "K4"]);
+  const providerFaults = allFaults.filter(isProviderFault);
   const options: WaveOptions = {
     env,
     adapters,
-    // The governance scenarios (G1, H1) are opt-in: H1 needs a wave of its own.
-    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1"
-      && (id !== "M1" || adapters.length >= 2))),
+    // The governance scenarios (G1, H1), the journeys (Q1–Q3) and the contention run (L1) are opt-in: H1 needs a wave of its own.
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1"
+      && !takesJourneyTriggers(id) && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
-    faults: list<FaultKind>(values.faults, FAULT_KINDS, "faults", stormMinutes ? STORM_DEFAULT_FAULTS : crashPoint ? ["K1"] : ["K1", "K2", "K4"]),
+    faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault)),
+    ...(providerFaults.length ? { providerFaults } : {}),
     triggers: list<TriggerId>(values.triggers, TRIGGER_IDS, "triggers", ["time"]),
     concurrency: integer(values.concurrency, "concurrency", 4, 1, 20),
     tasks: integer(values.tasks, "tasks", stormMinutes ? 200 : 8, 1, 200),
@@ -177,6 +204,32 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     throw new Error("--fault-after-seconds fires faults by time; use it with --triggers time");
   }
   if (!crashPoint && values["crash-point-hold-ms"] !== undefined) throw new Error("--crash-point-hold-ms applies only to --crash-point");
+  if (providerFaults.length) {
+    if (stormMinutes) throw new Error("Provider message faults (PV*) are planned per task; do not combine them with --storm-minutes");
+    if (env !== "local") throw new Error("Provider message faults (PV*) shim the local provider; run them with --env local");
+    if (adapters.some(adapter => !PROVIDER_FAULT_ADAPTERS.includes(adapter))) throw new Error(`Provider message faults (PV*) cover ${PROVIDER_FAULT_ADAPTERS.join(" and ")}; remove the other adapters from --adapters`);
+    // Every PV task gets its own restart through --provider-fault-restart; a planned K cell would be a different task.
+    if (options.faults.length) throw new Error("Provider message faults (PV*) do not share a wave with planned restart faults (K*); use --provider-fault-restart K1 to restart after each provider fault");
+    // Every planned task gets the fault; only these workloads send the turn/interrupt the rules target.
+    const idle = options.workloads.filter(id => !PROVIDER_FAULT_WORKLOADS.includes(id));
+    if (idle.length) throw new Error(`Provider message faults (PV*) need workloads that interrupt a provider turn (${PROVIDER_FAULT_WORKLOADS.join(", ")}); remove ${idle.join(", ")} from --workloads`);
+    const messages = parseProviderMessages(values["provider-fault-message"]);
+    if (messages.message) options.providerFaultMessage = messages.message;
+    if (messages.byWorkload) options.providerFaultMessageByWorkload = messages.byWorkload;
+    const delays = parseProviderDelays(values["provider-fault-delays"]);
+    if (delays && !providerFaults.includes("PV1")) throw new Error("--provider-fault-delays sets PV1 delays; add PV1 to --faults");
+    if (delays) options.providerFaultDelaysMs = delays;
+    Object.assign(options, parseProviderFaultRestart(values["provider-fault-restart"], values["provider-fault-restart-after-seconds"], providerFaults, delays));
+    // Each K1 kills the whole control plane: a second task in flight would lose its held message to the
+    // first task's restart and miss its own, so a restart wave runs one task at a time.
+    if (options.providerFaultRestart && options.concurrency !== 1) throw new Error("--provider-fault-restart restarts the whole control plane per task; run it with --concurrency 1");
+  } else if (values["provider-fault-message"] !== undefined || values["provider-fault-delays"] !== undefined
+    || values["provider-fault-restart"] !== undefined || values["provider-fault-restart-after-seconds"] !== undefined) {
+    throw new Error("--provider-fault-message, --provider-fault-delays and --provider-fault-restart need a provider fault (PV1, PV2 or PV3) in --faults");
+  }
+  validateMultiServerOptions(options);
+  Object.assign(options, parseTimeFaultOptions(options, values["time-age-hours"]));
+  Object.assign(options, parseRepeatedRestartOptions(options, values["rr-gap-seconds"], values["rr-stop-on"]));
   const upgradeFrom = values["upgrade-from"];
   if (options.faults.includes("K14") !== (upgradeFrom !== undefined)) {
     throw new Error("K14 (upgrade mid-run) and --upgrade-from <older checkout> go together: pass both or neither");
@@ -187,6 +240,8 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     if (crashPoint) throw new Error("--upgrade-from does not combine with --crash-point");
     options.upgradeFrom = path.resolve(upgradeFrom);
   }
+  applyJourneyOptions(options, { matrix: values.matrix === true, serverFrom: values["server-from"], tasksGiven: values.tasks !== undefined,
+    triggersGiven: values.triggers !== undefined });
   const storage = values.storage ?? "local";
   const workspaceRepo = values["workspace-repo"];
   if (options.workloads.includes("R1") !== (workspaceRepo !== undefined)) {
@@ -224,11 +279,12 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
         + "for chaos tasks. Lower one of them (RESTART_CHAOS_DAYTONA_VCPU_BUDGET sets the budget).");
     }
   }
+  if (values["db-pressure"] !== undefined) options.dbPressure = integer(values["db-pressure"], "db-pressure", 0, 1, 8);
   if (storage !== "local" && storage !== "s3") throw new Error("--storage must be local or s3");
   if (storage === "s3") options.storage = "s3";
   if (values["storage-faults"] !== undefined) {
     if (storage !== "s3") throw new Error("--storage-faults needs --storage s3");
-    options.storageFaults = list<"ST1" | "ST2" | "ST3">(values["storage-faults"], STORAGE_FAULT_KINDS, "storage-faults", []);
+    options.storageFaults = list<StorageFaultKind>(values["storage-faults"], STORAGE_FAULT_KINDS, "storage-faults", []);
   }
   if (values["storage-fault-seconds"] !== undefined) {
     if (!options.storageFaults?.length) throw new Error("--storage-fault-seconds needs --storage-faults");
@@ -237,6 +293,9 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     if (!match || min < 5 || max < min || max > 900) throw new Error("--storage-fault-seconds takes <min>-<max> seconds, 5 to 900, min not above max");
     options.storageFaultMs = [min * 1000, max * 1000];
   }
+  if (values["storage-trigger"] !== undefined) options.storageTrigger = parseStorageTrigger(values["storage-trigger"], options);
+  if (values["native-trigger"] !== undefined) options.nativeTrigger = parseNativeTrigger(values["native-trigger"], options);
+  if (values["native-trigger-outage"] !== undefined) options.nativeTrigger = { ...options.nativeTrigger!, outageMs: parseNativeTriggerOutage(values["native-trigger-outage"], options) };
   return { mode: "wave", options, keep };
 }
 
