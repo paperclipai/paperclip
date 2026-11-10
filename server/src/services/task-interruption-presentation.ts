@@ -44,6 +44,8 @@ type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   nativeResumeAt?: Date | null;
   /** When the native coordinator saved this run's terminal failure, if it did. */
   nativeFailedAt?: Date | null;
+  /** The configured model id the provider rejected (native_provider_model_rejected only). */
+  rejectedModel?: string | null;
 };
 type ProjectionWait = { id: string; requestedAt: Date; sourceRunId?: string | null; executionWaitReason?: string | null;
   preparationStatus?: string | null; preparationRetryAt?: number | string | null; preparationUpdatedAt?: Date | null;
@@ -207,7 +209,8 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
       : run.errorCode === "native_provider_model_rejected" ? "choose_model"
       : [agent?.pauseReason, project?.pauseReason, company?.pauseReason].some(reason => reason === "budget" || reason === "budget_exceeded")
         ? "budget" : input.paused || project?.pausedAt || agent?.status === "paused" || company?.status === "paused" ? "resume" : null;
-  if (userAction) return { ...base, responsibility: "user", state: "waiting_for_user", userAction };
+  if (userAction) return { ...base, responsibility: "user", state: "waiting_for_user", userAction,
+    ...(userAction === "choose_model" && run.rejectedModel ? { rejectedModel: run.rejectedModel } : {}) };
   // The previous controller cannot confirm its own stop. Name the one board
   // action instead of showing the fenced run as working (RC-47).
   if (input.ownerStopRequired) return { ...base, responsibility: "user", state: "waiting_for_user", userAction: "confirm_owner_stop" };
@@ -343,6 +346,9 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
           and ${heartbeatRuns.error} ~ '^(Execution workspace provision|Workspace seed|Runtime provision) command "'
         then ${heartbeatRuns.error} else null end`,
       errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+      // The model this run asked the provider for; configuration, not provider text.
+      rejectedModel: sql<string | null>`case when ${heartbeatRuns.errorCode} = 'native_provider_model_rejected'
+        then ${boundedJsonString(sql`${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'->'provider'->'model'`, 200)} end`,
       scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
       // Candidate only: the coordinator also pushes nextAttemptAt forward while
       // it defers an ineligible run. The scheduler's own admission check below

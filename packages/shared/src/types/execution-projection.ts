@@ -136,6 +136,8 @@ export interface TaskInterruptionPresentation {
     output: string | null;
     message: string;
   };
+  /** With `userAction: "choose_model"`: the configured model id the provider rejected. */
+  rejectedModel?: string;
   /** A persisted Retry admission wait, normalized to public text by the server. */
   retryWait?: { reason: string; message: string };
   intentId: string | null;

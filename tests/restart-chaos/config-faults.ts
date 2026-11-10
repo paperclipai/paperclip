@@ -170,7 +170,9 @@ export interface ConfigSnapshot {
   runs: Array<{ id: string; status: string; createdAt: number | null; startedAt: number | null; errorCode: string | null; error: string | null }>;
   interruption: { state: string | null; canRetry: boolean; userAction: string | null; workspaceFailure: string | null;
     /** The named setup command failure (`setup_failed`), as the task page shows it. */
-    setupFailure?: string | null; observedRunId: string | null } | null;
+    setupFailure?: string | null;
+    /** The model id the provider rejected, as the task page names it. */
+    rejectedModel?: string | null; observedRunId: string | null } | null;
   execution: { label: string | null; cause: string | null; nextAction: string | null } | null;
   /** Pending thread interactions on the task (connection cards and similar). */
   cards: Array<{ id: string; kind: string; status: string; serviceSlug: string | null; agentSetup: boolean }>;
@@ -186,6 +188,7 @@ export function taskLevelTexts(snapshot: ConfigSnapshot): string[] {
   if (interruption?.workspaceFailure) texts.push(interruption.workspaceFailure);
   if (interruption?.setupFailure) texts.push(interruption.setupFailure);
   if (interruption?.userAction) texts.push(`userAction:${interruption.userAction}`);
+  if (interruption?.rejectedModel) texts.push(`rejected model ${interruption.rejectedModel}`);
   if (snapshot.execution?.label) texts.push(snapshot.execution.label);
   if (snapshot.execution?.nextAction) texts.push(snapshot.execution.nextAction);
   for (const card of snapshot.cards) {

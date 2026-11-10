@@ -233,7 +233,8 @@ async function snapshot(api: ChaosApi, issueId: string, agentId: string, errors:
     return {
       at, reachable: true, issueStatus: String(issue.status), runs: runSamples,
       interruption: interruption ? { state: interruption.state ?? null, canRetry: interruption.canRetry === true, userAction: interruption.userAction ?? null,
-        workspaceFailure: interruption.workspaceFailure?.message ?? null, setupFailure: interruption.setupFailure?.message ?? null, observedRunId: interruption.observedRunId ?? null } : null,
+        workspaceFailure: interruption.workspaceFailure?.message ?? null, setupFailure: interruption.setupFailure?.message ?? null,
+        rejectedModel: interruption.rejectedModel ?? null, observedRunId: interruption.observedRunId ?? null } : null,
       execution: projection ? { label: projection.label ?? null, cause: projection.cause ?? null, nextAction: projection.nextAction ?? null } : null,
       cards: (Array.isArray(interactions) ? interactions : []).map(card => ({ id: String(card.id), kind: String(card.kind), status: String(card.status),
         serviceSlug: card.payload?.serviceSlug ?? null, agentSetup: card.payload?.agentSetup === true })),

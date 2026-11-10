@@ -27,13 +27,22 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/** An API-key Codex turn whose configured model the Responses API answers with 404. */
+export const NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC = {
+  provider: "codex",
+  category: "model_not_found",
+  status: 404,
+  authMode: "api_key",
+} as const;
+
 /** Reconstruct only the closed diagnostic vocabulary, never provider text. */
 export function readNativeModelRejectionDiagnostic(value: unknown) {
   try {
     const entry = record(value);
-    return Object.entries(NATIVE_MODEL_REJECTION_DIAGNOSTIC).every(([key, expected]) => entry[key] === expected)
-      ? { ...NATIVE_MODEL_REJECTION_DIAGNOSTIC }
-      : null;
+    for (const diagnostic of [NATIVE_MODEL_REJECTION_DIAGNOSTIC, NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC]) {
+      if (Object.entries(diagnostic).every(([key, expected]) => entry[key] === expected)) return { ...diagnostic };
+    }
+    return null;
   } catch { return null; }
 }
 
@@ -213,6 +222,8 @@ export function readNativeTurnFailureDiagnostic(value: unknown): NativeTurnFailu
 /** Observe only events accepted by the bound control-plane persistence port. */
 export function createNativeProviderFailureObservation(provider: { kind: string; model?: string | null }) {
   let rejectedTurnId: string | null = null;
+  /** A Codex API-key turn whose configured model the Responses API does not serve (404). */
+  let missingModelTurnId: string | null = null;
   let overloadedTurnId: string | null = null;
   const failedTurns = new Map<string, NativeTurnFailureDiagnostic>();
   const providerFailures = new Map<string, ProviderFailure>();
@@ -251,6 +262,16 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
       }
       if (!provider.model || payload.status !== "failed" || payload.recoverable === true || failure.recoverable === true ||
           typeof failure.message !== "string" || failure.message.length > 4_096) return;
+      // With an API key, Codex retries the Responses API 404 and then fails the turn with this
+      // terminal text (codex 0.160.0). Bind it to the configured model; store neither name nor text.
+      const info = record(failure.codexErrorInfo);
+      const infoKinds = Object.keys(info);
+      if (infoKinds.length === 1 && ["httpConnectionFailed", "responseStreamDisconnected"].includes(infoKinds[0]!) &&
+          record(info[infoKinds[0]!]).httpStatusCode === 404 &&
+          failure.message.startsWith(`unexpected status 404 Not Found: The model \`${provider.model}\` does not exist or you do not have access to it.`)) {
+        missingModelTurnId = event.turnId;
+        return;
+      }
       let response: Record<string, unknown>;
       try { response = record(JSON.parse(failure.message)); } catch { return; }
       const error = record(response.error);
@@ -272,6 +293,11 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
         errorMessage: NATIVE_PROVIDER_OVERLOADED_MESSAGE,
         diagnostic: { ...NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC },
       };
+      if (turnId === missingModelTurnId) return {
+        errorCode: "native_provider_model_rejected" as const,
+        errorMessage: NATIVE_MODEL_REJECTION_MESSAGE,
+        diagnostic: { ...NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC },
+      };
       if (turnId !== rejectedTurnId) {
         // A driver's closed category marks a rejected model for any provider. Only an
         // action-required rejection qualifies; a transient one may succeed on retry.
@@ -292,7 +318,8 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
     /** Diagnostics only: the failed turn that `forTerminal` did not classify. */
     unclassifiedTurnFailure(turnId: string | null | undefined, terminal: PrpTerminalState) {
       if (!turnId || terminal.turnTerminalState !== "failed" || terminal.runTerminalState !== "failed" ||
-          turnId === overloadedTurnId || turnId === rejectedTurnId || modelUnavailableTurn(turnId)) return null;
+          turnId === overloadedTurnId || turnId === rejectedTurnId || turnId === missingModelTurnId ||
+          modelUnavailableTurn(turnId)) return null;
       const diagnostic = failedTurns.get(turnId);
       return diagnostic ? { ...diagnostic } : null;
     },
