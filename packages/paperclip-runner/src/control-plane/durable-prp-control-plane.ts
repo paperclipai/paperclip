@@ -879,8 +879,14 @@ function eventSchemaIssuePaths(issues: readonly { path?: unknown }[] | undefined
 }
 
 function eventCommitFailureCause(error: unknown): string {
-  const code = isRecord(error) ? error.code : undefined;
-  if (typeof code === "string" && /^[A-Za-z0-9_.:-]{1,80}$/.test(code)) return code;
+  // Database and transport adapters wrap their coded failure in Error.cause.
+  // Read only bounded codes: messages can contain SQL, arguments or secrets.
+  let current = error;
+  for (let depth = 0; depth < 4 && isRecord(current); depth++) {
+    const code = current.code;
+    if (typeof code === "string" && /^[A-Za-z0-9_.:-]{1,80}$/.test(code)) return code;
+    current = current.cause;
+  }
   const name = error instanceof Error ? error.name : typeof error;
   return /^[A-Za-z0-9_.:-]{1,80}$/.test(name) ? name : "unknown_error";
 }

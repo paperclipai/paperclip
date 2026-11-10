@@ -212,6 +212,27 @@ describe.skipIf(!support.supported)("native run log source watermarks", () => {
     expect(run!.bytes).toBe(Buffer.byteLength(content));
   });
 
+  it("cold-recovers a legacy-compacted event that an earlier release wrote with an invite token", async () => {
+    const f = await fixture(), store = f.store(), handle = await store.begin(f.binding);
+    const token = "pcp_invite_LegacyCompactedFixtureToken-0123456789abcdef";
+    const event = toolEvent(f, `join /invite/${token} ${"retained output ".repeat(5000)} raw ${token}`.slice(0, 65_536));
+    await f.persist(event, 2);
+    // Written before invite redaction: the stored head still holds the token.
+    const chunk = compactRunLogChunk(formatNativeRunLogEvent(event), undefined, { redactInvitations: false });
+    expect(chunk).toContain(token);
+    expect(chunk).toContain("[paperclip truncated run log chunk: omitted ");
+    await store.append(handle, { stream: "stdout", ts: "legacy", seq: 1, sourceCursor: 2, chunk });
+    await store.finalize(handle);
+    const prefix = await readAll(store, handle);
+    await f.persist(f.event(2), 5);
+    await f.settle(handle.logRef);
+    const cold = f.store();
+    await recoverSettledNativeRunLog(db, cold, handle.logRef, async () => ({ enabled: false }));
+    const content = (await cold.read(handle)).content;
+    expect(content.startsWith(prefix)).toBe(true);
+    expect(content.trim().split("\n")).toHaveLength(2);
+  });
+
   it.each([[20, "A"], [256, "界"]] as const)("retains a current %i-step %s plan through proof outage and cold recovery", async (count, character) => {
     const f = await fixture(), event = planEvent(f, count, character.repeat(4000));
     const outage = failPublishedPrefixProof(f);

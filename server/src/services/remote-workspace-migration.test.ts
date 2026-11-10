@@ -161,10 +161,15 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       requestKey: "preserve-pending", requestKeys: ["preserve-pending"] }).returning();
     return repository!;
   }
-  it("preserves an unmaterialized pending repository request during offline migration", async () => {
-    const f = await seed(), repository = await pendingRepository(f);
+  it.each(["offline", "online", "failed"] as const)("preserves an unmaterialized repository request during %s migration", async mode => {
+    const f = await (mode === "offline" ? seed() : queuedFixture());
+    const pending = await pendingRepository(f);
+    if (mode === "failed") await db.update(executionWorkspaceRepositories)
+      .set({ state: "needs_repair", failureCode: "repository_preparation_failed", catalogRepositoryId: "unavailable-catalog",
+        requestedRef: "preserved-requested-ref" }).where(eq(executionWorkspaceRepositories.id, pending.id));
+    const [repository] = await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, pending.id));
     vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
-    await migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: true });
+    await migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: mode === "offline" });
     const authority = readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)!;
     expect(authority.source).toEqual({ kind: "empty" });
     expect(await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, repository.id)))
@@ -194,7 +199,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
   });
   it.each(["online", "preparing", "needs_repair", "pinned", "branched", "failure", "directory", "symlink", "parent_symlink", "parent_file", "escaping_path"] as const)(
     "keeps an unresolved repository request blocked when %s", async state => {
-      const f = await seed(), repository = await pendingRepository(f);
+      const f = await (state === "online" ? seed() : queuedFixture()), repository = await pendingRepository(f);
       vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
       if (state === "preparing" || state === "needs_repair") await db.update(executionWorkspaceRepositories)
         .set({ state }).where(eq(executionWorkspaceRepositories.id, repository.id));
@@ -213,13 +218,23 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
         if (state === "directory") { await fs.mkdir(target); await fs.writeFile(path.join(target, "partial.txt"), "keep partial work\n"); }
         else await fs.symlink("missing-target", target);
       }
-      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true, writersStopped: state !== "online" }))
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true }))
         .rejects.toThrow("repository_preparation_unresolved");
       expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
       expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
       if (state === "directory") expect(await fs.readFile(path.join(f.cwd, repository.relativePath, "partial.txt"), "utf8"))
         .toBe("keep partial work\n");
     });
+  it("keeps a companion's pending repository request blocked during online migration", async () => {
+    const f = await queuedFixture(), aliasId = randomUUID();
+    await db.insert(executionWorkspaces).values({ ...await workspace(f.workspaceId), id: aliasId });
+    await pendingRepository({ ...f, workspaceId: aliasId });
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true }))
+      .rejects.toThrow("repository_preparation_unresolved");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    expect(await db.select().from(workspaceOperations)).toHaveLength(0);
+  });
   async function nestedFixture() {
     const parent = await seed(), workspaceId = randomUUID();
     const cwd = path.join(parent.cwd, ".paperclip", "worktrees", "child");

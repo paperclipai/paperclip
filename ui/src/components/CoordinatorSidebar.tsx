@@ -5,7 +5,6 @@ import type { Agent, Project } from "@paperclipai/shared";
 import { useCoordinatorAttentionCount } from "@/hooks/useCoordinatorAttentionCount";
 import { issuesApi } from "@/api/issues";
 import { instanceSettingsApi } from "@/api/instanceSettings";
-import { projectsApi } from "@/api/projects";
 import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
 import { useRecentTasks } from "@/hooks/useRecentTasks";
 import { usePinnedNavigation } from "@/hooks/usePinnedNavigation";
@@ -27,6 +26,7 @@ import { taskStatusIconProps } from "@/lib/task-status-presentation";
 import { AgentAvatar } from "./AgentAvatar";
 import { agentChatPinKey } from "./AgentChatPin";
 import { PinnedNavigationList, type PinnedNavigationItem } from "./PinnedNavigationList";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 const moreDestinations = [
   { label: "Search", to: "/search", icon: Search },
@@ -122,7 +122,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
   const { openNewIssue } = useDialogActions();
   const location = useLocation();
   const attentionCount = useCoordinatorAttentionCount(companyId);
-  const { data: projects } = useQuery({ queryKey: queryKeys.projects.list(companyId!), queryFn: () => projectsApi.list(companyId!), enabled: !!companyId });
+  const { data: projects } = useQuery({ ...companyProjectsQuery(companyId!), enabled: !!companyId });
   // Only project IDs and visit times are kept in memory. Labels and task lists
   // always come from the authorized API, scoped to the current person/company.
   const scope = `${companyId}:${userId}`;

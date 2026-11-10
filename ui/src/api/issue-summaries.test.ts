@@ -1,4 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
 import { issuesApi } from "./issues";
 
 const first = "11111111-1111-4111-8111-111111111111";
@@ -22,7 +23,7 @@ describe("issue summary HTTP requests", () => {
 
   it("does not send empty or oversized batches", async () => {
     expect(await issuesApi.summaries("company", [])).toEqual([]);
-    await expect(issuesApi.summaries("company", Array(6).fill(first))).rejects.toThrow("Too many");
+    await expect(issuesApi.summaries("company", Array(ISSUE_SUMMARIES_MAX_IDS + 1).fill(first))).rejects.toThrow("Too many");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

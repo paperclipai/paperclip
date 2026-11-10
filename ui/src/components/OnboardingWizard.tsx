@@ -1920,7 +1920,7 @@ function OnboardingWizardInner({
           );
           projectId = project.id;
           queryClient.invalidateQueries({
-            queryKey: queryKeys.projects.list(createdCompanyId)
+            queryKey: queryKeys.projects.all(createdCompanyId)
           });
         }
         if (stillTheSameCompany(createdCompanyId)) setCreatedProjectId(projectId);

@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { captureRemoteWorkspaceDirectory, readRemoteWorkspaceArchiveDirectories, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
+import { workspaceArchive, readRemoteWorkspaceArchiveDirectories, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage } from "./remote-workspace-snapshot-archive.js";
 
 const archiveIo = vi.hoisted(() => ({
   afterChmod: undefined as ((target: string, mode: number) => void) | undefined,
@@ -34,6 +34,9 @@ vi.mock("node:fs/promises", async importOriginal => {
     await actual.chmod(target, mode); archiveIo.afterChmod?.(target, mode);
   } };
 });
+
+const captureRemoteWorkspaceDirectory = (input: Omit<Parameters<typeof workspaceArchive>[0], "kind">) => workspaceArchive({ ...input, kind: "capture" });
+const restoreRemoteWorkspaceArchive = (input: Omit<Parameters<typeof workspaceArchive>[0], "kind">) => workspaceArchive({ ...input, kind: "restore" });
 
 const execute = promisify(execFile);
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull,

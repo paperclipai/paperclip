@@ -16,6 +16,8 @@ import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.j
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { createStorageService } from "../storage/service.js";
 import type { StorageService } from "../storage/types.js";
+import { withS3FailureDiagnostics } from "../storage/s3-failure.js";
+import { isStorageUnavailableError } from "../storage/storage-unavailable.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, newWorkspaceSnapshotStorageTiming, recoverWorkspaceSnapshotArchive, uploadWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
@@ -453,6 +455,28 @@ suite("remote workspace snapshot storage", () => {
       await expect(fs.access(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
     } finally { temp.mockRestore(); }
   });
+  it("keeps a storage outage as the cause when the download deadline ends its wait", async () => {
+    const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
+    let requested!: () => void;
+    const firstRequest = new Promise<void>(resolve => { requested = resolve; });
+    const unavailable = { ...storage, getObject: vi.fn(async () => {
+      requested();
+      return withS3FailureDiagnostics("get_object", async () => {
+        throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
+      });
+    }) } as StorageService;
+    const scratch = path.join(root, "outage-scratch"); await fs.mkdir(scratch);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const result = loadWorkspaceSnapshotArchive({ storage: unavailable, reference: ref, targetPath: path.join(root, "outage.pcws"),
+      temporaryParent: scratch }).then(() => ({ succeeded: true }), (error: unknown) => error);
+    try {
+      await firstRequest;
+      await vi.advanceTimersByTimeAsync(300_001);
+      const outcome = await Promise.race([result, wait(2_000).then(() => ({ pending: true }))]);
+      expect(isStorageUnavailableError(outcome)).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+
   it.each(["headers", "body"])("closes a stalled S3 %s request before returning a retryable download failure", async phase => {
     const f = await fixture(), ref = await uploadWorkspaceSnapshot(f.upload);
     const ciphertext = await fs.readFile(path.join(root, "objects", ref.objectKey));

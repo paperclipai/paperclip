@@ -5958,6 +5958,13 @@ impl CommandExecutor for CodexCommandExecutor {
         Ok(drained.next_drain_deadline)
     }
 
+    fn provider_poll_is_live(&self) -> bool {
+        self.provider.is_some()
+            && self.state.as_ref().is_some_and(|state| {
+                state.startup_attempt.is_none() && state.lifecycle != "reconciliation_required"
+            })
+    }
+
     fn maintain_backpressured_provider(&mut self) -> Result<(), DurableRunnerError> {
         if self.state.as_ref().is_some_and(|state| {
             state.receipt_limit_interrupt_pending && state.active_provider_turn_id.is_some()

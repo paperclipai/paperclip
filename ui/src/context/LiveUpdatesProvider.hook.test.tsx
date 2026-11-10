@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
+import { isLiveReconciledQuery } from "../lib/live-reconcile";
 
 const { pushToast, companySelection } = vi.hoisted(() => ({
   pushToast: vi.fn(() => "toast-id"),
@@ -317,7 +318,7 @@ describe("LiveUpdatesProvider socket run notification scope", () => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await vi.waitFor(() => expect(sockets).toHaveLength(2));
-    expect(invalidate).toHaveBeenCalledExactlyOnceWith({ type: "active" }, { cancelRefetch: false });
+    expect(invalidate).toHaveBeenCalledExactlyOnceWith({ type: "active", predicate: isLiveReconciledQuery }, { cancelRefetch: false });
   });
 
   it.each(["parent-agent", "child-agent"])("shows an unrelated retryable failure without issueId for %s", async (agentId) => {

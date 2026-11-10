@@ -73,7 +73,10 @@ vi.mock("../api/dashboard", () => ({
 }));
 
 vi.mock("../api/execution-workspaces", () => ({
-  executionWorkspacesApi: { listSummaries: apiMocks.executionWorkspaceSummaries },
+  executionWorkspacesApi: {
+    listSummariesByIds: (companyId: string, ids: readonly string[]) =>
+      apiMocks.executionWorkspaceSummaries(companyId, { ids }),
+  },
 }));
 
 vi.mock("../api/issues", () => ({
@@ -131,6 +134,20 @@ vi.mock("../context/DialogContext", () => ({
 vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({ isMobile: false }),
 }));
+
+const workspaceIdScan = vi.hoisted(() => ({ calls: 0, limit: Number.POSITIVE_INFINITY }));
+
+vi.mock("../lib/inbox", async () => {
+  const actual = await vi.importActual<typeof import("../lib/inbox")>("../lib/inbox");
+  return {
+    ...actual,
+    collectReferencedExecutionWorkspaceIds: (...lists: Array<ReadonlyArray<Pick<Issue, "executionWorkspaceId">>>) => {
+      workspaceIdScan.calls += 1;
+      if (workspaceIdScan.calls > workspaceIdScan.limit) throw new Error("Workspace id scan ran on an unchanged render");
+      return actual.collectReferencedExecutionWorkspaceIds(...lists);
+    },
+  };
+});
 
 vi.mock("../hooks/useInboxBadge", () => ({
   useDismissedInboxAlerts: () => ({ dismissed: new Set(), dismiss: vi.fn() }),
@@ -901,6 +918,8 @@ describe("Inbox toolbar", () => {
     await vi.waitFor(() => {
       expect(container.querySelector('[data-slot="task-row"]')?.textContent).toContain("Workspace Aurora");
     });
+    // Only the workspaces the rows reference are read, never the company-wide list.
+    expect(apiMocks.executionWorkspaceSummaries).toHaveBeenCalledWith("company-1", { ids: ["execution-workspace-1"] });
 
     const taskRow = container.querySelector('[data-slot="task-row"]');
     const identifier = taskRow?.querySelector('[data-slot="task-row-identifier"]');
@@ -910,6 +929,185 @@ describe("Inbox toolbar", () => {
     expect(timestamp).not.toBeNull();
     if (!identifier || !timestamp) throw new Error("Expected canonical identifier and timestamp columns");
     expect(identifier.compareDocumentPosition(timestamp) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+    act(() => root.unmount());
+  });
+
+  it("scans a realistic Mine list for workspace ids once per data change, not per render", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["status", "id", "updated"]));
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    const base = new Date("2026-03-11T00:00:00.000Z").getTime();
+    const issues = Array.from({ length: 100 }, (_, index) => createIssue({
+      id: `issue-${index}`,
+      identifier: `PAP-${5000 + index}`,
+      title: `Scaled task ${index}`,
+      executionWorkspaceId: `execution-workspace-${String(index).padStart(3, "0")}`,
+      lastActivityAt: new Date(base - index * 1000),
+    }));
+    setIssueRows(issues);
+    workspaceIdScan.calls = 0;
+    workspaceIdScan.limit = Number.POSITIVE_INFINITY;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>);
+      });
+      await vi.waitFor(() => expect(container.querySelectorAll('[data-slot="task-row"]').length).toBe(100));
+      await vi.waitFor(() => expect(apiMocks.executionWorkspaceSummaries).toHaveBeenCalled());
+      expect(apiMocks.executionWorkspaceSummaries).toHaveBeenCalledTimes(1);
+      expect(apiMocks.executionWorkspaceSummaries.mock.calls[0]?.[1]).toEqual({
+        ids: issues.map((issue) => issue.executionWorkspaceId),
+      });
+
+      // Keyboard navigation re-renders the page without changing its data.
+      workspaceIdScan.limit = workspaceIdScan.calls;
+      await act(async () => {
+        for (let press = 0; press < 5; press += 1) {
+          document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "j", bubbles: true }));
+        }
+      });
+      expect(workspaceIdScan.calls).toBe(workspaceIdScan.limit);
+      expect(apiMocks.executionWorkspaceSummaries).toHaveBeenCalledTimes(1);
+    } finally {
+      workspaceIdScan.limit = Number.POSITIVE_INFINITY;
+      act(() => root.unmount());
+    }
+  });
+
+  it("rows reveal while the workspace read is pending when no workspace column or grouping is active", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["status", "id", "updated"]));
+    localStorage.setItem("paperclip:inbox:group-by", "none");
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    apiMocks.executionWorkspaceSummaries.mockReturnValue(new Promise(() => {}));
+    setIssueRows([createIssue({
+      executionWorkspaceId: "execution-workspace-1",
+      title: "Row without workspace column",
+    })]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-slot="task-row"]')?.textContent).toContain("Row without workspace column");
+    });
+    expect(apiMocks.executionWorkspaceSummaries).toHaveBeenCalledWith("company-1", { ids: ["execution-workspace-1"] });
+
+    act(() => root.unmount());
+  });
+
+  it("keeps a new view hidden while previous workspace summaries stand in for its ids", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["status", "id", "workspace", "updated"]));
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mineFixture = { ...mineFixture, issues: [createIssue({ id: "issue-mine", identifier: "PAP-6001", title: "Mine view task", executionWorkspaceId: "execution-workspace-1" })] };
+    apiMocks.issuesList.mockResolvedValue([
+      createIssue({ id: "issue-recent", identifier: "PAP-6002", title: "Recent view task", executionWorkspaceId: "execution-workspace-2" }),
+    ]);
+    const summary = (id: string, name: string) => ({ id, name, mode: "isolated_workspace", projectWorkspaceId: null });
+    let resolveSecond: () => void = () => {};
+    apiMocks.executionWorkspaceSummaries.mockImplementation(async (_companyId: string, { ids }: { ids: string[] }) => {
+      if (ids.includes("execution-workspace-2")) await new Promise<void>((resolve) => { resolveSecond = resolve; });
+      return ids.map((id) => summary(id, id === "execution-workspace-1" ? "Workspace One" : "Workspace Two"));
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    const render = () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>);
+
+    try {
+      await act(async () => { render(); });
+      await vi.waitFor(() => expect(container.querySelector('[data-slot="task-row"]')?.textContent).toContain("Workspace One"));
+
+      routerMock.location.pathname = "/inbox/recent";
+      await act(async () => { render(); });
+      await vi.waitFor(() => {
+        expect(apiMocks.executionWorkspaceSummaries.mock.calls.some(([, filters]) =>
+          (filters as { ids: string[] }).ids.includes("execution-workspace-2"))).toBe(true);
+      });
+      expect(container.textContent).not.toContain("Recent view task");
+
+      await act(async () => { resolveSecond(); });
+      await vi.waitFor(() => {
+        const recentRow = [...container.querySelectorAll('[data-slot="task-row"]')]
+          .find((row) => row.textContent?.includes("Recent view task"));
+        expect(recentRow?.textContent).toContain("Workspace Two");
+      });
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it("reveals another company's rows that reference no workspaces after a workspace view loaded", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["status", "id", "workspace", "updated"]));
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    setIssueRows([createIssue({ id: "issue-first", identifier: "PAP-7001", title: "First company task", executionWorkspaceId: "execution-workspace-1" })]);
+    apiMocks.executionWorkspaceSummaries.mockResolvedValue([
+      { id: "execution-workspace-1", name: "Workspace One", mode: "isolated_workspace", projectWorkspaceId: null },
+    ]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    const render = () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>);
+
+    try {
+      await act(async () => { render(); });
+      await vi.waitFor(() => expect(container.querySelector('[data-slot="task-row"]')?.textContent).toContain("Workspace One"));
+
+      setIssueRows([createIssue({ id: "issue-second", identifier: "PAP-7002", title: "Second company task", companyId: "company-2" })]);
+      companyState.selectedCompanyId = "company-2";
+      await act(async () => { render(); });
+      await vi.waitFor(() => expect(container.textContent).toContain("Second company task"));
+      expect(container.textContent).not.toContain("Workspace One");
+      expect(apiMocks.executionWorkspaceSummaries).toHaveBeenCalledTimes(1);
+    } finally {
+      act(() => root.unmount());
+    }
+  });
+
+  it("keeps rows hidden until referenced workspaces load when the Workspace column is shown", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem("paperclip:inbox:issue-columns", JSON.stringify(["status", "id", "workspace", "updated"]));
+    apiMocks.experimentalSettings.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    let resolveWorkspaces: (value: unknown) => void = () => {};
+    apiMocks.executionWorkspaceSummaries.mockReturnValue(new Promise((resolve) => { resolveWorkspaces = resolve; }));
+    setIssueRows([createIssue({
+      executionWorkspaceId: "execution-workspace-1",
+      title: "Row with workspace column",
+    })]);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(apiMocks.executionWorkspaceSummaries).toHaveBeenCalledWith("company-1", { ids: ["execution-workspace-1"] });
+    });
+    expect(container.querySelector('[data-slot="task-row"]')).toBeNull();
+
+    await act(async () => {
+      resolveWorkspaces([{ id: "execution-workspace-1", name: "Workspace Borealis", mode: "isolated_workspace", projectWorkspaceId: null }]);
+    });
+    await vi.waitFor(() => {
+      expect(container.querySelector('[data-slot="task-row"]')?.textContent).toContain("Workspace Borealis");
+    });
 
     act(() => root.unmount());
   });

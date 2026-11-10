@@ -7,7 +7,6 @@ import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import type { Agent, AttentionItem, DecisionHistoryItem } from "@paperclipai/shared";
 import { attentionApi } from "@/api/attention";
 import { agentsApi } from "@/api/agents";
-import { projectsApi } from "@/api/projects";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { usePanel } from "@/context/PanelContext";
@@ -30,6 +29,7 @@ import { parseCssTimeMs } from "@/components/task-chat/motion-tokens";
 import { readIssueReviewPolicyMetadata } from "@/lib/review-policy";
 import { CoordinatorDecisionReceipt as Receipt } from "./CoordinatorDecisionReceipt";
 import { CoordinatorTaskMotion } from "./CoordinatorTaskCommitment";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 type Group = "none" | "task" | "agent" | "project";
 
@@ -41,7 +41,7 @@ function HistoryPanel({ companyId, agents, onClose, mobile = false }: { companyI
   const [projectId, setProjectId] = useState("");
   const [groupBy, setGroupBy] = useState<Group>("none");
   const [sort, setSort] = useState<"newest" | "oldest">("newest");
-  const projects = useQuery({ queryKey: queryKeys.projects.list(companyId), queryFn: () => projectsApi.list(companyId) });
+  const projects = useQuery({ ...companyProjectsQuery(companyId) });
   const history = useInfiniteQuery({
     queryKey: [...queryKeys.attention(companyId), "history", { search, outcome, agentId, projectId, sort }],
     queryFn: ({ pageParam }) => attentionApi.history(companyId, { search, outcome, agentId, projectId, sort, cursor: pageParam, limit: 40 }),

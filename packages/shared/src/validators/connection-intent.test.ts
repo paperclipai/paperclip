@@ -42,6 +42,17 @@ describe("connection intent contracts", () => {
     expect(connectionIntentPayloadSchema.safeParse({ ...base, phase: "connected" }).success).toBe(false);
   });
 
+  it("keeps queued agent setup markers server-owned and limited to AI cards", () => {
+    const payload = { version: 1, serviceSlug: "openrouter", serviceName: "OpenRouter", requestingAgentId: agentId,
+      requestingAgentName: "Reviewer", phase: "requested", agentSetup: true };
+    expect(connectionIntentPayloadSchema.safeParse({ ...payload, purpose: "ai" }).success).toBe(true);
+    expect(connectionIntentPayloadSchema.safeParse({ ...payload, purpose: "ai", agentSetupOperationId: agentId }).success).toBe(true);
+    expect(connectionIntentPayloadSchema.safeParse({ ...payload, agentSetup: undefined, purpose: "ai", agentSetupOperationId: agentId }).success).toBe(false);
+    expect(connectionIntentPayloadSchema.safeParse(payload).success).toBe(false);
+    expect(connectionRequestInputSchema.safeParse({ service: "openrouter", agentSetup: true }).success).toBe(false);
+    expect(connectionRequestInputSchema.safeParse({ service: "openrouter", agentSetupOperationId: agentId }).success).toBe(false);
+  });
+
   it("validates terminal outcomes independently from payload state", () => {
     expect(connectionIntentResultSchema.parse({
       version: 1,

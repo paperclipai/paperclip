@@ -15,6 +15,7 @@ import { PanelProvider } from "./context/PanelContext";
 import { SidebarProvider } from "./context/SidebarContext";
 import { DialogProvider } from "./context/DialogContext";
 import { EditorAutocompleteProvider } from "./context/EditorAutocompleteContext";
+import { applyLiveEventFreeQueryDefaults } from "./lib/live-reconcile";
 import { PrimaryAgentProvider } from "./context/PrimaryAgentProvider";
 import { ToastProvider, useToastActions, type ToastInput } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
@@ -79,6 +80,8 @@ const queryClient = createAppQueryClient(
     },
   },
 );
+// Instance and personal preference reads have no live events; see live-reconcile.ts.
+applyLiveEventFreeQueryDefaults(queryClient);
 // Outages pause queries and replayable mutations instead of failing them, and
 // live queries refresh once when the server answers again.
 bindConnectivity(queryClient, connectivity);

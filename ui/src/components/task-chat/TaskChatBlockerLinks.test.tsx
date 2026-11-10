@@ -50,7 +50,7 @@ function relation(id: string, identifier: string, status: IssueRelationIssueSumm
 
 // The onboarding walk: BRA-1 waits on BRA-2 (running), todo tasks and
 // blocked tasks that are "covered" in the task list. Six steps plus a live
-// terminal blocker exceed one summaries request (at most five IDs).
+// terminal blocker; every summaries request stays within the endpoint limit.
 const terminal = relation("bra-9", "BRA-9", "in_progress");
 const blockers = [
   { ...relation("bra-2", "BRA-2", "in_progress"), terminalBlockers: [terminal] },

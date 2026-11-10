@@ -105,6 +105,19 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
     expect(snapshot.contextIssues.find(row => row.id === resolvedTask.id)?.interruption).toMatchObject({ state: "resolved", canRetry: false });
     expect(snapshot.failureRuns.map(run => run.agentId)).not.toContain(supersededAgent.id);
     expect(snapshotResponse.headers["cache-control"]).toBe("private, no-store");
+    const timingPhases = new Map((snapshotResponse.headers["server-timing"] ?? "").split(", ").map((entry: string) => {
+      const match = /^([a-z_]+);dur=(\d+\.\d)$/.exec(entry);
+      expect(match, entry).not.toBeNull();
+      return [match![1]!, Number(match![2])] as const;
+    }));
+    for (const phase of [
+      "paperclip_inbox", "inbox_access", "inbox_issues", "inbox_parents", "inbox_failures", "inbox_failure_context",
+      "inbox_issues_candidates", "inbox_issues_query", "inbox_issues_labels", "inbox_issues_user_stats", "inbox_issues_read_stats",
+      "inbox_issues_last_activity", "inbox_issues_archives", "inbox_issues_live_descendants",
+    ]) expect(timingPhases.get(phase), phase).toBeGreaterThanOrEqual(0);
+    // Attribution: list sub-phases run inside inbox_issues, and every phase inside the request.
+    expect(timingPhases.get("inbox_issues")!).toBeGreaterThanOrEqual(timingPhases.get("inbox_issues_candidates")! + timingPhases.get("inbox_issues_query")! - 0.2);
+    expect(timingPhases.get("paperclip_inbox")!).toBeGreaterThanOrEqual(timingPhases.get("inbox_issues")! - 0.1);
     expect(snapshot).not.toHaveProperty("failureError");
     expect(snapshot).not.toHaveProperty("contextError");
   });
@@ -284,7 +297,13 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
       release();
       const responses = await Promise.all(requests);
       expect(responses.every(response => response.status === 200)).toBe(true);
-      if (coalesced) expect((await coalesced).headers["x-paperclip-request-cache"]).toBe("coalesced");
+      if (coalesced) {
+        const shared = await coalesced as { headers: Record<string, string> };
+        expect(shared.headers["x-paperclip-request-cache"]).toBe("coalesced");
+        // The coalesced reader reports the shared read's phases, not only its own access check.
+        expect(shared.headers["server-timing"]).toMatch(/inbox_issues;dur=/);
+        expect(shared.headers["server-timing"]).toMatch(/inbox_issues_query;dur=/);
+      }
       // The aborted snapshot can outlive the seven ordinary reads. A coalesced
       // response waits for that compute to settle before we require a fresh one.
       const settled = await request(app).get(snapshotPath).expect(200);

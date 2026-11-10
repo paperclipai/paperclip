@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_run_events_retry_exhausted_idx" ON "heartbeat_run_events" USING btree ("company_id","run_id","id" DESC NULLS LAST) WHERE "heartbeat_run_events"."event_type" = 'lifecycle' and "heartbeat_run_events"."message" like 'Bounded retry exhausted%';

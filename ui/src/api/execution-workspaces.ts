@@ -8,6 +8,7 @@ import type {
   WorkspaceOperation,
   WorkspaceRuntimeControlTarget,
 } from "@paperclipai/shared";
+import { EXECUTION_WORKSPACE_SUMMARY_IDS_MAX } from "@paperclipai/shared";
 import { api } from "./client";
 import { sanitizeWorkspaceRuntimeControlTarget } from "./workspace-runtime-control";
 
@@ -60,9 +61,11 @@ export const executionWorkspacesApi = {
       status?: string;
       reuseEligible?: boolean;
       selectableForTask?: boolean;
+      ids?: readonly string[];
     },
   ) => {
     const params = new URLSearchParams();
+    if (filters?.ids) params.set("ids", filters.ids.join(","));
     if (filters?.projectId) params.set("projectId", filters.projectId);
     if (filters?.projectWorkspaceId) params.set("projectWorkspaceId", filters.projectWorkspaceId);
     if (filters?.issueId) params.set("issueId", filters.issueId);
@@ -74,6 +77,17 @@ export const executionWorkspacesApi = {
     return api.get<ExecutionWorkspaceSummary[]>(
       `/companies/${companyId}/execution-workspaces${qs ? `?${qs}` : ""}`,
     );
+  },
+  /** Summaries for specific workspaces, read in server-sized chunks of ids. */
+  listSummariesByIds: async (companyId: string, ids: readonly string[]) => {
+    const chunks: string[][] = [];
+    for (let index = 0; index < ids.length; index += EXECUTION_WORKSPACE_SUMMARY_IDS_MAX) {
+      chunks.push(ids.slice(index, index + EXECUTION_WORKSPACE_SUMMARY_IDS_MAX));
+    }
+    const pages = await Promise.all(
+      chunks.map((chunk) => executionWorkspacesApi.listSummaries(companyId, { ids: chunk })),
+    );
+    return pages.flat();
   },
   list: (
     companyId: string,

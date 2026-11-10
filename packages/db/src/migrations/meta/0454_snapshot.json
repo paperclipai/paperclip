@@ -1,5 +1,5 @@
 {
-  "id": "01f62df5-8514-43ce-97b1-1d590d9b31c0",
+  "id": "f98af245-4a2e-4c3d-b89e-6ed3e81a074c",
   "prevId": "d54bfeb4-dedb-4f8b-9195-a4d4aa67d71f",
   "version": "7",
   "dialect": "postgresql",
@@ -34552,6 +34552,34 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "heartbeat_run_events_retry_exhausted_idx": {
+          "name": "heartbeat_run_events_retry_exhausted_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_run_events\".\"event_type\" = 'lifecycle' and \"heartbeat_run_events\".\"message\" like 'Bounded retry exhausted%'",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -64809,12 +64837,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
-        },
-        "dot_device_cutover": {
-          "name": "dot_device_cutover",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "device_cutover_stack_id": {
           "name": "device_cutover_stack_id",

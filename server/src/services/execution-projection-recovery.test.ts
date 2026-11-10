@@ -15,6 +15,37 @@ describe.skipIf(!support.supported)("persisted stopped-workspace projection", ()
   }, 60_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
+  it("names failed setup for an unstarted queued run and removes the label after readiness", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Setup wait", issuePrefix: "SW" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", adapterType: "paperclip_runner",
+      status: "paused", lifecycleState: "verifying", lifecycleHolds: [],
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 1, retryRequired: true },
+      lifecycleError: "Execution configuration check failed. Connect an account and choose your personal default." });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "queued" });
+    expect((await executionProjectionsForRuns(db, companyId, [runId])).get(runId)).toMatchObject({
+      phase: "queued", label: "Agent setup needs attention", cause: "agent_setup_failed", canStop: true,
+      nextAction: "Open the agent's Harness / Runtime settings to repair its configuration, then retry verification.",
+    });
+    await db.update(agents).set({
+      lifecycleError: "Execution configuration check failed. The remote Runner is being updated.",
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 1,
+        retryAt: new Date(Date.now() + 60_000).toISOString() },
+    }).where(eq(agents.id, agentId));
+    expect((await executionProjectionsForRuns(db, companyId, [runId])).get(runId)).toMatchObject({
+      phase: "queued", label: "Waiting for agent setup", cause: "agent_setup_pending",
+      nextAction: "This turn starts automatically after the agent finishes setup and verification.",
+    });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]).toMatchObject({ status: "queued", startedAt: null });
+    expect((await executionProjectionsForRuns(db, randomUUID(), [runId])).size).toBe(0);
+    await db.update(agents).set({ lifecycleState: "ready", status: "idle", lifecycleError: null }).where(eq(agents.id, agentId));
+    expect((await executionProjectionsForRuns(db, companyId, [runId])).get(runId)).toMatchObject({ label: "Queued", cause: null });
+    // Historical or started work must not inherit a later setup failure.
+    await db.update(agents).set({ lifecycleState: "verifying", status: "paused", lifecycleError: "safe failure" }).where(eq(agents.id, agentId));
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    expect((await executionProjectionsForRuns(db, companyId, [runId])).get(runId)?.label).toBe("Completed");
+  });
+
   it("reads recovered files on a cancelled run through the real batched query", async () => {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Stopped workspace", issuePrefix: "SWP" });

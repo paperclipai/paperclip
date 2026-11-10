@@ -1,6 +1,15 @@
+import { readAiConnectionConfigurationFailure } from "../../../lib/ai-connection-configuration-failure.js";
 import type { LifecycleFailure } from "./ports.js";
 
 // Only fixed text may leave this boundary. Provider errors can contain secrets.
+const connectionReasons = {
+  ai_connection_responsible_user_missing: "Set the responsible user before selecting this agent's AI connection.",
+  ai_connection_default_missing: "Connect an AI account and choose the responsible user's personal default for this provider.",
+  ai_connection_missing: "The selected AI connection is unavailable. Choose an available connection in Configuration.",
+  ai_connection_incompatible: "Choose an AI connection compatible with this agent's harness and model in Configuration.",
+  ai_connection_unavailable: "Reconnect or validate the selected AI account in Configuration.",
+  ai_connection_credential_not_shared: "The credential is not shared with the responsible user. Ask its owner for access or choose an authorized connection.",
+} as const;
 const reasons = {
   harness_test_failed: "The execution test did not pass. Open Configuration and run the agent test to inspect the failed checks.",
   ai_connection_required: "This agent's environment requires a managed AI connection and an isolated Runner home. Check both in Configuration, then retry.",
@@ -24,11 +33,14 @@ const configurationFailures = new Set([
 
 export function lifecycleVerificationNeedsRetry(context: LifecycleFailure, error: unknown): boolean {
   const code = lifecycleFailureCode(error) ?? "";
-  return context.phase === "verifying" && context.stage === "host"
-    && (configurationFailures.has(code) || (code === "harness_test_failed" && (context.verificationFailures ?? 0) >= 3));
+  return ["verifying", "resuming"].includes(context.phase ?? "") && context.stage === "host"
+    && (readAiConnectionConfigurationFailure(error) !== null || context.phase === "verifying"
+      && (configurationFailures.has(code) || (code === "harness_test_failed" && (context.verificationFailures ?? 0) >= 3)));
 }
 
 export function lifecycleFailureCode(error: unknown): string | undefined {
+  const selectionFailure = readAiConnectionConfigurationFailure(error);
+  if (selectionFailure) return selectionFailure;
   const candidate = error as { code?: unknown; cause?: { code?: unknown } } | null;
   return [candidate?.code, candidate?.cause?.code].find((code): code is string =>
     typeof code === "string" && (Object.hasOwn(reasons, code) || transientCodes.has(code)));
@@ -46,7 +58,8 @@ export function lifecycleFailureMessage(context: LifecycleFailure, error: unknow
     : ["save_plugins", "complete_host", "complete_plugin", "transition"].includes(context.stage)
       ? `${phase}: saving progress` : phase;
   const code = lifecycleFailureCode(error);
-  const reason = code && Object.hasOwn(reasons, code) ? reasons[code as keyof typeof reasons]
+  const reason = code && Object.hasOwn(connectionReasons, code) ? connectionReasons[code as keyof typeof connectionReasons]
+    : code && Object.hasOwn(reasons, code) ? reasons[code as keyof typeof reasons]
     : "Paperclip could not complete this step. It will retry automatically. If this continues, contact your instance administrator.";
   return `${step} failed. ${reason}${lifecycleVerificationNeedsRetry(context, error)
     ? " Automatic verification is paused. Update Configuration or choose Retry now." : ""}`;

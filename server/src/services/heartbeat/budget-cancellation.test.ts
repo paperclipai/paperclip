@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import type { Db } from "@paperclipai/db";
 import { agents, agentWakeupRequests, browserUseRuns, browserUseSessions, budgetPolicies, companies, connectionGrants, costEvents, environmentLeases, heartbeatRuns, issues, projects, toolApplications, toolConnections } from "@paperclipai/db";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { runningProcesses } from "../../adapters/index.js";
 import { terminateLocalService } from "../local-service-supervisor.js";
@@ -14,7 +14,13 @@ import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notific
 import { PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
 import { createPostgresRunDispatchAdapter } from "../../modules/run-dispatch/adapters/postgres.js";
 import { createHeartbeatRunControl } from "./run-control.js";
-import { listPendingBudgetCancellationScopes } from "./budget-cancellation.js";
+import {
+  listPendingBudgetCancellationScopes,
+  pendingBudgetCancellationScopesQuery,
+  pendingBudgetRunCancellationExistsQuery,
+  pendingBudgetRunCancellationPredicate,
+  pendingBudgetRunIdsForScopeQuery,
+} from "./budget-cancellation.js";
 import { callbacks, runControlPostgresSupport, setupRunControlDatabase } from "./__tests__/run-control-fixtures.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
@@ -465,5 +471,39 @@ describe.skipIf(!runControlPostgresSupport.supported)("scoped budget cancellatio
       expect(terminateLocalService).not.toHaveBeenCalled();
       expect(deps.setRunStatusFromLive).not.toHaveBeenCalled();
     } finally { unsubscribe(); }
+  });
+
+  it("reads pending Stops through the partial index and ignores delivered or malformed intents", async () => {
+    const { company, agent } = await fixture();
+    const intent = { companyId: company.id, scopeType: "agent" as const, scopeId: agent.id, policyId: randomUUID(), version: 1 };
+    const [pending] = await db.insert(heartbeatRuns).values([
+      { resultJson: { startupCancellation: { budgetEnforcement: intent } } },
+      { resultJson: { startupCancellation: { budgetEnforcement: { ...intent, deliveredAt: new Date().toISOString() } } } },
+      { resultJson: { startupCancellation: { budgetEnforcement: "legacy" } } },
+      { resultJson: { startupCancellation: { requestedAt: new Date().toISOString() } } },
+      { resultJson: null },
+    ].map(row => ({ ...row, companyId: company.id, agentId: agent.id, status: "cancelled", runtimeMode: "legacy" as const }))).returning();
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(pendingBudgetRunCancellationPredicate()))
+      .toEqual([{ id: pending.id }]);
+    expect(await listPendingBudgetCancellationScopes(db)).toEqual([{ companyId: company.id, scopeType: "agent", scopeId: agent.id,
+      enforcement: { policyId: intent.policyId, version: 1 } }]);
+    // The schema index predicate must stay identical to the server predicate.
+    // Otherwise every worker pass falls back to reading all run result JSON.
+    // EXPLAIN the statements the callers send. This table is tiny, so a
+    // sequential scan is cheaper here; with it disabled, the planner can use
+    // the partial index only when each statement implies the index predicate.
+    const plans = await db.transaction(async tx => {
+      await tx.execute(sql`set local enable_seqscan = off`);
+      const explained: string[] = [];
+      for (const query of [
+        pendingBudgetCancellationScopesQuery(db, 1).getSQL(),
+        pendingBudgetCancellationScopesQuery(db).getSQL(),
+        pendingBudgetRunIdsForScopeQuery(db, intent).getSQL(),
+        sql`select exists (${pendingBudgetRunCancellationExistsQuery()})`,
+      ]) explained.push(JSON.stringify(await tx.execute(sql`explain (format json) ${query}`)));
+      return explained;
+    });
+    expect(plans).toHaveLength(4);
+    for (const plan of plans) expect(plan).toContain("heartbeat_runs_pending_budget_cancellation_idx");
   });
 });

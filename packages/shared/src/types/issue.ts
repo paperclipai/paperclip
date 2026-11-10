@@ -1565,6 +1565,10 @@ export type ConnectionIntentPhase = "requested" | "authorizing" | "needs_retry";
  * authorization URLs are returned solely from addressed board endpoints.
  */
 export interface ConnectionIntentPayload {
+  /** Controller-created repair for a queued turn awaiting agent verification. */
+  agentSetup?: true;
+  /** Server-owned lifecycle operation whose selected account this card repairs. */
+  agentSetupOperationId?: string;
   /** Human-selected audience for this OAuth draft; applied only at completion. */
   setupAccess?: { connectionId: string; access: "all_agents" | { agentIds: string[] } };
   /** Existing chat setup; the server derives the destination from these IDs. */

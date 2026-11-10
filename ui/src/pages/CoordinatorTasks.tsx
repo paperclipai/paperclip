@@ -1,3 +1,4 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { readTaskListSortParams, taskListOrderToIssueSort, type TaskListSort } from "@/lib/task-list";
 import { useDeferredValue, useEffect, useRef, useState, type ReactNode } from "react";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
@@ -8,7 +9,6 @@ import { agentsApi } from "@/api/agents";
 import { attentionApi } from "@/api/attention";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { issuesApi } from "@/api/issues";
-import { projectsApi } from "@/api/projects";
 import { EmptyState } from "@/components/EmptyState";
 import { KanbanBoard } from "@/components/KanbanBoard";
 import { TaskList, type TaskListItem } from "@/components/TaskList";
@@ -150,7 +150,7 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
     enabled: !!companyId,
   })) });
   const agents = useQuery({ queryKey: queryKeys.agents.list(companyId!), queryFn: () => agentsApi.list(companyId!), enabled: !!companyId });
-  const projects = useQuery({ queryKey: queryKeys.projects.list(companyId!, { includeArchived: true }), queryFn: () => projectsApi.list(companyId!, { includeArchived: true }), enabled: !!companyId });
+  const projects = useQuery({ ...companyProjectsQuery(companyId!, { includeArchived: true }), enabled: !!companyId });
   const directory = useQuery({ queryKey: queryKeys.access.companyUserDirectory(companyId!), queryFn: () => accessApi.listUserDirectory(companyId!), enabled: !!companyId });
   const labels = useQuery({ queryKey: queryKeys.issues.labels(companyId!), queryFn: () => issuesApi.listLabels(companyId!), enabled: !!companyId });
   const sharedLiveRuns = useSharedPollingQuery({ companyId, resourceKey: "live-runs", queryKey: queryKeys.liveRuns(companyId!), enabled: !!companyId, refetchInterval: false, leaderOnly: true });

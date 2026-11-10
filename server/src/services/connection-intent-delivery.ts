@@ -1,3 +1,6 @@
+import { isAgentAwaitingSetup, requestAgentLifecycleRecheckInTransaction } from "../modules/agent-lifecycle/index.js";
+import { agents, companies } from "@paperclipai/db";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { connectionContinuationPendingResponse, findSatisfiedToolConnection, satisfiedConnectionIntentService } from "./satisfied-connection-intents.js";
 import { isAiConnectionConfigurationFailure } from "./ai-auth-failure.js";
@@ -27,6 +30,9 @@ export async function wakeConnectionIntentAfterResolution(
   const resolvedAt = input.loaded.interaction.resolvedAt;
   const interactionResolvedAt = resolvedAt instanceof Date ? resolvedAt.toISOString() : resolvedAt;
   const payload = input.loaded.interaction.payload;
+  // Setup repair resumes the accepted queued turn through lifecycle readiness.
+  // It never creates an additional provider turn through the generic wake route.
+  if (payload !== null && typeof payload === "object" && "agentSetup" in payload && payload.agentSetup === true) return;
   const repairsProviderAuthentication = payload !== null && typeof payload === "object" && "purpose" in payload && payload.purpose === "ai";
   await heartbeat.wakeup(agentId, {
     source: "automation",
@@ -131,7 +137,7 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
     const retiredForAvailableConnection = interaction?.status === "expired"
       && interaction.result?.outcome === "expired" && "connectionId" in interaction.result
       && typeof interaction.result.connectionId === "string";
-    const payload = interaction?.payload as { requestingAgentId?: string; serviceSlug?: string; purpose?: "ai" } | undefined;
+    const payload = interaction?.payload as { requestingAgentId?: string; serviceSlug?: string; purpose?: "ai"; agentSetup?: true; agentSetupOperationId?: string } | undefined;
     if (!loaded || !interaction || (!retiredForAvailableConnection && !["accepted", "rejected"].includes(interaction.status))
       || ["done", "cancelled"].includes(loaded.issue.status) || loaded.issue.assigneeAgentId !== payload?.requestingAgentId) {
       await db.update(connectionIntentDeliveries).set({ deliveredAt: new Date() }).where(and(eq(connectionIntentDeliveries.interactionId, interactionId),
@@ -152,10 +158,41 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
         return;
       }
     }
-    if (interaction.status === "accepted") {
+    if (interaction.status === "accepted" && payload?.agentSetup !== true) {
       const ready = await connectionIntentService(db).usableConnectionForAgent({ companyId: claimed.companyId,
-        agentId: payload!.requestingAgentId!, responsibleUserId: userId!, serviceSlug: payload!.serviceSlug!, purpose: payload!.purpose });
+        agentId: payload!.requestingAgentId!, responsibleUserId: userId!, serviceSlug: payload!.serviceSlug!, purpose: payload!.purpose, sourceRunId: interaction.sourceRunId,
+        agentSetup: payload!.agentSetup, agentSetupOperationId: payload!.agentSetupOperationId });
       if (!ready) return;
+    }
+    if (payload?.agentSetup === true && payload.purpose === "ai") {
+      await db.transaction(async tx => {
+        const [task] = await tx.select().from(issues).where(and(eq(issues.id, loaded.issue.id), eq(issues.companyId, claimed.companyId))).for("update");
+        const [source] = await tx.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, interaction!.sourceRunId!), eq(heartbeatRuns.companyId, claimed.companyId),
+          eq(heartbeatRuns.agentId, payload.requestingAgentId!),
+        )).for("no key update");
+        const [agent] = await tx.select().from(agents).where(and(eq(agents.id, payload.requestingAgentId!), eq(agents.companyId, claimed.companyId))).for("update");
+        const [company] = await tx.select({ defaultResponsibleUserId: companies.defaultResponsibleUserId })
+          .from(companies).where(eq(companies.id, claimed.companyId));
+        const verificationUserId = agent?.lifecycleOperation?.responsibleUserId ?? company?.defaultResponsibleUserId;
+        if (interaction!.status === "accepted" && task && !["done", "cancelled"].includes(task.status)
+          && task.assigneeAgentId === payload.requestingAgentId && source?.status === "queued" && !source.startedAt
+          && source.runtimeMode === "legacy" && agent && isAgentAwaitingSetup(agent)
+          && verificationUserId === interaction!.addresseeUserId
+          && (!payload.agentSetupOperationId || agent.lifecycleOperation?.id === payload.agentSetupOperationId)) {
+          const ready = await connectionIntentService(db).usableConnectionForAgent({ companyId: claimed.companyId,
+            agentId: payload.requestingAgentId!, responsibleUserId: userId!, serviceSlug: payload.serviceSlug!, purpose: "ai",
+            sourceRunId: interaction!.sourceRunId, agentSetup: true, agentSetupOperationId: payload.agentSetupOperationId });
+          if (!ready) return;
+          await requestAgentLifecycleRecheckInTransaction(tx, { companyId: claimed.companyId, agentId: agent.id,
+            configurationRepaired: true }, () => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle));
+        }
+        // Decline, Stop and stale ownership also settle this delivery without a wake.
+        await tx.update(connectionIntentDeliveries).set({ deliveredAt: new Date() }).where(and(
+          eq(connectionIntentDeliveries.interactionId, interactionId), eq(connectionIntentDeliveries.companyId, claimed.companyId),
+          eq(connectionIntentDeliveries.nextAttemptAt, claimed.nextAttemptAt), isNull(connectionIntentDeliveries.deliveredAt)));
+      });
+      return;
     }
     if (retiredForAvailableConnection) {
       const publications: ActivityPublication[] = [];

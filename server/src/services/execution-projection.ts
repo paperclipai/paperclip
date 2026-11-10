@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
+  agents,
   heartbeatRuns,
   issues,
   dotAgentBindings,
@@ -19,6 +20,7 @@ import { workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { readTaskDrain } from "./task-admission.js";
 import { getStartupRecoveryState } from "../startup-recovery-state.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
+import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 const MAX_PREDECESSOR_CLEANUP_CHECKS = 16;
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
@@ -189,6 +191,13 @@ export async function executionProjectionsForRuns(
   // executor the claim also waits for. Pending uses admission's own predicate.
   const settlingPredecessorKeys = new Set<string>();
   const queuedRuns = runs.filter(run => run.status === "queued");
+  const setupAgentIds = [...new Set(queuedRuns.filter(run => !run.startedAt).map(run => run.agentId))];
+  const setupAgents = setupAgentIds.length ? await read(async () => db
+    .select({ id: agents.id, lifecycleState: agents.lifecycleState,
+      lifecycleHolds: agents.lifecycleHolds,
+      retryRequired: sql<boolean>`coalesce(${agents.lifecycleOperation}->>'retryRequired', 'false') = 'true'` })
+    .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, setupAgentIds)))) : [];
+  const setupByAgent = new Map(setupAgents.map(agent => [agent.id, agent]));
   const issueIdOf = (run: Run) => run.nativeIssueId ?? text(run.contextSnapshot?.issueId);
   const queuedIssueIds = [...new Set(queuedRuns.map(issueIdOf).filter((id): id is string => !!id))];
   if (queuedIssueIds.length) {
@@ -250,6 +259,7 @@ export async function executionProjectionsForRuns(
         now,
         waitingByRun.get(run.id),
         settlingPredecessorKeys.has(run.id),
+        setupByAgent.get(run.agentId),
       ),
     );
   }
@@ -275,6 +285,7 @@ export function projectExecution(
   now = new Date(),
   waitingForProvider?: WaitingExternalProvider,
   waitingForPredecessor = false,
+  setupAgent?: { lifecycleState: string; lifecycleHolds: readonly string[]; retryRequired?: boolean },
 ): ExecutionProjection {
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
@@ -475,6 +486,15 @@ export function projectExecution(
     return leaseConfirmed || processConfirmed
       ? set("working", "Working")
       : set("reconnecting", "Confirming execution");
+  }
+  if (run.status === "queued" && !run.startedAt && setupAgent
+    && isAgentAwaitingSetup(setupAgent)) {
+    const needsRepair = setupAgent.retryRequired === true;
+    projection.cause = needsRepair ? "agent_setup_failed" : "agent_setup_pending";
+    projection.nextAction = needsRepair
+      ? "Open the agent's Harness / Runtime settings to repair its configuration, then retry verification."
+      : "This turn starts automatically after the agent finishes setup and verification.";
+    return set("queued", needsRepair ? "Agent setup needs attention" : "Waiting for agent setup");
   }
   if (run.status === "queued" && !run.startedAt && readTaskDrain(now)) {
     projection.cause = "task_drain";

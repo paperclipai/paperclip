@@ -11,9 +11,12 @@ export function listAttentionExhaustedRuns(db: Db, companyId: string) {
       message: heartbeatRunEvents.message,
     })
     .from(heartbeatRunEvents)
+    // Keep both receipt filters as SQL literals. They must match the partial
+    // index heartbeat_run_events_retry_exhausted_idx; a bound parameter would
+    // stop a generic prepared plan from using it.
     .where(and(
       eq(heartbeatRunEvents.companyId, companyId),
-      eq(heartbeatRunEvents.eventType, "lifecycle"),
+      sql`${heartbeatRunEvents.eventType} = 'lifecycle'`,
       sql`${heartbeatRunEvents.message} like 'Bounded retry exhausted%'`,
     ))
     .orderBy(asc(heartbeatRunEvents.runId), desc(heartbeatRunEvents.id))

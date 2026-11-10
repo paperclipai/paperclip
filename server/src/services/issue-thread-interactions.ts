@@ -2908,7 +2908,9 @@ export function issueThreadInteractionService(
     ) => {
       const payload = connectionIntentPayloadSchema.parse(input.payload);
       const sameSavedSetup = (candidate: typeof payload) =>
-        candidate.savedSetup?.endpointId === payload.savedSetup?.endpointId
+        candidate.agentSetup === payload.agentSetup
+        && candidate.agentSetupOperationId === payload.agentSetupOperationId
+        && candidate.savedSetup?.endpointId === payload.savedSetup?.endpointId
         && candidate.savedSetup?.connectionId === payload.savedSetup?.connectionId
         && candidate.savedSetup?.action === payload.savedSetup?.action
         && Boolean(candidate.savedSetup?.credentialRotation) === Boolean(payload.savedSetup?.credentialRotation)
@@ -2962,7 +2964,8 @@ export function issueThreadInteractionService(
             eq(issueThreadInteractionIdempotencyKeys.idempotencyKey, input.idempotencyKey))).limit(1);
         if (qualityAlias) throw conflict("Interaction idempotency key already exists for a different request", { idempotencyKey: input.idempotencyKey });
 
-        // Serialize on the task so retries and later runs share the same live card.
+        // Generic requests share live cards across runs. Setup cards stay bound
+        // to the queued turn that their delivery can repair.
         const pending = await tx.select().from(issueThreadInteractions).where(and(
           eq(issueThreadInteractions.companyId, issue.companyId),
           eq(issueThreadInteractions.issueId, issue.id),
@@ -2972,14 +2975,21 @@ export function issueThreadInteractionService(
           eq(issueThreadInteractions.addresseeUserId, input.addresseeUserId),
         ));
         const reusable = pending.find((candidate) =>
-          connectionIntentPayloadSchema.parse(candidate.payload).serviceSlug === payload.serviceSlug && connectionIntentPayloadSchema.parse(candidate.payload).purpose === payload.purpose && sameSavedSetup(connectionIntentPayloadSchema.parse(candidate.payload)) && isDeepStrictEqual(connectionIntentPayloadSchema.parse(candidate.payload).accessRequest, payload.accessRequest));
+          (!payload.agentSetup || candidate.sourceRunId === input.sourceRunId)
+          && connectionIntentPayloadSchema.parse(candidate.payload).serviceSlug === payload.serviceSlug && connectionIntentPayloadSchema.parse(candidate.payload).purpose === payload.purpose && sameSavedSetup(connectionIntentPayloadSchema.parse(candidate.payload)) && isDeepStrictEqual(connectionIntentPayloadSchema.parse(candidate.payload).accessRequest, payload.accessRequest));
         if (reusable) {
           await enqueueIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(reusable));
           return reusable;
         }
 
-        const [sourceRun] = await tx.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
+        const sourceQuery = tx.select({ context: heartbeatRuns.contextSnapshot, status: heartbeatRuns.status,
+          agentId: heartbeatRuns.agentId, startedAt: heartbeatRuns.startedAt, runtimeMode: heartbeatRuns.runtimeMode }).from(heartbeatRuns)
           .where(and(eq(heartbeatRuns.id, input.sourceRunId), eq(heartbeatRuns.companyId, issue.companyId)));
+        const [sourceRun] = await (payload.agentSetup ? sourceQuery.for("no key update") : sourceQuery);
+        if (payload.agentSetup && (payload.purpose !== "ai" || sourceRun?.agentId !== payload.requestingAgentId
+          || sourceRun.status !== "queued" || sourceRun.startedAt !== null || sourceRun.runtimeMode !== "legacy")) {
+          throw conflict("Agent setup requests require an unstarted queued turn");
+        }
         if (!sourceRun) throw unprocessable("Interaction source run is unavailable");
         const originCommentIds = await currentContinuationOrigins(tx as unknown as Db, issue.companyId, issue.id, sourceRun.context);
         await notifyIssueReviewState(tx, { companyId: issue.companyId, issueId: issue.id });
