@@ -88,6 +88,56 @@ describe("native execution renewal ownership", () => {
     expect(returning).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
   });
+  it("hands preparation renewal to the same owner's executor at the next attempt", async () => {
+    vi.useFakeTimers();
+    const { input, returning } = fixture();
+    const preparation = startNativeSessionExecutionLeaseRenewal(input);
+    expect(() => startNativeSessionExecutionLeaseRenewal({ ...input, attempt: 0 })).toThrow("native_session_renewal_binding_changed");
+    const executorLost = vi.fn(async () => undefined);
+    const execution = startNativeSessionExecutionLeaseRenewal({ ...input, attempt: 2, onLost: executorLost });
+    await preparation.stop();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(returning).toHaveBeenCalledTimes(1);
+    returning.mockResolvedValueOnce([]);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(executorLost).toHaveBeenCalledTimes(1);
+    expect(input.onLost).not.toHaveBeenCalled();
+    await expect(execution.stop()).rejects.toThrow("native_session_lease_lost");
+  });
+  it("does not count a renewal that failed because the owner's executor advanced the attempt", async () => {
+    vi.useFakeTimers();
+    const { input, returning } = fixture();
+    let complete!: (value: { runId: string }[]) => void;
+    returning.mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));
+    const preparation = startNativeSessionExecutionLeaseRenewal(input);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(returning).toHaveBeenCalledTimes(1);
+    const execution = startNativeSessionExecutionLeaseRenewal({ ...input, attempt: 2 });
+    complete([]);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(returning).toHaveBeenCalledTimes(2);
+    expect(input.onLost).not.toHaveBeenCalled();
+    await preparation.stop();
+    await execution.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("keeps renewing when the coordinator shows its own owner already claimed the next attempt", async () => {
+    vi.useFakeTimers();
+    const { input, returning } = fixture();
+    const limit = vi.fn(async () => [{ attempt: 2, leaseOwner: "owner" }]);
+    Object.assign(input.db, { select: () => ({ from: () => ({ where: () => ({ limit }) }) }) });
+    returning.mockResolvedValueOnce([]);
+    const preparation = startNativeSessionExecutionLeaseRenewal(input);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(limit).toHaveBeenCalledTimes(1);
+    expect(input.onLost).not.toHaveBeenCalled();
+    const execution = startNativeSessionExecutionLeaseRenewal({ ...input, attempt: 2 });
+    await preparation.stop();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(returning).toHaveBeenCalledTimes(2);
+    expect(input.onLost).not.toHaveBeenCalled();
+    await execution.stop();
+  });
   it("does not queue SQL behind a slow renewal and fences a lost owner", async () => {
     vi.useFakeTimers();
     const { input, update, returning } = fixture();

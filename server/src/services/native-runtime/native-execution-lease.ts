@@ -256,17 +256,26 @@ const renewals = new WeakMap<Db, Map<string, {
   confirmedDeadline: number;
 }>>();
 
+async function attemptAdvancedUnderOwner(binding: RenewalInput): Promise<boolean> {
+  const [row] = await binding.db.select({ attempt: nativeRunFinalizations.attempt, leaseOwner: nativeRunFinalizations.leaseOwner })
+    .from(nativeRunFinalizations)
+    .where(and(eq(nativeRunFinalizations.runId, binding.runId), eq(nativeRunFinalizations.companyId, binding.companyId)))
+    .limit(1);
+  return row?.leaseOwner === binding.leaseOwner && row.attempt > binding.attempt;
+}
+
 export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): NativeExecutionLeaseRenewal {
   let owners = renewals.get(input.db);
   if (!owners) { owners = new Map(); renewals.set(input.db, owners); }
   let state = owners.get(input.leaseOwner);
   if (state) {
     if (state.input.runId !== input.runId || state.input.companyId !== input.companyId
-      || state.input.issueId !== input.issueId || state.input.attempt !== input.attempt
+      || state.input.issueId !== input.issueId || state.input.attempt > input.attempt
       || state.input.controller.bootId !== input.controller.bootId || state.input.remote !== input.remote) {
       throw new Error("native_session_renewal_binding_changed");
     }
     if (state.lost) throw state.lost;
+    if (input.attempt > state.input.attempt) state.input = { ...state.input, attempt: input.attempt, onLost: input.onLost };
     state.references += 1;
   } else {
     const ttlMs = input.remote ? REMOTE_CONTROLLER_LEASE_MS : NATIVE_SESSION_EXECUTION_LEASE_TTL_MS;
@@ -275,7 +284,7 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
       state!.lost = error instanceof Error ? error : new Error("native_session_lease_lost");
       clearInterval(state!.timer);
       clearTimeout(state!.deadline);
-      state!.loss = Promise.resolve().then(input.onLost).catch(() => undefined);
+      state!.loss = Promise.resolve().then(state!.input.onLost).catch(() => undefined);
     };
     const deadline = (delay: number) => {
       const timer = setTimeout(() => lose(new Error("native_session_lease_renewal_deadline")), Math.max(0, delay));
@@ -285,7 +294,8 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
     const renew = () => {
       if (state!.lost || state!.busy) return;
       state!.busy = true;
-      state!.pending = renewNativeSessionExecutionLeaseDeadline({ ...input, leaseTtlMs: ttlMs,
+      const binding = state!.input;
+      state!.pending = renewNativeSessionExecutionLeaseDeadline({ ...binding, leaseTtlMs: ttlMs,
         reacquire: !input.remote && input.controllerGeneration !== undefined
           ? { controllerGeneration: input.controllerGeneration } : undefined })
         .then(confirmedDeadline => {
@@ -296,7 +306,8 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
           state!.confirmedDeadline = confirmedDeadline;
           state!.deadline = deadline(confirmedDeadline - performance.now());
         })
-        .catch((error: unknown) => {
+        .catch(async (error: unknown) => {
+          if (state!.input !== binding) return;
           // A cancelled statement can retry at the next tick, but does not
           // extend the ownership deadline. Never queue overlapping attempts.
           for (let cause = error, depth = 0; cause && depth < 4; cause = (cause as { cause?: unknown }).cause, depth++) {
@@ -305,6 +316,7 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
             const code = (cause as { code?: unknown }).code;
             if (code === "57014" || code === "40P01") return;
           }
+          if (await attemptAdvancedUnderOwner(binding).catch(() => false) || state!.input !== binding) return;
           lose(error);
         }).finally(() => { state!.busy = false; });
     };

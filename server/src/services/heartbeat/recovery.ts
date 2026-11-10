@@ -997,7 +997,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     try {
       const dispositions = await claimNativeRestartRecoveries({
         onClaim: (claim, scope) => {
-          if (!scope.remote || claim.kind !== "reattach_remote_runner") return;
+          if (!scope.remote) return;
           // Start before the rest of the batch or its event writes can delay dispatch.
           preparationRenewals.set(claim.runId, startNativeSessionExecutionLeaseRenewal({
             db, ...scope, runId: claim.runId, leaseOwner: claim.leaseOwner,
