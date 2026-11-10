@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { sidecarShutdownSnapshot } from "./acpx-sidecar-shutdown.js";
+import { recordSidecarShutdownThenQueue, sidecarShutdownSnapshot } from "./acpx-sidecar-shutdown.js";
 
 describe("sidecar shutdown snapshot", () => {
   it("bounds samples, keeps the oldest calls and omits private data", () => {
@@ -27,5 +27,20 @@ describe("sidecar shutdown snapshot", () => {
       reason: "sidecar received SIGTERM", pendingTools: 0, pendingInputs: 0,
       pendingPermissions: 0, normalizingTools: 0, tools: [], truncatedTools: 0,
     });
+  });
+
+  it("records the snapshot before queueing shutdown", () => {
+    const order: string[] = [];
+    expect(recordSidecarShutdownThenQueue(() => order.push("record"), () => order.push("queue"))).toBe(true);
+    expect(order).toEqual(["record", "queue"]);
+  });
+
+  it("still queues shutdown when the snapshot write throws", () => {
+    const order: string[] = [];
+    expect(recordSidecarShutdownThenQueue(() => {
+      order.push("record");
+      throw new Error("EPIPE: stdout closed");
+    }, () => order.push("queue"))).toBe(false);
+    expect(order).toEqual(["record", "queue"]);
   });
 });

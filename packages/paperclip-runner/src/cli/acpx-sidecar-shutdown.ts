@@ -27,3 +27,14 @@ export function sidecarShutdownSnapshot(
     truncatedTools: tools.size - samples.length,
   };
 }
+
+export function recordSidecarShutdownThenQueue(record: () => void, queueShutdown: () => void): boolean {
+  let recorded = true;
+  try {
+    record();
+  } catch {
+    recorded = false;
+  }
+  queueShutdown();
+  return recorded;
+}

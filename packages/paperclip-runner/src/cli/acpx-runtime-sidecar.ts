@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { sidecarShutdownSnapshot } from "./acpx-sidecar-shutdown.js";
+import { recordSidecarShutdownThenQueue, sidecarShutdownSnapshot } from "./acpx-sidecar-shutdown.js";
 import { classifyClaudeStatusBanner } from "../drivers/acpx/claude-status-banners.js";
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { toolFileChangesFromAcpContent, workspaceRootsFor, type ToolFileChange } from "../tool-file-changes.js";
@@ -227,14 +227,18 @@ process.once("SIGINT", () => {
 function requestShutdown(reason: string): void {
   if (shutdownRequested) return;
   shutdownRequested = true;
-  diagnostic("sidecar_shutdown_requested", JSON.stringify(sidecarShutdownSnapshot(
-    reason, tools, inputs.size, permissions.size, normalizingTools.size,
-  )));
-  if (!inputClosed) lines.pause();
-  pendingInput = enqueueAcpxSidecarInput(
-    pendingInput,
-    () => shutdown(reason),
-    (error) => diagnostic("sidecar_shutdown_failed", safeMessage(error)),
+  recordSidecarShutdownThenQueue(
+    () => diagnostic("sidecar_shutdown_requested", JSON.stringify(sidecarShutdownSnapshot(
+      reason, tools, inputs.size, permissions.size, normalizingTools.size,
+    ))),
+    () => {
+      if (!inputClosed) lines.pause();
+      pendingInput = enqueueAcpxSidecarInput(
+        pendingInput,
+        () => shutdown(reason),
+        (error) => diagnostic("sidecar_shutdown_failed", safeMessage(error)),
+      );
+    },
   );
 }
 
