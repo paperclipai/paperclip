@@ -38,11 +38,6 @@ const RENEWAL_STATEMENT_TIMEOUT_MS = 10_000;
  *
  * Callers lock with `lockNativeExecutionLeaseForReacquire` first, so the run
  * row this reads is the latest committed version and stays so until commit.
- *
- * A run resumed by restart recovery keeps the `recovery_state` its claim wrote
- * (`resuming_session`, `awaiting_runner_reattach` or `bootstrap_incomplete`)
- * until a result is accepted. That record is the grant of this very lease, not
- * another actor's: see `nativeOwnRestartClaimUnchanged`.
  */
 const OWN_RESTART_CLAIM_STATES: ReadonlyArray<readonly [disposition: string, recoveryState: string]> = [
   ["resume_dead_runner", "resuming_session"],
@@ -50,16 +45,6 @@ const OWN_RESTART_CLAIM_STATES: ReadonlyArray<readonly [disposition: string, rec
   ["bootstrap_incomplete", "bootstrap_incomplete"],
 ];
 
-/**
- * The row still shows exactly the local restart-recovery claim that granted
- * the current lease, and nothing recorded since. The claim writes its
- * `recovery_state` together with its owner, boot and generation and appends
- * one history entry naming that boot, generation and disposition. Every later
- * actor appends another entry (a shutdown suspension, a failure settlement),
- * moves the state to one this list does not pair (`awaiting_evidence`,
- * `blocked`), or replaces owner, boot or generation, which the caller's WHERE
- * also matches. Rows saved by earlier releases carry the same entry shape.
- */
 function nativeOwnRestartClaimUnchanged(): SQL {
   const last = sql`(${nativeRunFinalizations.recoveryHistory} -> -1)`;
   const pairs = sql.join(OWN_RESTART_CLAIM_STATES.map(([disposition, state]) =>

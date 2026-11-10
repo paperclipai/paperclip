@@ -192,13 +192,7 @@ describeEmbeddedPostgres("native execution lease taken back after a host sleep",
     });
   }
 
-  /**
-   * Restart-chaos L7 (TM3 or TM1 then TM2): restart recovery resumed the run,
-   * then the host slept. The claim's own recovery record stays on the row until
-   * a result is accepted, so it must not count as another actor's.
-   */
   function restartClaimEntry(overrides: Record<string, unknown> = {}) {
-    // The shape historyEntry() writes; a previous release wrote the same keys.
     return { at: new Date().toISOString(), restartKind: "hard", controllerBootId: controller.bootId,
       controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt.toISOString(),
       controllerGeneration: GENERATION, disposition: "resume_dead_runner", reason: "dead_runner_with_exact_provider_checkpoint",
@@ -241,7 +235,6 @@ describeEmbeddedPostgres("native execution lease taken back after a host sleep",
     expect(await releaseAsOwner(run)).toHaveLength(1);
   });
 
-  /** The executor's failure settlement: pre-result lock, observed-only held condition, resumable failure fields. */
   async function settleFailureAsOwner(run: SleptRun) {
     return owner.transaction(async tx => {
       await lockNativeExecutionLeaseForReacquire(tx, { ...run, preResultOnly: true });
@@ -266,7 +259,6 @@ describeEmbeddedPostgres("native execution lease taken back after a host sleep",
     expect(saved).toMatchObject({ phase: "retryable_failure", leaseOwner: null, recoveryState: "resuming_session",
       failureCode: "native_session_lease_lost" });
     expect((saved.recoveryHistory as Array<{ disposition?: string }>).at(-1)?.disposition).toBe("retryable_failure");
-    // The settled row no longer shows the claim, so a late renewal stays fenced out.
     await expect(renewNativeSessionExecutionLease(run.renewal)).rejects.toThrow("native_session_lease_lost");
   });
 
