@@ -12907,7 +12907,7 @@ registerCurrentRoute({
   path: "/api/tool-gateway/gateways/{gatewayId}/tokens",
   tags: ["tool-gateway"],
   summary: "Create a named MCP gateway token",
-  description: "Creates a client token for an external MCP client. A person caller receives the token value once in the response. An agent with delegated connection management may create the token for its responsible person, but receives only metadata (id, tokenPrefix, expiresAt, pendingReveal: true) plus tokensPath, the gateway's Tokens page (/<prefix>/apps/gateways/<gatewayId>/tokens). The value does not exist until that person reveals it there; send the person to tokensPath as a Markdown link, and never ask for, accept, or repeat token values in chat. To rotate, create the replacement, then revoke the old token after the person confirms the client works with the new one.",
+  description: "Creates a client token for an external MCP client. A person caller receives the token value once in the response. An agent with delegated connection management may create the token for its responsible person, but receives only metadata (id, tokenPrefix, expiresAt, pendingReveal: true) plus tokensPath, the gateway's Tokens page (/<prefix>/apps/gateways/<gatewayId>/tokens). The value does not exist until that person reveals it there; send the person to tokensPath as a Markdown link, and never ask for, accept, or repeat token values in chat. To rotate, create the replacement and leave the old token active in that turn: its client keeps working on it until the person installs the new value. Revoke the old token only after the person says the client works with the new one, or let them revoke it on the Tokens page.",
   body: toolGatewayCompanyBodySchema,
   responses: {
     201: r.ok(),

@@ -5,7 +5,11 @@ import { waitForReply } from "./identity-support.js";
 import { privateScanJson } from "./external-secret-scan.js";
 import { collectRunEvents } from "../run-observations.js";
 import { GATEWAY_TOKEN_VALUE } from "./external-gateway-rotation.js";
+import { startNotesProvider, connectNotes, type NotesProvider } from "./external-provider.js";
 import type { Entity } from "./internal-support.js";
+import type { ChatCatalogContext } from "../chat-catalog-contract.js";
+
+const providers = new WeakMap<ChatCatalogContext, NotesProvider>();
 
 type SavedGateway = Entity & { profileId?: string; createdByUserId?: string | null; tokens?: Array<{ pendingReveal?: boolean; subjectType?: string }> };
 /**
@@ -29,11 +33,17 @@ export function gradeGatewayCreate(value: unknown) {
   return c.result();
 }
 export const gatewayExternalCases = [definition("gateways-profiles.create-gateway", async ctx => {
-  const profile = await ctx.input.api.post<Entity>(`${root(ctx)}/tools/profiles`, { profileKey: "website-team", name: "Website team tools", defaultAction: "deny", entries: [] });
-  return { profileId: profile.id, gatewaysPath: `/${ctx.input.fixtures.company.issuePrefix}/apps/gateways` };
+  // A profile that already allows a real read tool, so the gateway is useful as soon as it exists.
+  const provider = await startNotesProvider("Website team notes"); providers.set(ctx, provider);
+  try {
+    const connection = await connectNotes(ctx, provider, "read-only");
+    const profile = await ctx.input.api.post<Entity>(`${root(ctx)}/tools/profiles`, { profileKey: "website-team", name: "Website team tools", defaultAction: "deny",
+      entries: [{ selectorType: "catalog_entry", effect: "include", connectionId: connection.connectionId, catalogEntryId: connection.read[0] }] });
+    return { profileId: profile.id, connectionId: connection.connectionId, gatewaysPath: `/${ctx.input.fixtures.company.issuePrefix}/apps/gateways` };
+  } catch (error) { providers.delete(ctx); await provider.close(); throw error; }
 }, gradeGatewayCreate, {
   oracleVersion: "paperclip.chat-catalog.external.v2",
-  sourceFiles: ["chat-catalog-domains/external-gateways-profiles.ts", "chat-catalog-domains/external-gateway-rotation.ts", "chat-catalog-domains/external-secret-scan.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-support.ts", "run-observations.ts", "chat-scenarios/gateways-profiles.yaml"],
+  sourceFiles: ["chat-catalog-domains/external-gateways-profiles.ts", "chat-catalog-domains/external-gateway-rotation.ts", "chat-catalog-domains/external-provider.ts", "chat-catalog-domains/external-secret-scan.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-support.ts", "run-observations.ts", "chat-scenarios/gateways-profiles.yaml"],
   async act(ctx, state) {
     await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx));
     const before = await ctx.input.api.get<{ gateways: SavedGateway[] }>(`${root(ctx)}/tools/gateways`); state.gatewayCountBeforeHuman = before.gateways.length;
@@ -79,12 +89,16 @@ export const gatewayExternalCases = [definition("gateways-profiles.create-gatewa
     await expect(ctx.input.page.getByRole("main").getByText(String(gateway.name), { exact: true }).first()).toBeVisible();
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
   },
-  async cleanup(ctx) {
-    const gateways = await ctx.input.api.get<{ gateways: SavedGateway[] }>(`${root(ctx)}/tools/gateways`);
-    for (const gateway of gateways.gateways) {
-      for (const token of (gateway.tokens ?? []) as Array<{ id?: string; revokedAt?: string | null }>) if (token.id && !token.revokedAt) await ctx.input.api.post(`/api/tool-gateway/gateway-tokens/${token.id}/revoke`, { companyId: ctx.input.fixtures.company.id });
-      await ctx.input.api.patch(`/api/tool-gateway/gateways/${gateway.id}`, { companyId: ctx.input.fixtures.company.id, status: "disabled" });
-    }
+  async cleanup(ctx, state) {
+    const provider = providers.get(ctx); providers.delete(ctx);
+    try {
+      const gateways = await ctx.input.api.get<{ gateways: SavedGateway[] }>(`${root(ctx)}/tools/gateways`);
+      for (const gateway of gateways.gateways) {
+        for (const token of (gateway.tokens ?? []) as Array<{ id?: string; revokedAt?: string | null }>) if (token.id && !token.revokedAt) await ctx.input.api.post(`/api/tool-gateway/gateway-tokens/${token.id}/revoke`, { companyId: ctx.input.fixtures.company.id });
+        await ctx.input.api.patch(`/api/tool-gateway/gateways/${gateway.id}`, { companyId: ctx.input.fixtures.company.id, status: "disabled" });
+      }
+      if (typeof state.connectionId === "string") await ctx.input.api.delete(`/api/tool-connections/${state.connectionId}`, { allowNotFound: true });
+    } finally { await provider?.close(); }
     // The profile is still referenced by the disabled gateway; the outer
     // disposable-company teardown owns its eventual deletion.
   },

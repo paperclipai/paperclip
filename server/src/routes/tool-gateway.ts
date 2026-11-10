@@ -414,7 +414,9 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       }
       // Agents link the person to the saved gateway; clients need a token from its Tokens page.
       const tokensPath = await gatewayTokensPath(req.params.companyId as string, gateway.id);
-      res.status(201).json({ ...gateway, gatewayPath: tokensPath.replace(/\/tokens$/, "/overview"), tokensPath });
+      const gatewayPath = tokensPath.replace(/\/tokens$/, "/overview");
+      res.status(201).json({ ...gateway, gatewayPath, tokensPath,
+        nextStep: `Link the saved gateway as a Markdown link, such as [${gateway.name}](${gatewayPath}), in your reply or question. A client connects with a token from its Tokens page (${tokensPath}).` });
     } catch (err) {
       sendGatewayError(res, err);
     }
@@ -480,7 +482,9 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
           `Reveal and copy the value of "${created.name}" on the gateway's Tokens page, then give it to the client.`, "reveal_credential"),
         nextStep: `Created "${created.name}" without a value. Its value is generated only when the person reveals it on the gateway's Tokens page (${tokensPath}); `
           + "link that page as a Markdown link. Never ask for, accept, or repeat token values in chat. "
-          + "Revoke an old token only after the person confirms the client works with the new one.",
+          + "When this replaces an old token, do not revoke the old one in this turn: its client keeps working on it until the person reveals the new value "
+          + "and installs it, and revoking now disconnects that client. Revoke the old token only after the person says the client works with the new one, "
+          + "or tell them they can revoke it on the same Tokens page.",
       });
     } catch (err) {
       sendGatewayError(res, err);

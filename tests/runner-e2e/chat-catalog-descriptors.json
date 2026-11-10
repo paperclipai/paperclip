@@ -3122,6 +3122,7 @@
     "sourceFiles": [
       "chat-catalog-domains/external-gateways-profiles.ts",
       "chat-catalog-domains/external-gateway-rotation.ts",
+      "chat-catalog-domains/external-provider.ts",
       "chat-catalog-domains/external-secret-scan.ts",
       "chat-catalog-domains/external-support.ts",
       "chat-catalog-domains/internal-support.ts",
