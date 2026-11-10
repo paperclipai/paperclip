@@ -12886,6 +12886,7 @@ registerCurrentRoute({
   path: "/api/tool-gateway/gateways/{gatewayId}/tokens",
   tags: ["tool-gateway"],
   summary: "Create a named MCP gateway token",
+  description: "Person-only. Returns the new token's plaintext exactly once to the creator. Agent callers receive 403 gateway_token_requires_person with the gateway's Tokens page path, where a person creates the token and hands it to the client.",
   body: toolGatewayCompanyBodySchema,
   responses: {
     201: r.ok(),
