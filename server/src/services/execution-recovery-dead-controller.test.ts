@@ -23,7 +23,7 @@ describe("automatic recovery after a drained legacy controller", () => {
     return Number(child.stdout);
   }
 
-  async function seedDrainedRun(controller: "exited" | "current") {
+  async function seedDrainedRun(controller: "exited" | "current", ending: "drained" | "killed" = "drained") {
     const companyId = randomUUID(), issueId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
     const live = currentControllerProcessStamp();
     const bootId = controller === "current" ? legacyControllerBootId : randomUUID();
@@ -32,8 +32,8 @@ describe("automatic recovery after a drained legacy controller", () => {
     await db.insert(companies).values({ id: companyId, name: "Drain company", issuePrefix: `D${companyId.slice(0, 6)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType: "paperclip_runner", status: "idle" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Follow up", status: "in_progress", assigneeAgentId: agentId });
-    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, status: "interrupted",
-      errorCode: "server_shutdown_interrupted", runtimeMode: "legacy", executionStage: "preparing",
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, status: ending === "drained" ? "interrupted" : "failed",
+      errorCode: ending === "drained" ? "server_shutdown_interrupted" : "process_lost", runtimeMode: "legacy", executionStage: "preparing",
       contextSnapshot: { issueId }, finishedAt: new Date(), runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } }, controllerBootId: bootId, controllerProcess,
       controllerLeaseExpiresAt: new Date(Date.now() + 55_000),
       resultJson: { stopReason: "interrupted", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
@@ -47,7 +47,7 @@ describe("automatic recovery after a drained legacy controller", () => {
   it("settles the hold at once when the drained controller process is proven gone", async () => {
     const { actionId, runId } = await seedDrainedRun("exited");
     const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(await isInterruptedNativePreparation(db, before!)).toBe(false);
+    expect(await isInterruptedNativePreparation(db, before!)).toBe(true);
     await settleUnrecoverableExecutions(db);
     const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actionId));
     expect(action).toMatchObject({ status: "resolved", outcome: "blocked" });
@@ -64,5 +64,12 @@ describe("automatic recovery after a drained legacy controller", () => {
     expect(action).toMatchObject({ status: "active", resolvedAt: null });
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(run!.controllerLeaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it.each(["exited", "current"] as const)("treats a killed preparation with a %s controller's live lease as interrupted only when that controller is gone", async controller => {
+    const { runId } = await seedDrainedRun(controller, "killed");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run!.controllerLeaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
+    expect(await isInterruptedNativePreparation(db, run!)).toBe(controller === "exited");
   });
 });
