@@ -1,4 +1,5 @@
-import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { DEFAULT_JSON_BODY_LIMIT } from "../http/body-limits.js";
+import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -100,7 +101,7 @@ describe("instance settings routes", () => {
   function createApp(actor: any, pluginWorkers?: PluginWorkerManager, prepareBackup?: () => Promise<boolean>, verifyControl = false) {
     const { errorHandler, instanceSettingsRoutes, cloudControlMiddleware } = routeModules.value;
     const app = express();
-    app.use(express.json());
+    app.use(express.json({ limit: DEFAULT_JSON_BODY_LIMIT, verify: (req, _res, raw) => { Reflect.set(req, "rawBody", raw); } }));
     app.use((req, _res, next) => {
       req.actor = actor;
       next();
@@ -1189,6 +1190,46 @@ describe("instance settings routes", () => {
         mockReadIdleSleepSafety.mockResolvedValue({ version: 3, backgroundWork: "none" });
       });
       afterEach(() => vi.unstubAllEnvs());
+
+      it("reads the same owner and deadline scope through the real body-bound middleware and production handler", async () => {
+        const raw = JSON.stringify({ idleCapabilities: catalog });
+        const token = assertion({ action: "task-drain:read-body", idleCapabilities: undefined, bodySha256: createHash("sha256").update(raw).digest("hex") });
+        const url = `/api/instance/task-drain/status?idleSleepSafety=1&scheduledWake=domain-deadlines-v1&ownerId=${ownerId}`;
+        await request(createControlApp({ type: "none" })).post(url).set("content-type", "application/json")
+          .set("x-paperclip-cloud-control", token).send(raw).expect(200);
+        expect(mockReadIdleSleepSafety).toHaveBeenCalledExactlyOnceWith(mockDb, expect.any(Function), Date.now,
+          ownerId, expect.any(Function), undefined, undefined, true, true,
+          { incomingWake: catalog, deadlineCapability: catalog, prepareLocalWork: expect.any(Function) });
+        expect(Object.isFrozen(mockReadIdleSleepSafety.mock.calls[0][9].incomingWake)).toBe(true);
+        await request(createControlApp({ type: "none" })).post(url).set("content-type", "application/json")
+          .set("x-paperclip-cloud-control", token).send(raw).expect(401);
+      });
+      it("rejects body tampering before installing capabilities or consuming the valid request", async () => {
+        const raw = JSON.stringify({ idleCapabilities: catalog });
+        const token = assertion({ action: "task-drain:read-body", idleCapabilities: undefined, bodySha256: createHash("sha256").update(raw).digest("hex") });
+        const url = `/api/instance/task-drain/status?idleSleepSafety=1&ownerId=${ownerId}`;
+        await request(createControlApp(adminActor)).post(url).set("content-type", "application/json")
+          .set("x-paperclip-cloud-control", token).send(raw + " ").expect(401);
+        expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+        await request(createControlApp({ type: "none" })).post(url).set("content-type", "application/json")
+          .set("x-paperclip-cloud-control", token).send(raw).expect(200);
+      });
+      it("rejects unsigned and actor-only body authority and cross-route method replay", async () => {
+        const raw = JSON.stringify({ idleCapabilities: catalog }), url = `/api/instance/task-drain/status?idleSleepSafety=1&ownerId=${ownerId}`;
+        for (const source of ["session", "cloud_tenant", "local_implicit", "cloud_control"]) {
+          await request(createControlApp({ ...adminActor, source, idleCapabilities: catalog })).post(url)
+            .set("content-type", "application/json").send(raw).expect(403);
+        }
+        expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+        const token = assertion({ action: "task-drain:read-body", idleCapabilities: undefined, bodySha256: createHash("sha256").update(raw).digest("hex") });
+        await request(createControlApp(adminActor)).get(url).set("x-paperclip-cloud-control", token).expect(400);
+        await request(createControlApp(adminActor)).post("/api/instance/task-drain").set("content-type", "application/json")
+          .set("x-paperclip-cloud-control", token).send(raw).expect(401);
+        await request(createControlApp(adminActor)).delete("/api/instance/task-drain").set("x-paperclip-cloud-control", token).expect(401);
+        expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+        await request(createControlApp({ type: "none" })).post(url).set("content-type", "application/json")
+          .set("x-paperclip-cloud-control", token).send(raw).expect(200);
+      });
 
       it("passes only the immutable signed catalog through real middleware and the production route", async () => {
         const token = assertion();

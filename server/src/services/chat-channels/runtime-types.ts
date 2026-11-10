@@ -69,6 +69,7 @@ export type InternalSetupState = ChatEndpointSetupState & {
     nextAttemptAt: string | null;
     failureCode?: string;
   };
+  slackCloudForms?: import("./slack/cloud-forms.js").SlackFormBinding;
   slackCloudEvents?: {
     version: 1;
     bindingId: string;
