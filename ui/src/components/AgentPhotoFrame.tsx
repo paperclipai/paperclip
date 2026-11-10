@@ -75,7 +75,13 @@ function AgentPhotoDrag({ agent, onError, onMovable, children }: { agent: AgentP
     image.src = `/api/assets/${assetId}/content`;
     return () => { cancelled = true; };
   }, [assetId]);
-  useEffect(() => () => { if (keyboardTimer.current !== null) window.clearTimeout(keyboardTimer.current); }, []);
+  function clearKeyboardSave() {
+    if (keyboardTimer.current === null) return;
+    window.clearTimeout(keyboardTimer.current);
+    keyboardTimer.current = null;
+  }
+
+  useEffect(() => () => { clearKeyboardSave(); }, []);
 
   const mutation = useMutation({
     mutationFn: (next: AgentAvatarFocus) => agentsApi.setAvatarFocus(agent.companyId, agent.id, next),
@@ -112,6 +118,7 @@ function AgentPhotoDrag({ agent, onError, onMovable, children }: { agent: AgentP
 
   function onPointerDown(event: PointerEvent<HTMLDivElement>) {
     if (!movable || mutation.isPending || event.button !== 0) return;
+    clearKeyboardSave();
     const rect = event.currentTarget.getBoundingClientRect();
     drag.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, origin: focusRef.current, container: rect.width };
     capturePointer(event.currentTarget, event.pointerId);
@@ -142,7 +149,7 @@ function AgentPhotoDrag({ agent, onError, onMovable, children }: { agent: AgentP
     const next = focusAt(focusRef.current, delta[0], delta[1], event.currentTarget.getBoundingClientRect().width);
     focusRef.current = next;
     setDraft(next);
-    if (keyboardTimer.current !== null) window.clearTimeout(keyboardTimer.current);
+    clearKeyboardSave();
     keyboardTimer.current = window.setTimeout(() => commit(next), 250);
   }
 
@@ -172,7 +179,7 @@ export function AgentPhotoFrame({ state, className }: { state: CharacterState; c
   return (
     <div
       data-testid="agent-photo-frame"
-      className={cn("shrink-0 rounded-full", frame.movable && "cursor-grab touch-none select-none focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring")}
+      className={cn("shrink-0 rounded-full", frame.movable && "cursor-grab touch-none select-none focus-visible:outline-none focus-visible:ring-(length:--focus-ring-halo-width) focus-visible:ring-ring")}
       tabIndex={frame.movable ? 0 : undefined}
       role={frame.movable ? "group" : "img"}
       aria-label={frame.movable

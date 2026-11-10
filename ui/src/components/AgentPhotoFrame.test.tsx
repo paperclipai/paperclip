@@ -19,6 +19,7 @@ class FakeImage {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   setAvatarFocus.mockReset();
@@ -63,6 +64,53 @@ it("moves a wide photo when it is dragged and saves the new center", async () =>
       frame?.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: 35, clientY: 10, pointerId: 1, button: 0 }));
     });
     expect(setAvatarFocus).toHaveBeenCalledWith("company-1", "agent-1", { x: 25, y: 50 });
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+it("cancels a pending arrow-key save when a drag starts", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("Image", FakeImage);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+    width: 100, height: 100, top: 0, left: 0, right: 100, bottom: 100, x: 0, y: 0, toJSON() { return {}; },
+  });
+  setAvatarFocus.mockResolvedValue({});
+  const agent = {
+    id: "agent-1",
+    companyId: "company-1",
+    name: "Monica",
+    status: "idle",
+    appearance: { ...appearanceForPalette("deep-tide"), customAvatarAssetId: "22222222-2222-4222-8222-222222222222" },
+  };
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  try {
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <AgentPhotoEditor agent={agent}>
+            <AgentPhotoFrame state="idle" />
+          </AgentPhotoEditor>
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+    });
+    const frame = container.querySelector("[data-testid='agent-photo-frame']");
+    await act(async () => {
+      frame?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowRight" }));
+    });
+    expect(setAvatarFocus).not.toHaveBeenCalled();
+    await act(async () => {
+      frame?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 10, clientY: 10, pointerId: 1, button: 0 }));
+      frame?.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 35, clientY: 10, pointerId: 1, button: 0 }));
+      frame?.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: 35, clientY: 10, pointerId: 1, button: 0 }));
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(setAvatarFocus).toHaveBeenCalledTimes(1);
+    expect(setAvatarFocus).toHaveBeenCalledWith("company-1", "agent-1", { x: 17, y: 50 });
+    expect(container.querySelector("[data-testid='agent-photo-frame']")?.className).toContain("focus-visible:ring-(length:--focus-ring-halo-width)");
   } finally {
     await act(async () => root.unmount());
   }

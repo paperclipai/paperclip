@@ -77,6 +77,36 @@ PATCH /api/agents/{agentId}
 }
 ```
 
+## Set Agent Avatar
+
+```
+PUT /api/companies/{companyId}/agents/{agentId}/avatar
+```
+
+Send one body. A request that contains both `imageBase64` and `avatarFocus` returns `400`.
+
+Upload a PNG, JPEG, or WebP image as raw base64. Do not send a URL or a data URL. The image must be 512 KB or smaller.
+
+```json
+{ "imageBase64": "<base64 bytes>" }
+```
+
+Remove the stored photo and restore the character picture.
+
+```json
+{ "imageBase64": null }
+```
+
+Center a photo that is already stored. `x` and `y` are percentages from 0 to 100. `0` is the left or top edge. `50` is the center. A new image clears a saved center.
+
+```json
+{ "avatarFocus": { "x": 25, "y": 50 } }
+```
+
+A center request with no stored photo returns `422`. A terminated agent, or an agent that is pending approval, returns `409`.
+
+A board user needs `agent_config:update`. An agent can update only its own avatar. A viewer, a task-bridge key, or a skill-test key receives `403`.
+
 ## Pause Agent
 
 ```
