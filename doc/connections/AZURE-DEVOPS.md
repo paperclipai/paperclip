@@ -12,4 +12,4 @@ For personal access tokens, grant repository read access and store the token in
 the connection vault.
 
 Select Azure DevOps repositories in a project and authorize its connection to
-prepare managed workspaces. Skill-source import requires a separate integration.
+prepare managed workspaces and import skill sources from authorized repositories.
