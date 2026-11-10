@@ -17,6 +17,7 @@ import { isConversation } from "../agent-conversations.js";
 import { renewLegacyControllerLease } from "../legacy-controller-lease.js";
 import type { prepareManagedAiRuntime } from "../ai-connection-runtime.js";
 import { resolveHeartbeatNativeLifecyclePolicy, type NativeLifecyclePolicy } from "./native-lifecycle.js";
+import { resolveWarmProviderSelection } from "../native-runtime/native-warm-capability.js";
 import {
   getNativeReviewAssignment,
   readNativeReviewAssignmentContext,
@@ -270,9 +271,16 @@ function resolveRuntimeLifecyclePolicy(input: HeartbeatRuntimeSelectionInput): N
   if (input.nativeRuntimeResolution.kind !== "native") return null;
   const target = input.workspace.executionTarget;
   const sandboxTarget = target?.kind === "remote" && target.transport === "sandbox" ? target : null;
+  const backend = input.nativeRuntimeResolution.profile.backend;
+  const rawAcpxAgent = parseObject(input.agent.adapterConfig).acpxAgent;
+  // The environment view resolves the harness through the runtime's resolver
+  // (ACPX without an agent is Claude); use the same harness here so the lease
+  // and the runner decisions agree.
+  const resolved = backend === "acpx_runtime" && rawAcpxAgent === undefined
+    ? resolveWarmProviderSelection(input.agent.adapterConfig, input.agent.companyId) : null;
   return resolveHeartbeatNativeLifecyclePolicy({
-    adapterType: input.agent.adapterType, backend: input.nativeRuntimeResolution.profile.backend,
-    acpxAgent: parseObject(input.agent.adapterConfig).acpxAgent,
+    adapterType: input.agent.adapterType, backend,
+    acpxAgent: resolved?.backend === backend ? resolved.acpxAgent : rawAcpxAgent,
     agentMode: parseObject(input.agent.adapterConfig).lifecycleMode, agentIdleTimeoutMs: parseObject(input.agent.adapterConfig).idleTimeoutMs,
     environmentPolicy: sandboxTarget ? sandboxTarget.runnerLifecyclePolicy : null,
     persistedPolicy: input.session.persistedNativeExecutionInput?.session.lifecyclePolicy,

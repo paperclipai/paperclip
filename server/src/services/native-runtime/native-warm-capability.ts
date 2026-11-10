@@ -1,6 +1,20 @@
-import type { PaperclipRunnerProviderProfile } from "./provider-profile.js";
+import { resolvePaperclipRunnerProviderProfile, type PaperclipRunnerProviderProfile } from "./provider-profile.js";
 
 type WarmProviderSelection = { backend: PaperclipRunnerProviderProfile["backend"]; acpxAgent?: unknown };
+
+/**
+ * The harness an agent config selects, resolved exactly as the runtime resolves
+ * it (an omitted provider is Codex; ACPX without an agent is Claude). Null when
+ * the runtime would refuse the config.
+ */
+export function resolveWarmProviderSelection(adapterConfig: unknown, companyId?: string): WarmProviderSelection | null {
+  try {
+    const profile = resolvePaperclipRunnerProviderProfile(adapterConfig, { companyId });
+    return { backend: profile.backend, acpxAgent: profile.provider === "acpx" ? profile.acpxAgent : undefined };
+  } catch {
+    return null;
+  }
+}
 
 /** Providers with a session-owned home and the current instruction-grant handoff. */
 export function supportsNativeWarmFiles(profile: WarmProviderSelection): boolean {

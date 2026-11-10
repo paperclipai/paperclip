@@ -48,9 +48,10 @@ Run-log reuse records show `environment: fresh/created` on every follow-up.
 ## The default change
 
 - **Scope.** A sandbox environment that inherits the lifecycle (`runnerLifecycleMode` unset), and an agent with no stored lifecycle. Covers Codex and OpenCode, as locally, plus Claude: on a sandbox the upload, not the provider relaunch, dominates its follow-up.
-- **Mechanics.** Warm on a sandbox already turns on `reuseLease`. The follow-up keeps the live sandbox and runner and adopts the workspace.
+- **Gate.** One rule (`defaultsRemoteSandboxRunToWarm`) decides it for both the lease and the runner. It applies only when the sandbox provider keeps reusable leases (Daytona does; E2B, Modal and the built-in `fake` provider do not), and with a managed AI account only when that harness supports a managed warm session (Codex). Otherwise the run is per-turn, exactly as before. The lease side asks the provider before acquisition; the runner side reads the acquired lease, so a default never produces a refused warm run.
+- **Mechanics.** Warm on a sandbox turns on `reuseLease` for the run. The follow-up keeps the live sandbox and runner and adopts the workspace.
 - **What does not change.** Explicit choices, environments that pin a lifecycle, plugin-task environments and admitted sessions keep their policy.
-- **Cost.** An idle sandbox stays up for the warm idle window (5 minutes). After that the controller suspends the runner, and the provider auto-stop follows the same window.
+- **Cost.** An idle sandbox stays up for the warm idle window (the agent's `idleTimeoutMs`, 5 minutes by default). After that the controller suspends the runner, and the provider auto-stop follows the same window.
 
 ## Gaps
 

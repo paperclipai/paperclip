@@ -1,8 +1,7 @@
 import { resolvePaperclipRunnerIdleTimeoutMs } from "@paperclipai/adapter-utils";
 import type { Environment } from "@paperclipai/shared";
 import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runtime/native-runner-recovery-contract.js";
-import { defaultsRemoteSandboxRunToWarm } from "./native-runtime/native-warm-capability.js";
-import { resolvePaperclipRunnerProviderProfile } from "./native-runtime/provider-profile.js";
+import { defaultsRemoteSandboxRunToWarm, resolveWarmProviderSelection } from "./native-runtime/native-warm-capability.js";
 
 /** Facts the remote-sandbox warm default needs beyond the configuration. */
 export interface RunnerLifecycleDefaultContext {
@@ -33,14 +32,10 @@ function sandboxRunDefaultsToWarm(
   adapterConfig: Record<string, unknown>,
   context: RunnerLifecycleDefaultContext,
 ): boolean {
-  let profile: ReturnType<typeof resolvePaperclipRunnerProviderProfile>;
-  try {
-    profile = resolvePaperclipRunnerProviderProfile(adapterConfig);
-  } catch {
-    return false;
-  }
+  const profile = resolveWarmProviderSelection(adapterConfig);
+  if (!profile) return false;
   return defaultsRemoteSandboxRunToWarm({
-    profile: { backend: profile.backend, acpxAgent: "acpxAgent" in profile ? profile.acpxAgent : undefined },
+    profile,
     reusableLeaseSupported: context.reusableLeaseSupported === true,
     // The attribution is not known here; a harness that needs it for a managed
     // warm session (Copilot) is not a measured default, so this is exact.

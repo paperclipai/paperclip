@@ -26,6 +26,7 @@ import { resolveHeartbeatNativeRuntimeMode } from "../native-runtime/runtime-mod
 import { claimNativeRestartRecoveries } from "../native-runtime/native-restart-recovery.js";
 import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 import { prepareAndSelectHeartbeatRuntime, selectHeartbeatRuntime, type HeartbeatRuntimeSelectionInput } from "./runtime-selection.js";
+import { resolveRunnerEnvironmentForRun } from "../runner-environment-lifecycle.js";
 import { reserveRunBudget } from "../budget-reservations.js";
 import { legacyControllerClaim } from "../legacy-controller-lease.js";
 import { agentInstructionWorkingCopyService } from "../agent-instruction-working-copies.js";
@@ -779,6 +780,47 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     input.beforeNativeRuntimeSelection = async () => { throw new Error("selection interrupted"); };
     await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("selection interrupted");
     expect(input.onNativeLifecycleSelected).toHaveBeenCalledWith({ provider: "codex", harness: "codex_app_server", lifecycleMode, sandboxResource });
+  });
+
+  // The environment view (lease) and the native policy (runner) must make the
+  // same remote-sandbox decision for every harness, including a provider-less
+  // Codex agent and ACPX without an agent (Claude).
+  it.each([
+    [{ provider: "codex", model: "gpt-5.6-luna" }, "warm"],
+    [{ model: "gpt-5.6-luna" }, "warm"],
+    [{ provider: "opencode", model: "openai/gpt-5" }, "warm"],
+    [{ provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-4-6" }, "warm"],
+    [{ provider: "acpx", model: "claude-sonnet-4-6" }, "warm"],
+    [{ provider: "acpx", acpxAgent: "copilot", model: "gpt-5" }, "per_turn"],
+  ] as const)("agrees with the environment view's lease for %j", async (adapterConfig, mode) => {
+    const { input, run, agent, issue } = await fixture();
+    input.agent.adapterConfig = adapterConfig;
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({ persisted: run, enabled: true, runtimeConfig: {}, adapterConfig, agent, issue, target: null, workspaceId: null });
+    const view = resolveRunnerEnvironmentForRun({ driver: "sandbox" as const, config: { provider: "daytona" } as Record<string, unknown> }, "paperclip_runner", adapterConfig,
+      undefined, undefined, { reusableLeaseSupported: true });
+    expect(view.config.reuseLease === true).toBe(mode === "warm");
+    input.workspace.executionTarget = { ...sandbox, reusableLeaseConfigured: view.config.reuseLease === true, effectiveCapabilities: { reusableLeases: true } } as never;
+    const stop = new Error("policy captured");
+    const policies: unknown[] = [];
+    await expect(prepareAndSelectHeartbeatRuntime(db, input, {
+      measure: async (_phase, work) => work(),
+      prepareInstructions: async (policy) => { policies.push(policy?.mode); throw stop; },
+    })).rejects.toBe(stop);
+    expect(policies).toEqual([mode]);
+  });
+
+  it("keeps a plugin task's sandbox target out of the remote default", async () => {
+    const { input } = await fixture();
+    const { lifecycleMode: _unset, ...adapterConfig } = (input.agent.adapterConfig ?? {}) as Record<string, unknown>;
+    input.agent.adapterConfig = adapterConfig;
+    input.workspace.executionTarget = { ...sandbox, reusableLeaseConfigured: true, effectiveCapabilities: { reusableLeases: true }, runnerTask: vi.fn() } as never;
+    const stop = new Error("policy captured");
+    const policies: unknown[] = [];
+    await expect(prepareAndSelectHeartbeatRuntime(db, input, {
+      measure: async (_phase, work) => work(),
+      prepareInstructions: async (policy) => { policies.push(policy?.mode); throw stop; },
+    })).rejects.toBe(stop);
+    expect(policies).toEqual(["per_turn"]);
   });
 
   it("rejects a warm native sandbox that cannot reuse its lease", async () => {
