@@ -97,6 +97,7 @@ export const LOCAL_TABLE_ROW_COUNTS = [
   { table: "company_skill_comments", localRows: 0 },
   { table: "company_skill_stars", localRows: 0 },
   { table: "company_user_sidebar_preferences", localRows: 0 },
+  { table: "company_user_ui_layouts", localRows: 0 },
   { table: "environment_custom_image_setup_sessions", localRows: 0 },
   { table: "environment_custom_image_templates", localRows: 0 },
   { table: "external_object_mentions", localRows: 0 },

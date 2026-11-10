@@ -131,6 +131,7 @@ export {
   upsertSidebarOrderPreferenceSchema,
   type UpsertSidebarOrderPreference,
 } from "./sidebar-preferences.js";
+export * from "./ui-layouts.js";
 export {
   resourceMembershipStateSchema,
   updateDocumentResourceMembershipSchema,
