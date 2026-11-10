@@ -443,17 +443,18 @@ describe("task Retry after inherited native cleanup quarantine", () => {
 
   // An ACPX session open names no provider PID; its sidecar reports one separately (s9107 t04).
   async function recordOwnStop(f: { companyId: string; agentId: string; sourceId: string }, providerPid: number,
-    sidecar?: { processGroupId: number | null }, options: { noIdentity?: boolean } = {}) {
+    sidecar?: { processGroupId: number | null }, options: { noIdentity?: boolean; startedPid?: boolean } = {}) {
     const processStartedAt = new Date(Date.now() - 90_000).toISOString();
     await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceId, agentId: f.agentId, eventType: PROCESS_IDENTITY_RECORDED,
       payload: { processPid: 99_999_996, processGroupId: 99_999_996, processStartedAt, targetKind: "local", hostname: hostname() } });
     // The real Codex projection names no PID in session opens; the checkpoint does.
     await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceId, agentId: f.agentId,
-      eventType: "session.started", payload: { prpEvent: { payload: { providerSessionId: "own-provider", driverSessionId: "own-provider" } } } });
+      eventType: "session.started", payload: { prpEvent: { payload: { providerSessionId: "own-provider", driverSessionId: "own-provider",
+        ...(options.startedPid ? { started: { pid: providerPid } } : {}) } } } });
     await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.sourceId, agentId: f.agentId,
       eventType: "session.reconciled", payload: { prpEvent: { payload: { providerSessionId: "own-provider", turnCount: 1,
         activeTurnId: null, terminalTurnId: "own-turn" } } } });
-    if (!sidecar && !options.noIdentity) {
+    if (!sidecar && !options.noIdentity && !options.startedPid) {
       const [row] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceId));
       await db.update(heartbeatRuns).set({ runnerProfileJson: { ...row.runnerProfileJson,
         sessionCheckpoint: { ...(row.runnerProfileJson as { sessionCheckpoint: object }).sessionCheckpoint, process: { providerPid } } } })
@@ -466,7 +467,7 @@ describe("task Retry after inherited native cleanup quarantine", () => {
       payload: { processPid: 99_999_996, processGroupId: 99_999_996, processStartedAt } });
   }
 
-  it.each(["stopped", "provider_alive", "no_stop", "no_provider_identity", "acpx_sidecar", "acpx_sidecar_own_group"] as const)(
+  it.each(["stopped", "provider_alive", "no_stop", "no_provider_identity", "started_pid", "acpx_sidecar", "acpx_sidecar_own_group"] as const)(
     "retires a run's own failed-close gate once its runner and providers are proven stopped (%s)", async mode => {
     const base = await mkdtemp(join(tmpdir(), "own-close-gate-"));
     const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
@@ -476,8 +477,8 @@ describe("task Retry after inherited native cleanup quarantine", () => {
       await quarantineOwnClose(f, base);
       if (mode !== "no_stop") await recordOwnStop(f, mode === "provider_alive" ? process.pid : 99_999_995,
         mode === "acpx_sidecar" ? { processGroupId: null } : mode === "acpx_sidecar_own_group" ? { processGroupId: 99_999_995 } : undefined,
-        { noIdentity: mode === "no_provider_identity" });
-      const retires = mode === "stopped" || mode === "acpx_sidecar";
+        { noIdentity: mode === "no_provider_identity", startedPid: mode === "started_pid" });
+      const retires = mode === "stopped" || mode === "started_pid" || mode === "acpx_sidecar";
       const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceId));
       expect(await retireStoppedSessionCleanupGates(db, { companyId: f.companyId, issueId: f.issueId, run: source })).toBe(retires);
       expect(nativeSessionCleanupBlock({ companyId: f.companyId, issueId: f.issueId }))

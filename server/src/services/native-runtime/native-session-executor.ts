@@ -3542,7 +3542,8 @@ export async function provenStoppedOwnNativeSession(
   // opens carry the PID only in the raw journal; ACPX reports its sidecar in
   // a diagnostic. Extra identities can only add a stop requirement.
   const providerPids: unknown[] = [];
-  const pidKeys = ["processId", "processGroupId", "providerPid", "codexPid", "sidecarPid", "agentPid", "agentProcessId", "previousProcessId"];
+  const pidKeys = ["processId", "process_id", "pid", "processGroupId", "providerPid", "codexPid", "sidecarPid", "agentPid",
+    "agentProcessId", "previousProcessId"];
   const collect = (...owners: unknown[]) => {
     for (const owner of owners) for (const key of pidKeys) {
       const value = record(owner)[key];
@@ -3569,10 +3570,18 @@ export async function provenStoppedOwnNativeSession(
   }
   const checkpoint = record(record(run.runnerProfileJson).sessionCheckpoint);
   collect(checkpoint.process);
+  // Without a parseable execution input there is no raw journal to locate;
+  // the projection and checkpoint above remain the evidence.
+  let execution: NativeExecutionInput | null = null;
   try {
-    const execution = parseNativeExecutionInput(record(run.runnerProfileJson).nativeExecutionInput);
-    const root = scopedRunnerdStateRoot(execution);
-    if (existsSync(root)) {
+    execution = parseNativeExecutionInput(record(run.runnerProfileJson).nativeExecutionInput);
+  } catch {
+    execution = null;
+  }
+  // An existing journal that cannot be read may name a live provider, so it fails closed.
+  try {
+    const root = execution ? scopedRunnerdStateRoot(execution) : null;
+    if (execution && root && existsSync(root)) {
       const snapshot = cleanupStateSnapshot(root, runnerProviderStateFilename(execution));
       if (record(snapshot.control.identity).runId === run.id) {
         collect(snapshot.provider, record(snapshot.provider).identity, record(snapshot.provider).startupAttempt);
@@ -3595,7 +3604,9 @@ export async function provenStoppedOwnNativeSession(
 
 type CleanupGateOwner = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "runtimeMode"
   | "nativeIssueId" | "runnerInstanceId" | "runnerProfileJson" | "processPid" | "processGroupId" | "processStartedAt">;
-const CLEANUP_GATE_OWNER_SCAN_LIMIT = 10;
+// Runs the gate refused before launch also count toward this bound, so it is
+// wide enough for a long refused-Retry history behind the owner.
+const CLEANUP_GATE_OWNER_SCAN_LIMIT = 50;
 
 /**
  * A local session close can fail without proof that its runner suspended (for
