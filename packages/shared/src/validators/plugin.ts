@@ -231,7 +231,8 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   // undefined value is omitted on JSON serialization, so a driver that declares
   // neither field carries no login flag.
   const { supportsSetupTokenLogin, ...rest } = driver;
-  return { ...rest, supportsLoginPty: rest.supportsLoginPty ?? supportsSetupTokenLogin };
+  const supportsLoginPty = rest.supportsLoginPty ?? supportsSetupTokenLogin;
+  return supportsLoginPty === undefined ? rest : { ...rest, supportsLoginPty };
 });
 
 export type PluginEnvironmentDriverDeclarationInput = z.infer<

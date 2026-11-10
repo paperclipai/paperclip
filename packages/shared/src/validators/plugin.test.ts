@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it } from "vitest";
 import { PLUGIN_CAPABILITIES } from "../constants.js";
 import { resolveDeclaredSandboxCapabilities } from "../environment-support.js";
@@ -33,6 +34,21 @@ describe("plugin capability constants", () => {
 });
 
 describe("plugin manifest validators", () => {
+  it("preserves strict manifest equality across JSON persistence when login flags are absent", () => {
+    const parsed = pluginManifestV1Schema.parse(buildSandboxProviderManifest({}));
+    expect(Object.hasOwn(parsed.environmentDrivers![0], "supportsLoginPty")).toBe(false);
+    expect(isDeepStrictEqual(parsed, JSON.parse(JSON.stringify(parsed)))).toBe(true);
+  });
+
+  it.each([true, false])("preserves explicit and legacy login flags across JSON persistence (%s)", (value) => {
+    for (const flag of ["supportsLoginPty", "supportsSetupTokenLogin"]) {
+      const parsed = pluginManifestV1Schema.parse(buildSandboxProviderManifest({ [flag]: value }));
+      expect(parsed.environmentDrivers![0].supportsLoginPty).toBe(value);
+      expect(Object.hasOwn(parsed.environmentDrivers![0], "supportsSetupTokenLogin")).toBe(false);
+      expect(isDeepStrictEqual(parsed, JSON.parse(JSON.stringify(parsed)))).toBe(true);
+    }
+  });
+
   it("preserves explicit workspace ancestry support without changing legacy declarations", () => {
     const manifest = { id: "example.storage", apiVersion: 1, version: "1.0.0", displayName: "Storage", description: "Storage", author: "Tests",
       categories: ["workspace"], capabilities: ["workspaces.manage", "events.subscribe"], resourceLifecycle: ["project"],
