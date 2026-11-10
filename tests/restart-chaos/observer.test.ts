@@ -224,13 +224,15 @@ describe("TaskObserver", () => {
     expect(observer.record.followUp).toMatchObject({ commentId: "comment-1" });
   });
 
-  it("S1 with a provider fault: does not stop after a turn terminal, and waits past the window for the next turn", async () => {
+  it("S1 with a provider fault: does not stop after a turn terminal, and stops once when the next turn starts", async () => {
     const events = [
       { seq: 1, eventType: "turn.started", createdAt: new Date(1).toISOString(), payload: {} },
       { seq: 2, eventType: "turn.completed", createdAt: new Date(2).toISOString(), payload: {} },
     ];
+    let nextTurn: unknown[] = [];
     const base = fakeApi({
-      "/events": route => route.includes("afterSeq=0") ? events : [],
+      "/events": route => route.includes("afterSeq=0") ? events
+        : route.includes("afterSeq=2") ? nextTurn : [],
       "/runs": () => [{ id: "r1", status: "running", createdAt: new Date(0).toISOString(), finishedAt: null }],
     }, "in_progress");
     const pvPlan: TaskPlan = { ...plan, workload: "S1", adapter: "claude", followUpAfterMs: 1_000,
@@ -240,6 +242,13 @@ describe("TaskObserver", () => {
     await observer.poll(observer.record.createdAt! + 5_000);
     expect(base.posted.filter(route => route.endsWith("/cancel"))).toEqual([]);
     expect(observer.record.stop ?? null).toBeNull();
+    // The next turn re-arms the Stop, and it fires once.
+    nextTurn = [{ seq: 3, eventType: "turn.started", createdAt: new Date(3).toISOString(), payload: {} }];
+    await observer.poll(observer.record.createdAt! + 6_000);
+    nextTurn = [];
+    await observer.poll(observer.record.createdAt! + 7_000);
+    expect(base.posted.filter(route => route.endsWith("/cancel"))).toEqual(["/api/heartbeat-runs/r1/cancel"]);
+    expect(observer.record.stop).toMatchObject({ runId: "r1" });
   });
 
   it("stopArmed: a provider-fault Stop needs a live provider turn; others keep the window", () => {
