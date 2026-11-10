@@ -13303,7 +13303,7 @@ export function issueService(db: Db) {
               .select({ id: issues.id })
               .from(issues)
               .where(eq(issues.id, issueId))
-              .for("update"));
+              .for("no key update"));
             return addComment(issueId, body, actor, options, tx);
           });
         return options?.authorizationReason ===
@@ -13319,7 +13319,7 @@ export function issueService(db: Db) {
         .where(eq(issues.id, issueId));
       // Caller-owned transactions (including chat and review comments) must
       // serialize with question creation before inserting the human comment.
-      const issue = await (actor.userId || (actor.runId && dbOrTx !== db) ? issueQuery.for("update") : issueQuery)
+      const issue = await (actor.userId || (actor.runId && dbOrTx !== db) ? issueQuery.for("no key update") : issueQuery)
         .then((rows: Array<{ companyId: string; conversationAgentId: string | null }>) => rows[0] ?? null);
 
       if (!issue) throw notFound("Issue not found");
