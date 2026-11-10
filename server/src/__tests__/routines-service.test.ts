@@ -15,6 +15,7 @@ import {
   folders,
   heartbeatRuns,
   instanceSettings,
+  issueComments,
   issueInboxArchives,
   issues,
   projectWorkspaces,
@@ -77,6 +78,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
     await db.delete(heartbeatRuns);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -807,6 +809,174 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       expect(routineIssues).toHaveLength(1);
       expect(routineIssues[0]?.id).toBe(first.linkedIssueId);
     }
+  });
+
+  async function seedConsecutiveSkippedTicks(input: {
+    companyId: string;
+    routineId: string;
+    linkedIssueId: string;
+    count: number;
+    startingAt?: Date;
+  }) {
+    const startingAt = input.startingAt ?? new Date("2026-09-28T00:00:00.000Z");
+    for (let i = 0; i < input.count; i += 1) {
+      await db.insert(routineRuns).values({
+        companyId: input.companyId,
+        routineId: input.routineId,
+        source: "schedule",
+        status: i === 0 ? "issue_created" : "skipped",
+        triggeredAt: new Date(startingAt.getTime() + i * 60_000),
+        linkedIssueId: input.linkedIssueId,
+        completedAt: new Date(startingAt.getTime() + i * 60_000),
+      });
+    }
+  }
+
+  // CRE-4176: CRE-4157 made any open routine-execution issue count as
+  // outstanding, which correctly stopped unbounded queue growth but also
+  // means a `blocked` issue nothing will ever return to now suppresses its
+  // routine forever. These three tests pin the discriminator: a `blocked`
+  // issue with no unblockDescriptor, no real blocker, and no live run
+  // watching it, stale across the routine's own last several ticks, gets
+  // cancelled so the routine can fire again — a genuinely held one does not.
+  describe("reaps a stale, unexplained blocked routine-execution issue (CRE-4176)", () => {
+    it("cancels the corpse and dispatches a fresh issue once stale across enough ticks", async () => {
+      const { companyId, issueSvc, routine, svc } = await seedFixture({ wakeup: async () => null });
+      await db.update(routines).set({ concurrencyPolicy: "skip_if_active" }).where(eq(routines.id, routine.id));
+
+      const corpseRunId = randomUUID();
+      const corpse = await issueSvc.create(companyId, {
+        projectId: routine.projectId,
+        title: routine.title,
+        description: routine.description,
+        status: "blocked",
+        priority: routine.priority,
+        assigneeAgentId: routine.assigneeAgentId,
+        originKind: "routine_execution",
+        originId: routine.id,
+        originRunId: corpseRunId,
+      });
+      expect(corpse.unblockDescriptor).toBeNull();
+
+      await db.insert(routineRuns).values({
+        id: corpseRunId,
+        companyId,
+        routineId: routine.id,
+        source: "schedule",
+        status: "issue_created",
+        triggeredAt: new Date("2026-09-28T00:00:00.000Z"),
+        linkedIssueId: corpse.id,
+        completedAt: new Date("2026-09-28T00:00:00.000Z"),
+      });
+      // Two more ticks already skipped into the same corpse, so by the time
+      // the next tick fires it has survived exactly
+      // ROUTINE_CORPSE_REAP_MIN_CONSECUTIVE_TICKS (3) prior dispatch attempts
+      // with nothing else ever created.
+      await seedConsecutiveSkippedTicks({
+        companyId,
+        routineId: routine.id,
+        linkedIssueId: corpse.id,
+        count: 2,
+        startingAt: new Date("2026-09-29T00:00:00.000Z"),
+      });
+
+      const run = await svc.runRoutine(routine.id, { source: "schedule" });
+      expect(run.status).toBe("issue_created");
+      expect(run.linkedIssueId).toBeTruthy();
+      expect(run.linkedIssueId).not.toBe(corpse.id);
+
+      const [cancelled] = await db.select().from(issues).where(eq(issues.id, corpse.id));
+      expect(cancelled?.status).toBe("cancelled");
+
+      const comments = await db
+        .select({ body: issueComments.body, authorType: issueComments.authorType })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, corpse.id));
+      expect(comments).toHaveLength(1);
+      expect(comments[0]?.authorType).toBe("system");
+      expect(comments[0]?.body).toContain("CRE-4176");
+
+      const routineIssues = await db.select({ id: issues.id }).from(issues).where(eq(issues.originId, routine.id));
+      expect(routineIssues).toHaveLength(2);
+    });
+
+    it("does not reap a blocked issue carrying an unblockDescriptor (genuine hold, CRE-4157 unaffected)", async () => {
+      const { companyId, issueSvc, routine, svc } = await seedFixture({ wakeup: async () => null });
+      await db.update(routines).set({ concurrencyPolicy: "skip_if_active" }).where(eq(routines.id, routine.id));
+
+      const heldRunId = randomUUID();
+      const held = await issueSvc.create(companyId, {
+        projectId: routine.projectId,
+        title: routine.title,
+        description: routine.description,
+        status: "blocked",
+        priority: routine.priority,
+        assigneeAgentId: routine.assigneeAgentId,
+        originKind: "routine_execution",
+        originId: routine.id,
+        originRunId: heldRunId,
+        unblockDescriptor: {
+          owner: "board",
+          action: "A human decided this needs board review before it continues.",
+        },
+      });
+
+      await seedConsecutiveSkippedTicks({
+        companyId,
+        routineId: routine.id,
+        linkedIssueId: held.id,
+        count: 3,
+      });
+
+      const run = await svc.runRoutine(routine.id, { source: "schedule" });
+      expect(run.status).toBe("skipped");
+      expect(run.linkedIssueId).toBe(held.id);
+
+      const [stillBlocked] = await db.select().from(issues).where(eq(issues.id, held.id));
+      expect(stillBlocked?.status).toBe("blocked");
+
+      const routineIssues = await db.select({ id: issues.id }).from(issues).where(eq(issues.originId, routine.id));
+      expect(routineIssues).toHaveLength(1);
+    });
+
+    it("does not reap a blocked issue before it has gone stale across enough ticks", async () => {
+      const { companyId, issueSvc, routine, svc } = await seedFixture({ wakeup: async () => null });
+      await db.update(routines).set({ concurrencyPolicy: "skip_if_active" }).where(eq(routines.id, routine.id));
+
+      const freshRunId = randomUUID();
+      const fresh = await issueSvc.create(companyId, {
+        projectId: routine.projectId,
+        title: routine.title,
+        description: routine.description,
+        status: "blocked",
+        priority: routine.priority,
+        assigneeAgentId: routine.assigneeAgentId,
+        originKind: "routine_execution",
+        originId: routine.id,
+        originRunId: freshRunId,
+      });
+
+      // Only one prior tick resolved to this issue (the one that created
+      // it) — short of ROUTINE_CORPSE_REAP_MIN_CONSECUTIVE_TICKS, so it gets
+      // the benefit of the doubt rather than being reaped on its first skip.
+      await db.insert(routineRuns).values({
+        id: freshRunId,
+        companyId,
+        routineId: routine.id,
+        source: "schedule",
+        status: "issue_created",
+        triggeredAt: new Date("2026-09-28T00:00:00.000Z"),
+        linkedIssueId: fresh.id,
+        completedAt: new Date("2026-09-28T00:00:00.000Z"),
+      });
+
+      const run = await svc.runRoutine(routine.id, { source: "schedule" });
+      expect(run.status).toBe("skipped");
+      expect(run.linkedIssueId).toBe(fresh.id);
+
+      const [stillBlocked] = await db.select().from(issues).where(eq(issues.id, fresh.id));
+      expect(stillBlocked?.status).toBe("blocked");
+    });
   });
 
   it("creates draft routines without a project or default assignee", async () => {

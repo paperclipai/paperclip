@@ -6,6 +6,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   activityLog,
+  approvals,
   companies,
   companyMemberships,
   companySecretBindings,
@@ -17,7 +18,9 @@ import {
   folders,
   goals,
   heartbeatRuns,
+  issueApprovals,
   issueInboxArchives,
+  issueThreadInteractions,
   issues,
   pluginManagedResources,
   plugins,
@@ -81,6 +84,14 @@ import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./is
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
+import { systemNoticePresentation } from "./recovery/notice-format.js";
+import {
+  buildRoutineExecutionCorpseReapComment,
+  isStaleAcrossConsecutiveTicks,
+  isUnexplainedBlockedIssue,
+  ROUTINE_CORPSE_REAP_MIN_CONSECUTIVE_TICKS,
+  ROUTINE_EXECUTION_CORPSE_REAP_COMMENT_TITLE,
+} from "./routine-execution-reap.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
@@ -1514,6 +1525,103 @@ export function routineService(
       .then((rows) => rows[0] ?? null);
   }
 
+  // CRE-4176: once CRE-4157 made any open routine-execution issue count as
+  // outstanding, a `blocked` one that nothing will ever return to takes its
+  // routine dark permanently — the dispatch tick still fires every cadence,
+  // it just skips/coalesces into the same corpse forever. This checks
+  // whether `candidate` is exactly that corpse (recovery- or platform-parked,
+  // never a genuine human hold) and, if the routine's own last N dispatch
+  // ticks already landed on nothing else, cancels it so this tick can
+  // dispatch a fresh issue instead of perpetuating the hold. Returns true iff
+  // it cancelled the candidate.
+  async function reapStaleRoutineExecutionCorpseIfEligible(input: {
+    routine: typeof routines.$inferSelect;
+    candidate: typeof issues.$inferSelect;
+    excludeRunId: string;
+    executor: Db;
+  }): Promise<boolean> {
+    const { routine, candidate, excludeRunId, executor } = input;
+    if (routine.concurrencyPolicy === "always_enqueue") return false;
+    if (!isUnexplainedBlockedIssue(candidate)) return false;
+
+    const [readiness, pendingInteraction, pendingApproval, liveRun] = await Promise.all([
+      issueSvc.getDependencyReadiness(candidate.id, executor),
+      executor
+        .select({ id: issueThreadInteractions.id })
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            eq(issueThreadInteractions.companyId, candidate.companyId),
+            eq(issueThreadInteractions.issueId, candidate.id),
+            eq(issueThreadInteractions.status, "pending"),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      executor
+        .select({ id: approvals.id })
+        .from(issueApprovals)
+        .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+        .where(
+          and(
+            eq(issueApprovals.companyId, candidate.companyId),
+            eq(issueApprovals.issueId, candidate.id),
+            eq(approvals.status, "pending"),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      executor
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, candidate.companyId),
+            inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${candidate.id}`,
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+    // Any of these is a product-recognized reason something will still
+    // return to this issue: a real blocker, a question/approval awaiting an
+    // answer, or a live/scheduled run (e.g. a provider-quota wait's retry
+    // monitor) that still points at it. Only the total absence of all four is
+    // the "clearable by nothing" shape unique to a platform-parked corpse.
+    if (readiness.unresolvedBlockerCount > 0) return false;
+    if (pendingInteraction || pendingApproval || liveRun) return false;
+
+    const recentLinkedIssueIds = await executor
+      .select({ linkedIssueId: routineRuns.linkedIssueId })
+      .from(routineRuns)
+      .where(
+        and(
+          eq(routineRuns.companyId, routine.companyId),
+          eq(routineRuns.routineId, routine.id),
+          ne(routineRuns.id, excludeRunId),
+        ),
+      )
+      .orderBy(desc(routineRuns.triggeredAt), desc(routineRuns.id))
+      .limit(ROUTINE_CORPSE_REAP_MIN_CONSECUTIVE_TICKS)
+      .then((rows) => rows.map((row) => row.linkedIssueId));
+    if (!isStaleAcrossConsecutiveTicks(recentLinkedIssueIds, candidate.id)) return false;
+
+    const cancelled = await issueSvc.update(candidate.id, { status: "cancelled" }, executor);
+    if (!cancelled) return false;
+    await issueSvc.addComment(
+      candidate.id,
+      buildRoutineExecutionCorpseReapComment({ minConsecutiveTicks: ROUTINE_CORPSE_REAP_MIN_CONSECUTIVE_TICKS }),
+      {},
+      {
+        authorType: "system",
+        presentation: systemNoticePresentation({ tone: "warning", title: ROUTINE_EXECUTION_CORPSE_REAP_COMMENT_TITLE }),
+      },
+      executor,
+    );
+    return true;
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
     return executor
       .update(routineRuns)
@@ -1815,10 +1923,21 @@ export function routineService(
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findOutstandingExecutionIssue(input.routine, txDb, dispatchFingerprint, {
-          kind: issueOriginKind,
-          id: issueOriginId,
-        });
+        let activeIssue: typeof issues.$inferSelect | null = await findOutstandingExecutionIssue(
+          input.routine,
+          txDb,
+          dispatchFingerprint,
+          { kind: issueOriginKind, id: issueOriginId },
+        );
+        if (activeIssue) {
+          const reaped = await reapStaleRoutineExecutionCorpseIfEligible({
+            routine: input.routine,
+            candidate: activeIssue,
+            excludeRunId: createdRun.id,
+            executor: txDb,
+          });
+          if (reaped) activeIssue = null;
+        }
         if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           if (manualRunnerUserId) {
