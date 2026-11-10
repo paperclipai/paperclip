@@ -5,6 +5,8 @@ import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import type { StorageService } from "../storage/types.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { STORAGE_FAILURE_CLEANUP_MS } from "../storage/failure-cleanup.js";
+import { logger } from "../middleware/logger.js";
 
 export const REMOTE_WORKSPACE_SNAPSHOT_GRACE_MS = 7 * 86400_000;
 export const REMOTE_WORKSPACE_SNAPSHOT_RETRY_MS = 15 * 60_000;
@@ -15,6 +17,23 @@ const date = (value: unknown) => typeof value === "string" && Number.isFinite(Da
 
 export function notifyRemoteWorkspaceSnapshots(transaction: object, hint?: string) {
   return notifyDeliveryWork(transaction, DELIVERY_QUEUES.remoteWorkspaceSnapshots, hint);
+}
+
+export async function abortSnapshotAttemptUploads(storage: StorageService, companyId: string, keys: Iterable<string>, signal?: AbortSignal) {
+  const abort = storage.abortIncompleteUploads?.bind(storage);
+  if (!abort) return 0;
+  let aborted = 0;
+  for (const key of keys) {
+    signal?.throwIfAborted();
+    const bounded = AbortSignal.timeout(STORAGE_FAILURE_CLEANUP_MS);
+    try {
+      aborted += await abort(companyId, key, { signal: signal ? AbortSignal.any([signal, bounded]) : bounded });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      logger.warn({ err: error, companyId, objectKey: key }, "workspace snapshot multipart upload abort failed");
+    }
+  }
+  return aborted;
 }
 
 function abandonedUploadOperationId(row: Snapshot) {
@@ -148,6 +167,7 @@ export function remoteWorkspaceSnapshotRetentionService(db: Db, options: {
         for (const key of keys) {
           if (!key.startsWith(prefix) || key.includes("..") || key.includes("\\")) throw new Error("snapshot_upload_scope_invalid");
         }
+        await abortSnapshotAttemptUploads(options.storage, claimed.companyId, keys, signal);
         for (const key of keys) {
           signal?.throwIfAborted();
           await options.storage.deleteObject(claimed.companyId, key, { signal, allVersions: true });

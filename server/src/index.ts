@@ -195,6 +195,7 @@ import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl, resolveLocalR
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
+import { abortInFlightMultipartUploads } from "./storage/s3-multipart.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
@@ -2144,6 +2145,9 @@ async function startServerWithDatabaseTeardown(
     }
 
     await workspaceRecoveryStop;
+
+    const abortedUploads = await abortInFlightMultipartUploads(new Error("server_shutdown"));
+    if (abortedUploads) logger.info({ signal, abortedUploads }, "aborted in-flight multipart uploads before exit");
 
     const telemetryClient = getTelemetryClient();
     if (telemetryClient) {
