@@ -141,7 +141,6 @@ export function actionableItem(sample: TaskSample): string | null {
   // for the person to do: the Retry button, the failed notice and the blocker describe work they already asked for.
   if (interruption?.retryWait) return null;
   if (interruption?.canRetry) return "Retry";
-  if (interruption?.userAction) return `user action ${interruption.userAction}`;
   if (interruption && (interruption.state === "waiting_for_user" || interruption.state === "failed")) return `interruption ${interruption.state}`;
   if (sample.activeRecoveryAction && sample.recoveryOwner === "board") return "board recovery action";
   if (sample.executionBlocker) return "execution blocker";
