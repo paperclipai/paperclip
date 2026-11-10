@@ -18,7 +18,7 @@ describe("RepositoryEditor", () => {
   it("checks large selections against the catalog with linear ID reads", async () => {
     let reads = 0;
     const repos = Array.from({ length: 400 }, (_, index) => ({
-      get id() { reads++; return `repo-${index}`; },
+      get id() { if (++reads >= 400 * 15) throw new Error("Repository ID reads exceeded the linear rendering budget"); return `repo-${index}`; },
       fullName: `org/repo-${index}`, url: `https://github.com/org/repo-${index}`, connections: [],
     }));
     const container = document.createElement("div"), root = createRoot(container);
