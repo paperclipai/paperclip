@@ -15,8 +15,8 @@ reference is neither a registered execution nor evidence that a journey passed.
 These are sibling directories under `maps/`. Each feature file has a same-named
 agent access companion. Reuse the product map's sub-feature IDs, so `tasks/create`
 identifies the same capability in both maps. Product behavior remains governed by
-[the implementation spec](../doc/SPEC-implementation.md); a map cannot grant
-authority or redefine a permission denial as success.
+the code and its tests; a map cannot grant authority or redefine a permission
+denial as success.
 
 ## Capability identifiers
 

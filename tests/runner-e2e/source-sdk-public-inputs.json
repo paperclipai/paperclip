@@ -276,7 +276,7 @@
     "packages/shared/src/issue-references.ts": "bfdd2126fb12797f2c8177113285b2c3233aecef",
     "packages/shared/src/issue-thread-interactions.test.ts": "6f516055744fcedd2e0c06ce82c6a1a019120762",
     "packages/shared/src/issue-write-denial.test.ts": "e21b93aa79e6635c019ac338eff954ec618a98ed",
-    "packages/shared/src/issue-write-denial.ts": "7844fa576492d53e064fc6326c9d94af827ce157",
+    "packages/shared/src/issue-write-denial.ts": "e6b4d72a83f6e4e76e85e34a80f88d1d69b7dfe4",
     "packages/shared/src/markdown-work-products.test.ts": "7293d14ad45ec2b11b5deaab4ce070c36f7c9010",
     "packages/shared/src/markdown-work-products.ts": "16a88cfb717f325c247a516e78b47d53871b52ed",
     "packages/shared/src/mcp-config-help-prompt.ts": "fa58effb7cd995198909315d9ba2a93dedde0552",
