@@ -117,6 +117,8 @@ const MAX_NOTIFICATION_COUNT = 2_048;
 const MAX_NOTIFICATION_BYTES = 4 * 1024 * 1024;
 const RUNNER_CLIENT_VERSION = "0.3.0";
 const RUNNER_BOOTSTRAP_TICKET_TTL_MS = 60_000;
+const RUNNER_RESTORE_STABLE_MS = 60_000;
+const MAX_UNSTABLE_RUNNER_RESTORES = 3;
 const RUNNERD_MAX_OUTBOX_BYTES = 16 * 1024 * 1024;
 const RUNNERD_P0_RESERVE_BYTES = 1024 * 1024;
 
@@ -676,6 +678,41 @@ function recoveredRunAttachment(state: {
     status: command.status,
     providerIdentityEventIndex,
   };
+}
+
+// Committed events that show a provider turn or tool work started. Commands
+// use the control plane's shared recovery-maintenance vocabulary instead.
+const PROVIDER_WORK_EVENT_TYPES = new Set(["turn.accepted", "turn.started", "item.started", "tool.execution.started",
+  "semantic_tool.input", "runtime_request.created", "mcp_app.tool_input"]);
+
+/**
+ * The payload of this run's own `run.attach` when a restart cut it off before
+ * any provider work: the runner journaled it and then died, so the restored
+ * runner settled it as `execution_indeterminate` and will not execute it
+ * again. Attaching binds the run to its saved session and starts no turn, so a
+ * new attachment with the same payload is safe while nothing after the old one
+ * started provider work: every later command is recovery maintenance (see
+ * isRunnerRecoveryMaintenanceCommand), and no committed event shows a turn or
+ * tool work. Each runner refuses the new one unless its provider
+ * session is settled. Warm transitions and staged attachments keep their own
+ * exact replay paths and are never re-issued here.
+ */
+function cutOffRunAttachmentPayload(state: {
+  commands: readonly { type: string; status: string; controllerSeq: number; payload: Record<string, unknown>; result?: unknown }[];
+  committedEvents: readonly { eventType: string }[];
+  warmTransition?: unknown;
+  stagedRunAttachment?: unknown;
+}): Record<string, unknown> | null {
+  if (state.warmTransition != null || state.stagedRunAttachment != null) return null;
+  const attach = state.commands.findLast(command => command.type === "run.attach");
+  if (!attach || attach.payload.paperclipNextAuthority !== undefined) return null;
+  const outcomeUnknown = attach.status === "indeterminate" || (attach.status === "failed"
+    && record(record(attach.result).result).code === "execution_indeterminate");
+  if (!outcomeUnknown) return null;
+  if (state.commands.some(command => command.controllerSeq > attach.controllerSeq
+    && !isRunnerRecoveryMaintenanceCommand(command.type))) return null;
+  if (state.committedEvents.some(event => PROVIDER_WORK_EVENT_TYPES.has(event.eventType))) return null;
+  return structuredClone(attach.payload);
 }
 
 function latestProviderIdentityEventIndex(
@@ -4015,6 +4052,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   readonly #failureSignal: Promise<never>;
   #rejectFailureSignal!: (error: Error) => void;
   #runnerRecoveryInProgress = false;
+  #lastRunnerRestoreAt: number | null = null;
+  #unstableRunnerRestores = 0;
   #startupComplete = false;
   readonly #authorityRunId: () => string | undefined;
   #startupFailureCode = "native_runner_process_exited";
@@ -7059,7 +7098,19 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     // Only a replacement executor can be restoring a cold Pi process. Share
     // one deadline across every recovery barrier; live adoption stays at 30 s.
     if (runAttachment) {
-      await this.#waitCommand("run.attach", runAttachment.commandId, admissionDeadline, true);
+      try {
+        await this.#waitCommand("run.attach", runAttachment.commandId, admissionDeadline, true);
+      } catch (error) {
+        // A restart can cut off this run's own attachment after the runner
+        // journaled it. The restored runner settles it as
+        // execution_indeterminate and never executes it again. Attach once
+        // more with a new command; the runner admits it only for a settled
+        // provider session.
+        const reattachment = cutOffRunAttachmentPayload(core.store.state);
+        if (!reattachment) throw error;
+        const retry = core.queueCommand("run.attach", reattachment, undefined, true);
+        await this.#waitCommand("run.attach", retry.commandId, admissionDeadline, true);
+      }
     }
     // A launched runner normally advanced at authentication, before run.attach
     // restores the provider. An adopted runner had no launch step.
@@ -8442,7 +8493,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.options.runnerReconnectGraceMs !== undefined &&
           handle.restart
         ) {
-          void this.#recoverRunnerProcess(handle, detail);
+          this.#recoverOrFailRunnerProcess(handle, detail);
           return;
         }
         this.#failTransport(
@@ -8460,7 +8511,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.options.runnerReconnectGraceMs !== undefined &&
           handle.restart
         ) {
-          void this.#recoverRunnerProcess(
+          this.#recoverOrFailRunnerProcess(
             handle,
             error instanceof Error ? error.message : String(error),
           );
@@ -8479,6 +8530,23 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         );
       },
     );
+  }
+
+  #recoverOrFailRunnerProcess(handle: RunnerProcessHandle, detail: string): void {
+    this.#unstableRunnerRestores = unstableRunnerRestoreCount(
+      this.#unstableRunnerRestores,
+      this.#lastRunnerRestoreAt,
+      Date.now(),
+    );
+    if (this.#unstableRunnerRestores >= MAX_UNSTABLE_RUNNER_RESTORES) {
+      this.#failTransport(
+        new Error(
+          `native_runner_process_exited: runnerd exited ${this.#unstableRunnerRestores} times within ${RUNNER_RESTORE_STABLE_MS}ms of being restored${detail ? `: ${detail.slice(-1_000)}` : ""}`,
+        ),
+      );
+      return;
+    }
+    void this.#recoverRunnerProcess(handle, detail);
   }
 
   async #recoverRunnerProcess(
@@ -8575,6 +8643,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         })();
         if (await Promise.race([completion, authenticated])) {
           this.#diagnostic("runner process restored its durable PRP session");
+          this.#lastRunnerRestoreAt = Date.now();
           this.#watchRunner(recoveredHandle);
           return;
         }
@@ -9010,7 +9079,12 @@ export const runnerdLaunchProfileInternals = Object.freeze({
   p0ReserveBytes: RUNNERD_P0_RESERVE_BYTES,
 });
 
+function unstableRunnerRestoreCount(previous: number, restoredAt: number | null, now: number): number {
+  return restoredAt !== null && now - restoredAt < RUNNER_RESTORE_STABLE_MS ? previous + 1 : 0;
+}
+
 export const runnerdRecoveryInternals = Object.freeze({
+  unstableRunnerRestoreCount,
   projectCopilotRunGrant,
   completedMaintenanceTerminalReceipt,
   completedMaintenanceTerminalReplayMatches,
@@ -9021,6 +9095,7 @@ export const runnerdRecoveryInternals = Object.freeze({
   providerDrainStateFromSnapshot,
   providerTurnIsActiveFromCommittedEvents,
   recoveredRunAttachment,
+  cutOffRunAttachmentPayload,
   releaseRunnerProcessOwnership,
   runnerCloseDeadlines,
   runnerCloseGraceMs,

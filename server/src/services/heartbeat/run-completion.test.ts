@@ -33,9 +33,12 @@ import { PluginWorkerUnavailableError } from "../plugin-worker-unavailable-error
 import { ReviewedChatBindingDeniedError, ReviewedChatBindingNotReadyError } from "../reviewed-chat-binding-diagnostics.js";
 import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
 import { RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
+import { STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY } from "../../storage/storage-unavailable.js";
+import { withS3FailureDiagnostics } from "../../storage/s3-failure.js";
 import { workspaceProviderCallFailure } from "../workspace-provider-failure.js";
 import { logger } from "../../middleware/logger.js";
 import { unprocessable } from "../../errors.js";
+import { ACCOUNTING_CONTENTION_MESSAGE, AccountingContentionError } from "../accounting-transaction.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
 import { createHeartbeatRunPreparation, ConfigurationIncompleteFailure, classifyManagedProjectAuthFailure } from "./run-preparation.js";
 import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js";
@@ -735,6 +738,39 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.input.onProviderTraceFinalized).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { runtimeMode: "native" as const, conversation: true, createsFinal: true },
+    { runtimeMode: "native" as const, conversation: false, createsFinal: false },
+    { runtimeMode: "legacy" as const, conversation: true, createsFinal: false },
+  ])("scopes final-response precedence to native standing conversations: %j", async ({ runtimeMode, conversation, createsFinal }) => {
+    const f = await fixture({ runtimeMode });
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Conversation reply",
+      ...(conversation ? { assigneeAgentId: f.agent.id, conversationAgentId: f.agent.id,
+        conversationUserId: "board-person", conversationState: "active" } : {}),
+    }).returning();
+    const [earlier] = await db.insert(issueComments).values({ companyId: f.run.companyId, issueId: issue.id,
+      authorAgentId: f.agent.id, createdByRunId: f.run.id, body: "Checking the request.",
+    }).returning();
+    f.input.issueId = issue.id;
+    f.input.issueRef = issue;
+    f.input.issueContext = await createHeartbeatRunPreparation(db).getIssueExecutionContext(f.run.companyId, issue.id);
+    f.input.adapterResult.resultJson = { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "The complete answer" } };
+    f.deps.findRunIssueComment.mockResolvedValue(earlier);
+    f.deps.issuesSvc.addComment.mockImplementation(async (issueId, body) => {
+      const [comment] = await db.insert(issueComments).values({ companyId: f.run.companyId, issueId,
+        authorAgentId: f.agent.id, authorType: "agent", createdByRunId: f.run.id, body }).returning();
+      return { ...comment, authorType: "agent" as const };
+    });
+    await f.completion.completeRun(f.input);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issue.id));
+    expect(comments.some(comment => comment.id === earlier.id && comment.body === earlier.body)).toBe(true);
+    expect(comments.filter(comment => comment.body === "The complete answer")).toHaveLength(createsFinal ? 1 : 0);
+    expect((await read(f.run.id)).resultJson).toMatchObject({ presentationDecision: {
+      chosenSource: createsFinal ? "semantic_result_summary" : "existing_issue_comment",
+      commentAction: createsFinal ? "create" : "reuse",
+    } });
+  });
+
   it("keeps completion and session persistence moving after a response comment fails", async () => {
     const f = await fixture();
     f.input.adapterResult.resultJson = { finalResponseDisposition: "final", finalResponse: "Completed the work." };
@@ -784,6 +820,100 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     else await f.completion.failRun(f.failure(error));
     expect(await read(f.run.id)).toMatchObject({ status: "failed", error: "PRP command session.open failed",
       resultJson: { providerFailure } });
+  });
+
+  it.each(["run", "setup", "restore"] as const)("waits a minute and suppresses rapid recovery when %s fails because storage is unavailable (storage chaos ST1)", async phase => {
+    const f = await fixture();
+    const outage = await withS3FailureDiagnostics("put_object", async () => {
+      throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable",
+        $fault: "server", $metadata: { httpStatusCode: 503, attempts: 3 } });
+    }).catch(error => error as Error);
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "scheduled", run: { id: "wait" } } as never);
+    if (phase === "restore") await f.completion.failRunSetup(f.setup(new RemoteWorkspaceRestoreError("snapshot_download", true, outage)));
+    else if (phase === "setup") await f.completion.failRunSetup(f.setup(outage));
+    else await f.completion.failRun(f.failure(outage));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: STORAGE_UNAVAILABLE_CODE, error: STORAGE_UNAVAILABLE_MESSAGE });
+    expect(failed.error).not.toContain("Injected storage outage");
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, STORAGE_UNAVAILABLE_RETRY);
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }),
+      expect.objectContaining({ suppressImmediateRecovery: true }));
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+  });
+
+  it.each(["run", "setup"] as const)("ends the task's automatic recovery once its storage wait is exhausted (%s)", async phase => {
+    const f = await fixture();
+    const outage = await withS3FailureDiagnostics("put_object", async () => {
+      throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
+    }).catch(error => error as Error);
+    f.deps.scheduleBoundedRetryForRun.mockResolvedValueOnce({ outcome: "retry_exhausted", attempt: 11, maxAttempts: 10 } as never);
+    if (phase === "setup") await f.completion.failRunSetup(f.setup(outage));
+    else await f.completion.failRun(f.failure(outage));
+    expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, STORAGE_UNAVAILABLE_RETRY);
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }),
+      expect.objectContaining({ suppressImmediateRecovery: true }));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: STORAGE_UNAVAILABLE_CODE,
+      error: STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE });
+  });
+
+  it.each(["execution", "setup"] as const)("names the nested cause of a generic %s failure and keeps SQL text off the board", async phase => {
+    const f = await fixture();
+    const logged = vi.spyOn(logger, "error");
+    onTestFinished(() => logged.mockRestore());
+    const driver = Object.assign(new Error("could not serialize access due to concurrent update"), { code: "40001" });
+    const query = new Error('Failed query: update "heartbeat_runs" set "usage_json" = $1 where "id" = $2\nparams: {"apiKey":"sk-live-secret"},run-1',
+      { cause: new Error("transaction aborted", { cause: driver }) });
+    const error = new Error(`Usage write failed: ${query.message}`, { cause: query });
+    if (phase === "setup") await f.completion.failRunSetup(f.setup(error));
+    else await f.completion.failRun(f.failure(error));
+    const run = await read(f.run.id);
+    expect(run).toMatchObject({ status: "failed", errorCode: phase === "setup" ? "setup_failed" : "adapter_failed",
+      error: "Usage write failed: Database query failed (40001)", resultJson: { failureCause: "40001" } });
+    expect(JSON.stringify(run.resultJson)).not.toMatch(/heartbeat_runs|sk-live-secret|params/);
+    expect(logged).toHaveBeenCalledWith(expect.objectContaining({ runId: f.run.id, failureCause: "40001" }), expect.any(String));
+  });
+
+  it("bounds the failure cause to a closed-shape token and falls back to the error class", async () => {
+    const f = await fixture();
+    class QueryTimeoutError extends Error { override name = "QueryTimeoutError"; }
+    const unsafe = Object.assign(new QueryTimeoutError("timed out"), { code: `${"X".repeat(81)}` },
+      { cause: { code: "select * from users" } });
+    await f.completion.failRun(f.failure(unsafe));
+    expect((await read(f.run.id)).resultJson).toMatchObject({ failureCause: "QueryTimeoutError" });
+  });
+
+  it("names why an adapter result failed without a code", async () => {
+    const f = await fixture();
+    await f.completion.completeRun({ ...f.input, adapterResult: { ...f.input.adapterResult, exitCode: 137, signal: null, errorMessage: null } });
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "adapter_failed", error: "Adapter failed",
+      resultJson: { stopReason: "adapter_failed", failureCause: "exit_code_137" } });
+  });
+
+  it("keeps SQL text out of a cancelled adapter result's error", async () => {
+    const f = await fixture();
+    await f.completion.completeRun({ ...f.input, adapterResult: { ...f.input.adapterResult, exitCode: 1,
+      errorMessage: 'Failed query: select "secret_value" from x where id = $1\nparams: sk-secret', resultJson: { status: "cancelled" } } });
+    const run = await read(f.run.id);
+    expect(run.status).toBe("cancelled");
+    expect(run.error).toBe("Database query failed");
+  });
+
+  it("records no failure cause when the failure already has a named code", async () => {
+    const f = await fixture();
+    await f.completion.completeRun({ ...f.input, adapterResult: { ...f.input.adapterResult, exitCode: 1, errorCode: "provider_quota", errorMessage: "quota" } });
+    const run = await read(f.run.id);
+    expect(run.errorCode).toBe("provider_quota");
+    expect(run.resultJson).not.toHaveProperty("failureCause");
+  });
+
+  it("keeps an ordinary adapter failure on the normal recovery path", async () => {
+    const f = await fixture();
+    await f.completion.failRun(f.failure(new Error("adapter crashed")));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "adapter_failed" });
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }),
+      expect.objectContaining({ suppressImmediateRecovery: false }));
   });
 
   it("still records failure and releases issue ownership when log finalization and progress flushing fail", async () => {
@@ -1316,6 +1446,128 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "runner_revision_mismatch" });
     expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent, RUNNER_REVISION_MISMATCH_RETRY);
     expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
+  });
+
+  it("saves a bounded cause and keeps the retryable generic code when accounting retries are exhausted", async () => {
+    const f = await fixture();
+    const logged = vi.spyOn(logger, "error");
+    onTestFinished(() => logged.mockRestore());
+    const driverError = Object.assign(new Error("could not serialize access due to concurrent update"),
+      { name: "PostgresError", code: "40001" });
+    const queryError = new Error("Failed query: select \"id\" from \"heartbeat_runs\" where \"id\" = $1 for update\nparams: secret-run-id",
+      { cause: driverError });
+    await f.completion.failRun(f.failure(new AccountingContentionError(queryError, 4)));
+    const failed = await read(f.run.id);
+    // adapter_failed keeps chat and recovery retry paths that key on it.
+    expect(failed).toMatchObject({ status: "failed", errorCode: "adapter_failed", error: ACCOUNTING_CONTENTION_MESSAGE,
+      resultJson: { failureCause: "40001" } });
+    expect(JSON.stringify(failed)).not.toMatch(/heartbeat_runs|secret-run-id|Failed query/);
+    const failureLog = logged.mock.calls.find(call => call[1] === "heartbeat execution failed");
+    expect(failureLog?.[0]).toMatchObject({ runId: f.run.id, errorCode: "adapter_failed", failureCause: "40001" });
+  });
+
+  describe("a native run that fails before provider work", () => {
+    const contention = () => new AccountingContentionError(Object.assign(new Error("deadlock detected"),
+      { name: "PostgresError", code: "40P01" }), 4);
+    const nativeFixture = async () => {
+      const f = await fixture({ runtimeMode: "native" }, `NPD${randomUUID().slice(0, 6)}`);
+      f.deps.scheduleBoundedRetryForRun.mockResolvedValue({ outcome: "scheduled", run: f.run } as never);
+      return { ...f, preDispatch: (err: unknown, nativeDispatchMayHaveStarted?: boolean) =>
+        ({ ...f.failure(err), legacyAdapterEntered: false, nativeDispatchMayHaveStarted }) };
+    };
+
+    it("records that no provider work started and re-queues itself in the uncharged preparation lane", async () => {
+      const f = await nativeFixture();
+      await f.completion.failRun(f.preDispatch(contention(), false));
+      const failed = await read(f.run.id);
+      expect(failed).toMatchObject({ status: "failed", errorCode: "adapter_failed",
+        resultJson: { failureCause: "40P01", nativePreDispatchFailure: { version: 1, providerWorkStarted: false } } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent,
+        { retryReason: "interrupted_preparation" });
+      expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }),
+        expect.objectContaining({ suppressImmediateRecovery: true }));
+    });
+
+    it("re-queues a setup failure on a transient database fault", async () => {
+      const f = await nativeFixture();
+      await f.completion.failRunSetup({ ...f.setup(Object.assign(new Error("could not serialize access"),
+        { name: "PostgresError", code: "40001" })), nativeDispatchMayHaveStarted: false });
+      expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "setup_failed",
+        resultJson: { failureCause: "40001", nativePreDispatchFailure: { version: 1, providerWorkStarted: false } } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent,
+        { retryReason: "interrupted_preparation" });
+    });
+
+    it("keeps the hold once the run's history shows a native process start", async () => {
+      const f = await nativeFixture();
+      await appendHeartbeatRunEvent(db, { companyId: f.run.companyId, runId: f.run.id, agentId: f.run.agentId,
+        eventType: "native.process_start_requested", stream: "system", level: "info", message: "Native execution requested",
+        payload: { providerAttempt: 1 } });
+      await f.completion.failRun(f.preDispatch(contention(), false));
+      const failed = await read(f.run.id);
+      expect(failed.resultJson).not.toHaveProperty("nativePreDispatchFailure");
+      expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["a dispatch that may have started", true],
+      ["a caller that does not report dispatch", undefined],
+    ] as const)("keeps the hold for %s", async (_label, mayHaveStarted) => {
+      const f = await nativeFixture();
+      await f.completion.failRun(f.preDispatch(contention(), mayHaveStarted));
+      expect((await read(f.run.id)).resultJson).not.toHaveProperty("nativePreDispatchFailure");
+      expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    });
+
+    it("keeps the hold when a native coordinator was claimed", async () => {
+      const f = await nativeFixture();
+      const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Claimed native run" }).returning();
+      await db.update(heartbeatRuns).set({ nativeIssueId: issue.id }).where(eq(heartbeatRuns.id, f.run.id));
+      await db.insert(nativeRunFinalizations).values({ runId: f.run.id, companyId: f.run.companyId, issueId: issue.id, phase: "observed", attempt: 1, leaseOwner: "executor-lease" });
+      await f.completion.failRun(f.preDispatch(contention(), false));
+      expect((await read(f.run.id)).resultJson).not.toHaveProperty("nativePreDispatchFailure");
+      expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    });
+
+    it("re-queues when runtime selection created the coordinator but no executor claimed it", async () => {
+      const f = await nativeFixture();
+      const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Unclaimed native run" }).returning();
+      await db.update(heartbeatRuns).set({ nativeIssueId: issue.id }).where(eq(heartbeatRuns.id, f.run.id));
+      await db.insert(nativeRunFinalizations).values({ runId: f.run.id, companyId: f.run.companyId, issueId: issue.id, phase: "observed" });
+      await f.completion.failRun(f.preDispatch(contention(), false));
+      expect((await read(f.run.id)).resultJson).toMatchObject({ nativePreDispatchFailure: { version: 1, providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledOnce();
+      // The unclaimed coordinator is closed so it cannot hold the successor as pending cleanup.
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id)))[0])
+        .toMatchObject({ phase: "terminal_failure", failureCode: "native_pre_dispatch_failure" });
+    });
+
+    it.each([
+      ["a recorded process", { processPid: 4242 }],
+      ["a provider session", { sessionIdAfter: "provider-session" }],
+    ] as const)("keeps the hold when the run carries %s", async (_label, patch) => {
+      const f = await nativeFixture();
+      await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, f.run.id));
+      await f.completion.failRun(f.preDispatch(contention(), false));
+      expect((await read(f.run.id)).resultJson).not.toHaveProperty("nativePreDispatchFailure");
+      expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    });
+
+    it("re-queues a follow-up whose process identity was inherited from its warm predecessor", async () => {
+      const f = await nativeFixture();
+      await db.update(heartbeatRuns).set({ processPid: 4242, runnerProfileJson: { inheritedProcessIdentityRunId: randomUUID() } })
+        .where(eq(heartbeatRuns.id, f.run.id));
+      await f.completion.failRun(f.preDispatch(contention(), false));
+      expect((await read(f.run.id)).resultJson).toMatchObject({ nativePreDispatchFailure: { version: 1, providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledOnce();
+    });
+
+    it("records the proof but does not re-queue a failure that is not a transient database fault", async () => {
+      const f = await nativeFixture();
+      await f.completion.failRun(f.preDispatch(new Error("adapter crashed"), false));
+      expect((await read(f.run.id)).resultJson).toMatchObject({ nativePreDispatchFailure: { version: 1, providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    });
   });
 
   it("records a workspace provider's reason on the run and in the setup failure log without retrying", async () => {

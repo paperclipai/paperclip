@@ -152,6 +152,15 @@ export const heartbeatRuns = pgTable(
     ),
     scheduledRetryCancellationIdx: index("heartbeat_runs_scheduled_retry_cancellation_idx").on(table.id)
       .where(sql`${table.status} = 'scheduled_retry' and jsonb_typeof(${table.resultJson}->'startupCancellation') = 'object'`),
+    // Committed budget Stops that are not delivered yet. The predicate must stay
+    // identical to `pendingBudgetRunCancellationPredicate` in the server, so the
+    // budget worker, run control, and the idle check read only these few rows
+    // instead of every run's result JSON.
+    pendingBudgetCancellationIdx: index("heartbeat_runs_pending_budget_cancellation_idx")
+      .on(table.companyId)
+      .where(sql`jsonb_typeof(${table.resultJson}->'startupCancellation'->'budgetEnforcement') = 'object'
+        and ${table.resultJson}->'startupCancellation'->'budgetEnforcement'->>'deliveredAt' is null`)
+      .concurrently(),
     // Runs a dispatch gate refused for a pause; that hold's release resumes them.
     treeHoldSuppressionIdx: index("heartbeat_runs_tree_hold_suppression_idx")
       .on(table.companyId, sql`(${table.resultJson}->'treeHoldSuppression'->>'holdId')`)
@@ -161,6 +170,12 @@ export const heartbeatRuns = pgTable(
     legacyControllerLeaseIdx: index("heartbeat_runs_legacy_controller_lease_idx")
       .on(table.controllerLeaseExpiresAt)
       .where(sql`${table.runtimeMode} = 'legacy' AND ${table.status} = 'running' AND ${table.controllerBootId} is not null`),
+    // Runs woken by one chat comment. Not partial: the planner ignores the
+    // expression statistics of a partial index and would then walk the run
+    // history by creation time to satisfy `order by created_at limit 1`.
+    companyWakeCommentIdx: index("heartbeat_runs_company_wake_comment_idx")
+      .on(table.companyId, sql`(${table.contextSnapshot}->>'wakeCommentId')`)
+      .concurrently(),
     costAccountingPendingIdx: index("heartbeat_runs_cost_accounting_pending_idx").on(table.updatedAt, table.id).where(sql`${table.costAccountingPending} = true`),
     costDataQualityIdx: index("heartbeat_runs_cost_data_quality_idx")
       .on(table.companyId, sql`coalesce(${table.finishedAt}, ${table.createdAt}) desc`, table.id)
@@ -192,6 +207,12 @@ export const heartbeatRuns = pgTable(
     ),
     companyNativeWorkspaceIdx: index("heartbeat_runs_company_native_workspace_idx")
       .on(table.companyId, sql`(${table.runnerProfileJson}->'nativeWorkspaceSync'->>'workspaceId')`)
+      .concurrently(),
+    // Runs of one native session. Retention, recovery and resume reads filter
+    // by company and session; without this they walk the agent's run history.
+    companyNativeSessionIdx: index("heartbeat_runs_company_native_session_idx")
+      .on(table.companyId, table.nativeSessionId)
+      .where(sql`${table.nativeSessionId} is not null`)
       .concurrently(),
     companyIssueCreatedIdx: index("heartbeat_runs_company_issue_created_idx").on(
       table.companyId,
@@ -237,6 +258,14 @@ export const heartbeatRuns = pgTable(
       sql`(${table.contextSnapshot} ->> 'taskKey')`,
       table.createdAt.desc(),
     ),
+    // Runs that recorded an execution workspace in their legacy context. Workspace
+    // activity and cleanup checks probe it instead of decoding every run context.
+    // Partial, so it serves only queries that repeat the predicate and never
+    // competes with other company-scoped indexes.
+    companyCtxExecutionWorkspaceIdx: index("heartbeat_runs_company_ctx_execution_workspace_idx")
+      .on(table.companyId, sql`(${table.contextSnapshot} ->> 'executionWorkspaceId')`)
+      .where(sql`${table.contextSnapshot} ? 'executionWorkspaceId'`)
+      .concurrently(),
     companyCtxPaperclipIssueCreatedIdx: index("heartbeat_runs_company_ctx_paperclip_issue_created_idx")
       .on(table.companyId, sql`(${table.contextSnapshot} -> 'paperclipIssue' ->> 'id')`, table.createdAt.desc())
       .concurrently(),

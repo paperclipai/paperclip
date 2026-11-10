@@ -1,3 +1,4 @@
+import { projectEnvironmentOptions } from "../services/project-environments.js";
 import { projectGitAuthorizationService } from "../services/project-git-authorization.js";
 import { skillAccessRequestContext } from "../services/skill-access.js";
 import { createHash } from "node:crypto";
@@ -381,15 +382,26 @@ export function projectRoutes(db: Db) {
     res.json(summary);
   });
 
+  router.get("/companies/:companyId/project-environments", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await projectEnvironmentOptions(db, companyId, {
+      userId: req.actor.type === "board" ? req.actor.userId : req.actor.onBehalfOfUserId,
+      agentId: req.actor.type === "agent" ? req.actor.agentId : null,
+    }));
+  });
+
   router.post("/companies/:companyId/projects", validate(createProjectSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     type CreateProjectPayload = Parameters<typeof svc.create>[1] & {
       workspace?: Parameters<typeof svc.createWorkspace>[1];
       repositoryIds?: string[];
+      environmentId?: string;
+      expectedStorageProviderPluginId?: string | null;
     };
 
-    const { workspace, repositoryIds, repositoryUrls, idempotencyKey, ...projectData } = req.body as CreateProjectPayload & { idempotencyKey?: string; repositoryUrls?: string[] };
+    const { workspace, repositoryIds, repositoryUrls, idempotencyKey, environmentId, expectedStorageProviderPluginId, ...projectData } = req.body as CreateProjectPayload & { idempotencyKey?: string; repositoryUrls?: string[] };
     const receiptOnly = req.get("X-Paperclip-Receipt-Only") === "true";
     if (receiptOnly && !idempotencyKey) throw unprocessable("Project receipt recovery requires an idempotency key");
     projectData.privacyOwnerUserId = req.actor.type === "board" ? req.actor.userId ?? null : req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
@@ -418,7 +430,7 @@ export function projectRoutes(db: Db) {
     const urlRepositories = (repositoryUrls ?? []).map(normalizeProjectRepositoryUrl);
     const repositories = repositoryIds ? await selectedRepositories(req, companyId, repositoryIds) : null;
     const actor = getActorInfo(req);
-    const fingerprint = createHash("sha256").update(JSON.stringify({ projectData, workspace, repositoryIds, repositoryUrls })).digest("hex");
+    const fingerprint = createHash("sha256").update(JSON.stringify({ projectData, workspace, repositoryIds, repositoryUrls, environmentId, expectedStorageProviderPluginId })).digest("hex");
     const receiptKey = idempotencyKey ? `project:${companyId}:${actor.actorId}:${runContext?.issue.id ?? "board"}:${idempotencyKey}` : null;
     const result = await db.transaction(async (tx) => {
       if (receiptKey) {
@@ -463,7 +475,13 @@ export function projectRoutes(db: Db) {
       if (receiptOnly) return null;
       if (runContext && !museActor) await projectToolContext(tx as unknown as Db, req.actor, true);
       const service = projectService(tx as unknown as Db);
-      const project = repositories ? await service.createWithRepositories(companyId, projectData, repositories) : await service.create(companyId, projectData);
+      const environment = {
+        environmentId,
+        expectedStorageProviderPluginId,
+        userId: req.actor.type === "board" ? req.actor.userId : req.actor.onBehalfOfUserId,
+        agentId: req.actor.type === "agent" ? req.actor.agentId : null,
+      };
+      const project = repositories ? await service.createWithRepositories(companyId, projectData, repositories, environment) : await service.create(companyId, projectData, environment);
       if (project.visibility === "private") await addActorAsPrivateProjectPrincipal(req, project, tx as unknown as Db);
       const attachedUrls = new Set((repositories ?? []).map(repo => repo.url.toLowerCase()));
       const registeredUrls: typeof urlRepositories = [];

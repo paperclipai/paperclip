@@ -12,6 +12,8 @@
  * by hand-rolled fetches (health, uploads) classify the same way.
  */
 
+import { CancelledError } from "@tanstack/react-query";
+
 export type ErrorKind =
   | "transient"
   | "auth"
@@ -78,6 +80,23 @@ const CODE_COPY: Record<string, { title: string; body: string }> = {
   TIMEOUT: {
     title: "Request timed out",
     body: "This took too long to respond. Please try again in a moment.",
+  },
+  // Queued message edits. The editor keeps the person's text in every case.
+  queued_comment_revision_conflict: {
+    title: "Queue changed",
+    body: "The queue changed in another session. Your edit is still here; save again to apply it to the latest queue.",
+  },
+  queued_comment_stale_queue: {
+    title: "Queue changed",
+    body: "The queue changed in another session. Your edit is still here; save again to apply it to the latest queue.",
+  },
+  queued_comment_stale_target: {
+    title: "Queued message changed",
+    body: "This queued message was already sent or removed. Your text is still here; you can queue it as a new message.",
+  },
+  queued_comment_not_pending: {
+    title: "Queued message changed",
+    body: "This queued message was already sent or removed. Your text is still here; you can queue it as a new message.",
   },
   // Issue-thread interaction resolution (moved from lib/interaction-resolution-error.ts).
   interaction_audience_denied: {
@@ -181,8 +200,9 @@ function readableServerMessage(err: unknown): string | null {
 // --- Classification ---------------------------------------------------------------
 
 function isAbortError(err: unknown): boolean {
-  const name = record(err)?.name;
-  return name === "AbortError" || name === "CancelledError";
+  // React Query's `CancelledError` keeps the default `name` ("Error"), so it
+  // can only be recognized by class.
+  return record(err)?.name === "AbortError" || err instanceof CancelledError;
 }
 
 function isNetworkTypeError(err: unknown): boolean {

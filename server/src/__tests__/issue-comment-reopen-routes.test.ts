@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
-import { getTableName } from "drizzle-orm";
+import { getTableName, type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError, unprocessable } from "../errors.js";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
@@ -455,6 +456,20 @@ describe("issue comment reopen routes", () => {
     }));
     mockDbSelectFrom.mockImplementation((table) => {
       const name = getTableName(table as Parameters<typeof getTableName>[0]);
+      if (name === "issues" || name === "agents") return { where: (condition: SQL) => {
+        const ids = [...new Set(new PgDialect().sqlToQuery(condition).params
+          .filter((value): value is string => typeof value === "string" && value !== "company-1"))];
+        const rows = async () => name === "issues"
+          ? (await Promise.all(ids.map(id => mockIssueService.getById(id)))).filter(row => row && ids.includes(row.id))
+          : ids.map(id => ({ id, companyId: "company-1", permissions: null }));
+        const query = {
+          orderBy: () => query,
+          for: () => query,
+          then: (resolve: (rows: unknown[]) => unknown, reject?: (reason: unknown) => unknown) =>
+            rows().then(resolve, reject),
+        };
+        return query;
+      } };
       if (name === "case_handoffs") return { where: vi.fn(() => ({
         orderBy: vi.fn(() => ({ limit: vi.fn(async () => []) })),
       })) };
@@ -1047,7 +1062,7 @@ describe("issue comment reopen routes", () => {
       // Plan §6: name the boundary, who can act, and the sanctioned path.
       expect(res.body.error).toContain("Issue visibility");
       expect(res.body.error).toContain("Who can act:");
-      expect(res.body.details.sanctionedPath).toContain("child issue");
+      expect(res.body.details.sanctionedPath).toContain("Ask the board to widen visibility");
       expect(mockAccessService.decide).toHaveBeenCalledWith(
         expect.objectContaining({ action: "issue:comment" }),
       );
@@ -1231,6 +1246,7 @@ describe("issue comment reopen routes", () => {
         assigneeAgentId: otherAgentId,
         status: "todo",
       }),
+      mockTx,
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -2408,6 +2424,7 @@ describe("issue comment reopen routes", () => {
         actorAgentId: "22222222-2222-4222-8222-222222222222",
         actorUserId: null,
       }),
+      mockTx,
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),

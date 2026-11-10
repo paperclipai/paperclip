@@ -1,5 +1,7 @@
 import type { SetIssueTitle } from "@paperclipai/shared";
-import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
+import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS, ISSUE_SUMMARIES_MAX_IDS, type IssueChatBootstrap } from "@paperclipai/shared";
+import type { RunForIssue } from "./activity";
+import type { ActiveRunForIssue, LiveRunForIssue } from "./heartbeats";
 import type { IssueSummary } from "@paperclipai/shared";
 import type { ExecutionReconciliation } from "@paperclipai/shared";
 import type { IssueContextUsage } from "@paperclipai/shared";
@@ -299,6 +301,19 @@ export const issuesApi = {
     // never join a request sent with the previous account's cookie.
     detachInflightGet(path);
     return api.get<IssueSummary[]>(path, { ...options, cache: "no-store" });
+  },
+  /**
+   * The task chat's first-frame reads for up to ten tasks in one request. Each
+   * item's fields have the shape of the matching single-task endpoint;
+   * missing and unreadable tasks are omitted.
+   */
+  chatBootstrap: (companyId: string, issueRefs: readonly string[], options?: RequestOptions) => {
+    const refs = [...new Set(issueRefs.map((ref) => ref.trim()).filter(Boolean))];
+    if (refs.length === 0 || refs.length > ISSUE_CHAT_BOOTSTRAP_MAX_IDS) throw new Error("Chat bootstrap needs one to ten task references");
+    const path = `/companies/${companyId}/issues/chat-bootstrap?${new URLSearchParams({ ids: refs.join(",") })}`;
+    // Never join a request sent with the previous account's cookie.
+    detachInflightGet(path);
+    return api.get<IssueChatBootstrap<RunForIssue, LiveRunForIssue, ActiveRunForIssue>>(path, { ...options, cache: "no-store" });
   },
   /** Fetch every page for bounded task-detail relations, not just the default first page. */
   listAll: async (companyId: string, filters: Omit<IssueListFilters, "limit" | "offset" | "sortField" | "sortDir" | "afterId" | "attention">, options?: RequestOptions): Promise<Issue[]> => {

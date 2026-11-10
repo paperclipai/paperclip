@@ -289,6 +289,7 @@ export type PluginRpcErrorCode =
  */
 export interface PluginInvocationScope {
   companyId: string;
+  agentOrigin?: { agentId: string; runId?: string | null };
   projectGit?: { projectId: string; workspaceId?: string; runId?: string; agentId?: string; operation?: "prepare" | "inspect" | "remove" };
 }
 
@@ -646,6 +647,11 @@ export interface PluginEnvironmentRunnerIngressEndpointParams
 }
 
 export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDriverBaseParams {
+  /** Omitted means ordinary execution. A login allocation targets a saved agent,
+   * requires requestedExpiresAt, and releases only that login, never its computer. */
+  purpose?: "run" | "login";
+  /** Host-resolved fixed command identity for a login allocation. */
+  loginCommandKey?: PluginLoginCommandKey;
   runId: string;
   creationOperationId?: string;
   /** Explicit platform probes may request a provider-owned immutable snapshot
@@ -1086,6 +1092,8 @@ export type PluginLoginCommandKey = "claude" | "codex" | "grok";
 
 /** The open request for one live login pseudo-terminal. The worker registers the terminal by `hostRouteId`. */
 export interface PluginLoginPtyOpenParams {
+  /** Independent absolute deadline, required by providers hosting login on an existing computer. */
+  expiresAt?: string;
   /** The host-owned opaque route identifier. The worker registers the terminal by it. */
   hostRouteId: string;
   /** The environment driver key, for the worker sandbox scope. It routes the worker; it confers no command authority. */
@@ -1117,20 +1125,42 @@ export interface PluginLoginPtyOpenResult {
 
 /** The input request. It carries the worker session identifier and the raw input bytes. */
 export interface PluginLoginPtyInputParams {
+  /** Host-bound company context for provider callbacks during this lifecycle call. */
+  companyId?: string;
+  /** Stable identity of this input write. Retries retain the identity and bytes. */
+  inputId?: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
   /** The raw input bytes to write to the terminal. */
   data: string;
 }
 
+/** Read the fixed Codex result of a bound login allocation; never an arbitrary path. */
+export interface PluginLoginPtyReadCredentialParams {
+  driverKey: string;
+  companyId: string;
+  environmentId: string;
+  providerLeaseId: string;
+  loginCommandKey: "codex";
+}
+
+export interface PluginLoginPtyReadCredentialResult {
+  kind: "codex-auth-json";
+  authJson: string;
+}
+
 /** The stop request. It carries the worker session identifier. */
 export interface PluginLoginPtyStopParams {
+  /** Host-bound company context for provider callbacks during this lifecycle call. */
+  companyId?: string;
   /** The worker session identifier that the open reply returned. */
   workerSessionId: string;
 }
 
 /** The close request. The host route identifier is the authoritative key. */
 export interface PluginLoginPtyCloseParams {
+  /** Host-bound company context for provider callbacks during this lifecycle call. */
+  companyId?: string;
   /**
    * The host-owned opaque route identifier. This is the authoritative close key,
    * so the host closes the terminal even when no worker session identifier
@@ -1498,6 +1528,8 @@ export interface HostToWorkerMethods {
   ];
   /** Write delayed input to a live login pseudo-terminal, keyed by the worker session identifier. */
   loginPtyInput: [params: PluginLoginPtyInputParams, result: void];
+  /** Read the fixed credential artifact after the bound login process succeeds. */
+  loginPtyReadCredential: [params: PluginLoginPtyReadCredentialParams, result: PluginLoginPtyReadCredentialResult];
   /** Stop a live login pseudo-terminal child, keyed by the worker session identifier. */
   loginPtyStop: [params: PluginLoginPtyStopParams, result: void];
   /** Close a live login pseudo-terminal by the host route identifier and return a bound acknowledgement. */
@@ -1572,6 +1604,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "environmentDeleteTemplate",
   "loginPtyOpen",
   "loginPtyInput",
+  "loginPtyReadCredential",
   "loginPtyStop",
   "loginPtyClose",
   "duplexChannelOpen",

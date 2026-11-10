@@ -1,3 +1,4 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { usePrimaryAgentPresentation } from "./primary-agent/PrimaryAgentPresentation";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties } from "react";
@@ -10,7 +11,6 @@ import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { MissingUserSecretsBanner } from "../pages/secrets/MissingUserSecretsBanner";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
@@ -517,8 +517,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   });
 
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(effectiveCompanyId!),
-    queryFn: () => projectsApi.list(effectiveCompanyId!),
+    ...companyProjectsQuery(effectiveCompanyId!),
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
   const { data: mentionIssues } = useQuery({

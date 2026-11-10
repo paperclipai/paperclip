@@ -1,4 +1,5 @@
 import { settleOwnableKind } from "../recovery/ownership-invariant-report.js";
+import { markRunHandedOffForShutdown } from "./shutdown-handoff.js";
 import { ORPHANED_RUN_LEASE_FAILURE_REASON } from "../environment-run-lease-settlement.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../environment-lease-controller.js";
 import { readNativeStartupCleanup, readNativeStartupContext } from "../native-runtime/native-startup-cleanup.js";
@@ -164,7 +165,8 @@ export interface HeartbeatRecoveryDependencies extends Pick<HeartbeatRetryDepend
     graceMs?: number;
   }) => Promise<void>;
   setRunStatus: (runId: string, status: string, patch?: Partial<typeof heartbeatRuns.$inferInsert>) => Promise<HeartbeatRun | null>;
-  setRunStatusFromLive: (runId: string, status: string, fromStatuses: string[], patch?: Partial<typeof heartbeatRuns.$inferInsert>) => Promise<{
+  setRunStatusFromLive: (runId: string, status: string, fromStatuses: string[], patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+    failureReport?: undefined, cancellationCondition?: undefined, options?: { onlyWhileNativeLeaseLapsed?: true }) => Promise<{
     updated: boolean;
     run: HeartbeatRun | null;
   }>;
@@ -476,7 +478,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     enterShutdown();
     const idleSessions = await closeIdleWarmNativeSessionsForRestart();
     if (idleSessions.failed > 0) {
-      logger.warn({ idleSessions }, "idle native sessions could not checkpoint before controller shutdown");
+      logger.warn({ idleSessions }, "idle native session cleanup failed before controller shutdown");
     }
     let intent: Awaited<ReturnType<typeof readHotRestartIntent>>;
     try {
@@ -596,6 +598,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           isNativeSessionId(run.nativeSessionId),
       )
       .map(({ run }) => run.id);
+    for (const runId of nativeRunIds) markRunHandedOffForShutdown(runId);
     const detachedNativeSessions =
       await detachNativeSessionsForRestart(nativeRunIds);
 
@@ -996,7 +999,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     try {
       const dispositions = await claimNativeRestartRecoveries({
         onClaim: (claim, scope) => {
-          if (!scope.remote || claim.kind !== "reattach_remote_runner") return;
+          if (!scope.remote) return;
           // Start before the rest of the batch or its event writes can delay dispatch.
           preparationRenewals.set(claim.runId, startNativeSessionExecutionLeaseRenewal({
             db, ...scope, runId: claim.runId, leaseOwner: claim.leaseOwner,
@@ -1189,6 +1192,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         // hot restart. Leaving the old event consumer attached lets its
         // finalizer interrupt/suspend Claude while the next server is adopting
         // the same turn.
+        markRunHandedOffForShutdown(run.id);
         await detachNativeSessionsForRestart([run.id]);
         const recoveryHistoryEntry = JSON.stringify({
           at: now.toISOString(),
@@ -1980,6 +1984,12 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         | "native_chat_workspace_scope_mismatch";
       processPidAlive?: boolean;
       processGroupAlive?: boolean;
+      /**
+       * The orphan sweep acted on a lapsed executor lease it read earlier. The
+       * owner may have taken that lease back since (host sleep), so mark only
+       * while it is still lapsed, under the coordinator lock.
+       */
+      leaseLapsed?: boolean;
     },
   ) {
     const durableOwnershipHold =
@@ -1992,21 +2002,20 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     )
       return run;
     const blockedStatus = run.status === "failed" ? "failed" : "running";
-    const blockedWrite = await setRunStatusFromLive(
-      run.id,
-      blockedStatus,
-      [blockedStatus],
-      {
-        error: NATIVE_OWNERSHIP_UNVERIFIED_MESSAGE,
-        errorCode: NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE,
-        ...(durableOwnershipHold
-          ? {
-              nativePhase: "terminal_failure",
-              nativePhaseUpdatedAt: new Date(),
-            }
-          : {}),
-      },
-    );
+    const blockedPatch = {
+      error: NATIVE_OWNERSHIP_UNVERIFIED_MESSAGE,
+      errorCode: NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE,
+      ...(durableOwnershipHold
+        ? {
+            nativePhase: "terminal_failure",
+            nativePhaseUpdatedAt: new Date(),
+          }
+        : {}),
+    };
+    const blockedWrite = evidence.leaseLapsed
+      ? await setRunStatusFromLive(run.id, blockedStatus, [blockedStatus], blockedPatch,
+        undefined, undefined, { onlyWhileNativeLeaseLapsed: true })
+      : await setRunStatusFromLive(run.id, blockedStatus, [blockedStatus], blockedPatch);
     if (!blockedWrite.updated || !blockedWrite.run) {
       return blockedWrite.run ?? run;
     }
@@ -2506,6 +2515,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
               : "observed_owner_unverified",
           processPidAlive: nativeProcessPidAlive,
           processGroupAlive: nativeProcessGroupAlive,
+          // Read as lapsed (or unset): its owner may take it back before this write.
+          leaseLapsed: nativeRun && !(nativeControllerLeaseExpiresAt && nativeControllerLeaseExpiresAt > now),
         });
         if (nativeControllerLeaseExpiresAt && nativeControllerLeaseExpiresAt > now)
           scope.onDeferredDeadline?.(nativeControllerLeaseExpiresAt.getTime());
@@ -2691,6 +2702,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
           errorCode: "process_lost",
           finishedAt: now,
+          ...(restartInterruptedBeforeDispatch && legacyControllerGone ? { controllerLeaseExpiresAt: now } : {}),
           resultJson: (() => {
             const result = mergeRunStopMetadataForAgent(
               { adapterType, adapterConfig },

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, fillPlaceholders } from "drizzle-orm";
-import { agents, chatActions, chatConversations, chatEndpointResources, chatEndpoints,
-  chatGitHubReviews, chatMessageLinks, companies, heartbeatRuns, issueComments, issues,
+import { agents, chatActions, chatConversations, chatDeliveries, chatEndpointResources, chatEndpoints,
+  chatGitHubConfigurations, chatGitHubReviews, chatMessageLinks, companies, heartbeatRuns, issueComments, issues,
   runIdentityContexts, toolApplications, toolConnections, type Db } from "@paperclipai/db";
 import { defaultGitHubReviewPolicy } from "@paperclipai/shared";
 
@@ -77,6 +77,33 @@ export function captureReviewWaitQueries(db: Db, queries: CapturedReviewWaitQuer
       return builder;
     };
   }});
+}
+
+/** Extend the review-wait fixture to a check action whose review has no run
+ * yet, so the check state must find the wake run from the inbound comment. */
+export async function seedGitHubReviewCheck(db: Db) {
+  const f = await seedGitHubReviewWait(db);
+  const githubDeliveryId = randomUUID(), chatDeliveryId = randomUUID(), wakeRunId = randomUUID();
+  const event = { deliveryId: githubDeliveryId, repository: "synthetic/repository", repositoryId: "42",
+    pullNumber: 7, headSha: f.headSha };
+  await db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, f.endpointId));
+  await db.update(chatEndpointResources).set({ enabled: true, availability: "available" })
+    .where(eq(chatEndpointResources.id, f.resourceId));
+  await db.insert(chatGitHubConfigurations).values({ endpointId: f.endpointId, companyId: f.companyId,
+    configuration: { toolsEnabled: true } as never, updatedByUserId: "operator" });
+  await db.insert(chatDeliveries).values({ id: chatDeliveryId, companyId: f.companyId, endpointId: f.endpointId,
+    conversationId: f.conversationId, providerEventId: githubDeliveryId, deduplicationKey: githubDeliveryId,
+    eventKind: "message", state: "processed", normalizedEvent: { githubAutomatic: { context: event } } });
+  await db.update(chatMessageLinks).set({ deliveryId: chatDeliveryId })
+    .where(and(eq(chatMessageLinks.companyId, f.companyId), eq(chatMessageLinks.commentId, f.commentId)));
+  await db.insert(heartbeatRuns).values({ id: wakeRunId, companyId: f.companyId, agentId: f.agentId,
+    nativeIssueId: f.issueId, status: "running", contextSnapshot: { wakeCommentId: f.commentId } });
+  await db.update(chatGitHubReviews).set({ runId: null, assessment: null, state: "queued" })
+    .where(eq(chatGitHubReviews.id, f.reviewId));
+  const [action] = await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpointId,
+    kind: "github_review_check", providerActionId: `github_review_check:${githubDeliveryId}`,
+    payload: { event, admitted: true, runtimeGeneration: 0 } }).returning();
+  return { ...f, action: action!, event, githubDeliveryId, chatDeliveryId, wakeRunId };
 }
 
 export async function revokeReviewWaitConnection(db: Db, fixture: Awaited<ReturnType<typeof seedGitHubReviewWait>>) {
