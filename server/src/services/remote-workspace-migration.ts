@@ -420,13 +420,12 @@ async function lockMigrationRecovery(lock: MigrationTransaction, plans: Migratio
     sources: online.flatMap(({ reserved, onlineSource }) => [...reserved.legacyRecoverySources, ...onlineSource!.companions.flatMap(proof => proof.sources)]),
     holds: online.flatMap(({ reserved, onlineSource }) => [...reserved.onlineRecoveryHolds, ...onlineSource!.companions.flatMap(proof => proof.holds)]) }))
     throw new Error("remote_workspace_migration_blocked:remote_copyback_owned");
-  const readers = await Promise.allSettled(online.map(async ({ input, onlineSource, reserved }) => {
+  await mapCohortMembers(online, async ({ input, onlineSource, reserved }) => {
     const current = await inspect(input.db, { ...input, onlineSource, operationId: reserved.operation!.id }, cohort);
     if (current.reasons.length || canonical(current.legacyRecoverySources) !== canonical(reserved.legacyRecoverySources)
       || canonical(current.onlineRecoveryHolds) !== canonical(reserved.onlineRecoveryHolds))
       throw new Error("remote_workspace_migration_recovery_source_changed");
-  }));
-  for (const reader of readers) if (reader.status === "rejected") throw reader.reason;
+  }, online[0].input.signal);
 }
 
 function createMigrationChildVerifier(input: MigrationInput, onlineSource: OnlineWorkspaceSource | undefined, sourceLock: MigrationTransaction, cohort = false) {
@@ -698,15 +697,29 @@ export async function migrateRemoteWorkspace(input: MigrationInput) {
 const cohortSchema = z.object({
   schema: z.literal("paperclip.remote-workspace-cohort.v1"), id: z.string().uuid(), companyId: z.string().uuid(),
   sourceProof: z.string().regex(/^[a-f0-9]{64}$/),
-  members: z.array(z.object({ workspaceId: z.string().uuid(), operationId: z.string().uuid() }).strict()).min(1).max(8),
+  members: z.array(z.object({ workspaceId: z.string().uuid(), operationId: z.string().uuid() }).strict()).min(1).max(32),
 }).strict();
+
+async function mapCohortMembers<T, R>(members: readonly T[], read: (member: T, index: number) => Promise<R>, signal?: AbortSignal): Promise<R[]> {
+  const results: R[] = [], cancellation = members.length > 8 ? signal : undefined;
+  for (let start = 0; start < members.length; start += 8) {
+    cancellation?.throwIfAborted();
+    const readers = await Promise.allSettled(members.slice(start, start + 8).map((member, index) => read(member, start + index)));
+    for (const reader of readers) {
+      if (reader.status === "rejected") throw reader.reason;
+      results.push(reader.value);
+    }
+    cancellation?.throwIfAborted();
+  }
+  return results;
+}
 
 export async function migrateRemoteWorkspaceCohort(input: {
   db: Db; storage: StorageService; companyId: string; workspaceIds: readonly string[];
   apply?: boolean; concurrency?: number; signal: AbortSignal; sourceLockWaitMs?: number;
 }) {
   const companyId = z.string().uuid().parse(input.companyId).toLowerCase();
-  const workspaceIds = z.array(z.string().uuid()).min(1).max(8).parse(input.workspaceIds).map(id => id.toLowerCase()).sort();
+  const workspaceIds = z.array(z.string().uuid()).min(1).max(32).parse(input.workspaceIds).map(id => id.toLowerCase()).sort();
   const concurrency = z.number().int().min(1).max(8).parse(input.concurrency ?? 2);
   if (new Set(workspaceIds).size !== workspaceIds.length) throw new Error("workspace_cohort_duplicate_member");
   input.signal.throwIfAborted();
@@ -735,20 +748,22 @@ export async function migrateRemoteWorkspaceCohort(input: {
         || cohort.members.find(member => member.workspaceId === snapshot.executionWorkspaceId)?.operationId !== operation.id
         || canonical(operation.metadata?.cohortMigration) !== canonical(cohort))) throw new Error("workspace_cohort_membership_changed");
     return { companyId, cohortId: cohort.id, applied: Boolean(input.apply), replayed: true,
-      members: await Promise.all(workspaceIds.map(workspaceId => inventoryRemoteWorkspaceMigration(input.db, { companyId, workspaceId }))) };
+      members: await mapCohortMembers(workspaceIds, workspaceId => inventoryRemoteWorkspaceMigration(input.db, { companyId, workspaceId }), input.signal) };
   }
   if (imported.some(Boolean)) throw new Error("workspace_cohort_membership_changed");
   const stop = new AbortController(), signal = AbortSignal.any([input.signal, stop.signal]);
-  const members = await Promise.all(workspaceIds.map(async workspaceId => {
+  const members = await mapCohortMembers(workspaceIds, async workspaceId => {
     const memberInput: MigrationInput = { db: input.db, storage: input.storage, companyId, workspaceId, apply: true, signal };
     const onlineSource = await resolveMigrationSource(memberInput);
     if (!onlineSource) throw new Error("workspace_cohort_online_source_required");
     return { input: memberInput, onlineSource };
-  }));
+  }, signal);
   const scopeIdentity = (scope: OnlineWorkspaceSource) => canonical({ kind: scope.kind,
     projectIds: scope.projectIds, issueIds: scope.issueIds, workspaceIds: scope.workspaceIds });
   if (members.some(member => scopeIdentity(member.onlineSource) !== scopeIdentity(members[0].onlineSource)))
     throw new Error("workspace_cohort_source_scope_mismatch");
+  if (members.length > 8 && members.some(member => member.onlineSource.root !== members[0].onlineSource.root))
+    throw new Error("workspace_cohort_same_root_required");
   for (const member of members) for (const other of members) {
     if (member !== other && member.onlineSource.root !== other.onlineSource.root
       && member.onlineSource.root.startsWith(other.onlineSource.root + path.sep)) throw new Error("workspace_cohort_leaf_members_required");
@@ -777,13 +792,12 @@ export async function migrateRemoteWorkspaceCohort(input: {
     || new Set(cohort.members.map(member => member.operationId)).size !== workspaceIds.length
     || pending.some(marker => canonical(marker) !== canonical(cohort))) throw new Error("workspace_cohort_membership_changed");
   const preflight = async (db: ReadDb) => {
-    const readers = await Promise.allSettled(members.map(async member => {
+    await mapCohortMembers(members, async member => {
       const current = await inspect(db, { ...member.input, onlineSource: member.onlineSource }, cohort);
       if (current.reasons.length) throw new Error(`remote_workspace_migration_blocked:${current.reasons.join(",")}`);
       if (fingerprint(current.workspace) !== fingerprint(initial.find(workspace => workspace.id === member.input.workspaceId)!))
         throw new Error("workspace_cohort_source_changed");
-    }));
-    for (const reader of readers) if (reader.status === "rejected") throw reader.reason;
+    }, signal);
   };
   if (!input.apply) { await preflight(input.db); return { companyId, cohortId: cohort.id, applied: false, eligible: true, workspaceIds }; }
   const publications: Parameters<typeof publishActivity>[0][] = [];
@@ -793,16 +807,12 @@ export async function migrateRemoteWorkspaceCohort(input: {
       if (!await tryAcquireExecutionWorkspaceLifecycleLock(lock, workspaceId)) throw new IsolatedRepositorySourceBusy("workspace_source_busy");
     }
     await preflight(input.db);
-    const reservations = await Promise.allSettled(members.map(async member => {
+    const plans: MigrationPlan[] = await mapCohortMembers(members, async member => {
       const reserved = await reserveMigration(member.input, member.onlineSource, cohort,
         fingerprint(initial.find(workspace => workspace.id === member.input.workspaceId)!));
       if (reserved.authority) throw new Error("workspace_cohort_membership_changed");
       return { ...member, reserved };
-    }));
-    const plans: MigrationPlan[] = reservations.map(reservation => {
-      if (reservation.status === "rejected") throw reservation.reason;
-      return reservation.value;
-    });
+    }, signal);
     await lockMigrationRecovery(lock, plans, cohort);
     if (refreshSourceProof) {
       const refreshedCohort = { ...cohort, sourceProof };
@@ -855,15 +865,14 @@ export async function migrateRemoteWorkspaceCohort(input: {
       for (const peer of peers) if (peer.status === "rejected") failure ??= peer.reason;
       if (failure) throw failure;
       signal.throwIfAborted();
-      const nestedReaders = await Promise.allSettled(plans.map(async (plan, index) => {
+      await mapCohortMembers(plans, async (plan, index) => {
         const captured = captures[index]!;
         if (!captured.nested.length) return;
         const scratch = path.join(captured.scratch, "verify-nested"); await fs.mkdir(scratch);
         const verified = await (childVerifier?.finalize ?? prepareNestedWorkspaceImports)({ ...plan.input, workspace: plan.reserved.workspace,
           scratch, recordedChildren: captured.nested, gitSourceRoots: plan.onlineSource?.gitSourceRoots });
         if (canonical(verified) !== canonical(captured.nested)) throw new Error("nested_workspace_source_changed");
-      }));
-      for (const reader of nestedReaders) if (reader.status === "rejected") throw reader.reason;
+      }, signal);
       await lock.execute(sql`select 1`);
       await lock.transaction(async tx => {
         await lockMigrationParents(tx, companyId, null, plans.flatMap(plan => [
@@ -889,9 +898,9 @@ export async function migrateRemoteWorkspaceCohort(input: {
     } catch (error) { failure = error; throw error; }
     finally {
       await childVerifier?.close();
-      const cleanup = await Promise.allSettled(captures.filter((capture): capture is CapturedMigration => Boolean(capture))
-        .map(capture => removeTaskDirectoryTree(capture.scratch)));
-      const errors = cleanup.flatMap(outcome => outcome.status === "rejected" ? [outcome.reason] : []);
+      const cleanup = await mapCohortMembers(captures.filter((capture): capture is CapturedMigration => Boolean(capture)),
+        capture => removeTaskDirectoryTree(capture.scratch).then(() => [], error => [error]));
+      const errors = cleanup.flat();
       if (errors.length) throw new AggregateError(failure ? [failure, ...errors] : errors, "workspace_cohort_cleanup_failed");
       if (!failure) signal.throwIfAborted();
     }
