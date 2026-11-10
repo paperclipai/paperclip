@@ -428,8 +428,11 @@ one index probe per binding: `issue_id`, `native_issue_id`, the bound issues'
 checkout and execution runs, and the legacy context keys `issueId`, `taskId`
 and `executionWorkspaceId`. Migration 0460 builds
 `heartbeat_runs_company_ctx_execution_workspace_idx` concurrently for the last
-key. The context expressions must stay textually equal to the index
-expressions; a regression test checks that no binding scans `heartbeat_runs`.
+key. The index is partial (`context_snapshot ? 'executionWorkspaceId'`), so it
+serves only queries that repeat that predicate and does not compete with other
+company-scoped indexes. The context expressions and the predicate must stay
+textually equal to the index definitions; a regression test checks that no
+binding scans `heartbeat_runs`.
 To compare both plans on a disposable local fixture:
 
 ```sh

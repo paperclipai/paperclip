@@ -108,7 +108,8 @@ export function expirationScope(workspace: Workspace) {
   // PostgreSQL read every company run and decode its context JSON. Each key set
   // is passed as an array so the planner probes the index instead of hashing a
   // full scan; it does not count the cost of reading TOASTed contexts. The legacy
-  // context expressions match the heartbeat_runs expression indexes exactly;
+  // context expressions match the heartbeat_runs expression indexes exactly,
+  // and the key test matches the partial workspace index predicate;
   // ->> yields NULL for non-object contexts, so those rows stay unmatched there
   // and can still match through an independent native binding. The UNION
   // removes duplicate IDs, so the outer primary-key probe keeps each run once.
@@ -131,7 +132,8 @@ export function expirationScope(workspace: Workspace) {
         UNION SELECT unnest(ARRAY[checkout_run_id, execution_run_id]) FROM bound
         UNION ${companyRuns} AND (context_snapshot ->> 'issueId') = ANY(ARRAY(SELECT id::text FROM tree))
         UNION ${companyRuns} AND (context_snapshot ->> 'taskId') = ANY(ARRAY(SELECT id::text FROM tree))
-        UNION ${companyRuns} AND (context_snapshot ->> 'executionWorkspaceId') = ${workspace.id}
+        UNION ${companyRuns} AND context_snapshot ? 'executionWorkspaceId'
+          AND (context_snapshot ->> 'executionWorkspaceId') = ${workspace.id}
       ))
     )`;
 }

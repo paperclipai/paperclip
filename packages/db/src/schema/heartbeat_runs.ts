@@ -260,8 +260,11 @@ export const heartbeatRuns = pgTable(
     ),
     // Runs that recorded an execution workspace in their legacy context. Workspace
     // activity and cleanup checks probe it instead of decoding every run context.
+    // Partial, so it serves only queries that repeat the predicate and never
+    // competes with other company-scoped indexes.
     companyCtxExecutionWorkspaceIdx: index("heartbeat_runs_company_ctx_execution_workspace_idx")
       .on(table.companyId, sql`(${table.contextSnapshot} ->> 'executionWorkspaceId')`)
+      .where(sql`${table.contextSnapshot} ? 'executionWorkspaceId'`)
       .concurrently(),
     companyCtxPaperclipIssueCreatedIdx: index("heartbeat_runs_company_ctx_paperclip_issue_created_idx")
       .on(table.companyId, sql`(${table.contextSnapshot} -> 'paperclipIssue' ->> 'id')`, table.createdAt.desc())

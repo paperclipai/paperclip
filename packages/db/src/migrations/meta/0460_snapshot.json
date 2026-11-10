@@ -1,5 +1,5 @@
 {
-  "id": "3463d09a-4528-48c3-b752-169cb3db392c",
+  "id": "f93ccf18-7e86-4788-be77-b17430c86b2f",
   "prevId": "e070677d-cfb8-4438-847c-29c4da7ca8c5",
   "version": "7",
   "dialect": "postgresql",
@@ -36034,6 +36034,7 @@
             }
           ],
           "isUnique": false,
+          "where": "\"heartbeat_runs\".\"context_snapshot\" ? 'executionWorkspaceId'",
           "concurrently": true,
           "method": "btree",
           "with": {}
