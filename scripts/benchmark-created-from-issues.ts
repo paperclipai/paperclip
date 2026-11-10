@@ -14,7 +14,8 @@
 // The script runs the baseline (from --baseline-ref) and the working-tree
 // `issueService.list` with the route's filters, for several source tasks,
 // asserts identical complete row payloads, and reports alternating timings and
-// EXPLAIN (ANALYZE, BUFFERS) of the list statement.
+// EXPLAIN (ANALYZE, BUFFERS) of the list statement. An inbox case lists a page
+// with blocked-inbox attention and explains its external review-wait read.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -167,7 +168,14 @@ try {
     readCondition, createdFromIssueId: sourceIssueId, includeRoutineExecutions: true,
     sortField: "id", sortDir: "asc", limit: 500,
   });
-  const cases = { busy: busy.id as string, quiet: quiet.id as string };
+  // The inbox case is a page of issues with blocked-inbox attention: its
+  // review-wait read used to cover every in-review task of the company.
+  const cases: Record<string, { filters: IssueFilters; statement: RegExp }> = {
+    busy: { filters: filtersFor(busy.id), statement: /"creation_source_issue"/ },
+    quiet: { filters: filtersFor(quiet.id), statement: /"creation_source_issue"/ },
+    inbox: { filters: { readCondition, status: "todo,in_progress,in_review,blocked", includeBlockedInboxAttention: true,
+      sortField: "updated", sortDir: "desc", limit: 50 }, statement: /"status_decisions"."reason_code"/ },
+  };
   const arms = { baseline: baseline.issueService(db), treatment: issueService(db) };
   const results: Record<string, unknown> = {};
   const stats = (values: number[]) => {
@@ -175,8 +183,7 @@ try {
     return { medianMs: Number(sorted[Math.floor(sorted.length / 2)]!.toFixed(2)), minMs: Number(sorted[0]!.toFixed(2)),
       maxMs: Number(sorted[sorted.length - 1]!.toFixed(2)), samplesMs: values.map((value) => Number(value.toFixed(2))) };
   };
-  for (const [name, sourceIssueId] of Object.entries(cases)) {
-    const filters = filtersFor(sourceIssueId);
+  for (const [name, { filters, statement }] of Object.entries(cases)) {
     const times = { baseline: [] as number[], treatment: [] as number[] };
     let reference: unknown;
     for (let iteration = -2; iteration < samples; iteration++) {
@@ -199,21 +206,30 @@ try {
     for (const arm of ["baseline", "treatment"] as const) {
       capture = [];
       await arms[arm].list(companyId, filters);
-      const listStatement = capture.find((query) => /"creation_source_issue"/.test(query.sql));
+      const matching = capture.filter((query) => statement.test(query.sql));
       capture = null;
-      assert.ok(listStatement, `${arm}: list statement captured`);
-      const [row] = await client.unsafe(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${listStatement.sql}`, listStatement.params);
-      const plan = row["QUERY PLAN"][0];
-      plans[arm] = { executionMs: plan["Execution Time"], planningMs: plan["Planning Time"],
-        sharedBuffers: plan.Plan["Shared Hit Blocks"] + plan.Plan["Shared Read Blocks"], plan };
+      assert.ok(matching.length > 0, `${arm}: list statement captured`);
+      let executionMs = 0, planningMs = 0, sharedBuffers = 0;
+      const statementPlans = [];
+      for (const query of matching) {
+        const [row] = await client.unsafe(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${query.sql}`, query.params);
+        const plan = row["QUERY PLAN"][0];
+        executionMs += plan["Execution Time"];
+        planningMs += plan["Planning Time"];
+        sharedBuffers += plan.Plan["Shared Hit Blocks"] + plan.Plan["Shared Read Blocks"];
+        statementPlans.push(plan);
+      }
+      plans[arm] = { statements: matching.length, params: matching.reduce((sum, query) => sum + query.params.length, 0),
+        executionMs, planningMs, sharedBuffers, plans: statementPlans };
     }
     results[name] = {
       resultRows: resultIds.size,
       baseline: stats(times.baseline), treatment: stats(times.treatment),
       speedup: Number((stats(times.baseline).medianMs / stats(times.treatment).medianMs).toFixed(1)),
       listStatement: Object.fromEntries(Object.entries(plans).map(([arm, value]) => {
-        const { executionMs, planningMs, sharedBuffers } = value as { executionMs: number; planningMs: number; sharedBuffers: number };
-        return [arm, { executionMs, planningMs, sharedBuffers }];
+        const { statements, params, executionMs, planningMs, sharedBuffers } = value as
+          { statements: number; params: number; executionMs: number; planningMs: number; sharedBuffers: number };
+        return [arm, { statements, params, executionMs: Number(executionMs.toFixed(3)), planningMs: Number(planningMs.toFixed(3)), sharedBuffers }];
       })),
     };
     if (evidenceDir) {
