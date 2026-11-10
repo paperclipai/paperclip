@@ -1652,6 +1652,7 @@ export function JsonSchemaForm({
     const isWide =
       fieldType === "object" ||
       fieldType === "array" ||
+      propSchema.format === "textarea" ||
       (typeof propSchema.maxLength === "number" && propSchema.maxLength > TEXTAREA_THRESHOLD);
     return (
       <div key={key} className={cn("min-w-0", isWide && "sm:col-span-2")}>

@@ -876,6 +876,29 @@ describe("JsonSchemaForm arrays of objects", () => {
     expect(entryButtons()[0].textContent).not.toContain("error");
   });
 
+  it("gives multi-line text the full row of an open entry", async () => {
+    const withNotes: JsonSchemaNode = {
+      ...schema,
+      properties: {
+        backends: {
+          ...schema.properties!.backends,
+          items: {
+            ...schema.properties!.backends.items!,
+            properties: { ...schema.properties!.backends.items!.properties, notes: { type: "string", format: "textarea" } },
+          },
+        },
+      },
+    };
+    await act(async () => {
+      root.render(<JsonSchemaForm schema={withNotes} values={{ backends: [{ id: "" }] }} onChange={() => {}} />);
+    });
+
+    const textarea = container.querySelector("textarea");
+    expect(textarea).not.toBeNull();
+    expect(textarea!.closest(".sm\\:col-span-2")).not.toBeNull();
+    expect(container.querySelector('input[type="text"]')!.closest(".sm\\:col-span-2")).toBeNull();
+  });
+
   it("disables the fields of read-only entries", async () => {
     const readOnly: JsonSchemaNode = {
       ...schema,
