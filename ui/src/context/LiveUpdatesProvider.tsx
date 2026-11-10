@@ -2235,10 +2235,8 @@ type SocketAuthScope = { userId: string | null; sessionId: string | null; key: s
  * reconnects.
  */
 function nextSocketAuthScope(previous: SocketAuthScope | null, userId: string | null, sessionId: string | null): SocketAuthScope {
-  if (previous && userId !== null && previous.userId === userId) {
-    if (previous.sessionId === sessionId) return previous;
-    if (previous.sessionId === null) return { ...previous, sessionId };
-  }
+  if (previous && previous.userId === userId && previous.sessionId === sessionId) return previous;
+  if (previous && userId !== null && previous.userId === userId && previous.sessionId === null) return { ...previous, sessionId };
   return { userId, sessionId, key: sessionId ?? userId ?? "signed_out" };
 }
 
@@ -2269,9 +2267,12 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { data: health } = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
   const currentUserId = session?.user?.id ?? session?.session?.userId ??
     (health?.deploymentMode === "local_trusted" ? "local-board" : null);
-  const socketAuth = useRef<SocketAuthScope | null>(null);
-  socketAuth.current = nextSocketAuthScope(socketAuth.current, currentUserId, session?.session?.id ?? null);
-  const socketAuthKey = socketAuth.current.key;
+  const sessionId = session?.session?.id ?? null;
+  const [socketAuth, setSocketAuth] = useState(() => nextSocketAuthScope(null, currentUserId, sessionId));
+  const nextSocketAuth = nextSocketAuthScope(socketAuth, currentUserId, sessionId);
+  // Adjust state during render: the scope depends on the previous scope.
+  if (nextSocketAuth !== socketAuth) setSocketAuth(nextSocketAuth);
+  const socketAuthKey = nextSocketAuth.key;
   const [connectedScopeKey, setConnectedScopeKey] = useState<string | null>(null);
   const liveCompanyId = resolveLiveCompanyId(selectedCompanyId, selectedCompany?.id ?? null);
   const socketScopeKey = JSON.stringify([liveCompanyId, socketAuthKey]);

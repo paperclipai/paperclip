@@ -25,6 +25,8 @@ test("a returning visit makes each shell read at most once and keeps one live so
     await rowsAt();
     await page.waitForTimeout(5_000);
     const counts = shellReadCounts();
+    // The restored session is verified exactly once; that read is what used to reconnect the socket.
+    expect(counts["auth/get-session"], JSON.stringify(counts)).toBe(1);
     expect(Object.entries(counts).filter(([, count]) => count > 1), JSON.stringify(counts)).toEqual([]);
     expect(sockets, "The verified session reconnected the live socket").toHaveLength(1);
   } finally { await context.close(); }
