@@ -439,7 +439,7 @@ export function AgentProviderConnection({
         }}
         primaryLabel={
           opened && needsLogin
-            ? loginPhase === "waiting" ? "Waiting for code"
+            ? loginPhase === "waiting" ? adapterType === "codex_local" ? "Waiting for auth…" : "Waiting for code"
               : loginPhase === "connecting" ? "Connecting"
               : `Sign in to ${provider}`
             : busy

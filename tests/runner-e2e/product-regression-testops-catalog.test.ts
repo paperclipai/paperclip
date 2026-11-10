@@ -72,7 +72,7 @@ it("runs every standing Product regression case through its existing full-stack 
     expect(projected.records[1]!.value.checks).toHaveLength(matcherResults.length);
     expect(projected.records[1]!.value.checks?.map(check => check.passed)).toEqual(matcherResults.map(check => check.passed));
     if (firstTask) {
-      const alias = "gpt-5.6-sol-2026-11-01", secret = "sk-proj-syntheticcredentialabcdefghijklmnop";
+      const alias = "gpt-6.1-sol-2026-11-01", secret = "sk-proj-syntheticcredentialabcdefghijklmnop";
       for (const [configuredModel, observedModels] of [[row.model, [alias]], [null, []], [row.model, [secret]]] as const) {
         const reported = observedModels[0] ?? configuredModel ?? "provider-default (unreported)";
         const output = project({ ...raw, model: reported, firstTask: { ...firstTask, configuredModel, observedModels: [...observedModels] } });
@@ -83,7 +83,7 @@ it("runs every standing Product regression case through its existing full-stack 
         expect(output.records[1]!.value.reportedModelSha256).toBe(createHash("sha256").update(reported).digest("hex"));
         expect(JSON.stringify(output)).not.toContain(reported);
       }
-      for (const configuredModel of ["gpt-6.1-sol", secret]) {
+      for (const configuredModel of ["gpt-5.6-sol", secret]) {
         expect(() => project({ ...raw, model: alias, firstTask: { ...firstTask, configuredModel, observedModels: [alias] } }))
           .toThrow("product_regression_testops_metadata_invalid");
       }

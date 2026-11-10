@@ -68,6 +68,7 @@ import {
   GOOGLE_WORKSPACE_DEFAULT_SELECTION,
   getAvailableConnectionMethod,
   getConnectableAppDefinition,
+  createToolConnectionSchema,
   type CreateToolConnection,
   type GoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
@@ -3361,6 +3362,42 @@ describeEmbeddedPostgres("tool access service", () => {
       .where(eq(toolConnections.companyId, company.id))).toEqual([]);
     expect(await db.select().from(companySecrets)
       .where(eq(companySecrets.companyId, company.id))).toEqual([]);
+  });
+
+  it.each([
+    { name: "channel purpose", input: { connectionPurpose: "channel" as const, transport: "local_stdio" as const } },
+    { name: "chat transport", input: { transport: "chat_sdk" as const } },
+    { name: "voice transport", input: { transport: "voice" as const } },
+  ])("rejects a $name before it writes any row", async ({ input }) => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+
+    await expect(service.createConnection(company.id, connectionInput({
+      name: "Not a tool",
+      config: { templateId: "paperclip.echo-calculator-time" },
+      ...input,
+    }))).rejects.toMatchObject({ status: 422 });
+
+    expect(await db.select().from(toolConnections)
+      .where(eq(toolConnections.companyId, company.id))).toEqual([]);
+    expect(await db.select().from(toolApplications)
+      .where(eq(toolApplications.companyId, company.id))).toEqual([]);
+  });
+
+  it("stores config as transportConfig when the request leaves transportConfig out", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const body = createToolConnectionSchema.parse({
+      name: "Local echo config only",
+      transport: "local_stdio",
+      config: { templateId: "paperclip.echo-calculator-time" },
+    });
+
+    const connection = await service.createConnection(company.id, body);
+
+    const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+    expect(stored?.config).toMatchObject({ templateId: "paperclip.echo-calculator-time" });
+    expect(stored?.transportConfig).toEqual(stored?.config);
   });
 
   it("registers an approved local stdio template and exposes its runtime slot", async () => {

@@ -1,3 +1,4 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { isLockedIssueStub } from "@/components/LockedIssueChip";
 import { IssuePullRequestLinks } from "../IssuePullRequestLinks";
 import { useIssueWorkProducts } from "../../hooks/useIssueWorkProducts";
@@ -32,7 +33,6 @@ import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { selectArtifactAttachments } from "@/lib/issue-artifacts";
-import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
 import { useSidebar } from "../../context/SidebarContext";
 import { queryKeys } from "../../lib/queryKeys";
@@ -79,6 +79,7 @@ import { invalidateInboxIssueQueries } from "../../lib/inboxArchiveCache";
 import { Button } from "@/components/ui/button";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -436,7 +437,7 @@ export function IssueProperties({
     enabled: !!companyId,
   });
   const assigneeRuntimeAgentId = issue.assigneeAgentId ?? null;
-  const { data: assigneeRuntimeState } = useQuery({
+  const { data: assigneeRuntimeState, isLoading: assigneeRuntimeStateLoading } = useQuery({
     queryKey: queryKeys.agents.runtimeState(assigneeRuntimeAgentId ?? ""),
     queryFn: () => agentsApi.runtimeState(assigneeRuntimeAgentId!, companyId ?? undefined),
     // Optional detail: a 403 for board users without agent management access
@@ -451,8 +452,7 @@ export function IssueProperties({
     enabled: !!companyId,
   });
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(companyId!, { includeArchived: true }),
-    queryFn: () => projectsApi.list(companyId!, { includeArchived: true }),
+    ...companyProjectsQuery(companyId!, { includeArchived: true }),
     enabled: !!companyId,
   });
   const activeProjects = useMemo(
@@ -2420,12 +2420,16 @@ export function IssueProperties({
           </PropertyPicker>
         ) : null}
 
-        {assigneeRateLimits && summarizeProviderRateLimits(assigneeRateLimits, Date.now()) ? (
+        {assigneeRuntimeStateLoading || (assigneeRateLimits && summarizeProviderRateLimits(assigneeRateLimits, Date.now())) ? (
           <PropertyRow label="Usage limit">
-            <AgentRateLimitPropertyValue
-              snapshot={assigneeRateLimits}
-              detailsHref={assigneeRateLimitAgent ? agentUrl(assigneeRateLimitAgent) : undefined}
-            />
+            {assigneeRuntimeStateLoading ? (
+              <Skeleton className="h-4 w-32" role="status" aria-label="Loading usage limit" />
+            ) : (
+              <AgentRateLimitPropertyValue
+                snapshot={assigneeRateLimits}
+                detailsHref={assigneeRateLimitAgent ? agentUrl(assigneeRateLimitAgent) : undefined}
+              />
+            )}
           </PropertyRow>
         ) : null}
 

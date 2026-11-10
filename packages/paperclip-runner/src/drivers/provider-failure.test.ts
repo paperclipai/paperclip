@@ -95,6 +95,14 @@ describe("provider failure boundary", () => {
       .toMatchObject({ category: "rate_limit", retryability: "unknown" });
   });
 
+  it("classifies OpenRouter's invalid model ID as an unavailable model unless OpenCode allows a retry", () => {
+    const data = { message: "openrouter/unavailable-model is not a valid model ID", statusCode: 400 };
+    expect(openCodeProviderFailure({ name: "APIError", data: { ...data, isRetryable: false } }, "openrouter"))
+      .toMatchObject({ category: "model_unavailable", retryability: "requires_action", httpStatus: 400 });
+    expect(openCodeProviderFailure({ name: "APIError", data: { ...data, isRetryable: true } }, "openrouter")?.category)
+      .not.toBe("model_unavailable");
+  });
+
   it("extracts OpenCode API error fields without copying response bodies or headers", () => {
     const failure = openCodeProviderFailure({ name: "APIError", data: { message: "Service is busy.", statusCode: 503,
       responseBody: "private request", responseHeaders: { authorization: "secret" } } }, "openrouter");

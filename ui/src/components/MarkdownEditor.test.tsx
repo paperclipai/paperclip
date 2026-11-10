@@ -980,6 +980,34 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it.each([
+    ["Steer the current turn&#x20;", "Steer the current turn "],
+    ["Steer the current turn &#x20;\n", "Steer the current turn  \n"],
+    ["Use `&#x20;`&#x20;", "Use `&#x20;` "],
+    ["First line&#x20;\nsecond&#x20;\n", "First line&#x20;\nsecond \n"],
+    ["**bold&#x20;**&#x20;\n", "**bold&#x20;** \n"],
+    ["First line&#x20;\nsecond", "First line&#x20;\nsecond"],
+    ["**bold&#x20;**\n", "**bold&#x20;**\n"],
+    ["Use \\&#x20;", "Use \\&#x20;"],
+    ["```text\n&#x20;", "```text\n&#x20;"],
+    ["    &#x20;", "    &#x20;"],
+  ])("stores trailing editor spaces without changing literal entities: %s", async (exported, stored) => {
+    mdxEditorMockState.emitMountChange = exported;
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<MarkdownEditor value="Draft" onChange={handleChange} />);
+    });
+    await flush();
+
+    expect(handleChange).toHaveBeenCalledWith(stored);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("stores intraword underscores as typed instead of the exporter's escaped form", async () => {
     const value = "Your final answer must be exactly E2E_ASK_12_journey_1793913565974_507b01b8.";
     // The real exporter escapes every literal underscore, including inside words.
@@ -1019,6 +1047,27 @@ describe("MarkdownEditor", () => {
     await flush();
 
     expect(handleChange).toHaveBeenCalledWith(stored);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("stores a pasted command's `=` as typed instead of the highlight exporter's escaped form", async () => {
+    const value = "Run node -e 'const fs=require(\"fs\");x.map(a=>a)' then check a == b.\n\n```js\nconst keep\\=1\n```";
+    // MDXEditor's highlight extension escapes every prose `=`; code is exported as typed.
+    mdxEditorMockState.emitMountChange =
+      "Run node -e 'const fs\\=require(\"fs\");x.map(a\\=>a)' then check a \\=\\= b.\n\n```js\nconst keep\\=1\n```";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<MarkdownEditor value={value} onChange={handleChange} placeholder="Markdown body" />);
+    });
+
+    await flush();
+
+    expect(handleChange).toHaveBeenCalledWith(value);
 
     await act(async () => {
       root.unmount();

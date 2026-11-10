@@ -23,22 +23,33 @@ const validArchive = (value: unknown): value is Archive => {
     && Number.isSafeInteger(entry.bytes) && entry.bytes > 0;
 };
 
-async function verifyArchive(path: string, expected: Archive) {
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+// The run report keeps only the outer message. Name the failed check with a
+// fixed reason so a recurrence is diagnosable without exposing private paths.
+export const invalidArchive = (reason: string, cause?: unknown) =>
+  new Error(`runner_remote_provider_archive_invalid: ${reason}`, cause === undefined ? undefined : { cause });
+
+export async function verifyArchive(path: string, expected: Archive, signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  let file;
+  try { file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
+  catch (error) { throw invalidArchive("archive_unreadable", error); }
   try {
     const metadata = await file.stat();
-    if (!metadata.isFile() || metadata.size !== expected.bytes) throw Error("runner_remote_provider_archive_invalid");
+    if (!metadata.isFile()) throw invalidArchive("archive_not_file");
+    if (metadata.size !== expected.bytes) throw invalidArchive("size_mismatch");
     const hash = createHash("sha256");
-    for await (const chunk of file.createReadStream({ autoClose: false })) hash.update(chunk);
-    if (hash.digest("hex") !== expected.sha256) throw Error("runner_remote_provider_archive_invalid");
+    for await (const chunk of file.createReadStream({ autoClose: false, signal })) hash.update(chunk);
+    signal?.throwIfAborted();
+    if (hash.digest("hex") !== expected.sha256) throw invalidArchive("sha256_mismatch");
   } finally { await file.close(); }
 }
 
-export async function readProviderPackLayers(root: string, expectedDigest: string, value: unknown): Promise<ProviderPackLayers> {
+export async function readProviderPackLayers(root: string, expectedDigest: string, value: unknown, signal?: AbortSignal): Promise<ProviderPackLayers> {
   const receipt = value as { encoding: string; providerPackDigest: string; overlay: Archive; files: FileLayer[] };
-  if (receipt.encoding !== "tar+zstd" || receipt.providerPackDigest !== expectedDigest
+  if (receipt.providerPackDigest !== expectedDigest) throw invalidArchive("receipt_identity_mismatch");
+  if (receipt.encoding !== "tar+zstd"
     || !validArchive(receipt.overlay) || !Array.isArray(receipt.files) || receipt.files.length > 10_000) {
-    throw Error("runner_remote_provider_archive_invalid");
+    throw invalidArchive("receipt_invalid");
   }
   const paths = new Set<string>();
   for (const file of receipt.files) {
@@ -47,20 +58,21 @@ export async function readProviderPackLayers(root: string, expectedDigest: strin
       || file.path.startsWith("/") || file.path.includes("\\") || file.path.includes("\0")
       || file.path.split("/").some(part => !part || part === "." || part === "..")
       || !Number.isSafeInteger(file.mode) || file.mode < 0 || file.mode > 0o777 || paths.has(file.path)) {
-      throw Error("runner_remote_provider_archive_invalid");
+      throw invalidArchive("layer_invalid");
     }
     paths.add(file.path);
   }
   for (const path of paths) {
     let parent = posix.dirname(path);
     while (parent !== ".") {
-      if (paths.has(parent)) throw Error("runner_remote_provider_archive_invalid");
+      if (paths.has(parent)) throw invalidArchive("layer_invalid");
       parent = posix.dirname(parent);
     }
   }
   const sourceRoot = `${root}.archives`;
-  if (!(await lstat(sourceRoot)).isDirectory()) throw Error("runner_remote_provider_archive_invalid");
-  await verifyArchive(`${sourceRoot}/overlay.tar.zst`, receipt.overlay);
+  const layers = await lstat(sourceRoot).catch(error => { throw invalidArchive("layers_unreadable", error); });
+  if (!layers.isDirectory()) throw invalidArchive("layers_unreadable");
+  await verifyArchive(`${sourceRoot}/overlay.tar.zst`, receipt.overlay, signal);
   return { kind: "layers", sourceRoot, overlay: receipt.overlay, files: receipt.files };
 }
 
@@ -100,6 +112,11 @@ const reuseScript = `
 })().catch(()=>process.exitCode=1);
 `;
 
+export function providerPackLayersArgument(archive: ProviderPackLayers, targetPath: string, reuseRoots: readonly string[]) {
+  const spec = Buffer.from(JSON.stringify({ target: targetPath, roots: reuseRoots, files: archive.files })).toString("base64");
+  return Buffer.byteLength(spec) > 120_000 ? null : spec;
+}
+
 export async function stageProviderPackLayers(input: {
   archive: ProviderPackLayers;
   runner: CommandManagedRuntimeRunner;
@@ -110,9 +127,9 @@ export async function stageProviderPackLayers(input: {
   const { archive, runner } = input;
   if (!runner.syncIn) throw Error("runner_remote_provider_archive_transport_unavailable");
   const measure = <T>(name: string, fn: () => Promise<T>) => input.trace ? input.trace.measure(name, fn) : fn();
-  const spec = Buffer.from(JSON.stringify({ target: input.targetPath, roots: input.reuseRoots, files: archive.files })).toString("base64");
+  const spec = providerPackLayersArgument(archive, input.targetPath, input.reuseRoots);
   // Respect the per-argument Linux limit; unusual packs retain directory staging.
-  if (Buffer.byteLength(spec) > 120_000) return false;
+  if (spec === null) return false;
   const capability = await measure("provider_pack.archive.probe", () => runner.execute({
     command: "sh", args: ["-c", `${providerPackExtractionProbe} && node -e 'process.exit(Number(process.versions.node.split(".")[0])>=18?0:1)'`],
     bypassSession: true, timeoutMs: 10_000,
@@ -142,14 +159,15 @@ export async function stageProviderPackLayers(input: {
     const hash = createHash("sha256");
     await measure("provider_pack.archive.verify_missing", () => pipeline((async function* () {
       for (const layer of layers) {
-        const file = await open(`${archive.sourceRoot}/${layer.name}`, constants.O_RDONLY | constants.O_NOFOLLOW);
+        const file = await open(`${archive.sourceRoot}/${layer.name}`, constants.O_RDONLY | constants.O_NOFOLLOW)
+          .catch(error => { throw invalidArchive("archive_unreadable", error); });
         try {
           const metadata = await file.stat(), layerHash = createHash("sha256");
-          if (!metadata.isFile() || metadata.size !== layer.bytes) throw Error("runner_remote_provider_archive_invalid");
+          if (!metadata.isFile() || metadata.size !== layer.bytes) throw invalidArchive("size_mismatch");
           for await (const chunk of file.createReadStream({ autoClose: false })) {
             layerHash.update(chunk); hash.update(chunk); yield chunk;
           }
-          if (layerHash.digest("hex") !== layer.sha256) throw Error("runner_remote_provider_archive_invalid");
+          if (layerHash.digest("hex") !== layer.sha256) throw invalidArchive("sha256_mismatch");
         } finally { await file.close(); }
       }
     })(), createWriteStream(bundlePath, { flags: "wx", mode: 0o600 })));

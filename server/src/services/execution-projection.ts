@@ -1,5 +1,6 @@
 import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
+  agents,
   heartbeatRuns,
   issues,
   dotAgentBindings,
@@ -19,6 +20,7 @@ import { workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { readTaskDrain } from "./task-admission.js";
 import { getStartupRecoveryState } from "../startup-recovery-state.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
+import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 const MAX_PREDECESSOR_CLEANUP_CHECKS = 16;
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
@@ -189,6 +191,13 @@ export async function executionProjectionsForRuns(
   // executor the claim also waits for. Pending uses admission's own predicate.
   const settlingPredecessorKeys = new Set<string>();
   const queuedRuns = runs.filter(run => run.status === "queued");
+  const setupAgentIds = [...new Set(queuedRuns.filter(run => !run.startedAt).map(run => run.agentId))];
+  const setupAgents = setupAgentIds.length ? await read(async () => db
+    .select({ id: agents.id, lifecycleState: agents.lifecycleState,
+      lifecycleHolds: agents.lifecycleHolds,
+      retryRequired: sql<boolean>`coalesce(${agents.lifecycleOperation}->>'retryRequired', 'false') = 'true'` })
+    .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, setupAgentIds)))) : [];
+  const setupByAgent = new Map(setupAgents.map(agent => [agent.id, agent]));
   const issueIdOf = (run: Run) => run.nativeIssueId ?? text(run.contextSnapshot?.issueId);
   const queuedIssueIds = [...new Set(queuedRuns.map(issueIdOf).filter((id): id is string => !!id))];
   if (queuedIssueIds.length) {
@@ -250,6 +259,7 @@ export async function executionProjectionsForRuns(
         now,
         waitingByRun.get(run.id),
         settlingPredecessorKeys.has(run.id),
+        setupByAgent.get(run.agentId),
       ),
     );
   }
@@ -275,6 +285,7 @@ export function projectExecution(
   now = new Date(),
   waitingForProvider?: WaitingExternalProvider,
   waitingForPredecessor = false,
+  setupAgent?: { lifecycleState: string; lifecycleHolds: readonly string[]; retryRequired?: boolean },
 ): ExecutionProjection {
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
@@ -334,6 +345,27 @@ export function projectExecution(
         "The task was closed or reassigned before delivery. Inspect the current task owner and status.";
       return set("failed", "Continuation cancelled");
     }
+    const reconciliation = recoveryAction.evidence.executionReconciliation;
+    if (recoveryAction.cause === "native_restart_recovery_blocked"
+      && recoveryAction.evidence.reason === "controller_process_space_unverified"
+      && recoveryAction.evidence.continuationDelivery === "not_requested"
+      && reconciliation && typeof reconciliation === "object" && !Array.isArray(reconciliation)
+      && "runId" in reconciliation && reconciliation.runId === run.id
+      && "controllerStopped" in reconciliation && reconciliation.controllerStopped === true
+      && "providerStopped" in reconciliation && reconciliation.providerStopped === true
+      && "controllerAuthorityDigest" in reconciliation && typeof reconciliation.controllerAuthorityDigest === "string" && /^[0-9a-f]{64}$/.test(reconciliation.controllerAuthorityDigest)) {
+      const continuation = recoveryAction.evidence.explicitUserContinuation as
+        { previousRunId?: unknown; runId?: unknown } | undefined;
+      const explicitSuccessor = text(continuation?.runId);
+      if (continuation?.previousRunId === run.id && explicitSuccessor && explicitSuccessor !== run.id) {
+        projection.successorRunId = explicitSuccessor;
+        projection.nextAction = null;
+        return set("completed", "Continued in another run");
+      }
+      projection.cause = null;
+      projection.nextAction = "The original execution was contained and its action outcomes reviewed. Use Retry to request another attempt.";
+      return set("failed", "Execution contained");
+    }
     const deliveredRunId = text(recoveryAction.evidence.continuationRunId);
     projection.successorRunId = deliveredRunId;
     projection.cause = null;
@@ -381,6 +413,10 @@ export function projectExecution(
     run.status === "scheduled_retry"
   )) {
     projection.recoveryOwner = "agent";
+    if (coordinator?.failureCode === "native_governed_wait_settlement_pending") {
+      projection.nextAction = "The work and waiting state are saved. Paperclip is confirming shutdown before continuing.";
+      return set("finishing", "Finishing shutdown");
+    }
     return set(
       projection.retryAt && new Date(projection.retryAt) > now
         ? "retry_scheduled"
@@ -450,6 +486,15 @@ export function projectExecution(
     return leaseConfirmed || processConfirmed
       ? set("working", "Working")
       : set("reconnecting", "Confirming execution");
+  }
+  if (run.status === "queued" && !run.startedAt && setupAgent
+    && isAgentAwaitingSetup(setupAgent)) {
+    const needsRepair = setupAgent.retryRequired === true;
+    projection.cause = needsRepair ? "agent_setup_failed" : "agent_setup_pending";
+    projection.nextAction = needsRepair
+      ? "Open the agent's Harness / Runtime settings to repair its configuration, then retry verification."
+      : "This turn starts automatically after the agent finishes setup and verification.";
+    return set("queued", needsRepair ? "Agent setup needs attention" : "Waiting for agent setup");
   }
   if (run.status === "queued" && !run.startedAt && readTaskDrain(now)) {
     projection.cause = "task_drain";

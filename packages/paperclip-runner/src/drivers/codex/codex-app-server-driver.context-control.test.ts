@@ -129,7 +129,6 @@ describe("Codex app-server Codex driver", () => {
         "skills.include_instructions": false,
         include_apps_instructions: false,
         include_collaboration_mode_instructions: true,
-        "features.image_generation": false,
       },
       permissions: "paperclip-runner-workspace-only",
       runtimeWorkspaceRoots: [WORKSPACE],
@@ -160,8 +159,6 @@ describe("Codex app-server Codex driver", () => {
         expect.stringContaining(
           'shell_environment_policy.set={PATH="/bin",LANG="C.UTF-8"}',
         ),
-        "--disable",
-        "image_generation",
       ]),
     );
     expect(
@@ -660,7 +657,7 @@ describe("Codex app-server Codex driver", () => {
       ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
       for (const action of ["set", "pause", "resume", "clear"] as const) {
         await expect(
-          unsupported.goal?.({ action, ...(action === "set" ? { objective: "Must not reach the provider" } : {}) }),
+          unsupported.goal?.(action === "set" ? { action, objective: "Must not reach the provider" } : { action }),
         ).rejects.toBeInstanceOf(HarnessCapabilityUnavailableError);
       }
       expect(unsupportedTransport.calls.filter(({ method }) =>

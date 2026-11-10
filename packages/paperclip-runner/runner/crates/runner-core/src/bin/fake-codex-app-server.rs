@@ -717,6 +717,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .any(|value| value == "--hold-first-durable-turn");
     let durable_tool_ids = args.iter().any(|value| value == "--durable-tool-ids");
+    // Real Codex records each turn's input, and accepted steering input when it
+    // enters the conversation at the next model step, as userMessage items.
+    let consume_steer = args.iter().any(|value| value == "--consume-steer");
     let expected_canonical_task_context_file =
         argument(&args, "--expected-canonical-task-context-file");
     let emit_tool_call = args.iter().any(|value| value == "--emit-tool-call");
@@ -734,6 +737,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let exit_after_tool_call_completion = args
         .iter()
         .any(|value| value == "--exit-after-tool-call-completion");
+    // Keep the turn open after an accepted completion report, so a test can
+    // kill the runner between the durable proposal and the provider terminal.
+    let hold_after_terminal_result = args
+        .iter()
+        .any(|value| value == "--hold-after-terminal-result");
     let emit_tool_call_on_resume = args
         .iter()
         .any(|value| value == "--emit-tool-call-on-resume");
@@ -766,6 +774,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let linger_after_turn_start = args
         .iter()
         .any(|value| value == "--linger-after-turn-start");
+    // A tool job that leaves the provider's session (like `nohup job &` in a
+    // Bash tool) and outlives the provider's process group.
+    let escaped_tool_pid_file = argument(&args, "--spawn-escaped-tool-job");
     let hold_turn = args.iter().any(|value| value == "--hold-turn") || linger_after_turn_start;
     let held_output_count = argument(&args, "--held-output-count")
         .map(|value| value.parse::<usize>())
@@ -1112,6 +1123,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "terminal-result:rejected"
                 },
             )?;
+            if success && hold_after_terminal_result {
+                continue;
+            }
             finish_turn(
                 &state_path,
                 &mut state,
@@ -1326,8 +1340,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "params": {"threadId": state.thread_id, "goal": state.goal}
                     }))?;
                 }
+                // Thread usage that predates this run's first turn, as a
+                // shared thread reports after an earlier run's work.
+                if args.iter().any(|arg| arg == "--usage-before-first-turn") {
+                    send(json!({"method": "thread/tokenUsage/updated", "params": {
+                        "threadId": state.thread_id,
+                        "tokenUsage": {"total": {"inputTokens": 5, "outputTokens": 1}, "last": {"inputTokens": 5, "outputTokens": 1}}
+                    }}))?;
+                }
             }
             "thread/resume" => {
+                if let Some(delay) = argument(&args, "--thread-resume-delay-ms") {
+                    thread::sleep(Duration::from_millis(delay.parse()?));
+                }
                 if reject_missing_resume_state {
                     send(json!({"id": id, "error": {
                         "code": -32600,
@@ -1639,6 +1664,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     return Err("turn/start omitted the external sandbox boundary".into());
                 }
+                if let Some(pid_file) = escaped_tool_pid_file.as_deref() {
+                    if turn_start_count == 0 {
+                        std::process::Command::new("perl")
+                            .args([
+                                "-e",
+                                "use POSIX (); POSIX::setsid() or die; open(my $f, '>', \"$ARGV[0].tmp\") or die; print $f $$; close $f; rename(\"$ARGV[0].tmp\", $ARGV[0]) or die; exec '/bin/sh', '-c', 'while :; do sleep 1; done'",
+                                pid_file,
+                            ])
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn()?;
+                    }
+                }
                 turn_start_count += 1;
                 if durable_turn_ids {
                     state.next_turn = state
@@ -1773,10 +1812,104 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "id": id,
                     "result": {"turn": {"id": provider_turn_id, "status": "inProgress"}}
                 }))?;
+                // A resumed Codex thread can report the cumulative usage of the
+                // turn lost to a restart after it accepts the next turn.
+                if durable_turn_ids
+                    && state.next_turn > 1
+                    && args
+                        .iter()
+                        .any(|value| value == "--stale-usage-after-turn-start")
+                {
+                    send(json!({"method": "thread/tokenUsage/updated", "params": {
+                        "threadId": state.thread_id,
+                        "turnId": format!("provider-turn-{}", state.next_turn - 1),
+                        "tokenUsage": {"total": {"inputTokens": 100, "outputTokens": 20}, "last": {"inputTokens": 50, "outputTokens": 10}}
+                    }}))?;
+                }
+                // A resumed Codex thread can also report items and the
+                // terminal of the turn lost to a restart after it accepts the
+                // next turn. They are history of an earlier generation.
+                if durable_turn_ids
+                    && state.next_turn > 1
+                    && args
+                        .iter()
+                        .any(|value| value == "--stale-items-after-turn-start")
+                {
+                    let lost_turn_id = format!("provider-turn-{}", state.next_turn - 1);
+                    for (method, params) in [
+                        (
+                            "item/started",
+                            json!({"item": {"id": "lost-item", "type": "agentMessage", "text": ""}}),
+                        ),
+                        (
+                            "item/agentMessage/delta",
+                            json!({"itemId": "lost-item", "delta": "late"}),
+                        ),
+                        (
+                            "item/completed",
+                            json!({"item": {"id": "lost-item", "type": "agentMessage", "text": "late"}}),
+                        ),
+                        (
+                            "turn/completed",
+                            json!({"turn": {"id": lost_turn_id, "status": "failed", "items": [],
+                            "error": {"message": "lost", "codexErrorInfo": "other"}}}),
+                        ),
+                    ] {
+                        let mut params = params;
+                        params["threadId"] = json!(state.thread_id);
+                        if method != "turn/completed" {
+                            params["turnId"] = json!(lost_turn_id);
+                        }
+                        send(json!({"method": method, "params": params}))?;
+                    }
+                }
+                // A notification for a turn the runner never owned fails the
+                // accepted turn before it starts.
+                if args
+                    .iter()
+                    .any(|value| value == "--foreign-usage-before-turn-started")
+                {
+                    send(json!({"method": "thread/tokenUsage/updated", "params": {
+                        "threadId": state.thread_id,
+                        "turnId": "provider-turn-foreign",
+                        "tokenUsage": {"total": {"inputTokens": 100, "outputTokens": 20}, "last": {"inputTokens": 50, "outputTokens": 10}}
+                    }}))?;
+                }
+                // A loaded host can accept a turn long before it starts it.
+                if let Some(delay) = argument(&args, "--turn-started-delay-ms") {
+                    thread::sleep(Duration::from_millis(delay.parse()?));
+                }
+                // A test can hold the start until it has detached the controller.
+                if let Some(gate) = argument(&args, "--turn-started-gate").map(PathBuf::from) {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                    while !gate.is_file() && std::time::Instant::now() < deadline {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                }
+                // An accepted turn can be lost before it starts.
+                if args
+                    .iter()
+                    .any(|value| value == "--exit-before-turn-started")
+                {
+                    return Err("configured exit before turn started".into());
+                }
                 send(json!({
                     "method": "turn/started",
                     "params": {"turn": {"id": provider_turn_id}}
                 }))?;
+                if consume_steer {
+                    // Real Codex records the turn's own input as its first userMessage item.
+                    for method in ["item/started", "item/completed"] {
+                        send(json!({
+                            "method": method,
+                            "params": {
+                                "threadId": state.thread_id,
+                                "turnId": provider_turn_id,
+                                "item": {"id": format!("{provider_turn_id}-input"), "type": "userMessage", "content": []}
+                            }
+                        }))?;
+                    }
+                }
                 if args.iter().any(|value| value == "--account-notifications") {
                     send(json!({"method":"account/updated", "params":{
                         "authMode":"chatgpt", "planType":"pro"
@@ -2206,6 +2339,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "turn/steer" => {
                 send(json!({"id": id, "result": {"accepted": true}}))?;
+                if consume_steer {
+                    for method in ["item/started", "item/completed"] {
+                        send(json!({
+                            "method": method,
+                            "params": {
+                                "threadId": state.thread_id,
+                                "turnId": state.active_turn_id,
+                                "item": {"id": "steered-user-message-1", "type": "userMessage", "content": []}
+                            }
+                        }))?;
+                    }
+                }
                 if linger_after_turn_start {
                     send(json!({
                         "method": "item/completed",

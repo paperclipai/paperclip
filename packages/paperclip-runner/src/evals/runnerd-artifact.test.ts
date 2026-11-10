@@ -28,6 +28,11 @@ describe("runnerd artifact metadata", () => {
     expect(parsePaperclipRunnerdBuildMetadata(valid)).toEqual(valid);
   });
 
+  it("accepts private host-control metadata without changing ordinary artifact admission", () => {
+    expect(parsePaperclipRunnerdBuildMetadata({ ...valid, privateHostControlVersion: 1 }))
+      .toEqual(valid);
+  });
+
   it("rejects an unknown binary metadata schema", () => {
     expect(() => parsePaperclipRunnerdBuildMetadata({ ...valid, schema: "runnerd/v2" }))
       .toThrow(PaperclipRunnerdArtifactError);

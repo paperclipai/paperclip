@@ -52,10 +52,17 @@ export interface RunnerApiIo {
 export function validateRunnerApiCall(value: unknown, context: RunnerApiContext): { input: RunnerApiCall; operation: RunnerApiOperation } {
   const parsed = runnerApiCallSchema.safeParse(value);
   if (!parsed.success) throw badRequest("Invalid call_api arguments", { issues: parsed.error.issues });
-  const input = parsed.data;
+  let input = parsed.data;
   const operation = runnerApiOperation(input.operationId);
-  if (operation.transport !== "rest") throw unprocessable("This endpoint requires its existing protocol client; call_api supports REST only");
-  if (input.responseText && operation.method !== "GET") throw badRequest("responseText requires a GET operation; read the saved artifact instead of repeating a mutation");
+  if (operation.transport !== "rest") throw unprocessable(`This endpoint requires its existing protocol client; call_api supports REST only and no other API route substitutes for it.${operation.description.trim() ? " Read its catalog description for details." : ""}`);
+  if (input.responseText && operation.method !== "GET") {
+    // A later page of a mutation response would need the mutation repeated.
+    // A first-window request changes only presentation, so the mutation runs
+    // once and its response is returned through the normal inline/artifact path.
+    if ((input.responseText.offsetBytes ?? 0) > 0) throw badRequest("This request was not sent: responseText.offsetBytes applies only to GET reads, and a later page of a mutation response would repeat the mutation. Remove responseText and send the mutation once; read any saved response artifact with GET /api/assets/{assetId}/content.");
+    const { responseText: _ignored, ...rest } = input;
+    input = rest;
+  }
   if (!operation.allowedModes.includes(context.workMode)) throw forbidden("call_api permits only reads in Ask and Plan modes; use the permitted dedicated tools");
   if (input.pathParams?.companyId && input.pathParams.companyId !== context.companyId) throw forbidden("API call belongs to another company");
   const contentType = (input.contentType ?? "application/json").split(";", 1)[0].trim().toLowerCase();
@@ -69,6 +76,26 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
     }
   }
   return { input, operation };
+}
+
+/**
+ * Rules for a new dispatch only. Recovery and saved receipts still validate an
+ * older accepted call with validateRunnerApiCall, so these rules stay out of it.
+ * Callers that reserve a mutation receipt must run this before the reservation.
+ */
+export function assertRunnerApiDispatchable(operation: RunnerApiOperation, input: RunnerApiCall, receivedKeys: readonly string[]): void {
+  if (operation.method === "PATCH" && input.body === undefined && !input.files?.length && operation.requestBody?.required) {
+    // A PATCH without a body changes nothing but still returns success, which
+    // reads as a completed update. Name the missing argument instead.
+    throw badRequest(`This request was not sent: this PATCH requires body, a JSON object with the fields to change${patchFieldHint(operation)}. Received arguments: ${[...receivedKeys].sort().join(", ")}.`);
+  }
+}
+
+function patchFieldHint(operation: RunnerApiOperation): string {
+  const schema = operation.requestBody?.content?.["application/json"]?.schema as { properties?: Record<string, unknown> } | undefined;
+  const fields = Object.keys(schema?.properties ?? {});
+  if (!fields.length) return "";
+  return ` (allowed fields: ${fields.slice(0, 12).join(", ")}${fields.length > 12 ? ", ..." : ""})`;
 }
 
 export function runnerApiUrl(operation: RunnerApiOperation, input: RunnerApiCall, context: RunnerApiContext, apiUrl: string): URL {
@@ -121,9 +148,38 @@ export async function readBoundedResponse(response: Response, maxBytes = RUNNER_
   return Buffer.concat(chunks);
 }
 
+/**
+ * Page position reported by capped list routes (for example
+ * GET /api/companies/{companyId}/issues) through X-Paperclip-Has-More and its
+ * sibling headers. Agents never see response headers, so surface it beside the
+ * data; otherwise a capped page reads as the complete list.
+ */
+export function runnerApiPagination(headers: Headers) {
+  const hasMoreHeader = headers.get("x-paperclip-has-more");
+  if (hasMoreHeader !== "true" && hasMoreHeader !== "false") return undefined;
+  const hasMore = hasMoreHeader === "true";
+  const limit = Number(headers.get("x-paperclip-limit"));
+  const offsetHeader = headers.get("x-paperclip-next-offset");
+  const nextOffset = offsetHeader !== null && /^\d+$/.test(offsetHeader) ? Number(offsetHeader) : null;
+  const nextAfterId = hasMore ? headers.get("x-paperclip-next-after-id") : null;
+  const next = [
+    ...(nextAfterId ? [`afterId=${nextAfterId}`] : []),
+    ...(nextOffset !== null ? [`offset=${nextOffset}`] : []),
+  ];
+  return {
+    hasMore,
+    truncated: hasMore,
+    ...(Number.isSafeInteger(limit) && limit > 0 ? { limit } : {}),
+    nextOffset: hasMore ? nextOffset : null,
+    ...(nextAfterId ? { nextAfterId } : {}),
+    ...(hasMore ? { guidance: `This list is incomplete: the page limit was reached and more results exist. Repeat the same call with the same filters and ${next.length ? next.join(" or ") : "the next page"} in query; continue until pagination.hasMore is false before treating the list as complete.` } : {}),
+  };
+}
+
 export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiContext, io: RunnerApiIo) {
   const inlineBytes = RUNNER_API_INLINE_BYTES;
   const { operation, input: validated } = validateRunnerApiCall(input, context);
+  assertRunnerApiDispatchable(operation, validated, Object.keys(input));
   input = validated;
   const sensitiveResponse = runnerApiSensitiveResponse(operation.method, operation.path);
   const url = runnerApiUrl(operation, input, context, io.apiUrl);
@@ -221,7 +277,8 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
     const uncertain = mutation && (response.status >= 500 || response.status === 408 || (response.status >= 300 && response.status < 400));
     const uncertainty = { outcome: "unknown", guidance: "Inspect current state before retrying this mutation; it may already have succeeded." };
     const etag = input.responseText && response.ok ? response.headers.get("etag") : null;
-    const base = { ok: response.ok, status: response.status, operationId: operation.operationId, contentType: type, retryAfter: response.headers.get("retry-after"), ...(etag ? { etag } : {}), ...(uncertain ? uncertainty : {}) };
+    const pagination = response.ok ? runnerApiPagination(response.headers) : undefined;
+    const base = { ok: response.ok, status: response.status, operationId: operation.operationId, contentType: type, retryAfter: response.headers.get("retry-after"), ...(etag ? { etag } : {}), ...(pagination ? { pagination } : {}), ...(uncertain ? uncertainty : {}) };
     if (response.status >= 300 && response.status < 400) return { ...base, ok: false, error: "api_redirect_not_followed" };
     let totalBytes = captured?.byteSize ?? bytes.length;
     let baseOffset = captured && response.ok ? textOffset : 0;

@@ -56,18 +56,29 @@ export function nativeUsageBiller(provider: NativeExecutionInput["provider"]): s
   return "openai";
 }
 
+/** Provenance note for a receipt whose run includes a provider turn lost on
+ * restore. That turn's usage can never be reported, so the receipt is final
+ * but its usage and price are a lower bound. */
+export const NATIVE_LOST_TURN_USAGE_EVIDENCE = "a provider turn was lost on restore and never reported its usage; observed usage is a lower bound";
+export const NATIVE_TURN_LOST_ON_RESTORE = "provider_turn_lost_on_restore";
+const LOST_ON_RESTORE = NATIVE_TURN_LOST_ON_RESTORE;
+
 export function createNativeTurnAccounting(provider: NativeExecutionInput["provider"]) {
-  const turns = new Map<string, { usage: Record<string, unknown> | null; terminal: boolean }>();
+  const turns = new Map<string, { usage: Record<string, unknown> | null; terminal: boolean; lost?: boolean }>();
   const sequences = new Map<string, number>();
   let currentTurn: string | undefined;
   const terminalTypes = ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"];
   const snapshot = () => {
     if (turns.size === 0) return { usage: null, turnId: undefined, complete: false };
     let inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0;
-    let cost = 0n, costKnown = false, costIncomplete = false, complete = true;
+    let cost = 0n, costKnown = false, costIncomplete = false, complete = true, usageLost = false;
     for (const [turnId, turn] of turns) {
       const normalized = normalizeNativeUsage(turn.usage);
-      complete &&= turnId !== "unattributed" && turn.terminal && normalized !== undefined;
+      // A turn the restored Runner reports as lost on restore can never report
+      // its usage. It does not hold the receipt open; it makes it a lower bound.
+      const lost = turn.lost === true && normalized === undefined;
+      usageLost ||= lost;
+      complete &&= turnId !== "unattributed" && turn.terminal && (normalized !== undefined || lost);
       inputTokens += (normalized?.inputTokens ?? 0) - (normalized?.cacheWriteTokens ?? 0);
       outputTokens += normalized?.outputTokens ?? 0;
       cacheReadTokens += normalized?.cachedInputTokens ?? 0;
@@ -83,7 +94,7 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
     const runDelta = { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
       ...(retainCost ? { providerCostUsd: Number(cost) / 1_000_000_000 } : {}) };
     const current = currentTurn ? turns.get(currentTurn) : undefined;
-    return { usage: { runDelta, accountingCostIncomplete: costIncomplete,
+    return { usage: { runDelta, accountingCostIncomplete: costIncomplete, ...(usageLost ? { accountingUsageLost: true } : {}),
       ...(retainCost ? { accountingCostUsdExact: `${cost / 1_000_000_000n}.${String(cost % 1_000_000_000n).padStart(9, "0")}` } : {}) },
       turnId: current && normalizeNativeUsage(current.usage) ? currentTurn : undefined, complete };
   };
@@ -105,6 +116,7 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
         currentTurn = event.turnId;
         turn.usage = null;
         turn.terminal = false;
+        turn.lost = false;
       } else if (payload.kind === "usage" && (!currentTurn || !turns.has(key))) currentTurn = event.turnId;
       if (payload.kind === "usage") {
         const usage = record(payload.usage);
@@ -112,6 +124,7 @@ export function createNativeTurnAccounting(provider: NativeExecutionInput["provi
           ? { runDelta: record(usage.runDelta), runDeltaComplete: usage.runDeltaComplete } : null;
       }
       if (terminal) turn.terminal = true;
+      if (event.eventType === "turn.failed" && record(payload.error).code === LOST_ON_RESTORE) turn.lost = true;
       turns.set(key, turn);
       return true;
     },
