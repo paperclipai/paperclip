@@ -1,0 +1,10 @@
+{
+  "name": "paperclip-plugin-dot-owned-linux-qualification",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "paperclipPlugin": {
+    "manifest": "./dist/qualification-manifest.js",
+    "worker": "./dist/worker.mjs"
+  }
+}

@@ -1,8 +1,9 @@
-import { registerNativeCancellationDelivery } from "../services/native-runtime/native-cancellation-delivery.js";
-import { registerNativeRuntimeResponseDelivery } from "../services/native-runtime/native-runtime-response-delivery.js";
-import { registerNativeCleanupReleaseWake } from "../services/native-runtime/native-cleanup-release-wake.js";
-import { registerCostAccountingWork, registerBudgetEnforcementWork } from "../services/budget-enforcement-worker.js";
-import { deliverBudgetResumeContinuations, type BudgetResumeDelivery } from "../services/budget-resume-continuation.js";
+import { forkNormalDotApp } from "./helpers/owned-linux/physical-app-owner.js";
+import { attachDotChild, type ChildSnapshot } from "./helpers/owned-linux/child-client.js";
+import { usefulAfterPhysicalRestart } from "./helpers/owned-linux/useful-after-physical-restart.js";
+import { nativeProviderRecoveryEvidence } from "../services/native-runtime/native-session-executor.js";
+import { stopCheckpointedOwnedRun } from "./helpers/owned-linux/checkpointed-fault.js";
+import { beginOwnedPrivateCA } from "./helpers/owned-linux/private-ca-scope.js";
 import { z } from "zod";
 import { mcpClientMirrorGeneration, mcpClientMirrorReceiptSchema } from "../services/public-mcp/client-mirror-contract.js";
 import { HttpError } from "../errors.js";
@@ -10,26 +11,20 @@ import type { EventFetch } from "../services/public-mcp/event-webhooks.js";
 import { DEVICE_GRANT } from "../services/public-mcp/oauth.js";
 import { issueService } from "../services/issues.js";
 import { documentService } from "../services/documents.js";
-import { heartbeatService } from "../services/heartbeat.js";
-import { setupRunnerPrpWebSocketServer } from "../realtime/runner-prp-ws.js";
-import { resolveLocalRuntimeApiUrl } from "../runtime-api.js";
-import { configuredPaperclipApiBaseUrl } from "../services/heartbeat/run-preparation.js";
 import { idleWorkSnapshot, isIdleTaskDrainActive } from "../services/task-admission.js";
-import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { readIdleMcpSleepProof } from "../services/public-mcp/idle-sleep-proof.js";
 import { externalOperationDigest } from "../vendor/paperclip-runner/index.js";
 import { createHash, createHmac, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { createServer, request as nodeRequest, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 import { once } from "node:events";
-import { mkdtemp, mkdir, writeFile, access } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, access, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import type express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { applyPendingMigrations, createDb, closeRegisteredClients, authUsers, companies, mcpOauthGrants, agents, dotAgentBindings, dotRunnerAssignments, dotRunnerOperations, mcpOauthRequests, mcpOauthTokens, mcpOauthClientChanges, mcpOauthClientMirrorState, mcpOauthDeviceRequests, heartbeatRuns, agentWakeupRequests, completionContracts, nativeRunResults, issues, mcpEventDeliveries, mcpEventSubscriptions } from "@paperclipai/db";
+import { applyPendingMigrations, createDb, closeRegisteredClients, authUsers, companies, mcpOauthGrants, agents, dotAgentBindings, dotRunnerAssignments, dotRunnerOperations, mcpOauthRequests, mcpOauthTokens, mcpOauthClientChanges, mcpOauthClientMirrorState, mcpOauthDeviceRequests, heartbeatRuns, agentWakeupRequests, completionContracts, nativeRunResults, nativeRunFinalizations, issues, mcpEventDeliveries, mcpEventSubscriptions } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "../lib/dedicated-test-database-url.js";
 import { accessService } from "../services/access.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -111,7 +106,42 @@ const closedUnavailable=(response:{status:number;body:unknown;text?:string;heade
 const listen=async(server:Server)=>{server.listen(0,"127.0.0.1");await once(server,"listening");const address=server.address();if(!address||typeof address==="string")throw new Error("Missing owned principal listener");return `http://127.0.0.1:${address.port}`;};
 const close=async(server:Server|undefined)=>{if(!server?.listening)return;await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));};
 describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device/subscription and genuine useful Retry",()=>{
-  let db:ReturnType<typeof createDb>,app:express.Express|undefined,home:string,cloudServer:Server|undefined,appServer:Server|undefined;
+  let physicalApp:Awaited<ReturnType<typeof forkNormalDotApp>>|undefined;
+  let childControl:ReturnType<typeof attachDotChild>|undefined;
+  let childSnapshot:ChildSnapshot|undefined;
+  const retiredChildren:ChildSnapshot[]=[];
+  const physicalOwners:Array<Awaited<ReturnType<typeof forkNormalDotApp>>>=[];
+  const knownChildProcesses:Array<{child:import("node:child_process").ChildProcess;owner:ReturnType<typeof import("../../../tests/runner-e2e/process-tree-owner.js")["createProcessTreeOwner"]>}>=[];
+  let physicalFollowon:Awaited<ReturnType<typeof usefulAfterPhysicalRestart>>|undefined;
+  let activeCaseDeadline:number|undefined,setupDeadline=0;
+  const childDeadline=()=>Math.min(activeCaseDeadline??Infinity,performance.now()+15_000);
+  const syncChildObservation=async(deadline=childDeadline())=>{
+    if(!childControl)throw new Error("Missing actual child owner");
+    const snapshot=await childControl.request({command:"snapshot"},deadline);childSnapshot=snapshot;
+    expect(childControl.snapshot()).toEqual({pending:0,failures:0});
+    const all=[...retiredChildren,snapshot];
+    authenticateCalls=all.reduce((sum,value)=>sum+value.database.authenticateCalls,0);
+    sessionCalls=all.reduce((sum,value)=>sum+value.owner.sessionCalls,0);
+    unexpectedDecisionWakes=all.reduce((sum,value)=>sum+value.owner.unexpectedDecisionWakes,0);
+    eventTransportCounts.factoryOwners=all.reduce((sum,value)=>sum+value.database.eventFactoryOwners,0);
+    eventTransportCounts.authorityRequests=all.reduce((sum,value)=>sum+value.database.authorityRequests,0);
+    eventTransportCounts.callbackRequests=all.reduce((sum,value)=>sum+value.database.callbackRequests,0);
+    eventTransportCounts.unexpected=all.reduce((sum,value)=>sum+value.database.unexpectedEventRequests,0);
+    pendingDeviceAckCheckObservers=snapshot.database.observerPending;
+    pendingDeviceObservers=snapshot.database.observerPending;deviceObserverFailures=snapshot.database.observerFailures;
+    if(snapshot.database.overflow!==0)throw new Error("Child observer overflow invalidates attribution");
+    readinessStatuses.splice(0,readinessStatuses.length,...snapshot.owner.healthStatuses);readinessOverflow=snapshot.owner.healthOverflow;
+    return snapshot;
+  };
+  const setChildDeviceStage=async(value:"first-select"|"retry-select"|"none")=>{
+    if(!childControl)throw new Error("Missing actual child owner");
+    await childControl.request({command:"device-stage",value},childDeadline());
+  };
+  const setChildHealth=async(value:"ready"|"unavailable"|"wake-once-then-unavailable")=>{
+    if(!childControl)throw new Error("Missing actual child owner");
+    await childControl.request({command:"health",value},childDeadline());
+  };
+  let db:ReturnType<typeof createDb>,home:string,cloudServer:Server|undefined;
   let cloudService:{handler:(req:IncomingMessage,res:ServerResponse)=>unknown;stopBackgroundTasks:()=>void}|undefined,restoreOAuth:(()=>void)|undefined,restoreEventFactory:(()=>void)|undefined;
   let signer:{publicJwks:string;signClaim:(input:{stackId:string;claimId:string;previousOrigin:string;canonicalOrigin:string;stackSlug:string})=>string;signControlAssertion:(input:{stackId:string;action:"mcp-dot:principal"|"task-drain:start"|"task-drain:read"|"task-drain:stop";requestId:string})=>string};
   let registry:Registry,connectorStore:Instances,CloudStackRouter:Router,metadataCompany:(id:string)=>string;
@@ -119,12 +149,11 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
   const userId=randomUUID(),operatorId=userId,companyId=randomUUID(),otherCompanyId=randomUUID(),instanceId="inst_"+randomUUID();
 
   let agentId="",serial=0,callback:Server|undefined,callbackOrigin="",customerCookie="";
-  let heartbeat:ReturnType<typeof heartbeatService>|undefined;
-  let dispatchWork:ReturnType<ReturnType<typeof heartbeatService>["registerRunDispatchWork"]>|undefined;
-  let stopBudgetOwners:(()=>Promise<void>)|undefined;
-  const nativeSockets=new Set<import("node:net").Socket>(),callbacks:Array<{id:string;at:number;kind?:string}>=[],errors:unknown[]=[];
+  let restoreLinuxCA:(()=>void)|undefined;
+  let linuxInput:{catalogRoot:string;prebuiltPackageRoot:string;expectedBundleDigest:string;providerRoot:string;remoteBinary:string;caBundle:string;caSHA256:string};
+  const callbacks:Array<{id:string;at:number;kind?:string}>=[],errors:unknown[]=[];
   let failures=1,unexpectedDecisionWakes=0;
-  let reconstructCloudOwner:()=>Promise<void>,reconstructAppOwner:()=>Promise<void>;
+  let reconstructCloudOwner:()=>Promise<void>,makePhysicalSecond:()=>Promise<void>;
   const controlledMasterKeys=new Map<string,Buffer>();
   let cloudOwnerGenerations=0,appOwnerGenerations=0;
   const ownedTenantOrigins=new Set<string>([origin]);
@@ -236,17 +265,9 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
   const callbackSecret="whsec_"+randomBytes(32).toString("base64");
   // server.close's callback and each accepted Socket's close event are distinct
   // ownership signals. Join both without destroying or forgetting a socket.
-  const closeAppTransport=async()=>{
-    const socketJoins=Promise.all([...nativeSockets].map(socket=>once(socket,"close")));
-    await Promise.all([close(appServer),socketJoins]);
-    // The server close barrier ends acceptance. Include any connection delivered
-    // during that close whose synchronous Set-delete listener has not run yet.
-    await Promise.all([...nativeSockets].map(socket=>once(socket,"close")));
-    expect(nativeSockets.size).toBe(0);
-  };
   const pause=(ms:number)=>new Promise<void>(resolve=>setTimeout(resolve,ms));
   const host=new URL(origin).host;
-  const boardPost=(target:string)=>request(app!).post(target).set("Host",host).set("Origin",origin);
+  const boardPost=(target:string)=>request(appLoopback).post(target).set("Host",host).set("Origin",origin);
   const cloudCall=(target:string,body?:Record<string,unknown>,browser=false,accessToken?:string)=>{
    if(!cloudServer)throw new Error("Missing normal Cloud listener");
    const call=body===undefined?request(cloudServer).get(target):request(cloudServer).post(target).send(body);
@@ -313,7 +334,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
    });
   }
 
-  beforeAll(async()=>{
+  beforeAll(async()=>{setupDeadline=performance.now()+90_000;
     const checkout=process.env.PAPERCLIP_DOT_PRINCIPAL_CLOUD_CHECKOUT;if(!checkout||!path.isAbsolute(checkout))throw new Error("Explicit own compiled current Cloud checkout required");
     const load=(name:string)=>import(pathToFileURL(path.join(checkout,"dist",name)).href);
     const [runtime,postgresRegistry,provisioner,fake,stackSecrets,providers,service,routing,identity,wakeReadiness]=await Promise.all([
@@ -372,93 +393,12 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     vi.stubEnv("PAPERCLIP_PUBLIC_URL",origin);vi.stubEnv("PAPERCLIP_AUTH_PUBLIC_BASE_URL",origin);vi.stubEnv("PAPERCLIP_API_URL",origin);vi.stubEnv("PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS",publicJwks);
     vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID",instanceId);vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT","test");vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_BASE_URL",cloudOrigin);vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY",sign.privateKey.export({format:"jwk"}).d!);vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY",seal.privateKey.export({format:"jwk"}).d!);
     await applyPendingMigrations(url!);
-    const eventsModule=await import("../services/public-mcp/events.js"),createEvents=eventsModule.createPublicMcpEvents;
-    const eventsSpy=vi.spyOn(eventsModule,"createPublicMcpEvents").mockImplementation((queryDb,oauth,dispatch,options)=>{
-      if(options?.enableDotRunner!==true||oauth.mode!=="openai_dot_agent"||oauth.config.resource!==resource)return createEvents(queryDb,oauth,dispatch,options);
-      eventTransportCounts.factoryOwners++;return createEvents(queryDb,oauth,dispatch,{...options,fetch:eventTransport});
-    });restoreEventFactory=()=>eventsSpy.mockRestore();
-    const deviceCutover=await import("../services/public-mcp/device-cutover.js"),actualDeviceAckCheck=deviceCutover.assertDotDeviceProfileAck;
-    const ackCheckSpy=vi.spyOn(deviceCutover,"assertDotDeviceProfileAck").mockImplementation((...input)=>{
-      const phase=deviceStage,originalPromise=actualDeviceAckCheck(...input);
-      if(phase){
-        if(deviceAckChecks.length>=16){deviceWireOverflow++;return originalPromise;}
-        const record:typeof deviceAckChecks[number]={stage:phase,result:"pending"};deviceAckChecks.push(record);pendingDeviceAckCheckObservers++;
-        void originalPromise.then(()=>{record.result="fulfilled";},error=>{record.result=error instanceof HttpError&&error.status===503&&error.message==="The hosted Dot connection is being reconciled."?"current-ack-denial":"other";}).finally(()=>{pendingDeviceAckCheckObservers--;});
-      }
-      return originalPromise;
-    });
-    const createOAuth=oauthModule.createPublicMcpOAuth;const spy=vi.spyOn(oauthModule,"createPublicMcpOAuth").mockImplementation((...args)=>{const owner=createOAuth(...args);if(owner.mode==="openai_dot_agent"){const original=owner.authenticate;owner.authenticate=token=>{authenticateCalls++;return original.call(owner,token);};
-      const register=owner.register;owner.register=(...input)=>{
-        const observe=holdDeviceMirrorAck;if(deviceStage)actualDeviceRegistrationCalls++;
-        const originalPromise=register.apply(owner,input);
-        if(observe){
-          pendingDeviceObservers++;
-          void originalPromise.then(async value=>{
-            try{
-              actualDeviceClientId=value.client_id;
-              const [change]=await db.select({revision:mcpOauthClientChanges.revision}).from(mcpOauthClientChanges).where(eq(mcpOauthClientChanges.clientId,value.client_id));
-              if(!change||!Number.isSafeInteger(change.revision)||change.revision<=deviceAckBaselineRevision)throw new Error("Actual DCR revision was not retained");
-              deviceAckTargetRevision=change.revision;resolveDeviceAckTarget?.(change.revision);
-            }catch{deviceObserverFailures++;resolveDeviceAckTarget?.(undefined);}finally{pendingDeviceObservers--;}
-          },()=>{pendingDeviceObservers--;deviceObserverFailures++;resolveDeviceAckTarget?.(undefined);});
-        }
-        return originalPromise;
-      };}return owner;});restoreOAuth=()=>{spy.mockRestore();ackCheckSpy.mockRestore();};
-    const makeAppOwner=async()=>{
-    db=createDb(url!,{maxConnections:2,applicationName:"dot-principal-normal-app"});await migrateCloudConfiguration(db);await initializeAdapterSettings(db);await initializeCloudRuntimeConfig(db);resetCloudRuntimeIdentityForTests();resetCloudControlReplayFenceForTests();await initializeCloudRuntimeIdentity(db);
-    const standby=await createCloudWarmStandby(db);expect(standby()).toBe(appOwnerGenerations===0);
-    const {createApp}=await import("../app.js");
-    const budgetResumeDelivery:BudgetResumeDelivery={};
-    app=await createApp(db,{budgetResumeDelivery,uiMode:"none",serverPort:3100,storageService:createStorageService(createLocalDiskStorageProvider(path.join(home,"objects"))),deploymentMode:"authenticated",deploymentExposure:"private",bindHost:"127.0.0.1",allowedHostnames:[new URL(origin).hostname],authPublicBaseUrl:origin,authReady:true,companyDeletionEnabled:false,managedPluginAutoInstall:[],cloudWarmStandby:standby,decisionServiceOptions:{wakeOriginAgent:async()=>{unexpectedDecisionWakes++;throw new Error("Unexpected Decision dependency in closed Dot journey");}},resolveSession:async req=>{sessionCalls++;if(req.get("x-selected-operator")!==userId)return null;const [user]=await db.select().from(authUsers).where(eq(authUsers.id,userId));return user?{session:{id:"principal-hop-session",userId},user}:null;}});
-    await app.locals.bundledPluginsStartup;const actualApp=app;appServer=createServer((req,res)=>{observeInbound("tenant",req,res);if(req.method==="GET"&&(req.url??"").split("?",1)[0]==="/api/health"&&healthAvailability!=="ready"){
-       if(readinessStatuses.length<32){res.once("finish",()=>{readinessStatuses.push(res.statusCode);});}else readinessOverflow++;
-       if(healthAvailability==="wake-once-then-unavailable")healthAvailability="unavailable";
-       else {res.writeHead(503,{"content-type":"application/json"}).end(JSON.stringify({status:"unavailable"}));return;}
-     }actualApp(req,res);});
-    appServer.on("connection",socket=>{nativeSockets.add(socket);socket.once("close",()=>nativeSockets.delete(socket));});setupRunnerPrpWebSocketServer(appServer);appLoopback=await listen(appServer);
-      vi.stubEnv("PAPERCLIP_API_URL",appLoopback);vi.stubEnv("PAPERCLIP_RUNTIME_API_URL",appLoopback);vi.stubEnv("PAPERCLIP_LISTEN_HOST","127.0.0.1");vi.stubEnv("PAPERCLIP_LISTEN_PORT",new URL(appLoopback).port);
-      const coordinator:ReturnType<typeof createDeliveryWorkCoordinator>=app!.locals.deliveryWork;
-      if(!coordinator||typeof coordinator.register!=="function")throw new Error("Missing normal App delivery owner");
-      const owner=heartbeatService(db);heartbeat=owner;
-      const canRun=()=>!isIdleTaskDrainActive()&&!standby();
-      dispatchWork=owner.registerRunDispatchWork(coordinator,canRun);await dispatchWork.ready;
-      registerNativeCancellationDelivery(db,coordinator);registerNativeRuntimeResponseDelivery(db,coordinator);
-      const release=registerNativeCleanupReleaseWake(db,error=>{errors.push(error);});appServer!.once("close",release);
-      await owner.registerDeferredReceiptWork(coordinator,canRun).ready;
-      await owner.registerScheduledRetryCancellationWork(coordinator,canRun).ready;
-      await owner.registerCapturedInstructionCommitWork(coordinator,canRun).ready;
-      await owner.registerInstructionDirectoryCleanupWork(coordinator,canRun).ready;
-      await owner.registerNativeWorkspaceFinalizationWork(coordinator,canRun).ready;
-      await owner.registerRetainedNativeSessionCleanupWork(coordinator,canRun).ready;
-      await owner.registerExternalConversationSettlementWork(coordinator,canRun).ready;
-      await owner.registerNativeRecoveryNoticeWork(coordinator,canRun).ready;
-      await owner.registerNativeEnvironmentSettlementWork(coordinator,canRun).ready;
-      await owner.registerNativeRunProjectionWork(coordinator,canRun).ready;
-      await owner.registerNativeResultCommitWork(coordinator,canRun).ready;
-      await owner.registerNativeStatusReassessmentWork(coordinator,canRun).ready;
-      await owner.registerNativeReviewResponseWork(coordinator,canRun).ready;
-      await owner.registerNativeResponsePresentationWork(coordinator,canRun).ready;
-      await owner.registerNativePendingEffectWork(coordinator,canRun).ready;
-      await owner.registerUnsafeWorkspaceExportWork(coordinator,canRun).ready;
-      await owner.registerAutomaticCompletionReviewWork(coordinator,canRun).ready;
-      await owner.registerObsoletePolicyReviewWork(coordinator,canRun).ready;
-      await owner.registerCancelledWorkspacePreservationWork(coordinator,canRun).ready;
-      await owner.registerStoppedInstructionCollectionWork(coordinator,canRun).ready;
-      const enforcement=registerBudgetEnforcementWork(db,coordinator,{cancelWorkForScope:owner.cancelBudgetScopeWork,
-        deliverResumeContinuations:()=>deliverBudgetResumeContinuations(db,{...budgetResumeDelivery,resumeTaskRetry:(company,request)=>owner.resumeTaskRetry(company,request)})});
-      const accounting=registerCostAccountingWork(db,coordinator,owner.reconcileCostAccounting);
-      stopBudgetOwners=async()=>{try{await enforcement.stop();}finally{await accounting.stop();}};
-      await enforcement.ready;await accounting.ready;
-      appOwnerGenerations++;
-    };
-    await makeAppOwner();
-    reconstructAppOwner=async()=>{
-      await dispatchWork?.stop();if(heartbeat){await heartbeat.stopInvocationsForAgents([agentId],"Normal hosted owner reconstruction");await heartbeat.drainActiveRunExecutions();}
-      await stopBudgetOwners?.();await app?.locals.paperclipShutdown?.();await closeAppTransport();
-      await db.$client.end({timeout:1});await closeRegisteredClients(url!,{scope:"database"});
-      await makeAppOwner();
-      vi.stubEnv("PAPERCLIP_API_URL",appLoopback);vi.stubEnv("PAPERCLIP_RUNTIME_API_URL",appLoopback);vi.stubEnv("PAPERCLIP_LISTEN_PORT",new URL(appLoopback).port);
-    };
+    const linuxInputFile=process.env.PAPERCLIP_DOT_LINUX_RUNTIME_INPUT;
+    if(!linuxInputFile||!path.isAbsolute(linuxInputFile))throw new Error("Explicit owned Linux runtime input required");
+    const absolute=z.string().refine(value=>path.isAbsolute(value));
+    linuxInput=z.object({catalogRoot:absolute,prebuiltPackageRoot:absolute,expectedBundleDigest:z.string().regex(/^sha256:[a-f0-9]{64}$/),providerRoot:absolute,remoteBinary:absolute,caBundle:absolute,caSHA256:z.string().regex(/^[a-f0-9]{64}$/)}).strict().parse(JSON.parse(await readFile(linuxInputFile,"utf8")));
+    restoreLinuxCA=beginOwnedPrivateCA({pem:await readFile(linuxInput.caBundle,"utf8"),SHA256:linuxInput.caSHA256});
+    vi.stubEnv("PAPERCLIP_RUNNER_REMOTE_BINARY_PATH",linuxInput.remoteBinary);
     callback=createServer(async(req,res)=>{
       try{
        const parts:Buffer[]=[];let length=0;for await(const chunk of req){length+=Buffer.byteLength(chunk);if(length>1_048_576)throw new Error("Bounded callback body exceeded");parts.push(Buffer.from(chunk));}
@@ -468,23 +408,60 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
        expect(body.data).not.toHaveProperty("challenge");callbacks.push({id,at:Date.now(),kind:body.data?.kind});res.writeHead(failures-->0?500:204).end();
       }catch(error){errors.push(error);res.writeHead(500).end();}
     });callbackOrigin=await listen(callback);
+    const makeAppOwner=async()=>{
+      db=createDb(url!,{maxConnections:2,applicationName:"dot-principal-parent-observer"});
+      // Parent observer has no delivery/Native/plugin owner. These normal setup
+      // writes happen BEFORE generation1 starts, so both process snapshots read
+      // the same persisted authorized fixture configuration.
+      if(appOwnerGenerations===0){await migrateCloudConfiguration(db);await initializeAdapterSettings(db);await initializeCloudRuntimeConfig(db);}
+      const generation=appOwnerGenerations+1;
+      const inputFile=path.join(home,`dot-child-generation-${generation}.json`);
+      await writeFile(inputFile,JSON.stringify({stackId,databaseUrl:url,home,origin,userId,companyId,generation,resource,
+        cloudOrigin,cloudLoopback,callbackPublicOrigin,callbackLoopback:callbackOrigin,linuxInput}),{mode:0o600,flag:"wx"});
+      const closedEnv=Object.fromEntries(Object.entries(process.env).filter(([key,value])=>value!==undefined&&
+        (key.startsWith("PAPERCLIP_")||["PATH","HOME","TMPDIR","LANG","TZ","NODE_OPTIONS","NODE_EXTRA_CA_CERTS"].includes(key)))) as Record<string,string>;
+      closedEnv.PAPERCLIP_DOT_CHILD_INPUT=inputFile;
+      physicalApp=await forkNormalDotApp({entry:new URL("./helpers/owned-linux/normal-app-child.ts",import.meta.url),
+        nodeExecutable:process.execPath,normalTsxImport:new URL("../../node_modules/tsx/dist/loader.mjs",import.meta.url),
+        cwd:process.cwd(),closedEnv,setupDeadline:activeCaseDeadline??setupDeadline,
+        registerActualChild:(child,owner)=>{
+          knownChildProcesses.push({child,owner});
+          childControl=attachDotChild(child,event=>{
+            if(event.kind==="dcr-committed"){
+              actualDeviceRegistrationCalls++;actualDeviceClientId=z.string().min(1).parse(event.clientId);
+              const revision=z.number().int().positive().parse(event.revision);
+              if(holdDeviceMirrorAck){deviceAckTargetRevision=revision;resolveDeviceAckTarget?.(revision);}
+            }else if(event.kind==="ack-check"){
+              if(deviceAckChecks.length>=16){deviceWireOverflow++;return;}
+              deviceAckChecks.push(z.object({stage:z.enum(["first-select","retry-select"]),result:z.enum(["fulfilled","current-ack-denial","other"])}).parse(event));
+            }else if(event.kind==="stopped"){
+              if(event.owner&&event.snapshot)retiredChildren.push({owner:event.owner as ChildSnapshot["owner"],database:event.snapshot as ChildSnapshot["database"]});
+            }else if(event.kind==="failed")errors.push(new Error("Actual owned Dot child failed"));
+          });
+        },privateLog:(channel,bytes)=>{if(channel==="stdout")process.stdout.write(bytes);else process.stderr.write(bytes);}});
+      physicalOwners.push(physicalApp);appLoopback=physicalApp.origin;appOwnerGenerations++;
+      await syncChildObservation();
+    };
+    await makeAppOwner();makePhysicalSecond=makeAppOwner;
+
+
 
   },90_000);
-  afterAll(async()=>{
+  afterAll(async()=>{activeCaseDeadline=undefined;
     const errors:unknown[]=[];
     releaseDeviceAckControl();deviceStage=undefined;observingPhase=undefined;
-    try{await dispatchWork?.stop();if(heartbeat){
-      const owner=heartbeat;let timer:ReturnType<typeof setTimeout>|undefined;
-      try{await Promise.race([(async()=>{if(z.uuid().safeParse(agentId).success)await owner.stopInvocationsForAgents([agentId],"Hosted Dot fixture teardown");await owner.drainActiveRunExecutions();})(),new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error("Owned Native join exceeded original15-second bound")),15_000);})]);}finally{clearTimeout(timer);}
-    }}catch(error){errors.push(error);}
-    try{await stopBudgetOwners?.();}catch(error){errors.push(error);}
-    try{await app?.locals.paperclipShutdown?.();}catch(error){errors.push(error);}
-    try{await closeAppTransport();}catch(error){errors.push(error);}
+    try{
+      for(const physical of physicalOwners)await physical.stop(childDeadline());
+      for(const known of knownChildProcesses){await known.owner.observe();
+        if(known.child.exitCode!==0||known.child.signalCode!==null||known.owner.liveGroups().length)
+          errors.push(new Error("Known child startup/execution ownership remains unknown; retain evidence"));}
+    }catch(error){errors.push(error);}
     try{await cloudService?.stopBackgroundTasks();await close(cloudServer);await close(callback);await registry?.close();}catch(error){errors.push(error);}
     try{if(db)await db.$client.end({timeout:1});if(url)await closeRegisteredClients(url,{scope:"database"});}catch(error){errors.push(error);}
+    try{restoreLinuxCA?.();}catch(error){errors.push(error);}
     restoreGateObservation?.();restoreOAuth?.();restoreEventFactory?.();setCloudRuntimeConfigSnapshot(null);resetCloudRuntimeIdentityForTests();resetCloudControlReplayFenceForTests();vi.unstubAllEnvs();vi.unstubAllGlobals();
     process.stdout.write(JSON.stringify({scope:"credential-free actual principal fixture transport",records:transportRecords,overflow:transportOverflow})+"\n");
-    expect(unexpectedDecisionWakes).toBe(0);expect(databaseObservation.listenersOpen).toBe(0);expect(databaseObservation.dedicatedOpen).toBe(0);
+    expect(unexpectedDecisionWakes).toBe(0);expect(physicalOwners.every(owner=>owner.child.exitCode===0)).toBe(true);expect(databaseObservation.listenersOpen).toBe(0);expect(databaseObservation.dedicatedOpen).toBe(0);
     const tokenDiagnostic=process.env.PAPERCLIP_DOT_ACCEPTANCE_RECEIPT;
     if(tokenDiagnostic){
       if(!path.isAbsolute(tokenDiagnostic))errors.push(new Error("Private token diagnostic needs absolute receipt path"));
@@ -495,23 +472,27 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
   },30_000);
 
   it("uses real hosted code/device OAuth, reverse subscription and genuine failed-task recovery before strict quiet/revoke",async()=>{
-    const caseStarted=performance.now();
-    if(!app)throw new Error("Missing normal App");
+    const caseStarted=performance.now();activeCaseDeadline=caseStarted+90_000;
+    if(!physicalApp)throw new Error("Missing normal physical App");
     const claim=signer.signClaim({stackId,claimId:randomUUID(),previousOrigin:origin,canonicalOrigin:origin,stackSlug:slug});
-    expect((await request(app).get("/api/health").set("Host",host).set(CLOUD_RUNTIME_IDENTITY_HEADER,claim)).status).toBe(200);
-    expect(getCloudRuntimeIdentity()).toMatchObject({stackId,canonicalOrigin:origin});
-    await db.insert(companies).values([{id:companyId,name:"Hosted Dot original grant company",issuePrefix:"HDC"},{id:otherCompanyId,name:"Primary not consent",issuePrefix:"HDP"}]);
-    await db.insert(authUsers).values({id:userId,name:"Current operator",email:userId+"@example.test",createdAt:new Date(),updatedAt:new Date()});
-    await accessService(db).ensureMembership(companyId,"user",userId,"owner","active");await accessService(db).ensureRoleDefaultGrants(companyId,userId,"owner",userId);
-    await instanceSettingsService(db).updateExperimental({enablePublicMcp:true,enableOpenAiDot:true,enableNativeRunner:true});
+    expect((await request(appLoopback).get("/api/health").set("Host",host).set(CLOUD_RUNTIME_IDENTITY_HEADER,claim)).status).toBe(200);
+    expect((await syncChildObservation()).owner.runtimeIdentity).toMatchObject({stackId,canonicalOrigin:origin});
+        await db.insert(companies).values([{id:companyId,name:"Hosted Dot original grant company",issuePrefix:"HDC"},{id:otherCompanyId,name:"Primary not consent",issuePrefix:"HDP"}]);
+        await db.insert(authUsers).values({id:userId,name:"Current operator",email:userId+"@example.test",createdAt:new Date(),updatedAt:new Date()});
+        await accessService(db).ensureMembership(companyId,"user",userId,"owner","active");
+        await accessService(db).ensureRoleDefaultGrants(companyId,userId,"owner",userId);
+        await instanceSettingsService(db).updateExperimental({enablePublicMcp:true,enableOpenAiDot:true,enableNativeRunner:true});
     const stack=await registry.getAssistantMcpStack(stackId);if(!stack)throw new Error("Missing normal stack");
     const route=await new CloudStackRouter({registry:{findStackByHost:async value=>value===stack.primaryHost?stack:undefined,findStackBySlug:async value=>value===stack.stackSlug?stack:undefined},baseDomain:"paperclip.app"}).resolveRoute({trustedHost:stack.primaryHost});
     if(route.kind!=="tenant"||!route.target?.activeAppOrigin)throw new Error("Missing normal tenant route");upstreamOrigin=route.target.activeAppOrigin;
     await vi.waitFor(async()=>{const receipt=await registry.mcpClientMirrorStore().readCurrent(stackId,origin);expect(receipt).toMatchObject({instanceId,origin,dotProfile:"hosted-dot-v1",enabled:true,frontDoor:"tenant-personal-v1"});},{timeout:10_000,interval:50});
+    const initialClaim=await boardPost("/api/bootstrap/claim").set("x-selected-operator",userId).send({});expect(initialClaim.status).toBe(200);expect(initialClaim.body).toMatchObject({claimed:true,userId});
+    const environment=await boardPost(`/api/companies/${companyId}/environments`).set("x-selected-operator",userId).send({name:"Owned real Linux Dot",driver:"sandbox",config:{provider:"dot-linux-qualification",qualificationId:"dot-owned-linux",reuseLease:false,runnerLifecycleMode:"per_turn"}});
+    expect(environment.status).toBe(201);expect(z.uuid().safeParse(environment.body.id).success).toBe(true);
     const invited=await boardPost(`/api/companies/${companyId}/dot-invitations`).set("x-selected-operator",userId).send({});expect(invited.status).toBe(200);agentId=invited.body.agent.id;
     const workspace=path.join(home,"workspace");await mkdir(workspace,{recursive:true});await writeFile(path.join(workspace,"AGENTS.md"),"Use only the assigned Paperclip tools to save the requested arithmetic document.\n");
     const [invitedAgent]=await db.select().from(agents).where(eq(agents.id,agentId));
-    const configuration=await request(app).patch(`/api/agents/${agentId}`).set("Host",host).set("Origin",origin).set("x-selected-operator",userId).send({adapterConfig:{...invitedAgent.adapterConfig,cwd:workspace}});expect(configuration.status).toBe(200);
+    const configuration=await request(appLoopback).patch(`/api/agents/${agentId}`).set("Host",host).set("Origin",origin).set("x-selected-operator",userId).send({adapterConfig:{...invitedAgent.adapterConfig,cwd:workspace}});expect(configuration.status).toBe(200);
     const pairing=await boardPost(`/api/companies/${companyId}/agents/${agentId}/dot-binding`).set("x-selected-operator",userId).send({});expect(pairing.status).toBe(201);
     const registration=await cloudCall("/mcp/runner/oauth/register",{client_name:"Actual hosted Dot",redirect_uris:[redirect],grant_types:["authorization_code","refresh_token",DEVICE_GRANT],response_types:["code"],token_endpoint_auth_method:"none"});expect(registration.status).toBe(201);
     const clientId=registration.body.client_id,verifier=randomBytes(48).toString("base64url");
@@ -526,7 +507,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     const callbackCode=z.enum(["temporarily_unavailable","invalid_grant","invalid_request","access_denied"]).safeParse(returned.body?.error);
     callbackHttp={status:returned.status,code:closedUnavailable(returned)?"temporarily_unavailable":callbackCode.success?callbackCode.data:"unclassified",retryAfter30:returned.headers["retry-after"]==="30"};
     expect(returned.status,JSON.stringify({stage:"authorization-code-callback",...callbackHttp})).toBe(303);
-    const beforeAuth=authenticateCalls,tokenRequest={grant_type:"authorization_code",client_id:clientId,redirect_uri:redirect,resource,code:new URL(returned.headers.location).searchParams.get("code"),code_verifier:verifier};
+    await syncChildObservation();const beforeAuth=authenticateCalls,tokenRequest={grant_type:"authorization_code",client_id:clientId,redirect_uri:redirect,resource,code:new URL(returned.headers.location).searchParams.get("code"),code_verifier:verifier};
     const originalRequestDigest=createHash("sha256").update(JSON.stringify(tokenRequest)).digest("hex");
     const exchange=async()=>{tokenObservationStart=performance.now();observingPhase="token";try{return await cloudCall("/mcp/runner/oauth/token",tokenRequest);}finally{observingPhase=undefined;}};
     let tokens=await exchange();
@@ -556,7 +537,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     }
     const errorCode=z.enum(["temporarily_unavailable","invalid_grant","invalid_request","access_denied"]).safeParse(tokens.body?.error);
     tokenHttp={status:tokens.status,code:closedUnavailable(tokens)?"temporarily_unavailable":errorCode.success?errorCode.data:"unclassified"};
-    expect(tokens.status,JSON.stringify({stage:"authorization-code-token",...tokenHttp})).toBe(200);expect(authenticateCalls).toBe(beforeAuth+1);
+    await syncChildObservation();expect(tokens.status,JSON.stringify({stage:"authorization-code-token",...tokenHttp})).toBe(200);expect(authenticateCalls).toBe(beforeAuth+1);
     let raw=tokens.body.access_token;expect(raw).toMatch(/^pcm1\./);
     const paired=await tool(raw,"paperclip_dot_pair",{pairingCode:pairing.body.pairingCode});expect(paired.status).toBe(200);expect(paired.body.result.isError).toBe(false);
     const [binding]=await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id,pairing.body.bindingId));expect(binding.grantId).toBeTruthy();
@@ -586,11 +567,11 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     const selectArgs={stackId:slug},selectPath=`/v1/assistant-mcp/requests/${device.body.user_code}/select`;
     const selectDigest=createHash("sha256").update(JSON.stringify(selectArgs)).digest("hex");
     deviceAckTargetGate=new Promise(resolve=>{resolveDeviceAckTarget=resolve;});deviceAckReleaseGate=new Promise(resolve=>{releaseDeviceMirrorAck=resolve;});deviceAckHeldGate=new Promise(resolve=>{resolveDeviceAckHeld=resolve;});
-    holdDeviceMirrorAck=true;deviceStage="first-select";observingPhase="device-first-select";tokenObservationStart=performance.now();
+    holdDeviceMirrorAck=true;await setChildDeviceStage("first-select");deviceStage="first-select";observingPhase="device-first-select";tokenObservationStart=performance.now();
     let knownClientId:string|undefined;
     try{
       const firstSelect=await cloudCall(selectPath,selectArgs,true);
-      expect(firstSelect.status).toBe(503);expect(closedUnavailable(firstSelect)!==undefined).toBe(true);
+      await syncChildObservation();expect(firstSelect.status).toBe(503);expect(closedUnavailable(firstSelect)!==undefined).toBe(true);
       expect(deviceWire.some(value=>value.stage==="first-select"&&value.route==="device-mint"&&value.status===503&&value.error==="closed-error")).toBe(true);
       let timer:ReturnType<typeof setTimeout>|undefined;
       try{await Promise.race([deviceAckHeldGate,new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error("Actual complete ACK response was not observed within its existing15-second transport budget")),Math.min(15_000,90_000-(performance.now()-caseStarted)));})]);}finally{clearTimeout(timer);}
@@ -615,13 +596,13 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       expect(await db.select({id:mcpOauthDeviceRequests.id}).from(mcpOauthDeviceRequests).where(eq(mcpOauthDeviceRequests.clientId,pending.tenantClientId)).limit(2)).toHaveLength(0);
       expect(await db.select({id:mcpOauthGrants.id}).from(mcpOauthGrants).where(eq(mcpOauthGrants.clientId,pending.tenantClientId)).limit(2)).toHaveLength(0);
       expect(pending.expiresAt).toBeGreaterThan(Date.now());knownClientId=pending.tenantClientId;
-    }finally{releaseDeviceAckControl();deviceStage=undefined;observingPhase=undefined;}
+    }finally{releaseDeviceAckControl();await setChildDeviceStage("none");deviceStage=undefined;observingPhase=undefined;}
     const acknowledgedDevice=await currentMirrorAck();expect(acknowledgedDevice.revision).toBe(deviceAckTargetRevision);expect(acknowledgedDevice.generation).toBe(heldDeviceAck?.generation);
     expect(pendingDeviceAckResponses).toBe(0);expect(deviceObserverFailures).toBe(0);expect(deviceWireOverflow).toBe(0);
     expect(createHash("sha256").update(JSON.stringify(selectArgs)).digest("hex")).toBe(selectDigest);
-    deviceStage="retry-select";observingPhase="device-retry-select";tokenObservationStart=performance.now();
+    await setChildDeviceStage("retry-select");deviceStage="retry-select";observingPhase="device-retry-select";tokenObservationStart=performance.now();
     let deviceSelect:Awaited<ReturnType<typeof cloudCall>>;
-    try{deviceSelect=await cloudCall(selectPath,selectArgs,true);}finally{deviceStage=undefined;observingPhase=undefined;}
+    try{deviceSelect=await cloudCall(selectPath,selectArgs,true);await syncChildObservation();}finally{await setChildDeviceStage("none");deviceStage=undefined;observingPhase=undefined;}
     expect(deviceSelect.status).toBe(200);expect(actualDeviceRegistrationCalls).toBe(1);
     const selectedDevice=await registry.assistantMcpStore().getAuthorization(device.body.user_code);
     expect(selectedDevice?.status==="selected"&&selectedDevice.tenantClientId===knownClientId&&selectedDevice.expiresAt===originalDeviceExpiry).toBe(true);
@@ -639,13 +620,13 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     await pause(device.body.interval*1000+1);const deviceToken=await cloudCall("/mcp/runner/oauth/token",{grant_type:DEVICE_GRANT,client_id:clientId,resource,device_code:device.body.device_code});expect(deviceToken.status).toBe(200);expect(deviceToken.body.access_token).toMatch(/^pcm1\./);
     expect((await cloudCall("/mcp/runner/oauth/revoke",{client_id:clientId,resource,token:deviceToken.body.refresh_token})).status).toBe(200);
     const subscription={name:"paperclip.dot.mailbox_updated",arguments:{companyId,bindingId:pairing.body.bindingId},delivery:{mode:"webhook",url:callbackPublicOrigin+"/events",secret:callbackSecret}};
-    expect(eventTransportCounts.factoryOwners).toBe(appOwnerGenerations);
+    await syncChildObservation();expect(eventTransportCounts.factoryOwners).toBe(appOwnerGenerations);
     const subscribed=await rpc(raw,"events/subscribe",subscription);
     const rpcError=z.object({code:z.number().int(),message:z.string().max(300),data:z.unknown().optional()}).strict().safeParse(subscribed.body?.error);
     const error:SubscriptionWitness["error"]=subscribed.body?.error===undefined&&subscribed.status===200?"none":!rpcError.success?"unclassified":rpcError.data.code===-32602&&rpcError.data.message==="Hosted Dot subscription authority is unavailable."?"hosted-authority-unavailable":rpcError.data.message==="Callback endpoint is unavailable."?"invalid-destination":rpcError.data.message==="Callback verification failed."?"callback-verification-failed":"unclassified";
     subscriptionWitness={status:subscribed.status,rpcCode:rpcError.success&&[-32602,-32015,-32603].includes(rpcError.data.code)?rpcError.data.code:undefined,error};
     expect(subscriptionWitness).toEqual({status:200,rpcCode:undefined,error:"none"});
-    expect(eventTransportCounts.authorityRequests).toBeGreaterThan(0);expect(eventTransportCounts.callbackRequests).toBeGreaterThan(0);expect(eventTransportCounts.unexpected).toBe(0);
+    await syncChildObservation();expect(eventTransportCounts.authorityRequests).toBeGreaterThan(0);expect(eventTransportCounts.callbackRequests).toBeGreaterThan(0);expect(eventTransportCounts.unexpected).toBe(0);
     await vi.waitFor(()=>expect(callbacks.length).toBeGreaterThanOrEqual(2),{timeout:10_000,interval:25});expect(callbacks[0].id).toBe(callbacks[1].id);expect(callbacks[1].at-callbacks[0].at).toBeGreaterThanOrEqual(1900);
     const inbox=await tool(raw,"paperclip_dot_inbox",{});expect(inbox.status).toBe(200);const challenge=inbox.body.result.structuredContent.result.items.find((item:{kind:string})=>item.kind==="readiness_challenge");expect(challenge).toBeTruthy();
     expect((await tool(raw,"paperclip_dot_confirm_event",{challenge:challenge.references.challenge})).body.result.isError).toBe(false);
@@ -653,17 +634,17 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       expect((await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id,pairing.body.bindingId)))[0].status).toBe("ready");
       const [readyAgent]=await db.select().from(agents).where(eq(agents.id,agentId));expect(readyAgent.lifecycleState).toBe("ready");expect(["active","idle"].includes(readyAgent.status)).toBe(true);
     },{timeout:10_000,interval:25});
+    const selected=await request(appLoopback).patch(`/api/agents/${agentId}`).set("Host",host).set("Origin",origin).set("x-selected-operator",userId).send({defaultEnvironmentId:environment.body.id});
+    expect(selected.status).toBe(200);expect(selected.body.defaultEnvironmentId).toBe(environment.body.id);
     const binary=process.env.PAPERCLIP_DOT_HOSTED_RUNNER_BINARY;
     expect(binary,"Explicit source-matched local Runner binary is required").toBeTruthy();if(!binary||!path.isAbsolute(binary))throw new Error("PAPERCLIP_DOT_HOSTED_RUNNER_BINARY must be absolute");await access(binary);
     vi.stubEnv("PAPERCLIP_RUNNER_BINARY",binary);vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR",path.join(home,"runner-state"));vi.stubEnv("PAPERCLIP_IN_WORKTREE","false");
-    if(!appServer)throw new Error("Missing actual normal App listener");
+    if(!physicalApp)throw new Error("Missing actual normal App process/listener");
     const nativeOrigin=appLoopback;vi.stubEnv("PAPERCLIP_API_URL",nativeOrigin);vi.stubEnv("PAPERCLIP_RUNTIME_API_URL",nativeOrigin);vi.stubEnv("PAPERCLIP_LISTEN_HOST","127.0.0.1");vi.stubEnv("PAPERCLIP_LISTEN_PORT",String(new URL(nativeOrigin).port));
-    expect(resolveLocalRuntimeApiUrl()).toBe(nativeOrigin);expect(configuredPaperclipApiBaseUrl()).toBe(nativeOrigin);
-    if(!heartbeat||!dispatchWork)throw new Error("Normal Native owners were not composed at startup");
-    vi.stubEnv("PAPERCLIP_RUNNER_BINARY","relative-invalid-dot-retry-controller");
+    expect(physicalApp.origin).toBe(nativeOrigin);
+    expect((await syncChildObservation()).owner.pid).toBe(physicalApp.pid);
     const task=await issueService(db).create(companyId,{title:"Save the arithmetic report",description:"Save a report document containing 17 + 25 = 42 using the assigned Paperclip tools.",workMode:"standard",status:"todo",assigneeAgentId:agentId,createdByUserId:operatorId});
     const read=await tool(raw,"paperclip_dot_tasks",{});expect(read.status).toBe(200);expect(read.body.result.isError).toBe(false);expect(read.body.result.structuredContent.result.some((item:{id:string})=>item.id===task.id)).toBe(true);
-    vi.stubEnv("PAPERCLIP_RUNNER_BINARY","relative-invalid-dot-retry-controller");
     const admissionId=randomUUID(),requestArgs={issueId:task.id,requestId:admissionId};
     const admission=await tool(raw,"paperclip_dot_request_work",requestArgs);expect(admission.status,JSON.stringify(admission.body)).toBe(200);expect(admission.body.result.isError,JSON.stringify(admission.body)).toBe(false);
     const admissionKey=`dot-work:${pairing.body.bindingId}:${(await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id,pairing.body.bindingId)))[0].generation}:${admissionId}`;
@@ -672,49 +653,64 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     const [wake]=await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey,admissionKey));let runId=wake.runId!;
     const replay=await tool(raw,"paperclip_dot_request_work",requestArgs);expect(replay.body.result.structuredContent.result.runId).toBe(runId);expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey,admissionKey))).toHaveLength(1);
     const failedRunId=runId;
+    // A real offered assignment plus current durable checkpoint/header must
+    // precede the fault. No useful business operation has been sent yet.
     await vi.waitFor(async()=>{
-      const [failed]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,failedRunId));
-      expect(failed?.status).toBe("failed");expect(failed?.finishedAt).not.toBeNull();
-      expect(failed?.error).toContain("PAPERCLIP_RUNNER_BINARY must be an absolute path");expect(failed).toMatchObject({runtimeMode:"legacy",nativeSessionId:null,completionContractId:null});
+      expect(await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,failedRunId))).toHaveLength(1);
     },{timeout:30_000,interval:50});
-    await heartbeat.waitForRunExecutionDrain(failedRunId,{timeoutMs:15_000});
-    const failedAssignments=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,failedRunId));expect(failedAssignments).toHaveLength(0);
+    await vi.waitFor(async()=>{
+      expect(await nativeProviderRecoveryEvidence({db,runId:failedRunId,
+        sourceFailureCode:"native_session_interrupted",executionTargetKind:"remote"}))
+        .toMatchObject({recoveryMode:"exact_checkpoint_resume",checkpointExists:true,providerSessionEstablished:true});
+    },{timeout:30_000,interval:50});
+    if(!childControl)throw new Error("Missing actual installed child provider owner");
+    const fault=z.object({status:z.literal("stopped"),runId:z.literal(failedRunId),providerLeaseId:z.string(),containerId:z.string(),
+      kernel:z.object({pid:z.number().int().positive(),fingerprint:z.string()}).passthrough(),checkpoint:z.object({recoveryMode:z.literal("exact_checkpoint_resume")}).passthrough(),
+      namespaceTerminationOnly:z.literal(true),termination:z.object({providerLeaseId:z.string(),state:z.literal("stopped")})}).strict()
+      .parse((await childControl.request({command:"stop-checkpointed",runId:failedRunId,environmentId:environment.body.id},childDeadline())).result);
+    expect(fault.termination).toEqual({providerLeaseId:fault.providerLeaseId,state:"stopped"});
+    let failureEpisode:Record<string,unknown>|undefined;
+    await vi.waitFor(async()=>{
+      const [owner]=await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId,failedRunId));
+      const episodes=owner?.recoveryHistory.filter(row=>row.disposition==="retryable_failure")??[];
+      expect(episodes).toHaveLength(1);failureEpisode=episodes[0];
+      expect(failureEpisode).toMatchObject({checkpointExists:true,providerSessionEstablished:true});
+      // Observe the actual native settlement category; never substitute the
+      // old local-adapter code or accept an arbitrary failure as this fault.
+      expect(["native_runner_process_exited","native_session_interrupted","provider_process_exited",
+        "provider_stdout_closed","provider_process_output_closed"]).toContain(failureEpisode.reason);
+      expect(Date.parse(String(failureEpisode.at))).toBeGreaterThan(0);
+    },{timeout:30_000,interval:50});
     expect(await documentService(db).getIssueDocumentByKey(task.id,"report")).toBeNull();
-    const failedReplay=await tool(raw,"paperclip_dot_request_work",requestArgs);
-    expect(failedReplay.body.result.structuredContent.result).toMatchObject({status:"admission_failed",runId:failedRunId,admissionStatus:"failed"});
-    vi.stubEnv("PAPERCLIP_RUNNER_BINARY",binary);
+    const failedAssignments=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,failedRunId));
+    expect(failedAssignments).toHaveLength(1);
     let actualSuccessor:typeof heartbeatRuns.$inferSelect|undefined;
     const retryKey=randomUUID(),retryBody={idempotencyKey:retryKey,observedRunId:failedRunId};
     const unauthorizedRetry=await boardPost(`/api/issues/${task.id}/retry`).send(retryBody);expect(unauthorizedRetry.status).toBe(403);
     const retry=await boardPost(`/api/issues/${task.id}/retry`).set("x-selected-operator",operatorId).send(retryBody);
-    if(retry.status===202){
-      expect(retry.status,JSON.stringify(retry.body)).toBe(202);expect(retry.body).toMatchObject({accepted:true,stale:false,observedRunId:failedRunId});expect(retry.body.requestId).toBeTruthy();
-      const repeatedRetry=await boardPost(`/api/issues/${task.id}/retry`).set("x-selected-operator",operatorId).send(retryBody);
-      expect(repeatedRetry.status,JSON.stringify(repeatedRetry.body)).toBe(202);expect(repeatedRetry.body.requestId).toBe(retry.body.requestId);
-      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey,`task-retry:${retryKey}`))).toHaveLength(1);
-      await vi.waitFor(async()=>{
-        const [retryWake]=await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id,retry.body.requestId));
-        expect(retryWake).toMatchObject({companyId,agentId,requestedByActorId:operatorId});
-        expect(retryWake.payload).toMatchObject({issueId:task.id,taskRetry:{sourceRunId:failedRunId,actorId:operatorId}});
-        expect(retryWake.runId).toBeTruthy();expect(retryWake.runId).not.toBe(failedRunId);runId=retryWake.runId!;
-      },{timeout:30_000,interval:50});
-    }else{
-      expect(retry.status,JSON.stringify(retry.body)).toBe(200);
-      expect(retry.body,JSON.stringify(retry.body)).toMatchObject({requestId:null,accepted:false,stale:true});
-      expect(retry.body.observedRunId).toBeTruthy();expect(retry.body.observedRunId).not.toBe(failedRunId);runId=retry.body.observedRunId;
-      expect(retry.body.presentation).toMatchObject({intentId:null,responsibility:"system",state:"working",nextRetryAt:null,canRetry:false,userAction:null,sourceRunIds:[runId],observedRunId:runId});
-      const [successor]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,runId));
-      expect(successor).toMatchObject({id:runId,companyId,agentId,issueId:task.id,retryOfRunId:failedRunId,invocationSource:"automation",triggerDetail:"system"});
-      expect(successor.contextSnapshot).toMatchObject({source:"issue.continuation_recovery"});expect(successor.wakeupRequestId).toBeTruthy();
-      const [automaticWake]=await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id,successor.wakeupRequestId!));
-      expect(automaticWake).toMatchObject({companyId,agentId,runId,source:"automation",triggerDetail:"system",reason:"issue_continuation_needed"});
-      expect(automaticWake.payload).toMatchObject({issueId:task.id});expect(automaticWake.payload?.taskRetry).toBeUndefined();
-      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey,`task-retry:${retryKey}`))).toHaveLength(0);
-    }
-    const stillFailed=await tool(raw,"paperclip_dot_request_work",requestArgs);
-    expect(stillFailed.body.result.structuredContent.result).toMatchObject({status:"admission_failed",runId:failedRunId});
-    await vi.waitFor(async()=>{const [run]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,runId));actualSuccessor=run;if(run&&["failed","cancelled","timed_out"].includes(run.status))throw new Error(`Normal Dot admission failed: ${run.errorCode??run.status}`);expect(await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,runId))).toHaveLength(1);},{timeout:30_000,interval:50});
-    const successorAssignments=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,runId));expect(successorAssignments).toHaveLength(1);const assignment=successorAssignments[0];expect(assignment).toMatchObject({bindingId:pairing.body.bindingId,agentId,companyId,status:"offered"});
+    expect(retry.status,JSON.stringify(retry.body)).toBe(202);
+    expect(retry.body).toMatchObject({accepted:true,stale:false,observedRunId:failedRunId});expect(retry.body.requestId).toBeTruthy();
+    const repeatedRetry=await boardPost(`/api/issues/${task.id}/retry`).set("x-selected-operator",operatorId).send(retryBody);
+    expect(repeatedRetry.status).toBe(202);expect(repeatedRetry.body.requestId).toBe(retry.body.requestId);
+    await vi.waitFor(async()=>{
+      const [retryWake]=await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id,retry.body.requestId));
+      expect(retryWake).toMatchObject({companyId,agentId,requestedByActorId:operatorId});
+      expect(retryWake.payload).toMatchObject({issueId:task.id,taskRetry:{sourceRunId:failedRunId,actorId:operatorId}});
+      expect(retryWake.runId).toBeTruthy();runId=retryWake.runId!;
+      if(runId===failedRunId)expect(retryWake.status).toBe("coalesced");
+      // A normal authorized Retry can admit a successor if it wins the race;
+      // an automatic same-run resume can instead own the coalesced receipt.
+      // Neither branch is forced by suppressing normal recovery workers.
+      const [current]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,runId));actualSuccessor=current;
+      expect(current).toMatchObject({companyId,agentId});
+      expect(current.status).toBe("running");
+    },{timeout:30_000,interval:50});
+    await vi.waitFor(async()=>{
+      expect(await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,runId))).toHaveLength(1);
+    },{timeout:30_000,interval:50});
+    const successorAssignments=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,runId));
+    const assignment=successorAssignments[0];expect(assignment).toMatchObject({bindingId:pairing.body.bindingId,agentId,companyId});
+    expect(["offered","accepted"]).toContain(assignment.status);
     const assigned=await tool(raw,"paperclip_dot_read",{assignmentId:assignment.id});expect(assigned.body.result.isError,JSON.stringify(assigned.body)).toBe(false);
     const operation=async(name:"paperclip_dot_accept"|"paperclip_dot_tool"|"paperclip_dot_finish",input:Record<string,unknown>,requestId=randomUUID(),expectedStatus:"completed"|"rejected"="completed")=>{
       const action=({paperclip_dot_accept:"accept",paperclip_dot_tool:"tool",paperclip_dot_finish:"finish"} as const)[name];
@@ -744,31 +740,60 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     const [run]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,runId));const [contract]=await db.select().from(completionContracts).where(eq(completionContracts.id,run.completionContractId!));const specification=z.object({revision:z.string(),criteria:z.array(z.object({id:z.string()}))}).passthrough().parse(contract.contractJson);
     const result={reportedWorkDisposition:"completed",summary:"Saved the arithmetic report.",completionClaim:{contractRevision:specification.revision,objectiveSatisfied:true,criteria:specification.criteria.map(criterion=>({criterionId:criterion.id,status:"passed",evidenceRefs:[]})),remainingWork:[]},evidence:[],verification:[{commandOrCheck:"Read the persisted report: 17 + 25 = 42.",status:"pass"}]};
     expect((await operation("paperclip_dot_tool",{name:"paperclip_finish",arguments:result})).receipt).toMatchObject({status:"completed",isError:false});
-    await operation("paperclip_dot_finish",{result});await heartbeat.waitForRunExecutionDrain(runId,{timeoutMs:15_000});
+    await operation("paperclip_dot_finish",{result});await childControl!.request({command:"drain-run",runId},childDeadline());
     const [settledAssignment]=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id,assignment.id));expect(settledAssignment.status).toBe("settled");const successorResults=await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId,runId));expect(successorResults).toHaveLength(1);const [settledTask]=await db.select().from(issues).where(eq(issues.id,task.id));expect(settledTask.status).toBe("done");
-    const heartbeatOwner=heartbeat;
-    const passiveConnectionSnapshot=()=>({clients:databaseObservation.clients,opened:databaseObservation.connectionsOpened,closed:databaseObservation.connectionsClosed,live:databaseObservation.liveConnections.size,dedicated:databaseObservation.dedicatedOpen,listeners:databaseObservation.listenersOpen});
+    const passiveConnectionSnapshot=async(deadline=childDeadline())=>{
+      const child=await syncChildObservation(deadline),all=[...retiredChildren,child];
+      return{clients:databaseObservation.clients+all.reduce((n,v)=>n+v.database.clients,0),
+        opened:databaseObservation.connectionsOpened+all.reduce((n,v)=>n+v.database.opened,0),
+        closed:databaseObservation.connectionsClosed+all.reduce((n,v)=>n+v.database.closed,0),
+        live:databaseObservation.liveConnections.size+all.reduce((n,v)=>n+v.database.connections,0),
+        dedicated:databaseObservation.dedicatedOpen+all.reduce((n,v)=>n+v.database.dedicated,0),
+        listeners:databaseObservation.listenersOpen+all.reduce((n,v)=>n+v.database.listeners,0)};
+    };
+    const totalTenantSnapshot=async(deadline=childDeadline())=>{
+      const connections=await passiveConnectionSnapshot(deadline);
+      const all=[...retiredChildren,childSnapshot!];
+      return{queryCount:databaseObservation.queries+all.reduce((n,v)=>n+v.database.queries,0),callbacks:callbacks.length,connections};
+    };
     const awaitPassiveConnectionClosure=async(deadline:number)=>{
       expect(databaseObservation.connectionsOpened).toBeGreaterThan(0);
-      const remaining=deadline-performance.now();expect(remaining,"Original15-second settlement budget must include transport closure").toBeGreaterThan(0);
-      await vi.waitFor(()=>{
-        expect(databaseObservation.liveConnections.size).toBe(0);expect(databaseObservation.dedicatedOpen).toBe(0);expect(databaseObservation.listenersOpen).toBe(0);
-        expect(databaseObservation.connectionsClosed).toBe(databaseObservation.connectionsOpened);
+      const remaining=deadline-performance.now();expect(remaining,"Original15-second settlement includes all used transports").toBeGreaterThan(0);
+      await vi.waitFor(async()=>{
+        const connections=await passiveConnectionSnapshot(deadline);
+        expect(childSnapshot!.database.opened).toBeGreaterThan(0);expect(childSnapshot!.database.queries).toBeGreaterThan(0);
+        expect(connections.live).toBe(0);expect(connections.dedicated).toBe(0);expect(connections.listeners).toBe(0);
+        expect(connections.closed).toBe(connections.opened);
       },{timeout:remaining,interval:25});
     };
+    const inspect=async(deadline=childDeadline())=>{
+      const value=(await childControl!.request({command:"inspect"},deadline)).result;
+      return z.object({frontDoor:z.object({blocked:z.boolean()}).passthrough(),subscriptions:z.object({blocked:z.boolean()}).passthrough(),
+        schedule:z.object({blocked:z.boolean()}).passthrough()}).passthrough().parse(value);
+    };
+    const settleActualOwners=async(deadline:number)=>{
+      await vi.waitFor(async()=>{
+        const child=await syncChildObservation(deadline);
+        expect(child.owner.taskDrain).toMatchObject({activeRuns:0,pendingWakes:0,quiescent:true});
+        expect(child.owner.worker.active+idleWorkSnapshot().active).toBe(0);
+        expect(child.owner.errorCount).toBe(0);expect(child.owner.unexpectedDecisionWakes).toBe(0);
+        expect(child.database.observerPending).toBe(0);expect(child.database.observerFailures).toBe(0);expect(child.database.overflow).toBe(0);
+        const childReadBefore=child.database.queries;
+        const proof=await inspect(deadline);
+        expect((await syncChildObservation(deadline)).database.queries).toBeGreaterThan(childReadBefore);
+        expect(proof.frontDoor.blocked).toBe(false);expect(proof.subscriptions.blocked).toBe(false);expect(proof.schedule.blocked).toBe(false);
+        expect((await db.select().from(mcpEventDeliveries)).every(row=>row.finishedAt!==null)).toBe(true);
+      },{timeout:deadline-performance.now(),interval:25});
+    };
     const firstSettlementDeadline=performance.now()+15_000;
-    const budget={beforeRead:async()=>{},check:()=>{}};
-    const inspect=()=>readIdleMcpSleepProof(db,db,{stackId,ownerId:randomUUID(),capabilityGeneration:"a".repeat(64),challenge:"b".repeat(64),now:Date.now(),budget});
-    await vi.waitFor(async()=>{
-      expect(heartbeatOwner.getTaskDrainStatus()).toMatchObject({activeRuns:0,pendingWakes:0,quiescent:true});expect(idleWorkSnapshot().active).toBe(0);
-      expect(databaseObservation.listenersOpen).toBe(0);expect(databaseObservation.dedicatedOpen).toBe(0);
-      const proof=await inspect();expect(proof.frontDoor.blocked).toBe(false);expect(proof.subscriptions.blocked).toBe(false);expect(proof.schedule.blocked).toBe(false);
-      expect((await db.select().from(mcpEventDeliveries)).every(row=>row.finishedAt!==null)).toBe(true);
-    },{timeout:15_000,interval:25});
+    await settleActualOwners(firstSettlementDeadline);
     const beforeRead=databaseObservation.queries;expect((await documentService(db).getIssueDocumentByKey(task.id,"report"))?.body).toBe("17 + 25 = 42.");expect(databaseObservation.queries).toBeGreaterThan(beforeRead);
     await awaitPassiveConnectionClosure(firstSettlementDeadline);
-    const before={queryCount:databaseObservation.queries,callbacks:callbacks.length,connections:passiveConnectionSnapshot()};let quietAfter:typeof before|undefined;const quietTraceStart=performance.now();
-    await pause(15_000);const quietTraceEnd=performance.now();quietAfter={queryCount:databaseObservation.queries,callbacks:callbacks.length,connections:passiveConnectionSnapshot()};expect(quietAfter).toEqual(before);expect(errors).toEqual([]);
+    const before=await totalTenantSnapshot();let quietAfter:typeof before|undefined;const quietTraceStart=performance.now();
+    // No SQL observer or child IPC request during this strict window. Only the
+    // original actual tenant/Cloud owners can change the passive counters.
+    await pause(15_000);const quietTraceEnd=performance.now();quietAfter=await totalTenantSnapshot();
+    expect(quietAfter).toEqual(before);expect(errors).toEqual([]);
     // The normal owner route acquires the signed tenant idle hold, reads the
     // real current mirror/admission and calls the existing provider stop owner.
     // This is controlled local provider/HTTP availability, not deployed suspension.
@@ -777,14 +802,14 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     const idleAdmission=await registry.readIdleMcpWakeAdmission(stackId);expect(idleAdmission).toBeTruthy();
     const admissionDigest=createHash("sha256").update(JSON.stringify(idleAdmission)).digest("hex");
     const [preWakeBinding]=await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id,pairing.body.bindingId));
-    healthAvailability="wake-once-then-unavailable";
+    await setChildHealth("wake-once-then-unavailable");
     const failedReadiness=await tool(raw,"paperclip_dot_tasks",{});expect(failedReadiness.status).toBe(503);expect(failedReadiness.body).toMatchObject({error:"temporarily_unavailable"});
-    expect(readinessStatuses[0]).toBe(200);expect(readinessStatuses.some(status=>status===503)).toBe(true);expect(readinessOverflow).toBe(0);
+    await syncChildObservation();expect(readinessStatuses[0]).toBe(200);expect(readinessStatuses.some(status=>status===503)).toBe(true);expect(readinessOverflow).toBe(0);
     // Provider readiness has legitimately settled awake, but the original
     // credential request was refused by the real entry HTTP readiness owner.
     // Retry the same wrapped credential; do not mint or publish new authority.
     expect(await registry.getStack(stackId)).toMatchObject({lifecycleState:"active",sleepState:"awake"});
-    healthAvailability="ready";
+    await setChildHealth("ready");
     const readyRetry=await tool(raw,"paperclip_dot_tasks",{});expect(readyRetry.status).toBe(200);expect(readyRetry.body.result.isError).toBe(false);
     const [postWakeBinding]=await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id,pairing.body.bindingId));
     expect(postWakeBinding).toMatchObject({id:preWakeBinding.id,generation:preWakeBinding.generation,grantId:originalGrant.id,status:"ready"});
@@ -792,48 +817,73 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     wakeEvidence={sleepStatus:sleepResponse.status,failedReadinessStatus:failedReadiness.status,retryStatus:readyRetry.status,admissionDigest,grantId:originalGrant.id,bindingGeneration:postWakeBinding.generation,healthStatuses:[...readinessStatuses],overflow:readinessOverflow};
     const firstBindingSnapshot=(await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id,pairing.body.bindingId)))[0];
     const callbackCountBeforeRestart=callbacks.length;
-    await reconstructAppOwner();await reconstructCloudOwner();
-    expect(appOwnerGenerations).toBe(2);expect(cloudOwnerGenerations).toBe(2);
-    const restoredBinding=(await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id,pairing.body.bindingId)))[0];
-    expect(restoredBinding).toMatchObject({id:firstBindingSnapshot.id,companyId,agentId,grantId:originalGrant.id,generation:firstBindingSnapshot.generation,status:"ready"});
-    expect((await documentService(db).getIssueDocumentByKey(task.id,"report"))?.body).toBe("17 + 25 = 42.");
-    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId,runId))).toHaveLength(1);
-    const refreshed=await cloudCall("/mcp/runner/oauth/token",{grant_type:"refresh_token",client_id:clientId,resource,refresh_token:tokens.body.refresh_token});expect(refreshed.status).toBe(200);
-    raw=refreshed.body.access_token;expect(raw).toMatch(/^pcm1\./);
-    const afterRestart=await rpc(raw,"events/subscribe",subscription);expect(afterRestart.status).toBe(200);
-    const resumedSettlementDeadline=performance.now()+15_000;
-    await vi.waitFor(async()=>{
-      expect(idleWorkSnapshot().active).toBe(0);expect(databaseObservation.listenersOpen).toBe(0);expect(databaseObservation.dedicatedOpen).toBe(0);
-      const proof=await inspect();expect(proof.frontDoor.blocked).toBe(false);expect(proof.subscriptions.blocked).toBe(false);expect(proof.schedule.blocked).toBe(false);
-      expect((await db.select().from(mcpEventDeliveries)).every(row=>row.finishedAt!==null)).toBe(true);
-    },{timeout:15_000,interval:25});
-    // A refresh/reconstruction may legitimately redeliver a pending notification,
-    // but it cannot duplicate the completed task, run result or durable operation.
-    expect(callbacks.length).toBeGreaterThanOrEqual(callbackCountBeforeRestart);
-    await awaitPassiveConnectionClosure(resumedSettlementDeadline);
-    const resumedBefore={queryCount:databaseObservation.queries,callbacks:callbacks.length,connections:passiveConnectionSnapshot()},resumedStart=performance.now();
-    await pause(15_000);const resumedElapsed=performance.now()-resumedStart;
-    const resumedAfter={queryCount:databaseObservation.queries,callbacks:callbacks.length,connections:passiveConnectionSnapshot()};expect(resumedAfter).toEqual(resumedBefore);expect(errors).toEqual([]);
-    const [retainedFailure]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,failedRunId));expect(retainedFailure).toMatchObject({id:failedRunId,companyId,agentId,status:"failed"});expect(retainedFailure.error).toContain("PAPERCLIP_RUNNER_BINARY must be an absolute path");
-    const failedResults=await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId,failedRunId));expect(failedResults).toHaveLength(0);
-    if(retry.status===200){
-      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.issueId,task.id))).filter(row=>row.retryOfRunId===failedRunId).map(row=>row.id)).toEqual([runId]);
-      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey,`task-retry:${retryKey}`))).toHaveLength(0);
-    }
+    if(!physicalApp)throw new Error("Missing first physical App generation");
+    let resumedBefore:Awaited<ReturnType<typeof totalTenantSnapshot>>|undefined,resumedAfter:typeof resumedBefore;
+    let resumedElapsed=0;
+    physicalFollowon=await usefulAfterPhysicalRestart({get db(){return db;},companyId,agentId,first:physicalApp,get cloudLoopback(){return cloudLoopback;},
+      caseDeadline:caseStarted+90_000,
+      startSecond:async()=>{
+        // First real Node/group closed before this new child can be started.
+        await db.$client.end({timeout:1});await closeRegisteredClients(url!,{scope:"database"});
+        await makePhysicalSecond();
+        await reconstructCloudOwner();
+        expect(appOwnerGenerations).toBe(2);expect(cloudOwnerGenerations).toBe(2);
+        const restoredBinding=(await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id,pairing.body.bindingId)))[0];
+        expect(restoredBinding).toMatchObject({id:firstBindingSnapshot.id,companyId,agentId,grantId:originalGrant.id,generation:firstBindingSnapshot.generation,status:"ready"});
+        expect((await documentService(db).getIssueDocumentByKey(task.id,"report"))?.body).toBe("17 + 25 = 42.");
+        expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId,runId))).toHaveLength(1);
+        const refreshed=await cloudCall("/mcp/runner/oauth/token",{grant_type:"refresh_token",client_id:clientId,resource,refresh_token:tokens.body.refresh_token});expect(refreshed.status).toBe(200);
+        raw=refreshed.body.access_token;expect(raw).toMatch(/^pcm1\./);
+        const afterRestart=await rpc(raw,"events/subscribe",subscription);expect(afterRestart.status).toBe(200);
+        expect(callbacks.length).toBeGreaterThanOrEqual(callbackCountBeforeRestart);
+        if(!physicalApp)throw new Error("Second real child did not start");return physicalApp;
+      },
+      createTask:async body=>{const response=await boardPost(`/api/companies/${companyId}/issues`).set("x-selected-operator",operatorId).send(body);return{status:response.status,body:response.body};},
+      tool:async(name,args,ownedOrigin)=>{
+        if(!ownedOrigin){const response=await tool(raw,name,args);return{status:response.status,body:response.body};}
+        const selected=new URL(ownedOrigin);expect(selected.protocol).toBe("http:");expect(selected.hostname).toBe("127.0.0.1");
+        // Same actual wrapped credential, virtual tenant Host, protocol and RPC
+        // body through the ONE owned lost-response proxy. No retry/new requestID.
+        const response=await request(ownedOrigin).post("/mcp/runner").set("Host",host).set("Authorization","Bearer "+raw)
+          .set("Accept","application/json, text/event-stream").set("mcp-protocol-version","2026-07-28").set("mcp-method","tools/call").set("mcp-name",name)
+          .send({jsonrpc:"2.0",id:++serial,method:"tools/call",params:{name,arguments:args,_meta:{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{events:{}}}}});
+        return{status:response.status,body:response.body};
+      },
+      assertPassiveQuiet:async duration=>{
+        const resumedSettlementDeadline=performance.now()+15_000;
+        await settleActualOwners(resumedSettlementDeadline);await awaitPassiveConnectionClosure(resumedSettlementDeadline);
+        resumedBefore=await totalTenantSnapshot();const resumedStart=performance.now();
+        await pause(duration);resumedElapsed=performance.now()-resumedStart;resumedAfter=await totalTenantSnapshot();
+        expect(resumedElapsed).toBeGreaterThanOrEqual(15_000);expect(resumedAfter).toEqual(resumedBefore);expect(errors).toEqual([]);
+      },
+    });
+    const [retainedFailure]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,failedRunId));
+    expect(retainedFailure).toMatchObject({id:failedRunId,companyId,agentId});
+    const [retainedOwner]=await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId,failedRunId));
+    expect(retainedOwner.recoveryHistory.filter(row=>row.disposition==="retryable_failure")).toEqual([failureEpisode]);
+    if(runId===failedRunId)expect(retainedFailure.status).toBe("succeeded");
+    else expect(retainedFailure.status).toBe("failed");
+    const failedResults=await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId,failedRunId));expect(failedResults).toHaveLength(runId===failedRunId?1:0);
+    const retryReceipts=await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.idempotencyKey,`task-retry:${retryKey}`));
+    expect(retryReceipts).toHaveLength(1);expect(retryReceipts[0].runId).toBe(runId);
+    if(runId===failedRunId)expect(retryReceipts[0].status).toBe("coalesced");
     const subscriptionsBefore=await db.select().from(mcpEventSubscriptions);
     const wrongBinding=await rpc(raw,"events/subscribe",{...subscription,arguments:{companyId,bindingId:randomUUID()}});expect(wrongBinding.status).toBe(400);expect(wrongBinding.body.error).toMatchObject({code:-32602,message:"Invalid arguments or unavailable authority."});expect(await db.select().from(mcpEventSubscriptions)).toEqual(subscriptionsBefore);
-    const revoked=await request(app!).delete(`/api/companies/${companyId}/agents/${agentId}/dot-binding`).set("Host",host).set("Origin",origin).set("x-selected-operator",userId);expect(revoked.status).toBe(204);
+    const revoked=await request(appLoopback).delete(`/api/companies/${companyId}/agents/${agentId}/dot-binding`).set("Host",host).set("Origin",origin).set("x-selected-operator",userId);expect(revoked.status).toBe(204);
     const revokedTasks=await tool(raw,"paperclip_dot_tasks",{});expect(revokedTasks.status).toBe(503);expect(revokedTasks.body).toMatchObject({error:"temporarily_unavailable"});
     const revokedOperation=await tool(raw,"paperclip_dot_operation_status",{assignmentId:assignment.id,requestId:writeId});expect(revokedOperation.status).toBe(503);expect(revokedOperation.body).toMatchObject({error:"temporarily_unavailable"});
+    const revokedFreshOperation=await tool(raw,"paperclip_dot_operation_status",{assignmentId:physicalFollowon.assignmentId,requestId:physicalFollowon.requestId});
+    expect(revokedFreshOperation.status).toBe(503);expect(revokedFreshOperation.body).toMatchObject({error:"temporarily_unavailable"});
     expect((await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id,pairing.body.bindingId)))[0].generation).toBeGreaterThan(1);
     expect((await db.select().from(mcpOauthGrants).where(eq(mcpOauthGrants.id,originalGrant.id)))[0].revokedAt).not.toBeNull();
-    expect(eventTransportCounts.factoryOwners).toBe(appOwnerGenerations);expect(eventTransportCounts.unexpected).toBe(0);
+    await syncChildObservation();expect(eventTransportCounts.factoryOwners).toBe(appOwnerGenerations);expect(eventTransportCounts.unexpected).toBe(0);
     expect(deviceRetryEvidence).toMatchObject({firstStatus:503,retryStatus:200,registrationCalls:1,sameClient:true,originalExpiryUnchanged:true,zeroInnerAuthorizationsBeforeRetry:true,pendingInnerAuthorizationsAfterRetry:1,heldExactDcrRevision:true,scopeValidated:true});
     const evidencePath=process.env.PAPERCLIP_DOT_ACCEPTANCE_RECEIPT;
     if(!evidencePath)throw new Error("Explicit owned Dot acceptance receipt path required");
     await writeFile(evidencePath,JSON.stringify({
       version:1,scope:"controlled-normal-hosted-Dot-useful-retry",companyId,agentId,taskId:task.id,
-      retryHttpStatus:retry.status,retryBranch:retry.status===202?"authorized-manual":"verified-normal-automatic",
+      retryHttpStatus:retry.status,retryBranch:runId===failedRunId?"normal-native-resume-retry-coalesced":"authorized-retry-successor",
+      originalFailureEpisode:failureEpisode,ownedFault:fault,recoveryIdentity:runId===failedRunId?"same-run-native-resume":"authorized-retry-successor",
       originalRun:{id:failedRunId,status:retainedFailure.status,errorCode:retainedFailure.errorCode,runtimeMode:retainedFailure.runtimeMode,
         nativeSessionPresent:retainedFailure.nativeSessionId!==null,assignmentCount:failedAssignments.length,resultCount:failedResults.length,
         costAccountingPending:retainedFailure.costAccountingPending},
@@ -843,10 +893,10 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       operation:{requestId:writeId,journalCount:writeJournals.length,journalStatus:journal.status,sourceEventPresent:journal.sourceEventId!==null},
       quiet:{elapsedMs:quietTraceEnd-quietTraceStart,queryCountBefore:before.queryCount,queryCountAfter:quietAfter?.queryCount,
         callbackCountBefore:before.callbacks,
-        callbackCountAfter:quietAfter?.callbacks,connectionCountsBefore:before.connections,connectionCountsAfter:quietAfter?.connections,allCreatedClientsObserved:databaseObservation.clients,closedDedicatedOwners:databaseObservation.dedicatedOpen,closedListenerOwners:databaseObservation.listenersOpen},
+        callbackCountAfter:quietAfter?.callbacks,connectionCountsBefore:before.connections,connectionCountsAfter:quietAfter?.connections,allCreatedClientsObserved:before.connections.clients,closedDedicatedOwners:before.connections.dedicated,closedListenerOwners:before.connections.listeners},
       errorsCount:errors.length,revocationChecksCompleted:true,
       successorAccounting:{finalRecorded:false,reason:"No added post-settlement accounting query; original443had no final accounting assertion"},
-      reconstruction:{appOwners:appOwnerGenerations,cloudOwners:cloudOwnerGenerations,newDbOwners:true,fullProcessRestart:false,masterKeyProvider:"controlled provider port retained outside reconstructed owners",quiet:{elapsedMs:resumedElapsed,before:resumedBefore,after:resumedAfter}},
+      reconstruction:{appOwners:appOwnerGenerations,cloudOwners:cloudOwnerGenerations,newDbOwners:true,fullProcessRestart:true,physicalRestart:{first:physicalFollowon.firstIdentity,second:physicalFollowon.secondIdentity},freshUseful2:{taskId:physicalFollowon.taskId,runId:physicalFollowon.runId,assignmentId:physicalFollowon.assignmentId,requestId:physicalFollowon.requestId,lostCommittedReply:physicalFollowon.committedReplyLoss},masterKeyProvider:"controlled provider port retained outside reconstructed owners",quiet:{elapsedMs:resumedElapsed,before:resumedBefore,after:resumedAfter}},
       controlledNormalAppCloud:true,hostedCredentialWake:wakeEvidence,originalGrantId:originalGrant.id,codeAndDeviceVerified:true,deviceSelectionRetry:deviceRetryEvidence,eventTransport:{...eventTransportCounts,scope:"controlled exact-owned virtual HTTP; production DNS/peer/SSRF NOT qualified"},subscriptionWitness,fullDotMirrorVerified:true,
     }),{mode:0o600});
     casePassed=true;
