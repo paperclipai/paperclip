@@ -1,5 +1,5 @@
 import type { CSSProperties, ReactNode } from "react";
-import { Maximize2, Minimize2, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Maximize2, Minimize2, PanelRightClose, PanelRightOpen, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -17,6 +17,7 @@ export interface SidePanelFrameProps {
   maximized?: boolean;
   resizing?: boolean;
   label?: string;
+  headerSize?: "default" | "task-detail";
   className?: string;
   bodyClassName?: string;
   style?: CSSProperties;
@@ -33,6 +34,7 @@ export function SidePanelFrame({
   maximized = false,
   resizing = false,
   label = "Side panel",
+  headerSize = "default",
   className,
   bodyClassName,
   style,
@@ -47,7 +49,7 @@ export function SidePanelFrame({
       data-maximized={maximized ? "true" : "false"}
       data-resizing={resizing ? "true" : "false"}
       className={cn(
-        "flex min-h-0 min-w-0 flex-col overflow-hidden bg-(--side-panel-bg) text-(--side-panel-fg)",
+        "relative flex min-h-0 min-w-0 flex-col overflow-hidden bg-(--side-panel-bg) text-(--side-panel-fg)",
         presentation === "docked" && "h-full border-l border-border",
         presentation === "sheet" && "h-full w-full",
         presentation === "embedded" && "h-full rounded-xl border border-border",
@@ -57,7 +59,9 @@ export function SidePanelFrame({
       style={style}
     >
       {(header || trailingControls) ? (
-        <header className="flex h-(--side-panel-header-height) min-w-0 shrink-0 items-center gap-1 px-2">
+        <header className={cn(
+          "flex h-(--side-panel-header-height) min-w-0 shrink-0 items-center gap-1 px-2",
+        )}>
           <div className="flex min-w-0 flex-1 self-stretch">{header}</div>
           {trailingControls ? (
             <div className="flex shrink-0 items-center gap-1">{trailingControls}</div>
@@ -81,7 +85,14 @@ export function SidePanelFrame({
           </div>
         ) : children}
       </div>
-      {footer ? <footer className="shrink-0 border-t border-border">{footer}</footer> : null}
+      {footer ? (
+        <footer className={cn(
+          "shrink-0",
+          headerSize !== "task-detail" && "border-t border-border",
+        )}>
+          {footer}
+        </footer>
+      ) : null}
     </section>
   );
 }
@@ -91,11 +102,13 @@ export function SidePanelToggleButton({
   onToggle,
   shortcut,
   className,
+  highlightWhenOpen = true,
 }: {
   open: boolean;
   onToggle: () => void;
   shortcut?: string;
   className?: string;
+  highlightWhenOpen?: boolean;
 }) {
   const label = "Toggle side panel";
   return (
@@ -110,7 +123,7 @@ export function SidePanelToggleButton({
           onClick={onToggle}
           className={cn(
             "h-(--side-panel-tab-height) w-(--side-panel-tab-height)",
-            open && "bg-accent text-accent-foreground",
+            open && highlightWhenOpen && "bg-accent text-accent-foreground",
             className,
           )}
         >
@@ -128,10 +141,12 @@ export function SidePanelWindowControls({
   maximized,
   onMaximizedChange,
   onToggle,
+  closeControl = "toggle",
 }: {
   maximized: boolean;
   onMaximizedChange: (maximized: boolean) => void;
   onToggle: () => void;
+  closeControl?: "toggle" | "close";
 }) {
   return (
     <>
@@ -146,7 +161,21 @@ export function SidePanelWindowControls({
       >
         {maximized ? <Minimize2 aria-hidden /> : <Maximize2 aria-hidden />}
       </Button>
-      <SidePanelToggleButton open onToggle={onToggle} />
+      {closeControl === "close" ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          className="h-(--side-panel-tab-height) w-(--side-panel-tab-height) text-muted-foreground hover:text-foreground focus-visible:text-foreground"
+          onClick={onToggle}
+          aria-label="Close side panel"
+          title="Close side panel"
+        >
+          <X aria-hidden />
+        </Button>
+      ) : (
+        <SidePanelToggleButton open onToggle={onToggle} />
+      )}
     </>
   );
 }

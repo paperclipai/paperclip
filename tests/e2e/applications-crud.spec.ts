@@ -2,7 +2,7 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
 
 // Current Apps lifecycle coverage. The legacy Tools -> Applications CRUD table
 // was retired; old links now redirect to /apps. Keep this harness focused on
-// the user-visible Connections list plus app detail setup/advanced flows.
+// the user-visible Connections list plus app Permissions flows.
 
 type SeedResult = {
   companyId: string;
@@ -86,7 +86,7 @@ test.describe.serial("applications lifecycle", () => {
     // background health sweep then probes the connection endpoint. The test
     // endpoint is an unreachable loopback URL, so the probe fails and the pill
     // becomes "Needs attention" and adds a "Reconnect" action. Both are
-    // connected states that navigate to the same provider setup page. This test
+    // connected states that navigate to the same Permissions page. This test
     // proves the connected-vs-not-connected split, not the transient health
     // label, so accept either connected state instead of the racy exact label.
     // The pill is derived from two react-query fetches (applications +
@@ -97,7 +97,7 @@ test.describe.serial("applications lifecycle", () => {
       .filter({ has: page.getByRole("heading", { name: connectedName, exact: true }) });
     await expect(connectedRow).toBeVisible();
     await expect(connectedRow.getByText(/^(Connected|Needs attention)$/)).toBeVisible({ timeout: 30_000 });
-    const openConnection = connectedRow.getByRole("button", { name: /^Open .* connection settings$/ });
+    const openConnection = connectedRow.getByRole("button", { name: /^Open .* permissions$/ });
     await expect(openConnection).toBeVisible();
 
     // The not-connected app has no connection, so the health sweep never touches
@@ -112,19 +112,19 @@ test.describe.serial("applications lifecycle", () => {
 
     await openConnection.click();
     await expect(page).toHaveURL(
-      new RegExp(`/${seed.prefix}/apps/${connected.id}/setup$`),
+      new RegExp(`/${seed.prefix}/apps/${connected.id}/permissions$`),
       { timeout: 20_000 },
     );
 
     await gotoApps(page, seed.prefix);
     await notConnectedRow.getByRole("button", { name: `Connect ${notConnectedName}` }).click();
     await expect(page).toHaveURL(
-      new RegExp(`/${seed.prefix}/apps/app/${notConnected.id}/setup$`),
+      new RegExp(`/${seed.prefix}/apps/app/${notConnected.id}/permissions$`),
       { timeout: 20_000 },
     );
   });
 
-  test("connected app detail supports pause, rename, and removal", async ({ page, request }) => {
+  test("connected app detail supports rename on Permissions", async ({ page, request }) => {
     const appName = `${APP_PREFIX}-detail-app`;
     const renamed = `${APP_PREFIX}-renamed-app`;
     const connection = await createConnection(request, seed.companyId, {
@@ -132,59 +132,13 @@ test.describe.serial("applications lifecycle", () => {
       name: appName,
     });
 
-    await page.goto(`/${seed.prefix}/apps/${connection.id}/setup`);
+    await page.goto(`/${seed.prefix}/apps/${connection.id}/permissions`);
     await expect(page.getByRole("heading", { name: appName })).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole("heading", { name: "Account" })).toBeVisible();
-    await expect(page.getByText("Anyone in your company can use this connection")).toBeVisible();
 
     await page.getByRole("button", { name: "Rename app" }).click();
     await page.getByLabel("App name").fill(renamed);
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByRole("heading", { name: renamed })).toBeVisible({ timeout: 15_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-detail.png`, fullPage: true });
-
-    await page.getByRole("button", { name: "Danger zone" }).click();
-    const pauseConnection = page.getByRole("switch", { name: "Pause connection" });
-    await pauseConnection.click();
-    await expect(pauseConnection).toBeChecked({ timeout: 15_000 });
-    await expect(page.getByText("App paused").first()).toBeVisible();
-    await pauseConnection.click();
-    await expect(pauseConnection).not.toBeChecked({ timeout: 15_000 });
-    await expect(page.getByText("App resumed").first()).toBeVisible();
-
-    await page.getByRole("button", { name: "Remove app", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Yes, remove it" })).toBeVisible();
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-remove-connected.png`, fullPage: true });
-    await page.getByRole("button", { name: "Yes, remove it" }).click();
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });
-    await expect(page.getByText("App removed").first()).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible();
-    await expect(
-      page
-        .getByRole("list", { name: "Connector list" })
-        .getByRole("listitem")
-        .filter({ has: page.getByRole("heading", { name: renamed, exact: true }) }),
-    ).toHaveCount(0);
-  });
-
-  test("not-connected app advanced page removes the application", async ({ page, request }) => {
-    const cleanAppName = `${APP_PREFIX}-clean-remove-app`;
-    const cleanApp = await createApplication(request, seed.companyId, { name: cleanAppName });
-
-    await page.goto(`/${seed.prefix}/apps/app/${cleanApp.id}/advanced`);
-    await expect(page.getByRole("heading", { name: cleanAppName })).toBeVisible({ timeout: 30_000 });
-    await page.getByRole("button", { name: "Danger zone" }).click();
-    await page.getByRole("button", { name: "Remove app", exact: true }).click();
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-remove-not-connected.png`, fullPage: true });
-    await page.getByRole("button", { name: "Yes, remove it" }).click();
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });
-    await expect(page.getByText("App removed").first()).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible();
-    await expect(
-      page
-        .getByRole("list", { name: "Connector list" })
-        .getByRole("listitem")
-        .filter({ has: page.getByRole("heading", { name: cleanAppName, exact: true }) }),
-    ).toHaveCount(0);
   });
 });

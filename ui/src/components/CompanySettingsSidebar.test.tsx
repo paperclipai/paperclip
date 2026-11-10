@@ -5,6 +5,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
+import { CompanySettingsSidebar as ProductionCompanySettingsSidebar } from "./CompanySettingsSidebar.production";
+import { primarySidebarStyles } from "./primary-sidebar-styles";
 
 const sidebarNavItemMock = vi.hoisted(() => vi.fn());
 const mockSidebarBadgesApi = vi.hoisted(() => ({
@@ -16,6 +18,7 @@ const mockPluginsApi = vi.hoisted(() => ({
 const mockUsePluginSlots = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/router", () => ({
+  useNavigate: () => vi.fn(),
   Link: ({
     children,
     to,
@@ -41,7 +44,7 @@ vi.mock("@/lib/router", () => ({
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({
     selectedCompanyId: "company-1",
-    selectedCompany: { id: "company-1", name: "Paperclip" },
+    selectedCompany: { id: "company-1", issuePrefix: "PAP", name: "Paperclip" },
   }),
 }));
 
@@ -53,6 +56,7 @@ vi.mock("@/context/SidebarContext", () => ({
 }));
 
 vi.mock("./SidebarNavItem", () => ({
+  SidebarNavExpandedProvider: ({ children }: { children: React.ReactNode }) => children,
   SidebarNavItem: (props: {
     to: string;
     label: string;
@@ -62,6 +66,10 @@ vi.mock("./SidebarNavItem", () => ({
     sidebarNavItemMock(props);
     return <div>{props.label}</div>;
   },
+}));
+
+vi.mock("./SidebarNavItem.production", () => ({
+  SidebarNavItem: ({ label, to }: { label: string; to: string }) => <a href={to}>{label}</a>,
 }));
 
 vi.mock("./SidebarCompanyMenu", () => ({
@@ -122,7 +130,7 @@ describe("CompanySettingsSidebar", () => {
     vi.clearAllMocks();
   });
 
-  it("renders one unified settings list without company or instance headers", async () => {
+  it("renders a primary-style settings takeover with a back-to-app link", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
@@ -137,10 +145,34 @@ describe("CompanySettingsSidebar", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Paperclip");
+    expect(container.textContent).not.toContain("Paperclip");
+    expect(container.textContent).not.toContain("Settings");
+    expect(container.querySelector('[aria-label="Back from Settings"]')).toBeNull();
+    const settingsSurface = container.querySelector('[data-contextual-sidebar="settings"]');
+    expect(settingsSurface?.classList).toContain("primary-sidebar-surface");
+    expect(container.querySelector('[data-slot="contextual-sidebar-nav"]')?.className).toBe(
+      primarySidebarStyles.nav,
+    );
+    const settingsHeader = container.querySelector('[data-slot="settings-sidebar-header"]');
+    expect(settingsHeader?.classList).toContain("h-(--sz-60px)");
+    expect(settingsHeader?.classList).toContain("items-center");
+    expect(settingsHeader?.textContent).toContain("Back to app");
+    const backGroup = container.querySelector('[data-slot="settings-back-group"]');
+    expect(backGroup?.classList).toContain("w-full");
+    for (const className of primarySidebarStyles.group.split(" ")) {
+      expect(backGroup?.classList).toContain(className);
+    }
+    expect(container.querySelector('[data-slot="contextual-sidebar-group"]')?.className).toBe(
+      primarySidebarStyles.group,
+    );
+    expect(container.textContent).toContain("Back to app");
+    expect(container.querySelector('nav[aria-label="Settings"]')?.textContent).not.toContain(
+      "Back to app",
+    );
     expect(container.textContent).not.toContain("Company Settings");
     expect(container.textContent).not.toContain("Instance Settings");
     expect(container.textContent).toContain("General");
+    expect(container.textContent).toContain("Connections");
     expect(container.textContent).toContain("Environments");
     expect(container.textContent).toContain("Export");
     expect(container.textContent).toContain("Import");
@@ -148,6 +180,12 @@ describe("CompanySettingsSidebar", () => {
     expect(container.textContent).toContain("Secrets");
     expect(container.textContent).toContain("Access");
     expect(container.textContent).not.toContain("Tools & Access");
+    expect(sidebarNavItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "/dashboard",
+        label: "Back to app",
+      }),
+    );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "/company/settings",
@@ -230,6 +268,16 @@ describe("CompanySettingsSidebar", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("shows Connections in the production sidebar without a Fast Responses query", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><ProductionCompanySettingsSidebar /></QueryClientProvider>));
+    await flushReact();
+    expect(container.querySelector('a[href="/company/settings/connections"]')?.textContent).toBe("Connections");
+    expect(queryClient.getQueryCache().getAll().some(query => String(query.queryKey[0]).includes("experimental"))).toBe(false);
+    await act(async () => root.unmount());
   });
 
   it("renders company settings pages contributed by ready plugins", async () => {

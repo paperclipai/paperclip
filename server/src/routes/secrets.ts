@@ -116,6 +116,16 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
   const runRedactions = createRunSecretRedactionRegistry(db);
   const defaultProvider = getConfiguredSecretProvider();
 
+  async function assertSecretCatalogReadAllowed(req: Parameters<typeof assertBoard>[0], companyId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "secrets:read",
+      resource: { type: "company", companyId },
+    });
+    if (decision.allowed) return;
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+  }
+
   function agentSecretContext(req: Parameters<typeof assertBoard>[0]) {
     if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId || !req.actor.runId) {
       throw forbidden("Run-bound agent authentication required");
@@ -576,6 +586,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertSecretCatalogReadAllowed(req, companyId);
     const secrets = await svc.list(companyId);
     res.json(secrets.map(({ id, name, key, status }) => ({ id, name, key, status })));
   });
@@ -1104,7 +1115,17 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     );
     if (!existing) return;
 
-    const removed = await svc.remove(id);
+    const resolvedByUserId = req.actor.userId ?? "board";
+    const reason = "The referenced secret was deleted.";
+    const removed = await svc.remove(id, {
+      beforeDelete: async (secret) => {
+        const rejected = await proposals.rejectPendingBindingsForSecret(secret.companyId, secret.id, { resolvedByUserId, reason });
+        // Same signal as an ordinary rejection, so the proposing agent continues.
+        for (const proposal of rejected) {
+          await notifySecretProposalResolution({ proposal, status: "rejected", userId: resolvedByUserId, reason, issues, heartbeat });
+        }
+      },
+    });
     if (!removed) {
       res.status(404).json({ error: "Secret not found" });
       return;

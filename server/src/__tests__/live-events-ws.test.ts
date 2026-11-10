@@ -4,6 +4,8 @@ import type { Duplex } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setupLiveEventsWebSocketServer } from "../realtime/live-events-ws.js";
 import { logger } from "../middleware/logger.js";
+import { idleWorkSnapshot, startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
+import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 
 vi.mock("../middleware/logger.js", () => ({
   logger: {
@@ -65,6 +67,43 @@ async function flushPromises() {
 describe("setupLiveEventsWebSocketServer", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it.each([false, true])("counts accepted upgrade authentication after disconnect (failure=%s)", async (fail) => {
+    const server = new EventEmitter();
+    const socket = new FakeUpgradeSocket();
+    let finishAuth!: () => void;
+    const pending = new Promise<void>(resolve => { finishAuth = resolve; });
+    setupLiveEventsWebSocketServer(server as never, {} as never, {
+      deploymentMode: "authenticated",
+      resolveCloudActor: async () => {
+        await pending;
+        if (fail) throw new Error("fixture authentication write failed");
+        return { userId: "fixture-user", companyIds: ["company-1"] };
+      },
+    });
+    server.emit("upgrade", createUpgradeRequest(), socket as unknown as Duplex, Buffer.alloc(0));
+    const hold = startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
+    const emptyDb = { transaction: async (run: (tx: unknown) => Promise<unknown>) =>
+      run({ execute: async () => [{ blocked: false }] }) };
+    const report = () => readIdleSleepSafety(emptyDb as never,
+      () => ({ ...hold, draining: true, activeRuns: 0, pendingWakes: 0 }), Date.now, hold.ownerId, async () => "none");
+    try {
+      socket.destroy();
+      await flushPromises();
+      expect(idleWorkSnapshot().active).toBe(1);
+      expect((await report()).backgroundWork).toBe("unknown");
+      finishAuth();
+      await flushPromises();
+      expect(idleWorkSnapshot().active).toBe(0);
+      expect((await report()).backgroundWork).toBe("none");
+      expect(socket.endedChunks).toEqual([]);
+    } finally {
+      finishAuth();
+      await flushPromises();
+      stopTaskDrain();
+      server.emit("close");
+    }
   });
 
   it("does not write a rejection response after the raw upgrade socket is already closed", async () => {

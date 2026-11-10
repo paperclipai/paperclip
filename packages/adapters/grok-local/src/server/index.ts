@@ -80,3 +80,9 @@ export {
   type PromoteGrokDeviceLoginCredentialInput,
   type PromoteGrokDeviceLoginCredentialOutcome,
 } from "./adapter-auth-promotion.js";
+
+export { decideGrokAuthMerge } from "./grok-auth-merge-decision.js";
+
+export { parseGrokAuthPayload, hasUsableGrokAuthValue } from "./grok-home.js";
+
+export { copyBackGrokAuth } from "./grok-auth-copyback.js";

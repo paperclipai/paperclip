@@ -42,8 +42,353 @@ import {
   type PrpEvent,
   type PrpStructuredRunResult,
 } from "./codex-app-server-driver.test-support.js";
+import { NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
+import { canonicalJson } from "./codex-driver-values.js";
+
+function cursorProviderIdentity(mode: unknown) {
+  return {
+    kind: "acpx",
+    normalizedSessionId: "normalized-cursor-recovery",
+    acpxRecordId: "acpx-record-1",
+    backendSessionId: "backend-session-1",
+    agentSessionId: "agent-session-1",
+    profileDigest: `sha256:${"a".repeat(64)}`,
+    workspaceDigest: `sha256:${"b".repeat(64)}`,
+    requestedModel: "explicit-cursor-model",
+    effectiveModel: "explicit-cursor-model",
+    permissionMode: "approve-all",
+    ...(mode === undefined ? {} : { mode }),
+    providerLifetimeFenceCandidates: [60_001, 60_002, 60_003],
+  };
+}
 
 describe("Codex app-server Codex driver", () => {
+  it("keeps one disposition request after a restart continuation completes without a result", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-resultless-continuation", normalizedSessionId: "session-resultless-continuation", workingDirectory: WORKSPACE,
+    });
+    const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+    await session.startTurn({ message: { role: "user", text: "Finish the request." } });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "failed", error: lost, items: [] } });
+    await collectUntilTerminal(session.events());
+    transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    await session.startTurn({ message: { role: "user", text: "Continue." }, continuation: true });
+    // The provider ends the continuation without paperclip_finish, for
+    // example while it says it will wait for a background command.
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-2", status: "completed", items: [] } });
+    await collectUntilTerminal(session.events());
+    const afterContinuation = await session.snapshot();
+    // The continuation borrowed the one-shot marker for crash adoption; it was
+    // not the disposition request, so the allowance is still available.
+    expect(afterContinuation).toMatchObject({ activeTurnId: null, semanticResult: null,
+      dispositionOnlyRecoveryConsumed: false, dispositionOnlyRecoveryTurnId: null });
+    expect(nativeRestartInterruptedTurnId({ ...afterContinuation, semanticResult: null })).toBeNull();
+    transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-3", status: "inProgress", items: [] } });
+    await expect(session.startTurn({ message: { role: "user", text: "Report the disposition." } }))
+      .resolves.toMatchObject({ turnId: "turn-3" });
+    expect(await session.snapshot()).toMatchObject({ dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: "turn-3" });
+    // The disposition request itself is the bound: a resultless answer to it
+    // does not re-arm another request.
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-3", status: "completed", items: [] } });
+    await collectUntilTerminal(session.events());
+    expect(await session.snapshot()).toMatchObject({ dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: "turn-3" });
+    await expect(session.startTurn({ message: { role: "user", text: "Again." } })).rejects.toThrow();
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("offers another restart continuation when a later restart loses the continuation turn itself", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-two-restarts", normalizedSessionId: "session-two-restarts", workingDirectory: WORKSPACE,
+    });
+    const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+    await session.startTurn({ message: { role: "user", text: "Finish the request." } });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "failed", error: lost, items: [] } });
+    await collectUntilTerminal(session.events());
+    expect(nativeRestartInterruptedTurnId({ ...await session.snapshot(), semanticResult: null })).toBe("turn-1");
+    // The first restart's continuation is accepted, then a second restart
+    // loses it before any result.
+    transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    await session.startTurn({ message: { role: "user", text: "Continue." }, continuation: true });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-2", status: "failed", error: lost, items: [] } });
+    await collectUntilTerminal(session.events());
+    const snapshot = await session.snapshot();
+    // The lost continuation re-arms the marker exactly like the first loss.
+    expect(snapshot.dispositionOnlyRecoveryConsumed).toBe(false);
+    expect(nativeRestartInterruptedTurnId({ ...snapshot, semanticResult: null })).toBe("turn-2");
+    // A consumed marker still means the allowance is used.
+    expect(nativeRestartInterruptedTurnId({ ...snapshot, semanticResult: null, dispositionOnlyRecoveryConsumed: true })).toBeNull();
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("re-arms the continuation when recovery finds the checkpointed continuation turn lost", async () => {
+    // Controller lost during the first continuation: the checkpoint names the
+    // continuation as the active turn and as the consumed marker's turn.
+    const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-lost-continuation", normalizedSessionId: "session-lost-continuation", workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Finish the request." } });
+    first.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "failed", error: lost, items: [] } });
+    await collectUntilTerminal(original.events());
+    first.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    await original.startTurn({ message: { role: "user", text: "Continue." }, continuation: true });
+    const checkpoint = await original.snapshot();
+    expect(checkpoint).toMatchObject({ activeTurnId: "turn-2", dispositionOnlyRecoveryConsumed: true,
+      dispositionOnlyRecoveryTurnId: "turn-2" });
+    await original.close({ reason: "controller lost during the continuation" });
+    second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE, turns: [
+      { id: "turn-1", status: "failed", error: lost, items: [] },
+      { id: "turn-2", status: "failed", error: lost, items: [] },
+    ] } };
+    const recovery = await driver.recoverSession!(checkpoint);
+    expect(recovery).toMatchObject({ recovered: true });
+    const recovered = recovery.session!;
+    const restored = await recovered.snapshot();
+    expect(restored.dispositionOnlyRecoveryConsumed).toBe(false);
+    expect(nativeRestartInterruptedTurnId({ ...restored, semanticResult: null })).toBe("turn-2");
+    second.turnStartResponse = Promise.resolve({ turn: { id: "turn-3", status: "inProgress", items: [] } });
+    await expect(recovered.startTurn({ message: { role: "user", text: "Continue." }, continuation: true }))
+      .resolves.toMatchObject({ turnId: "turn-3" });
+    await recovered.close({ reason: "fixture complete" });
+  });
+
+  it.each(["agent", "plan", "ask"])("retains native Cursor %s mode through checkpoint and recovery", async (mode) => {
+    const identity = cursorProviderIdentity(mode);
+    const first = new FakeCodexTransport("thread-1", "provider-session-1", identity);
+    const second = new FakeCodexTransport("thread-1", "provider-session-1", identity);
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-cursor-recovery", normalizedSessionId: "normalized-cursor-recovery", workingDirectory: WORKSPACE,
+    });
+    const snapshot = await original.snapshot();
+    expect(snapshot.providerIdentity).toEqual(identity);
+    await original.close({ reason: "controller disconnected" });
+
+    const recovery = await driver.recoverSession(snapshot);
+    expect(recovery.recovered).toBe(true);
+    expect((await recovery.session!.snapshot()).providerIdentity).toEqual(identity);
+    await recovery.session!.close({ reason: "test complete" });
+  });
+
+  it.each([undefined, "agent", "ask"])("refuses recovery when native Cursor plan mode becomes %s", async (changedMode) => {
+    const first = new FakeCodexTransport("thread-1", "provider-session-1", cursorProviderIdentity("plan"));
+    const second = new FakeCodexTransport("thread-1", "provider-session-1", cursorProviderIdentity(changedMode));
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-cursor-recovery", normalizedSessionId: "normalized-cursor-recovery", workingDirectory: WORKSPACE,
+    });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "controller disconnected" });
+
+    await expect(driver.recoverSession(snapshot)).resolves.toEqual({
+      recovered: false, reason: "provider resumed with a different tagged session identity",
+    });
+    expect(second.calls.some((call) => call.method === "turn/start")).toBe(false);
+  });
+
+  it.each([null, "", 3])("rejects malformed native provider mode %j before opening a session", async (mode) => {
+    const transport = new FakeCodexTransport("thread-1", "provider-session-1", cursorProviderIdentity(mode));
+    const driver = makeDriver([transport]);
+    await expect(driver.openSession({
+      runId: "run-cursor-recovery", normalizedSessionId: "normalized-cursor-recovery", workingDirectory: WORKSPACE,
+    })).rejects.toThrow("ACPX provider identity contains an invalid provider mode");
+    expect(transport.calls.some((call) => call.method === "turn/start")).toBe(false);
+  });
+
+  it.each([null, "checkpointed-prior-turn"])("recovers an autonomous goal turn beyond checkpoint %s", async (checkpointTurnId) => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-goal-recovery", normalizedSessionId: "normalized-goal-recovery", workingDirectory: WORKSPACE,
+    });
+    await original.goal?.({ action: "set", objective: "Continue across a controller crash" });
+    const snapshot = await original.snapshot();
+    snapshot.activeTurnId = checkpointTurnId;
+    second.goalState = structuredClone(first.goalState);
+    second.readResponse = { thread: {
+      id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+      turns: [{ id: "autonomous-live-turn", status: "inProgress", items: [] }],
+    } };
+    await original.close({ reason: "controller lost before goal turn checkpoint" });
+    const recovery = await driver.recoverSession?.(snapshot);
+    expect(recovery).toMatchObject({ recovered: true });
+    const recovered = recovery!.session!;
+    expect(await recovered.snapshot()).toMatchObject({ activeTurnId: "autonomous-live-turn" });
+    second.push("item/started", {
+      threadId: "thread-1", turnId: "autonomous-live-turn", item: { id: "recovered-item", type: "agentMessage", text: "Continuing" },
+    });
+    const iterator = recovered.events()[Symbol.asyncIterator]();
+    let event: PrpEvent | undefined;
+    do { event = (await iterator.next()).value; } while (event && event.eventType !== "item.started" && !event.eventType.startsWith("run."));
+    expect(event).toMatchObject({ eventType: "item.started", turnId: "autonomous-live-turn" });
+    expect(second.calls.some((call) => call.method === "turn/start" || call.method === "thread/goal/set")).toBe(false);
+    await recovered.close({ reason: "test complete" });
+  });
+
+  it.each([undefined, [{ id: "", status: "inProgress" }], [
+    { id: "first", status: "inProgress" }, { id: "second", status: "inProgress" },
+  ]])("rejects ambiguous autonomous goal history %j", async (turns) => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-goal-recovery", normalizedSessionId: "normalized-goal-recovery", workingDirectory: WORKSPACE,
+    });
+    await original.goal?.({ action: "set", objective: "Continue across a controller crash" });
+    const snapshot = await original.snapshot();
+    second.goalState = structuredClone(first.goalState);
+    second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE, turns } };
+    await original.close({ reason: "controller lost" });
+    await expect(driver.recoverSession?.(snapshot)).resolves.toEqual({
+      recovered: false, reason: expect.stringMatching(/ambiguous autonomous goal turn history|codex_history_incomplete/),
+    });
+    expect(second.calls.some((call) => call.method === "turn/start" || call.method === "thread/goal/set")).toBe(false);
+  });
+  it.each([
+    "initial-read",
+    "reconcile-read",
+    "goal-probe",
+    "plan-probe",
+  ] as const)(
+    "rethrows exact recovery integrity failure after cleanup at %s",
+    async (stage) => {
+      const originalTransport = new FakeCodexTransport();
+      const recoveryTransport = new FakeCodexTransport();
+      const fault = new NativeSessionProtocolIntegrityError(
+        "semantic_input_digest_mismatch",
+      );
+      const request = recoveryTransport.request.bind(recoveryTransport);
+      let reads = 0;
+      vi.spyOn(recoveryTransport, "request").mockImplementation(
+        async (method, params) => {
+          if (method === "thread/read") reads += 1;
+          if (
+            (stage === "initial-read" && method === "thread/read") ||
+            (stage === "reconcile-read" &&
+              method === "thread/read" &&
+              reads === 2) ||
+            (stage === "goal-probe" && method === "thread/goal/get") ||
+            (stage === "plan-probe" && method === "collaborationMode/list")
+          )
+            throw fault;
+          return request(method, params);
+        },
+      );
+      const close = vi.spyOn(recoveryTransport, "close");
+      // The integrity error remains primary even when required cleanup rejects.
+      close.mockRejectedValue(new Error("secondary cleanup failure"));
+      const driver = makeDriver(
+        [originalTransport, recoveryTransport],
+        stage === "plan-probe" ? { requestedCollaborationMode: "plan" } : {},
+      );
+      const original = await driver.openSession({
+        runId: "run-recovery-integrity",
+        normalizedSessionId: "session-recovery-integrity",
+        workingDirectory: WORKSPACE,
+      });
+      await original.startTurn({ message: { role: "user", text: "Work." } });
+      const checkpoint = await original.snapshot();
+      await original.close({ reason: "fixture disconnect" });
+      await expect(
+        driver.recoverSession!({
+          ...checkpoint,
+          providerRecoveryPolicy: "allow_replacement_after_resume_failure",
+        }),
+      ).rejects.toBe(fault);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(
+        recoveryTransport.calls.some((call) => call.method === "thread/start"),
+      ).toBe(false);
+    },
+  );
+
+  it.each(["completed", "interrupted", "failed", "cancelled"])(
+    "adopts a checkpointed active turn that became %s while disconnected",
+    async (status) => {
+      const first = new FakeCodexTransport();
+      const second = new FakeCodexTransport();
+      second.readResponse = {
+        thread: {
+          id: "thread-1",
+          sessionId: "provider-session-1",
+          cwd: WORKSPACE,
+          turns: [{ id: "turn-1", status, items: [] }],
+        },
+      };
+      const driver = makeDriver([first, second]);
+      const original = await driver.openSession({
+        runId: "run-disconnected-terminal",
+        normalizedSessionId: "normalized-disconnected-terminal",
+        workingDirectory: WORKSPACE,
+      });
+      await original.startTurn({ message: { role: "user", text: "Work." } });
+      const checkpoint = await original.snapshot();
+      await original.close({ reason: "transport disconnected" });
+
+      const recovery = await driver.recoverSession!(checkpoint);
+      expect(recovery.recovered).toBe(true);
+      const recovered = recovery.session!;
+      expect(await recovered.snapshot()).toMatchObject({
+        activeTurnId: null,
+        terminalTurns: [{ turnId: "turn-1" }],
+      });
+      const events = await collectUntilTerminal(recovered.events());
+      expect(
+        events.filter((event) => event.eventType === `turn.${status}`),
+      ).toHaveLength(1);
+      expect(second.calls.some((call) => call.method === "turn/start")).toBe(
+        false,
+      );
+      await recovered.close({ reason: "test complete" });
+    },
+  );
+
+  it.each([undefined, "agent", "plan", "ask"] as const)("persists and verifies the tagged runnerd provider identity including mode %s on recovery", async (mode) => {
+    const providerIdentity = {
+      kind: "acpx",
+      normalizedSessionId: "normalized-tagged-recovery",
+      ...(mode === undefined ? {} : { mode }),
+      acpxRecordId: "acpx-record-1",
+      backendSessionId: "backend-session-1",
+      agentSessionId: "agent-session-1",
+      profileDigest: `sha256:${"a".repeat(64)}`,
+      workspaceDigest: `sha256:${"b".repeat(64)}`,
+      requestedModel: "gpt-5.6-sol",
+      effectiveModel: "gpt-5.6-sol",
+      permissionMode: "approve-all",
+      providerLifetimeFenceCandidates: [60_001, 60_002, 60_003],
+    };
+    const first = new FakeCodexTransport(
+      "thread-1",
+      "provider-session-1",
+      providerIdentity,
+    );
+    const second = new FakeCodexTransport("thread-1", "provider-session-1", {
+      ...providerIdentity,
+      backendSessionId: "backend-session-2",
+    });
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-tagged-recovery",
+      normalizedSessionId: "normalized-tagged-recovery",
+      workingDirectory: WORKSPACE,
+    });
+    const snapshot = await original.snapshot();
+    expect(snapshot.providerIdentity).toEqual(providerIdentity);
+    await original.close({ reason: "transport lost" });
+
+    await expect(driver.recoverSession?.(snapshot)).resolves.toEqual({
+      recovered: false,
+      reason: "provider resumed with a different tagged session identity",
+    });
+  });
+
   it("resumes and reconciles the exact provider thread after transport loss", async () => {
     const first = new FakeCodexTransport();
     const second = new FakeCodexTransport();
@@ -65,11 +410,149 @@ describe("Codex app-server Codex driver", () => {
     expect(second.calls.map((call) => call.method)).toEqual([
       "initialize",
       "thread/read",
+      "thread/turns/list",
       "thread/resume",
       "thread/goal/get",
       "thread/read",
+      "thread/turns/list",
+      "thread/read",
+      "thread/turns/list",
     ]);
     expect((await recovery?.session?.snapshot())?.activeTurnId).toBe("turn-1");
+  });
+
+  describe("a turn accepted for a controller that died before checkpointing it", () => {
+    async function recoverAfterLostAcceptance(acceptedTurnId: string | null) {
+      const first = new FakeCodexTransport();
+      const second = Object.assign(new FakeCodexTransport(), {
+        controllerAcceptedTurnId: () => acceptedTurnId,
+      });
+      second.readResponse = {
+        thread: {
+          id: "thread-1",
+          sessionId: "provider-session-1",
+          cwd: WORKSPACE,
+          turns: [{ id: "turn-1", status: "inProgress", items: [] }],
+        },
+      };
+      const driver = makeDriver([first, second]);
+      const original = await driver.openSession({
+        runId: "run-lost-acceptance",
+        normalizedSessionId: "normalized-lost-acceptance",
+        workingDirectory: WORKSPACE,
+      });
+      // RC-59: the dying controller checkpointed the resumed session, sent
+      // turn/start, and died before checkpointing the accepted turn.
+      const snapshot = await original.snapshot();
+      expect(snapshot.activeTurnId ?? null).toBeNull();
+      await original.close({ reason: "controller restarted" });
+      const recovery = await driver.recoverSession!(snapshot);
+      expect(recovery).toMatchObject({ recovered: true });
+      // The runner releases the turn's start, held until the thread read
+      // bound the recovered turn, then the turn's own terminal.
+      second.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress", items: [] } });
+      second.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+      return recovery.session!;
+    }
+
+    it("adopts the turn when the runner's durable turn.start result names it", async () => {
+      const recovered = await recoverAfterLostAcceptance("turn-1");
+      expect((await recovered.snapshot()).activeTurnId).toBe("turn-1");
+      const events = await collectUntilTerminal(recovered.events());
+      const turnEvents = events.filter(event => event.eventType.startsWith("turn."));
+      expect(turnEvents.map(event => [event.eventType, event.turnId])).toEqual([
+        ["turn.accepted", "turn-1"],
+        ["turn.started", "turn-1"],
+        ["turn.completed", "turn-1"],
+      ]);
+      await expect(recovered.startTurn({ message: { role: "user", text: "Again." } }))
+        .rejects.toThrow();
+      await recovered.close({ reason: "test complete" });
+    });
+
+    it.each([
+      ["no accepted turn.start result", null],
+      ["a turn.start result for a different turn", "turn-other"],
+    ])("still fails closed on a foreign active turn with %s", async (_label, acceptedTurnId) => {
+      const recovered = await recoverAfterLostAcceptance(acceptedTurnId);
+      expect((await recovered.snapshot()).activeTurnId ?? null).toBeNull();
+      await expect(collectUntilTerminal(recovered.events())).resolves.toBeDefined();
+      await expect(recovered.startTurn({ message: { role: "user", text: "Work." } }))
+        .rejects.toThrow("Provider started an unexpected turn.");
+      await recovered.close({ reason: "test complete" });
+    });
+  });
+
+  describe("a Codex turn that completed while no controller was attached", () => {
+    async function recoverCompleted(status: string) {
+      const first = new FakeCodexTransport();
+      const second = Object.assign(new FakeCodexTransport(), {
+        controllerAcceptedTurnId: () => null,
+        controllerAcceptedCompletedTurnId: () => "turn-1",
+      });
+      second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+        turns: [{ id: "turn-1", status, items: [] }] } };
+      const driver = makeDriver([first, second]);
+      const original = await driver.openSession({ runId: "run-completed", normalizedSessionId: "normalized-completed", workingDirectory: WORKSPACE });
+      const snapshot = await original.snapshot();
+      await original.close({ reason: "controller restarted" });
+      const recovery = await driver.recoverSession!(snapshot);
+      expect(recovery).toMatchObject({ recovered: true });
+      second.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress", items: [] } });
+      second.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+      return recovery.session!;
+    }
+
+    it("adopts the accepted turn when provider history shows it completed", async () => {
+      const recovered = await recoverCompleted("completed");
+      const events = await collectUntilTerminal(recovered.events());
+      expect(events.filter(event => event.eventType.startsWith("turn.")).map(event => [event.eventType, event.turnId]))
+        .toEqual(expect.arrayContaining([["turn.accepted", "turn-1"], ["turn.completed", "turn-1"]]));
+      expect(events.find(event => event.eventType === "session.failed")).toBeUndefined();
+      await recovered.close({ reason: "test complete" });
+    });
+
+    it("leaves a turn the runner reports lost to the restart continuation", async () => {
+      const recovered = await recoverCompleted("failed");
+      expect((await recovered.snapshot()).activeTurnId ?? null).toBeNull();
+      await recovered.close({ reason: "test complete" });
+    });
+  });
+
+  it("rejects a recovered provider thread outside the assigned workspace", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: {
+        id: "thread-1",
+        sessionId: "provider-session-1",
+        cwd: "/tmp",
+        turns: [{ id: "turn-1", status: "inProgress", items: [] }],
+      },
+    };
+    const driver = makeDriver([first, second], {
+      environment: {
+        PATH: "/bin",
+        HOME: "/isolated/home",
+        CODEX_HOME: "/isolated/codex",
+        PAPERCLIP_WORKSPACE_CWD: WORKSPACE,
+      },
+    });
+    const original = await driver.openSession({
+      runId: "run-recover-outside-workspace",
+      normalizedSessionId: "normalized-recover-outside-workspace",
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Work." } });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "transport lost" });
+
+    await expect(driver.recoverSession?.(snapshot)).resolves.toEqual({
+      recovered: false,
+      reason: expect.stringContaining(
+        "Codex working directory is outside the assigned workspace",
+      ),
+    });
   });
 
   it("ignores an old terminal turn when the persisted active turn is still running", async () => {
@@ -619,23 +1102,10 @@ describe("Codex app-server Codex driver", () => {
           dispositionOnlyRecoveryTurnId:
             testCase.dispositionOnlyRecoveryTurnId,
         });
-        expect(recovery).toMatchObject({ recovered: true });
-        await expect(recovery!.session!.snapshot()).resolves.toMatchObject({
-          activeTurnId: null,
-          dispositionOnlyRecoveryConsumed: true,
-          dispositionOnlyRecoveryTurnId:
-            testCase.dispositionOnlyRecoveryTurnId,
-        });
-        await expect(recovery!.session!.startTurn({
-          message: {
-            role: "user",
-            text: "Do not repeat the task while provider history is unknown.",
-          },
-        })).rejects.toThrow("session cannot start another turn");
+        expect(recovery).toMatchObject({ recovered: false, reason: expect.stringContaining("codex_history_incomplete") });
         expect(
           second.calls.filter((call) => call.method === "turn/start"),
         ).toHaveLength(0);
-        await recovery!.session!.close({ reason: "test complete" });
       },
     );
   }
@@ -939,16 +1409,203 @@ describe("Codex app-server Codex driver", () => {
       const snapshot = await original.snapshot();
       await original.close({ reason: "transport lost" });
       const recovery = await driver.recoverSession?.(snapshot);
-      expect(recovery?.session).toBeDefined();
-      await expect(
-        recovery!.session!.reconcile!(),
-      ).rejects.toMatchObject<HarnessReconciliationError>({
-        name: "HarnessReconciliationError",
-        recoverable: true,
-        message: expect.stringContaining(testCase.message),
+      expect(recovery).toMatchObject({
+        recovered: false,
+        reason: expect.stringContaining(testCase.message),
       });
-      await recovery!.session!.close({ reason: "test complete" });
+      expect(recovery?.session).toBeUndefined();
     }
+  });
+
+  it("settles a missing persisted turn with the durable result it already proposed", async () => {
+    // Provider history lost the turn (for example, it was killed before the
+    // turn terminal was flushed), but Paperclip durably holds the result that
+    // turn proposed. That result is the turn's outcome: finalize it instead of
+    // failing recovery and re-running finished work.
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE, turns: [] },
+    };
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-missing-proposed-turn",
+      normalizedSessionId: "normalized-missing-proposed-turn",
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Complete." } });
+    expect(
+      await first.invoke({
+        id: "call-before-kill",
+        method: "item/tool/call",
+        params: { threadId: "thread-1", turnId: "turn-1", callId: "call-before-kill", tool: "paperclip_finish", arguments: result },
+      }),
+    ).toMatchObject({ success: true });
+    const snapshot = await original.snapshot();
+    expect(snapshot).toMatchObject({ activeTurnId: "turn-1", semanticResult: { turnId: "turn-1", result } });
+    await original.close({ reason: "killed before the turn terminal" });
+
+    const recovery = await driver.recoverSession?.(snapshot);
+    expect(recovery).toMatchObject({ recovered: true });
+    const events = await collectUntilTerminal(recovery!.session!.events());
+    expect(events.filter((event) => event.eventType === "turn.completed")).toHaveLength(1);
+    expect(events.filter((event) => event.eventType === "run.result.proposed")).toHaveLength(0);
+    expect(await recovery!.session!.snapshot()).toMatchObject({
+      activeTurnId: null,
+      semanticResult: { turnId: "turn-1", result },
+      terminalTurns: [expect.objectContaining({ turnId: "turn-1" })],
+    });
+  });
+
+  it.each([
+    { held: true, lost: { code: "provider_turn_lost_on_restore", recoverable: true } },
+    { held: false, lost: { code: "provider_turn_lost_on_restore", recoverable: true } },
+    { held: true, lost: { code: "acpx_active_turn_recovery_closed", recoverable: false } },
+    { held: false, lost: { code: "acpx_active_turn_recovery_closed", recoverable: false } },
+  ])("settles a live restart-lost terminal from its durable result only when one is held ($lost.code, held=$held)", async ({ held, lost }) => {
+    // ACPX reports the lost turn as a live notification after the session
+    // reopens, not through thread/read. When runnerd already recorded the
+    // accepted result, it closes the turn instead of restoring it. An accepted
+    // result for that exact turn must still finalize as a completed turn.
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+        turns: [{ id: "turn-1", status: "inProgress", items: [] }] },
+    };
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: `run-live-lost-${held}`,
+      normalizedSessionId: `normalized-live-lost-${held}`,
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Complete." } });
+    if (held) {
+      await first.invoke({
+        id: "call-before-kill",
+        method: "item/tool/call",
+        params: { threadId: "thread-1", turnId: "turn-1", callId: "call-before-kill", tool: "paperclip_finish", arguments: result },
+      });
+    }
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "killed before the turn terminal" });
+    const recovery = await driver.recoverSession?.(snapshot);
+    expect(recovery).toMatchObject({ recovered: true });
+    const collecting = collectUntilTerminal(recovery!.session!.events());
+    second.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "failed", error: lost, items: [] } });
+    const events = await collecting;
+    const terminal = events.find((event) => event.eventType.startsWith("turn."));
+    expect(terminal?.eventType).toBe(held ? "turn.completed" : "turn.failed");
+    if (!held) expect(terminal?.payload).toMatchObject({ error: lost });
+    if (held) expect(events.filter((event) => event.eventType === "run.result.proposed")).toHaveLength(0);
+  });
+
+  it("accepts a stored restart-lost failure for a held result without a replay conflict", async () => {
+    // A runner from before this rule recorded the restart-lost turn as failed
+    // with its held result. Replaying that same terminal is not a conflict.
+    // (A held result plus a committed terminal makes the session terminal, so
+    // the recovery read is the path that can replay it.)
+    const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+        turns: [{ id: "turn-1", status: "failed", error: lost, items: [] }] },
+    };
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-stored-lost",
+      normalizedSessionId: "normalized-stored-lost",
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Complete." } });
+    await first.invoke({
+      id: "call-before-kill",
+      method: "item/tool/call",
+      params: { threadId: "thread-1", turnId: "turn-1", callId: "call-before-kill", tool: "paperclip_finish", arguments: result },
+    });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "killed before the turn terminal" });
+    const stored = canonicalJson({ terminalState: "failed", error: lost, result });
+    const recovery = await driver.recoverSession?.({
+      ...snapshot,
+      activeTurnId: null,
+      terminalTurns: [{ turnId: "turn-1", fingerprint: stored }],
+    });
+    expect(recovery).toMatchObject({ recovered: true });
+    await recovery!.session!.reconcile?.();
+    const events: string[] = [];
+    const draining = (async () => { for await (const event of recovery!.session!.events()) events.push(event.eventType); })();
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    await recovery!.session!.close({ reason: "test complete" });
+    await draining;
+    expect(events).not.toContain("session.failed");
+    expect(events).not.toContain("harness.protocol_failed");
+    expect((await recovery!.session!.snapshot().catch((error: unknown) => error)) instanceof Error).toBe(false);
+  });
+
+  it.each([true, false])("settles a restore-lost turn from its durable result only when one is held (held=%s)", async (held) => {
+    // The runner can report the checkpointed turn lost on restore when it
+    // cannot prove the accepted result itself, while Paperclip already holds it.
+    const lost = { code: "provider_turn_lost_on_restore", recoverable: true };
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+        turns: [{ id: "turn-1", status: "failed", error: lost, items: [] }] },
+    };
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: `run-lost-proposed-${held}`,
+      normalizedSessionId: `normalized-lost-proposed-${held}`,
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Complete." } });
+    if (held) {
+      await first.invoke({
+        id: "call-before-kill",
+        method: "item/tool/call",
+        params: { threadId: "thread-1", turnId: "turn-1", callId: "call-before-kill", tool: "paperclip_finish", arguments: result },
+      });
+    }
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "killed before the turn terminal" });
+    const recovery = await driver.recoverSession?.(snapshot);
+    expect(recovery).toMatchObject({ recovered: true });
+    const events = await collectUntilTerminal(recovery!.session!.events());
+    const terminal = events.find((event) => event.eventType.startsWith("turn."));
+    expect(terminal?.eventType).toBe(held ? "turn.completed" : "turn.failed");
+    if (!held) expect(terminal?.payload).toMatchObject({ error: lost });
+  });
+
+  it("does not settle a missing persisted turn with a result another turn proposed", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    second.readResponse = {
+      thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE, turns: [] },
+    };
+    const driver = makeDriver([first, second]);
+    const original = await driver.openSession({
+      runId: "run-missing-other-turn",
+      normalizedSessionId: "normalized-missing-other-turn",
+      workingDirectory: WORKSPACE,
+    });
+    await original.startTurn({ message: { role: "user", text: "Complete." } });
+    await first.invoke({
+      id: "call-before-kill",
+      method: "item/tool/call",
+      params: { threadId: "thread-1", turnId: "turn-1", callId: "call-before-kill", tool: "paperclip_finish", arguments: result },
+    });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "killed before the turn terminal" });
+    const recovery = await driver.recoverSession?.({
+      ...snapshot,
+      semanticResult: { ...snapshot.semanticResult!, turnId: "turn-older" },
+    });
+    expect(recovery).toMatchObject({
+      recovered: false,
+      reason: expect.stringContaining("persisted active turn turn-1 is missing"),
+    });
   });
 
   it("reconciles a turn completed during transport loss without replacing either session identity", async () => {
@@ -1027,6 +1684,31 @@ describe("Codex app-server Codex driver", () => {
     expect(await recovered!.usage?.()).toEqual({
       total: { inputTokens: 21, outputTokens: 8 },
     });
+  });
+
+  it("refreshes authorized tools on resume without replacing the provider thread", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const original = await makeDriver([first], { conversationMode: "prepared", dynamicTools: [] }).openSession({
+      runId: "run-connect", normalizedSessionId: "normalized-connect", workingDirectory: WORKSPACE,
+    });
+    const snapshot = await original.snapshot();
+    await original.close({ reason: "waiting for connection" });
+    const githubTool = { name: "github_search", description: "Search authorized repositories", inputSchema: { type: "object" } };
+    const handler = vi.fn(async () => ({ repositories: ["paperclip"] }));
+    const resumedDriver = makeDriver([second], { conversationMode: "prepared", dynamicTools: [githubTool], dynamicToolHandler: handler });
+    expect((await resumedDriver.descriptor()).capabilities.toolRefreshOnResume).toBe(true);
+    const recovery = await resumedDriver.recoverSession(snapshot);
+    expect(recovery.recovered).toBe(true);
+    await recovery.session!.startTurn({ message: { role: "user", text: "Continue with GitHub connected" } });
+    expect(second.calls.some(call => call.method === "thread/start")).toBe(false);
+    expect(second.calls.find(call => call.method === "thread/resume")?.params).toMatchObject({ threadId: "thread-1", dynamicTools: expect.arrayContaining([githubTool]) });
+    const result = await second.invoke({ id: "rpc-github", method: "item/tool/call", params: {
+      threadId: "thread-1", turnId: "turn-1", callId: "github-call", tool: "github_search", arguments: { query: "paperclip" },
+    } });
+    expect(result).toMatchObject({ success: true });
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ tool: "github_search", threadId: "thread-1" }));
+    await recovery.session?.close({ reason: "test done" });
   });
 
 });

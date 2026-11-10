@@ -7,11 +7,15 @@ export const GENERATED_ACPX_SIDECAR_COMMANDS = [
   "run.attach",
   "turn.start",
   "turn.cancel",
+  "turn.steer",
   "permission.resolve",
   "input.resolve",
   "tool.resolve",
   "session.read",
   "session.snapshot",
+  "session.goal.get",
+  "session.goal.set",
+  "session.goal.clear",
   "session.suspend",
   "session.close",
 ] as const;
@@ -20,15 +24,43 @@ export type GeneratedAcpxSidecarCommand =
 
 export const GENERATED_ACPX_SIDECAR_EVENT_TYPES = [
   "runtime.event",
+  "runtime.rich_event",
   "runtime.permission_requested",
   "runtime.input_requested",
   "runtime.tool_called",
   "runtime.turn_terminal",
   "runtime.process",
   "runtime.diagnostic",
+  "runtime.goal",
 ] as const;
 export type GeneratedAcpxSidecarEventType =
   (typeof GENERATED_ACPX_SIDECAR_EVENT_TYPES)[number];
+
+export const GENERATED_ACPX_SIDECAR_OPEN_PARAMS = [
+  "runtimeDirectory",
+  "normalizedSessionId",
+  "workingDirectory",
+  "agent",
+  "model",
+  "permissionMode",
+  "mode",
+  "piThinkingLevel",
+  "claudeEffort",
+  "grokEffort",
+  "grokDisableWebSearch",
+  "permissionModePinned",
+  "providerPolicy",
+  "systemInstructions",
+  "runtimeContext",
+  "tools",
+  "providerSessionKey",
+  "expectedIdentity",
+  "candidateAdmission",
+] as const;
+
+export const GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS = [
+  "readOnly",
+] as const;
 
 export type GeneratedAcpxToolOperation =
   | "read"

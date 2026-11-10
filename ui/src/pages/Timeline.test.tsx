@@ -11,6 +11,7 @@ const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockWorkTimelineApi = vi.hoisted(() => ({
   get: vi.fn(),
 }));
+const mockLocation = vi.hoisted(() => ({ search: "" }));
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1" }),
@@ -25,7 +26,7 @@ vi.mock("@/api/workTimeline", () => ({
 }));
 
 vi.mock("@/lib/router", () => ({
-  useLocation: () => ({ pathname: "/PAP/timeline" }),
+  useLocation: () => ({ pathname: "/PAP/timeline", search: mockLocation.search }),
 }));
 
 vi.mock("@/components/RequestCollapsedSidebar", () => ({
@@ -130,6 +131,7 @@ describe("Timeline", () => {
       defaultOptions: { queries: { retry: false } },
     });
     mockWorkTimelineApi.get.mockResolvedValue(emptyTimeline);
+    mockLocation.search = "";
   });
 
   afterEach(() => {
@@ -141,7 +143,8 @@ describe("Timeline", () => {
     vi.clearAllMocks();
   });
 
-  it("requests the collapsed app sidebar by default", async () => {
+  it("applies project scope from the project Timeline control", async () => {
+    mockLocation.search = "?projectId=11111111-1111-4111-8111-111111111111";
     root = createRoot(container);
 
     flushSync(() => {
@@ -153,7 +156,12 @@ describe("Timeline", () => {
     });
     await flushReact();
 
-    expect(container.querySelector('[data-testid="request-collapsed-sidebar"]')).not.toBeNull();
+    expect(container.textContent).toContain("Project Timeline");
+    expect(mockWorkTimelineApi.get).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ projectId: "11111111-1111-4111-8111-111111111111" }),
+      expect.anything(),
+    );
   });
 
   it("renders range controls plus icon zoom controls without the user lens selector or visible-duration readout", async () => {
@@ -175,6 +183,18 @@ describe("Timeline", () => {
     expect(container.textContent).not.toContain("Everyone");
     expect(container.textContent).not.toContain("work kicked off");
     expect(container.textContent).not.toContain("visible");
+
+    expect(container.querySelector('[data-testid="request-collapsed-sidebar"]')).not.toBeNull();
+
+    expect(mockWorkTimelineApi.get).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        from: expect.any(String),
+        to: expect.any(String),
+      }),
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(mockWorkTimelineApi.get.mock.calls[0]?.[1]).not.toHaveProperty("userId");
   });
 
   it("renders top timeline stats and keeps range controls in the chart footer", async () => {
@@ -333,28 +353,5 @@ describe("Timeline", () => {
       activeMs: 20 * 60 * 1000,
       totalTokens: 1_250,
     });
-  });
-
-  it("requests the company timeline without a user lens parameter", async () => {
-    root = createRoot(container);
-
-    flushSync(() => {
-      root?.render(
-        <QueryClientProvider client={queryClient}>
-          <Timeline />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    expect(mockWorkTimelineApi.get).toHaveBeenCalledWith(
-      "company-1",
-      expect.objectContaining({
-        from: expect.any(String),
-        to: expect.any(String),
-      }),
-      { signal: expect.any(AbortSignal) },
-    );
-    expect(mockWorkTimelineApi.get.mock.calls[0]?.[1]).not.toHaveProperty("userId");
   });
 });

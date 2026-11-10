@@ -14,7 +14,7 @@ export interface AcpxModelControl {
 }
 
 /**
- * Select and verify the exact qualified model before a billable prompt can be
+ * Select and verify the exact requested model before a billable prompt can be
  * accepted. A provider selector is normalized only after ACP reports it.
  */
 export async function requireVerifiedAcpxModel(
@@ -22,31 +22,39 @@ export async function requireVerifiedAcpxModel(
   profile: QualifiedAcpxProfile,
 ): Promise<AcpxModelStatus> {
   if (!control.getStatus) {
-    throw new Error("ACPX agent cannot verify its effective model");
-  }
-  const requestedModel = profile.qualificationModel;
-  let status = await control.getStatus();
-  const mustSelectCanonical =
-    profile.reportedModelId !== requestedModel ||
-    status.models?.currentModelId !== requestedModel;
-  if (mustSelectCanonical) {
-    if (!control.setModel) {
-      throw new Error(
-        "ACPX agent cannot verify its canonical model through ACP config options",
-      );
-    }
-    await control.setModel(requestedModel);
-    status = await control.getStatus();
-  }
-  if (status.models?.currentModelId !== profile.reportedModelId) {
-    throw new Error(
-      `ACPX effective model mismatch: requested ${requestedModel}, expected ACP selector ${profile.reportedModelId}, received ${status.models?.currentModelId ?? "unverified"}`,
+    throw acpxModelVerificationError(
+      "ACPX_MODEL_STATUS_UNAVAILABLE",
+      "ACPX agent cannot verify its effective model",
     );
   }
-  return normalizeQualifiedModelStatus(status, profile);
+  const requestedModel = profile.qualificationModel;
+  const providerModel = profile.reportedModelId;
+  let status = await control.getStatus();
+  if (status.models?.currentModelId !== providerModel) {
+    if (!control.setModel) {
+      throw acpxModelVerificationError(
+        "ACPX_MODEL_SELECTION_UNAVAILABLE",
+        "ACPX agent cannot verify the requested model through ACP config options",
+      );
+    }
+    // Catalogs may be incomplete. Let the provider accept or reject the exact ID.
+    await control.setModel(providerModel);
+    status = await control.getStatus();
+  }
+  if (status.models?.currentModelId !== providerModel) {
+    throw acpxModelVerificationError(
+      "ACPX_EFFECTIVE_MODEL_MISMATCH",
+      `ACPX effective model mismatch: requested ${requestedModel}, expected ACP selector ${providerModel}, received ${status.models?.currentModelId ?? "unverified"}`,
+    );
+  }
+  return normalizeVerifiedModelStatus(status, profile);
 }
 
-function normalizeQualifiedModelStatus(
+function acpxModelVerificationError(code: string, message: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+function normalizeVerifiedModelStatus(
   status: AcpxModelStatus,
   profile: QualifiedAcpxProfile,
 ): AcpxModelStatus {

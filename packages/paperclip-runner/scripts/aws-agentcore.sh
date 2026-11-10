@@ -22,6 +22,9 @@ MODEL_ID="global.anthropic.claude-sonnet-4-6"
 MARKETPLACE_PRODUCT_ID="prod-ffvjxvh4ltq64"
 MARKETPLACE_PRODUCT_ID_EXPLICIT=false
 TRUSTED_PRINCIPAL=""
+GITHUB_OIDC_PROVIDER_ARN="${PAPERCLIP_AWS_AGENTCORE_GITHUB_OIDC_PROVIDER_ARN:-}"
+GITHUB_REPOSITORY="paperclipai/paperclip"
+GITHUB_ENVIRONMENT="runner-e2e-paid"
 CONTEXT_PREFIX=""
 DRY_RUN=false
 FORCE=false
@@ -38,6 +41,9 @@ usage() {
     "  --model MODEL_ID     Bedrock-native model ID" \
     "  --marketplace-product-id ID  exact AWS Marketplace product ID for the model" \
     "  --principal ARN      stable IAM role/user trusted to assume runner role" \
+    "  --github-oidc-provider-arn ARN  optional account-local GitHub Actions OIDC provider" \
+    "  --github-repository OWNER/REPO  exact repository admitted by OIDC trust (default: $GITHUB_REPOSITORY)" \
+    "  --github-environment NAME       exact protected environment admitted by OIDC trust (default: $GITHUB_ENVIRONMENT)" \
     "  --context-prefix PFX S3 prefix dedicated to this qualified profile" \
     "  --dry-run            validate and print changes without deployment" \
     "  --replace-failed-stack  explicitly replace an owned ROLLBACK_COMPLETE stack" \
@@ -55,6 +61,9 @@ while [[ $# -gt 0 ]]; do
     --model) MODEL_ID="$2"; shift 2 ;;
     --marketplace-product-id) MARKETPLACE_PRODUCT_ID="$2"; MARKETPLACE_PRODUCT_ID_EXPLICIT=true; shift 2 ;;
     --principal) TRUSTED_PRINCIPAL="$2"; shift 2 ;;
+    --github-oidc-provider-arn) GITHUB_OIDC_PROVIDER_ARN="$2"; shift 2 ;;
+    --github-repository) GITHUB_REPOSITORY="$2"; shift 2 ;;
+    --github-environment) GITHUB_ENVIRONMENT="$2"; shift 2 ;;
     --context-prefix) CONTEXT_PREFIX="$2"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     --replace-failed-stack) REPLACE_FAILED_STACK=true; shift ;;
@@ -91,6 +100,14 @@ if [[ "$MODEL_ID" != "global.anthropic.claude-sonnet-4-6" && "$MARKETPLACE_PRODU
 fi
 if [[ ! "$MARKETPLACE_PRODUCT_ID" =~ ^prod-[a-z0-9]+$ ]]; then
   printf 'Marketplace product ID must use the AWS prod-* form.\n' >&2
+  exit 2
+fi
+if [[ -n "$GITHUB_OIDC_PROVIDER_ARN" && ! "$GITHUB_OIDC_PROVIDER_ARN" =~ ^arn:aws(-[^:]+)?:iam::[0-9]{12}:oidc-provider/token\.actions\.githubusercontent\.com$ ]]; then
+  printf 'GitHub OIDC provider must be the account-local token.actions.githubusercontent.com provider ARN.\n' >&2
+  exit 2
+fi
+if [[ ! "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ || ! "$GITHUB_ENVIRONMENT" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+  printf 'GitHub OIDC trust requires exact OWNER/REPO and environment names.\n' >&2
   exit 2
 fi
 if [[ -z "$CONTEXT_PREFIX" ]]; then CONTEXT_PREFIX="paperclip/agentcore/$STACK_NAME"; fi
@@ -279,6 +296,14 @@ provision() {
   caller_arn="$(printf '%s' "$identity" | json_field Arn)"
   account_id="$(printf '%s' "$identity" | json_field Account)"
   partition="$(printf '%s' "$caller_arn" | cut -d: -f2)"
+  if [[ -n "$GITHUB_OIDC_PROVIDER_ARN" ]]; then
+    local expected_github_oidc_provider_arn="arn:$partition:iam::$account_id:oidc-provider/token.actions.githubusercontent.com"
+    if [[ "$GITHUB_OIDC_PROVIDER_ARN" != "$expected_github_oidc_provider_arn" ]]; then
+      printf 'GitHub OIDC provider must belong to the current AWS account and partition.\n' >&2
+      exit 1
+    fi
+    aws_cli iam get-open-id-connect-provider --open-id-connect-provider-arn "$GITHUB_OIDC_PROVIDER_ARN" >/dev/null
+  fi
   model_resource_arn="arn:$partition:bedrock:$AWS_REGION_NAME:$account_id:inference-profile/$MODEL_ID"
   foundation_model_id="$(printf '%s' "$MODEL_ID" | sed -E 's/^(global|us|eu|apac)\.//')"
   foundation_model_resource_arn="arn:$partition:bedrock:*::foundation-model/$foundation_model_id"
@@ -342,7 +367,11 @@ provision() {
       "EnvironmentName=development" "DeploymentMode=$DEPLOYMENT_MODE" \
       "HarnessEndpointName=$ENDPOINT_NAME" \
       "ContextPrefix=$CONTEXT_PREFIX" \
-      "TrustedRunnerPrincipalArn=$TRUSTED_PRINCIPAL" "BedrockModelId=$MODEL_ID" \
+      "TrustedRunnerPrincipalArn=$TRUSTED_PRINCIPAL" \
+      "GitHubOidcProviderArn=$GITHUB_OIDC_PROVIDER_ARN" \
+      "GitHubRepository=$GITHUB_REPOSITORY" \
+      "GitHubEnvironment=$GITHUB_ENVIRONMENT" \
+      "BedrockModelId=$MODEL_ID" \
       "BedrockModelResourceArn=$model_resource_arn" \
       "BedrockFoundationModelResourceArn=$foundation_model_resource_arn" \
       "BedrockMarketplaceProductId=$MARKETPLACE_PRODUCT_ID" \
@@ -400,6 +429,7 @@ provision() {
     "PAPERCLIP_AWS_AGENTCORE_MEMORY_ARN=$memory_arn" \
     "PAPERCLIP_AWS_AGENTCORE_MEMORY_ID=$memory_id" \
     "PAPERCLIP_AWS_AGENTCORE_INVOCATION_ROLE_ARN=$role_arn" \
+    "PAPERCLIP_AWS_AGENTCORE_EXECUTION_ROLE_ARN=$role_arn" \
     "PAPERCLIP_AWS_AGENTCORE_CONTEXT_BUCKET=$context_bucket" \
     "PAPERCLIP_AWS_AGENTCORE_CONTEXT_PREFIX=$context_prefix" \
     "PAPERCLIP_AWS_AGENTCORE_CONTEXT_KMS_KEY_ARN=$context_kms_key_arn" \

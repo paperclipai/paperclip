@@ -1,3 +1,29 @@
+import { imagePreparationReceiptIds } from "./task-chat/image-resources";
+import type { ScrollingHistory } from "@/components/task-chat/TaskMessageScroller";
+import { TaskChatShimmerScope } from "@/components/task-chat/TaskChatShimmer";
+import { useRunnerSubmission } from "@/hooks/useRunnerSubmission";
+import { TaskChatLoadingShell } from "@/components/task-chat/TaskChatLoadingShell";
+import {
+  ISSUE_DETAIL_CONTENT_PAINT_MARK,
+  ISSUE_DETAIL_CONTENT_MEASURE,
+  scheduleIssueDetailPaintMeasure,
+  recordIssueDetailReadiness,
+} from "@/lib/issue-detail-performance";
+import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
+import { workspaceRestoreMarkerDetail } from "@/lib/workspace-restore-marker";
+import { credentialAccessNotice } from "@/lib/credential-access-notice";
+import type { ActivityEvent, Issue, IssueQueuedCommentQueue, TaskBrowser } from "@paperclipai/shared";
+import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
+import { skillCreatedItems } from "@/components/task-chat/skill-created-items";
+import { taskCreatedItems } from "@/components/task-chat/task-created-items";
+import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
+import { useConnectivity } from "@/lib/connectivity";
+import { CoordinatorChatHandoffStatus, CoordinatorChatTaskHandoff, standaloneChatHandoffs, useCoordinatorChatTaskHandoffs, useLiveChatHandoffIds } from "@/components/coordinator/CoordinatorChatTaskHandoffs";
+import { CoordinatorChatReceiptStatus, useCoordinatorChatDecisionReceipts } from "@/components/coordinator/CoordinatorChatDecisionReceipts";
+import { CoordinatorChatQuestionStatus, useCoordinatorChatPendingQuestions } from "@/components/coordinator/CoordinatorChatPendingQuestions";
+import { requiresExecutionReconciliation } from "@paperclipai/shared";
+import { TaskChatExpansionState } from "@/components/task-chat/expansion-state";
+import { TaskChatScrollReady, taskChatHashAnchor, useTaskChatScrollNavigation } from "@/components/task-chat/scroll-navigation";
 import {
   useCallback,
   useEffect,
@@ -6,6 +32,7 @@ import {
   useRef,
   useState,
   type ComponentProps,
+  type ReactNode,
 } from "react";
 import {
   IssueAssigneePausedNotice,
@@ -17,12 +44,18 @@ import {
 } from "@/components/transcript/useLiveRunTranscripts";
 import { useNativeRunTranscripts } from "@/components/transcript/useNativeRunTranscripts";
 import { TaskChatLiveTail } from "@/components/task-chat/TaskChatLiveTail";
-import { TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
+import { TaskChatRunnerHeader, TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
+import { partitionRunHealthItems } from "@/components/task-chat/TaskChatRunHealthBanner";
 import {
   TaskChatTurnStatusIsland,
   taskChatTurnStatusModel,
 } from "@/components/task-chat/TaskChatTurnStatusIsland";
 import { commentsToTaskChatItems } from "@/components/task-chat/task-chat-adapter";
+import {
+  taskChatStatusRelevance,
+  withoutHistoricalRunStatus,
+} from "@/components/task-chat/status-relevance";
+import { selectBudgetedTranscriptRuns } from "@/components/task-chat/transcript-reveal-budget";
 import {
   assembleThreadItems,
   attachSettledTurns,
@@ -30,12 +63,17 @@ import {
   coalesceSettledTurns,
   isTerminalRunStatus,
   embedPlanDocumentAtWriteBoundary,
+  omitProgressRepeatedByResponseAcrossSegments,
   paperclipRunnerFinalResponse,
+  paperclipRunnerAcceptedResponseWake,
   paperclipRunnerTimelineItems,
   prependIssueBrief,
+  settledCompactionMarkers,
   settledRunChildren,
   splitTranscriptAtAnchors,
   transcriptToTaskChatItems,
+  runtimeRequestSegmentContext,
+  reconcileSegmentRuntimeRequests,
   type SettledTurnMergeMeta,
 } from "@/components/task-chat/transcript-adapter";
 import { TaskChatDescriptionBubble } from "@/components/task-chat/TaskChatDescriptionBubble";
@@ -58,10 +96,13 @@ import {
 } from "@/components/task-chat/task-chat-model";
 import { TaskChatInteractionCard } from "@/components/task-chat/TaskChatInteractionCard";
 import { TaskChatProtocolCard } from "@/components/task-chat/TaskChatProtocolCard";
+import { TaskChatRequestHistoryContext } from "@/components/task-chat/TaskChatComposerTakeoverContext";
 import {
   interactionThreadAnchorMs,
+  isOutdatedPlanConfirmation,
   isSuppressedThreadInteraction,
 } from "@/components/task-chat/interaction-thread-order";
+import { orderTaskCreationItems, taskCreationSourceRunId } from "@/components/task-chat/task-creation-order";
 import {
   interactionReplacesComposerSkip,
   shouldHideInteractionCard,
@@ -77,13 +118,20 @@ import {
   taskChatContentKey,
 } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
+import { TaskChatComposerDock } from "@/components/task-chat/TaskChatComposerDock";
+import {
+  RunnerGoalWidget,
+  useRunnerGoalControl,
+} from "@/components/task-chat/RunnerGoalWidget";
 import { TaskChatQueuedMessages } from "@/components/task-chat/TaskChatQueuedMessages";
-import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow";
+import { QUEUED_MESSAGE_AUTO_STEER_DELAY_MS } from "@/components/task-chat/queued-message-auto-steer";
 import { useSidebar } from "@/context/SidebarContext";
+import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
+import { useDismissedTaskQuestions } from "@/hooks/useDismissedTaskQuestions";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
-import { latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
+import { isRedundantAiRecoveryNotice, latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
 import { isLiveIssueRun, isTerminalIssueStatus } from "@/lib/liveIssueIds";
 import {
   resolveTaskChatBlockers,
@@ -98,6 +146,14 @@ import {
   workProductHref,
 } from "@/lib/issue-artifacts";
 import { heartbeatsApi, type RuntimeRequestResolution } from "@/api/heartbeats";
+import { issuesApi } from "@/api/issues";
+import { queryKeys } from "@/lib/queryKeys";
+import { useQueryClient } from "@tanstack/react-query";
+import { TaskChatPresentationProvider } from "@/components/task-chat/presentation-mode";
+import { isRunStopConfirmed } from "@/lib/wait-for-stopped-runs";
+
+const EMPTY_BROWSERS: TaskBrowser[] = [];
+const COMPACT_RUN_LOG_READ_LIMIT_BYTES = 32_000;
 
 function toMs(value: Date | string | null | undefined): number {
   if (!value) return 0;
@@ -175,7 +231,10 @@ function threadOwnsPlanPreview(
   renderedRunIds: ReadonlySet<string>,
   tailRunId: string | null,
 ): boolean {
-  if (!planDocument || !interactionTargetsPlanRevision(interaction, planDocument))
+  if (
+    !planDocument ||
+    !interactionTargetsPlanRevision(interaction, planDocument)
+  )
     return false;
   // Plans without a native-run owner are canonical chronological thread
   // entries. In particular, legacy adapters write them through shell/API
@@ -208,7 +267,26 @@ function isRunnerResponseComment(params: {
 // off to (e.g. a stopped run with no tool activity). Normal completions hand off
 // well within this as soon as the settled turn/comment lands.
 const SETTLING_TAIL_MAX_MS = 15_000;
+const INITIAL_HISTORY_REVEAL_TIMEOUT_MS = 15_000;
+// Once saved history is ready, a run transcript may hold the first reveal only
+// this long. A slow run-log read must not hide saved messages and the composer.
+// Live runs then stream into the tail; settled compact runs keep a fixed
+// "More run output" control instead of inserting output after the reveal.
+export const INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS = 600;
+const EMPTY_RUN_IDS: ReadonlySet<string> = new Set<string>();
+const INITIAL_FONT_REVEAL_TIMEOUT_MS = 3000;
 const EMPTY_LIVE_ISSUE_IDS: ReadonlySet<string> = new Set<string>();
+const LONG_THREAD_BLOCKER_REPEAT_COUNT = 4;
+
+export function shouldRepeatTaskChatBlockers(items: TaskChatItem[]): boolean {
+  const conversationItems = items.filter(
+    (item) =>
+      item.kind === "brief" ||
+      item.kind === "interaction" ||
+      (item.kind === "message" && !item.interstitial),
+  );
+  return conversationItems.length >= LONG_THREAD_BLOCKER_REPEAT_COUNT;
+}
 
 function isNativePaperclipRunnerRun(
   run:
@@ -256,6 +334,50 @@ function acceptedSemanticResultSummary(value: unknown): string | null {
   return typeof result?.summary === "string" && result.summary.trim()
     ? result.summary
     : null;
+}
+
+function acceptedSemanticResultDisposition(value: unknown): string | null {
+  const result = acceptedSemanticResult(value);
+  return typeof result?.reportedWorkDisposition === "string"
+    ? result.reportedWorkDisposition
+    : null;
+}
+
+function presentationDecisionCommentId(
+  value: unknown,
+): string | null | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
+  const decision = (value as Record<string, unknown>).presentationDecision;
+  if (!decision || typeof decision !== "object" || Array.isArray(decision))
+    return undefined;
+  const record = decision as Record<string, unknown>;
+  if (record.schema !== "paperclip.run_presentation_decision.v1")
+    return undefined;
+  return typeof record.commentId === "string" && record.commentId.trim()
+    ? record.commentId
+    : null;
+}
+
+function semanticProgressCommentIds(value: unknown): Set<string> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return new Set();
+  const receipts = (value as Record<string, unknown>).semanticToolReceipts;
+  if (!receipts || typeof receipts !== "object" || Array.isArray(receipts))
+    return new Set();
+  const ids = new Set<string>();
+  for (const receipt of Object.values(receipts)) {
+    if (!receipt || typeof receipt !== "object" || Array.isArray(receipt))
+      continue;
+    const record = receipt as Record<string, unknown>;
+    if (record.operationId !== "report_progress") continue;
+    const result = record.result;
+    if (!result || typeof result !== "object" || Array.isArray(result))
+      continue;
+    const commentId = (result as Record<string, unknown>).commentId;
+    if (typeof commentId === "string" && commentId) ids.add(commentId);
+  }
+  return ids;
 }
 
 function acceptedSemanticResultVerificationCaveats(value: unknown) {
@@ -320,7 +442,20 @@ function resolvedWithoutUserFacingResponse(value: unknown): boolean {
   );
 }
 
-export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
+export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread> & {
+  conversationMode?: boolean;
+  creationActivity?: ActivityEvent[];
+  createdTasks?: Issue[];
+  compactHistory?: boolean;
+  scrollingHistory?: ScrollingHistory;
+  historyControl?: ReactNode;
+  onExpandHistory?: () => void;
+  initialHistoryPending?: boolean;
+  initialHistoryError?: boolean;
+  onRetryInitialHistory?: () => void;
+  onOpenSkill?: (skillId: string, name: string) => void;
+  onDismissInteraction?: (interaction: IssueThreadInteraction) => Promise<void>;
+};
 
 type PendingComposerInput =
   | {
@@ -385,9 +520,16 @@ function durableInputLabel(
  * folded row. flag-OFF remains byte-for-byte IssueChatThread.
  */
 export function TaskChatThread(props: TaskChatThreadProps) {
+  const coordinatorEnabled = useCoordinatorPresentation();
+  const { status: connectionStatus } = useConnectivity();
+  const { enabled: streamlinedPreference } = useStreamlinedUiEnabled();
+  const streamlinedUiEnabled = coordinatorEnabled || streamlinedPreference;
   const {
+    initialHistoryPending = false,
+    initialHistoryError = false,
+    onRetryInitialHistory,
     comments,
-    interactions,
+    interactions: storedInteractions,
     documents = [],
     workProducts = [],
     attachments = [],
@@ -398,11 +540,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     userProfileMap,
     currentUserId,
     onAdd,
+    onCancelRun,
+    stopPending,
+    stopScope,
     issueWorkMode = "standard",
     onWorkModeChange,
     composerAccessory,
     footer,
     showComposer = true,
+    composerPause,
     composerDisabledReason,
     emptyMessage = "No messages yet.",
     companyId,
@@ -413,8 +559,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     imageUploadHandler,
     mentions,
     enableReassign,
+    conversationMode,
     reassignOptions,
     currentAssigneeValue,
+    suggestedAssigneeValue,
+    assigneeAdapterOverrides,
     issueStatus,
     issueAssigneeAgentId = null,
     onAcceptInteraction,
@@ -425,6 +574,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onSubmitInteractionVerdicts,
     externalReferences,
     threadHeader,
+    browsers = EMPTY_BROWSERS,
+    onOpenBrowser,
+    hasOlderComments = false,
     issueBrief,
     feedbackVotes,
     feedbackDataSharingPreference = "prompt",
@@ -432,29 +584,158 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onVote,
     draftKey,
     onInterruptQueued,
+    onCancelQueued,
     interruptingQueuedRunId,
     onTryAgainNoLiveExecutionPath,
     tryAgainNoLiveExecutionPathPending = false,
+    onRetryFailedRun,
+    retryFailedRunId = null,
     queuedCommentQueue,
     onEditQueuedComment,
     onReorderQueuedComments,
     onSteerQueuedComment,
+    queuedMessageAutoSteerDelayMs = QUEUED_MESSAGE_AUTO_STEER_DELAY_MS,
     onDiscardQueuedComment,
     blockedBy = [],
     blockerAttention,
     liveIssueIds,
     onResumeAssignee,
     resumeAssigneePending = false,
+    onOpenSkill,
   } = props;
+  const {
+    data: planDocument,
+    isLoading: planLoading,
+    isError: planError,
+    refetch: retryPlan,
+  } = useIssuePlanDocument(issueId);
+  const interactions = useMemo(() => storedInteractions?.filter(
+    interaction => !isOutdatedPlanConfirmation(interaction, planDocument),
+  ), [storedInteractions, planDocument]);
+  const confirmedStoppedRunIds = useMemo(() => new Set((linkedRuns ?? []).filter((run) =>
+    companyId && (run.runtimeMode === "legacy" || run.runtimeMode === "native") && isRunStopConfirmed({
+      id: run.runId, companyId, status: run.status, runtimeMode: run.runtimeMode, resultJson: run.resultJson ?? null,
+    }),
+  ).map((run) => run.runId)), [companyId, linkedRuns]);
+  const retryFailedRunHandler =
+    isTerminalIssueStatus(issueStatus) ||
+    interactions?.some((interaction) => interaction.status === "pending") ||
+    requiresExecutionReconciliation(props.recoveryAction?.cause) ||
+    props.scheduledRetry ||
+    linkedRuns?.some((run) => {
+      // The server accepts explicit new attempts for these stopped legacy
+      // conversations. It still proves process/lease termination and ownership;
+      // offering Retry does not certify prior action outcomes or resume them.
+      // Keep this set aligned with conversation-continuation.ts on the server.
+      if (
+        run.runtimeMode === "legacy" &&
+        (run.status === "failed" || run.status === "timed_out") &&
+        run.execution?.phase === "recovery_needed" &&
+        run.execution.cause === "legacy_execution_requires_reconciliation" &&
+        [
+          "claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
+          "pi_local", "grok_local", "kimi_local", "hermes_local",
+        ].includes(run.adapterType ?? "")
+      ) return false;
+      return [
+        "working",
+        "waiting_for_provider",
+        "retry_scheduled",
+        "reconnecting",
+        "finishing",
+        "queued",
+        "recovery_needed",
+      ].includes(run.execution?.phase ?? "");
+    })
+      ? undefined
+      : onRetryFailedRun;
+  const canRetryFailedRun = Boolean(retryFailedRunHandler);
+  const queryClient = useQueryClient();
+  const decisionReceipts = useCoordinatorChatDecisionReceipts(issueId, conversationMode);
+  const pendingQuestions = useCoordinatorChatPendingQuestions(issueId, conversationMode);
+  const taskHandoffs = useCoordinatorChatTaskHandoffs(issueId, conversationMode === true);
+  const scrollingHistory: ScrollingHistory | undefined = props.scrollingHistory ? {
+    hasMore: props.scrollingHistory.hasMore || !!decisionReceipts.hasNextPage || !!taskHandoffs.hasNextPage,
+    loading: props.scrollingHistory.loading || decisionReceipts.isFetchingNextPage || taskHandoffs.isFetchingNextPage,
+    error: props.scrollingHistory.error,
+    load: () => Promise.all([
+      props.scrollingHistory?.hasMore ? props.scrollingHistory.load() : undefined,
+      decisionReceipts.status !== "error" && decisionReceipts.hasNextPage ? decisionReceipts.fetchNextPage() : undefined,
+      taskHandoffs.status !== "error" && taskHandoffs.hasNextPage ? taskHandoffs.fetchNextPage() : undefined,
+    ]),
+  } : undefined;
+  const conversationWindowStart = props.scrollingHistory?.hasMore && comments.length
+    ? Math.min(...comments.map(comment => toMs(comment.createdAt))) : -Infinity;
+  const liveHandoffIds = useLiveChatHandoffIds(`${currentUserId}:${issueId}`, taskHandoffs.handoffs, taskHandoffs.isSuccess);
+  const createdProjectItems = useProjectCreatedItems(props.creationActivity ?? [], companyId);
+  const createdSkillItems = useMemo(() => skillCreatedItems(props.creationActivity ?? []), [props.creationActivity]);
+  const createdTaskItems = useMemo(() => {
+    const representedTaskIds = new Set(taskHandoffs.handoffs.map((handoff) => handoff.issueId));
+    for (const interaction of interactions ?? []) {
+      if (interaction.kind !== "suggest_tasks" || interaction.status !== "accepted" || isSuppressedThreadInteraction(interaction)) continue;
+      for (const task of interaction.result?.createdTasks ?? []) representedTaskIds.add(task.issueId);
+    }
+    return taskCreatedItems(props.createdTasks ?? [], issueId, companyId, representedTaskIds);
+  }, [props.createdTasks, issueId, companyId, taskHandoffs.handoffs, interactions]);
+  const [pendingComposerAssignee, setPendingComposerAssignee] = useState<
+    string | null
+  >(null);
+  const composerSuggestedAssignee = currentUserId && currentAssigneeValue === `user:${currentUserId}`
+    ? suggestedAssigneeValue
+    : undefined;
+  const effectiveComposerAssignee = pendingComposerAssignee ?? composerSuggestedAssignee;
+  const effectiveGoalAgentId = effectiveComposerAssignee === undefined
+    ? issueAssigneeAgentId
+    : effectiveComposerAssignee.startsWith("agent:")
+      ? effectiveComposerAssignee.slice("agent:".length) || null
+      : null;
+  const runnerGoal = useRunnerGoalControl(issueId, effectiveGoalAgentId);
 
-  const paperclipQueue =
-    queuedCommentQueue?.protocol === "paperclip_runner_v1"
+  useEffect(() => {
+    setPendingComposerAssignee(null);
+  }, [currentAssigneeValue, issueId]);
+
+  const reassignForRunnerGoal = useCallback(
+    async (reassignment: {
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    }) => {
+      if (!issueId)
+        throw new Error("The task is not available for reassignment.");
+      await issuesApi.update(issueId, {
+        ...reassignment,
+        deferWakeForGoal: true,
+      });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.detail(issueId),
+      });
+    },
+    [issueId, queryClient],
+  );
+
+  const queuedMessageQueue =
+    queuedCommentQueue && queuedCommentQueue.entries.length > 0
       ? queuedCommentQueue
       : null;
+  const emptyQueuedCommentQueue = useMemo<IssueQueuedCommentQueue>(
+    () => ({
+      issueId: issueId ?? "",
+      queueId: null,
+      state: null,
+      targetRunId: null,
+      revision: "empty",
+      protocol: "paperclip_runner_v1",
+      steeringDisposition: "temporarily_unavailable",
+      entries: [],
+    }),
+    [issueId],
+  );
   const queuedCommentIds = useMemo(
     () =>
-      new Set(paperclipQueue?.entries.map((entry) => entry.comment.id) ?? []),
-    [paperclipQueue],
+      new Set(
+        queuedMessageQueue?.entries.map((entry) => entry.comment.id) ?? [],
+      ),
+    [queuedMessageQueue],
   );
   const [queuedEdit, setQueuedEdit] = useState<{
     commentId: string;
@@ -465,17 +746,17 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
   const beginQueuedEdit = useCallback(
     (commentId: string) => {
-      const entry = paperclipQueue?.entries.find(
+      const entry = queuedMessageQueue?.entries.find(
         (candidate) => candidate.comment.id === commentId,
       );
-      if (!entry?.canEdit || !paperclipQueue) return;
+      if (!entry?.canEdit || !queuedMessageQueue) return;
       setQueuedEdit({
         commentId,
         body: entry.comment.body,
-        revision: paperclipQueue.revision,
+        revision: queuedMessageQueue.revision,
       });
     },
-    [paperclipQueue],
+    [queuedMessageQueue],
   );
 
   const saveQueuedEdit = useCallback(
@@ -530,7 +811,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
   useEffect(() => {
     if (!queuedEdit || queuedEdit.stale) return;
-    const targetStillQueued = paperclipQueue?.entries.some(
+    const targetStillQueued = queuedMessageQueue?.entries.some(
       (entry) => entry.comment.id === queuedEdit.commentId,
     );
     if (!targetStillQueued) {
@@ -538,16 +819,18 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         current ? { ...current, stale: true } : current,
       );
     } else if (
-      paperclipQueue &&
-      queuedEdit.revision !== paperclipQueue.revision
+      queuedMessageQueue &&
+      queuedEdit.revision !== queuedMessageQueue.revision
     ) {
       // A concurrent reorder/edit refreshes the optimistic-lock token without
       // replacing the Markdown currently in the editor.
       setQueuedEdit((current) =>
-        current ? { ...current, revision: paperclipQueue.revision } : current,
+        current
+          ? { ...current, revision: queuedMessageQueue.revision }
+          : current,
       );
     }
-  }, [paperclipQueue, queuedEdit]);
+  }, [queuedEdit, queuedMessageQueue]);
 
   const liveWorkLinks = useMemo(
     () =>
@@ -592,7 +875,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       <>
         {threadHeader}
         {liveWorkLinks ? (
-          <TaskChatLiveWorkLinks liveWork={liveWorkLinks} placement="top" />
+          <TaskChatLiveWorkLinks liveWork={liveWorkLinks} placement="top" companyId={companyId} />
         ) : blockerLinks ? (
           <TaskChatBlockerLinks
             directBlocker={blockerLinks.directBlocker}
@@ -603,16 +886,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       </>
     ) : undefined;
 
-  const bottomBlockerLinks = liveWorkLinks ? (
-    <TaskChatLiveWorkLinks liveWork={liveWorkLinks} placement="bottom" />
-  ) : blockerLinks ? (
-    <TaskChatBlockerLinks
-      directBlocker={blockerLinks.directBlocker}
-      ultimateBlocker={blockerLinks.ultimateBlocker}
-      placement="bottom"
-    />
-  ) : null;
-
   const linkedRunMetaById = useMemo(() => {
     const map = new Map<
       string,
@@ -621,6 +894,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     for (const run of linkedRuns ?? []) map.set(run.runId, run);
     return map;
   }, [linkedRuns]);
+
+  const statusRelevance = useMemo(
+    () => taskChatStatusRelevance(issueStatus, [
+      ...(linkedRuns ?? []).map((run) => ({ ...run, id: run.runId })),
+      ...(liveRuns ?? []),
+      ...(activeRun ? [activeRun] : []),
+    ], props.recoveryAction),
+    [issueStatus, linkedRuns, liveRuns, activeRun, props.recoveryAction],
+  );
 
   const verificationCaveatsByRunId = useMemo(() => {
     const map = new Map<
@@ -637,17 +919,30 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // Historical placeholder comments remain untouched in storage. Projection
   // prefers the accepted semantic result so runs such as DOT-20 recover their
   // real upstream response without a data migration.
+  const imageReceipts = useMemo(
+    () => imagePreparationReceiptIds(comments, attachments, workProducts),
+    [comments, attachments, workProducts],
+  );
   const projectedComments = useMemo(
     () =>
-      comments.map((comment) => {
+      comments.flatMap((comment) => {
+        if (imageReceipts.has(comment.id)) return [];
+        if (comment.authorType === "system" && comment.metadata?.recoveryResponsibility === "system") return [];
+        if (statusRelevance.isHistoricalNotice(comment)) return [];
+        if (isRedundantAiRecoveryNotice(comment, interactions)) return [];
         if (comment.body !== LEGACY_WITHHELD_RUN_COMMENT || !comment.runId)
-          return comment;
-        const summary = acceptedSemanticResultSummary(
-          linkedRunMetaById.get(comment.runId)?.resultJson,
-        );
-        return summary ? { ...comment, body: summary } : comment;
+          return [comment];
+        const resultJson = linkedRunMetaById.get(comment.runId)?.resultJson;
+        // Historical native runs wrote a placeholder comment even when the
+        // accepted result only yielded for interaction. Do not turn that
+        // control-plane wait into an ordinary assistant bubble.
+        if (acceptedSemanticResultDisposition(resultJson) === "yielded") {
+          return [];
+        }
+        const summary = acceptedSemanticResultSummary(resultJson);
+        return [summary ? { ...comment, body: summary } : comment];
       }),
-    [comments, linkedRunMetaById],
+    [comments, interactions, linkedRunMetaById, statusRelevance, imageReceipts],
   );
 
   const commentItems = useMemo(
@@ -655,6 +950,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       commentsToTaskChatItems(projectedComments, {
         agentMap,
         userLabelMap,
+        userProfileMap,
         currentUserId,
         issueAssigneeAgentId,
         verificationCaveatsByRunId,
@@ -663,6 +959,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       projectedComments,
       agentMap,
       userLabelMap,
+      userProfileMap,
       currentUserId,
       issueAssigneeAgentId,
       verificationCaveatsByRunId,
@@ -675,6 +972,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     for (const r of linkedRuns ?? []) {
       map.set(r.runId, {
         id: r.runId,
+        createdAt: r.createdAt,
         status: r.status,
         adapterType: r.adapterType ?? "",
         runtimeMode: r.runtimeMode,
@@ -685,6 +983,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     for (const r of liveRuns ?? []) {
       map.set(r.id, {
         id: r.id,
+        createdAt: r.createdAt,
         status: r.status,
         adapterType: r.adapterType,
         runtimeMode: r.runtimeMode,
@@ -696,6 +995,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     if (activeRun) {
       map.set(activeRun.id, {
         id: activeRun.id,
+        createdAt: activeRun.createdAt,
         status: activeRun.status,
         adapterType: activeRun.adapterType,
         runtimeMode: activeRun.runtimeMode,
@@ -706,36 +1006,117 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return [...map.values()];
   }, [linkedRuns, liveRuns, activeRun]);
 
+  const openedAt = useMemo(() => Date.now(), [issueId]);
+  const scrollNavigation = useTaskChatScrollNavigation();
+  const requestedTranscripts = useRef({ issueId, ids: new Set<string>() });
+  if (requestedTranscripts.current.issueId !== issueId) {
+    requestedTranscripts.current = { issueId, ids: new Set<string>() };
+  }
+  // Runs whose transcript outlasted INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS on the
+  // first open of this issue. Latched per issue so the decision never flips.
+  // `deferred` holds only runs that had already settled at that moment, so a
+  // live transcript that finishes later stays visible.
+  const [slowTranscripts, setSlowTranscripts] = useState<{
+    issueId: typeof issueId; ids: ReadonlySet<string>; deferred: ReadonlySet<string>;
+  } | null>(null);
+  const slowTranscriptsForIssue = slowTranscripts && slowTranscripts.issueId === issueId ? slowTranscripts : null;
+  const slowTranscriptRunIds = slowTranscriptsForIssue?.ids ?? EMPTY_RUN_IDS;
+  const slowSettledTranscriptRunIds = slowTranscriptsForIssue?.deferred ?? EMPTY_RUN_IDS;
+  const compactTranscriptDeferral = Boolean(props.compactHistory && !conversationMode && props.onExpandHistory && !scrollNavigation.hash);
+  const deferredTranscriptRunIds = useMemo(() => {
+    const deferred = new Set<string>();
+    if (!compactTranscriptDeferral) return deferred;
+    for (const run of runs) if (slowSettledTranscriptRunIds.has(run.id)) deferred.add(run.id);
+    for (const run of runs) {
+      if (requestedTranscripts.current.ids.has(run.id) || run.status !== "succeeded" ||
+        !run.createdAt || toMs(run.createdAt) > openedAt) continue;
+      const meta = linkedRunMetaById.get(run.id);
+      if (acceptedSemanticResultDisposition(meta?.resultJson) === "yielded" ||
+        interactions?.some(interaction => interaction.sourceRunId === run.id && interaction.status === "pending")) continue;
+      const presentationCommentId = presentationDecisionCommentId(meta?.resultJson);
+      const progressCommentIds = semanticProgressCommentIds(meta?.resultJson);
+      if (projectedComments.some(comment =>
+        comment.authorType === "agent" && !comment.deletedAt && comment.body.trim() &&
+        comment.body !== LEGACY_WITHHELD_RUN_COMMENT && !progressCommentIds.has(comment.id) &&
+        (comment.runId ?? comment.createdByRunId ?? comment.derivedCreatedByRunId) === run.id &&
+        (presentationCommentId === undefined || presentationCommentId === comment.id),
+      )) deferred.add(run.id);
+    }
+    return deferred;
+  }, [issueId, runs, projectedComments, linkedRunMetaById, interactions, compactTranscriptDeferral, slowSettledTranscriptRunIds, openedAt]);
+  const transcriptRuns = useMemo(() => runs.filter(run =>
+    !deferredTranscriptRunIds.has(run.id) &&
+    !(props.compactHistory && !conversationMode && props.onExpandHistory && !scrollNavigation.hash &&
+      initialHistoryPending && isTerminalRunStatus(run.status) && !requestedTranscripts.current.ids.has(run.id)),
+  ), [issueId, runs, deferredTranscriptRunIds, props.compactHistory, conversationMode, props.onExpandHistory, scrollNavigation.hash, initialHistoryPending]);
+  useLayoutEffect(() => {
+    for (const run of transcriptRuns) requestedTranscripts.current.ids.add(run.id);
+  }, [transcriptRuns]);
   const nativeRuns = useMemo(
-    () => runs.filter((run) => run.runtimeMode === "native"),
-    [runs],
+    () => transcriptRuns.filter((run) => run.runtimeMode === "native").map((run) => ({
+      ...run,
+      conversationOnly: Boolean(props.compactHistory && (!run.createdAt || new Date(run.createdAt).getTime() <= openedAt)),
+    })),
+    [transcriptRuns, props.compactHistory, openedAt],
   );
-  const {
-    transcriptByRun: logTranscriptByRun,
-    isInitialHydrating: logsAreInitiallyHydrating,
-  } = useLiveRunTranscripts({
-    // Native events are authoritative, but the persisted/live log remains a
-    // compatibility source when an upgraded server has no event history or
-    // the native event endpoint is temporarily unavailable.
-    runs,
-    companyId,
-  });
   const {
     transcriptByRun: nativeTranscriptByRun,
     errorsByRun: nativeTranscriptErrorsByRun,
-  } = useNativeRunTranscripts(nativeRuns);
+    isInitialHydrating: nativeEventsAreInitiallyHydrating,
+    hydratedRunIds: hydratedNativeRunIds,
+    terminalHydratedRunIds,
+    retry: retryNativeEvents,
+  } = useNativeRunTranscripts(nativeRuns, { companyId });
+  const logRuns = useMemo(() => transcriptRuns.filter((run) =>
+    (!nativeRuns.some((nativeRun) => nativeRun.id === run.id && nativeRun.conversationOnly) ||
+      nativeTranscriptErrorsByRun.has(run.id) ||
+      (hydratedNativeRunIds.has(run.id) && (nativeTranscriptByRun.get(run.id)?.length ?? 0) === 0)) && (
+    run.runtimeMode !== "native" ||
+    // Active runs still need the websocket log stream. Only settled native
+    // history can skip the legacy transport when event history is available.
+    run.status === "running" || run.status === "queued" ||
+    nativeTranscriptErrorsByRun.has(run.id) ||
+    (hydratedNativeRunIds?.has(run.id) &&
+      (nativeTranscriptByRun.get(run.id)?.length ?? 0) === 0)
+  )), [transcriptRuns, nativeRuns, nativeTranscriptErrorsByRun, hydratedNativeRunIds, nativeTranscriptByRun]);
+  const {
+    transcriptByRun: logTranscriptByRun,
+    isInitialHydrating: logsAreInitiallyHydrating,
+    hydratedRunIds: hydratedLogRunIds,
+    truncatedRunIds,
+    errorsByRun: logErrorsByRun,
+    retry: retryLogs,
+  } = useLiveRunTranscripts({ runs: logRuns, companyId, ...(props.compactHistory ? { logReadLimitBytes: COMPACT_RUN_LOG_READ_LIMIT_BYTES } : {}) });
+  const fallbackByRunRef = useRef(
+    new Map<string, NonNullable<ReturnType<typeof logTranscriptByRun.get>>>(),
+  );
   const transcriptByRun = useMemo(() => {
     const next = new Map(logTranscriptByRun);
     for (const run of nativeRuns) {
-      const logTranscript = logTranscriptByRun.get(run.id) ?? [];
       const nativeTranscript = nativeTranscriptByRun.get(run.id) ?? [];
-      const nativeEventsUnavailable = nativeTranscriptErrorsByRun.has(run.id);
+      const logTranscript = logTranscriptByRun.get(run.id) ?? [];
+      if (nativeTranscriptErrorsByRun.has(run.id) && logTranscript.length > 0) {
+        fallbackByRunRef.current.set(run.id, logTranscript);
+      }
+      const fallback = fallbackByRunRef.current.get(run.id);
+      const lastTimestamp = (entries: typeof nativeTranscript) =>
+        entries.reduce((latest, entry) => Math.max(latest, toMs(entry.ts)), 0);
+      // Keep a newer fallback visible through native transport recovery. An
+      // empty successful poll must not rewind a response the reader just saw.
       if (
-        nativeTranscript.length > 0
-        && (!nativeEventsUnavailable || logTranscript.length === 0)
+        fallback &&
+        (nativeTranscriptErrorsByRun.has(run.id) ||
+          lastTimestamp(nativeTranscript) < lastTimestamp(fallback))
       ) {
+        next.set(run.id, fallback);
+      } else if (nativeTranscript.length > 0) {
+        fallbackByRunRef.current.delete(run.id);
         next.set(run.id, nativeTranscript);
       }
+    }
+    for (const id of fallbackByRunRef.current.keys()) {
+      if (!nativeRuns.some((run) => run.id === id))
+        fallbackByRunRef.current.delete(id);
     }
     return next;
   }, [
@@ -823,7 +1204,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // backbone chronologically at its start time (PAP-367).
   const lastCommentIdByRun = useMemo(() => {
     const map = new Map<string, string>();
-    for (const comment of comments) {
+    for (const comment of projectedComments) {
       if (comment.deletedAt || !comment.runId || !comment.id) continue;
       map.set(comment.runId, comment.id);
     }
@@ -831,14 +1212,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     // Same-turn steering splits that causal interval into timestamped segments,
     // so each segment must stay unanchored and interleave around the injected
     // human bubble through the chronological assembler.
-    for (const comment of comments) {
+    for (const comment of projectedComments) {
       const runId = comment.steeredIntoRunId;
       if (!comment.deletedAt && runId && comment.conversationAnchorAt) {
         map.delete(runId);
       }
     }
     return map;
-  }, [comments]);
+  }, [projectedComments]);
 
   const steeringAnchorsByRun = useMemo(() => {
     const map = new Map<string, number[]>();
@@ -856,15 +1237,16 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return map;
   }, [comments]);
 
-  const { data: planDocument } = useIssuePlanDocument(issueId);
-
   // A native-runner Plan is part of the turn that wrote its current revision.
   // Legacy adapters do not expose the semantic write_document boundary needed
   // for stable embedding, so their Plans remain chronological thread entries.
   // Prefer a native review request's explicit run binding; while that request
   // is still being created, infer the native owner from the document timestamp.
-  const planDocumentSourceRunId = useMemo(() => {
-    if (!planDocument) return null;
+  const planDocumentOwnerRunId = useMemo(() => {
+    // Coordinator keeps saved plans in document chronology. A run may write
+    // several documents (or use shell tools with no semantic write boundary);
+    // attaching the plan to its last write can put it after the resulting work.
+    if (!planDocument || coordinatorEnabled) return null;
     const candidates = new Map<
       string,
       {
@@ -887,16 +1269,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     for (const run of liveRuns ?? []) candidates.set(run.id, run);
     if (activeRun) candidates.set(activeRun.id, activeRun);
 
-    const linkedReview = (interactions ?? []).find(
-      (interaction) => {
-        if (!interaction.sourceRunId) return false;
-        const sourceRun = candidates.get(interaction.sourceRunId);
-        return (
-          isNativePaperclipRunnerRun(sourceRun) &&
-          interactionTargetsPlanRevision(interaction, planDocument)
-        );
-      },
-    );
+    const linkedReview = (interactions ?? []).find((interaction) => {
+      if (!interaction.sourceRunId) return false;
+      const sourceRun = candidates.get(interaction.sourceRunId);
+      return (
+        isNativePaperclipRunnerRun(sourceRun) &&
+        interactionTargetsPlanRevision(interaction, planDocument)
+      );
+    });
     if (linkedReview?.sourceRunId) return linkedReview.sourceRunId;
 
     const documentAtMs = toMs(planDocument.updatedAt);
@@ -923,7 +1303,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         toMs(b.startedAt ?? b.createdAt) - toMs(a.startedAt ?? a.createdAt),
     );
     return matchingRuns[0]?.id ?? null;
-  }, [activeRun, interactions, linkedRuns, liveRuns, planDocument]);
+  }, [activeRun, coordinatorEnabled, interactions, linkedRuns, liveRuns, planDocument]);
+
+  const planDocumentSourceRunId = planDocumentOwnerRunId &&
+    !deferredTranscriptRunIds.has(planDocumentOwnerRunId) &&
+    ((transcriptByRun.get(planDocumentOwnerRunId)?.length ?? 0) > 0 ||
+      !runs.some(run => run.id === planDocumentOwnerRunId && isTerminalRunStatus(run.status)))
+    ? planDocumentOwnerRunId : null;
 
   const planTurnItem = useMemo<TaskChatPlanDocumentItem | null>(() => {
     if (!planDocument || !planDocumentSourceRunId) return null;
@@ -1027,10 +1413,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         // separately projected human responses stay at resolvedAt.
         ms: isResolvedPlanConfirmation(interaction)
           ? (handoffAtMs ?? createdAtMs)
-          : interactionThreadAnchorMs(
-              interaction,
-              handoffAtMs ?? createdAtMs,
-            ),
+          : interactionThreadAnchorMs(interaction, handoffAtMs ?? createdAtMs),
         order: 2,
         id,
         item: { id, kind: "interaction", interaction },
@@ -1121,10 +1504,45 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         },
       });
     }
+    for (const item of createdProjectItems) {
+      entries.push({ id: item.id, item, ms: toMs(item.timestamp), order: 2 });
+    }
+    for (const item of createdSkillItems) {
+      entries.push({ id: item.id, item, ms: toMs(item.timestamp), order: 2 });
+    }
+    for (const item of createdTaskItems) {
+      entries.push({ id: item.id, item, ms: toMs(item.timestamp), order: 3 });
+    }
+    // Older sessions arrive with their surrounding messages when history is
+    // paged in; otherwise they would collect above the loaded conversation.
+    const historyStart = hasOlderComments
+      ? Math.min(...visibleComments.map((comment) => toMs(comment.conversationAnchorAt ?? comment.createdAt)))
+      : -Infinity;
+    for (const [index, browser] of browsers.entries()) {
+      if (toMs(browser.createdAt) < historyStart) continue;
+      const id = `browser:${browser.sessionId}`;
+      entries.push({
+        id,
+        ms: toMs(browser.createdAt),
+        order: 2,
+        item: {
+          id,
+          kind: "browser",
+          browser,
+          label: browsers.length > 1 ? `Browser ${index + 1}` : "Browser",
+          timestamp: browser.createdAt,
+        },
+      });
+    }
     return entries.sort(
       (a, b) => a.ms - b.ms || a.order - b.order || a.id.localeCompare(b.id),
     );
   }, [
+    createdProjectItems,
+    createdSkillItems,
+    createdTaskItems,
+    browsers,
+    hasOlderComments,
     comments,
     projectedComments,
     commentItems,
@@ -1158,9 +1576,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         adapterType: run.adapterType ?? "",
         runtimeMode: run.runtimeMode,
         startMs: toMs(run.startedAt ?? run.createdAt),
-        endMs: run.finishedAt
-          ? toMs(run.finishedAt)
-          : Number.POSITIVE_INFINITY,
+        endMs: run.finishedAt ? toMs(run.finishedAt) : Number.POSITIVE_INFINITY,
       });
     }
     for (const run of liveRuns ?? []) {
@@ -1168,9 +1584,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         adapterType: run.adapterType,
         runtimeMode: run.runtimeMode,
         startMs: toMs(run.startedAt ?? run.createdAt),
-        endMs: run.finishedAt
-          ? toMs(run.finishedAt)
-          : Number.POSITIVE_INFINITY,
+        endMs: run.finishedAt ? toMs(run.finishedAt) : Number.POSITIVE_INFINITY,
       });
     }
     if (activeRun) {
@@ -1201,7 +1615,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             entryMs <= window.endMs,
         );
       if (anchors.length > 0) {
-        anchorsByRun.set(runId, [...new Set(anchors)].sort((a, b) => a - b));
+        anchorsByRun.set(
+          runId,
+          [...new Set(anchors)].sort((a, b) => a - b),
+        );
       }
     }
     return anchorsByRun;
@@ -1211,40 +1628,366 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // heavy assembly memo doesn't recompute on every parent render.
   const hasBrief = Boolean(issueBrief);
 
-  const { items, settledRunIds } = useMemo<{
+  const { items, settledRunIds, settledReplyRunIds } = useMemo<{
     items: TaskChatItem[];
     settledRunIds: Set<string>;
+    settledReplyRunIds: Set<string>;
   }>(() => {
     // Runs whose settled turn made it into the assembled thread — the live tail
     // hands off to this as its "the settled turn has rendered" signal (PAP-462
     // B4), so the transcript stays mounted through the settle gap without ever
     // double-rendering beside its own settled turn.
     const settledRunIds = new Set<string>();
+    const settledReplyRunIds = new Set<string>();
+    const sourceRunByItemId = new Map<string, string>();
+    const commentsById = new Map(projectedComments.map(comment => [comment.id, comment]));
+    for (const { item } of orderedEntries) {
+      if (item.kind !== "message" || item.author !== "agent") continue;
+      const comment = commentsById.get(item.id);
+      const runId = comment?.createdByRunId ?? comment?.runId ?? comment?.derivedCreatedByRunId;
+      if (runId) sourceRunByItemId.set(item.id, runId);
+    }
     const entriesWithFailures = [...orderedEntries];
+    for (const question of pendingQuestions.questions) {
+      const id = `pending-question:${question.subject.id}`;
+      entriesWithFailures.push({ id, ms: toMs(question.createdAt), order: 4, item: { id, kind: "pending_question", question } });
+    }
+    for (const receipt of decisionReceipts.receipts) {
+      if (toMs(receipt.resolvedAt) < conversationWindowStart) continue;
+      entriesWithFailures.push({ id: `decision-receipt:${receipt.id}`, ms: toMs(receipt.resolvedAt), order: 4,
+        item: { id: `decision-receipt:${receipt.id}`, kind: "decision_receipt", receipt } });
+    }
+    for (const handoff of standaloneChatHandoffs(taskHandoffs.handoffs, interactions ?? [])) {
+      if (toMs(handoff.createdAt) < conversationWindowStart) continue;
+      entriesWithFailures.push({ id: handoff.id, ms: toMs(handoff.createdAt), order: 4,
+        item: { id: handoff.id, kind: "task_handoff", handoff, animateEntry: liveHandoffIds.has(handoff.id) } });
+    }
     // Settled turns for every terminal run whose transcript we have. Provider
     // commentary, grouped activity (including reasoning summaries), and
     // terminal request receipts remain in transcript order. Final text is
-    // owned by a posted comment when one exists; yielded interaction runs keep
-    // the accepted summary in the turn's durable response slot instead.
+    // owned by a posted completion comment when one exists. Yielded interaction
+    // runs remain activity/waiting state and never occupy a final-response slot.
     const settledTurns: {
       turn: TaskChatTurnItem;
+      sourceRunId: string;
       anchorCommentId: string | null;
       startMs: number;
     }[] = [];
     // Raw summary inputs per turn id, so back-to-back same-agent runs can
     // coalesce into one "Worked" row in the final pass (PAP-362).
     const turnMergeMetaById = new Map<string, SettledTurnMergeMeta>();
+    let previousExecutionWaitKey: string | null = null;
     for (const source of runs) {
       if (!isTerminalRunStatus(source.status)) continue;
       if (liveRun && source.id === liveRun.id) continue;
       const entries = transcriptByRun.get(source.id) ?? [];
       const meta = linkedRunMetaById.get(source.id);
+      const credentialAccess = credentialAccessNotice(meta ? {
+        ...meta,
+        agentName: meta.agentName || agentMap?.get(meta.agentId)?.name,
+      } : undefined, currentUserId, userLabelMap);
+      const historical = statusRelevance.isHistoricalRun(source.id);
+      // A workspace admission attempt never started provider work. Its live
+      // successor owns the waiting indicator; retain this attempt in the run log.
+      if (source.status === "cancelled" && meta?.errorCode === "workspace_busy") {
+        settledRunIds.add(source.id);
+        continue;
+      }
+      // /new is represented by its durable comment boundary, not an empty
+      // model response or a completed-run notice.
+      if (meta?.resultJson?.conversationReset === true) { settledRunIds.add(source.id); continue; }
+      // A queued continuation can become unnecessary while another turn finishes
+      // the task. Keep that cancellation in the run log, not the conversation.
+      // Apply this before native stop markers are assembled as well.
+      if (
+        source.status === "cancelled" &&
+        entries.length === 0 &&
+        (meta?.errorCode === "issue_not_in_progress" ||
+          (meta?.errorCode === "issue_terminal_status" && !meta.startedAt))
+      ) {
+        settledRunIds.add(source.id);
+        continue;
+      }
+      // Historical pre-admission cancellations describe a wait, not failed
+      // work. Collapse repeated observations of that hold, retaining real
+      // execution and any transcript/comment content between wait episodes.
+      const executionWait =
+        source.status === "cancelled" &&
+        !meta?.startedAt &&
+        meta?.errorCode === "execution_reconciliation_required" &&
+        entries.length === 0 &&
+        !lastCommentIdByRun.has(source.id);
+      if (executionWait) {
+        settledRunIds.add(source.id);
+        if (historical || props.interruption) continue;
+        const wait = meta?.resultJson?.executionWait;
+        const waitKey = wait && typeof wait === "object" && "recoveryActionId" in wait
+          ? String(wait.recoveryActionId)
+          : "execution_reconciliation_required";
+        if (previousExecutionWaitKey !== waitKey) {
+          const id = `${source.id}:execution-wait`;
+          entriesWithFailures.push({
+            ms: toMs(meta?.finishedAt ?? meta?.createdAt),
+            order: 3,
+            id,
+            item: {
+              id, kind: "marker", variant: "interrupted", tone: "neutral",
+              label: "Waiting to resume",
+              detail: "The previous execution needs to be checked before work can continue. See the task’s execution hold for the next action. Individual checks remain in the run history.",
+            },
+          });
+        }
+        previousExecutionWaitKey = waitKey;
+        continue;
+      }
+      previousExecutionWaitKey = null;
+      const compactionMarkers = settledCompactionMarkers(entries, source.id);
+      for (const marker of compactionMarkers) {
+        entriesWithFailures.push({ id: marker.id, ms: toMs(marker.createdAtIso), order: 3, item: marker });
+      }
       const acceptedSummary = acceptedSemanticResultSummary(meta?.resultJson);
+      const parsedSource = transcriptToTaskChatItems(entries, {
+        runId: source.id,
+        agentName: meta?.agentName,
+        running: false,
+      });
+      // A run that posted a card yielded to that card. Its wake summary
+      // describes the wait, not an answer, so it never becomes the turn's
+      // reply, even after the card is answered.
+      const sourceHasAttentionCard = (interactions ?? []).some(
+        (interaction) =>
+          interaction.sourceRunId === source.id &&
+          !isSuppressedThreadInteraction(interaction),
+      );
+      const sourceAcceptedResponseWake =
+        source.status === "succeeded" &&
+        !sourceHasAttentionCard &&
+        paperclipRunnerAcceptedResponseWake(parsedSource, source.id);
+      const sourceYielded =
+        (acceptedSemanticResultDisposition(meta?.resultJson) === "yielded" ||
+          entries.some(
+            (entry) =>
+              entry.kind === "run_result" && entry.disposition === "yielded",
+          )) &&
+        !sourceAcceptedResponseWake;
+      const sourceIsPaperclipRunner = isNativePaperclipRunnerRun(source);
+      const sourceAllowSummaryFallback = !sourceIsPaperclipRunner ||
+        terminalHydratedRunIds.has(source.id) ||
+        entries.some((entry) => entry.kind === "run_terminal");
+      const decidedCommentId = presentationDecisionCommentId(meta?.resultJson);
+      const progressCommentIds = semanticProgressCommentIds(meta?.resultJson);
+      const sourcePresentationCommentId =
+        decidedCommentId === undefined
+          ? ([...projectedComments]
+              .reverse()
+              .find(
+                (comment) =>
+                  !comment.deletedAt &&
+                  comment.runId === source.id &&
+                  !progressCommentIds.has(comment.id),
+              )?.id ?? null)
+          : decidedCommentId !== null &&
+              projectedComments.some(
+                (comment) =>
+                  !comment.deletedAt &&
+                  comment.runId === source.id &&
+                  comment.id === decidedCommentId,
+              )
+            ? decidedCommentId
+            : null;
+      const sourceHasPresentationComment = sourcePresentationCommentId !== null;
+      const sourcePresentationText = sourcePresentationCommentId
+        ? (projectedComments.find(
+            (comment) => comment.id === sourcePresentationCommentId,
+          )?.body ?? null)
+        : null;
+      // A yielded wait is not an answer, but prose the agent wrote before it
+      // yielded (explaining the question card it posted, say) is. It streamed
+      // into view live, so the settled turn keeps it in place.
+      const sourceYieldedResponse =
+        sourceIsPaperclipRunner && sourceYielded && !sourceHasPresentationComment
+          ? paperclipRunnerFinalResponse(parsedSource, {
+              runId: source.id,
+              agentName: meta?.agentName,
+              allowFallback: false,
+              yielded: true,
+              waitSummary: acceptedSummary,
+            })
+          : undefined;
+      const sourceHasNativeResponse =
+        sourceIsPaperclipRunner &&
+        (Boolean(sourceYieldedResponse) || !sourceYielded) &&
+        (sourceHasPresentationComment || Boolean(sourceYieldedResponse) ||
+          Boolean(acceptedSummary) ||
+          entries.some(
+            (entry) =>
+              (entry.kind === "assistant" &&
+                entry.channel !== "progress" &&
+                Boolean(entry.text.trim())) ||
+              (entry.kind === "run_result" && Boolean(entry.summary.trim())),
+          ));
+      const sourceHasNativeStop =
+        sourceIsPaperclipRunner &&
+        (source.status === "failed" ||
+          source.status === "timed_out" ||
+          source.status === "cancelled" ||
+          source.status === "interrupted");
+      if (sourceHasNativeStop) {
+        settledRunIds.add(source.id);
+        const code =
+          meta?.errorCode ??
+          (source.status === "timed_out"
+            ? "native_runner_timed_out"
+            : "native_runner_process_exited");
+        const label =
+          code === "native_provider_runtime_missing" && source.status === "failed"
+            ? "Runtime missing"
+            : code === "native_provider_model_rejected" && source.status === "failed"
+            ? "Model unavailable"
+            : code === "native_provider_approval_required" && source.status === "failed"
+            ? "Approval required"
+            : code === "native_provider_usage_limit" && source.status === "failed"
+            ? "Usage limit reached"
+            : source.status === "cancelled"
+              ? "Run cancelled"
+              : source.status === "interrupted"
+                ? "Run interrupted"
+                : source.status === "timed_out"
+                  ? "Run timed out"
+                  : "Run failed";
+        const responseBoundary = sourceHasNativeResponse
+          ? " after returning a final response"
+          : "";
+        const detail =
+          source.status === "cancelled"
+            ? `The run was cancelled${responseBoundary}.`
+            : source.status === "interrupted"
+              ? `The run was interrupted${responseBoundary}.`
+              : code === "native_provider_runtime_missing"
+                ? "The selected provider runtime is missing a required package. Reinstall or rebuild Paperclip with its bundled provider dependencies, restart the server, then test the agent's runtime before retrying."
+              : code === "native_provider_approval_required"
+                ? "This operation requires approval, but this runner has no interactive approval handler. Review the operation and update the agent's permission setting before retrying."
+                : code === "native_provider_model_rejected"
+                ? `${meta?.error || "The provider rejected the selected model."} Choose a supported model or clear the task's model override, then retry.`
+                : code === "native_provider_usage_limit" &&
+                    source.status === "failed"
+                  ? "The model provider has reached its current usage limit. Try again after the limit resets."
+                  : code === "provider_frame_too_large"
+                    ? "Provider output exceeded the safe limit."
+                    : source.status === "timed_out"
+                      ? `The runner timed out${responseBoundary} (${code}).`
+                      : `The runner stopped${responseBoundary} (${code}).`;
+        const id = `${source.id}:failure`;
+        const runAgent = meta?.agentId
+          ? agentMap?.get(meta.agentId)
+          : undefined;
+        const finishedAt =
+          meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt;
+        if (!historical && (!props.interruption || credentialAccess ||
+            (props.interruption.responsibility === "user" &&
+              ["native_provider_model_rejected", "native_provider_approval_required"].includes(code)))) entriesWithFailures.push({
+          ms: toMs(finishedAt),
+          order: 3,
+          id,
+          item: {
+            id,
+            kind: "marker",
+            variant: "interrupted",
+            tone: source.status === "cancelled" ? "neutral" : "error",
+            label,
+            detail,
+            retryable: code !== "native_session_cleanup_quarantined",
+            ...(credentialAccess ? { credentialAccess, retryable: false } : {}),
+            collapsible: true,
+            runId: source.id,
+            createdAtIso: finishedAt
+              ? new Date(finishedAt).toISOString()
+              : undefined,
+            runHref: runAgent
+              ? `/agents/${encodeURIComponent(runAgent.urlKey)}/runs/${encodeURIComponent(source.id)}`
+              : credentialAccess && meta?.agentId
+                ? `/agents/${encodeURIComponent(meta.agentId)}/runs/${encodeURIComponent(source.id)}`
+                : undefined,
+          },
+        });
+      }
+      // A failed run still needs its own retry target when it produced output
+      // or a final comment. Otherwise the thread keeps retrying an older run.
+      const sourceHasLegacyStop = !sourceIsPaperclipRunner && (
+        source.status === "failed" || source.status === "timed_out" ||
+        (source.status === "cancelled" && entries.length === 0)
+      );
+      if (sourceHasLegacyStop) {
+        settledRunIds.add(source.id);
+        const code = meta?.errorCode ?? "native_runner_process_exited";
+        const retryDetail = meta?.scheduledRetryAt
+          ? "Retry scheduled automatically."
+          : canRetryFailedRun
+            ? "You can retry this message now."
+            : "Your message is preserved.";
+        const restoreFailed = hasWorkspaceRestoreFailure(meta?.resultJson);
+        const branchUnavailable = (meta?.resultJson?.configurationIncomplete as Record<string, unknown> | undefined)?.reason === "workspace_base_ref_unresolved";
+        const savedPlan = Boolean(planDocument && (meta?.resultJson?.savedPlanRevisionId === planDocument.latestRevisionId || interactions?.some((interaction) =>
+          interaction.sourceRunId === source.id && interactionTargetsPlanRevision(interaction, planDocument),
+        )));
+        const aiRequest = interactions?.find((interaction) => interaction.kind === "connection_intent" && interaction.payload.purpose === "ai" && interaction.sourceRunId === source.id);
+        const detail = branchUnavailable
+          ? "Repair the starting branch below before retrying."
+          : restoreFailed
+          ? workspaceRestoreMarkerDetail({ result: meta?.resultJson, savedPlan, hasResponse: sourceHasPresentationComment || Boolean(acceptedSummary) })
+          : aiRequest
+          ? aiRequest.status === "pending"
+            ? "Use the connection card below to continue."
+            : "This run stopped because its AI account was unavailable."
+          : source.status === "cancelled"
+            ? code === "execution_reconciliation_required"
+              ? "The previous execution must be checked before this task can continue. Your message is preserved. View the stopped run for details."
+              : "Execution was stopped."
+            : code === "provider_frame_too_large"
+            ? `Provider output exceeded the safe limit. ${retryDetail}`
+            : code.startsWith("workspace_git_scan_")
+            ? `Workspace setup failed before the agent started. ${retryDetail}`
+            : `The run failed (${code}). ${retryDetail}`;
+        const id = `${source.id}:failure`;
+        if (!historical && (!props.interruption || credentialAccess)) entriesWithFailures.push({
+          ms: toMs(meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt),
+          order: 3,
+          id,
+          item: {
+            id,
+            kind: "marker",
+            variant: "interrupted",
+            label: branchUnavailable ? "Starting branch unavailable" : restoreFailed ? "Workspace restore failed" : aiRequest?.status === "pending" ? "AI connection needed" : source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
+            runId: source.status === "cancelled" ? undefined : source.id,
+            ...(branchUnavailable || aiRequest?.status === "pending" ? { retryable: false } : {}),
+            ...(restoreFailed ? {
+              retryable: meta?.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive"
+                && meta?.resultJson?.workspaceRestoreFailure !== "restore_invalid_metadata",
+              collapsible: true,
+              runHref: meta?.agentId ? `/agents/${encodeURIComponent(agentMap?.get(meta.agentId)?.urlKey ?? meta.agentId)}/runs/${encodeURIComponent(source.id)}` : undefined,
+              planHref: savedPlan ? "#document-plan" : undefined,
+            } : {}),
+            ...(credentialAccess ? {
+              credentialAccess,
+              retryable: false,
+              runHref: `/agents/${encodeURIComponent(meta?.agentId ?? "")}/runs/${encodeURIComponent(source.id)}`,
+            } : {}),
+            tone: source.status === "cancelled" || aiRequest?.status === "pending" ? "neutral" : "error",
+            detail,
+          },
+        });
+      }
       if (entries.length === 0) {
+        if (sourceIsPaperclipRunner && sourceYielded) {
+          settledRunIds.add(source.id);
+          continue;
+        }
+        if (sourceIsPaperclipRunner && !sourceAllowSummaryFallback) continue;
         if (
           isNativePaperclipRunnerRun(source) &&
+          sourceAllowSummaryFallback &&
           acceptedSummary &&
-          !lastCommentIdByRun.has(source.id)
+          !sourceHasPresentationComment
         ) {
           const startedAtMs = toMs(meta?.startedAt ?? meta?.createdAt);
           const finishedAtMs = toMs(meta?.finishedAt);
@@ -1260,13 +2003,16 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             parts: [{ entries, durationMs, failed }],
           });
           settledTurns.push({
+            sourceRunId: source.id,
             turn: {
               id: turnId,
               kind: "turn",
               settled: true,
+              historical,
               agentName:
                 meta?.agentName ??
                 (meta?.agentId ? agentMap?.get(meta.agentId)?.name : undefined),
+              agent: meta?.agentId ? agentMap?.get(meta.agentId) ?? { id: meta.agentId } : undefined,
               agentIcon: meta?.agentId
                 ? agentMap?.get(meta.agentId)?.icon
                 : undefined,
@@ -1284,36 +2030,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             startMs: startedAtMs > 0 ? startedAtMs : Number.POSITIVE_INFINITY,
           });
           settledRunIds.add(source.id);
-        } else if (
-          source.status === "failed" ||
-          source.status === "timed_out"
-        ) {
-          settledRunIds.add(source.id);
-          const code = meta?.errorCode ?? "native_runner_process_exited";
-          const retryDetail = meta?.scheduledRetryAt
-            ? "Retry scheduled automatically."
-            : "You can retry this message now.";
-          const detail =
-            code === "provider_frame_too_large"
-              ? `Provider output exceeded the safe limit. ${retryDetail}`
-              : `The runner stopped before returning an answer (${code}). ${retryDetail}`;
-          const id = `${source.id}:failure`;
-          entriesWithFailures.push({
-            ms: toMs(meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt),
-            order: 3,
-            id,
-            item: {
-              id,
-              kind: "marker",
-              variant: "interrupted",
-              label: "Run failed",
-              detail,
-            },
-          });
-        } else if (!lastCommentIdByRun.has(source.id)) {
+          settledReplyRunIds.add(source.id);
+        } else if (!sourceHasNativeStop && !sourceHasLegacyStop && !lastCommentIdByRun.has(source.id)) {
           settledRunIds.add(source.id);
           const id = `${source.id}:terminal-notice`;
-          entriesWithFailures.push({
+          if (!historical && (!props.interruption || credentialAccess)) entriesWithFailures.push({
             ms: toMs(meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt),
             order: 3,
             id,
@@ -1321,8 +2042,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               id,
               kind: "marker",
               variant: "turn_boundary",
-              label: "Run completed",
-              detail: "The runner returned no user-facing response.",
+              label: source.status === "cancelled" ? "Stopped" : "Run completed",
+              detail: source.status === "cancelled" ? "This turn was cancelled before it returned a response." : "The runner returned no user-facing response.",
             },
           });
         }
@@ -1338,27 +2059,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         Number.isFinite(started) && Number.isFinite(finished)
           ? Math.max(0, finished - started)
           : undefined;
-      const sourceIsPaperclipRunner = isNativePaperclipRunnerRun(source);
-      const hasPaperclipRunnerResponse =
-        sourceIsPaperclipRunner &&
-        Boolean(
-          acceptedSummary ||
-          entries.some(
-            (entry) =>
-              (entry.kind === "assistant" &&
-                entry.channel === "final" &&
-                Boolean(entry.text.trim())) ||
-              (entry.kind === "run_result" && Boolean(entry.summary.trim())),
-          ),
-        );
       if (
         source.status === "succeeded" &&
-        !lastCommentIdByRun.has(source.id) &&
+        sourceAllowSummaryFallback &&
+        !sourceHasPresentationComment &&
         resolvedWithoutUserFacingResponse(meta?.resultJson) &&
-        !hasPaperclipRunnerResponse
+        !sourceHasNativeResponse
       ) {
         const id = `${source.id}:terminal-notice`;
-        entriesWithFailures.push({
+        if (!historical && (!props.interruption || credentialAccess)) entriesWithFailures.push({
           ms: toMs(meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt),
           order: 3,
           id,
@@ -1376,47 +2085,123 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       const startSlotMs = startSlotRaw
         ? toMs(startSlotRaw)
         : Number.POSITIVE_INFINITY;
-      const timelineAnchors =
-        sourceIsPaperclipRunner
-          ? (steeringAnchorsByRun.get(source.id) ?? [])
-          : (legacyTimelineAnchorsByRun.get(source.id) ?? []);
+      const timelineAnchors = sourceIsPaperclipRunner
+        ? (steeringAnchorsByRun.get(source.id) ?? [])
+        : (legacyTimelineAnchorsByRun.get(source.id) ?? []);
       const segments = splitTranscriptAtAnchors(
         entries,
         startSlotMs,
         timelineAnchors,
       );
-      for (const [segmentIndex, segment] of segments.entries()) {
-        if (segment.entries.length === 0) continue;
-        const parsedTranscript = transcriptToTaskChatItems(segment.entries, {
+      const runtimeRequests = runtimeRequestSegmentContext(entries, {
+        runId: source.id, agentName: meta?.agentName, running: false,
+      });
+      const projectedSegments = segments.map((segment) => {
+        const parsedTranscript = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems(segment.entries, {
           runId: source.id,
           agentName: meta?.agentName,
           running: false,
-        });
+        }), segment.entries, runtimeRequests);
         const parsed =
           source.id === planDocumentSourceRunId && planTurnItem
             ? embedPlanDocumentAtWriteBoundary(parsedTranscript, planTurnItem)
             : parsedTranscript;
-        const children = settledRunChildren(
-          sourceIsPaperclipRunner
-            ? paperclipRunnerTimelineItems(parsed)
-            : parsed,
-        );
-        const finalResponse =
-          sourceIsPaperclipRunner &&
-          !lastCommentIdByRun.has(source.id)
-            ? paperclipRunnerFinalResponse(parsed, {
-                runId: source.id,
-                agentName: meta?.agentName,
-                fallbackSummary: acceptedSummary,
-              })
+        const visibleActivity = historical ? withoutHistoricalRunStatus(parsed) : parsed;
+        return {
+          segment,
+          parsed,
+          // Historical turns drop provider notices, but a failed MCP start
+          // still explains that run's answer, so take it before the filter.
+          mcpStartupFailures: partitionRunHealthItems(parsed).failures,
+          timelineItems: sourceIsPaperclipRunner
+            ? paperclipRunnerTimelineItems(visibleActivity)
+            : visibleActivity,
+        };
+      });
+      const sourceResponseText =
+        sourceIsPaperclipRunner && sourceYielded
+          ? sourceYieldedResponse?.text
+          : sourceIsPaperclipRunner
+          ? (sourcePresentationText ??
+            paperclipRunnerFinalResponse(parsedSource, {
+              runId: source.id,
+              agentName: meta?.agentName,
+              fallbackSummary: acceptedSummary,
+              allowFallback: sourceAllowSummaryFallback,
+            })?.text)
+          : undefined;
+      const timelineItemsBySegment = sourceIsPaperclipRunner
+        ? omitProgressRepeatedByResponseAcrossSegments(
+            projectedSegments.map(({ timelineItems }) => timelineItems),
+            sourceResponseText,
+          )
+        : projectedSegments.map(({ timelineItems }) => timelineItems);
+      let lastPopulatedSegmentIndex = -1;
+      for (let index = projectedSegments.length - 1; index >= 0; index -= 1) {
+        if ((projectedSegments[index]?.segment.entries.length ?? 0) > 0) {
+          lastPopulatedSegmentIndex = index;
+          break;
+        }
+      }
+      // A yielded turn's authored reply renders once, in the segment that
+      // contains it: the last segment with an authored final, which is where
+      // the whole-run scan found it. A steering anchor can split the turn, so
+      // the last populated segment is not always the right one.
+      const yieldedOptions = {
+        runId: source.id,
+        agentName: meta?.agentName,
+        allowFallback: false,
+        yielded: true,
+        waitSummary: acceptedSummary,
+      };
+      const yieldedResponseSegmentIndex = sourceYieldedResponse
+        ? projectedSegments.findLastIndex(({ parsed }) =>
+            Boolean(paperclipRunnerFinalResponse(parsed, yieldedOptions)))
+        : -1;
+      const settledSegmentFinalResponse = (
+        segmentIndex: number,
+        parsed: readonly TaskChatItem[],
+      ): TaskChatMessageItem | undefined => {
+        if (!sourceIsPaperclipRunner) return undefined;
+        const lastSegment = segmentIndex === lastPopulatedSegmentIndex;
+        if (sourceYielded) {
+          if (!sourceYieldedResponse) return undefined;
+          if (yieldedResponseSegmentIndex === -1) return lastSegment ? sourceYieldedResponse : undefined;
+          return segmentIndex === yieldedResponseSegmentIndex
+            ? paperclipRunnerFinalResponse(parsed, yieldedOptions)
             : undefined;
-        if (
-          children.length === 0 &&
-          !finalResponse &&
-          !sourceIsPaperclipRunner
-        )
+        }
+        if (sourceHasPresentationComment) return undefined;
+        // A steering anchor may split acceptance from its terminal. Keep the
+        // whole-run proof and render its answer exactly once.
+        if (sourceAcceptedResponseWake) {
+          return lastSegment
+            ? paperclipRunnerFinalResponse(parsedSource, { runId: source.id, agentName: meta?.agentName })
+            : undefined;
+        }
+        return paperclipRunnerFinalResponse(parsed, {
+          runId: source.id,
+          agentName: meta?.agentName,
+          fallbackSummary: lastSegment ? acceptedSummary : undefined,
+          allowFallback: sourceAllowSummaryFallback,
+        });
+      };
+      for (const [segmentIndex, projected] of projectedSegments.entries()) {
+        const { segment, parsed } = projected;
+        if (segment.entries.length === 0) continue;
+        const finalResponse = settledSegmentFinalResponse(segmentIndex, parsed);
+        const runHealth = {
+          failures: projectedSegments[segmentIndex]?.mcpStartupFailures ?? [],
+          rest: partitionRunHealthItems(timelineItemsBySegment[segmentIndex] ?? []).rest,
+        };
+        const children = settledRunChildren(runHealth.rest);
+        // A compaction-only run is fully shown by its divider.
+        if (children.length === 0 && !finalResponse && (!sourceIsPaperclipRunner || compactionMarkers.length > 0)) {
+          if (compactionMarkers.length > 0) settledRunIds.add(source.id);
           continue;
+        }
         settledRunIds.add(source.id);
+        if (finalResponse) settledReplyRunIds.add(source.id);
         const segmented = timelineAnchors.length > 0;
         const turnId = segmented
           ? `${source.id}:turn:${segmentIndex}`
@@ -1436,19 +2221,24 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           ],
         });
         settledTurns.push({
+          sourceRunId: source.id,
           turn: {
             id: turnId,
             kind: "turn",
             settled: true,
+            historical,
             agentName:
               meta?.agentName ??
               (meta?.agentId ? agentMap?.get(meta.agentId)?.name : undefined),
-            agentIcon: meta?.agentId
+            agent: meta?.agentId ? agentMap?.get(meta.agentId) ?? { id: meta.agentId } : undefined,
+              agentIcon: meta?.agentId
               ? agentMap?.get(meta.agentId)?.icon
               : undefined,
             standaloneHeader: sourceIsPaperclipRunner,
+            continuedAfterSteering: sourceIsPaperclipRunner && segmentIndex > 0,
             animateFold: liveSeenRef.current.has(source.id),
             items: children,
+            ...(runHealth.failures.length > 0 ? { mcpStartupFailures: runHealth.failures } : {}),
             finalResponse,
             summary: buildTurnSummary(segment.entries, {
               durationMs: segmentDurationMs,
@@ -1457,7 +2247,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           },
           anchorCommentId: segmented
             ? null
-            : (lastCommentIdByRun.get(source.id) ?? null),
+            : sourceIsPaperclipRunner
+              ? sourceHasPresentationComment
+                ? sourcePresentationCommentId
+                : null
+              : (lastCommentIdByRun.get(source.id) ?? null),
           // A post-steering segment ties the acknowledgement-backed human
           // bubble and is therefore inserted immediately after it. The first
           // segment retains the normal run-start slot.
@@ -1472,10 +2266,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     // settled ids and projection makes the terminal handoff structurally
     // identical instead of moving one unsplit live turn around the steer.
     if (liveRun) {
-      const timelineAnchors =
-        isNativePaperclipRunnerRun(liveRun)
-          ? (steeringAnchorsByRun.get(liveRun.id) ?? [])
-          : (legacyTimelineAnchorsByRun.get(liveRun.id) ?? []);
+      const timelineAnchors = isNativePaperclipRunnerRun(liveRun)
+        ? (steeringAnchorsByRun.get(liveRun.id) ?? [])
+        : (legacyTimelineAnchorsByRun.get(liveRun.id) ?? []);
       if (timelineAnchors.length > 0) {
         const entries = transcriptByRun.get(liveRun.id) ?? [];
         const startSlotMs =
@@ -1486,23 +2279,27 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           startSlotMs,
           timelineAnchors,
         );
+        const runtimeRequests = runtimeRequestSegmentContext(entries, {
+          runId: liveRun.id, agentName: liveRun.agentName, running: true,
+        });
         for (const [segmentIndex, segment] of segments.slice(0, -1).entries()) {
           if (segment.entries.length === 0) continue;
-          const parsedTranscript = transcriptToTaskChatItems(segment.entries, {
+          const parsedTranscript = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems(segment.entries, {
             runId: liveRun.id,
             agentName: liveRun.agentName,
             running: false,
-          });
+          }), segment.entries, runtimeRequests);
           const parsed =
             liveRun.id === planDocumentSourceRunId && planTurnItem
               ? embedPlanDocumentAtWriteBoundary(parsedTranscript, planTurnItem)
               : parsedTranscript;
-          const children = settledRunChildren(
+          const runHealth = partitionRunHealthItems(
             isNativePaperclipRunnerRun(liveRun)
               ? paperclipRunnerTimelineItems(parsed)
               : parsed,
           );
-          if (children.length === 0) continue;
+          const children = settledRunChildren(runHealth.rest);
+          if (children.length === 0 && runHealth.failures.length === 0) continue;
           const turnId = `${liveRun.id}:turn:${segmentIndex}`;
           const segmentDurationMs =
             Number.isFinite(segment.startMs) && Number.isFinite(segment.endMs)
@@ -1520,6 +2317,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ],
           });
           settledTurns.push({
+            sourceRunId: liveRun.id,
             turn: {
               id: turnId,
               kind: "turn",
@@ -1529,11 +2327,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                 (liveRun.agentId
                   ? agentMap?.get(liveRun.agentId)?.name
                   : undefined),
+              agent: liveRun.agentId ? agentMap?.get(liveRun.agentId) ?? { id: liveRun.agentId } : undefined,
               agentIcon: liveRun.agentId
                 ? agentMap?.get(liveRun.agentId)?.icon
                 : undefined,
               standaloneHeader: isNativePaperclipRunnerRun(liveRun),
+              continuedAfterSteering:
+                isNativePaperclipRunnerRun(liveRun) && segmentIndex > 0,
               items: children,
+              ...(runHealth.failures.length > 0 ? { mcpStartupFailures: runHealth.failures } : {}),
               summary: buildTurnSummary(segment.entries, {
                 durationMs: segmentDurationMs,
               }),
@@ -1550,7 +2352,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
     const turnsByAnchor = new Map<string, TaskChatTurnItem[]>();
     const unanchored: { turn: TaskChatTurnItem; startMs: number }[] = [];
-    for (const { turn, anchorCommentId, startMs } of settledTurns) {
+    for (const { turn, sourceRunId, anchorCommentId, startMs } of settledTurns) {
+      sourceRunByItemId.set(turn.id, sourceRunId);
       if (anchorCommentId) {
         const list = turnsByAnchor.get(anchorCommentId) ?? [];
         list.push(turn);
@@ -1584,36 +2387,57 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return {
       items: prependIssueBrief(
         attachSettledTurns(
-          coalesceSettledTurns(out, turnMergeMetaById),
+          coalesceSettledTurns(
+            coordinatorEnabled ? orderTaskCreationItems(out, sourceRunByItemId) : out,
+            turnMergeMetaById,
+          ),
           turnMergeMetaById,
         ),
         hasBrief,
       ),
       settledRunIds,
+      settledReplyRunIds,
     };
   }, [
     orderedEntries,
+    coordinatorEnabled,
+    conversationWindowStart,
+    decisionReceipts.receipts,
+    pendingQuestions.questions,
+    taskHandoffs.handoffs,
+    liveHandoffIds,
+    props.interruption,
+    statusRelevance,
+    canRetryFailedRun,
+    interactions,
     runs,
     liveRun,
     transcriptByRun,
+    terminalHydratedRunIds,
     linkedRunMetaById,
     lastCommentIdByRun,
+    comments,
+    projectedComments,
     steeringAnchorsByRun,
     legacyTimelineAnchorsByRun,
     hasBrief,
+    planDocument,
     planDocumentSourceRunId,
     planTurnItem,
     agentMap,
+    currentUserId,
+    userLabelMap,
   ]);
 
   // Hand off once the settled turn or its reply comment is in the thread; a
   // stopped run that yields neither is released by the backstop timeout so the
   // tail never lingers indefinitely.
+  const settlingRunSource =
+    settlingRun != null ? runs.find((run) => run.id === settlingRun.id) : undefined;
   const settlingIsPaperclipRunner =
-    settlingRun != null &&
-    isNativePaperclipRunnerRun(
-      runs.find((run) => run.id === settlingRun.id),
-    );
+    settlingRun != null && isNativePaperclipRunnerRun(settlingRunSource);
+  // A stopped turn posts no reply, so its settled turn is already complete.
+  const settlingRunStopped = settlingRunSource?.status === "cancelled";
   const settlingHasComment =
     settlingRun != null &&
     comments.some((comment) =>
@@ -1638,7 +2462,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     settlingRun != null &&
     (settlingIsPaperclipRunner
       ? settledRunIds.has(settlingRun.id) &&
-        (settlingHasComment || settlingHasDurableInteraction)
+        (settlingHasComment ||
+          settlingHasDurableInteraction ||
+          settlingRunStopped ||
+          // A projected terminal answer can already own the response while
+          // the canonical comment request is still in flight. Do not show a
+          // second activity tail just because that fetch is slower.
+          settledReplyRunIds.has(settlingRun.id))
       : settlingHasComment || settledRunIds.has(settlingRun.id));
   useEffect(() => {
     if (!settlingRun) return;
@@ -1665,19 +2495,41 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     : showSettlingTail
       ? settlingRun!.id
       : null;
+  // A running (or still settling) turn lives outside the chronological body.
+  // Its task cards follow that same tail until the complete turn takes over.
+  const [threadItems, tailTaskCreationItems] = useMemo<[TaskChatItem[], TaskChatItem[]]>(() => {
+    if (!coordinatorEnabled || !tailRunId) return [items, []];
+    const body: TaskChatItem[] = [];
+    const tail: TaskChatItem[] = [];
+    for (const item of items) {
+      (taskCreationSourceRunId(item) === tailRunId ? tail : body).push(item);
+    }
+    return [body, tail];
+  }, [items, coordinatorEnabled, tailRunId]);
   const tailStreaming = Boolean(liveRun);
   const tailRunSource = tailRunId
     ? runs.find((run) => run.id === tailRunId)
     : undefined;
   const paperclipRunnerTail = isNativePaperclipRunnerRun(tailRunSource);
+  const paperclipRunnerTailAwaitingContinuation = Boolean(
+    paperclipRunnerTail &&
+    (acceptedSemanticResultDisposition(
+      tailRunId ? linkedRunMetaById.get(tailRunId)?.resultJson : null,
+    ) === "yielded" ||
+      (interactions ?? []).some(
+        (interaction) =>
+          interaction.sourceRunId === tailRunId &&
+          interaction.status === "pending",
+      )),
+  );
   const tailAllEntries = tailRunId
     ? (transcriptByRun.get(tailRunId) ?? [])
     : [];
   const tailActivityUnavailable = Boolean(
-    tailRunId
-      && nativeTranscriptErrorsByRun.has(tailRunId)
-      && (logTranscriptByRun.get(tailRunId)?.length ?? 0) === 0
-      && !logsAreInitiallyHydrating,
+    tailRunId &&
+    nativeTranscriptErrorsByRun.has(tailRunId) &&
+    (logTranscriptByRun.get(tailRunId)?.length ?? 0) === 0 &&
+    !logsAreInitiallyHydrating,
   );
   const tailTimelineAnchors = tailRunId
     ? paperclipRunnerTail
@@ -1697,19 +2549,21 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // A fresh array is produced on every render. Track every presentation field
   // that can change without changing the entry count or text length so channel,
   // lifecycle, result status, and usage-only updates invalidate the projection.
-  const tailEntryContentKey = tailEntries.reduce((key, entry) => {
+  const tailEntryContentKey = tailAllEntries.reduce((key, entry) => {
     const textIdentity = "text" in entry ? entry.text : "";
     const contentIdentity = "content" in entry ? entry.content : "";
-    const channelIdentity = "channel" in entry ? entry.channel ?? "" : "";
-    const lifecycleIdentity = "lifecycle" in entry ? entry.lifecycle ?? "" : "";
+    const channelIdentity = "channel" in entry ? (entry.channel ?? "") : "";
+    const lifecycleIdentity =
+      "lifecycle" in entry ? (entry.lifecycle ?? "") : "";
     const statusIdentity =
       "isError" in entry ? (entry.isError ? "error" : "ok") : "";
     const usageIdentity =
       entry.kind === "result"
         ? `${entry.subtype}:${entry.inputTokens}:${entry.outputTokens}:${entry.cachedTokens}:${entry.costUsd}`
         : "";
-    return `${key}|${entry.kind}:${channelIdentity}:${lifecycleIdentity}:${statusIdentity}:${usageIdentity}:${textIdentity}:${contentIdentity}`;
-  }, String(tailEntries.length));
+    const requestIdentity = entry.kind === "runtime_request" ? JSON.stringify(entry) : "";
+    return `${key}|${entry.kind}:${channelIdentity}:${lifecycleIdentity}:${statusIdentity}:${usageIdentity}:${textIdentity}:${contentIdentity}:${requestIdentity}`;
+  }, String(tailAllEntries.length));
   const tailContentKey = `${tailSegmentStartMs ?? "run-start"}:${tailEntryContentKey}`;
   const blockerContentKey = blockerLinks
     ? `${blockerLinks.directBlocker.id}:${blockerLinks.ultimateBlocker?.id ?? ""}`
@@ -1720,6 +2574,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ? `${tailPlanItem.id}:${tailPlanItem.document.body.length}`
     : "";
   const threadContentKey = `${taskChatContentKey(items)}:${tailContentKey}:${tailPlanContentKey}:${blockerContentKey}`;
+  const repeatBlockersAtBottom =
+    !streamlinedUiEnabled || shouldRepeatTaskChatBlockers(items);
+  const bottomBlockerLinks = repeatBlockersAtBottom ? (
+    liveWorkLinks ? (
+      <TaskChatLiveWorkLinks liveWork={liveWorkLinks} placement="bottom" companyId={companyId} />
+    ) : blockerLinks ? (
+      <TaskChatBlockerLinks
+        directBlocker={blockerLinks.directBlocker}
+        ultimateBlocker={blockerLinks.ultimateBlocker}
+        placement="bottom"
+      />
+    ) : null
+  ) : null;
 
   // Status-pill inputs for the tail (PAP-461, A1): the run's start, its finish
   // (once terminal), and the "called N tools" summary. Memoized on the
@@ -1733,11 +2600,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const tailStatus = liveRun
     ? liveRun.status
     : (runs.find((run) => run.id === settlingRun?.id)?.status ?? "succeeded");
-  const tailStartedAtMs = liveRun
-    ? (tailSegmentStartMs ??
-      (liveRun.startedAt ? toMs(liveRun.startedAt) : null) ??
-      toMs(liveRun.createdAt))
-    : (settlingRun?.startedAtMs ?? null);
+  const tailStartedAtMs =
+    tailSegmentStartMs ??
+    (liveRun
+      ? ((liveRun.startedAt ? toMs(liveRun.startedAt) : null) ??
+        toMs(liveRun.createdAt))
+      : (settlingRun?.startedAtMs ?? null));
   const tailFinishedAtMs = liveRun
     ? liveRun.finishedAt
       ? toMs(liveRun.finishedAt)
@@ -1760,23 +2628,45 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // pill's own second-tick keeps the elapsed readout moving. `running` follows
   // tailStreaming: true while live, false through the settle gap — so the tail
   // renders identically either side of the run finishing.
+  const {
+    pending: runnerSubmissionPending,
+    agentId: submissionAgentId,
+    takingLonger: submissionTakingLonger,
+    begin: beginSubmission,
+    reject: rejectSubmission,
+    blocked: startupBlocked,
+  } = useRunnerSubmission({
+    issueId: issueId ?? null,
+    agentId: issueAssigneeAgentId,
+    agent: agentMap?.get(issueAssigneeAgentId ?? ""),
+    blocked: Boolean(composerPause),
+    comments,
+    issueStatus,
+    runId: liveRun?.id ?? null,
+    linkedRuns,
+    interruption: props.interruption,
+    onRefresh: props.onRefreshLatestComments,
+  });
   const tailAgentName =
     liveRun?.agentName ?? linkedRunMetaById.get(tailRunId ?? "")?.agentName;
   const tailAgentId =
     liveRun?.agentId ??
     linkedRunMetaById.get(tailRunId ?? "")?.agentId ??
-    issueAssigneeAgentId;
+    submissionAgentId ?? issueAssigneeAgentId;
   const tailAgent = tailAgentId ? agentMap?.get(tailAgentId) : undefined;
   const visibleTailAgentName = tailAgentName ?? tailAgent?.name ?? null;
   const visibleTailAgentIcon = tailAgent?.icon ?? null;
   const tailItems = useMemo(
     () => {
       if (!tailRunId) return [];
-      const parsed = transcriptToTaskChatItems(tailEntries, {
+      const runtimeRequests = runtimeRequestSegmentContext(tailAllEntries, {
+        runId: tailRunId, agentName: tailAgentName, running: tailStreaming,
+      });
+      const parsed = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems(tailEntries, {
         runId: tailRunId,
         agentName: tailAgentName,
         running: tailStreaming,
-      });
+      }), tailEntries, runtimeRequests, tailStreaming);
       return tailPlanItem
         ? embedPlanDocumentAtWriteBoundary(parsed, tailPlanItem)
         : parsed;
@@ -1804,6 +2694,28 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       item: TaskChatRuntimeRequestItem,
       decision: TaskChatRuntimeRequestDecision,
     ) => {
+      const projected = (interactions ?? []).find((interaction) =>
+        interaction.kind === "ask_user_questions" && interaction.sourceRunId === item.runId &&
+        interaction.payload.runtimeRequestId === item.requestId);
+      if (projected?.kind === "ask_user_questions") {
+        if (projected.status !== "pending") throw new Error("This question has already been answered or closed.");
+        if (decision.action === "cancel") {
+          if (!onCancelInteraction) throw new Error("Cancelling this question is unavailable.");
+          await onCancelInteraction(projected);
+          return;
+        }
+        if (decision.action !== "submit" || !("response" in decision) || !projected.payload.questionSet || !onSubmitInteractionAnswers) {
+          throw new Error("Submit the answer through the saved question card.");
+        }
+        const response = decision.response;
+        await onSubmitInteractionAnswers(projected, projected.payload.questionSet.questions.map(question => {
+          const answer = response.answers[question.id];
+          const otherText = question.answerMode === "text" ? answer?.text?.trim() : answer?.customText?.trim();
+          return { questionId: question.id, optionIds: question.answerMode === "text" ? [] : (answer?.selectedOptionIds ?? []),
+            ...(otherText ? { otherText } : {}) };
+        }));
+        return;
+      }
       if (!item.turnId || !item.requestKind) {
         throw new Error(
           "This runtime request is missing the provider turn identity needed to resolve it.",
@@ -1839,14 +2751,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         resolution,
       });
     },
-    [],
+    [interactions, onSubmitInteractionAnswers, onCancelInteraction],
   );
   const pendingComposerInputs = useMemo<PendingComposerInput[]>(() => {
     const result: PendingComposerInput[] = [];
     const runtimeKey = pendingRuntimeRequest
       ? `runtime:${pendingRuntimeRequest.runId}:${pendingRuntimeRequest.requestId}`
       : null;
-    if (pendingRuntimeRequest && runtimeKey) {
+    // A projected card owns the durable answer and forwards it to the live
+    // provider. Bypassing it leaves a pending card that blocks completion.
+    const projectedRuntime = pendingRuntimeRequest && (interactions ?? []).some(interaction =>
+      interaction.kind === "ask_user_questions" && interaction.sourceRunId === pendingRuntimeRequest.runId &&
+      interaction.payload.runtimeRequestId === pendingRuntimeRequest.requestId);
+    if (pendingRuntimeRequest && runtimeKey && !projectedRuntime) {
       result.push({
         key: runtimeKey,
         kind: "runtime",
@@ -1862,6 +2779,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       .filter(
         (interaction) =>
           interaction.status === "pending" &&
+          interaction.kind !== "connection_intent" &&
+          !(coordinatorEnabled && interaction.kind === "suggest_tasks") &&
           !shouldHideInteractionCard(interaction),
       )
       .sort((left, right) => toMs(right.createdAt) - toMs(left.createdAt));
@@ -1873,7 +2792,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           ? `runtime:${interaction.sourceRunId}:${interaction.payload.runtimeRequestId}`
           : null;
       const key = recoveredRuntimeKey ?? `interaction:${interaction.id}`;
-      if (key === runtimeKey) continue;
+
       result.push({
         key,
         kind: "durable",
@@ -1882,49 +2801,93 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       });
     }
     return result;
-  }, [interactions, pendingRuntimeRequest]);
+  }, [interactions, pendingRuntimeRequest, coordinatorEnabled]);
+  const { dismissedQuestionIds: dismissedInputIds, dismissQuestion: dismissInput } = useDismissedTaskQuestions(issueId, currentUserId);
+  const isInputDismissed = useCallback((input: PendingComposerInput) =>
+    input.kind === "durable"
+      ? Boolean(input.interaction.dismissedAt) || dismissedInputIds.has(input.interaction.id) || dismissedInputIds.has(input.key)
+      : dismissedInputIds.has(input.key), [dismissedInputIds]);
+  const [dismissError, setDismissError] = useState<string | null>(null);
+  const latestUserComment = useMemo(() => comments
+    .filter(comment => !comment.deletedAt && comment.authorUserId && !comment.authorAgentId && !comment.createdByRunId)
+    .reduce<(typeof comments)[number] | null>((latest, comment) =>
+      !latest || toMs(comment.createdAt) >= toMs(latest.createdAt) ? comment : latest, null), [comments]);
+  const currentPendingInputs = useMemo(() => pendingComposerInputs.filter(input =>
+    !isInputDismissed(input) && !(input.kind === "durable"
+      && latestUserComment && toMs(input.interaction.createdAt) < toMs(latestUserComment.createdAt))),
+  [pendingComposerInputs, isInputDismissed, latestUserComment]);
+  const pendingReminderInputs = useMemo(() => currentPendingInputs.filter(input =>
+    !(input.kind === "durable" && input.interaction.kind === "ask_user_questions")),
+  [currentPendingInputs]);
+  const currentPendingKeys = useMemo(() => new Set(currentPendingInputs.map(input => input.key)), [currentPendingInputs]);
   const [takeoverMode, setTakeoverMode] = useState<"open" | "normal">("open");
   const [selectedPendingKey, setSelectedPendingKey] = useState<string | null>(
     null,
   );
+  const explicitlyOpenedInputRef = useRef<string | null>(null);
+  const inputSelectionVersionRef = useRef(0);
   const knownPendingKeysRef = useRef<Set<string>>(new Set());
+  const lastInputUserCommentRef = useRef(latestUserComment);
   useEffect(() => {
     const currentKeys = new Set(
       pendingComposerInputs.map((input) => input.key),
     );
     const hasNewInput = pendingComposerInputs.some(
-      (input) => !knownPendingKeysRef.current.has(input.key),
+      (input) => currentPendingKeys.has(input.key) && !knownPendingKeysRef.current.has(input.key),
     );
+    const previousUserComment = lastInputUserCommentRef.current;
+    const movedOn = latestUserComment && previousUserComment?.id !== latestUserComment.id
+      && (!previousUserComment || toMs(latestUserComment.createdAt) >= toMs(previousUserComment.createdAt));
+    lastInputUserCommentRef.current = latestUserComment;
     knownPendingKeysRef.current = currentKeys;
-    setSelectedPendingKey((current) =>
-      current && currentKeys.has(current)
+    setSelectedPendingKey((current) => {
+      if (hasNewInput) return currentPendingInputs[0]?.key ?? null;
+      const currentInput = pendingComposerInputs.find(input => input.key === current);
+      const requestMovedOn = movedOn && currentInput?.kind === "durable"
+        && !isInputDismissed(currentInput) && !currentPendingKeys.has(currentInput.key);
+      return current && currentKeys.has(current)
+        && (currentPendingKeys.has(current) || explicitlyOpenedInputRef.current === current)
+        && !requestMovedOn
         ? current
-        : (pendingComposerInputs[0]?.key ?? null),
-    );
-    if (hasNewInput) setTakeoverMode("open");
-  }, [pendingComposerInputs]);
+        : (currentPendingInputs[0]?.key ?? null);
+    });
+    if (hasNewInput) {
+      inputSelectionVersionRef.current += 1;
+      setTakeoverMode("open");
+    }
+  }, [pendingComposerInputs, latestUserComment, currentPendingInputs, currentPendingKeys, isInputDismissed]);
   const selectedPendingInput =
     pendingComposerInputs.find((input) => input.key === selectedPendingKey) ??
-    pendingComposerInputs[0] ??
+    currentPendingInputs[0] ??
     null;
+  const selectedPendingInputKeyRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    selectedPendingInputKeyRef.current = selectedPendingInput?.key ?? null;
+  }, [selectedPendingInput?.key]);
   const interactionDraftKey = selectedPendingInput
     ? `paperclip:task-input:${issueId ?? "unknown"}:${selectedPendingInput.key}`
     : undefined;
   const openPendingTakeover = useCallback(() => {
+    inputSelectionVersionRef.current += 1;
+    if (!pendingReminderInputs.some(input => input.key === selectedPendingInput?.key)) {
+      setSelectedPendingKey(pendingReminderInputs[0]?.key ?? null);
+    }
     setTakeoverMode("open");
-  }, []);
+  }, [pendingReminderInputs, selectedPendingInput]);
   const showNextPendingInput = useCallback(() => {
-    if (pendingComposerInputs.length < 2) return;
-    const currentIndex = pendingComposerInputs.findIndex(
+    if (pendingReminderInputs.length < 2) return;
+    inputSelectionVersionRef.current += 1;
+    const currentIndex = pendingReminderInputs.findIndex(
       (input) => input.key === selectedPendingInput?.key,
     );
     setSelectedPendingKey(
-      pendingComposerInputs[(currentIndex + 1) % pendingComposerInputs.length]
+      pendingReminderInputs[(currentIndex + 1) % pendingReminderInputs.length]
         ?.key ?? null,
     );
-  }, [pendingComposerInputs, selectedPendingInput?.key]);
+  }, [pendingReminderInputs, selectedPendingInput?.key]);
   const skipPendingInput = useCallback(
     async (input: PendingComposerInput) => {
+      inputSelectionVersionRef.current += 1;
       if (input.kind === "runtime") {
         await handleRuntimeRequestDecision(input.item, { action: "cancel" });
       } else {
@@ -1937,38 +2900,37 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     [handleRuntimeRequestDecision, onSkipInteraction],
   );
   const runtimeComposerDisabledReason = composerDisabledReason ?? undefined;
-  const assigneeUsesPaperclipRunner = Boolean(
-    issueAssigneeAgentId &&
-    agentMap?.get(issueAssigneeAgentId)?.adapterType === "paperclip_runner",
-  );
-  const [runnerSubmissionPending, setRunnerSubmissionPending] = useState(false);
-  useEffect(() => {
-    if (tailRunId) setRunnerSubmissionPending(false);
-  }, [tailRunId]);
-  useEffect(() => {
-    if (!runnerSubmissionPending || tailRunId) return;
-    const timeout = window.setTimeout(
-      () => setRunnerSubmissionPending(false),
-      10_000,
-    );
-    return () => window.clearTimeout(timeout);
-  }, [runnerSubmissionPending, tailRunId]);
+  const hasAgentAssignee = Boolean(submissionAgentId ?? issueAssigneeAgentId);
   const handleThreadAdd = useCallback(
     async (...args: Parameters<typeof onAdd>) => {
-      if (assigneeUsesPaperclipRunner) setRunnerSubmissionPending(true);
+      args[4] ??= crypto.randomUUID();
+      const attempt = beginSubmission(args[4], args[2] ? {
+        agentId: args[2].assigneeAgentId,
+        agent: agentMap?.get(args[2].assigneeAgentId ?? ""),
+      } : undefined, args[1]);
+      const selectionVersion = ++inputSelectionVersionRef.current;
+      explicitlyOpenedInputRef.current = null;
+      setTakeoverMode("normal");
       try {
         await onAdd(...args);
+        dismissInput(pendingComposerInputs.map(input => input.kind === "durable" ? input.interaction.id : input.key));
       } catch (error) {
-        setRunnerSubmissionPending(false);
+        if (inputSelectionVersionRef.current === selectionVersion) {
+          explicitlyOpenedInputRef.current = selectedPendingInput?.key ?? null;
+          setSelectedPendingKey(selectedPendingInput?.key ?? null);
+          setTakeoverMode(takeoverMode);
+        }
+        rejectSubmission(attempt, error);
         throw error;
       }
     },
-    [assigneeUsesPaperclipRunner, onAdd],
+    [beginSubmission, rejectSubmission, onAdd, pendingComposerInputs, selectedPendingInput, dismissInput, agentMap, takeoverMode],
   );
   const optimisticRunnerStartup =
-    assigneeUsesPaperclipRunner &&
+    hasAgentAssignee &&
+    !startupBlocked &&
     !tailRunId &&
-    (runnerSubmissionPending ||
+    (props.retryPreparing || props.interruption?.state === "working" || runnerSubmissionPending ||
       commentItems.some(
         (item) =>
           item.kind === "message" &&
@@ -1997,6 +2959,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       return (
         <TaskChatBubbleActions
           copyText={item.text}
+          fastResponse={item.origin === "fast_response"}
           feedback={
             onVote
               ? {
@@ -2020,9 +2983,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
   const renderQueuedAction = useCallback(
     (item: TaskChatMessageItem) => {
-      if (paperclipQueue) return null;
       const runId = item.queueTargetRunId;
-      if (item.optimistic !== "queued" || !runId || !onInterruptQueued)
+      if (composerPause || item.optimistic !== "queued" || !runId || !onInterruptQueued)
         return null;
 
       const isInterrupting = interruptingQueuedRunId === runId;
@@ -2038,13 +3000,24 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         </Button>
       );
     },
-    [interruptingQueuedRunId, onInterruptQueued, paperclipQueue],
+    [composerPause, interruptingQueuedRunId, onInterruptQueued],
   );
+
+  const reopenToolReview = useCallback((interactionId: string) => {
+    inputSelectionVersionRef.current += 1;
+    const key = pendingComposerInputs.find(input => input.kind === "durable" && input.interaction.id === interactionId)?.key ?? `interaction:${interactionId}`;
+    explicitlyOpenedInputRef.current = key;
+    setSelectedPendingKey(key);
+    setTakeoverMode("open");
+  }, [pendingComposerInputs]);
 
   const renderInteraction = useCallback(
     (item: TaskChatInteractionItem) => (
       <TaskChatInteractionCard
         item={item}
+        onReviewRequest={reopenToolReview}
+        showUnansweredQuestion
+        showPendingRequest
         planDocument={planDocument}
         showPlanPreview={
           !threadOwnsPlanPreview(
@@ -2084,7 +3057,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       planDocumentSourceRunId,
       settledRunIds,
       tailRunId,
+      reopenToolReview,
     ],
+  );
+
+  const historyControl = props.historyControl ?? (
+    props.compactHistory && props.onExpandHistory
+    && (deferredTranscriptRunIds.size > 0 || logRuns.some((run) => truncatedRunIds?.has(run.id)))
+      ? <Button type="button" variant="ghost" size="sm" onClick={props.onExpandHistory}>More run output</Button>
+      : null
+  );
+  const renderBrief = useCallback(
+    () => issueBrief ? <><TaskChatDescriptionBubble brief={issueBrief} />{historyControl}</> : null,
+    [issueBrief, historyControl],
   );
 
   const assignedAgentForNotice = useMemo(() => {
@@ -2131,9 +3116,33 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       ? {
           id: selectedPendingInput.key,
           label: selectedPendingInput.label,
-          pendingCount: pendingComposerInputs.length,
+          hideLabel:
+            selectedPendingInput.kind === "durable" &&
+            selectedPendingInput.interaction.kind === "request_confirmation" &&
+            Boolean(selectedPendingInput.interaction.payload.toolAction),
+          pendingCount: Math.max(1, pendingReminderInputs.length),
           content: takeoverContent,
-          onDismiss: () => setTakeoverMode("normal"),
+          onDismiss: () => {
+            inputSelectionVersionRef.current += 1;
+            void (async () => {
+              setDismissError(null);
+              try {
+                if (selectedPendingInput.kind === "durable") {
+                  await props.onDismissInteraction?.(selectedPendingInput.interaction);
+                  dismissInput(selectedPendingInput.interaction.id);
+                } else {
+                  dismissInput(selectedPendingInput.key);
+                }
+                if (selectedPendingInputKeyRef.current === selectedPendingInput.key) {
+                  explicitlyOpenedInputRef.current = null;
+                  setSelectedPendingKey(null);
+                  setTakeoverMode("normal");
+                }
+              } catch (error) {
+                setDismissError(error instanceof Error ? error.message : "Unable to dismiss this request. Try again.");
+              }
+            })();
+          },
           onSkip: () => skipPendingInput(selectedPendingInput),
           onShowNext: showNextPendingInput,
           inlineSkip:
@@ -2152,6 +3161,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               : runtimeRequestReplacesComposerSkip(selectedPendingInput.item),
         }
       : null;
+  const expansionState = useRef(new Map<string, boolean>());
   const autoFollowContentKey = `${threadContentKey}:${composerTakeover?.id ?? "composer"}`;
 
   // Mobile (PAP-360): the app shell scrolls the DOCUMENT (Layout's main is
@@ -2161,210 +3171,540 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // and track auto-follow against window scroll. Both paths include takeover
   // state so opening or closing composer input preserves bottom pinning.
   const { isMobile } = useSidebar();
-  useWindowAutoFollow(isMobile ? autoFollowContentKey : 0, isMobile);
+  const initialCommentWindow = useRef<{
+    oldestAt: number;
+    ids: Set<string>;
+  } | null>(null);
+  if (!initialCommentWindow.current && comments.length > 0) {
+    initialCommentWindow.current = {
+      oldestAt: Math.min(...comments.map((comment) => toMs(comment.createdAt))),
+      ids: new Set(comments.map((comment) => comment.id)),
+    };
+  }
+  const initialCommentRunIds = new Set(
+    comments
+      .filter((comment) => initialCommentWindow.current?.ids.has(comment.id))
+      .flatMap((comment) => [
+        comment.runId,
+        comment.createdByRunId,
+        comment.derivedCreatedByRunId,
+      ]),
+  );
+  const initialRuns = transcriptRuns.filter((run) => {
+    if (
+      !initialCommentWindow.current ||
+      !isTerminalRunStatus(run.status) ||
+      initialCommentRunIds.has(run.id)
+    )
+      return true;
+    const metadata = linkedRunMetaById.get(run.id);
+    return (
+      !metadata ||
+      toMs(metadata.finishedAt ?? metadata.startedAt ?? metadata.createdAt) >=
+        initialCommentWindow.current.oldestAt
+    );
+  });
+  const pendingTranscriptRuns = initialRuns.filter((run) => {
+    if (slowTranscriptRunIds.has(run.id)) return false;
+    // A scheduled retry has not started and has no log to hydrate yet.
+    if (run.status === "scheduled_retry") return false;
+    if (
+      run.runtimeMode === "native" &&
+      (hydratedNativeRunIds
+        ? !hydratedNativeRunIds.has(run.id)
+        : nativeEventsAreInitiallyHydrating)
+    )
+      return true;
+    if (
+      run.runtimeMode === "native" &&
+      (nativeTranscriptByRun.get(run.id)?.length ?? 0) > 0
+    )
+      return false;
+    return run.status !== "queued" && hydratedLogRunIds
+      ? !hydratedLogRunIds.has(run.id)
+      : logsAreInitiallyHydrating;
+  });
+  const transcriptHistoryPending = pendingTranscriptRuns.length > 0;
+  // Only these may stop holding the reveal after the budget. See
+  // selectBudgetedTranscriptRuns for the live, steered and settled rules.
+  const budgetedTranscriptRuns = selectBudgetedTranscriptRuns(pendingTranscriptRuns, {
+    compactDeferral: compactTranscriptDeferral,
+    hasTimelineAnchors: (run) => ((isNativePaperclipRunnerRun(run)
+      ? steeringAnchorsByRun.get(run.id)
+      : legacyTimelineAnchorsByRun.get(run.id))?.length ?? 0) > 0,
+  });
+  // The budget timer reads the runs that are still pending when it fires, so
+  // a transcript that hydrates early does not restart the budget.
+  const budgetedTranscriptRunsRef = useRef(budgetedTranscriptRuns);
+  budgetedTranscriptRunsRef.current = budgetedTranscriptRuns;
+  const hasBudgetedTranscriptRuns = budgetedTranscriptRuns.length > 0;
+  // Hydrating a run inserts activity around its saved reply and can move the
+  // latest viewport substantially. Compact opens hydrate only their bounded
+  // recent window, but its saved cards and latest turn must arrive together so
+  // the first readable frame already has its final structure.
+  const chatMetadataPending = Boolean(issueId && conversationMode && (
+    (pendingQuestions.enabled && pendingQuestions.isPending) ||
+    (decisionReceipts.enabled && decisionReceipts.isPending) ||
+    (taskHandoffs.enabled && taskHandoffs.isPending)
+  ));
+  const savedHistoryPending = initialHistoryPending || planLoading || chatMetadataPending;
+  const historyPending = savedHistoryPending || transcriptHistoryPending;
+  useEffect(() => {
+    recordIssueDetailReadiness({ plan: !planLoading, transcripts: !transcriptHistoryPending, history: !historyPending });
+  }, [issueId, planLoading, transcriptHistoryPending, historyPending]);
+  const historyError =
+    initialHistoryError ||
+    planError ||
+    runs.some((run) =>
+      run.runtimeMode === "native"
+        ? nativeTranscriptErrorsByRun.has(run.id) &&
+          (logTranscriptByRun.get(run.id)?.length ?? 0) === 0
+        : Boolean(logErrorsByRun?.has(run.id)),
+    );
+  const historyKey = conversationMode && draftKey ? draftKey : issueId;
+  const [revealedHistoryKey, setRevealedHistoryKey] = useState<string | null | undefined>(undefined);
+  const revealCachedHeader = connectionStatus !== "online" && Boolean(threadHeader);
+  const historyRevealed = revealedHistoryKey === historyKey || revealCachedHeader;
+  useEffect(() => {
+    if (revealCachedHeader) setRevealedHistoryKey(historyKey);
+  }, [revealCachedHeader, historyKey]);
+  // The budget is one deadline per history key. It starts the first time
+  // saved history is ready, and later changes to the pending runs keep it.
+  const transcriptRevealDeadline = useRef<{ historyKey: typeof historyKey; at: number } | null>(null);
+  useEffect(() => {
+    if (historyRevealed || savedHistoryPending) return;
+    if (transcriptRevealDeadline.current?.historyKey !== historyKey) {
+      transcriptRevealDeadline.current = { historyKey, at: Date.now() + INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS };
+    }
+    if (!hasBudgetedTranscriptRuns) return;
+    const timer = window.setTimeout(() => {
+      const expired = budgetedTranscriptRunsRef.current;
+      if (expired.length === 0) return;
+      setSlowTranscripts((current) => {
+        const previous = current && current.issueId === issueId ? current : null;
+        return {
+          issueId,
+          ids: new Set([...(previous?.ids ?? []), ...expired.map((run) => run.runId)]),
+          deferred: new Set([
+            ...(previous?.deferred ?? []),
+            ...expired.filter((run) => run.settled).map((run) => run.runId),
+          ]),
+        };
+      });
+    }, Math.max(0, transcriptRevealDeadline.current.at - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [historyRevealed, savedHistoryPending, hasBudgetedTranscriptRuns, historyKey, issueId]);
+  const historyShellRef = useRef<HTMLDivElement>(null);
+  const [expiredHistoryWait, setExpiredHistoryWait] = useState<{ historyKey: typeof historyKey } | null>(null);
+  const historyWaitExpired = expiredHistoryWait !== null && expiredHistoryWait.historyKey === historyKey;
+  const scrollTarget = taskChatHashAnchor(scrollNavigation.hash ?? "");
+  const scrollCommentId = scrollTarget?.startsWith("comment-") ? scrollTarget.slice("comment-".length) : null;
+  const scrollWaitKey = scrollCommentId ? JSON.stringify([issueId, scrollNavigation.key, scrollNavigation.hash]) : "";
+  const [expiredScrollWaitKey, setExpiredScrollWaitKey] = useState<string | null>(null);
+  const scrollTargetPending = Boolean(scrollCommentId && initialHistoryPending &&
+    !comments.some(comment => comment.id === scrollCommentId) && expiredScrollWaitKey !== scrollWaitKey);
+  useEffect(() => {
+    if (!scrollTargetPending) return;
+    const timer = window.setTimeout(() => setExpiredScrollWaitKey(scrollWaitKey), INITIAL_HISTORY_REVEAL_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [scrollTargetPending, scrollWaitKey]);
+  const prepareInitialContent = Boolean(scrollNavigation.hash) || !historyPending || historyRevealed || historyWaitExpired;
+  // Supporting requests can stall without rejecting. Bound the first reveal
+  // independently of their pending states so saved conversation and the
+  // composer stay accessible, with an explicit incomplete-history notice.
+  useEffect(() => {
+    if (historyRevealed) return;
+    const timer = window.setTimeout(() => {
+      setExpiredHistoryWait({ historyKey });
+      setRevealedHistoryKey(historyKey);
+    }, INITIAL_HISTORY_REVEAL_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [historyRevealed, historyKey]);
+  // Mount and measure the real thread while concealed. The properties pane
+  // can still be opening when data becomes ready; revealing during its width
+  // transition rewraps cards and races initial anchor/focus scrolling.
+  // Readiness is latched per issue: refetches never hide existing conversation.
+  useEffect(() => {
+    if (historyRevealed || historyPending) return;
+    const fontWaitStarted = performance.now();
+    let previousGeometry: string | undefined;
+    let stableFrames = 0;
+    let frame: number;
+    const revealWhenSettled = () => {
+      const shell = historyShellRef.current;
+      const bounds = shell?.getBoundingClientRect();
+      const scroller = shell?.querySelector('[data-testid="task-chat-scroller"]');
+      const composer = shell?.querySelector('[data-testid="task-chat-composer-dock"]');
+      const geometry = JSON.stringify([bounds?.x, bounds?.y, bounds?.width, bounds?.height,
+        scroller?.clientHeight, scroller?.scrollHeight, scroller?.scrollTop, composer?.getBoundingClientRect().height]);
+      const fontsPending = document.fonts?.status === "loading" && performance.now() - fontWaitStarted < INITIAL_FONT_REVEAL_TIMEOUT_MS;
+      stableFrames = geometry === previousGeometry && !fontsPending ? stableFrames + 1 : 0;
+      previousGeometry = geometry;
+      if (stableFrames >= 2) setRevealedHistoryKey(historyKey);
+      else frame = requestAnimationFrame(revealWhenSettled);
+    };
+    frame = requestAnimationFrame(revealWhenSettled);
+    return () => cancelAnimationFrame(frame);
+  }, [historyPending, historyRevealed, historyKey]);
+  useEffect(() => {
+    if (!historyRevealed || !issueId) return;
+    scheduleIssueDetailPaintMeasure(ISSUE_DETAIL_CONTENT_PAINT_MARK, ISSUE_DETAIL_CONTENT_MEASURE);
+  }, [historyRevealed, issueId]);
+  const retryHistory = () => {
+    onRetryInitialHistory?.();
+    retryLogs?.();
+    retryNativeEvents?.();
+    void retryPlan();
+  };
 
   return (
-    <div
-      className={cn(
-        "flex flex-col",
-        !isMobile && "h-(--tc-thread-max-h) min-h-0 flex-1",
-      )}
-      data-testid="task-chat-thread"
-    >
-      <div className={cn("flex flex-col", !isMobile && "min-h-0 flex-1")}>
-        {items.length === 0 && !tailRunId ? (
+    <TaskChatRequestHistoryContext.Provider value={issueId ?? "unknown"}>
+    <TaskChatExpansionState.Provider value={expansionState.current}>
+      <TaskChatScrollReady.Provider value={(historyRevealed || !historyPending || historyWaitExpired) && !scrollTargetPending}>
+        <TaskChatPresentationProvider
+          mode={streamlinedUiEnabled ? "streamlined" : "production"}
+        >
           <div
-            className={isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"}
+            className={cn(
+              "relative flex min-h-0 flex-1 flex-col",
+              isMobile && !historyRevealed && "task-chat-history-pending",
+            )}
+            data-testid="task-chat-thread"
+            ref={historyShellRef}
           >
-            {threadHeaderWithBlockers ? (
+            {!historyRevealed ? (
+              <div className="absolute inset-0 z-10 overflow-hidden bg-background" data-testid="task-chat-history-loading">
+                <TaskChatLoadingShell mobile={isMobile} streamlined={streamlinedUiEnabled} coordinator={coordinatorEnabled} />
+              </div>
+            ) : null}
+            <div
+              className={cn(
+                "relative flex min-h-0 flex-1 flex-col",
+              )}
+              aria-busy={!historyRevealed}
+            >
+              {historyError || (historyPending && historyWaitExpired) ? (
+                <div
+                  role="status"
+                  className="absolute inset-x-0 top-0 z-20 mx-auto flex w-full max-w-(--tc-shell-max-w) items-center gap-2 border border-border bg-background px-4 py-2 text-sm text-muted-foreground"
+                >
+                  {historyError ? "Some task history could not be loaded." : "Some task history is still loading."}
+                  {historyError ? (
+                    <Button variant="ghost" size="sm" onClick={retryHistory}>
+                      Retry
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
               <div
+                data-testid="task-chat-history-content"
                 className={cn(
-                  "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-6 px-4",
-                  isMobile ? "pt-4" : "pt-3",
+                  "flex min-h-0 flex-1 flex-col",
+                  !historyRevealed && "invisible",
                 )}
-                data-testid="task-chat-thread-header"
+                inert={!historyRevealed}
               >
-                {threadHeaderWithBlockers}
+                {prepareInitialContent ? (
+                  <>
+                    {items.length === 0 && !tailRunId && !optimisticRunnerStartup && !scrollingHistory?.hasMore ? (
+                      <div
+                        className="min-h-0 flex-1 overflow-y-auto"
+                      >
+                        {threadHeaderWithBlockers || pendingQuestions.isError || decisionReceipts.isError || decisionReceipts.hasNextPage || taskHandoffs.isError || taskHandoffs.hasNextPage ? (
+                          <div
+                            className={cn(
+                              "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-6 px-4",
+                              isMobile ? "pt-4" : "pt-3",
+                              streamlinedUiEnabled && "md:px-0",
+                            )}
+                            data-testid="task-chat-thread-header"
+                          >
+                            {threadHeaderWithBlockers}
+                            <CoordinatorChatQuestionStatus query={pendingQuestions} /><CoordinatorChatReceiptStatus query={decisionReceipts} scroll={!!scrollingHistory} />
+                            <CoordinatorChatHandoffStatus query={taskHandoffs} scroll={!!scrollingHistory} />
+                          </div>
+                        ) : null}
+                        <div role={historyPending ? "status" : undefined} className="px-3 py-10 text-center text-sm text-muted-foreground">
+                          {historyPending ? "Loading task history…" : emptyMessage}
+                        </div>
+                        {bottomBlockerLinks ? (
+                          <div
+                            className={cn(
+                              "mx-auto w-full max-w-(--tc-shell-max-w) px-4 pb-4",
+                              streamlinedUiEnabled && "md:px-0",
+                            )}
+                          >
+                            {bottomBlockerLinks}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <TaskChatThreadView
+                        items={threadItems}
+                        scrollingHistory={scrollingHistory}
+                        attachments={attachments}
+                        header={<>{threadHeaderWithBlockers}{!issueBrief ? historyControl : null}<CoordinatorChatQuestionStatus query={pendingQuestions} /><CoordinatorChatReceiptStatus query={decisionReceipts} scroll={!!scrollingHistory} /><CoordinatorChatHandoffStatus query={taskHandoffs} scroll={!!scrollingHistory} /></>}
+                        renderInteraction={renderInteraction}
+                        renderBrief={renderBrief}
+                        renderMessageActions={renderMessageActions}
+                        renderQueuedAction={renderQueuedAction}
+                        onTryAgainNoLiveExecutionPath={
+                          issueStatus === "blocked" &&
+                          !requiresExecutionReconciliation(
+                            props.recoveryAction?.cause,
+                          ) &&
+                          !linkedRuns?.some(
+                            (run) => run.execution?.phase === "recovery_needed",
+                          )
+                            ? onTryAgainNoLiveExecutionPath
+                            : undefined
+                        }
+                        tryAgainNoLiveExecutionPathPending={
+                          tryAgainNoLiveExecutionPathPending
+                        }
+                        onRetryFailedRun={retryFailedRunHandler}
+                        retryFailedRunId={retryFailedRunId}
+                        onOpenSkill={onOpenSkill}
+                        onOpenBrowser={onOpenBrowser}
+                        tail={
+                          tailRunId ||
+                          optimisticRunnerStartup ||
+                          bottomBlockerLinks ? (
+                            <>
+                              {tailRunId || optimisticRunnerStartup ? (
+                                <div data-testid="task-chat-live-transcript">
+                                  <TaskChatShimmerScope items={tailItems}>
+                                  <TaskChatRunnerHeader
+                                    runId={tailRunId}
+                                    agentName={visibleTailAgentName}
+                                    agentIcon={visibleTailAgentIcon}
+                                    agent={tailAgent ?? (tailAgentId ? { id: tailAgentId } : undefined)}
+                                    status={optimisticRunnerStartup ? "queued" : tailStatus}
+                                    execution={liveRun?.id === tailRunId ? liveRun.execution : null}
+                                    preparationLabel={optimisticRunnerStartup && submissionTakingLonger ? "Taking longer than usual…" : undefined}
+                                    startedAtMs={tailStartedAtMs}
+                                    finishedAtMs={tailFinishedAtMs}
+                                    continuedAfterSteering={paperclipRunnerTail && tailTimelineAnchors.length > 0}
+                                    statusContent={tailRunSource?.adapterType !== "paperclip_runner" && !optimisticRunnerStartup ? (
+                                      <TaskChatLiveRunPill status={tailStatus} execution={liveRun?.id === tailRunId ? liveRun.execution : null}
+                                        startedAtMs={tailStartedAtMs} finishedAtMs={tailFinishedAtMs} toolSummary={tailToolSummary} />
+                                    ) : undefined}
+                                  />
+                                  {tailRunSource?.adapterType === "paperclip_runner" ||
+                                  optimisticRunnerStartup ? (
+                                    <TaskChatRunnerTurn
+                                      showHeader={false}
+                                      runId={tailRunId}
+                                      execution={
+                                        liveRun?.id === tailRunId
+                                          ? liveRun.execution
+                                          : null
+                                      }
+                                      agentName={visibleTailAgentName}
+                                      agentIcon={visibleTailAgentIcon}
+                                      agent={tailAgent ?? (tailAgentId ? { id: tailAgentId } : undefined)}
+                                      items={tailItems}
+                                      preparationLabel={optimisticRunnerStartup && submissionTakingLonger ? "Taking longer than usual…" : undefined}
+                                      allowSummaryFallback={!paperclipRunnerTail ||
+                                        terminalHydratedRunIds.has(tailRunId ?? "") ||
+                                        tailEntries.some((entry) => entry.kind === "run_terminal")}
+                                      status={
+                                        optimisticRunnerStartup
+                                          ? "queued"
+                                          : tailStatus
+                                      }
+                                      startedAtMs={tailStartedAtMs}
+                                      finishedAtMs={tailFinishedAtMs}
+                                      activityUnavailable={tailActivityUnavailable}
+                                      awaitingContinuation={
+                                        paperclipRunnerTailAwaitingContinuation
+                                      }
+                                      waitSummary={acceptedSemanticResultSummary(
+                                        tailRunId ? linkedRunMetaById.get(tailRunId)?.resultJson : null,
+                                      )}
+                                      continuedAfterSteering={
+                                        paperclipRunnerTail &&
+                                        tailTimelineAnchors.length > 0
+                                      }
+                                      onRuntimeRequestDecision={
+                                        handleRuntimeRequestDecision
+                                      }
+                                    />
+                                  ) : (
+                                    <TaskChatShimmerScope items={tailItems}>
+                                      <TaskChatLiveTail
+                                        items={tailItems}
+                                        emptyMessage={
+                                          tailStatus === "queued"
+                                            ? "Waiting to start..."
+                                            : (liveRun && liveRun.id === tailRunId
+                                                ? liveRun.currentStatusMessage
+                                                : null) ||
+                                              (tailStatus === "failed"
+                                                ? linkedRunMetaById.get(tailRunId ?? "")?.errorCode?.startsWith("workspace_git_scan_")
+                                                  ? "Workspace setup failed before the agent started."
+                                                  : "This run stopped before a response was available. Review the task’s connection or recovery action below."
+                                                : "Waiting for transcript...")
+                                        }
+                                      />
+                                    </TaskChatShimmerScope>
+                                  )}
+                                  </TaskChatShimmerScope>
+                                </div>
+                              ) : null}
+                              {tailTaskCreationItems.map(item => (
+                                <div key={item.id} data-thread-anchor={item.id} data-thread-item-kind={item.kind} className="mt-4">
+                                  {item.kind === "task_handoff"
+                                    ? <CoordinatorChatTaskHandoff handoff={item.handoff} animateEntry={item.animateEntry} />
+                                    : item.kind === "interaction" ? renderInteraction(item) : null}
+                                </div>
+                              ))}
+                              {bottomBlockerLinks}
+                            </>
+                          ) : null
+                        }
+                        contentKey={`${autoFollowContentKey}:${historyRevealed}`}
+                        className={isMobile ? undefined : "pt-3"}
+                      />
+                    )}
+                  </>
+                ) : null}
               </div>
-            ) : null}
-            <div className="px-3 py-10 text-center text-sm text-muted-foreground">
-              {emptyMessage}
             </div>
-            {bottomBlockerLinks ? (
-              <div className="mx-auto w-full max-w-(--tc-shell-max-w) px-4 pb-4">
-                {bottomBlockerLinks}
+            {assignedAgentForNotice?.status === "paused" && !isTerminalIssueStatus(issueStatus) ? (
+              <div className="mx-auto w-full max-w-(--tc-shell-max-w) px-4 pt-2">
+                <IssueAssigneePausedNotice
+                  agent={assignedAgentForNotice}
+                  issueStatus={issueStatus}
+                  onResume={onResumeAssignee}
+                  resuming={resumeAssigneePending}
+                />
               </div>
             ) : null}
-          </div>
-        ) : (
-          <TaskChatThreadView
-            items={items}
-            header={threadHeaderWithBlockers}
-            renderInteraction={renderInteraction}
-            renderBrief={
-              issueBrief
-                ? () => <TaskChatDescriptionBubble brief={issueBrief} />
-                : undefined
-            }
-            renderMessageActions={renderMessageActions}
-            renderQueuedAction={renderQueuedAction}
-            onTryAgainNoLiveExecutionPath={
-              issueStatus === "blocked"
-                ? onTryAgainNoLiveExecutionPath
-                : undefined
-            }
-            tryAgainNoLiveExecutionPathPending={
-              tryAgainNoLiveExecutionPathPending
-            }
-            tail={
-              tailRunId || optimisticRunnerStartup || bottomBlockerLinks ? (
-                <>
-                  {tailRunId || optimisticRunnerStartup ? (
-                    <div data-testid="task-chat-live-transcript">
-                      {paperclipRunnerTail || optimisticRunnerStartup ? (
-                        <TaskChatRunnerTurn
-                          runId={tailRunId}
-                          agentName={visibleTailAgentName}
-                          agentIcon={visibleTailAgentIcon}
-                          items={tailItems}
-                          status={
-                            optimisticRunnerStartup ? "queued" : tailStatus
+            {showComposer ? (
+              <TaskChatComposerDock mobile={isMobile} streamlined={streamlinedUiEnabled} concealed={!historyRevealed}>
+                {prepareInitialContent ? (
+                  <>
+                    {composerAccessory}
+                    {dismissError ? <p role="alert" className="text-sm text-destructive">{dismissError}</p> : null}
+                    {tailTurnStatus ? (
+                      <TaskChatTurnStatusIsland
+                        key={tailRunId ?? "turn-status"}
+                        model={tailTurnStatus}
+                        defaultCollapsed={isMobile}
+                        compact={composerTakeover != null || pendingRuntimeRequest != null}
+                      />
+                    ) : null}
+                    <RunnerGoalWidget control={runnerGoal} />
+                    <div
+                      className="relative isolate flex flex-col"
+                      data-testid="task-chat-composer-stack"
+                    >
+                      {!composerPause ? (
+                        <TaskChatQueuedMessages
+                          key={issueId}
+                          queue={queuedMessageQueue ?? emptyQueuedCommentQueue}
+                          onEdit={beginQueuedEdit}
+                          editingCommentId={queuedEdit?.commentId ?? null}
+                          autoSteerDelayMs={queuedMessageAutoSteerDelayMs}
+                          onReorder={async (orderedCommentIds, revision) => {
+                            if (!onReorderQueuedComments)
+                              throw new Error("Queue reordering is unavailable.");
+                            await onReorderQueuedComments(
+                              orderedCommentIds,
+                              revision,
+                            );
+                          }}
+                          onSteer={async (commentId, revision) => {
+                            if (!onSteerQueuedComment)
+                              throw new Error("Steering is unavailable.");
+                            await onSteerQueuedComment(commentId, revision);
+                          }}
+                          onInterrupt={
+                            onInterruptQueued && queuedMessageQueue?.queueId
+                              ? async () => {
+                                  return onInterruptQueued(
+                                    queuedMessageQueue.targetRunId,
+                                  );
+                                }
+                              : undefined
                           }
-                          startedAtMs={tailStartedAtMs}
-                          finishedAtMs={tailFinishedAtMs}
-                          activityUnavailable={tailActivityUnavailable}
-                          onRuntimeRequestDecision={
-                            handleRuntimeRequestDecision
+                          onDiscard={async (commentId, revision) => {
+                            if (commentId.startsWith("optimistic-")) {
+                              if (!onCancelQueued)
+                                throw new Error("Discard is unavailable.");
+                              onCancelQueued(commentId);
+                              return;
+                            }
+                            if (!onDiscardQueuedComment)
+                              throw new Error("Discard is unavailable.");
+                            await onDiscardQueuedComment(commentId, revision);
+                            if (queuedEdit?.commentId === commentId)
+                              setQueuedEdit(null);
+                          }}
+                        />
+                      ) : null}
+                      <div className="relative z-10">
+                        <TaskChatComposer
+                          onAdd={handleThreadAdd}
+                          confirmedSubmissionIds={new Set(comments.filter((comment) =>
+                            comment.authorUserId === currentUserId && comment.clientRequestId &&
+                            !("clientStatus" in comment && comment.clientStatus)
+                          ).map((comment) => comment.clientRequestId!))}
+                          onStop={liveRun ? onCancelRun : undefined}
+                          confirmedStoppedRunIds={confirmedStoppedRunIds}
+                          stopPending={stopPending}
+                          stopScope={stopScope}
+                          workMode={issueWorkMode}
+                          onWorkModeChange={onWorkModeChange}
+                          disabled={Boolean(runtimeComposerDisabledReason)}
+                          disabledReason={runtimeComposerDisabledReason}
+                          onAttachImage={onAttachImage}
+                          onImageUpload={imageUploadHandler}
+                          mentions={mentions}
+                          enableReassign={enableReassign}
+                          conversationMode={conversationMode}
+                          reassignOptions={reassignOptions}
+                          agentMap={agentMap}
+                          modelAgents={agentMap}
+                          userProfileMap={userProfileMap}
+                          currentAssigneeValue={currentAssigneeValue}
+                          suggestedAssigneeValue={composerSuggestedAssignee}
+                          companyId={companyId}
+                          assigneeAdapterOverrides={assigneeAdapterOverrides}
+                          onPendingAssigneeChange={setPendingComposerAssignee}
+                          issueStatus={issueStatus}
+                          mobile={isMobile}
+                          draftKey={draftKey}
+                          queuedEdit={queuedEdit}
+                          onSaveQueuedEdit={saveQueuedEdit}
+                          onCancelQueuedEdit={() => setQueuedEdit(null)}
+                          pause={composerPause}
+                          takeover={composerTakeover}
+                          runnerGoalCapability={runnerGoal.data?.capability ?? null}
+                          onRunnerGoalCommand={runnerGoal.executeComposerCommand}
+                          onRunnerGoalReassign={reassignForRunnerGoal}
+                          pendingTakeover={
+                            pendingReminderInputs.length > 0
+                              ? {
+                                  count: pendingReminderInputs.length,
+                                  label: `${pendingReminderInputs.length} pending input${pendingReminderInputs.length === 1 ? "" : "s"}`,
+                                  onOpen: openPendingTakeover,
+                                }
+                              : null
                           }
                         />
-                      ) : (
-                        <>
-                          <TaskChatLiveRunPill
-                            status={tailStatus}
-                            startedAtMs={tailStartedAtMs}
-                            finishedAtMs={tailFinishedAtMs}
-                            toolSummary={tailToolSummary}
-                          />
-                          <TaskChatLiveTail
-                            items={tailItems}
-                            emptyMessage={
-                              tailStatus === "queued"
-                                ? "Waiting to start..."
-                                : (liveRun && liveRun.id === tailRunId
-                                    ? liveRun.currentStatusMessage
-                                    : null) || "Waiting for transcript..."
-                            }
-                          />
-                        </>
-                      )}
+                      </div>
                     </div>
-                  ) : null}
-                  {bottomBlockerLinks}
-                </>
-              ) : null
-            }
-            contentKey={autoFollowContentKey}
-            className={isMobile ? undefined : "pt-3"}
-            scroll={!isMobile}
-          />
-        )}
-      </div>
-      {assignedAgentForNotice?.status === "paused" ? (
-        <div className="mx-auto w-full max-w-(--tc-shell-max-w) px-4 pt-2">
-          <IssueAssigneePausedNotice
-            agent={assignedAgentForNotice}
-            onResume={onResumeAssignee}
-            resuming={resumeAssigneePending}
-          />
-        </div>
-      ) : null}
-      {showComposer ? (
-        <div
-          data-testid="task-chat-composer-dock"
-          className={cn(
-            "sticky",
-            // Mobile mirrors the flag-off thread's dock: lifted above the
-            // safe-area inset and clear of the auto-hiding bottom nav, above
-            // page content in the document-flow stacking context. The bottom
-            // offset (--tc-composer-bottom) tracks the nav: Layout raises it to
-            // the nav height while the nav is visible so the composer's action
-            // row is never occluded, and drops it back to the safe-area dock
-            // when the nav auto-hides (PAP-495). transition-[bottom] rides the
-            // nav's own 200ms slide; the offset only changes on nav toggles, so
-            // it never animates mid-scroll.
-            isMobile
-              ? "bottom-(--tc-composer-bottom) z-20 transition-[bottom] duration-200 ease-out"
-              : "bottom-0 z-10",
-            "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 bg-background/80 px-4 pb-2 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60",
-          )}
-        >
-          {composerAccessory}
-          {tailTurnStatus ? (
-            <TaskChatTurnStatusIsland model={tailTurnStatus} />
-          ) : null}
-          <div
-            className="relative isolate flex flex-col"
-            data-testid="task-chat-composer-stack"
-          >
-            {paperclipQueue && paperclipQueue.entries.length > 0 ? (
-              <TaskChatQueuedMessages
-                queue={paperclipQueue}
-                onEdit={beginQueuedEdit}
-                onReorder={async (orderedCommentIds, revision) => {
-                  if (!onReorderQueuedComments)
-                    throw new Error("Queue reordering is unavailable.");
-                  await onReorderQueuedComments(orderedCommentIds, revision);
-                }}
-                onSteer={async (commentId, revision) => {
-                  if (!onSteerQueuedComment)
-                    throw new Error("Steering is unavailable.");
-                  await onSteerQueuedComment(commentId, revision);
-                }}
-                onDiscard={async (commentId, revision) => {
-                  if (!onDiscardQueuedComment)
-                    throw new Error("Discard is unavailable.");
-                  await onDiscardQueuedComment(commentId, revision);
-                  if (queuedEdit?.commentId === commentId) setQueuedEdit(null);
-                }}
-              />
+                    {footer}
+                  </>
+                ) : null}
+              </TaskChatComposerDock>
             ) : null}
-            <div className="relative z-10">
-              <TaskChatComposer
-                onAdd={handleThreadAdd}
-                workMode={issueWorkMode}
-                onWorkModeChange={onWorkModeChange}
-                disabled={Boolean(runtimeComposerDisabledReason)}
-                disabledReason={runtimeComposerDisabledReason}
-                onAttachImage={onAttachImage}
-                onImageUpload={imageUploadHandler}
-                mentions={mentions}
-                enableReassign={enableReassign}
-                reassignOptions={reassignOptions}
-                agentMap={agentMap}
-                userProfileMap={userProfileMap}
-                currentAssigneeValue={currentAssigneeValue}
-                issueStatus={issueStatus}
-                mobile={isMobile}
-                draftKey={draftKey}
-                queuedEdit={queuedEdit}
-                onSaveQueuedEdit={saveQueuedEdit}
-                onCancelQueuedEdit={() => setQueuedEdit(null)}
-                takeover={composerTakeover}
-                pendingTakeover={
-                  pendingComposerInputs.length > 0
-                    ? {
-                        count: pendingComposerInputs.length,
-                        label: `${pendingComposerInputs.length} pending input${pendingComposerInputs.length === 1 ? "" : "s"}`,
-                        onOpen: openPendingTakeover,
-                      }
-                    : null
-                }
-              />
-            </div>
           </div>
-          {footer}
-        </div>
-      ) : null}
-    </div>
+        </TaskChatPresentationProvider>
+      </TaskChatScrollReady.Provider>
+    </TaskChatExpansionState.Provider>
+    </TaskChatRequestHistoryContext.Provider>
   );
 }

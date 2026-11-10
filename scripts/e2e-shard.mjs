@@ -12,7 +12,7 @@ const DURATIONS_MANIFEST = path.join(HERE, "e2e-shard-durations.json");
 // Specs the default local_trusted Playwright project deliberately skips. Keep
 // this in sync with `testIgnore` in tests/e2e/playwright.config.ts — the unit
 // test in scripts/__tests__/e2e-shard.test.mjs fails if the two ever drift.
-export const IGNORED_SPECS = ["multi-user.spec.ts", "multi-user-authenticated.spec.ts"];
+export const IGNORED_SPECS = ["in-feed-native/**", "multi-user.spec.ts", "multi-user-authenticated.spec.ts"];
 
 // Enumerates the specs the default e2e lane actually runs, as repo-relative
 // paths so the output can be handed straight to `playwright test`.

@@ -674,10 +674,10 @@ async function runSmoke({ config, chromium }) {
 
     activeCheckpoint = "B.oauth-callback";
     await completePosthogAuthorization(page, config);
-    const cleanSetupPath = `/${TARGET_COMPANY_PREFIX}/apps/${connectionId}/setup`;
+    const permissionsPath = `/${TARGET_COMPANY_PREFIX}/apps/${connectionId}/permissions`;
     await gotoPaperclipPage(
       page,
-      new URL(cleanSetupPath, config.baseUrl).toString(),
+      new URL(permissionsPath, config.baseUrl).toString(),
       page.getByText("PostHog connected", { exact: true }),
       "B.oauth-callback",
       "connected_state_missing",

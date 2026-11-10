@@ -1,0 +1,47 @@
+{
+  "schema": "paperclip.cursor-linux-image-proof/v1",
+  "recordedAt": "2026-09-28T21:06:05.761523+00:00",
+  "imageId": "sha256:5fa7951d1d6dd99305555fe00a5baf2bf5b834d16f021053737301975b93986f",
+  "execution": "local Docker linux/x64; network disabled",
+  "verification": "generic profile installation registry, pinned full native closure, retained immutable lease, ACP initialize request ID 0",
+  "native": {
+    "provider": "cursor",
+    "target": {
+      "platform": "linux",
+      "architecture": "x64"
+    },
+    "sourceSha": "25fb1b5b317e52a8ad50208d7681a1ee34bd939c",
+    "packDigest": "sha256:5fab4bc1f0633561b7d7e858a535ebd23faeccedb5f86044df071a3206d949ba",
+    "candidate": {
+      "version": "2026.09.26-dd393fe",
+      "profileDigest": "sha256:1157a5d071abbd57ab132f22bace75c65e84cc47a045b0023475488755e14899",
+      "closureDigest": "sha256:bf04ef8ea6a63191067a6b3e15139aa2c793d8419daab246aa3f0a012e1bbcd9",
+      "qualification": "pending",
+      "path": "provider-assets/cursor/linux-x64",
+      "sha256": "sha256:96fc36b9c1e77f307e487dfcc8d5e7fc2caa7ed68d41e9cb33793c00a8281bdc"
+    },
+    "commandDigest": "sha256:1157a5d071abbd57ab132f22bace75c65e84cc47a045b0023475488755e14899",
+    "runnerdSha256": "5eb3031aed118112caf0b80ea67a6cd01283098e2b4e526ef02d1416d125a1fb",
+    "protocolVersion": 1,
+    "nativeInfo": null,
+    "exitCode": null,
+    "eofSettled": false,
+    "prompts": 0,
+    "network": "none",
+    "credentials": false
+  },
+  "cleanup": {
+    "method": "bounded explicit owned process-group termination and native lease close",
+    "result": "passed",
+    "evidence": "lead-observed image probe completion; native clean EOF is explicitly not claimed"
+  },
+  "sourceProofSha256": "0d67a62f77b87440c3965426b318e552e5f2956ede62e13e0a28c813d95ca83d",
+  "qualification": {
+    "status": "pending",
+    "daytonaExecution": false,
+    "authenticatedSession": false,
+    "modelPrompts": 0,
+    "modelUsageCostUsd": 0,
+    "limitation": "Packaging/initialization and explicit cleanup only; no authenticated tools, interaction, recovery, permissions, or paid Daytona qualification."
+  }
+}

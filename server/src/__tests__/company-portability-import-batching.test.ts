@@ -418,8 +418,8 @@ describeEmbeddedPostgres("company import batches inserts", () => {
       .from(issues)
       .where(eq(issues.companyId, companyId));
     expect(imported?.status).toBe("in_progress");
-    // A fabricated import-time startedAt made carried-over work look hours
-    // stale to duration-based sweeps (e.g. the productivity review).
+    // An import-time startedAt would misrepresent carried-over work
+    // as a newly started active episode.
     expect(imported?.startedAt).toBeNull();
   });
 

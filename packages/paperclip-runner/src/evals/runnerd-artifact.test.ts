@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -26,6 +26,11 @@ const valid = {
 describe("runnerd artifact metadata", () => {
   it("parses the exact runnerd identity", () => {
     expect(parsePaperclipRunnerdBuildMetadata(valid)).toEqual(valid);
+  });
+
+  it("accepts private host-control metadata without changing ordinary artifact admission", () => {
+    expect(parsePaperclipRunnerdBuildMetadata({ ...valid, privateHostControlVersion: 1 }))
+      .toEqual(valid);
   });
 
   it("rejects an unknown binary metadata schema", () => {
@@ -68,6 +73,7 @@ describe("runnerd artifact metadata", () => {
 
       try {
         await writeFile(executablePath, verifiedScript, { mode: 0o700 });
+        const canonicalExecutablePath = await realpath(executablePath);
         const input = {
           executablePath,
           expectedSha256,
@@ -78,7 +84,7 @@ describe("runnerd artifact metadata", () => {
         };
 
         await expect(resolvePaperclipRunnerdArtifact(input)).resolves.toMatchObject({
-          executablePath,
+          executablePath: canonicalExecutablePath,
           sha256: expectedSha256,
           byteSize: Buffer.byteLength(verifiedScript),
           buildMetadata: valid,

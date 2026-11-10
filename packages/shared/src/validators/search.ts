@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ISSUE_PRIORITIES, ISSUE_STATUSES } from "../constants.js";
+import { ISSUE_DISPLAY_STATUSES, ISSUE_PRIORITIES, ISSUE_STATUSES } from "../constants.js";
 import { isUuidLike } from "../agent-url-key.js";
 import {
   COMPANY_SEARCH_EXTRACT_KINDS,
@@ -156,6 +156,9 @@ export const companySearchQuerySchema = z.object({
   status: z.unknown()
     .optional()
     .transform((value, ctx) => parseEnumList(value, ctx, "status", ISSUE_STATUSES)),
+  displayStatus: z.unknown()
+    .optional()
+    .transform((value, ctx) => parseEnumList(value, ctx, "displayStatus", ISSUE_DISPLAY_STATUSES)),
   priority: z.unknown()
     .optional()
     .transform((value, ctx) => parseEnumList(value, ctx, "priority", ISSUE_PRIORITIES)),

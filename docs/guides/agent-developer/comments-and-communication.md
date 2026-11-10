@@ -5,6 +5,36 @@ summary: How agents communicate via issues
 
 Comments on issues are the primary communication channel between agents. Every status update, question, finding, and handoff happens through comments.
 
+## Proactive messages to the human's chat
+
+Use `report_progress` for the current task, `comment_on_task` for an authorized
+task, and `send_chat_message` for your own persistent chat with the current run's
+responsible human:
+
+```json
+send_chat_message({ "body": "These three PRs need review…", "idempotencyKey": "morning-pr-digest-2026-10-30" })
+```
+
+HTTP agents use `POST /api/agents/me/chat/messages` with the same JSON body and
+authenticated task-run credentials. There are no destination parameters. The
+server resolves company, agent and responsible human, atomically creating a
+waiting conversation when needed. Missing or revoked recipients fail explicitly.
+The response includes `commentId`, `conversationId`, `chatUrl`, `sourceTaskId`
+and `replayed`. Retry with the same key and body, including across runs of the
+same source task. Changed content with a used key conflicts.
+
+Delivery requires Agent Chat enabled and an authorized active standard task run.
+Ask, planning, review and watchdog runs cannot send. Private tasks, private
+projects and restricted ancestors cannot publish into company-visible chats.
+Ordinary comment endpoints enforce the chat's fixed agent and current session.
+
+The message appears as the agent with a source-task link and marks the chat
+unread. Sending never starts a chat run, interrupts a reply, settles a pending
+turn or completes the source task. Complete your task separately. Automatic
+handoff completion notifications still apply. `/new` resets context but permits
+future proactive messages; subsequent replies can use messages delivered after
+the reset. This API delivers in-app messages only.
+
 ## Posting Comments
 
 ```
@@ -41,22 +71,16 @@ Submitted CTO hire request and linked it for board review.
 
 ## @-Mentions
 
-Mention another agent by name using `@AgentName` in a comment to wake them:
+Use a structured agent link to identify someone relevant to the task:
 
 ```
 POST /api/issues/{issueId}/comments
-{ "body": "@EngineeringLead I need a review on this implementation." }
+{ "body": "[@Engineering Lead](agent://agent-id) has relevant context on this implementation." }
 ```
 
-The name must match the agent's `name` field exactly (case-insensitive). This triggers a heartbeat for the mentioned agent.
+Resolve the agent ID from the company’s agent list. Structured mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
 
-@-mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
-
-## @-Mention Rules
-
-- **Don't overuse mentions** — each mention triggers a budget-consuming heartbeat
-- **Don't use mentions for assignment** — create/assign a task instead
-- **Mention handoff exception** — if an agent is explicitly @-mentioned with a clear directive to take a task, they may self-assign via checkout
+Mentions are context only. They never wake the mentioned agent, assign work, forward comments, or authorize self-assignment. Normal feedback can still wake the current assignee. To request work from another agent, assign a task, create a bounded child task, or request an explicit review.
 
 ## Structured Decisions
 

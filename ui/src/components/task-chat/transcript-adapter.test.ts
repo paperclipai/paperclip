@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptEntry } from "@/adapters";
+import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import {
   assembleThreadItems,
   attachSettledTurns,
@@ -13,6 +14,7 @@ import {
   flattenSelfTalk,
   isNestableLiveChild,
   ISSUE_BRIEF_ITEM_ID,
+  omitProgressRepeatedByResponseAcrossSegments,
   paperclipRunnerActivityItems,
   paperclipRunnerFinalResponse,
   paperclipRunnerHistoryItems,
@@ -22,6 +24,8 @@ import {
   splitTranscriptAtAnchors,
   toolDisplayName,
   transcriptToTaskChatItems,
+  runtimeRequestSegmentContext,
+  reconcileSegmentRuntimeRequests,
   type SettledTurnMergeMeta,
   type ThreadBackboneEntry,
 } from "./transcript-adapter";
@@ -30,9 +34,253 @@ import type {
   TaskChatPlanDocumentItem,
   TaskChatTurnItem,
 } from "./task-chat-model";
+import { latestPendingRuntimeRequest } from "./task-chat-model";
 import { providerActivityPresentation } from "./task-chat-activity-presentation";
+import { nativeRunEventsToTranscript } from "../transcript/native-run-events";
 
 const TS = "2026-07-31T12:00:00.000Z";
+
+describe("runtime requests across steering sections", () => {
+  it("selects the newer request when an older pending permission crosses steering", () => {
+    const older: TranscriptEntry = { kind: "runtime_request", ts: TS, requestId: "older-permission",
+      requestKind: "permission_approval", turnId: "provider-turn", requestType: "permission", status: "pending",
+      prompt: "Earlier write", choices: [{ key: "decline", label: "Deny" }], fields: [] };
+    const newer: TranscriptEntry = { ...older, ts: "2026-07-31T12:00:02.000Z", requestId: "newer-permission", prompt: "Later write" };
+    const options = { runId: "run-steering", running: true };
+    const context = runtimeRequestSegmentContext([older, newer], options);
+    const tail = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems([newer], options), [newer], context, true);
+    expect(tail.map(item => item.id)).toEqual(["run-steering:runtime-request:older-permission", "run-steering:runtime-request:newer-permission"]);
+    expect(latestPendingRuntimeRequest(tail)?.requestId).toBe("newer-permission");
+  });
+
+  it.each(["pending", "resolved", "cancelled"] as const)("keeps one %s permission under whole-run authority", status => {
+    const request: TranscriptEntry = { kind: "runtime_request", ts: TS, requestId: "permission-1",
+      requestKind: "permission_approval", turnId: "provider-turn", requestType: "permission", status: "pending",
+      prompt: "Pi write", choices: [{ key: "decline", label: "Deny" }], fields: [] };
+    const after: TranscriptEntry[] = [{ kind: "assistant", ts: "2026-07-31T12:00:01.000Z", text: "Continued.", channel: "progress" }];
+    if (status === "resolved") after.push({ ...request, ts: "2026-07-31T12:00:02.000Z", status, resolvedAction: "decline" });
+    const entries = [request, ...after];
+    const options = { runId: "run-steering", running: status !== "cancelled" };
+    const context = runtimeRequestSegmentContext(entries, options);
+    const history = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems([request], { ...options, running: false }), [request], context);
+    const tail = reconcileSegmentRuntimeRequests(transcriptToTaskChatItems(after, options), after, context, options.running);
+    const cards = [...history, ...tail].filter(item => item.kind === "protocol" && item.surface === "runtime_request");
+    expect(cards).toEqual([expect.objectContaining({ requestId: "permission-1", turnId: "provider-turn", status })]);
+    expect(history.filter(item => item.kind === "protocol")).toHaveLength(status === "pending" ? 0 : 1);
+    expect(tail.filter(item => item.kind === "protocol")).toHaveLength(status === "pending" ? 1 : 0);
+  });
+});
+
+describe("accepted native response-wake answers", () => {
+  const runId = "native-response-wake";
+  const summary =
+    "**Before release**\n- Test and rehearse rollback.\n\n**During release**\n- Deploy incrementally and watch errors.\n\n**After release**\n- Verify workflows and record follow-ups.";
+  function fixture(mode = "accepted") {
+    const result = {
+      schema: "paperclip.run_result.v1",
+      reportedWorkDisposition: "yielded",
+      summary,
+      completionClaim: { objectiveSatisfied: true, remainingWork: [] },
+      attentionRequests:
+        mode === "attention" ? [{ kind: "ask_user_questions" }] : [],
+      continuation: {
+        kind: mode === "question" ? "interaction" : "response_wake",
+        idempotencyKey: mode === "blank_key" ? " " : "next-exact-input",
+      },
+      evidence: [],
+      verification: [],
+      artifacts: [],
+    };
+    const event = (
+      seq: number,
+      eventType: string,
+      payload: Record<string, unknown>,
+    ) =>
+      ({
+        id: seq,
+        companyId: "company-1",
+        agentId: "agent-1",
+        stream: "system",
+        level: "info",
+        color: null,
+        message: null,
+        runId,
+        seq,
+        eventType,
+        createdAt: new Date(TS),
+        payload: {
+          prpEvent: {
+            schema: "paperclip.prp.event.v1",
+            schemaVersion: 1,
+            runId,
+            eventType,
+            sourceEventId: `response-${seq}`,
+            sourceKind:
+              eventType === "run.result.accepted" ||
+              eventType === "run.terminal"
+                ? "control_plane"
+                : "runner",
+            sourceInstanceId: "runner-1",
+            sourceSeq: seq,
+            normalizedSessionId: "session-1",
+            emittedAt: TS,
+            payload,
+          },
+        },
+      }) satisfies HeartbeatRunEvent;
+    const accepted = event(3, "run.result.accepted", { result });
+    if (mode === "mismatched_run")
+      accepted.payload.prpEvent.runId = "other-run";
+    if (mode === "forged_kind")
+      accepted.payload.prpEvent.eventType = "item.completed";
+    if (mode === "missing_source") accepted.payload.prpEvent.sourceEventId = "";
+    const events = [
+      event(1, "item.completed", {
+        kind: "agentMessage",
+        channel: "progress",
+        item: {
+          id: "preamble",
+          type: "agentMessage",
+          channel: "progress",
+          text: "I’m providing the requested checklist and leaving the task open.",
+        },
+      }),
+      event(2, "run.result.proposed", result),
+      ...(mode === "proposed" ? [] : [accepted]),
+      ...(mode === "nonterminal"
+        ? []
+        : [
+            event(4, "run.terminal", {
+              schema: "paperclip.prp.terminal.v1",
+              turnTerminalState: "completed",
+              runTerminalState:
+                mode === "failed_terminal" ? "failed" : "succeeded",
+              reportedWorkDisposition: "yielded",
+            }),
+          ]),
+      ...(mode === "provider_final"
+        ? [
+            event(5, "item.completed", {
+              kind: "agentMessage",
+              channel: "final",
+              item: {
+                id: "other-final",
+                type: "agentMessage",
+                channel: "final",
+                text: "Provider commentary is not the accepted checklist.",
+              },
+            }),
+          ]
+        : []),
+    ];
+    const entries = nativeRunEventsToTranscript(events);
+    return transcriptToTaskChatItems(entries, { runId, running: false });
+  }
+
+  it.each(["accepted", "provider_final"])(
+    "renders the exact accepted response-wake summary instead of commentary: %s",
+    (mode) => {
+      expect(
+        paperclipRunnerFinalResponse(fixture(mode), { runId }),
+      ).toMatchObject({
+        text: summary,
+        channel: "final",
+      });
+    },
+  );
+
+  it.each([
+    "proposed",
+    "mismatched_run",
+    "forged_kind",
+    "missing_source",
+    "question",
+    "attention",
+    "blank_key",
+    "nonterminal",
+    "failed_terminal",
+  ])("keeps %s evidence out of the response-wake final exception", (mode) => {
+    expect(
+      paperclipRunnerFinalResponse(fixture(mode), { runId }),
+    ).toBeUndefined();
+  });
+
+  it("does not grant the exception to another run or a live fallback", () => {
+    expect(
+      paperclipRunnerFinalResponse(fixture(), { runId: "other-run" }),
+    ).toBeUndefined();
+    expect(
+      paperclipRunnerFinalResponse(fixture(), { runId, allowFallback: false }),
+    ).toBeUndefined();
+  });
+});
+
+describe("completion tool feed visibility", () => {
+  it("keeps the full bounded notice text available when expanded", () => {
+    const summary = `${"Configuration context. ".repeat(30)}Use the project settings to fix this.`;
+    const [notice] = transcriptToTaskChatItems([{
+      kind: "provider_activity", ts: TS, family: "provider_notice", eventType: "provider.notice.recorded",
+      status: "informational", title: "Provider notice", summary,
+      payload: { noticeId: "long-notice", summary, userActionable: true },
+    }], { runId: "notice", running: false });
+    expect(notice.kind === "protocol" && notice.surface === "provider_activity" &&
+      notice.details.find((detail) => detail.label === "Summary")?.value).toBe(summary);
+  });
+
+  it("keeps completion events inspectable but hides both tool representations from live and settled feed activity", () => {
+    for (const running of [true, false]) {
+      const entries: TranscriptEntry[] = [
+        { kind: "tool_call", ts: TS, toolUseId: "legacy-finish", name: "paperclip_finish", input: {} },
+        ...["paperclip_finish", "search_tasks"].map((name) => ({
+          kind: "provider_activity" as const, ts: TS, family: "tool_execution" as const,
+          eventType: running ? "tool.execution.started" : "tool.execution.completed",
+          status: running ? "running" as const : "completed" as const,
+          title: "Tool execution", summary: name,
+          payload: { executionId: name, name, transport: "dynamic" },
+        })),
+        { kind: "provider_activity", ts: TS, family: "provider_notice", eventType: "provider.notice.recorded",
+          status: "informational", title: "Provider notice", summary: "Repository is not trusted",
+          payload: { noticeId: "notice", summary: "Repository is not trusted", userActionable: true } },
+      ];
+      const parsed = transcriptToTaskChatItems(entries, { runId: "finish-visibility", running });
+      expect(parsed).toHaveLength(4);
+      const activity = paperclipRunnerActivityItems(parsed);
+      expect(activity).toHaveLength(2);
+      expect(JSON.stringify(activity)).not.toContain("paperclip_finish");
+      expect(JSON.stringify(activity)).toContain("search_tasks");
+      expect(JSON.stringify(activity)).toContain("Repository is not trusted");
+      expect(paperclipRunnerTimelineItems(parsed)).toEqual(activity);
+    }
+  });
+});
+
+describe("omitProgressRepeatedByResponseAcrossSegments", () => {
+  const progress = (id: string, text: string): TaskChatItem => ({
+    id,
+    kind: "message",
+    author: "agent",
+    text,
+    channel: "progress",
+    interstitial: true,
+  });
+
+  it("removes only the final matching progress item across a steered run", () => {
+    const first = progress("first", "Repeated answer");
+    const second = progress("second", "Repeated answer");
+    const segments = [[first], [second]];
+
+    expect(
+      omitProgressRepeatedByResponseAcrossSegments(segments, "Repeated answer"),
+    ).toEqual([[first], []]);
+  });
+
+  it("preserves segment identity when there is no durable-response match", () => {
+    const segments = [[progress("first", "Progress only")]];
+    expect(
+      omitProgressRepeatedByResponseAcrossSegments(segments, "Final answer"),
+    ).toBe(segments);
+  });
+});
 
 function toolCall(name: string, input?: unknown): TranscriptEntry {
   return {
@@ -472,13 +720,14 @@ describe("transcriptToTaskChatItems protocol surfaces", () => {
       opts,
     );
     expect(items).toHaveLength(2);
-    expect(items[0]).toMatchObject({
+    // The turn's changed files close the turn, after its other activity.
+    expect(items[1]).toMatchObject({
       kind: "protocol",
       surface: "workspace_change",
       revision: 2,
       complete: true,
     });
-    expect(items[1]).toMatchObject({
+    expect(items[0]).toMatchObject({
       kind: "protocol",
       surface: "runtime_request",
       runId: "run-protocol",
@@ -610,19 +859,7 @@ describe("transcriptToTaskChatItems protocol surfaces", () => {
         description: "Canonical event details",
       },
     ]);
-    expect(
-      notice?.kind === "protocol" && notice.surface === "provider_activity"
-        ? notice.details
-        : [],
-    ).toEqual(
-      expect.arrayContaining([
-        { label: "Severity", value: "warning", mono: false },
-        { label: "Category", value: "config", mono: false },
-        { label: "Scope", value: "environment", mono: false },
-        { label: "Recoverable", value: "Yes", mono: false },
-        { label: "User Actionable", value: "No", mono: false },
-      ]),
-    );
+    expect(notice).toBeUndefined();
   });
 
   it("retains every canonical provider family for live and settled rendering", () => {
@@ -650,7 +887,7 @@ describe("transcriptToTaskChatItems protocol surfaces", () => {
       status: index % 2 === 0 ? "running" : "completed",
       title: family,
       summary: `Visible ${family}`,
-      payload: { [`${family}Id`]: `${family}-1` },
+      payload: { [`${family}Id`]: `${family}-1`, ...(family === "provider_notice" ? { userActionable: true } : {}) },
     }));
     const items = transcriptToTaskChatItems(entries, {
       ...opts,
@@ -876,21 +1113,20 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
     ]);
   });
 
-  it("keeps a pending request composer-only while preserving its group boundary", () => {
+  it("keeps a pending request in the feed while preserving its group boundary", () => {
     const rows = buildTurnTimelineRows(
       [tool("before"), request("pending", "pending"), tool("after")],
       true,
     );
 
-    expect(rows).toHaveLength(2);
-    expect(rows.every((row) => row.kind === "activity_phase")).toBe(true);
+    expect(rows).toHaveLength(3);
     expect(
       rows.map((row) =>
-        row.kind === "activity_phase" ? row.items[0]?.id : null,
+        row.kind === "activity_phase" ? row.items[0]?.id : row.id,
       ),
-    ).toEqual(["before", "after"]);
+    ).toEqual(["before", "pending:pending", "after"]);
     expect(rows[0]).toMatchObject({ kind: "activity_phase", active: false });
-    expect(rows[1]).toMatchObject({ kind: "activity_phase", active: true });
+    expect(rows[2]).toMatchObject({ kind: "activity_phase", active: true });
   });
 
   it("retains progress-only phases and uses the same row order for settled assembly", () => {
@@ -951,9 +1187,17 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
     ]);
   });
 
-  it("projects a yielded run-result summary into the durable final slot", () => {
+  it("keeps a yielded run-result and provider wait prose out of the durable final slot", () => {
     expect(
       paperclipRunnerFinalResponse([
+        {
+          id: "provider-wait",
+          kind: "message",
+          author: "agent",
+          text: "Waiting for Review browser RTS plan.",
+          channel: "final",
+          streaming: false,
+        },
         {
           id: "result",
           kind: "protocol",
@@ -967,11 +1211,52 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
           artifacts: [],
         },
       ]),
-    ).toMatchObject({
+    ).toBeUndefined();
+  });
+
+  it("keeps authored prose from a yielded turn but not its wait stub", () => {
+    const result = {
+      id: "result",
+      kind: "protocol",
+      surface: "run_result",
+      disposition: "yielded",
+      summary: "Waiting for user answers on the interview card.",
+      objectiveSatisfied: false,
+      verification: [],
+      remainingWork: [],
+      blocker: null,
+      artifacts: [],
+    } satisfies TaskChatItem;
+    const reply = {
+      id: "reply",
       kind: "message",
+      author: "agent",
+      text: "I've posted a question card that asks four things.\n- what you do\n- what done looks like",
       channel: "final",
-      text: "Waiting for Review browser RTS plan.",
-    });
+      streaming: false,
+    } satisfies TaskChatItem;
+    expect(paperclipRunnerFinalResponse([reply, result])).toBe(reply);
+    expect(paperclipRunnerFinalResponse([reply], { yielded: true })).toBe(reply);
+    // A provider may echo the wait stub after its authored reply.
+    expect(
+      paperclipRunnerFinalResponse([
+        reply,
+        { ...reply, id: "stub", text: result.summary },
+        result,
+      ]),
+    ).toBe(reply);
+    expect(
+      paperclipRunnerFinalResponse(
+        [{ ...reply, text: "Waiting for Which tools should the storefront use?." }],
+        { yielded: true },
+      ),
+    ).toBeUndefined();
+    expect(
+      paperclipRunnerFinalResponse([{ ...reply, text: result.summary }], {
+        yielded: true,
+        waitSummary: result.summary,
+      }),
+    ).toBeUndefined();
   });
 
   it("keeps a saved plan at its write_document boundary", () => {
@@ -1026,25 +1311,72 @@ describe("buildTurnTimelineRows (DOT-217)", () => {
       plan.id,
       "commentary-3:",
     ]);
+    expect(
+      embedded.find((item) => item.kind === "plan_document"),
+    ).toMatchObject({ placement: "write_boundary" });
+  });
+
+  it("embeds a saved Plan from a body-free conversation write receipt", () => {
+    const runId = "10000000-0000-4000-8000-000000000001";
+    const boundary: HeartbeatRunEvent = {
+      id: 1, companyId: "company", runId, agentId: "agent", seq: 1,
+      eventType: "item.completed", stream: "system", level: "info", color: null, message: null,
+      createdAt: new Date(TS),
+      payload: { prpEvent: {
+        schema: "paperclip.prp.event.v1", sourceEventId: "write-boundary", sourceInstanceId: "runner-1",
+        sourceKind: "runner", sourceSeq: 1, runId, normalizedSessionId: "session-1", eventType: "item.completed",
+        schemaVersion: 1, priority: 1, emittedAt: TS,
+        payload: { kind: "tool_result", item: { id: "write-plan", tool_use_id: "write-plan", type: "tool_result",
+          name: "write_document", input: { key: "plan" }, result: { disposition: "applied", document: { key: "plan" } } } },
+      } },
+    };
+    const parsed = transcriptToTaskChatItems(nativeRunEventsToTranscript([boundary]), { runId, running: false });
+    const embedded = embedPlanDocumentAtWriteBoundary(parsed, {
+      id: "saved-plan", kind: "plan_document", document: {} as TaskChatPlanDocumentItem["document"],
+    });
+    expect(embedded.find(item => item.kind === "plan_document")).toMatchObject({ placement: "write_boundary" });
+    expect(embedded.at(-1)?.id).toBe("saved-plan");
+    expect(parsed.some(item => item.kind === "tool" && item.rawName === "write_document" && item.status === "completed")).toBe(true);
+  });
+
+  it("retains a saved plan as an explicit fallback when its write boundary is unavailable", () => {
+    const plan: TaskChatPlanDocumentItem = {
+      id: "plan-doc:revision-fallback",
+      kind: "plan_document",
+      document: {} as TaskChatPlanDocumentItem["document"],
+    };
+
+    expect(
+      embedPlanDocumentAtWriteBoundary(
+        [commentary("commentary", "Transcript is still hydrating.")],
+        plan,
+      ),
+    ).toEqual([
+      commentary("commentary", "Transcript is still hydrating."),
+      { ...plan, placement: "fallback" },
+    ]);
   });
 });
 
 describe("transcriptToTaskChatItems native usage", () => {
   it("does not merge progress and final runner messages", () => {
-    const items = transcriptToTaskChatItems([
-      {
-        kind: "assistant",
-        ts: TS,
-        text: "Checking files.",
-        channel: "progress",
-      },
-      {
-        kind: "assistant",
-        ts: TS,
-        text: "The change is ready.",
-        channel: "final",
-      },
-    ], { runId: "native-run", running: true });
+    const items = transcriptToTaskChatItems(
+      [
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "Checking files.",
+          channel: "progress",
+        },
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "The change is ready.",
+          channel: "final",
+        },
+      ],
+      { runId: "native-run", running: true },
+    );
 
     expect(items).toEqual([
       expect.objectContaining({
@@ -1062,68 +1394,196 @@ describe("transcriptToTaskChatItems native usage", () => {
     ]);
   });
 
-  it("renders runner usage without inventing a context-window size", () => {
-    const items = transcriptToTaskChatItems([{
-      kind: "result",
-      ts: TS,
-      text: "",
-      inputTokens: 40,
-      outputTokens: 10,
-      cachedTokens: 5,
-      costUsd: 0.02,
-      subtype: "paperclip_runner_usage",
-      isError: false,
-      errors: [],
-    }], { runId: "native-run", running: true });
+  it("keeps separate completed commentary items as separate chronological paragraphs", () => {
+    const items = transcriptToTaskChatItems(
+      [
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "I am checking the existing behavior.",
+          channel: "progress",
+          itemId: "message-1",
+        },
+        {
+          kind: "assistant",
+          ts: "2026-07-31T12:00:01.000Z",
+          text: "The implementation is ready.",
+          channel: "progress",
+          itemId: "message-2",
+        },
+      ],
+      { runId: "native-run", running: false },
+    );
 
-    expect(items).toEqual([{
-      id: "native-run:usage:0",
-      kind: "usage",
-      usage: {
-        used: 55,
-        size: 0,
-        inputTokens: 40,
-        outputTokens: 10,
-        costUsd: 0.02,
+    expect(items).toEqual([
+      expect.objectContaining({
+        kind: "message",
+        text: "I am checking the existing behavior.",
+      }),
+      expect.objectContaining({
+        kind: "message",
+        text: "The implementation is ready.",
+      }),
+    ]);
+  });
+
+  it("coalesces only streaming chunks that share an item identity", () => {
+    const items = transcriptToTaskChatItems(
+      [
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "Still ",
+          channel: "progress",
+          delta: true,
+          itemId: "message-1",
+        },
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "working",
+          channel: "progress",
+          delta: true,
+          itemId: "message-1",
+        },
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "Next message",
+          channel: "progress",
+          delta: true,
+          itemId: "message-2",
+        },
+      ],
+      { runId: "native-run", running: true },
+    );
+
+    expect(items).toEqual([
+      expect.objectContaining({ kind: "message", text: "Still working" }),
+      expect.objectContaining({ kind: "message", text: "Next message" }),
+    ]);
+  });
+
+  it("keeps distinct completed reasoning items separate even on the same channel", () => {
+    const items = transcriptToTaskChatItems(
+      [
+        {
+          kind: "thinking",
+          ts: TS,
+          text: "Inspecting transport.",
+          lifecycle: "completed",
+          channel: "summary",
+          itemId: "reason-1",
+        },
+        {
+          kind: "thinking",
+          ts: "2026-07-31T12:00:01.000Z",
+          text: "Checking persistence.",
+          lifecycle: "completed",
+          channel: "summary",
+          itemId: "reason-2",
+        },
+      ],
+      { runId: "native-run", running: false },
+    );
+
+    expect(items).toEqual([
+      expect.objectContaining({
+        kind: "thinking",
+        lines: ["Inspecting transport."],
+      }),
+      expect.objectContaining({
+        kind: "thinking",
+        lines: ["Checking persistence."],
+      }),
+    ]);
+  });
+
+  it("renders runner usage without inventing a context-window size", () => {
+    const items = transcriptToTaskChatItems(
+      [
+        {
+          kind: "result",
+          ts: TS,
+          text: "",
+          inputTokens: 40,
+          outputTokens: 10,
+          cachedTokens: 5,
+          costUsd: 0.02,
+          subtype: "paperclip_runner_usage",
+          isError: false,
+          errors: [],
+        },
+      ],
+      { runId: "native-run", running: true },
+    );
+
+    expect(items).toEqual([
+      {
+        id: "native-run:usage:0",
+        kind: "usage",
+        usage: {
+          used: 55,
+          size: 0,
+          inputTokens: 40,
+          outputTokens: 10,
+          costUsd: 0.02,
+        },
       },
-    }]);
+    ]);
   });
 
   it("renders cumulative-only runner session usage", () => {
-    const items = transcriptToTaskChatItems([{
-      kind: "result",
-      ts: TS,
-      text: "",
-      inputTokens: 80,
-      outputTokens: 20,
-      cachedTokens: 0,
-      costUsd: 0,
-      subtype: "paperclip_runner_session_usage",
-      isError: false,
-      errors: [],
-    }], { runId: "native-run", running: true });
+    const items = transcriptToTaskChatItems(
+      [
+        {
+          kind: "result",
+          ts: TS,
+          text: "",
+          inputTokens: 80,
+          outputTokens: 20,
+          cachedTokens: 0,
+          costUsd: 0,
+          subtype: "paperclip_runner_session_usage",
+          isError: false,
+          errors: [],
+        },
+      ],
+      { runId: "native-run", running: true },
+    );
 
-    expect(items).toEqual([expect.objectContaining({
-      kind: "usage",
-      label: "Provider session total",
-      detail: expect.stringContaining("cumulative usage"),
-      usage: expect.objectContaining({ used: 100, inputTokens: 80, outputTokens: 20 }),
-    })]);
+    expect(items).toEqual([
+      expect.objectContaining({
+        kind: "usage",
+        label: "Provider session total",
+        detail: expect.stringContaining("cumulative usage"),
+        usage: expect.objectContaining({
+          used: 100,
+          inputTokens: 80,
+          outputTokens: 20,
+        }),
+      }),
+    ]);
   });
 
   it("does not change direct-adapter result presentation", () => {
-    const items = transcriptToTaskChatItems([{
-      kind: "result",
-      ts: TS,
-      text: "done",
-      inputTokens: 40,
-      outputTokens: 10,
-      cachedTokens: 0,
-      costUsd: 0,
-      subtype: "success",
-      isError: false,
-      errors: [],
-    }], { runId: "legacy-run", running: true });
+    const items = transcriptToTaskChatItems(
+      [
+        {
+          kind: "result",
+          ts: TS,
+          text: "done",
+          inputTokens: 40,
+          outputTokens: 10,
+          cachedTokens: 0,
+          costUsd: 0,
+          subtype: "success",
+          isError: false,
+          errors: [],
+        },
+      ],
+      { runId: "legacy-run", running: true },
+    );
     expect(items).toEqual([]);
   });
 });
@@ -1311,14 +1771,6 @@ describe("interstitial self-talk classification (PAP-355)", () => {
       if (m.kind !== "message") continue;
       expect(m.interstitial).toBe(true);
     }
-  });
-
-  it("marks only the message still open at the tail as streaming", () => {
-    const items = transcriptToTaskChatItems(stream, {
-      runId: "run-1",
-      running: true,
-    });
-    const messages = items.filter((it) => it.kind === "message");
     if (messages[0].kind !== "message" || messages[1].kind !== "message")
       return;
     // The first message was closed by the tool call — finished self-talk.
@@ -1347,13 +1799,6 @@ describe("interstitial self-talk classification (PAP-355)", () => {
       expect(m.interstitial).toBe(true);
       expect(m.streaming).toBe(false);
     }
-  });
-
-  it("stamps atMs from the first streamed chunk", () => {
-    const messages = transcriptToTaskChatItems(stream, {
-      runId: "run-1",
-      running: false,
-    }).filter((it) => it.kind === "message");
     if (messages[0].kind !== "message" || messages[1].kind !== "message")
       return;
     expect(messages[0].atMs).toBe(Date.parse(TS));
@@ -1451,26 +1896,29 @@ describe("settledRunChildren (PAP-361)", () => {
   });
 
   it("excludes an explicit final reply when runner usage follows it", () => {
-    const finalThenUsage = transcriptToTaskChatItems([
-      {
-        kind: "assistant",
-        ts: TS,
-        text: "Done — the limiter is wired in.",
-        channel: "final",
-      } as TranscriptEntry,
-      {
-        kind: "result",
-        ts: TS,
-        text: "",
-        inputTokens: 40,
-        outputTokens: 10,
-        cachedTokens: 0,
-        costUsd: 0,
-        subtype: "paperclip_runner_usage",
-        isError: false,
-        errors: [],
-      } as TranscriptEntry,
-    ], { runId: "native-run", running: false });
+    const finalThenUsage = transcriptToTaskChatItems(
+      [
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "Done — the limiter is wired in.",
+          channel: "final",
+        } as TranscriptEntry,
+        {
+          kind: "result",
+          ts: TS,
+          text: "",
+          inputTokens: 40,
+          outputTokens: 10,
+          cachedTokens: 0,
+          costUsd: 0,
+          subtype: "paperclip_runner_usage",
+          isError: false,
+          errors: [],
+        } as TranscriptEntry,
+      ],
+      { runId: "native-run", running: false },
+    );
 
     const children = settledRunChildren(finalThenUsage);
     expect(children).toHaveLength(1);
@@ -1482,25 +1930,28 @@ describe("settledRunChildren (PAP-361)", () => {
   });
 
   it("keeps a channel-less final reply out of activity when bookkeeping follows it", () => {
-    const finalThenBookkeeping = transcriptToTaskChatItems([
-      {
-        kind: "assistant",
-        ts: TS,
-        text: "Done — the direct adapter finished.",
-      } as TranscriptEntry,
-      {
-        kind: "result",
-        ts: TS,
-        text: "",
-        inputTokens: 40,
-        outputTokens: 10,
-        cachedTokens: 0,
-        costUsd: 0,
-        subtype: "paperclip_runner_usage",
-        isError: false,
-        errors: [],
-      } as TranscriptEntry,
-    ], { runId: "legacy-run", running: false });
+    const finalThenBookkeeping = transcriptToTaskChatItems(
+      [
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "Done — the direct adapter finished.",
+        } as TranscriptEntry,
+        {
+          kind: "result",
+          ts: TS,
+          text: "",
+          inputTokens: 40,
+          outputTokens: 10,
+          cachedTokens: 0,
+          costUsd: 0,
+          subtype: "paperclip_runner_usage",
+          isError: false,
+          errors: [],
+        } as TranscriptEntry,
+      ],
+      { runId: "legacy-run", running: false },
+    );
 
     const children = settledRunChildren(finalThenBookkeeping);
     expect(children).toHaveLength(1);
@@ -1550,35 +2001,36 @@ describe("settledRunChildren (PAP-361)", () => {
   });
 
   it("does not hide channel-less commentary when real activity follows it", () => {
-    const commentaryThenToolAndUsage = transcriptToTaskChatItems([
-      {
-        kind: "assistant",
-        ts: TS,
-        text: "Checking the direct adapter first.",
-      } as TranscriptEntry,
-      toolCall("Read", { file_path: "a.ts" }),
-      {
-        kind: "result",
-        ts: TS,
-        text: "",
-        inputTokens: 40,
-        outputTokens: 10,
-        cachedTokens: 0,
-        costUsd: 0,
-        subtype: "paperclip_runner_usage",
-        isError: false,
-        errors: [],
-      } as TranscriptEntry,
-    ], { runId: "legacy-run", running: false });
+    const commentaryThenToolAndUsage = transcriptToTaskChatItems(
+      [
+        {
+          kind: "assistant",
+          ts: TS,
+          text: "Checking the direct adapter first.",
+        } as TranscriptEntry,
+        toolCall("Read", { file_path: "a.ts" }),
+        {
+          kind: "result",
+          ts: TS,
+          text: "",
+          inputTokens: 40,
+          outputTokens: 10,
+          cachedTokens: 0,
+          costUsd: 0,
+          subtype: "paperclip_runner_usage",
+          isError: false,
+          errors: [],
+        } as TranscriptEntry,
+      ],
+      { runId: "legacy-run", running: false },
+    );
 
     const children = settledRunChildren(commentaryThenToolAndUsage);
     expect(children).toHaveLength(1);
     const phase = children[0];
     expect(phase.kind).toBe("activity_phase");
     if (phase.kind !== "activity_phase") return;
-    expect(phase.interstitial?.text).toBe(
-      "Checking the direct adapter first.",
-    );
+    expect(phase.interstitial?.text).toBe("Checking the direct adapter first.");
     expect(phase.items.map((item) => item.kind)).toEqual(["tool", "usage"]);
   });
 
@@ -2457,5 +2909,203 @@ describe("prependIssueBrief (PAP-375)", () => {
     expect(prependIssueBrief([], true).map((i) => i.kind)).toEqual(["brief"]);
     const items = [entry("u1", 1_000).item];
     expect(prependIssueBrief(items, false)).toBe(items);
+  });
+});
+
+describe("harness status notices", () => {
+  const notice = (noticeId: string, payload: Record<string, unknown>): TranscriptEntry => ({
+    kind: "provider_activity", ts: TS, family: "provider_notice", eventType: "provider.notice.recorded",
+    status: payload.severity === "error" ? "failed" : "informational", title: "Provider notice",
+    summary: String(payload.summary ?? ""),
+    payload: { schema: "paperclip.provider.notice.v1", noticeId, scope: "turn", userActionable: false, ...payload },
+  });
+  const read: TranscriptEntry = { kind: "tool_call", ts: TS, toolUseId: "read-1", name: "read_file", input: { path: "a.ts" } };
+  const retry = notice("error:retry:turn-1", {
+    severity: "warning", category: "provider_retry", recoverable: true, summary: "Reconnecting... 2/5",
+    details: [{ name: "Reason", value: "responseStreamDisconnected" }],
+  });
+
+  it("shows status notices as top-level timeline rows while generic warnings stay hidden", () => {
+    const parsed = transcriptToTaskChatItems([
+      read,
+      notice("compaction-1", { severity: "info", category: "context_compaction", recoverable: true, summary: "Compacting context", details: [{ name: "Phase", value: "running" }] }),
+      notice("warning-1", { severity: "warning", category: "warning", recoverable: true, summary: "noise" }),
+    ], { runId: "status", running: true });
+    const rows = buildTurnTimelineRows(paperclipRunnerTimelineItems(parsed), true);
+    expect(rows.map((row) => row.kind === "protocol" && row.surface === "provider_activity" ? row.id : row.kind)).toHaveLength(2);
+    const chip = rows[1];
+    expect(chip.kind === "protocol" && chip.surface === "provider_activity" && chip.details.find((d) => d.label === "Phase")?.value).toBe("running");
+    expect(JSON.stringify(rows)).not.toContain("noise");
+  });
+
+  it("marks a retry resolved once real work follows, and drops it behind a fatal error", () => {
+    const live = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems([read, retry], { runId: "r", running: true })), true);
+    expect(live.at(-1)).toMatchObject({ kind: "protocol" });
+    expect(live.at(-1)).not.toHaveProperty("resolved");
+
+    const recovered = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems([read, retry, { ...read, toolUseId: "read-2" }], { runId: "r", running: true })), true);
+    expect(recovered.find((row) => row.kind === "protocol")).toMatchObject({ resolved: true });
+
+    const failed = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems([
+      read, retry,
+      notice("error:final:turn-1", { severity: "error", category: "error", recoverable: false, summary: "You've hit your usage limit." }),
+    ], { runId: "r", running: false })), false);
+    const protocols = failed.filter((row) => row.kind === "protocol");
+    expect(protocols).toHaveLength(1);
+    expect(protocols[0]).toMatchObject({ summary: "You've hit your usage limit." });
+  });
+
+  it("keeps a later retry active after work between retries, and collapses back-to-back retries", () => {
+    const retry2 = notice("error:retry:turn-1", {
+      severity: "warning", category: "provider_retry", recoverable: true, summary: "Reconnecting... 1/5",
+    });
+    const work: TranscriptEntry = { ...read, toolUseId: "read-2" };
+    const rows = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems(
+      [read, retry, work, retry2], { runId: "r", running: true })), true)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ resolved: true });
+    expect(rows[1]).not.toHaveProperty("resolved");
+    const backToBack = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems(
+      [read, retry, retry2], { runId: "r", running: true })), true)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(backToBack).toHaveLength(1);
+    expect(backToBack[0]).toMatchObject({ summary: "Reconnecting... 1/5" });
+  });
+
+  it("marks a compaction that never completed as interrupted once the turn ends", () => {
+    const running = notice("compaction-1", { severity: "info", category: "context_compaction", recoverable: true, summary: "Compacting context", details: [{ name: "Phase", value: "running" }] });
+    const rows = (live: boolean) => buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems([read, running], { runId: "r", running: live })), live)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(rows(true)[0]).toMatchObject({ status: "informational" });
+    expect(rows(false)[0]).toMatchObject({ status: "interrupted" });
+  });
+
+  it("marks a retry left unresolved by a stopped turn as interrupted", () => {
+    const rows = (live: boolean) => buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems([read, retry], { runId: "r", running: live })), live)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(rows(true)[0]).toMatchObject({ status: "informational" });
+    expect(rows(false)[0]).toMatchObject({ status: "interrupted" });
+    expect(rows(false)[0]).not.toHaveProperty("resolved");
+  });
+
+  it("treats a retry followed only by the final answer as recovered", () => {
+    const answer: TranscriptEntry = { kind: "assistant", ts: TS, text: "Done: 8 lines.", channel: "final" } as TranscriptEntry;
+    const rows = buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems([read, retry, answer], { runId: "r", running: false })), false)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ resolved: true });
+    expect(rows[0]).not.toMatchObject({ status: "interrupted" });
+  });
+
+  it("keeps a retry stopped when only run-end records follow it", () => {
+    const parsed = [
+      ...transcriptToTaskChatItems([read, retry], { runId: "r", running: false }),
+      { id: "terminal", kind: "protocol", surface: "run_terminal", turnState: "cancelled", runState: "cancelled", disposition: "blocked" } as TaskChatItem,
+      { id: "stopped", kind: "marker", variant: "interrupted", label: "Run stopped" } as TaskChatItem,
+    ];
+    const rows = buildTurnTimelineRows(paperclipRunnerTimelineItems(parsed), false)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(rows[0]).toMatchObject({ status: "interrupted" });
+    expect(rows[0]).not.toHaveProperty("resolved");
+  });
+
+  it("does not treat a turn-end changed-files card as recovery from a stopped retry", () => {
+    const parsed = [
+      ...transcriptToTaskChatItems([read, retry], { runId: "r", running: false }),
+      { id: "changes", kind: "protocol", surface: "workspace_change", changeSetId: "c", revision: 1, source: "runner_verified",
+        complete: true, files: [], totals: { files: 1, additions: 2, deletions: 0 }, patchArtifactRef: null } as TaskChatItem,
+    ];
+    const rows = buildTurnTimelineRows(paperclipRunnerTimelineItems(parsed), false)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(rows[0]).toMatchObject({ status: "interrupted" });
+    expect(rows[0]).not.toHaveProperty("resolved");
+  });
+
+  it("lets a context.compacted divider replace the completed compaction chip", () => {
+    const compacted = notice("compaction-1", { severity: "info", category: "context_compaction", recoverable: true, summary: "Context compacted", details: [{ name: "Phase", value: "completed" }] });
+    const divider: TranscriptEntry = { kind: "provider_activity", ts: TS, family: "context", eventType: "context.compacted", status: "completed", title: "Context", summary: "", payload: { compactionId: "c1", reason: "provider" } };
+    const rows = (entries: TranscriptEntry[]) => buildTurnTimelineRows(paperclipRunnerTimelineItems(transcriptToTaskChatItems(entries, { runId: "r", running: true })), true)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity" && row.family === "provider_notice");
+    expect(rows([read, compacted])).toHaveLength(1);
+    expect(rows([read, compacted, divider])).toHaveLength(0);
+    const marker = { id: "m", kind: "marker", variant: "context_compacted", label: "Context compacted" } as unknown as TaskChatItem;
+    const parsed = paperclipRunnerTimelineItems(transcriptToTaskChatItems([read, compacted], { runId: "r", running: true }));
+    const withMarker = buildTurnTimelineRows([...parsed, marker], true)
+      .filter((row) => row.kind === "protocol" && row.surface === "provider_activity");
+    expect(withMarker).toHaveLength(0);
+  });
+});
+
+describe("turn changes assembled from edit rows", () => {
+  it("lists each edited file when the harness reports only per-edit patches", () => {
+    const items = transcriptToTaskChatItems(
+      [
+        { kind: "tool_call", ts: TS, name: "Write", toolUseId: "w1", input: { path: "price.js" } },
+        { kind: "diff", ts: TS, changeType: "file_header", text: "price.js", toolUseId: "w1" },
+        { kind: "diff", ts: TS, changeType: "hunk", text: "@@ -0,0 +1,2 @@", toolUseId: "w1" },
+        { kind: "diff", ts: TS, changeType: "add", text: "a", toolUseId: "w1" },
+        { kind: "diff", ts: TS, changeType: "add", text: "b", toolUseId: "w1" },
+        { kind: "tool_call", ts: TS, name: "Edit", toolUseId: "e1", input: { path: "price.js" } },
+        { kind: "tool_call", ts: TS, name: "Edit", toolUseId: "e2", input: { path: "other.js" } },
+        { kind: "diff", ts: TS, changeType: "file_header", text: "other.js", toolUseId: "e2" },
+        { kind: "diff", ts: TS, changeType: "hunk", text: "@@ -4,2 +4,2 @@", toolUseId: "e2" },
+        { kind: "diff", ts: TS, changeType: "context", text: "keep", toolUseId: "e2" },
+        { kind: "diff", ts: TS, changeType: "remove", text: "old", toolUseId: "e2" },
+        { kind: "diff", ts: TS, changeType: "add", text: "new", toolUseId: "e2" },
+        // An addressed line reaches its own row even after another call started.
+        { kind: "diff", ts: TS, changeType: "file_header", text: "price.js", toolUseId: "e1" },
+        { kind: "diff", ts: TS, changeType: "hunk", text: "@@ -1,2 +1,2 @@", toolUseId: "e1" },
+        { kind: "diff", ts: TS, changeType: "remove", text: "b", toolUseId: "e1" },
+        { kind: "diff", ts: TS, changeType: "add", text: "c", toolUseId: "e1" },
+        { kind: "diff", ts: TS, changeType: "truncation", text: "Diff shortened for display.", toolUseId: "e1" },
+        { kind: "tool_result", ts: TS, toolUseId: "w1", content: "", isError: false },
+        { kind: "tool_result", ts: TS, toolUseId: "e1", content: "", isError: false },
+        { kind: "tool_result", ts: TS, toolUseId: "e2", content: "", isError: false },
+      ],
+      { runId: "run-edits", running: false },
+    );
+    const edit = items.find((item) => item.kind === "tool" && item.id.endsWith("e1"));
+    expect(edit).toMatchObject({ diff: { path: "price.js", added: 1, removed: 1, truncated: true } });
+    const changes = items.at(-1);
+    expect(changes).toMatchObject({
+      kind: "protocol",
+      surface: "workspace_change",
+      complete: true,
+      totals: { files: 2, additions: 3, deletions: 1 },
+    });
+    if (changes?.kind !== "protocol" || changes.surface !== "workspace_change") throw new Error("expected changes");
+    // A file created this turn reports its net size.
+    expect(changes.files[0]).toMatchObject({ path: "price.js", operation: "create", additions: 2, deletions: 0 });
+    expect(changes.files[1]).toMatchObject({ path: "other.js", operation: "modify", additions: 1, deletions: 1 });
+    expect(changes.files[1].diff).toBe("@@ -4,2 +4,2 @@\n keep\n-old\n+new\n");
+  });
+});
+
+describe("edit diff review fixes", () => {
+  it("leaves failed edits out of the turn card and keeps producer counts for shortened patches", () => {
+    const items = transcriptToTaskChatItems(
+      [
+        { kind: "tool_call", ts: TS, name: "Edit", toolUseId: "ok", input: { path: "big.js" } },
+        { kind: "diff", ts: TS, changeType: "file_header", text: "big.js", toolUseId: "ok", additions: 900, deletions: 40 },
+        { kind: "diff", ts: TS, changeType: "hunk", text: "@@ -1,1 +1,1 @@", toolUseId: "ok" },
+        { kind: "diff", ts: TS, changeType: "remove", text: "a", toolUseId: "ok" },
+        { kind: "diff", ts: TS, changeType: "add", text: "b", toolUseId: "ok" },
+        { kind: "diff", ts: TS, changeType: "truncation", text: "Diff shortened for display.", toolUseId: "ok" },
+        { kind: "tool_result", ts: TS, toolUseId: "ok", content: "", isError: false },
+        { kind: "tool_call", ts: TS, name: "Edit", toolUseId: "bad", input: { path: "never.js" } },
+        { kind: "diff", ts: TS, changeType: "file_header", text: "never.js", toolUseId: "bad", additions: 3, deletions: 0 },
+        { kind: "diff", ts: TS, changeType: "add", text: "x", toolUseId: "bad" },
+        { kind: "tool_result", ts: TS, toolUseId: "bad", content: "rejected", isError: true },
+      ],
+      { runId: "run-review", running: false },
+    );
+    expect(items.find((item) => item.kind === "tool" && item.id.endsWith(":ok"))).toMatchObject({
+      diff: { added: 900, removed: 40, truncated: true },
+    });
+    const card = items.at(-1);
+    if (card?.kind !== "protocol" || card.surface !== "workspace_change") throw new Error("expected changes");
+    expect(card.files.map((file) => file.path)).toEqual(["big.js"]);
+    expect(card.files[0]).toMatchObject({ additions: 900, deletions: 40, diffTruncated: true });
   });
 });

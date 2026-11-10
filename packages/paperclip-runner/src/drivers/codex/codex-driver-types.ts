@@ -2,6 +2,7 @@ import type {
   HarnessRuntimeRequest,
   HarnessRuntimeRequestResolution,
   HarnessThreadLineageEntry,
+  PersistedHarnessProviderIdentity,
   PersistedHarnessSession,
 } from "../../contracts/harness-driver.js";
 import type {
@@ -9,16 +10,27 @@ import type {
   CodexTaskEnvelope,
 } from "../../contracts/codex.js";
 import type { CodexAppServerTransport } from "./app-server-transport.js";
+import type { CodexWorkingDirectoryAuthority } from "./codex-boundaries.js";
 import type { CodexQuestionResponseContext } from "./codex-question-adapter.js";
 
 export interface CodexAppServerDriverOptions {
   taskEnvelope: CodexTaskEnvelope;
   /** Explicit provider model selected by the persisted native execution. */
   model?: string;
+  /** Per-run reasoning effort sent with each Codex turn, including resumed turns. */
+  reasoningEffort?: string;
+  /** Saved hosted-search restriction for the default process transport. */
+  disableWebSearch?: boolean;
   approvalPolicy?: "never" | "on-request" | "untrusted";
+  /** Paperclip runtime instructions. Codex receives these as additive developer
+   * instructions; the historical option name remains compatible with callers. */
   baseInstructions?: string;
   includeSkillInstructions?: boolean;
-  conversationMode?: "task" | "direct";
+  /** Private instruction directory registered by the control plane for this run. */
+  instructionWorkingCopyRoot?: string;
+  /** Explicit selected skills, resolved from this task's assigned runtime assets. */
+  skillInputs?: readonly import("../../contracts/runtime-context.js").NativeSkillInput[];
+  conversationMode?: "task" | "direct" | "prepared";
   requestedCollaborationMode?: "default" | "plan";
   /**
    * Include Codex's built-in collaboration instructions. Defaults to true so
@@ -28,6 +40,13 @@ export interface CodexAppServerDriverOptions {
   includeCollaborationModeInstructions?: boolean;
   transportFactory?: (context?: {
     providerRecoveryPolicy?: PersistedHarnessSession["providerRecoveryPolicy"];
+    persistedSession?: Pick<
+      PersistedHarnessSession,
+      | "driverSessionId"
+      | "providerSessionId"
+      | "providerIdentity"
+      | "activeTurnId"
+    >;
   }) => CodexAppServerTransport;
   /** Additional control-plane tools exposed to the provider for this run. */
   dynamicTools?: readonly Readonly<Record<string, unknown>>[];
@@ -39,7 +58,12 @@ export interface CodexAppServerDriverOptions {
     turnId: string;
     arguments: unknown;
   }) => Promise<unknown>;
+  /** Current server constraints; does not commit task status before the turn ends. */
+  completionFeedback?: (result: import("../../protocol/replay-contract.js").PrpStructuredRunResult) => Promise<string>;
   environment?: NodeJS.ProcessEnv;
+  observability?: import("../agent-observability.js").ProviderObservabilityLaunch;
+  /** Filesystem that authoritatively admits the workspace path. */
+  workingDirectoryAuthority?: CodexWorkingDirectoryAuthority;
   now?: () => Date;
   runnerInstanceId?: string;
   onDiagnostic?: (message: string) => void;
@@ -56,10 +80,20 @@ export interface CodexAppServerDriverOptions {
     usage: boolean;
     reconciliation: boolean;
     dynamicTools: boolean;
+    toolRefreshOnResume: boolean;
     runtimeRequestResolution: boolean;
     goals: boolean;
     threadLineage: boolean;
   }>;
+  /** Provider-neutral goal metadata for transports exposing a compatible goal lifecycle. */
+  goalCapability?: {
+    actions: readonly ("set" | "pause" | "resume" | "clear")[];
+    autonomousUpdates: boolean;
+    persistentAcrossResume: boolean;
+    maxObjectiveChars: number;
+    tokenBudgetControl: boolean;
+    usageReporting: boolean;
+  };
   /** Provider-specific identity retained when the Codex protocol facade is backed by runnerd. */
   driverIdentity?: {
     kind: string;
@@ -74,6 +108,11 @@ export type CodexCapabilities = Required<
   NonNullable<CodexAppServerDriverOptions["capabilities"]>
 >;
 
+export type CodexGoalAvailability =
+  | "available"
+  | "unsupported"
+  | "policy_disabled";
+
 export type SemanticResultAdmission = "committed" | "identical" | "conflict";
 
 export interface TerminalReplayConflict {
@@ -84,6 +123,7 @@ export interface TerminalReplayConflict {
 export interface OpenedCodexThread {
   threadId: string;
   providerSessionId: string | null;
+  providerIdentity?: PersistedHarnessProviderIdentity;
   collaborationMode: Record<string, unknown> | null;
   context: CodexModelContextSnapshot;
   lineage: HarnessThreadLineageEntry;

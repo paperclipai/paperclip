@@ -10,7 +10,8 @@ use std::os::unix::fs::DirBuilderExt;
 use serde::{Deserialize, Serialize};
 
 use crate::acpx_provider_session::{
-    AcpxPermissionMode, AcpxProviderSessionConfig, AcpxProviderSessionIdentity,
+    AcpxPermissionMode, AcpxProviderSessionConfig, AcpxProviderSessionIdentity, CursorMode,
+    PiThinkingLevel,
 };
 use crate::durable::{
     create_private_temporary_file, open_private_regular_file, verify_private_directory,
@@ -18,7 +19,7 @@ use crate::durable::{
 use crate::local_runner::LocalRunnerError;
 use crate::stable_identity::{is_stable_id, SHORT_STABLE_ID_CHARS};
 
-const CHECKPOINT_SCHEMA: &str = "paperclip.runner.acpx-suspension-checkpoint.v1";
+const CHECKPOINT_SCHEMA: &str = "paperclip.runner.acpx-suspension-checkpoint.v2";
 const CHECKPOINT_DIRECTORY: &str = "acpx-provider";
 const CHECKPOINT_FILE: &str = "suspension-checkpoint.json";
 const MAX_CHECKPOINT_BYTES: u64 = 1024 * 1024;
@@ -48,6 +49,17 @@ struct PersistedAcpxProviderSessionIdentity {
     requested_model: String,
     effective_model: String,
     permission_mode: AcpxPermissionMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pi_thinking_level: Option<PiThinkingLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    claude_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    grok_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    grok_disable_web_search: Option<bool>,
+    provider_lifetime_fence_candidates: [u16; 3],
 }
 
 impl PersistedAcpxProviderSessionIdentity {
@@ -69,6 +81,12 @@ impl PersistedAcpxProviderSessionIdentity {
             requested_model: identity.requested_model,
             effective_model: identity.effective_model,
             permission_mode,
+            mode: identity.mode,
+            pi_thinking_level: identity.pi_thinking_level,
+            claude_effort: identity.claude_effort.clone(),
+            grok_effort: identity.grok_effort.clone(),
+            grok_disable_web_search: identity.grok_disable_web_search.clone(),
+            provider_lifetime_fence_candidates: identity.provider_lifetime_fence_candidates,
         })
     }
 
@@ -84,6 +102,12 @@ impl PersistedAcpxProviderSessionIdentity {
             requested_model: self.requested_model.clone(),
             effective_model: self.effective_model.clone(),
             permission_mode: Some(self.permission_mode),
+            mode: self.mode.clone(),
+            pi_thinking_level: self.pi_thinking_level,
+            claude_effort: self.claude_effort.clone(),
+            grok_effort: self.grok_effort.clone(),
+            grok_disable_web_search: self.grok_disable_web_search.clone(),
+            provider_lifetime_fence_candidates: self.provider_lifetime_fence_candidates,
         }
     }
 
@@ -103,6 +127,11 @@ impl AcpxSuspensionCheckpoint {
             || identity.requested_model != config.model
             || identity.effective_model != config.model
             || identity.permission_mode != Some(config.permission_mode)
+            || identity.mode != config.mode
+            || identity.pi_thinking_level != config.pi_thinking_level
+            || identity.claude_effort != config.claude_effort
+            || identity.grok_effort != config.grok_effort
+            || identity.grok_disable_web_search != config.grok_disable_web_search
             || config
                 .expected_identity
                 .as_ref()

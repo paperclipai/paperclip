@@ -123,7 +123,7 @@ describe("managed provider profile route authorization", () => {
           contextBucket: "paperclip-runner-context",
           contextPrefix: "profiles/example",
           contextKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/example",
-          qualificationRevision: "aws-agentcore-harness-v1",
+          qualificationRevision: "aws-agentcore-harness-context-v2",
           defaultModel: "global.anthropic.claude-sonnet-4-6",
           eventExpiryDays: 90,
         },

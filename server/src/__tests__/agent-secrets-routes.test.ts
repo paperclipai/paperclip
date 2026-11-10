@@ -19,6 +19,7 @@ import {
   secretAccessEvents,
 } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET, type AgentApiKeyScope } from "@paperclipai/shared";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { secretRoutes } from "../routes/secrets.js";
 import { secretService } from "../services/secrets.js";
@@ -159,7 +160,7 @@ describeEmbeddedPostgres("agent secret routes", () => {
       targetType: "agent",
       targetId: fixture.agentId,
       configPath: "access.API_ONLY_KEY",
-      projectionClass: "class_2_runtime_only",
+      projectionClass: "unclassified",
     });
     const projectBinding = await svc.createBinding({
       companyId: fixture.companyId,
@@ -183,7 +184,7 @@ describeEmbeddedPostgres("agent secret routes", () => {
     const list = await request(createApp(fixture)).get("/api/agents/me/secrets");
     expect(list.status).toBe(200);
     expect(list.body.secrets).toEqual([
-      expect.objectContaining({ key: "api_only_key", delivery: "api", projectionClass: "class_2_runtime_only" }),
+      expect.objectContaining({ key: "api_only_key", delivery: "api", projectionClass: "unclassified" }),
       expect.objectContaining({ key: "env_only_key", delivery: "env" }),
       expect.objectContaining({ key: "project_key", delivery: "env" }),
     ]);
@@ -246,6 +247,24 @@ describeEmbeddedPostgres("agent secret routes", () => {
       paperclipSecretRedactions: [expect.objectContaining({ fingerprintSha256: expect.any(String) })],
     });
     expect((run.contextSnapshot as { paperclipSecretRedactions: unknown[] }).paperclipSecretRedactions).toHaveLength(1);
+  });
+
+  it("redacts batched runs from projected registries and enforces company scope", async () => {
+    const first = await seedAgentRun();
+    const foreign = await seedAgentRun();
+    const registry = createRunSecretRedactionRegistry(db);
+    await registry.register(first.companyId, first.heartbeatRunId, "first-secret-value");
+    await registry.register(foreign.companyId, foreign.heartbeatRunId, "foreign-secret-value");
+    const runs = [
+      { id: first.heartbeatRunId, text: "first-secret-value foreign-secret-value", createdAt: new Date() },
+      { id: foreign.heartbeatRunId, text: "foreign-secret-value", createdAt: new Date() },
+    ];
+    const redacted = await registry.redactForRuns(first.companyId, runs);
+    expect(redacted[0].text).toBe(`${REDACTED_EVENT_VALUE} foreign-secret-value`);
+    expect(redacted[0].createdAt).toEqual(runs[0].createdAt);
+    expect(redacted[1].text).toBe("foreign-secret-value");
+    expect(await registry.redactForRun(first.companyId, first.heartbeatRunId, runs[0].text))
+      .toBe(redacted[0].text);
   });
 
   it("denies low-trust, task-bridge, and skill-test callers on both routes", async () => {

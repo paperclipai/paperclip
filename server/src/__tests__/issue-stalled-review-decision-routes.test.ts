@@ -38,7 +38,7 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("stalled review decision routes", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
-  const enqueueWakeup = vi.fn(async () => ({ id: randomUUID() }));
+  const enqueueWakeup = vi.fn(async (_agentId: string, _options: unknown) => ({ id: randomUUID() }));
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-stalled-review-decision-");

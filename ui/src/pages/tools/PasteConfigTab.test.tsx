@@ -13,9 +13,11 @@ const toolsApiMock = vi.hoisted(() => ({
   connectApp: vi.fn(),
   startOAuth: vi.fn(),
   finishApp: vi.fn(),
+  getConnection: vi.fn(),
 }));
 const mockNavigate = vi.hoisted(() => vi.fn());
 const navigateTopLevelMock = vi.hoisted(() => vi.fn());
+const popupAssignMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/tools", () => ({ toolsApi: toolsApiMock }));
 vi.mock("@/lib/browserNavigation", () => ({ navigateTopLevel: navigateTopLevelMock }));
 // The tab uses `useNavigate` from the app router (PAP-11088 draft hand-off),
@@ -87,6 +89,7 @@ function connectResult(overrides: Partial<ConnectToolAppResult> = {}): ConnectTo
       name: "kv-demo",
       uid: "app-gallery-link-test/kv-demo",
       connectionKind: "managed",
+      connectionPurpose: "tool",
       ownership: "customer",
       transport: "mcp_remote",
       authKind: "none",
@@ -172,20 +175,28 @@ function oauthConnectResult(startUrl: string | null = null): ConnectToolAppResul
 
 describe("PasteConfigTab — discoverability copy (PAP-11091)", () => {
   let container: HTMLDivElement;
+  let mountedRoot: ReturnType<typeof createRoot> | null = null;
 
   beforeEach(() => {
+    popupAssignMock.mockReset();
+    vi.spyOn(window, "open").mockReturnValue({ closed: false, location: { assign: popupAssignMock, href: "about:blank" }, focus: vi.fn(), close: vi.fn(), sessionStorage: window.sessionStorage } as unknown as Window);
+
     container = document.createElement("div");
     document.body.appendChild(container);
   });
 
   afterEach(() => {
+    flushSync(() => mountedRoot?.unmount());
+    mountedRoot = null;
     document.body.removeChild(container);
     document.body.innerHTML = "";
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
   async function render() {
     const root = createRoot(container);
+    mountedRoot = root;
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root.render(
@@ -213,20 +224,28 @@ describe("PasteConfigTab — discoverability copy (PAP-11091)", () => {
 
 describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
   let container: HTMLDivElement;
+  let mountedRoot: ReturnType<typeof createRoot> | null = null;
 
   beforeEach(() => {
+    popupAssignMock.mockReset();
+    vi.spyOn(window, "open").mockReturnValue({ closed: false, location: { assign: popupAssignMock, href: "about:blank" }, focus: vi.fn(), close: vi.fn(), sessionStorage: window.sessionStorage } as unknown as Window);
+
     container = document.createElement("div");
     document.body.appendChild(container);
   });
 
   afterEach(() => {
+    flushSync(() => mountedRoot?.unmount());
+    mountedRoot = null;
     document.body.removeChild(container);
     document.body.innerHTML = "";
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
   async function render() {
     const root = createRoot(container);
+    mountedRoot = root;
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root.render(
@@ -290,6 +309,42 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     expect(container.textContent).toContain("Review actions for kv-demo");
     // The dead-end "Next, you'll add the keys" copy is gone.
     expect(container.textContent).not.toContain("Next, you'll add the keys");
+  });
+
+  it("activates imported write actions as allowed by default", async () => {
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    const result = connectResult();
+    result.actions.canMakeChanges = [{
+      catalogEntryId: "cat-write",
+      toolName: "create_page",
+      title: "Create page",
+      description: "Create a page.",
+      riskLevel: "write",
+      isReadOnly: false,
+      isWrite: true,
+      isDestructive: false,
+      status: "active",
+    }];
+    toolsApiMock.connectApp.mockResolvedValue(result);
+    toolsApiMock.finishApp.mockResolvedValue({ connection: result.connection });
+
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const activateButton = buttonStartingWith("Activate 2 of 2");
+    expect(activateButton).toBeTruthy();
+    await act(async () => {
+      activateButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(toolsApiMock.finishApp).toHaveBeenCalledWith("company-1", "conn-1", {
+      enabledCatalogEntryIds: ["cat-read", "cat-write"],
+      askFirstCatalogEntryIds: [],
+      access: "all_agents",
+    });
   });
 
   it("collects imported headers as secret replacement fields before checking actions", async () => {
@@ -366,12 +421,82 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
       credentialValues: {},
     });
     expect(toolsApiMock.startOAuth).toHaveBeenCalledWith("conn-1");
-    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+    expect(popupAssignMock).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=redacted",
     );
     expect(container.textContent).toContain("Unverified server");
     expect(container.textContent).toContain("mcp.notion.com");
     expect(container.textContent).not.toContain("Review actions for notion");
+  });
+
+  it("verifies a completed sign-in and advances the original tab", async () => {
+    const popup = { closed: false, location: { href: "about:blank", assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    vi.mocked(window.open).mockReturnValue(popup as unknown as Window);
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    toolsApiMock.connectApp.mockResolvedValue(oauthConnectResult("https://mcp.notion.com/authorize"));
+    toolsApiMock.getConnection.mockResolvedValue({ id: "conn-1", status: "draft" });
+    await act(async () => buttonStartingWith("Check actions")!.click());
+    await flushReact();
+    await flushReact();
+    popup.location.href = `${window.location.origin}/CO/apps/other-connection/permissions?success=1`;
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(toolsApiMock.getConnection).not.toHaveBeenCalled();
+    // Simulate AppDetail consuming success=1 before the opener polls.
+    popup.location.href = `${window.location.origin}/CO/apps/conn-1/permissions`;
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(toolsApiMock.getConnection).toHaveBeenCalledWith("conn-1");
+    expect(mockNavigate).not.toHaveBeenCalled();
+    toolsApiMock.getConnection.mockResolvedValue({ id: "conn-1", status: "active" });
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/permissions");
+    expect(popup.close).toHaveBeenCalled();
+  });
+
+  it.each(["closed", "denied", "failed"])("offers retry after pasted-config sign-in is %s", async (outcome) => {
+    const popup = { closed: false, location: { href: "about:blank", assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
+    vi.mocked(window.open).mockReturnValue(popup as unknown as Window);
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    toolsApiMock.connectApp.mockResolvedValue(oauthConnectResult("https://mcp.notion.com/authorize"));
+    await act(async () => buttonStartingWith("Check actions")!.click());
+    await flushReact();
+    await flushReact();
+    if (outcome === "closed") popup.closed = true;
+    else popup.location.href = `${window.location.origin}/CO/apps/connect?resume=conn-1&oauth=${outcome}`;
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(buttonStartingWith("Try again")).toBeTruthy();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(toolsApiMock.getConnection).not.toHaveBeenCalled();
+  });
+
+  it("uses the background Cloud handoff returned with an imported OAuth connection", async () => {
+    const session = "imported_background_session_1234";
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({
+      authorizationUrl: "https://provider.example.test/authorize?state=imported",
+    }));
+    await pasteAndCheck(NOTION_PREVIEW, NOTION_CONFIG);
+    const result = oauthConnectResult("https://my.paperclip.app/connections/confirm?session=legacy");
+    result.auth = {
+      ...result.auth!,
+      handoff: { kind: "paperclip_cloud", session },
+    };
+    toolsApiMock.connectApp.mockResolvedValue(result);
+
+    await act(async () => {
+      buttonStartingWith("Check actions")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(request).toHaveBeenCalledWith("/cloud/connections/handoff", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ session }),
+    }));
+    await vi.waitFor(() => {
+      expect(popupAssignMock).toHaveBeenCalledWith(
+        "https://provider.example.test/authorize?state=imported",
+      );
+    });
+    expect(navigateTopLevelMock).not.toHaveBeenCalledWith(expect.stringContaining("/connections/confirm"));
   });
 
   it("rejects an unsafe start URL and retries OAuth on the same connection", async () => {
@@ -403,7 +528,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
     expect(toolsApiMock.connectApp).toHaveBeenCalledTimes(1);
     expect(toolsApiMock.startOAuth).toHaveBeenCalledTimes(1);
     expect(toolsApiMock.startOAuth).toHaveBeenCalledWith("conn-1");
-    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+    expect(popupAssignMock).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=retry-redacted",
     );
   });
@@ -420,7 +545,7 @@ describe("PasteConfigTab — activation handoff (PAP-11092)", () => {
       buttonStartingWith("Back")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/setup");
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-1/permissions");
     expect(toolsApiMock.connectApp).toHaveBeenCalledTimes(1);
     expect(toolsApiMock.startOAuth).not.toHaveBeenCalled();
   });

@@ -2,9 +2,10 @@
 
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, onlineManager } from "@tanstack/react-query";
 import type { Issue, IssueBlockedInboxAttention } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 
 const mockIssuesApi = vi.hoisted(() => ({
   list: vi.fn(),
@@ -164,6 +165,7 @@ describe("BlockedInboxView", () => {
     const { root } = renderWithClient(
       <BlockedInboxView
         {...blockedViewProps}
+        presentation="task"
       />,
       container,
     );
@@ -258,6 +260,7 @@ describe("BlockedInboxView", () => {
     const { root } = renderWithClient(
       <BlockedInboxView
         {...blockedViewProps}
+        presentation="task"
       />,
       container,
     );
@@ -269,6 +272,40 @@ describe("BlockedInboxView", () => {
     expect(rowText.indexOf("Board")).toBeGreaterThan(rowText.indexOf("Needs decision"));
     expect(rowText).not.toContain("Accept or reject");
     expect(container.querySelector('[data-testid="blocked-row-reason-column"]')?.textContent).toContain("Needs decision");
+    const taskRow = container.querySelector('[data-slot="task-row"]');
+    const identifier = container.querySelector('[data-slot="task-row-identifier"]');
+    const timestamp = container.querySelector('[data-slot="task-row-timestamp"]');
+    expect(taskRow).not.toBeNull();
+    expect(taskRow?.className).not.toContain("border-b");
+    expect(identifier).not.toBeNull();
+    expect(timestamp).not.toBeNull();
+    if (!identifier || !timestamp) throw new Error("Expected canonical identifier and timestamp columns");
+    expect(identifier.compareDocumentPosition(timestamp) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+
+    act(() => root.unmount());
+  });
+
+  it("restores the legacy status/id prefix, timestamp column, and row divider", async () => {
+    mockIssuesApi.list.mockResolvedValue([
+      makeIssue(
+        "issue-legacy",
+        "PAP-41",
+        "Legacy blocked row",
+        attention({ owner: { type: "board", agentId: null, userId: null, label: "Board" } }),
+      ),
+    ]);
+
+    const { root } = renderWithClient(
+      <BlockedInboxView {...blockedViewProps} presentation="legacy" />,
+      container,
+    );
+    await waitFor(() => container.textContent?.includes("Legacy blocked row") === true);
+
+    expect(container.querySelector('[data-slot="task-row"]')).toBeNull();
+    expect(container.querySelector('[data-testid="blocked-row-age"]')).not.toBeNull();
+    const row = container.querySelector("a")?.parentElement;
+    expect(row?.className).toContain("border-b");
+    expect(row?.textContent).toContain("PAP-41");
 
     act(() => root.unmount());
   });
@@ -363,5 +400,62 @@ describe("BlockedInboxView", () => {
     expect(banner?.textContent).toContain("Couldn't load the Blocked tab");
 
     act(() => root.unmount());
+  });
+
+  it("keeps loaded rows visible when a refetch fails transiently", async () => {
+    mockIssuesApi.list.mockResolvedValue([
+      makeIssue("issue-stalled-1", "TST-9", "Stalled cached row", attention()),
+    ]);
+
+    const { root, queryClient } = renderWithClient(
+      <BlockedInboxView
+        {...blockedViewProps}
+      />,
+      container,
+    );
+    await waitFor(() => container.textContent?.includes("Stalled cached row") ?? false);
+
+    // A refetch during a deploy fails: the loaded rows stay, no error banner.
+    mockIssuesApi.list.mockRejectedValueOnce(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries({ refetchType: "active" });
+    });
+
+    expect(container.textContent).toContain("Stalled cached row");
+    expect(container.querySelector('[data-testid="blocked-inbox-error"]')).toBeNull();
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+
+    act(() => root.unmount());
+  });
+
+  it("shows the loading skeleton, not the empty state, when the first load is paused on an outage", async () => {
+    // Paused queries report isLoading=false, so gating on it alone would
+    // render the empty state during an outage; the view state must win.
+    mockIssuesApi.list.mockReturnValue(new Promise(() => {}));
+    onlineManager.setOnline(false);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+    try {
+      act(() => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <BlockedInboxView {...blockedViewProps} />
+          </QueryClientProvider>,
+        );
+      });
+      await waitFor(() => container.querySelector('[data-testid="blocked-inbox-loading"]') !== null);
+
+      expect(container.querySelector('[data-testid="blocked-inbox-loading"]')).not.toBeNull();
+      expect(container.querySelector('[data-testid="blocked-inbox-empty"]')).toBeNull();
+      expect(container.querySelector('[data-testid="blocked-inbox-error"]')).toBeNull();
+    } finally {
+      onlineManager.setOnline(true);
+      act(() => root.unmount());
+    }
   });
 });

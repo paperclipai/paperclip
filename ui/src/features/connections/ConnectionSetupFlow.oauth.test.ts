@@ -7,6 +7,7 @@ import {
   isConnectionDefinitionUnavailable,
   isVercelConnectUnavailable,
   readConnectionIntentOAuthOutcome,
+  retainedResumeMatches,
   retainedReconnectMatches,
   requestedConnectionSetupResolution,
   requestedConnectionEntry,
@@ -91,12 +92,18 @@ describe("retained reconnect definition lookup", () => {
       requestedAppKey: "github",
       galleryApps: [],
       reconnectConnection: connection,
+      resumeConnection: null,
+      resumeApplication: null,
+      completedResumeConnectionId: null,
       applications: [githubApplication],
     })?.slug).toBe("github");
     expect(requestedConnectionEntry({
       requestedAppKey: "notion",
       galleryApps: [],
       reconnectConnection: connection,
+      resumeConnection: null,
+      resumeApplication: null,
+      completedResumeConnectionId: null,
       applications: [githubApplication],
     })).toBeNull();
   });
@@ -141,6 +148,9 @@ describe("retained reconnect definition lookup", () => {
       requestedAppKey: "github",
       galleryApps: [],
       reconnectConnection: null,
+      resumeConnection: null,
+      resumeApplication: null,
+      completedResumeConnectionId: null,
       applications: [],
     })).toBeNull();
     const visibleNotion = getConnectableAppDefinition("notion")!;
@@ -148,8 +158,38 @@ describe("retained reconnect definition lookup", () => {
       requestedAppKey: "notion",
       galleryApps: [visibleNotion],
       reconnectConnection: null,
+      resumeConnection: null,
+      resumeApplication: null,
+      completedResumeConnectionId: null,
       applications: [],
     })).toBe(visibleNotion);
+  });
+
+  it.each([
+    ["draft", true],
+    ["active", true],
+    ["disabled", false],
+    ["archived", false],
+  ] as const)("allows retained resume status %s only when appropriate", (status, expected) => {
+    const resumeConnection = {
+      id: "connection-1",
+      companyId: "company-1",
+      applicationId: "app-clickup",
+      status,
+      config: { sourceTemplateKey: "clickup" },
+    } as unknown as ToolConnection;
+    const resumeApplication = {
+      id: "app-clickup",
+      companyId: "company-1",
+      metadata: { sourceTemplateKey: "clickup" },
+    } as unknown as ToolApplication;
+
+    expect(retainedResumeMatches({
+      requestedAppKey: "clickup",
+      resumeConnection,
+      resumeApplication,
+      completedResumeConnectionId: "connection-1",
+    })).toBe(expected);
   });
 
   it("does not apply fresh-setup availability to an exact retained reconnect", () => {

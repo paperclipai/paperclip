@@ -16,6 +16,10 @@ export interface QuotaWindow {
 export interface ProviderQuotaResult {
   /** provider slug, e.g. "anthropic", "openai" */
   provider: string;
+  /** Connection, grant and credential revision; never a credential value. */
+  accountKey?: string;
+  accountLabel?: string;
+  capturedAt?: string;
   /** source label when the provider reports where the quota data came from */
   source?: string | null;
   /** true when the fetch succeeded and windows is populated */

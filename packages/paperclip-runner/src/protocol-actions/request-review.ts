@@ -25,7 +25,7 @@ export const requestReviewAction = {
   },
   "documentation": {
     "title": "Request task review",
-    "description": "Move the active mock task to review with a durable summary.",
+    "description": "Move the active task to review with a durable summary.",
     "note": null
   },
   "examples": {
@@ -66,7 +66,7 @@ export const requestReviewAction = {
       "operationId": "request_review",
       "version": 1,
       "title": "Request task review",
-      "description": "Move the active mock task to review with a durable summary.",
+      "description": "Move the active task to review with a durable summary.",
       "exposure": "always",
       "requiredClaims": [],
       "allowedModes": [
@@ -100,7 +100,7 @@ export const requestReviewAction = {
         "properties": {
           "commandId": {
             "type": "string",
-            "description": "Stable mock command identifier.",
+            "description": "Stable command identifier.",
             "minLength": 1,
             "maxLength": 200
           },
@@ -116,7 +116,7 @@ export const requestReviewAction = {
           },
           "entityRefs": {
             "type": "array",
-            "description": "Mock entities affected by the operation.",
+            "description": "Entities affected by the operation.",
             "items": {
               "type": "string",
               "minLength": 1

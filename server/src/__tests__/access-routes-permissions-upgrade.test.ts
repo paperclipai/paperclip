@@ -88,6 +88,12 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
   let db!: Db;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
+  // Load the large router graph during setup so a cold CI transform does not
+  // consume the first permission assertion's timeout budget.
+  beforeAll(async () => {
+    await import("../routes/access.js");
+  }, 30_000);
+
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-access-routes-permissions-upgrade-");
     db = createDb(tempDb.connectionString);
@@ -195,7 +201,7 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
       companyId: company.id,
       applicationKey: `route-app-${randomUUID()}`,
       name: "Route personal app",
-      type: "mcp",
+      type: "mcp_http",
       status: "active",
     }).returning().then((rows) => rows[0]!);
     const connection = await db.insert(toolConnections).values({

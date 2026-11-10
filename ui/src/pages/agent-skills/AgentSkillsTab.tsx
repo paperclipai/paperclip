@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, ChevronDown, Loader2, Search, Store, X } from "lucide-react";
 import type { Agent, AgentDesiredSkillEntry } from "@paperclipai/shared";
 import { agentsApi } from "../../api/agents";
+import { describeError } from "../../api/errors";
 import { companySkillsApi } from "../../api/companySkills";
 import { instanceSettingsApi } from "../../api/instanceSettings";
 import { queryKeys } from "../../lib/queryKeys";
@@ -95,7 +96,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
 
   const paperclipCoreSkill = useMemo(
     () => (companySkills ?? []).find((skill) => skill.key === PAPERCLIP_CORE_SKILL_KEY) ?? null,
-    [companySkills],
+    [companySkills, skillSnapshot],
   );
 
   // Seeded releases (release_id IS NOT NULL) for the paperclip core skill. Only
@@ -230,7 +231,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
   // Library skills → row models (the store's visual language, tuned for rows).
   const libraryRows = useMemo<AgentSkillRowData[]>(
     () =>
-      (companySkills ?? []).map((skill) => ({
+      (companySkills ?? []).filter((skill) => !(skillSnapshot?.entries ?? []).some((entry) => entry.key === skill.key && entry.readOnly)).map((skill) => ({
         key: skill.key,
         name: skill.name,
         icon: {
@@ -251,14 +252,14 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
         description: skill.description,
         categories: skill.categories,
       })),
-    [companySkills],
+    [companySkills, skillSnapshot],
   );
 
   // Adapter-detected, user-installed / unmanaged skills → read-only rows.
   const detectedRows = useMemo<AgentSkillRowData[]>(
     () =>
       (skillSnapshot?.entries ?? [])
-        .filter((entry) => isReadOnlyUnmanagedSkillEntry(entry, companySkillKeys))
+        .filter((entry) => (entry.readOnly && entry.desired) || isReadOnlyUnmanagedSkillEntry(entry, companySkillKeys))
         .map((entry) => ({
           key: entry.key,
           name: entry.runtimeName ?? entry.key,
@@ -417,9 +418,9 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
           <SaveStatusChip
             pending={syncSkills.isPending}
             unsaved={hasUnsavedChanges}
-            error={syncSkills.isError && hasUnsavedChanges}
+            error={syncSkills.isError && hasUnsavedChanges} // query-error-ok: syncSkills is a save mutation result, not a query read
           />
-          <div className="ml-auto flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:items-center">
+          <div data-canonical-toolbar="agent-skills" role="toolbar" aria-label="Agent skills controls" className="ml-auto flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:items-center">
             <div className="relative w-full sm:w-auto">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -439,9 +440,9 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
           </div>
         </div>
 
-        {syncSkills.isError ? (
+        {syncSkills.isError ? ( // query-error-ok: syncSkills is a save mutation result; copy rendered from the mutation error below
           <p className="text-xs text-destructive">
-            {syncSkills.error instanceof Error ? syncSkills.error.message : "Failed to update skills"}
+            {describeError(syncSkills.error).body}
           </p>
         ) : null}
       </div>
@@ -518,7 +519,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
                     )}
                   />
                   <span className="text-xs font-medium text-muted-foreground">
-                    Detected on adapter (read-only)
+                    Automatic and detected skills (read-only)
                   </span>
                   <span className="text-xs text-muted-foreground/70">{filteredDetected.length}</span>
                 </CollapsibleTrigger>

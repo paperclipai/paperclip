@@ -8,8 +8,19 @@ agent tutorial from provider research and protocol classification through
 manifest generation, branding, secrets, deterministic tests, real-account
 proof, and PR submission.
 
+Chat and email channels: [conversation-channel contract](./CONNECTOR-PLAYBOOK.md#chat-channel-connectors),
+[question inventory and quality bar](./CONNECTOR-PLAYBOOK.md#question-experience-inventory),
+and [per-provider question coverage index](./CHAT-QUESTION-COVERAGE.md).
+
+Runtime authentication: [AI Connections](./AI-CONNECTIONS.md).
+
+Long-term memory: [Experimental memory connectors](./MEMORY.md).
+
 Provider notes: [Google Workspace](./GOOGLE-WORKSPACE.md),
-[Gmail](./GMAIL.md), [PostHog](./POSTHOG.md). Optional credential custody:
+[Gmail](./GMAIL.md), [Asana](./ASANA.md), [Sentry](./SENTRY.md), [PostHog](./POSTHOG.md), [Braintrust](./BRAINTRUST.md), [Neon](./NEON.md), [Superagent](./SUPERAGENT.md), [Gauge](./GAUGE.md), [Ditto](./DITTO.md),
+[1Password](./1PASSWORD.md), [Unikraft](./UNIKRAFT.md), [AgentMail](./AGENTMAIL.md), [Telem.AI](./TELEM.md), [iMessage Photon](./IMESSAGE-PHOTON.md),
+[Enterpret](./ENTERPRET.md), [Supabase](./SUPABASE.md), and
+[Vercel](./vercel.md). Optional credential custody:
 [Vercel Connect](./VERCEL-CONNECT.md).
 
 Post-read action: classify a new integration request, pick the right Paperclip
@@ -200,3 +211,6 @@ translate the intent into Apps v2:
 Do not add new work to the retired v1 branch. If an old ticket still describes a
 valid product gap, retarget it to an active Apps v2 issue or close it as
 superseded with a link to the replacement.
+
+For Slack chat bot creation, installation, recovery, and live qualification, see
+[Automatic Slack app setup](SLACK-AUTOMATIC-SETUP.md).

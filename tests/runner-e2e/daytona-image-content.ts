@@ -6,14 +6,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 export const DAYTONA_IMAGE_CONTENT_SCHEMA =
-  "paperclip-daytona-runner-image-content/v3";
+  "paperclip-daytona-runner-image-content/v5";
 export const DAYTONA_IMAGE_PLATFORM = "linux/amd64";
 export const DAYTONA_IMAGE_DOCKERFILE_PATH = "docker/daytona-runner/Dockerfile";
 
-// This is the audited dependency closure of docker/daytona-runner/Dockerfile.
-// Keep it conservative: a false positive only rebuilds the image, while a
-// missing input could incorrectly reuse an incompatible paid-test image.
-export const DAYTONA_IMAGE_INPUT_PATHS = [
+export const DAYTONA_IMAGE_INPUT_PATHS = [...new Set([
   ".dockerignore",
   ".npmrc",
   "docker/daytona-runner/Dockerfile",
@@ -23,14 +20,79 @@ export const DAYTONA_IMAGE_INPUT_PATHS = [
   "pnpm-workspace.yaml",
   "scripts/link-plugin-dev-sdk.mjs",
   "tsconfig.base.json",
-  "packages/paperclip-eval-kernel",
-  "packages/paperclip-runner",
-] as const;
+  "packages/paperclip-eval-kernel/package.json",
+  "packages/paperclip-eval-kernel/src",
+  "packages/paperclip-eval-kernel/tsconfig.json",
+  "packages/paperclip-runner/scripts/provision-grok.mjs",
+  "packages/paperclip-runner/package.json",
+  "packages/paperclip-runner/acpx-profiles.json",
+  "packages/paperclip-runner/cursor-distributions.json",
+  "packages/paperclip-runner/cursor-contract.json",
+  // The pack's contract digest fingerprints these generated contracts.
+  "packages/paperclip-runner/generated",
+  "packages/paperclip-runner/protocol",
+  "packages/paperclip-runner/runner/Cargo.lock",
+  "packages/paperclip-runner/runner/Cargo.toml",
+  "packages/paperclip-runner/runner/crates",
+  "packages/paperclip-runner/scripts/acpx-sidecar-contract.mjs",
+  "packages/paperclip-runner/scripts/build-provider-pack.mjs",
+  "packages/paperclip-runner/scripts/contracts/contract-fingerprints.mjs",
+  "packages/paperclip-runner/scripts/provider-pack-executable-shims.mjs",
+  "packages/paperclip-runner/scripts/build-node-startup-timeout.mjs",
+  "packages/paperclip-runner/scripts/candidate-provider-pack.mjs",
+  "packages/paperclip-runner/scripts/build-copilot-distribution.mjs",
+  "packages/paperclip-runner/scripts/copilot-inner-distribution.mjs",
+  // ACPX generation recomputes the Copilot, Grok, Pi and Kimi release attestations.
+  "packages/paperclip-runner/scripts/acpx-release-attestations.mjs",
+  "packages/paperclip-runner/scripts/generate-acpx-profiles.mjs",
+  "packages/paperclip-runner/scripts/materialize-copilot-binary.mjs",
+  "packages/paperclip-runner/scripts/install-copilot-assets.mjs",
+  "packages/paperclip-runner/scripts/materialize-cursor-distribution.mjs",
+  "packages/paperclip-runner/scripts/cursor-runtime-patch.mjs",
+  "packages/paperclip-runner/scripts/build-verified-provider-entrypoints.mjs",
+  "packages/paperclip-runner/antigravity-distributions.json",
+  "packages/paperclip-runner/scripts/provision-antigravity.mjs",
+  "packages/paperclip-runner/scripts/antigravity-provisioner-layout.mjs",
+  "packages/paperclip-runner/scripts/materialize-antigravity-distribution.mjs",
+  "packages/paperclip-runner/scripts/patch-antigravity-runtime.mjs",
+  "packages/paperclip-runner/scripts/patch-antigravity-runtime.admission.py",
+  "packages/paperclip-runner/scripts/provider-pack-runtime-tree.mjs",
+  "packages/paperclip-runner/scripts/generate-acpx-sidecar-contract.mjs",
+  "packages/paperclip-runner/scripts/generate-protocol-schema-module.mjs",
+  "packages/paperclip-runner/scripts/materialize-pi-distribution.mjs",
+  "packages/paperclip-runner/scripts/pi-distribution",
+  "packages/paperclip-runner/scripts/materialize-kimi-distribution.mjs",
+  "packages/paperclip-runner/scripts/patch-kimi-runtime.mjs",
+  "packages/paperclip-runner/scripts/kimi-instructions-runtime.mjs",
+  "packages/paperclip-runner/scripts/provision-kimi.mjs",
+  "packages/paperclip-runner/scripts/kimi-distribution",
+  "packages/paperclip-runner/scripts/cursor-native-usage.mjs",
+  "packages/paperclip-runner/scripts/cursor-native-usage-source.json",
+  "packages/paperclip-runner/scripts/provision-cursor.mjs",
+  "packages/paperclip-runner/cursor-distributions.json",
+  "packages/paperclip-runner/cursor-contract.json",
+  // Pi runtime/extension/Node/closure pins are included by the src tree below.
+  "packages/paperclip-runner/src",
+  "packages/paperclip-runner/styles.css",
+  "packages/paperclip-runner/tsconfig.json",
+  "packages/paperclip-runner/tsconfig.surfaces.json",
+])] as const;
 
-const ignoredDirectoryPaths = new Set([
-  "packages/paperclip-runner/dist",
-  "packages/paperclip-runner/runner/target",
+const ignoredRunnerDevelopmentDirectoryPaths = new Set([
+  "packages/paperclip-runner/devtools",
+  "packages/paperclip-runner/docs",
+  "packages/paperclip-runner/examples",
+  "packages/paperclip-runner/test",
+  "packages/paperclip-runner/test-fixtures",
+  "packages/paperclip-runner/test-support",
 ]);
+
+const runnerDocumentationFilePattern = /\.md$/;
+const runnerTestFilePattern = /\.(?:spec|test)\.(?:[cm]?[jt]sx?)$/;
+const runnerRustIntegrationTestPathPattern =
+  /^packages\/paperclip-runner\/runner\/crates\/[^/]+\/tests(?:\/|$)/;
+const runnerSmokeScriptPattern =
+  /^packages\/paperclip-runner\/scripts\/[^/]+-smoke\.mjs$/;
 
 export interface DaytonaImageContentOptions {
   repositoryRoot?: string;
@@ -38,6 +100,17 @@ export interface DaytonaImageContentOptions {
   platform?: string;
   baseImages?: readonly string[];
   frontendDigest?: string;
+  /** Must match the Docker PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS build argument. */
+  candidateProviders?: readonly string[];
+}
+
+export function normalizedDaytonaCandidateProviders(values: readonly string[]): string[] {
+  const selected = [...values].sort();
+  if (selected.some(value => !["cursor", "copilot", "pi", "kimi"].includes(value))
+    || new Set(selected).size !== selected.length) {
+    throw new Error("Daytona candidate providers must be distinct known ACP profiles");
+  }
+  return selected;
 }
 
 function compareNames(left: string, right: string): number {
@@ -49,8 +122,18 @@ function normalizedRelativePath(value: string): string {
 }
 
 function shouldIgnore(relativePath: string): boolean {
-  if (ignoredDirectoryPaths.has(relativePath)) return true;
   return relativePath.split("/").includes("node_modules");
+}
+
+function shouldIgnoreRunnerDevelopmentInput(relativePath: string): boolean {
+  if (!relativePath.startsWith("packages/paperclip-runner/")) return false;
+  if (ignoredRunnerDevelopmentDirectoryPaths.has(relativePath)) return true;
+  return (
+    runnerDocumentationFilePattern.test(relativePath) ||
+    runnerTestFilePattern.test(relativePath) ||
+    runnerRustIntegrationTestPathPattern.test(relativePath) ||
+    runnerSmokeScriptPattern.test(relativePath)
+  );
 }
 
 function updateRecord(
@@ -160,7 +243,12 @@ async function hashEntry(
   relativePath: string,
 ): Promise<void> {
   const normalizedPath = normalizedRelativePath(relativePath);
-  if (shouldIgnore(normalizedPath)) return;
+  if (
+    shouldIgnore(normalizedPath) ||
+    shouldIgnoreRunnerDevelopmentInput(normalizedPath)
+  ) {
+    return;
+  }
 
   const absolutePath = path.resolve(root, relativePath);
   const relativeFromRoot = path.relative(root, absolutePath);
@@ -176,7 +264,6 @@ async function hashEntry(
 
   const stats = await lstat(absolutePath);
   if (stats.isDirectory()) {
-    updateRecord(hash, "directory", normalizedPath);
     const entries = await readdir(absolutePath, { withFileTypes: true });
     entries.sort((left, right) => compareNames(left.name, right.name));
     for (const entry of entries) {
@@ -221,6 +308,9 @@ export async function computeDaytonaImageContentId(
   for (const baseImage of await resolveBaseImages(root, options.baseImages)) {
     updateRecord(hash, "base-image", baseImage);
   }
+  for (const candidate of normalizedDaytonaCandidateProviders(options.candidateProviders ?? [])) {
+    updateRecord(hash, "candidate-provider", candidate);
+  }
   for (const inputPath of inputPaths) {
     await hashEntry(hash, root, inputPath);
   }
@@ -229,7 +319,13 @@ export async function computeDaytonaImageContentId(
 
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
 if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
-  computeDaytonaImageContentId()
+  const arguments_ = process.argv.slice(2);
+  const candidateFlag = arguments_[0];
+  if (arguments_.length > 1 || (candidateFlag !== undefined && !candidateFlag.startsWith("--candidate-providers="))) {
+    throw new Error("Expected only --candidate-providers=cursor,copilot,pi,kimi");
+  }
+  const candidateProviders = candidateFlag?.slice("--candidate-providers=".length).split(",").filter(Boolean) ?? [];
+  computeDaytonaImageContentId({ candidateProviders })
     .then((contentId) => process.stdout.write(`${contentId}\n`))
     .catch((error: unknown) => {
       process.stderr.write(

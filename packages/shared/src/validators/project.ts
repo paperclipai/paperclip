@@ -4,6 +4,11 @@ import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema } from "./trust-policy.js";
 import { objectWithoutDefaults } from "./partial.js";
 
+export const projectDiscoverySchema = z.object({
+  limit: z.number().int().min(1).max(50).default(50),
+  cursor: z.string().uuid().transform(value => value.toLowerCase()).optional(),
+}).strict();
+
 const executionWorkspaceStrategySchema = z
   .object({
     type: z.enum(["project_primary", "git_worktree", "adapter_managed", "cloud_sandbox"]).optional(),
@@ -24,6 +29,7 @@ export const projectExecutionWorkspacePolicySchema = z
     allowIssueOverride: z.boolean().optional(),
     defaultProjectWorkspaceId: z.string().guid().optional().nullable(),
     environmentId: z.string().guid().optional().nullable(),
+    storageProviderPluginId: z.string().uuid().optional().nullable(),
     workspaceStrategy: executionWorkspaceStrategySchema.optional().nullable(),
     workspaceRuntime: z.record(z.string(), z.unknown()).optional().nullable(),
     branchPolicy: z.record(z.string(), z.unknown()).optional().nullable(),
@@ -106,6 +112,7 @@ const projectFields = {
   goalIds: z.array(z.string().guid()).optional(),
   name: z.string().min(1),
   description: z.string().optional().nullable(),
+  visibility: z.enum(["open", "private"]).optional().default("open"),
   status: z.enum(PROJECT_STATUSES).optional().default("backlog"),
   leadAgentId: z.string().guid().optional().nullable(),
   targetDate: z.string().optional().nullable(),
@@ -117,8 +124,11 @@ const projectFields = {
 };
 
 export const createProjectSchema = z.object({
+  idempotencyKey: z.string().trim().min(1).max(255).optional(),
   ...projectFields,
   workspace: createProjectWorkspaceSchema.optional(),
+  repositoryIds: z.array(z.string().regex(/^\d+$/)).optional(),
+  repositoryUrls: z.array(z.string().url().max(2000)).max(100).optional(),
 });
 
 export type CreateProject = z.infer<typeof createProjectSchema>;
@@ -128,5 +138,12 @@ export const updateProjectSchema = objectWithoutDefaults(
 ).partial();
 
 export type UpdateProject = z.infer<typeof updateProjectSchema>;
+
+export const addProjectAccessMemberSchema = z.object({
+  subjectType: z.enum(["user", "agent"]),
+  subjectId: z.string().min(1),
+});
+
+export type AddProjectAccessMember = z.infer<typeof addProjectAccessMemberSchema>;
 
 export type ProjectExecutionWorkspacePolicy = z.infer<typeof projectExecutionWorkspacePolicySchema>;

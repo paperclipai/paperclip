@@ -1,3 +1,4 @@
+import { aiConnectionLoginIntentSchema } from "../ai-connections.js";
 import { z } from "zod";
 import { AGENT_ADAPTER_TYPES } from "../constants.js";
 import { ADAPTER_AUTH_PANEL_MODES, SETUP_TOKEN_TRANSPORT_ADVISORY_CODE } from "../types/agent.js";
@@ -43,6 +44,7 @@ export type ClaudeSetupTokenOverwrite =
 // runtime does not support a caller-supplied session length, so the schema
 // exposes no `ttlSeconds` field; a legacy `ttlSeconds` fails the strict parse.
 export const startClaudeSetupTokenSessionRequestSchema = z.object({
+  aiConnection: aiConnectionLoginIntentSchema.optional(),
   environmentId: z.string().guid(),
   adapterType: z.enum(AGENT_ADAPTER_TYPES),
   overwrite: claudeSetupTokenOverwriteSchema.optional(),
@@ -87,6 +89,7 @@ export const claudeSetupTokenSessionOwnerResponseSchema =
   claudeSetupTokenSessionResponseSchema.extend({
     panelMode: adapterAuthPanelModeSchema,
     prompt: claudeSetupTokenSessionPromptSchema.nullable(),
+    aiConnection: aiConnectionLoginIntentSchema.optional(),
   }).strict();
 export type ClaudeSetupTokenSessionOwnerResponse =
   z.infer<typeof claudeSetupTokenSessionOwnerResponseSchema>;

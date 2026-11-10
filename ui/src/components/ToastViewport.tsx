@@ -1,3 +1,6 @@
+import { AgentAvatar } from "./AgentAvatar";
+import { deriveInitials } from "./Identity";
+import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { useEffect, useState } from "react";
 import { Link } from "@/lib/router";
 import { X } from "lucide-react";
@@ -48,7 +51,16 @@ function AnimatedToast({
       )}
     >
       <div className="flex items-start gap-3 px-3 py-2.5">
-        <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", toneDotClasses[toast.tone])} />
+        {toast.actor?.type === "agent" ? (
+          <AgentAvatar agent={{ id: toast.actor.id, name: toast.actor.name, appearance: toast.actor.appearance }} size={24} />
+        ) : toast.actor?.type === "user" ? (
+          <Avatar size="sm" aria-hidden="true">
+            {toast.actor.image && <AvatarImage src={toast.actor.image} alt="" />}
+            <AvatarFallback>{deriveInitials(toast.actor.name)}</AvatarFallback>
+          </Avatar>
+        ) : (
+          <span className={cn("mt-1 h-2 w-2 shrink-0 rounded-full", toneDotClasses[toast.tone])} />
+        )}
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold leading-5">{toast.title}</p>
           {toast.body && (

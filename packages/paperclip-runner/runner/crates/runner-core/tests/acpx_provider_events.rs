@@ -109,7 +109,7 @@ fn preserves_tool_operation_authority_across_payload_sanitization() {
 }
 
 #[test]
-fn maps_text_and_thinking_without_exposing_reasoning() {
+fn maps_text_and_visible_reasoning_summaries_on_stable_stream_identities() {
     let text = normalize(
         AcpxRuntimeEventKind::TextDelta,
         json!({"type":"text_delta","messageId":"message-1","text":"Working"}),
@@ -121,12 +121,65 @@ fn maps_text_and_thinking_without_exposing_reasoning() {
 
     let thinking = normalize(
         AcpxRuntimeEventKind::Thinking,
-        json!({"type":"thinking","text":"private chain of thought"}),
+        json!({"type":"thinking","messageId":"reasoning-1","text":"Inspecting the implementation."}),
     );
-    assert_eq!(thinking[0].event_type, "item.started");
+    assert_eq!(thinking[0].event_type, "item.delta");
+    assert_eq!(thinking[0].payload["itemId"], "reasoning-1");
     assert_eq!(thinking[0].payload["kind"], "reasoning");
-    assert_eq!(thinking[0].payload["text"], serde_json::Value::Null);
-    assert!(!thinking[0].payload.to_string().contains("private chain"));
+    assert_eq!(thinking[0].payload["channel"], "summary");
+    assert_eq!(
+        thinking[0].payload["text"],
+        "Inspecting the implementation."
+    );
+
+    let output_without_provider_id = normalize(
+        AcpxRuntimeEventKind::TextDelta,
+        json!({"type":"text_delta","text":"first"}),
+    );
+    let next_output_without_provider_id = normalize(
+        AcpxRuntimeEventKind::TextDelta,
+        json!({"type":"text_delta","text":"second"}),
+    );
+    assert_eq!(
+        output_without_provider_id[0].payload["itemId"],
+        next_output_without_provider_id[0].payload["itemId"]
+    );
+    assert_ne!(
+        output_without_provider_id[0].payload["itemId"],
+        normalize(
+            AcpxRuntimeEventKind::Thinking,
+            json!({"type":"thinking","text":"summary"}),
+        )[0]
+        .payload["itemId"]
+    );
+}
+
+#[test]
+fn hashes_opaque_acpx_tool_identities_without_losing_lifecycle_correlation() {
+    let opaque_id = format!("tool / {}", "é".repeat(100));
+    let started = normalize(
+        AcpxRuntimeEventKind::ToolCall,
+        json!({
+            "type":"tool_call",
+            "tag":"tool_call",
+            "toolCallId":opaque_id.clone(),
+            "kind":"read",
+            "status":"pending"
+        }),
+    );
+    let completed = normalize(
+        AcpxRuntimeEventKind::ToolCall,
+        json!({
+            "type":"tool_call",
+            "tag":"tool_call_update",
+            "toolCallId":opaque_id,
+            "kind":"read",
+            "status":"completed"
+        }),
+    );
+    let execution_id = started[0].payload["executionId"].as_str().unwrap();
+    assert!(execution_id.starts_with("acpx-tool-"));
+    assert_eq!(completed[0].payload["executionId"], execution_id);
 }
 
 #[test]
@@ -146,6 +199,49 @@ fn maps_bounded_plan_and_completion_state() {
     assert_eq!(events[0].payload["steps"][0]["status"], "in_progress");
     assert_eq!(events[0].payload["complete"], false);
     assert_eq!(events[0].priority, EventPriority::P1);
+}
+
+#[test]
+fn preserves_usage_counters_across_sidecar_payload_redaction() {
+    let mut scope = AcpxEventScope::new("run-1").unwrap();
+    scope.bind_turn("turn-1").unwrap();
+    let decoded = decode_acpx_event(
+        &scope,
+        &AcpxSidecarEvent {
+            sequence: 1,
+            event_type: GeneratedAcpxSidecarEventType::RuntimeEvent,
+            run_id: Some("run-1".to_owned()),
+            turn_id: Some("turn-1".to_owned()),
+            payload: json!({
+                "type":"status", "tag":"usage_update",
+                "breakdown":{
+                    "inputTokens":12, "outputTokens":7, "thoughtTokens":0,
+                    "cachedReadTokens":2, "cachedWriteTokens":0, "totalTokens":21
+                },
+                "accessToken":"provider-secret",
+                "cost":{"amount":0.25,"currency":"USD"}
+            }),
+        },
+    )
+    .unwrap();
+    let AcpxEventPayload::Runtime {
+        kind,
+        tool_operation,
+        payload,
+        ..
+    } = decoded
+    else {
+        panic!("runtime usage must decode as a runtime payload");
+    };
+    assert_eq!(payload["accessToken"], "[REDACTED]");
+    assert_eq!(payload["breakdown"]["totalTokens"], 21);
+    let events =
+        normalize_acpx_runtime_event(kind, &payload, tool_operation, "event-7", "turn-1", 3);
+    assert_eq!(events[0].payload["runDeltaAvailable"], true);
+    assert_eq!(events[0].payload["runDelta"]["inputTokens"], 12);
+    assert_eq!(events[0].payload["runDelta"]["outputTokens"], 7);
+    assert_eq!(events[0].payload["runDelta"]["cacheReadTokens"], 2);
+    assert_eq!(events[0].payload["runDelta"]["cacheWriteTokens"], 0);
 }
 
 #[test]
@@ -238,6 +334,131 @@ fn does_not_label_non_usd_acpx_cost_as_usd() {
 
     assert_eq!(usage[0].payload["runDeltaAvailable"], true);
     assert_eq!(usage[0].payload["cumulative"]["providerCostUsd"], 0.0);
+}
+
+#[test]
+fn matches_typescript_mcp_display_identity_across_tool_lifecycle() {
+    for (title, namespace, name) in [
+        (
+            "mcp__paperclip__write_document",
+            "paperclip",
+            "write_document",
+        ),
+        (
+            "mcp.paperclip.write_document",
+            "paperclip",
+            "write_document",
+        ),
+        (
+            "  MCP__Paperclip__write_document  ",
+            "Paperclip",
+            "write_document",
+        ),
+        ("McP.other.read_document", "other", "read_document"),
+        ("mcp__paperclip__nested__tool", "paperclip", "nested__tool"),
+        ("mcp.paperclip.nested.tool", "paperclip", "nested.tool"),
+        ("mcp_____write_document", "_", "write_document"),
+        ("mcp__é__write_document", "é", "write_document"),
+    ] {
+        for (tag, status, event_type) in [
+            ("tool_call", "pending", "tool.execution.started"),
+            (
+                "tool_call_update",
+                "in_progress",
+                "tool.execution.progressed",
+            ),
+            ("tool_call_update", "completed", "tool.execution.completed"),
+        ] {
+            let events = normalize_acpx_runtime_event(
+                AcpxRuntimeEventKind::ToolCall,
+                &json!({
+                    "type": "tool_call", "tag": tag, "status": status,
+                    "toolCallId": "write-plan", "title": title,
+                    "rawInput": {"private": "not-for-the-log"},
+                    "operationId": "finish_task", "semantic_tool": {"phase": "result"}
+                }),
+                Some("execute"),
+                "event-7",
+                "turn-1",
+                3,
+            );
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].event_type, event_type);
+            let payload = &events[0].payload;
+            assert_eq!(payload["executionId"], "write-plan");
+            assert_eq!(payload["transport"], "mcp");
+            assert_eq!(payload["namespace"], namespace);
+            assert_eq!(payload["name"], name);
+            // Parsing the display title never changes preclassified operation authority.
+            assert_eq!(payload["operation"], "execute");
+            assert_eq!(payload["readOnly"], false);
+            for dropped in ["rawInput", "operationId", "semantic_tool"] {
+                assert!(payload.get(dropped).is_none());
+            }
+            assert!(!payload.to_string().contains("not-for-the-log"));
+        }
+    }
+}
+
+#[test]
+fn bounds_mcp_namespace_and_name_independently_after_parsing() {
+    let namespace = "é".repeat(300);
+    let events = normalize(
+        AcpxRuntimeEventKind::ToolCall,
+        json!({"type": "tool_call", "title": format!("mcp__{namespace}__write_document")}),
+    );
+    assert_eq!(events[0].payload["transport"], "mcp");
+    assert_eq!(events[0].payload["name"], "write_document");
+    assert_eq!(
+        events[0].payload["namespace"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .count(),
+        240
+    );
+    let events = normalize(
+        AcpxRuntimeEventKind::ToolCall,
+        json!({"type": "tool_call", "title": format!("mcp.paperclip.{}", "雪".repeat(300))}),
+    );
+    assert_eq!(events[0].payload["namespace"], "paperclip");
+    assert_eq!(
+        events[0].payload["name"].as_str().unwrap().chars().count(),
+        240
+    );
+    for title in [
+        "mcp__Authorization: Bearer namespace-secret__write_document",
+        "mcp.paperclip.Authorization: Bearer tool-secret",
+    ] {
+        let events = normalize(
+            AcpxRuntimeEventKind::ToolCall,
+            json!({"type": "tool_call", "title": title}),
+        );
+        assert!(!events[0].payload.to_string().contains("namespace-secret"));
+        assert!(!events[0].payload.to_string().contains("tool-secret"));
+    }
+}
+
+#[test]
+fn leaves_builtin_and_malformed_mcp_titles_as_display_only_builtin_names() {
+    for title in [
+        "Read file",
+        "write_document",
+        "paperclip__write_document",
+        "mcp____write_document",
+        "mcp__paperclip__",
+        "mcp..write_document",
+        "mcp.paperclip.",
+        "mcp__paperclip__write\ndocument",
+    ] {
+        let events = normalize(
+            AcpxRuntimeEventKind::ToolCall,
+            json!({"type": "tool_call", "title": title}),
+        );
+        assert_eq!(events[0].payload["transport"], "builtin");
+        assert!(events[0].payload["namespace"].is_null());
+        assert_eq!(events[0].payload["name"], title);
+    }
 }
 
 #[test]
@@ -514,4 +735,91 @@ fn leaves_operational_semantic_and_terminal_events_to_the_adapter() {
     )
     .is_empty());
     assert!(normalize(AcpxRuntimeEventKind::Done, json!({"type":"done"})).is_empty());
+}
+
+#[test]
+fn claude_rate_limit_on_usage_update_becomes_an_account_notice() {
+    let mut scope = AcpxEventScope::new("run-1").unwrap();
+    scope.bind_turn("turn-1").unwrap();
+    let decoded = decode_acpx_event(
+        &scope,
+        &AcpxSidecarEvent {
+            sequence: 1,
+            event_type: GeneratedAcpxSidecarEventType::RuntimeEvent,
+            run_id: Some("run-1".to_owned()),
+            turn_id: Some("turn-1".to_owned()),
+            payload: json!({
+                "type":"status", "tag":"usage_update",
+                "rateLimit":{
+                    "status":"allowed_warning", "rateLimitType":"five_hour",
+                    "utilization":0.86, "resetsAt":1_793_893_200
+                }
+            }),
+        },
+    )
+    .unwrap();
+    let AcpxEventPayload::Runtime {
+        kind,
+        tool_operation,
+        payload,
+        ..
+    } = decoded
+    else {
+        panic!("runtime usage must decode as a runtime payload");
+    };
+    let events =
+        normalize_acpx_runtime_event(kind, &payload, tool_operation, "event-7", "turn-1", 3);
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].event_type, "usage.reported");
+    let notice = &events[1];
+    assert_eq!(notice.event_type, "provider.notice.recorded");
+    assert_eq!(notice.payload["category"], "provider.rate_limits");
+    assert_eq!(notice.payload["scope"], "account");
+    assert_eq!(notice.payload["noticeId"], "event-7:rate-limits");
+    let snapshot: serde_json::Value =
+        serde_json::from_str(notice.payload["details"][0]["value"].as_str().unwrap()).unwrap();
+    assert_eq!(snapshot["provider"], "anthropic");
+    assert_eq!(snapshot["windows"][0]["id"], "claude.five_hour");
+    assert_eq!(snapshot["windows"][0]["usedPercent"], 86.0);
+    assert_eq!(snapshot["windows"][0]["resetsAt"], "2026-11-05T15:40:00Z");
+
+    let plain = normalize(
+        AcpxRuntimeEventKind::Status,
+        json!({"type":"status", "tag":"usage_update"}),
+    );
+    assert_eq!(
+        plain.len(),
+        1,
+        "usage without rate-limit data stays a single event"
+    );
+}
+
+#[test]
+fn claude_status_notices_pair_by_key_and_keep_details() {
+    let notice = |phase: &str| {
+        normalize(
+            AcpxRuntimeEventKind::ProviderNotice,
+            json!({
+                "type": "provider_notice", "severity": "info", "category": "context_compaction",
+                "summary": "Compacting context", "noticeKey": "compaction-1",
+                "details": [{"name": "Phase", "value": phase}]
+            }),
+        )
+    };
+    let started = notice("running");
+    let completed = notice("completed");
+    assert_eq!(
+        started[0].payload["noticeId"],
+        completed[0].payload["noticeId"]
+    );
+    assert_eq!(started[0].payload["category"], "context_compaction");
+    assert_eq!(
+        completed[0].payload["details"],
+        json!([{"name": "Phase", "value": "completed"}])
+    );
+    let plain = normalize(
+        AcpxRuntimeEventKind::ProviderNotice,
+        json!({"type": "provider_notice", "category": "acpx_x", "summary": "x"}),
+    );
+    assert!(plain[0].payload.get("details").is_none());
 }

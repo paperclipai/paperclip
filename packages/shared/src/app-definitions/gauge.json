@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "slug": "gauge",
+  "name": "Gauge",
+  "description": "Track how AI answers mention your brand, research keywords and traffic, and run content workflows.",
+  "categories": [
+    "analytics"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/gauge.png"
+  },
+  "urlPatterns": [
+    "https://app.withgauge.com/*"
+  ],
+  "docsUrl": "https://docs.withgauge.com/help/mcp",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://app.withgauge.com/mcp",
+        "scopesHint": [
+          "mcp"
+        ]
+      },
+      "guidanceMd": "Connect Gauge in the browser and choose the organization this connection may use. Write tools start enabled and remain governed by Paperclip's action policies.",
+      "riskTier": "S3",
+      "label": "Sign in with Gauge",
+      "consoleLinks": {
+        "docs": "https://docs.withgauge.com/help/mcp"
+      },
+      "warnings": [
+        "A Gauge account. Each connection reaches one Gauge organization: sign-in uses the organization chosen during consent, and an API key uses the organization that created it.",
+        "Gauge content tools can publish to your connected CMS, including live. Set publish actions to Ask first before agents run unattended."
+      ],
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Read and write",
+        "description": "Read AI visibility, SEO and traffic data, and run content workflows. Gauge content tools can publish to your connected CMS, including live. Set publish actions to Ask first before agents run unattended."
+      }
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a Gauge organization API key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://app.withgauge.com/mcp"
+      },
+      "guidanceMd": "In Gauge, open Settings → Integrations → API Keys, generate a key for Paperclip, and paste it below.",
+      "riskTier": "S3",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Gauge API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Gauge API key",
+          "secret": true,
+          "helperMd": "Gauge API keys are not scoped: a key reaches every MCP tool in the organization that created it, including publishing to a connected CMS, and requests are attributed to the organization rather than a user. Generate a separate key for Paperclip so it can be deleted independently, and set publish actions to Ask first before agents run unattended. Paperclip cannot narrow an existing key."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://docs.withgauge.com/help/mcp",
+        "docs": "https://docs.withgauge.com/help/mcp"
+      },
+      "warnings": [
+        "A Gauge account. Each connection reaches one Gauge organization: sign-in uses the organization chosen during consent, and an API key uses the organization that created it.",
+        "Gauge content tools can publish to your connected CMS, including live. Set publish actions to Ask first before agents run unattended."
+      ],
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Read and write",
+        "description": "Read AI visibility, SEO and traffic data, and run content workflows. Gauge content tools can publish to your connected CMS, including live. Set publish actions to Ask first before agents run unattended."
+      }
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { boolean, index, integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { boolean, index, integer, numeric, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import type { CompanySearchQuery, StatusCardRefreshPolicy } from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
@@ -56,6 +56,9 @@ export const statusCards = pgTable(
     lastModel: text("last_model"),
     generatingIssueId: uuid("generating_issue_id").references(() => issues.id, { onDelete: "set null" }),
     failureReason: text("failure_reason"),
+    // Internal deadline ownership; null denotes a row written before provenance
+    // was recorded. Membership may be rechecked at startup, retry/policy may not.
+    nextEvalReason: text("next_eval_reason").$type<"membership" | "policy" | "retry" | "refresh">(),
     nextEvalAt: timestamp("next_eval_at", { withTimezone: true }),
     archivedAt: timestamp("archived_at", { withTimezone: true }),
     archivedByUserId: text("archived_by_user_id"),
@@ -81,7 +84,7 @@ export const statusCardUpdates = pgTable(
     changes: jsonb("changes").$type<StatusCardUpdateChange[]>().notNull().default(sql`'[]'::jsonb`),
     inputTokens: integer("input_tokens").notNull().default(0),
     outputTokens: integer("output_tokens").notNull().default(0),
-    costCents: integer("cost_cents").notNull().default(0),
+    costCents: numeric("cost_cents", { precision: 24, scale: 7, mode: "number" }).notNull().default(0),
     model: text("model"),
     queryVersion: integer("query_version"),
     changeSummary: text("change_summary"),

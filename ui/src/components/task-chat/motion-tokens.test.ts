@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import { MOTION_TOKENS } from "./motion-tokens";
 import { buildTweakExport } from "./TweakPanel";
 
-/** Collect declared --motion-* custom properties from index.css (deduped). */
+/** Collect shared --motion-* properties from the token layer (deduped). */
 function declaredMotionTokens(): Set<string> {
-  const css = readFileSync(new URL("../../index.css", import.meta.url), "utf8");
+  const indexCss = readFileSync(new URL("../../index.css", import.meta.url), "utf8");
+  expect(indexCss).toContain('@import "./motion-tokens.css";');
+  const css = `${indexCss}\n${readFileSync(new URL("../../motion-tokens.css", import.meta.url), "utf8")}`;
   const names = new Set<string>();
   const re = /(--motion-[a-z0-9-]+)\s*:/g;
   let m: RegExpExecArray | null;
@@ -14,15 +16,15 @@ function declaredMotionTokens(): Set<string> {
 }
 
 describe("motion token catalog", () => {
-  it("is 1:1 with the --motion-* tokens declared in index.css", () => {
+  it("is 1:1 with the --motion-* tokens declared in the token layer", () => {
     const declared = declaredMotionTokens();
     const catalog = new Set(MOTION_TOKENS.map((t) => t.name));
 
     const missingFromCatalog = [...declared].filter((n) => !catalog.has(n));
     const missingFromCss = [...catalog].filter((n) => !declared.has(n));
 
-    expect(missingFromCatalog, "tokens in index.css but not in the catalog").toEqual([]);
-    expect(missingFromCss, "tokens in the catalog but not in index.css").toEqual([]);
+    expect(missingFromCatalog, "tokens in the token layer but not in the catalog").toEqual([]);
+    expect(missingFromCss, "tokens in the catalog but not in the token layer").toEqual([]);
     expect(catalog.size).toBe(declared.size);
   });
 });

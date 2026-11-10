@@ -25,7 +25,12 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://mcp.candid.org/mcp"
+        "serverUrl": "https://mcp.candid.org/mcp",
+        "scopesHint": [
+          "openid",
+          "profile",
+          "email"
+        ]
       },
       "guidanceMd": "Connect Candid in the browser. A Candid account with access to the MCP connector.",
       "riskTier": "S2",

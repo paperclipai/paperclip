@@ -1,7 +1,95 @@
 import { describe, expect, it } from "vitest";
 import { paperclipRunnerUIAdapter } from "./index";
+import { createPiProfileExtensionAdapter, PI_NOTICE_METHOD } from "../../../../packages/paperclip-runner/src/drivers/acpx/pi-extension-adapter";
+import { transcriptToTaskChatItems } from "../../components/task-chat/transcript-adapter";
+
+const piFailure = (overrides: Record<string, unknown> = {}, eventOverrides: Record<string, unknown> = {}) => ({
+  type: "paperclip.prp.event",
+  event: {
+    runId: "run-1", turnId: "turn-1", normalizedSessionId: "session-1",
+    eventType: "provider.notice.recorded",
+    payload: {
+      schema: "paperclip.provider.notice.v1", noticeId: "notice-1", category: "pi.runtime_failure",
+      severity: "error", summary: "Pi process exited with code 4", scope: "session",
+      recoverable: false, userActionable: false,
+      details: [{ name: "source.method", value: PI_NOTICE_METHOD },
+        { name: "source.nativeEvent", value: "runtime_failure" }, { name: "source.sessionId", value: "session-1" },
+        { name: "reason", value: "native_process_exited" }],
+      ...overrides,
+    },
+    ...eventOverrides,
+  },
+});
 
 describe("paperclip runner transcript projection", () => {
+  it("keeps both pinned Pi failure facts in diagnostics without adding a task warning", async () => {
+    const adapter = createPiProfileExtensionAdapter({ workspacePath: "/fixture", sessionId: "session-1", turnId: "turn-1" });
+    const notice = { sessionId: "session-1", category: "runtime_failure", severity: "error",
+      summary: "Pi process exited with code 4", details: { reason: "native_process_exited" } };
+    const raw = [...await adapter.notification(PI_NOTICE_METHOD, notice),
+      ...await adapter.notification(PI_NOTICE_METHOD, structuredClone(notice))];
+    expect(raw).toHaveLength(2);
+    expect(raw[0]!.payload.noticeId).not.toBe(raw[1]!.payload.noticeId);
+    const before = structuredClone(raw);
+    const parse = paperclipRunnerUIAdapter.createStdoutParser!().parseLine;
+    const entries = raw.flatMap(event => parse(JSON.stringify({ type: "paperclip.prp.event", event: {
+      runId: "run-1", normalizedSessionId: "session-1", turnId: "turn-1", ...event,
+    } }), "2026-10-03T07:00:00.000Z"));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ family: "provider_notice", payload: { userActionable: false } });
+    expect(transcriptToTaskChatItems(entries, { runId: "run-1", agentName: "Pi", running: false }))
+      .toEqual([]);
+    expect(raw).toEqual(before);
+  });
+
+  it("preserves different failure details, severity, authority and run/turn/session scope", () => {
+    const changed = [
+      piFailure({ summary: "Provider request failed" }),
+      piFailure({ severity: "warning" }),
+      piFailure({ recoverable: true }),
+      piFailure({ userActionable: true }),
+      piFailure({ details: piFailure().event.payload.details.map(detail => detail.name === "reason"
+        ? { ...detail, value: "provider_http_429" } : detail) }),
+      piFailure({ details: piFailure().event.payload.details.map(detail => detail.name === "source.sessionId"
+        ? { ...detail, value: "session-2" } : detail) }),
+      piFailure({}, { runId: "run-2" }),
+      piFailure({}, { turnId: "turn-2" }),
+      piFailure({}, { normalizedSessionId: "session-2" }),
+      piFailure({}, { runId: undefined }),
+      piFailure({}, { turnId: undefined }),
+    ];
+    for (const event of changed) {
+      const parse = paperclipRunnerUIAdapter.createStdoutParser!().parseLine;
+      expect(parse(JSON.stringify(piFailure()), "first")).toHaveLength(1);
+      expect(parse(JSON.stringify(event), "second")).toHaveLength(1);
+    }
+  });
+
+  it("starts a new diagnostic after retry activity, another event, or parser reset", () => {
+    const parser = paperclipRunnerUIAdapter.createStdoutParser!();
+    const parse = (event: unknown) => parser.parseLine(JSON.stringify(event), "2026-10-03T07:00:00.000Z");
+    expect(parse(piFailure())).toHaveLength(1);
+    expect(parse(piFailure({ noticeId: "notice-2" }))).toEqual([]);
+    for (const intervening of [piFailure({ category: "pi.auto_retry_start" }),
+      piFailure({}, { eventType: "item.delta", payload: { kind: "agentMessage", text: "Retrying" } }),
+      { type: "other" }]) {
+      parse(intervening);
+      expect(parse(piFailure())).toHaveLength(1);
+    }
+    parser.reset();
+    expect(parse(piFailure())).toHaveLength(1);
+  });
+
+  it("never coalesces other providers or unscoped/unsupported notices", () => {
+    for (const event of [piFailure({ category: "other.runtime_failure" }),
+      piFailure({ details: [] }), piFailure({}, { normalizedSessionId: undefined }),
+      piFailure({}, { runId: undefined }), piFailure({}, { turnId: undefined })]) {
+      const parse = paperclipRunnerUIAdapter.createStdoutParser!().parseLine;
+      expect(parse(JSON.stringify(event), "first")).toHaveLength(1);
+      expect(parse(JSON.stringify(event), "second")).toHaveLength(1);
+    }
+  });
+
   it("renders committed PRP semantic tool items with the existing chat parts", () => {
     const started = paperclipRunnerUIAdapter.parseStdoutLine(JSON.stringify({
       type: "paperclip.prp.event",
@@ -29,9 +117,9 @@ describe("paperclip runner transcript projection", () => {
     }), "2026-08-21T12:00:00.000Z");
 
     expect(event("item.delta", { kind: "reasoning", text: "Inspecting the runner" }, "reason-1"))
-      .toEqual([{ kind: "thinking", ts: expect.any(String), text: "Inspecting the runner", delta: true, channel: "unknown" }]);
+      .toEqual([{ kind: "thinking", ts: expect.any(String), text: "Inspecting the runner", delta: true, channel: "unknown", itemId: "reason-1" }]);
     expect(event("item.delta", { kind: "agentMessage", text: "Here is" }, "message-1"))
-      .toEqual([{ kind: "assistant", ts: expect.any(String), text: "Here is", delta: true, channel: "unknown" }]);
+      .toEqual([{ kind: "assistant", ts: expect.any(String), text: "Here is", delta: true, channel: "unknown", itemId: "message-1" }]);
     expect(event("item.started", {
       kind: "commandExecution",
       item: { id: "exec-1", type: "commandExecution", command: "pnpm test", status: "inProgress" },
@@ -46,7 +134,7 @@ describe("paperclip runner transcript projection", () => {
     ]);
   });
 
-  it("emits a proposed and accepted terminal summary only once", () => {
+  it("emits semantic result governance once without racing the provider final", () => {
     const parse = paperclipRunnerUIAdapter.createStdoutParser!().parseLine;
     const line = (eventType: string, payload: Record<string, unknown>) => parse(JSON.stringify({
       type: "paperclip.prp.event",
@@ -56,7 +144,6 @@ describe("paperclip runner transcript projection", () => {
     expect(line("run.result.proposed", { summary: "Finished the task" }))
       .toEqual([
         expect.objectContaining({ kind: "run_result", disposition: "done", summary: "Finished the task" }),
-        { kind: "assistant", ts: expect.any(String), text: "Finished the task", channel: "final" },
       ]);
     expect(line("run.result.accepted", { result: { summary: "Finished the task" } }))
       .toEqual([]);
@@ -71,16 +158,16 @@ describe("paperclip runner transcript projection", () => {
 
     expect(event("item.started", { kind: "agentMessage", channel: "progress", item: { id: "p1", type: "agentMessage", phase: "commentary", text: "" } }, "p1")).toEqual([]);
     expect(event("item.delta", { kind: "agentMessage", channel: "progress", text: "Running it now." }, "p1"))
-      .toEqual([{ kind: "assistant", ts: expect.any(String), text: "Running it now.", delta: true, channel: "progress" }]);
+      .toEqual([{ kind: "assistant", ts: expect.any(String), text: "Running it now.", delta: true, channel: "progress", itemId: "p1" }]);
 
     expect(event("item.started", { kind: "agentMessage", channel: "final", item: { id: "f1", type: "agentMessage", phase: "final_answer", text: "" } }, "f1")).toEqual([]);
     expect(event("item.delta", { kind: "agentMessage", channel: "final", text: "Completed." }, "f1"))
-      .toEqual([{ kind: "assistant", ts: expect.any(String), text: "Completed.", delta: true, channel: "final" }]);
+      .toEqual([{ kind: "assistant", ts: expect.any(String), text: "Completed.", delta: true, channel: "final", itemId: "f1" }]);
 
     expect(event("item.delta", { kind: "reasoning", channel: "summary", text: "Inspecting" }, "r1"))
-      .toEqual([{ kind: "thinking", ts: expect.any(String), text: "Inspecting", delta: true, channel: "summary" }]);
+      .toEqual([{ kind: "thinking", ts: expect.any(String), text: "Inspecting", delta: true, channel: "summary", itemId: "r1" }]);
     expect(event("item.delta", { kind: "reasoning", channel: "detail", text: "Detailed trace" }, "r1"))
-      .toEqual([{ kind: "thinking", ts: expect.any(String), text: "Detailed trace", delta: true, channel: "detail" }]);
+      .toEqual([{ kind: "thinking", ts: expect.any(String), text: "Detailed trace", delta: true, channel: "detail", itemId: "r1" }]);
   });
 
   it("preserves empty reasoning lifecycle events as real thinking activity", () => {
@@ -124,7 +211,6 @@ describe("paperclip runner transcript projection", () => {
     expect(event("run.result.proposed", { summary: "Human-readable completion." }))
       .toEqual([
         expect.objectContaining({ kind: "run_result", summary: "Human-readable completion." }),
-        { kind: "assistant", ts: expect.any(String), text: "Human-readable completion.", channel: "final" },
       ]);
   });
 
@@ -200,6 +286,37 @@ describe("paperclip runner transcript projection", () => {
       referenceId: "unsafe",
       path: "../secrets.env",
     })).toEqual([expect.objectContaining({ kind: "system", text: expect.stringContaining("unsafe") })]);
+  });
+
+  it("preserves complete native plan context and revision identity through replay", () => {
+    const parse = paperclipRunnerUIAdapter.createStdoutParser!().parseLine;
+    const description = "# Plan\n" + "x".repeat(99_981) + "\nFINAL-CHECK";
+    expect(description.length).toBe(100_000);
+    const questionId = `plan-${"a".repeat(64)}`;
+    const event = (eventType: string, payload: Record<string, unknown>) => parse(JSON.stringify({
+      type: "paperclip.prp.event", event: { eventType, payload },
+    }), "2026-09-28T12:00:00.000Z");
+    expect(event("runtime_request.created", { request: {
+      requestId: "native-plan", requestKind: "runtime", type: "input", input: {
+        schema: "paperclip.question_set.v1", description,
+        questions: [{ id: questionId, prompt: "Review", required: true, answerMode: "single_select", options: [{ id: "accept", label: "Accept plan" }, { id: "reject", label: "Reject plan" }, { id: "cancel", label: "Cancel plan request" }] }],
+      },
+    } })).toEqual([expect.objectContaining({ questionSet: expect.objectContaining({ description, questions: [expect.objectContaining({ id: questionId })] }) })]);
+    expect(event("runtime_request.resolved", { requestId: "native-plan", response: {
+      schema: "paperclip.question_response.v1", answers: { [questionId]: { selectedOptionIds: ["accept"] } },
+    } })).toEqual([expect.objectContaining({ questionSet: expect.objectContaining({ description }), response: expect.objectContaining({ answers: { [questionId]: { selectedOptionIds: ["accept"] } } }) })]);
+  });
+
+  it("rejects oversized native plan context instead of showing an incomplete decision", () => {
+    const entries = paperclipRunnerUIAdapter.parseStdoutLine(JSON.stringify({
+      type: "paperclip.prp.event", event: { eventType: "runtime_request.created", payload: { request: {
+        requestId: "oversized-plan", type: "input", input: {
+          schema: "paperclip.question_set.v1", description: "x".repeat(100_001),
+          questions: [{ id: "plan-revision", prompt: "Review", answerMode: "single_select", options: [{ id: "accept", label: "Accept" }] }],
+        },
+      } } },
+    }), "2026-09-28T12:00:00.000Z");
+    expect(entries).toEqual([{ kind: "system", ts: "2026-09-28T12:00:00.000Z", text: expect.stringContaining("No decision can be submitted") }]);
   });
 
   it("coalesces runtime request lifecycle data and emits terminal state", () => {

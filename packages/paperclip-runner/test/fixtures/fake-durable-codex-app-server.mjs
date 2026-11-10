@@ -81,6 +81,19 @@ function handleRequest(message) {
     });
     return;
   }
+  if (method === "thread/turns/list") {
+    const turns = Object.entries(state.turns).map(([turnId, status]) => ({
+      id: turnId, status, items: [], itemsView: "notLoaded",
+    }));
+    if (params.sortDirection === "desc") turns.reverse();
+    const offset = Number(params.cursor ?? 0);
+    const limit = params.limit ?? 100;
+    send({ id, result: {
+      data: turns.slice(offset, offset + limit),
+      nextCursor: offset + limit < turns.length ? String(offset + limit) : null,
+    } });
+    return;
+  }
   if (method === "thread/read") {
     send({
       id,
@@ -88,7 +101,10 @@ function handleRequest(message) {
         thread: {
           id: state.threadId,
           sessionId: state.sessionId,
-          turns: Object.entries(state.turns).map(([turnId, status]) => ({ id: turnId, status })),
+          status: { type: Object.values(state.turns).includes("inProgress") ? "active" : "idle" },
+          ...(params.includeTurns ? {
+            turns: Object.entries(state.turns).map(([turnId, status]) => ({ id: turnId, status })),
+          } : {}),
           tokenUsage: {
             total: {
               inputTokens: state.nextTurn * 10,

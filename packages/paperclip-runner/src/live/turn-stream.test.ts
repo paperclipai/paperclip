@@ -14,6 +14,7 @@ import {
   type CapabilityLiveTransportFactory,
   type CapabilityLiveTurnEvent,
 } from "./live-session.js";
+import type { CapabilityRunnerdProcessEvidence } from "./runnerd-codex-transport.js";
 import {
   createCapabilityTurnStreamDecoder,
   encodeCapabilityTurnStreamFrame,
@@ -161,10 +162,25 @@ class GatedTransport implements CodexAppServerTransport {
 
 function gatedTransportFactory(gate: Gate): CapabilityLiveTransportFactory {
   return (options) => {
-    const evidence = {
+    const evidence: CapabilityRunnerdProcessEvidence = {
       runnerPid: 7100,
       runnerProcessGroupId: 7100,
+      providerPid: null,
+      providerProcessStartedAt: null,
       codexPid: 7200,
+      codexProcessStartedAt: null,
+      sidecarPid: null,
+      sidecarProcessStartedAt: null,
+      agentPid: null,
+      agentProcessStartedAt: null,
+      providerDriver: null,
+      providerVersion: null,
+      acpxAgent: null,
+      agentServerVersion: null,
+      agentRuntimeVersion: null,
+      acpProtocolVersion: null,
+      providerExecutionKind: null,
+      providerService: null,
       runnerExited: false,
       runnerExitCode: null,
       runnerSignal: null,
@@ -172,7 +188,7 @@ function gatedTransportFactory(gate: Gate): CapabilityLiveTransportFactory {
       diagnostics: [],
     };
     options.onEvidence?.(evidence);
-    return { transport: new GatedTransport(gate), evidence: () => ({ ...evidence }) };
+    return { transport: new GatedTransport(gate), evidence: () => ({ ...evidence }), detachControllerForRestart: async () => {} };
   };
 }
 
@@ -369,9 +385,15 @@ describe("Capability turn stream framing", () => {
     const { session, close } = await openGatedSession(gate);
     try {
       const turn = session.sendMessage("Start writing, then I will stop you.");
+      await settle(() => session.snapshot().activeTurnId !== null, 1_000);
       gate.release();
       // Wait for the first delta to reach the transcript before interrupting.
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      await settle(
+        () => assistantText(
+          projectCapabilityIssueThread({ snapshot: session.snapshot() }),
+        ).trim() === DELTAS[0]!.trim(),
+        1_000,
+      );
       await session.interrupt("operator stopped the turn");
       const result = await turn;
 

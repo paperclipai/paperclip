@@ -7,6 +7,7 @@ import {
   DUPLEX_SPAN_CHANNEL_OPEN,
   DUPLEX_SPAN_REQUEST,
   DUPLEX_TRANSPORT_EVENT,
+  type DuplexObservabilityDimensions,
 } from "@paperclipai/adapter-utils/duplex-observability";
 import { runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import {
@@ -180,7 +181,7 @@ describe("createHostDuplexObservabilityRecorder", () => {
   });
 
   it("forwards the transport event with its name and dimensions", () => {
-    const events: Array<{ name: string; dimensions: Record<string, unknown> }> =
+    const events: Array<{ name: string; dimensions: DuplexObservabilityDimensions }> =
       [];
     const recorder = createHostDuplexObservabilityRecorder({
       tracer: createRecordingTracer().tracer,

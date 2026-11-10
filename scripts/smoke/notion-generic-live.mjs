@@ -264,7 +264,7 @@ async function fetchNotionVerificationCodeFromAgentMail({ notBefore }) {
 
 async function completeNotionAuthorization(page, config, credential, connectionId) {
   const paperclipOrigin = new URL(config.baseUrl).origin;
-  const setupPath = `/${TARGET_COMPANY_PREFIX}/apps/${connectionId}/setup`;
+  const permissionsPath = `/${TARGET_COMPANY_PREFIX}/apps/${connectionId}/permissions`;
   const deadline = Date.now() + 6 * 60_000;
   const verificationNotBefore = new Date();
   let providerSeen = false;
@@ -277,7 +277,7 @@ async function completeNotionAuthorization(page, config, credential, connectionI
       fail("C.oauth-callback", "invalid_navigation_url");
     }
     if (current.origin === paperclipOrigin) {
-      if (providerSeen && current.pathname === setupPath) return;
+      if (providerSeen && current.pathname === permissionsPath) return;
       await page.waitForTimeout(300);
       continue;
     }
@@ -778,8 +778,8 @@ async function runSmoke({ config, chromium }) {
     activeCheckpoint = "C.notion-login";
     await completeNotionAuthorization(page, config, credential, connectionId);
     activeCheckpoint = "C.oauth-callback";
-    const cleanSetupPath = `/${TARGET_COMPANY_PREFIX}/apps/${connectionId}/setup`;
-    await page.goto(new URL(cleanSetupPath, config.baseUrl).toString(), { waitUntil: "domcontentloaded" });
+    const permissionsPath = `/${TARGET_COMPANY_PREFIX}/apps/${connectionId}/permissions`;
+    await page.goto(new URL(permissionsPath, config.baseUrl).toString(), { waitUntil: "domcontentloaded" });
     await expectVisible(page.getByText("OAuth connected", { exact: true }), "C.oauth-callback", "connected_state_missing", 45_000);
     await expectVisible(page.getByText("Unverified server", { exact: true }), "C.oauth-callback", "unverified_badge_missing");
 

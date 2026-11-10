@@ -1,3 +1,12 @@
+import { useMutation } from "@tanstack/react-query";
+import { issuesApi } from "../api/issues";
+import { describeError } from "../api/errors";
+import { Checkbox } from "./ui/checkbox";
+import { NativeSelect } from "./ui/select";
+import type { Issue } from "@paperclipai/shared";
+import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
+import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
+import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { useMemo, useState } from "react";
 import type {
   Agent,
@@ -896,15 +905,21 @@ function formatTimeAbsolute(value: string | Date | null | undefined): string | n
 }
 
 /**
- * Headline for an action carrying a bounded retry lineage. It names who keeps the task in
- * every phase, because a manager owning the repair must never read as a manager owning
- * the deliverable.
+ * Headline for an action carrying a bounded retry lineage. It describes the recovery
+ * state and next step without implying that a repair owner owns the deliverable.
  */
 function lineageHeadline(lineage: RecoveryRetryLineage): string {
+  if (lineage.lane === "native_run") {
+    if (lineage.liveRunId) return "Paperclip is recovering the existing run.";
+    if (lineage.exhausted) return "Paperclip could not recover the existing run within its retry budget. Review the recorded failure before retrying.";
+    if (lineage.retryExpired) return "The retry for the existing run came due and did not start. Review the recorded failure and retry when ready.";
+    if (lineage.nextRetryAt) return "Paperclip has scheduled another attempt to resume the existing run.";
+    return "The existing run still needs recovery. Review the recorded failure before retrying.";
+  }
   // An attempt that came due and never ran leaves nobody working on this task, even though
   // attempts remain on paper. Say so before any lane wording that ends in "no action needed".
   if (lineage.retryExpired) {
-    return "This task's automatic retry came due and did not run, so nothing is moving it forward right now. Someone must retry it or record the next step. The task stays with its original owner.";
+    return "This task's automatic retry came due and did not run, so nothing is moving it forward right now. Someone must retry it or record the next step.";
   }
   if (lineage.lane === "source_owner") {
     return lineage.exhausted
@@ -992,6 +1007,7 @@ export function IssueRecoveryActionCard({
   variant = "full",
   className,
 }: IssueRecoveryActionCardProps) {
+  const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
   const liveness = useMemo(() => ({ scheduledRetry }), [scheduledRetry]);
   const cardState: RecoveryCardCardState = forcedState ?? deriveRecoveryCardState(action, liveness);
   const tone = STATE_TONE[cardState];
@@ -1003,15 +1019,22 @@ export function IssueRecoveryActionCard({
     if (cardState === "resolved" && action.outcome) {
       return `Recovery resolved as ${OUTCOME_LABEL[action.outcome] ?? action.outcome}.`;
     }
+    if (
+      (cardState === "needed" || cardState === "escalated") &&
+      action.kind === "active_run_watchdog" &&
+      action.ownerType === "board"
+    ) {
+      return "This recovery needs a human decision. Review the recorded failure and choose the next step.";
+    }
     if (lineage) return lineageHeadline(lineage);
     return KIND_HEADLINE[action.kind] ?? KIND_HEADLINE.missing_disposition;
-  }, [action.kind, action.outcome, cardState, lineage]);
+  }, [action.kind, action.outcome, action.ownerType, cardState, lineage]);
 
   // A lane with no path left must not keep advertising a retry that will never run — whether
   // the budget ran out or the scheduled attempt simply never fired.
   const wakeSummary = lineage?.retryExpired
     ? "The scheduled retry did not run — a retry or a decision is needed"
-    : lineage?.exhausted && lineage.lane !== "board"
+    : lineage?.exhausted && !lineage.liveRunId && lineage.lane !== "board"
     ? "Automatic retries are finished — a decision is needed"
     : readWakePolicySummary(action);
   const evidenceSummary = pickEvidenceSummary(action);
@@ -1049,13 +1072,17 @@ export function IssueRecoveryActionCard({
     resolved: "resolved",
   } satisfies Record<RecoveryCardCardState, string>)[cardState];
 
-  const showResolveActions = onResolve !== undefined && cardState !== "resolved";
   const visibleResolveOptions = RESOLVE_OPTIONS.filter((option) => {
+    if (action.cause === "native_workspace_finalization_owner_unverified") return false;
+    if (isNativeWorkspaceExportRepairCause(action.cause) && ["todo", "done", "in_review"].includes(option.outcome)) return false;
+    if (option.outcome === "todo" && requiresExecutionReconciliation(action.cause)) return false;
     if (option.boardOnly && !canFalsePositive) return false;
     return true;
   });
+  const showResolveActions = onResolve !== undefined && cardState !== "resolved" && visibleResolveOptions.length > 0;
   const reissueBaseRef = divergence?.reissueBaseRef ?? null;
   const showReissueAction =
+    workspaceIsolationControlsVisible &&
     onReissueIsolated !== undefined &&
     cardState !== "resolved" &&
     divergence !== null &&
@@ -1087,7 +1114,7 @@ export function IssueRecoveryActionCard({
     divergence !== null &&
     divergence.cleanliness === "dirty";
   const repairDisabledReason = repairContention
-    ? `Held by ${contentionLabel(repairContention)} — re-issue on an isolated workspace instead.`
+    ? `Held by ${contentionLabel(repairContention)}${showReissueAction ? " — re-issue on an isolated workspace instead." : "."}`
     : null;
   // When contended, the re-issue is the recommended path, so it takes the primary emphasis and a
   // "Recommended" hint while the repair button is disabled.
@@ -1098,6 +1125,8 @@ export function IssueRecoveryActionCard({
     showReconcileForward ||
     showBreakGlass ||
     showRepairAction;
+
+  if (requiresExecutionReconciliation(action.cause) || action.cause === "native_workspace_sync_out_unsafe_archive") return null;
 
   return (
     <section
@@ -1163,7 +1192,12 @@ export function IssueRecoveryActionCard({
                 className="inline-flex flex-wrap items-center gap-1.5"
                 data-testid="recovery-recovery-owner"
               >
-                {recoveryOwnerIsSourceOwner ? (
+                {lineage.lane === "native_run" && (action.ownerType !== "board" || Boolean(lineage.liveRunId)) ? (
+                  <>
+                    <span className="font-medium">Paperclip</span>
+                    <span className="text-muted-foreground">recovers the existing run</span>
+                  </>
+                ) : recoveryOwnerIsSourceOwner ? (
                   <span className="font-medium">Original owner — retrying itself</span>
                 ) : action.ownerType === "agent" && action.ownerAgentId ? (
                   <>
@@ -1482,3 +1516,55 @@ export function IssueRecoveryActionCard({
 export type { IssueRecoveryActionStatus };
 
 export default IssueRecoveryActionCard;
+
+/** Separate original-host confirmations: the opaque authority is supplied by
+ * the server snapshot, never entered or edited by the operator. */
+export function NativeControllerContainmentRecovery({ issue, canManage, onRecorded }: {
+  issue: Pick<Issue, "id" | "status" | "activeRecoveryAction">; canManage: boolean; onRecorded: () => void;
+}) {
+  const action = issue.activeRecoveryAction;
+  const [controllerStopped, setControllerStopped] = useState(false);
+  const [providerStopped, setProviderStopped] = useState(false);
+  const [outcome, setOutcome] = useState<"" | "completed" | "not_performed" | "mixed">("");
+  const [evidence, setEvidence] = useState("");
+  const authority = action?.evidence?.controllerAuthority;
+  const digest = authority && typeof authority === "object" && !Array.isArray(authority)
+    ? (authority as Record<string, unknown>).digest : undefined;
+  const runId = action?.evidence?.runId;
+  const submit = useMutation({ mutationFn: async () => {
+    if (!action || typeof runId !== "string" || typeof digest !== "string" || !outcome
+      || !controllerStopped || !providerStopped) throw new Error("Confirm both original-host stops and review the action outcomes.");
+    return issuesApi.resolveRecoveryAction(issue.id, { actionId: action.id, outcome: "restored", sourceIssueStatus: issue.status,
+      executionReconciliation: { runId, controllerStopped: true, providerStopped: true,
+        controllerAuthorityDigest: digest, actionOutcome: outcome, outcomeEvidence: evidence.trim() } });
+  }, onSuccess: onRecorded });
+  if (!action || action.kind !== "active_run_watchdog" || action.ownerType !== "board"
+    || action.cause !== "native_restart_recovery_blocked" || action.evidence?.reason !== "controller_process_space_unverified"
+    || !["active", "escalated"].includes(action.status) || typeof digest !== "string") return null;
+  return <section aria-label="Original controller recovery">
+    <h3>Verify the original execution stopped</h3>
+    <p>Paperclip cannot compare process IDs across hosts or kernel sessions. Stop both the controller and provider on the original host before recording evidence. The saved lease must also expire and environment/workspace cleanup must finish. Recording containment does not retry the task.</p>
+    {canManage ? <>
+      <Label><Checkbox checked={controllerStopped} onCheckedChange={value => setControllerStopped(value === true)} /> I verified the original controller stopped on its original host.</Label>
+      <Label><Checkbox checked={providerStopped} onCheckedChange={value => setProviderStopped(value === true)} /> I verified the original provider and its tools stopped on their original host.</Label>
+      <Label>Reviewed external action outcomes
+        <NativeSelect value={outcome} onChange={event => {
+          const value = event.target.value;
+          if (value === "completed" || value === "not_performed" || value === "mixed" || value === "") setOutcome(value);
+        }}>
+          <option value="">Select only after reviewing the effects</option>
+          <option value="completed">All completed</option>
+          <option value="not_performed">None performed</option>
+          <option value="mixed">Some completed and some not performed</option>
+        </NativeSelect>
+      </Label>
+      <Label>Original-host containment evidence and actions that must not be repeated
+        <Textarea maxLength={12000} value={evidence} onChange={event => setEvidence(event.target.value)} />
+      </Label>
+      <p>If any action outcome is still unknown, keep this hold. After evidence and cleanup settle, use the task’s ordinary Retry action separately.</p>
+      <Button disabled={submit.isPending || !controllerStopped || !providerStopped || !outcome || evidence.trim().length < 20}
+        onClick={() => submit.mutate()}>{submit.isPending ? "Recording…" : "Record containment"}</Button>
+      {submit.error && <p role="alert">{describeError(submit.error).body}</p>}
+    </> : <p>A company owner, company administrator, or instance administrator must review this original-host execution.</p>}
+  </section>;
+}

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { CheckCircle2, KeyRound, Loader2, ShieldCheck } from "lucide-react";
@@ -7,14 +7,16 @@ import type {
   McpJsonImportDraft,
   McpJsonImportPreview,
   ToolAppConnectionActionSummary,
+  ToolOAuthStartResult,
 } from "@paperclipai/shared";
+import { QueryErrorState } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { toolsApi } from "@/api/tools";
-import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
-import { navigateTopLevel } from "@/lib/browserNavigation";
+import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
+import { readOAuthWindowOutcome } from "@/lib/oauthWindowOutcome";
 import { useNavigate } from "@/lib/router";
 import {
   OAuthConnectStateScreen,
@@ -22,7 +24,7 @@ import {
 } from "@/features/connections/ConnectionSetupFlow";
 import { endpointHost } from "@/pages/apps/generic-mcp-connect";
 import { McpConfigHelpDialog } from "./McpConfigHelpDialog";
-import { ErrorState } from "./shared";
+import { describeError } from "@/api/errors";
 
 const SAMPLE_CONFIG = `{
   "mcpServers": {
@@ -88,7 +90,7 @@ function missingCredentialFields(draft: McpJsonImportDraft, values: Record<strin
 
 function askFirstLevelsFrom(result: ConnectToolAppResult): string[] {
   const raw = (result.suggestedDefaults as { askFirstRiskLevels?: unknown })?.askFirstRiskLevels;
-  return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : ["write", "destructive"];
+  return Array.isArray(raw) ? raw.filter((x): x is string => typeof x === "string") : [];
 }
 
 /**
@@ -112,6 +114,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
   const [oauthError, setOAuthError] = useState<string | null>(null);
   const [authorizationHost, setAuthorizationHost] = useState<string | null>(null);
 
+  const authorization = useAuthorizationWindow();
   const importMutation = useMutation({
     mutationFn: (mcpJson: string) => toolsApi.importMcpJson(companyId, { mcpJson }),
     onSuccess: (result) => {
@@ -122,27 +125,62 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
     },
   });
 
-  const openAuthorizationPage = (authorizationUrl: string) => {
-    const target = resolveAuthorizationTarget(authorizationUrl);
-    if (!target.ok) {
+  const openAuthorizationPage = async (
+    authorizationUrl: string,
+    handoff?: ToolOAuthStartResult["handoff"],
+  ) => {
+    try {
+      const target = await authorization.open({ authorizationUrl, handoff });
+      setAuthorizationHost(target.host);
+      setOAuthPhase("redirecting");
+    } catch (error) {
       setOAuthPhase("error");
-      setOAuthError(target.message);
-      return;
+      setOAuthError(describeError(error).body);
     }
-    setAuthorizationHost(target.host);
-    setOAuthPhase("redirecting");
-    navigateTopLevel(target.url);
   };
+
+  const { windowRef: authorizationWindow, cancel: closeAuthorization } = authorization;
+  const oauthConnectionId = connectResult?.connectionId;
+  useEffect(() => {
+    if (oauthPhase !== "redirecting" || !oauthConnectionId) return;
+    let cancelled = false;
+    let checking = false;
+    const check = async () => {
+      if (cancelled || checking) return;
+      const outcome = readOAuthWindowOutcome(authorizationWindow.current, oauthConnectionId);
+      if (outcome === "waiting") return;
+      if (outcome !== "connected") {
+        closeAuthorization();
+        setOAuthPhase("error");
+        setOAuthError(outcome === "closed" ? "The sign-in window closed. Try again to finish connecting."
+          : outcome === "denied" ? "Sign-in was cancelled. Try again when you’re ready."
+            : "Sign-in failed. Try again to finish connecting.");
+        return;
+      }
+      checking = true;
+      try {
+        const saved = await toolsApi.getConnection(oauthConnectionId);
+        if (!cancelled && saved.status === "active") {
+          cancelled = true;
+          closeAuthorization();
+          navigate(`/apps/${oauthConnectionId}/permissions`);
+        }
+      } catch { /* A later focus or poll can retry verification. */ }
+      finally { checking = false; }
+    };
+    const timer = window.setInterval(() => void check(), 1000);
+    window.addEventListener("focus", check);
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("focus", check); };
+  }, [oauthPhase, oauthConnectionId, authorizationWindow, closeAuthorization, navigate]);
 
   const oauthStartMutation = useMutation({
     mutationFn: (connectionId: string) => toolsApi.startOAuth(connectionId),
-    onSuccess: ({ authorizationUrl }) => openAuthorizationPage(authorizationUrl),
+    onSuccess: (start) => void openAuthorizationPage(start.authorizationUrl, start.handoff),
     onError: (error) => {
+      authorization.cancel();
       setOAuthPhase("error");
       setOAuthError(
-        error instanceof Error
-          ? error.message
-          : "Paperclip couldn’t start secure sign-in. Try again.",
+        describeError(error).body,
       );
     },
   });
@@ -164,6 +202,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
         setAuthorizationHost(null);
         setOAuthError(null);
         if (result.auth.manualClientRequired) {
+          authorization.cancel();
           setOAuthPhase("error");
           setOAuthError(
             "This server requires OAuth client details from its provider settings. Continue in setup to add them.",
@@ -172,19 +211,21 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
         }
         const startUrl = result.auth.startUrl?.trim();
         if (startUrl) {
-          openAuthorizationPage(startUrl);
+          void openAuthorizationPage(startUrl, result.auth.handoff);
         } else {
           setOAuthPhase("starting");
           oauthStartMutation.mutate(result.connectionId);
         }
         return;
       }
+      authorization.cancel();
       const defaults: Record<string, boolean> = {};
       for (const action of result.actions.readOnly) defaults[action.catalogEntryId] = true;
-      for (const action of result.actions.canMakeChanges) defaults[action.catalogEntryId] = false;
+      for (const action of result.actions.canMakeChanges) defaults[action.catalogEntryId] = true;
       setEnabled(defaults);
       setActivatedName(null);
     },
+    onError: () => authorization.cancel(),
   });
 
   const finishMutation = useMutation({
@@ -223,7 +264,8 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
       : typeof connectResult.connection.transportConfig?.url === "string"
         ? connectResult.connection.transportConfig.url
         : "";
-    return (
+    return (<>
+      {authorization.fallback}
       <OAuthConnectStateScreen
         identity={{
           name: connectResult.application.name,
@@ -233,15 +275,16 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
         error={oauthError}
         authorizationHost={authorizationHost}
         onRetry={() => {
+          authorization.reserve();
           setOAuthError(null);
           setAuthorizationHost(null);
           setOAuthPhase("starting");
           oauthStartMutation.mutate(connectResult.connectionId);
         }}
-        onBack={() => navigate(`/apps/${connectResult.connectionId}/setup`)}
+        onBack={() => navigate(`/apps/${connectResult.connectionId}/permissions`)}
         onCancel={() => navigate("/apps")}
       />
-    );
+    </>);
   }
 
   return (
@@ -295,7 +338,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
         </span>
       </div>
 
-      {importMutation.isError ? <ErrorState error={importMutation.error} /> : null}
+      {importMutation.error ? <QueryErrorState error={importMutation.error} action="check the config" /> : null}
 
       {preview ? (
         drafts.length === 0 ? (
@@ -325,7 +368,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
                   }
                   checking={connectMutation.isPending && connectMutation.variables?.name === draft.name}
                   canCheck={Boolean(url) && missingFields.length === 0}
-                  onCheck={url ? () => connectMutation.mutate(draft) : undefined}
+                  onCheck={url ? () => { authorization.reserve(); connectMutation.mutate(draft); } : undefined}
                 />
               );
             })}
@@ -344,7 +387,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
         )
       ) : null}
 
-      {connectMutation.isError ? <ErrorState error={connectMutation.error} /> : null}
+      {connectMutation.error ? <QueryErrorState error={connectMutation.error} action="check the app" /> : null}
       {connectResult ? (
         <CatalogReview
           result={connectResult}
@@ -362,7 +405,7 @@ export function PasteConfigTab({ companyId }: { companyId: string }) {
           onFinish={() => finishMutation.mutate()}
         />
       ) : null}
-      {finishMutation.isError ? <ErrorState error={finishMutation.error} /> : null}
+      {finishMutation.error ? <QueryErrorState error={finishMutation.error} action="finish setup" /> : null}
     </div>
   );
 }
@@ -486,7 +529,7 @@ function CatalogReview({
             Review actions for {result.application.name}
           </h3>
           <p className="mt-1 text-xs text-muted-foreground">
-            Health and catalog checks passed. Read-only actions start on; actions that can change data start off.
+            Health and catalog checks passed. Every discovered action starts allowed; you can narrow access after activation.
           </p>
         </div>
         <Button size="sm" onClick={onFinish} disabled={finishing || enabledCount === 0 || Boolean(activatedName)}>

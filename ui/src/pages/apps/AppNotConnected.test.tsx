@@ -5,6 +5,8 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppNotConnected } from "./AppNotConnected";
+import { ApiError } from "@/api/client";
+import { queryKeys } from "@/lib/queryKeys";
 
 const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
@@ -17,7 +19,7 @@ const updateApplicationMock = vi.hoisted(() => vi.fn());
 const mockAgentsList = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 const navigateComponentMock = vi.hoisted(() => vi.fn());
-const mockParams = vi.hoisted(() => ({ applicationId: "app-1", tab: "setup" as string | undefined }));
+const mockParams = vi.hoisted(() => ({ applicationId: "app-1", tab: "permissions" as string | undefined }));
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -153,7 +155,7 @@ describe("AppNotConnected", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockParams.applicationId = "app-1";
-    mockParams.tab = "setup";
+    mockParams.tab = "permissions";
     listApplicationsMock.mockResolvedValue({ applications: [application()] });
     listConnectionsMock.mockResolvedValue({ connections: [connection()] });
     listGalleryMock.mockResolvedValue({
@@ -199,14 +201,53 @@ describe("AppNotConnected", () => {
       );
     });
     await flushReact();
+    return client;
   }
 
-  it("redirects the application root route to setup", async () => {
+  it.each([["applications", 403], ["applications", 429], ["connections", 403], ["connections", 429]] as const)(
+    "shows a %s %s failure while the other read pauses and keeps Retry available",
+    async (failed, status) => {
+      const failedRead = failed === "applications" ? listApplicationsMock : listConnectionsMock;
+      const otherRead = failed === "applications" ? listConnectionsMock : listApplicationsMock;
+      const failedResult = failed === "applications" ? { applications: [application()] } : { connections: [connection()] };
+      const otherResult = failed === "applications" ? { connections: [connection()] } : { applications: [application()] };
+      failedRead.mockRejectedValueOnce(new ApiError("Read rejected", status, null)).mockResolvedValue(failedResult);
+      let resume!: () => void;
+      otherRead.mockImplementationOnce(() => new Promise(resolve => { resume = () => resolve(otherResult); }));
+      const client = await renderPage();
+      try {
+        const otherKey = failed === "applications" ? queryKeys.tools.connections("company-1") : queryKeys.tools.applications("company-1");
+        const otherQuery = client.getQueryCache().find({ queryKey: otherKey, exact: true })!;
+        await act(() => { otherQuery.setState({ fetchStatus: "paused" }); }); await flushReact();
+        expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+        await act(() => { otherQuery.setState({ fetchStatus: "fetching" }); }); await flushReact();
+        const error = container.querySelector('[data-query-view="error"]')!;
+        expect(error).not.toBeNull();
+        const retry = error.querySelector("button");
+        if (status === 429) {
+          expect(retry).not.toBeNull();
+          expect(retry!.disabled).toBe(false);
+          await act(() => { retry!.click(); }); await flushReact();
+          expect(failedRead).toHaveBeenCalledTimes(2);
+          expect(otherRead).toHaveBeenCalledOnce();
+          expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+          await act(() => { resume(); }); await flushReact();
+          expect(container.textContent).toContain("GitHub");
+        } else {
+          expect(retry).toBeNull();
+          await act(() => { resume(); }); await flushReact();
+          expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+        }
+      } finally { client.clear(); }
+    },
+  );
+
+  it("redirects the application root route to Permissions", async () => {
     mockParams.tab = undefined;
 
     await renderPage();
 
-    expect(navigateComponentMock).toHaveBeenCalledWith({ to: "/apps/app/app-1/setup", replace: true });
+    expect(navigateComponentMock).toHaveBeenCalledWith({ to: "/apps/app/app-1/permissions", replace: true });
     expect(listApplicationsMock).not.toHaveBeenCalled();
   });
 
@@ -221,7 +262,7 @@ describe("AppNotConnected", () => {
     expect(navigateComponentMock).toHaveBeenCalledWith({ to: "/apps/conn-live/permissions", replace: true });
   });
 
-  it("shows all existing provider connections before connecting another", async () => {
+  it("redirects a provider application to its live connection Permissions page", async () => {
     listApplicationsMock.mockResolvedValue({
       applications: [
         application({
@@ -265,31 +306,10 @@ describe("AppNotConnected", () => {
 
     await renderPage();
 
-    expect(navigateComponentMock).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("2 connected");
-    expect(container.textContent).toContain("Already connected to Notion");
-    expect(container.textContent).toContain("Dotta’s Notion");
-    expect(container.textContent).toContain("Notion team");
-    expect(container.querySelector('[title="Dotta"] [data-slot="avatar"]')).toBeTruthy();
-    expect(container.textContent).toContain("Connect another");
-
-    const editRows = Array.from(container.querySelectorAll("button")).filter((button) =>
-      button.textContent?.includes("Edit"),
-    );
-    await act(async () => {
-      editRows[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(navigateComponentMock).toHaveBeenCalledWith({
+      to: "/apps/conn-one/permissions",
+      replace: true,
     });
-    expect(mockNavigate).toHaveBeenCalledWith("/apps/conn-two/setup");
-
-    const connectAnother = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Connect another",
-    );
-    await act(async () => {
-      connectAnother?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    expect(mockNavigate).toHaveBeenCalledWith(
-      "/apps/connect?applicationId=app-1&name=Notion&new=1&source=notion",
-    );
   });
 
   it("does not group unrelated generic link applications", async () => {
@@ -319,16 +339,13 @@ describe("AppNotConnected", () => {
     await renderPage();
 
     expect(container.textContent).toContain("Not connected");
-    expect(container.textContent).toContain("Reconnect this app");
-    expect(container.textContent).not.toContain("Already connected to First server");
+    expect(container.textContent).toContain("Needs attention");
+    expect(container.textContent).toContain("Reconnect");
   });
 
   it.each([
-    ["setup", "Reconnect this app"],
     ["review", "Nothing is waiting for your OK right now."],
     ["permissions", "Permissions paused"],
-    ["test", "Reconnect to test this app."],
-    ["activity", "No activity yet."],
   ])("renders the %s tab with persistent app identity", async (tab, expectedText) => {
     mockParams.tab = tab;
 
@@ -339,26 +356,27 @@ describe("AppNotConnected", () => {
     expect(container.textContent).toContain(expectedText);
   });
 
-  it("redirects the legacy Advanced route to Setup", async () => {
-    mockParams.tab = "advanced";
-
+  it.each([
+    ["setup", "/apps/app/app-1/permissions"],
+    ["test", "/apps/app/app-1/permissions"],
+    ["advanced", "/apps/app/app-1/permissions"],
+    ["activity", "/activity?action=tool_"],
+  ])("redirects the retired %s tab", async (tab, to) => {
+    mockParams.tab = tab;
     await renderPage();
-
-    expect(navigateComponentMock).toHaveBeenCalledWith({
-      to: "/apps/app/app-1/setup",
-      replace: true,
-    });
+    expect(navigateComponentMock).toHaveBeenCalledWith({ to, replace: true });
   });
 
-  it("keeps previous setup context on reconnect tabs", async () => {
-    mockParams.tab = "setup";
+  it.each(["permissions", "review"])("shows reconnect directly below the header on %s", async (tab) => {
+    mockParams.tab = tab;
 
     await renderPage();
 
-    expect(container.textContent).toContain("Previous setup");
-    expect(container.textContent).toContain("Last error: Token expired.");
-    expect(container.textContent).toContain("https://github.example/mcp");
-    expect(container.textContent).toContain("Danger zone");
+    expect(container.textContent).toContain("Needs attention");
+    expect(container.textContent).toContain("Add a working GitHub key to restore access.");
+    expect(Array.from(container.querySelectorAll("button")).some(
+      (button) => button.textContent?.trim() === "Reconnect",
+    )).toBe(true);
   });
 
   it("carries the retained identity into the reconnect flow", async () => {

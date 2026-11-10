@@ -5,7 +5,19 @@ import {
   getAvailableConnectionMethods,
   getAppStoreDefinition,
   getConnectableAppDefinition,
+  type AppDefinition,
 } from "@paperclipai/shared";
+
+export function appSupportsToolCatalogSetup(entry: AppDefinition | null | undefined): boolean {
+  return Boolean(
+    entry && appSupportsCatalogSetup({
+      ...entry,
+      methods: entry.methods.filter(
+        (method) => (method.purpose ?? "tool") !== "channel" && method.transport !== "chat_sdk",
+      ),
+    }),
+  );
+}
 
 export const MCP_DIRECT_OAUTH_CONNECT_SLUGS = APP_STORE_DEFINITIONS
   .filter((app) => getAvailableConnectionMethods(app).some((method) =>
@@ -41,7 +53,11 @@ export function resolveAppsConnectRouteKey(input: {
   return input.serviceSlug ?? input.appKey ?? input.sourceSlug ?? undefined;
 }
 
-export function canEnterAppsConnect(searchParams: URLSearchParams): boolean {
+export function canEnterAppsConnect(
+  searchParams: URLSearchParams,
+  { chatConnectorsEnabled = false, githubReviewBotsEnabled = false }: { chatConnectorsEnabled?: boolean; githubReviewBotsEnabled?: boolean } = {},
+): boolean {
+  if (searchParams.get("aiLogin")?.trim()) return true;
   if (searchParams.get("byo") === "1") {
     // The old BYO discovery page has moved to the Connectors list. Keep only
     // exact custom-connection reconnects using this legacy query contract.
@@ -52,10 +68,27 @@ export function canEnterAppsConnect(searchParams: URLSearchParams): boolean {
     );
   }
   const source = searchParams.get("source") ?? "";
+  if (["google-ai", "gateway"].includes(source)) return true;
+  // Router connectors are registered by installed plugins, not the static
+  // catalog. AppsConnect resolves this reserved slug against the host gallery
+  // before rendering the pool wizard; unknown/uninstalled routers show its
+  // actionable unavailable state rather than bouncing back to the catalog.
+  if (/^ai-router-(?:[a-f0-9]{2})+$/.test(source)) return true;
   const entry = getAppStoreDefinition(source);
+  const channelEnabled = source === "github-code-review-bot" ? githubReviewBotsEnabled : chatConnectorsEnabled;
+  if (
+    !channelEnabled &&
+    source !== "agentmail" &&
+    entry?.methods.some((method) => method.purpose === "channel") &&
+    !entry.methods.some((method) => (method.purpose ?? "tool") !== "channel" && method.transport !== "chat_sdk")
+  ) return false;
   // A retained connection may belong to a provider hidden from fresh catalog
   // setup. Admit only known providers here; the setup flow then proves the
-  // exact reconnect target is visible to the selected company before rendering.
-  if (getConnectableAppDefinition(source) && searchParams.get("reconnect")?.trim()) return true;
-  return appSupportsCatalogSetup(entry);
+  // exact reconnect or incomplete-draft target belongs to the selected company
+  // and matches this provider before resolving the hidden definition.
+  if (
+    getConnectableAppDefinition(source)
+    && (searchParams.get("reconnect")?.trim() || searchParams.get("resume")?.trim())
+  ) return true;
+  return source === "agentmail" || channelEnabled ? appSupportsCatalogSetup(entry) : appSupportsToolCatalogSetup(entry);
 }

@@ -27,7 +27,7 @@ export interface MatcherObservation {
   runtimeMode?: string;
   environment?: string;
   files?: Record<string, string>;
-  artifacts?: Array<{ name: string; mimeType?: string }>;
+  artifacts?: Array<{ name: string; mimeType?: string; content?: string; contentVerified?: boolean }>;
   json?: unknown;
 }
 
@@ -60,6 +60,19 @@ function readJsonPath(value: unknown, path: string): unknown {
     }, value);
 }
 
+function countOccurrences(value: string, expected: string): number {
+  if (!expected) return 0;
+  let count = 0;
+  let cursor = 0;
+  while (cursor <= value.length - expected.length) {
+    const index = value.indexOf(expected, cursor);
+    if (index < 0) break;
+    count += 1;
+    cursor = index + expected.length;
+  }
+  return count;
+}
+
 export async function evaluateMatcher(
   matcher: Matcher,
   observation: MatcherObservation,
@@ -73,6 +86,9 @@ export async function evaluateMatcher(
   } else if (matcher.kind === "message_contains") {
     actual = message;
     passed = message.includes(normalizeMessage(matcher.expected));
+  } else if (matcher.kind === "message_occurrences") {
+    actual = countOccurrences(message, normalizeMessage(matcher.expected));
+    passed = actual === matcher.count;
   } else if (matcher.kind === "message_regex") {
     actual = message;
     passed = new RegExp(matcher.pattern, matcher.flags).test(message);
@@ -100,6 +116,7 @@ export async function evaluateMatcher(
     passed = actual === matcher.expected;
   } else if (
     matcher.kind === "file_exists" ||
+    matcher.kind === "file_exact" ||
     matcher.kind === "file_contains"
   ) {
     try {
@@ -108,17 +125,21 @@ export async function evaluateMatcher(
         (await readFile(matcher.path, "utf8"));
       passed =
         matcher.kind === "file_exists" ||
-        String(actual).includes(matcher.expected);
+        (matcher.kind === "file_exact"
+          ? String(actual) === matcher.expected
+          : String(actual).includes(matcher.expected));
     } catch {
       actual = undefined;
       passed = false;
     }
-  } else if (matcher.kind === "artifact_exists") {
+  } else if (matcher.kind === "artifact_exists" || matcher.kind === "artifact_exact") {
     actual = observation.artifacts ?? [];
     passed = (observation.artifacts ?? []).some(
       (artifact) =>
         artifact.name === matcher.name &&
-        (!matcher.mimeType || artifact.mimeType === matcher.mimeType),
+        (!matcher.mimeType || artifact.mimeType === matcher.mimeType) &&
+        (matcher.kind === "artifact_exists" ||
+          (artifact.contentVerified === true && artifact.content === matcher.expected)),
     );
   } else if (matcher.kind === "json_path") {
     actual = readJsonPath(observation.json, matcher.path);
@@ -146,4 +167,24 @@ export async function evaluateMatchers(
   return Promise.all(
     matchers.map((matcher) => evaluateMatcher(matcher, observation)),
   );
+}
+
+
+export function persistedFinalRunMessage(
+  comments: Array<{ id: string; createdByRunId?: string | null; body?: string | null }>,
+  run: { id: string; runtimeMode?: string; resultJson?: Record<string, unknown> | null },
+): string {
+  const runComments = comments.filter(comment => comment.createdByRunId === run.id);
+  const decision = run.resultJson?.presentationDecision;
+  const selectedId = decision && typeof decision === "object" && !Array.isArray(decision)
+    ? (decision as Record<string, unknown>).commentId : null;
+  // Read the persisted comment selected for the user, not a finish summary or
+  // attachment preparation message. Missing selected evidence must still fail.
+  if (typeof selectedId === "string") {
+    return runComments.find(comment => comment.id === selectedId)?.body ?? "";
+  }
+  // Native finalization can publish a deliverable-preparation comment before
+  // its response decision. That earlier comment is not the selected reply.
+  if (run.runtimeMode === "native") return "";
+  return runComments.map(comment => comment.body ?? "").join("\n");
 }

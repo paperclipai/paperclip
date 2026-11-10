@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StatusGlyph } from "@/components/StatusGlyph";
 import { ProjectTile } from "@/components/ProjectTile";
+import { useFlyoutAppearance } from "@/components/ui/flyout-appearance";
 
 /* ------------------------------------------------------------------ */
 /*  Single-flight quicklook store                                      */
@@ -169,18 +170,19 @@ export function IssueQuicklookCard({
   linkState?: unknown;
   compact?: boolean;
 }) {
+  const appearance = useFlyoutAppearance();
   const description = useMemo(() => summarizeIssueDescription(issue.description), [issue.description]);
   const projectName = issue.project?.name;
 
   return (
-    <div className={cn("space-y-2", compact && "space-y-1.5")}>
-      <div className="flex items-center gap-1">
-        <div className="flex min-w-0 flex-1 items-center gap-1">
+    <div className={appearance === "refreshed" ? "task-hover-card" : cn("space-y-2", compact && "space-y-1.5")}>
+      <div data-slot="task-preview-meta" className="flex items-center gap-1">
+        <div data-slot="task-preview-identity" className="flex min-w-0 flex-1 items-center gap-1">
           <StatusGlyph status={issue.status} size="md" title={statusLabel(issue.status)} />
-          <span className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
+          <span data-slot="task-preview-id" className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
             {issue.identifier ?? issue.id.slice(0, 8)}
           </span>
-          {projectName ? (
+          {projectName && appearance !== "refreshed" ? (
             <>
               <QuicklookSeparator className="shrink-0 text-muted-foreground" />
               <span
@@ -194,12 +196,13 @@ export function IssueQuicklookCard({
             </>
           ) : null}
         </div>
-        <span className="shrink-0 text-(length:--text-micro) text-muted-foreground">
+        <span data-slot="task-preview-time" className="shrink-0 text-(length:--text-micro) text-muted-foreground">
           {timeAgo(new Date(issue.updatedAt))}
         </span>
       </div>
 
       <RouterDom.Link
+        data-slot="task-preview-title"
         to={linkTo}
         state={linkState ?? withIssueDetailHeaderSeed(null, issue)}
         className="block text-sm font-medium leading-snug hover:underline line-clamp-2"
@@ -208,13 +211,16 @@ export function IssueQuicklookCard({
       </RouterDom.Link>
 
       {description ? (
-        <p className="text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] overflow-hidden">
+        <p data-slot="task-preview-description" className="text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] overflow-hidden">
           {description}
         </p>
       ) : null}
     </div>
   );
 }
+
+/** How long a hover rests on a task link before its full chat history is warmed. */
+export const ISSUE_HISTORY_HOVER_PREFETCH_DELAY_MS = 120;
 
 export const IssueLinkQuicklook = React.forwardRef<
   HTMLAnchorElement,
@@ -239,6 +245,8 @@ export const IssueLinkQuicklook = React.forwardRef<
     onClick,
     onClickCapture,
     onMouseEnter,
+    onMouseLeave,
+    onPointerDown,
     onFocus,
     onBlur,
     onTouchStart,
@@ -358,9 +366,26 @@ export const IssueLinkQuicklook = React.forwardRef<
   });
 
   const detailPath = createIssueDetailPath(issuePathId);
-  const handlePrefetch = React.useCallback(() => {
-    void prefetchIssueDetailForNavigation(queryClient, issuePathId, { issue: issuePrefetch });
-  }, [issuePathId, issuePrefetch, queryClient]);
+  // A pointer, a touch or keyboard focus that passes over a row warms only the
+  // issue and its recent comments. A hover or focus that rests on the link, a
+  // mouse or pen press, or a click also warms the rest of the chat's first
+  // frame, so the open renders from cache. A touch can start a scroll, so it
+  // warms the full set only on the click.
+  const historyPrefetchTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelHistoryPrefetch = React.useCallback(() => {
+    if (historyPrefetchTimerRef.current) clearTimeout(historyPrefetchTimerRef.current);
+    historyPrefetchTimerRef.current = null;
+  }, []);
+  React.useEffect(() => cancelHistoryPrefetch, [cancelHistoryPrefetch]);
+  const handlePrefetch = React.useCallback((history = true) => {
+    if (history) cancelHistoryPrefetch();
+    void prefetchIssueDetailForNavigation(queryClient, issuePathId, { issue: issuePrefetch, history });
+  }, [cancelHistoryPrefetch, issuePathId, issuePrefetch, queryClient]);
+  const handleDwellPrefetch = React.useCallback(() => {
+    handlePrefetch(false);
+    cancelHistoryPrefetch();
+    historyPrefetchTimerRef.current = setTimeout(() => handlePrefetch(true), ISSUE_HISTORY_HOVER_PREFETCH_DELAY_MS);
+  }, [cancelHistoryPrefetch, handlePrefetch]);
   const link = (
     <RouterDom.Link
       ref={setTriggerRef}
@@ -368,21 +393,30 @@ export const IssueLinkQuicklook = React.forwardRef<
       state={prefetchedState}
       className={className}
       onMouseEnter={(event) => {
-        handlePrefetch();
+        handleDwellPrefetch();
         onMouseEnter?.(event);
       }}
+      onMouseLeave={(event) => {
+        cancelHistoryPrefetch();
+        onMouseLeave?.(event);
+      }}
+      onPointerDown={(event) => {
+        handlePrefetch(event.pointerType !== "touch" && event.button === 0);
+        onPointerDown?.(event);
+      }}
       onFocus={(event) => {
-        handlePrefetch();
+        handleDwellPrefetch();
         openNow();
         onFocus?.(event);
       }}
       onBlur={(event) => {
+        cancelHistoryPrefetch();
         // Let clicks inside the portaled quicklook content finish before closing.
         setTimeout(() => close(), 0);
         onBlur?.(event);
       }}
       onTouchStart={(event) => {
-        handlePrefetch();
+        handlePrefetch(false);
         onTouchStart?.(event);
       }}
       onClickCapture={(event) => {
@@ -407,10 +441,8 @@ export const IssueLinkQuicklook = React.forwardRef<
     <Popover open={open} onOpenChange={(next) => (next ? openNow() : close())}>
       <PopoverTrigger
         asChild
-        onMouseEnter={() => {
-          handlePrefetch();
-          scheduleOpen();
-        }}
+        // The link's own hover handler warms the task; history waits for a dwell.
+        onMouseEnter={scheduleOpen}
         onMouseLeave={close}
       >
         {link}

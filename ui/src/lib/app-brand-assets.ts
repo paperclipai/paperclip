@@ -3,6 +3,7 @@ export type AppBrandManifestProvider = {
   provider: string;
   localAsset: string;
   darkAsset?: string;
+  aliases?: string[];
 };
 
 export type AppBrandManifest = {
@@ -29,7 +30,17 @@ function normalizedProviderKey(value: string): string {
 function isManifest(value: unknown): value is AppBrandManifest {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<AppBrandManifest>;
-  return candidate.schemaVersion === 1 && Array.isArray(candidate.providers);
+  return candidate.schemaVersion === 1 && Array.isArray(candidate.providers)
+    && candidate.providers.every((provider) => provider && typeof provider === "object"
+      && typeof provider.slug === "string" && typeof provider.provider === "string"
+      && isLocalAssetPath(provider.localAsset)
+      && (provider.darkAsset === undefined || isLocalAssetPath(provider.darkAsset))
+      && (provider.aliases === undefined || (Array.isArray(provider.aliases)
+        && provider.aliases.every((alias) => typeof alias === "string"))));
+}
+
+function isLocalAssetPath(value: unknown): value is string {
+  return typeof value === "string" && /^\/brands\/apps\/[a-z0-9-]+\.(svg|png)$/.test(value);
 }
 
 async function loadManifest(): Promise<AppBrandManifest> {
@@ -56,12 +67,13 @@ export function resolveLocalAppBrandAssets(
   const key = normalizedProviderKey(providerName);
   if (!key) return null;
   const provider = manifest.providers.find((candidate) =>
-    candidate.slug === key || normalizedProviderKey(candidate.provider) === key,
+    candidate.slug === key || normalizedProviderKey(candidate.provider) === key
+      || candidate.aliases?.some((alias) => normalizedProviderKey(alias) === key),
   );
-  if (!provider || typeof provider.localAsset !== "string" || !provider.localAsset) return null;
+  if (!provider || !isLocalAssetPath(provider.localAsset)) return null;
   return {
     light: provider.localAsset,
-    ...(typeof provider.darkAsset === "string" && provider.darkAsset ? { dark: provider.darkAsset } : {}),
+    dark: isLocalAssetPath(provider.darkAsset) ? provider.darkAsset : provider.localAsset,
   };
 }
 

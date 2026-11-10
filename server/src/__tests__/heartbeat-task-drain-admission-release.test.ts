@@ -1,17 +1,27 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { registerTaskDrainExpiryWork } from "../services/task-admission.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  costEvents,
   activityLog,
   agents,
+  authUsers,
   agentRuntimeState,
   agentWakeupRequests,
   companies,
+  companyMemberships,
   companySkills,
   createDb,
+  environments,
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
+  plugins,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -19,6 +29,11 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService, getTaskDrainStatus, startTaskDrain, stopTaskDrain } from "../services/heartbeat.ts";
 import { subscribeCompanyLiveEvents } from "../services/live-events.ts";
+import express from "express";
+import request from "supertest";
+import { instanceSettingsRoutes } from "../routes/instance-settings.js";
+import { errorHandler } from "../middleware/error-handler.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -36,6 +51,8 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-task-drain-admission-release-");
     db = createDb(tempDb.connectionString);
+    await db.insert(authUsers).values({ id: "responsible-user", name: "Drain fixture sponsor",
+      email: "drain-sponsor@example.test", createdAt: new Date(), updatedAt: new Date() });
   }, 60_000);
 
   function isHeartbeatRunDependentFkError(error: unknown) {
@@ -51,6 +68,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       await db.delete(heartbeatRunEvents);
       await db.delete(activityLog);
       try {
+        await db.delete(costEvents);
         await db.delete(heartbeatRuns);
         return;
       } catch (error) {
@@ -68,6 +86,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     await db.delete(agentRuntimeState);
     await db.delete(agents);
     await db.delete(companySkills);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -75,12 +94,10 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     await tempDb?.cleanup();
   });
 
-  async function seedQueuedRun() {
+  async function seedAgentAndIssue() {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
-    const runId = randomUUID();
-    const wakeupRequestId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -88,6 +105,8 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user",
+      membershipRole: "operator", status: "active" });
 
     await db.insert(agents).values({
       id: agentId,
@@ -119,6 +138,14 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       assigneeAgentId: agentId,
       responsibleUserId: "responsible-user",
     });
+
+    return { companyId, agentId, issueId };
+  }
+
+  async function seedQueuedRun() {
+    const { companyId, agentId, issueId } = await seedAgentAndIssue();
+    const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
 
     await db.insert(agentWakeupRequests).values({
       id: wakeupRequestId,
@@ -219,29 +246,244 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     expect(finished?.status).toBe("succeeded");
   }, 20_000);
 
-  // Wraps db.transaction so the callback's tx object throws the moment code
-  // calls tx.update(table) for a table named in tablesByCall — this makes a
-  // real Postgres transaction roll back exactly like a genuine write failure
-  // partway through, without touching any other table's update path.
-  // tablesByCall maps a 0-based db.transaction() call index (in call order)
-  // to the table that call should fail on; a call index with no entry runs
-  // every update for real. For example { 0: issues } fails only the
-  // issue-lock write inside releaseRunClaimedJustBeforeSuppression's
-  // transaction.
-  function withFailingTransactionalUpdate(realDb: typeof db, tablesByCall: Record<number, unknown>) {
-    let callIndex = 0;
+  it.each(["release", "paused agent", "new drain"] as const)("reconsiders queued work after maintenance with current gates: %s", async gate => {
+    const { companyId, agentId, issueId } = await seedAgentAndIssue();
+    const heartbeat = heartbeatService(db);
+    const counterDir = mkdtempSync(join(tmpdir(), "drain-executor-"));
+    const counter = join(counterDir, "executions");
+    await db.update(agents).set({ adapterConfig: { command: process.execPath,
+      args: ["-e", `require("node:fs").appendFileSync(${JSON.stringify(counter)}, process.env.PAPERCLIP_RUN_ID + "\\n")`] } })
+      .where(eq(agents.id, agentId));
+    startTaskDrain({});
+    await heartbeat.wakeup(agentId, {
+      source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+      payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "system", requestedByActorId: "issue_assignment",
+    });
+    await heartbeat.drainActiveRunExecutions();
+    const [queued] = await db.select({ id: heartbeatRuns.id, wakeupRequestId: heartbeatRuns.wakeupRequestId })
+      .from(heartbeatRuns);
+    expect(queued).toBeDefined();
+    if (gate === "paused agent") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, event => {
+      if (gate === "new drain" && event.type === "activity.logged" && event.payload.action === "instance.task_drain.stopped") startTaskDrain({});
+    });
+    try {
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => {
+        req.actor = { type: "board", userId: "local-board", source: "local_implicit", isInstanceAdmin: true };
+        next();
+      });
+      app.use("/api", instanceSettingsRoutes(db));
+      app.use(errorHandler);
+      const response = await request(app).delete("/api/instance/task-drain");
+      expect(response.status).toBe(200);
+      await heartbeat.drainActiveRunExecutions();
+      const runs = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, startedAt: heartbeatRuns.startedAt })
+        .from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, queued!.wakeupRequestId!));
+      expect(runs).toHaveLength(1);
+      const executions = existsSync(counter) ? readFileSync(counter, "utf8").trim().split("\n") : [];
+      if (gate === "release") {
+        expect(runs[0]).toMatchObject({ id: queued!.id, status: "succeeded" });
+        expect(executions.filter(id => id === queued!.id)).toHaveLength(1);
+        await request(app).delete("/api/instance/task-drain").expect(200);
+        await heartbeat.drainActiveRunExecutions();
+        expect(readFileSync(counter, "utf8").trim().split("\n").filter(id => id === queued!.id)).toHaveLength(1);
+      } else {
+        expect(runs[0]?.startedAt).toBeNull();
+        expect(executions).toEqual([]);
+      }
+    } finally {
+      unsubscribe();
+      await heartbeat.drainActiveRunExecutions();
+      rmSync(counterDir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it("preserves the plugin worker manager when DELETE releases a queued sandbox run", async () => {
+    const { companyId, agentId, issueId } = await seedAgentAndIssue();
+    const environmentId = randomUUID();
+    const pluginId = randomUUID();
+    const pluginKey = `test.drain-sandbox.${pluginId}`;
+    const provider = "drain-sandbox";
+    const acquisitionFailure = "drain_release_plugin_acquisition_reached";
+    const calls: Array<{ pluginId: string; method: string; params: unknown }> = [];
+    const pluginWorkers = {
+      isRunning: (id: string) => id === pluginId,
+      getWorker: () => ({ supportedMethods: ["environmentAcquireLease"] }),
+      call: async (id: string, method: string, params: unknown) => {
+        calls.push({ pluginId: id, method, params });
+        throw new Error(acquisitionFailure);
+      },
+    } as unknown as PluginWorkerManager;
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: pluginWorkers });
+    try {
+      await db.insert(plugins).values({
+        id: pluginId, pluginKey, packageName: "@test/drain-sandbox", version: "1.0.0", apiVersion: 1,
+        categories: ["automation"], status: "ready",
+        manifestJson: {
+          id: pluginKey, apiVersion: 1, version: "1.0.0", displayName: "Drain sandbox",
+          description: "Task-drain release fixture", author: "Paperclip", categories: ["automation"],
+          capabilities: ["environment.drivers.register"], entrypoints: { worker: "worker.js" },
+          environmentDrivers: [{ driverKey: provider, kind: "sandbox_provider", displayName: "Drain sandbox", configSchema: { type: "object" } }],
+        },
+      });
+      await db.insert(environments).values({ id: environmentId, name: `Drain sandbox ${environmentId}`,
+        driver: "sandbox", status: "active", config: { provider } });
+      await db.update(agents).set({ defaultEnvironmentId: environmentId }).where(eq(agents.id, agentId));
+      startTaskDrain({});
+      await heartbeat.wakeup(agentId, {
+        source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+        payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+        requestedByActorType: "system", requestedByActorId: "issue_assignment",
+      });
+      await heartbeat.drainActiveRunExecutions();
+      const [queued] = await db.select().from(heartbeatRuns);
+      expect(queued).toMatchObject({ status: "queued", startedAt: null });
+      expect(calls).toEqual([]);
+
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => {
+        req.actor = { type: "board", userId: "local-board", source: "local_implicit", isInstanceAdmin: true };
+        next();
+      });
+      app.use("/api", instanceSettingsRoutes(db, pluginWorkers));
+      app.use(errorHandler);
+      await request(app).delete("/api/instance/task-drain").expect(200);
+      await heartbeat.drainActiveRunExecutions();
+      const runs = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, error: heartbeatRuns.error })
+        .from(heartbeatRuns);
+      expect(runs).toHaveLength(1);
+      expect.soft(runs[0]).toMatchObject({ id: queued!.id, status: "failed", error: expect.stringContaining(acquisitionFailure) });
+      expect.soft(calls).toEqual([{
+        pluginId, method: "environmentAcquireLease",
+        params: expect.objectContaining({ driverKey: provider, companyId, environmentId,
+          issueId, agentId, runId: queued!.id, adapterType: "process" }),
+      }]);
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+      await db.update(agents).set({ defaultEnvironmentId: null }).where(eq(agents.id, agentId));
+      await db.delete(environments).where(eq(environments.id, environmentId));
+      await db.delete(plugins).where(eq(plugins.id, pluginId));
+    }
+  }, 20_000);
+
+  it("dispatches existing queued work at the drain deadline", async () => {
+    const { agentId, issueId } = await seedAgentAndIssue();
+    const heartbeat = heartbeatService(db);
+    startTaskDrain({});
+    await heartbeat.wakeup(agentId, {
+      source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+      payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "system", requestedByActorId: "issue_assignment",
+    });
+    await heartbeat.drainActiveRunExecutions();
+    const [queued] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns);
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      onError: error => { throw error; } });
+    let worker: ReturnType<typeof registerTaskDrainExpiryWork> | undefined;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        worker = registerTaskDrainExpiryWork(coordinator, () => {
+          void heartbeat.resumeQueuedRunsAfterDrain().then(resolve, reject);
+        });
+        startTaskDrain({ ttlMs: 5 });
+      });
+      await heartbeat.drainActiveRunExecutions();
+      const [run] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, queued!.id));
+      expect(run?.status).toBe("succeeded");
+    } finally { await worker?.stop(); await coordinator.stop(); }
+  }, 20_000);
+
+  it("keeps a wake that arrives during a task drain queued and runs it once the drain lifts", async () => {
+    const { agentId, issueId } = await seedAgentAndIssue();
+    const heartbeat = heartbeatService(db);
+
+    // The drain holds ADMISSION, not the request. The wake lands in the
+    // durable queue, so the restart that clears the process-local drain
+    // resumes it instead of losing it. (Before this, the wake was written
+    // as `skipped` and the issue sat in `todo` with no run and no path.)
+    startTaskDrain({});
+    await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "system",
+      requestedByActorId: "issue_assignment",
+    });
+    await heartbeat.drainActiveRunExecutions();
+
+    const wakeup = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup).toMatchObject({ status: "queued", reason: "issue_assigned" });
+    expect(wakeup?.payload).not.toHaveProperty("heartbeatSkip");
+    const queuedRuns = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns);
+    expect(queuedRuns).toHaveLength(1);
+    expect(queuedRuns[0]).toMatchObject({ status: "queued" });
+    const runId = queuedRuns[0]!.id;
+
+    // Admission stays held for as long as the drain is active, and the
+    // queued row does not count against quiescence: the restart may proceed.
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    const held = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(held?.status).toBe("queued");
+    expect(getTaskDrainStatus()).toMatchObject({
+      draining: true,
+      activeRuns: 0,
+      pendingWakes: 0,
+      quiescent: true,
+    });
+
+    // The drain lifts (a restart clears it the same way): the queued wake
+    // runs to completion through the normal admission path.
+    stopTaskDrain();
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    const finished = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(finished?.status).toBe("succeeded");
+    const completedWakeup = await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .then((rows) => rows[0] ?? null);
+    expect(completedWakeup?.status).toBe("completed");
+  }, 20_000);
+
+  // Inject one rollback only after the test starts task drain. Admission also
+  // uses transactions, so transaction call numbers do not identify release.
+  function withFailingTransactionalUpdate(realDb: typeof db, failingTable: unknown, armed: () => boolean) {
+    let injected = false;
     return new Proxy(realDb, {
       get(target, prop, receiver) {
         if (prop !== "transaction") return Reflect.get(target, prop, receiver);
         return (fn: (tx: unknown) => Promise<unknown>) => {
-          const failingTable = tablesByCall[callIndex];
-          callIndex += 1;
           return target.transaction((tx) => {
             const txProxy = new Proxy(tx as object, {
               get(txTarget, txProp, txReceiver) {
                 if (txProp === "update") {
                   return (table: unknown) => {
-                    if (failingTable !== undefined && table === failingTable) {
+                    if (!injected && armed() && table === failingTable) {
+                      injected = true;
                       throw new Error("simulated transactional write failure");
                     }
                     return (txTarget as any).update(table);
@@ -262,13 +504,15 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     // Fault the release transaction on the issue-lock write, so executeRun's
     // suppression branch catches the failure, logs it, and returns instead
     // of throwing. There is no in-process fallback or retry for this path.
-    const failingDb = withFailingTransactionalUpdate(db, { 0: issues });
+    let releaseStarted = false;
+    const failingDb = withFailingTransactionalUpdate(db, issues, () => releaseStarted);
     const heartbeat = heartbeatService(failingDb);
 
     const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
       const payload = event.payload as { runId?: string; status?: string };
       if (event.type === "heartbeat.run.status" && payload.runId === runId && payload.status === "running") {
         startTaskDrain({});
+        releaseStarted = true;
       }
     });
 
@@ -311,8 +555,14 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     expect(status.activeRuns).toBe(0);
     expect(status.quiescent).toBe(true);
 
-    // The run's row is still "running", so the orphan reaper finds it,
-    // finalizes it, and releases the issue lock on its own cycle.
+    // Missing local tracking cannot override the durable controller lease.
+    // Once that unrenewed lease expires, the reaper finalizes the orphan and
+    // releases the issue lock on its own cycle.
+    const beforeExpiry = await heartbeat.reapOrphanedRuns();
+    expect(beforeExpiry.runIds).not.toContain(runId);
+    await db.update(heartbeatRuns).set({
+      controllerLeaseExpiresAt: sql`clock_timestamp() - interval '1 second'`,
+    }).where(eq(heartbeatRuns.id, runId));
     const reapResult = await heartbeat.reapOrphanedRuns();
     expect(reapResult.runIds).toContain(runId);
 

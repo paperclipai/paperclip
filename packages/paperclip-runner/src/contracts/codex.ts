@@ -23,7 +23,7 @@ export const CODEX_BLOCK_TOOL_NAME = PRP_BLOCK_TOOL_NAME;
 /** @deprecated Use the provider-neutral PRP completion contract exports. */
 export const CODEX_SEMANTIC_TOOL_NAMES = PRP_SEMANTIC_TOOL_NAMES;
 export const CODEX_SKILLLESS_BASE_INSTRUCTIONS =
-  "Complete only the supplied task envelope. Do not discover or invoke skills. Do not call a control-plane API. Return exactly one semantic completion result; use paperclip_finish when the work is done or needs review, and paperclip_block only when work cannot continue." as const;
+  "Complete only the supplied task envelope. Do not discover or invoke skills. Do not call a control-plane API. Return exactly one semantic completion result; use paperclip_finish when the work is done, needs review, or is explicitly yielding for the next response, and paperclip_block only when work cannot continue." as const;
 
 export interface CodexTaskEnvelope {
   schema: typeof CODEX_TASK_ENVELOPE_SCHEMA;
@@ -50,6 +50,8 @@ export interface CodexModelContextSnapshot {
   collaborationMode: "default" | "plan";
   sandbox: unknown;
   approvalPolicy: unknown;
+  /** Historical trace field for the Paperclip instruction fragment, supplied
+   * to Codex as developerInstructions rather than replacing its stock base. */
   baseInstructions: string;
   instructionSources: string[];
   instructionPolicy: {
@@ -61,7 +63,7 @@ export interface CodexModelContextSnapshot {
   dynamicToolNames: string[];
   modelInputKinds: ["text"];
   liveConsole?: {
-    conversationMode?: "task" | "direct";
+    conversationMode?: "task" | "direct" | "prepared";
     runtimeRequestResolution: boolean;
     goals: boolean;
     threadLineage: boolean;
@@ -141,7 +143,6 @@ export function createCodexTaskEnvelope(input: {
         input.criteria ?? [{ id: "objective", requirement: "Complete the objective safely." }],
     },
     constraints: input.constraints ?? [
-      "Work only inside the supplied working directory.",
       "Do not discover or invoke skills.",
       "Do not call a control-plane API.",
       "Return one semantic completion result.",
