@@ -76,6 +76,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .find(|pair| pair[0] == "--cancel-reply")
         .map(|pair| pair[1].clone());
     let mut late_cancel_reply: Option<Value> = None;
+    // With --cancel-reply, a cancelled turn forgets its pending tool calls.
+    let mut cancel_retired_tools = false;
     let mut source_journal = if mode == "source-reconcile" {
         let path = args
             .windows(2)
@@ -637,7 +639,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "suspend-wrong-ack"
             | "suspend-wrong-identity"
             | "suspend-missing-identity" => {
-                if command == "tool.resolve" && mode == "turns-tool-resolution-rejected" {
+                if command == "tool.resolve"
+                    && (mode == "turns-tool-resolution-rejected" || cancel_retired_tools)
+                {
                     write_json(
                         &mut stdout,
                         &json!({
@@ -690,6 +694,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             json!({"status":"interrupted"}),
                         )?;
                         next_sequence += 1;
+                        cancel_retired_tools = true;
                         if fault == "late" {
                             late_cancel_reply = Some(response);
                         }

@@ -452,6 +452,7 @@ impl AcpxSidecarTransport {
             Ok(CommandOutcome::Rejected {
                 error,
                 resume_required,
+                ..
             }) => Err(AcpxTurnStartFailure {
                 error,
                 resume_required,
@@ -460,6 +461,23 @@ impl AcpxSidecarTransport {
                 error,
                 resume_required: false,
             }),
+        }
+    }
+
+    /// Returns `Err((error, retired))`, where `retired` is true only when the
+    /// sidecar rejected the result because it no longer tracks that tool call.
+    pub(crate) fn request_tool_resolve(
+        &mut self,
+        params: Value,
+    ) -> Result<Value, (LocalRunnerError, bool)> {
+        match self.request_outcome(GeneratedAcpxSidecarCommand::ToolResolve, params) {
+            Ok(CommandOutcome::Success(value)) => Ok(value),
+            Ok(CommandOutcome::Rejected {
+                error,
+                tool_call_retired,
+                ..
+            }) => Err((error, tool_call_retired)),
+            Err(error) => Err((error, false)),
         }
     }
 
@@ -727,7 +745,9 @@ impl AcpxSidecarTransport {
                     let resume_required = command == GeneratedAcpxSidecarCommand::TurnStart
                         && error.retryable
                         && error.code == "SESSION_RESUME_REQUIRED";
-                    return Ok(Some(CommandOutcome::Rejected { error: LocalRunnerError::invalid(
+                    let tool_call_retired = command == GeneratedAcpxSidecarCommand::ToolResolve
+                        && error.code == "ACPX_TOOL_CALL_STALE";
+                    return Ok(Some(CommandOutcome::Rejected { tool_call_retired, error: LocalRunnerError::invalid(
                         format!(
                             "ACPX sidecar command {} was rejected (retryable={}, classification={})",
                             command.as_str(),
@@ -935,6 +955,7 @@ enum CommandOutcome {
     Rejected {
         error: LocalRunnerError,
         resume_required: bool,
+        tool_call_retired: bool,
     },
 }
 

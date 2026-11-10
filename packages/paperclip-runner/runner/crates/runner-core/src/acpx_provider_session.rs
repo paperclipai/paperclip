@@ -359,6 +359,7 @@ pub struct AcpxProviderSession {
     transport_terminated: bool,
     rejected_start_resumable: bool,
     runtime_retired: bool,
+    cancelled_turn_id: Option<String>,
     completed_turn_observed: bool,
     generation_has_run_turn: bool,
     restarted_after_turn_from: Option<u32>,
@@ -420,6 +421,7 @@ impl AcpxProviderSession {
             transport_terminated: false,
             rejected_start_resumable: false,
             runtime_retired: false,
+            cancelled_turn_id: None,
             completed_turn_observed: false,
             generation_has_run_turn: false,
             restarted_after_turn_from: None,
@@ -802,6 +804,7 @@ impl AcpxProviderSession {
                 "ACPX interruption named a stale or inactive turn",
             ));
         }
+        self.cancelled_turn_id = Some(turn_id.to_owned());
         let response = match self.transport.request_turn_cancel(
             json!({"turnId":turn_id,"reason":bounded_reason(reason)}),
             Instant::now()
@@ -1116,12 +1119,19 @@ impl AcpxProviderSession {
                 "error":Value::Null,
             })
         };
-        let response = match self
-            .transport
-            .request(GeneratedAcpxSidecarCommand::ToolResolve, resolution)
-        {
+        let response = match self.transport.request_tool_resolve(resolution) {
             Ok(response) => response,
-            Err(error) => return Err(self.fail_closed(error)),
+            // This session's own turn.cancel retired the call before its result
+            // arrived, and the turn terminal may still be buffered. The provider
+            // can never receive this result, exactly as after a polled terminal,
+            // so keep the durable result instead of failing the transport.
+            Err((_, true)) if self.cancelled_turn_id.as_deref() == Some(turn_id.as_str()) => {
+                self.state = next_state;
+                self.tool_bridge = next_bridge;
+                self.reserved_tool_bridge = next_reserved_bridge;
+                return Ok(());
+            }
+            Err((error, _)) => return Err(self.fail_closed(error)),
         };
         self.verify_resolution(&response, "tool")?;
         self.state = next_state;
@@ -2274,6 +2284,7 @@ mod mode_tests {
             transport_terminated: false,
             rejected_start_resumable: false,
             runtime_retired: false,
+            cancelled_turn_id: None,
             completed_turn_observed: false,
             generation_has_run_turn: false,
             restarted_after_turn_from: None,
