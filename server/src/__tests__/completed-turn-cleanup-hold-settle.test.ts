@@ -1,15 +1,18 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
+  authUsers,
   companies,
   controllerInstances,
   createDb,
   heartbeatRuns,
   issueRecoveryActions,
+  issueRelations,
   issues,
   nativeRunFinalizations,
   workspaceOperations,
@@ -17,6 +20,8 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { currentControllerBootId, currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { deliverReconciledExecutions } from "../services/execution-recovery-resolution.js";
 import { registerControllerInstanceDb, resetControllerInstanceLeaseForTests } from "../services/controller-instance-lease.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 
@@ -50,8 +55,11 @@ suite("completed-turn cleanup holds on the shared ownership path", () => {
     temporary = await startEmbeddedPostgresTestDatabase("paperclip-completed-turn-cleanup-");
     db = createDb(temporary.connectionString);
     companyId = randomUUID(); agentId = randomUUID();
+    const responsibleUserId = randomUUID();
+    await db.insert(authUsers).values({ id: responsibleUserId, name: "Board", email: `${responsibleUserId}@example.test`,
+      emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: "CTC",
-      requireBoardApprovalForNewAgents: false });
+      requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: responsibleUserId });
     await db.insert(agents).values({ id: agentId, companyId, name: "Coder", role: "engineer", status: "idle",
       adapterType: "paperclip_runner", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
   }, 30_000);
@@ -61,18 +69,29 @@ suite("completed-turn cleanup holds on the shared ownership path", () => {
     await db.delete(issueRecoveryActions);
     await db.delete(workspaceOperations);
     await db.delete(nativeRunFinalizations);
-    await db.delete(heartbeatRuns);
+    // A delivered continuation leaves a wake and its run referencing each other.
+    await db.execute(sql`truncate table agent_wakeup_requests, heartbeat_runs cascade`);
+    await db.delete(issueRelations);
     await db.delete(issues);
   });
 
   afterAll(async () => { await temporary?.cleanup(); });
 
   async function quarantinedRun(options: { controllerAlive?: boolean; turnCompleted?: boolean; filesSaved?: boolean;
-    controllerBootId?: string; hostHashUnrecorded?: boolean } = {}) {
+    controllerBootId?: string; hostHashUnrecorded?: boolean; waitsOnChild?: boolean; statusVersion?: number;
+    settledByPreviousRelease?: boolean } = {}) {
     const issueId = randomUUID(), runId = randomUUID(), leaseId = randomUUID();
     const finishedAt = new Date(Date.now() - 60_000);
+    // The run's failure set Blocked at status version 6. A later version means
+    // a newer decision owns the Blocked status.
     await db.insert(issues).values({ id: issueId, companyId, title: "Set up visual reviews", status: "blocked",
-      assigneeAgentId: agentId, statusVersion: 6 });
+      assigneeAgentId: agentId, statusVersion: options.statusVersion ?? 6, blockedTransitionAt: finishedAt });
+    if (options.waitsOnChild) {
+      const childId = randomUUID();
+      await db.insert(issues).values({ id: childId, companyId, title: "Capture baselines", status: "in_progress",
+        assigneeAgentId: agentId, parentId: issueId });
+      await db.insert(issueRelations).values({ companyId, issueId: childId, relatedIssueId: issueId, type: "blocks" });
+    }
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "automation", issueId,
       nativeIssueId: issueId,
       status: "failed", errorCode: "native_session_cleanup_quarantined", runtimeMode: "native",
@@ -123,7 +142,31 @@ suite("completed-turn cleanup holds on the shared ownership path", () => {
       .where(eq(workspaceOperations.id, saved!.id));
     await db.insert(workspaceOperations).values({ companyId, issueId, heartbeatRunId: runId, phase: "workspace_finalize",
       status: "succeeded", metadata: { owningService: "workspace_recovery", preservationOperationIds } });
+    if (options.settledByPreviousRelease) {
+      // As the previous release (#20628) left them: both holds settled as
+      // restored, their replay block removed, the task still Blocked.
+      for (const id of [quarantineHold!.id, filesHold!.id]) {
+        const [row] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id));
+        const { automaticRecovery: _removed, ...evidence } = row!.evidence;
+        await db.update(issueRecoveryActions).set({ outcome: "restored", ownerType: "system",
+          resolutionNote: "The run finished its turn and saved its work; its session cleanup no longer blocks the task.",
+          evidence: { ...evidence, completedTurnCleanupSettlement: { runId, settledAt: new Date().toISOString(),
+            ownerProof: "process_exited" } } }).where(eq(issueRecoveryActions.id, id));
+      }
+    }
     return { issueId, runId, quarantineHoldId: quarantineHold!.id, filesHoldId: filesHold!.id };
+  }
+
+  const issue = async (id: string) => (await db.select().from(issues).where(eq(issues.id, id)))[0]!;
+  /** Runs the continuation worker with a recording wake. */
+  async function deliverContinuations() {
+    const wakes: Array<{ agentId: string; issueId: unknown; previousRunId: unknown }> = [];
+    await deliverReconciledExecutions(db, (async (wakeAgentId: string, request: { payload?: Record<string, unknown>;
+      contextSnapshot?: Record<string, unknown> }) => {
+      wakes.push({ agentId: wakeAgentId, issueId: request.payload?.issueId, previousRunId: request.contextSnapshot?.previousRunId });
+      return null;
+    }) as unknown as Parameters<typeof deliverReconciledExecutions>[1]);
+    return wakes;
   }
 
   const hold = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!;
@@ -131,7 +174,8 @@ suite("completed-turn cleanup holds on the shared ownership path", () => {
     .kinds.find(entry => entry.kind === KIND);
 
   it("settles both no-replay holds once the controller that held the cleanup gate is gone", async () => {
-    const f = await quarantinedRun();
+    // As on staging: the task also waits on an unfinished child task.
+    const f = await quarantinedRun({ waitsOnChild: true });
     // As on staging: the files hold blocks the task with no Retry and no continuation.
     expect(await getExecutionBlocker(db, companyId, f.issueId)).toMatchObject({ recoveryActionId: f.filesHoldId,
       canRetry: false, canContinue: false });
@@ -146,10 +190,71 @@ suite("completed-turn cleanup holds on the shared ownership path", () => {
     expect(await getExecutionBlocker(db, companyId, f.issueId)).toBeNull();
     // Settling replays nothing: no new run, and the task keeps its own wait.
     expect((await db.select().from(heartbeatRuns)).map(run => run.id)).toEqual([f.runId]);
-    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "blocked" });
+    // The child's dependency wait keeps the task Blocked; its completion continues it.
+    expect(await issue(f.issueId)).toMatchObject({ status: "blocked" });
+    expect(await deliverContinuations()).toEqual([]);
     expect(await db.select().from(activityLog).where(eq(activityLog.action, "issue.recovery_action_resolved"))).toHaveLength(1);
     // Bounded: nothing is left to list.
     expect(await pass()).toMatchObject({ inProgress: 0 });
+  }, 60_000);
+
+  // The staging dead end: the same quarantined completed turn, but the task has
+  // no blocker of its own. Its Blocked status came only from the run's failure.
+  it("releases the Blocked status the quarantined run set and continues the task once", async () => {
+    const f = await quarantinedRun();
+    expect(await pass()).toMatchObject({ inProgress: 1, settled: 1 });
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toBeNull();
+    expect(await issue(f.issueId)).toMatchObject({ status: "todo", blockedTransitionAt: null });
+    // One durable continuation, owned by the hold that owned the Blocked status.
+    const owner = await hold(f.quarantineHoldId);
+    expect(owner.evidence).toMatchObject({ continuationDelivery: "pending",
+      executionReconciliation: { runId: f.runId, providerStopped: true, actionOutcome: "completed" } });
+    expect(owner.returnOwnerAgentId).toBe(agentId);
+    expect((await hold(f.filesHoldId)).evidence.continuationDelivery).toBe("invalidated");
+    expect(await deliverContinuations()).toEqual([{ agentId, issueId: f.issueId, previousRunId: f.runId }]);
+    // Settling itself replays nothing, and the next pass lists nothing.
+    expect((await db.select().from(heartbeatRuns)).map(run => run.id)).toEqual([f.runId]);
+    expect(await pass()).toMatchObject({ inProgress: 0 });
+    // Normal admission accepts the continuation exactly once, as a fresh session.
+    const heartbeat = heartbeatService(db);
+    await deliverReconciledExecutions(db, heartbeat.wakeup);
+    await deliverReconciledExecutions(db, heartbeat.wakeup);
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId));
+    expect(successors).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+    expect(successors[0]!.contextSnapshot).toMatchObject({ issueId: f.issueId, forceFreshSession: true,
+      wakeReason: "issue_recovery_action_restored" });
+    expect((await hold(f.quarantineHoldId)).evidence).toMatchObject({ continuationDelivery: "delivered",
+      continuationRunId: successors[0]!.id });
+  }, 60_000);
+
+  // Upgrade: rows exactly as the previous release left that task. Both holds are
+  // already restored, so there is no blocker and no recovery action, but the
+  // task is still Blocked with no Retry. The next pass after deploy continues it.
+  it("continues a task whose holds the previous release settled but left Blocked", async () => {
+    const f = await quarantinedRun({ settledByPreviousRelease: true });
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toBeNull();
+    expect(await issue(f.issueId)).toMatchObject({ status: "blocked" });
+
+    expect(await pass()).toMatchObject({ inProgress: 1, settled: 1 });
+    expect(await issue(f.issueId)).toMatchObject({ status: "todo" });
+    expect(await deliverContinuations()).toEqual([{ agentId, issueId: f.issueId, previousRunId: f.runId }]);
+    expect(await pass()).toMatchObject({ inProgress: 0 });
+  }, 60_000);
+
+  it("keeps a Blocked status that a newer decision owns and starts nothing", async () => {
+    const f = await quarantinedRun({ statusVersion: 7 });
+    expect(await pass()).toMatchObject({ inProgress: 1, settled: 1 });
+    expect(await hold(f.quarantineHoldId)).toMatchObject({ outcome: "restored" });
+    expect(await issue(f.issueId)).toMatchObject({ status: "blocked" });
+    expect(await deliverContinuations()).toEqual([]);
+    expect(await pass()).toMatchObject({ inProgress: 0 });
+  }, 60_000);
+
+  it("keeps the Blocked status of previously settled holds while the closing controller is alive", async () => {
+    const f = await quarantinedRun({ settledByPreviousRelease: true, controllerAlive: true });
+    expect(await pass()).toMatchObject({ inProgress: 1, settled: 0 });
+    expect(await issue(f.issueId)).toMatchObject({ status: "blocked" });
   }, 60_000);
 
   it("proves a controller saved before its PID space was recorded gone through its stopped server boot", async () => {

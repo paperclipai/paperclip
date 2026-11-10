@@ -1790,9 +1790,30 @@ reconciler lists them as `native_completed_turn_cleanup_hold`. Once it proves
 the controller that closed the session gone (its in-process cleanup gate went
 with it), it settles each such hold as `restored` and removes its replay block.
 A hold that still protects files that are not verified as saved stays for
-workspace recovery. Settling starts no turn: the task keeps its own state (for
-example, waiting on a child task) and continues through normal admission when
-that wait ends. Saved user input is resumed through the ordinary resume path.
+workspace recovery. Settling starts no turn by itself. Saved user input is
+resumed through the ordinary resume path.
+
+The run's failure usually also set the task's Blocked status. In the same
+transaction, the reconciler decides that status once and records the decision on
+the settled holds (`completedTurnCleanupSettlement.blockedStatus`):
+
+- `released`: a settled hold still owns the Blocked status
+  (`holdOwnsBlockedStatus`: its `nativeFailureBlock` names the current status
+  version), the run's agent is still the assignee, and the task has no
+  unfinished blocker task. The task moves to `todo`, and that hold records one
+  durable continuation (`continuationDelivery: "pending"`). The
+  execution-continuation worker delivers it once, as a fresh session, through
+  normal admission.
+- `dependency_wait`: the task also waits on an unfinished blocker task. It stays
+  Blocked, and the blocker's completion wakes it.
+- `not_owned`: a newer decision owns the Blocked status, or the task changed
+  hands. The status is kept and nothing starts.
+
+Holds that an earlier release settled without this decision are listed again
+while their task is still Blocked, so such tasks continue on the first pass
+after deploy, without a migration. A task never rests Blocked with no blocker,
+no recovery action and no next action because its quarantined run's cleanup
+settled.
 
 A continuation cancelled by the queued-run gate while waiting for review did not start a provider. Its matching dispatch-gate receipt and unclaimed execution fields keep this deliberate wait out of unknown-action reconciliation. Pending review and decision gates still apply. If an older server already created a recovery hold for this exact state, Retry or a new user message can request one fresh turn after the server verifies there is no provider, coordinator, or unfinished cleanup. Saved user input is reconsidered through the same admission path; the cancelled turn is not replayed.
 
