@@ -26,6 +26,11 @@ describe("storage unavailability", () => {
     ["408 RequestTimeout", s3Error("RequestTimeout", 408)],
     ["a reset recorded under its error name", Object.assign(new Error("socket hang up"), { code: "ECONNRESET" })],
     ["a refused connection without a status", s3Error("Error", undefined, "ECONNREFUSED")],
+    ["400 ExpiredToken", s3Error("ExpiredToken", 400)],
+    ["403 ExpiredToken", s3Error("ExpiredToken", 403)],
+    ["403 InvalidAccessKeyId", s3Error("InvalidAccessKeyId", 403)],
+    ["403 SignatureDoesNotMatch", s3Error("SignatureDoesNotMatch", 403)],
+    ["a credential source that could not load a key", s3Error("CredentialsProviderError")],
   ])("treats %s from the store as unavailable", async (_label, error) => {
     expect(isStorageUnavailableError(await recorded(error))).toBe(true);
   });

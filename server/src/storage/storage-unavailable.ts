@@ -9,7 +9,9 @@ export const STORAGE_UNAVAILABLE_WAIT_RETRY_REASON = "storage_unavailable_wait";
 
 export const STORAGE_UNAVAILABLE_MESSAGE = "File storage was unavailable, so this attempt stopped before it could save its work. Paperclip will retry automatically when storage is back.";
 
-export const STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE = "File storage stayed unavailable through every automatic retry, so Paperclip stopped retrying this task. Retry once storage is back.";
+export const STORAGE_CREDENTIALS_REJECTED_MESSAGE = "File storage rejected Paperclip's storage credentials (they expired or were rotated), so this attempt stopped before it could save its work. Paperclip will retry automatically when valid credentials are available.";
+
+export const STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE = "File storage stayed unavailable or kept rejecting Paperclip's storage credentials through every automatic retry, so Paperclip stopped retrying this task. Check the storage service and its credentials, then Retry.";
 
 export const STORAGE_UNAVAILABLE_RETRY = {
   retryReason: STORAGE_UNAVAILABLE_WAIT_RETRY_REASON, wakeReason: "storage_unavailable_retry", maxAttempts: 10, delayMs: 60_000,
@@ -19,6 +21,15 @@ const UNAVAILABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 const UNAVAILABLE_NAMES = new Set(["ServiceUnavailable", "SlowDown", "InternalError", "RequestTimeout", "TimeoutError", "NetworkingError"]);
 const UNAVAILABLE_CODES = new Set(["ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EPIPE", "EAI_AGAIN", "ENOTFOUND",
   "ERR_STREAM_PREMATURE_CLOSE", "UND_ERR_SOCKET"]);
+
+const CREDENTIAL_REJECTION_CODES = new Set(["ExpiredToken", "ExpiredTokenException", "TokenRefreshRequired", "InvalidToken",
+  "InvalidAccessKeyId", "InvalidClientTokenId", "SignatureDoesNotMatch", "CredentialsProviderError"]);
+const CREDENTIAL_REJECTION_STATUS = new Set([400, 403]);
+
+export function isCredentialRejectionCode(code: unknown, status: number | null | undefined): boolean {
+  return typeof code === "string" && CREDENTIAL_REJECTION_CODES.has(code)
+    && (status === null || status === undefined || CREDENTIAL_REJECTION_STATUS.has(status));
+}
 
 function ownValue(value: unknown, key: string): unknown {
   if (!value || typeof value !== "object") return undefined;
@@ -46,10 +57,20 @@ function recordedStorageFailure(error: unknown) {
   return null;
 }
 
+export function isStorageCredentialRejection(error: unknown): boolean {
+  const recorded = recordedStorageFailure(error);
+  return recorded !== null && isCredentialRejectionCode(recorded.diagnostics.errorCode, recorded.diagnostics.httpStatus);
+}
+
+export function storageUnavailableMessage(error: unknown): string {
+  return isStorageCredentialRejection(error) ? STORAGE_CREDENTIALS_REJECTED_MESSAGE : STORAGE_UNAVAILABLE_MESSAGE;
+}
+
 export function isStorageUnavailableError(error: unknown): boolean {
   const recorded = recordedStorageFailure(error);
   if (!recorded) return false;
   const { diagnostics } = recorded;
+  if (isCredentialRejectionCode(diagnostics.errorCode, diagnostics.httpStatus)) return true;
   const status = diagnostics.httpStatus;
   if (status !== null && (status < 200 || status >= 300)) return UNAVAILABLE_STATUS.has(status);
   return UNAVAILABLE_NAMES.has(diagnostics.errorCode) || UNAVAILABLE_CODES.has(diagnostics.errorCode) || networkFailure(recorded.error);
