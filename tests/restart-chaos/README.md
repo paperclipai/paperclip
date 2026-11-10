@@ -360,7 +360,7 @@ method and status are written to `storage-proxy.json`.
 | Fault | Store behaviour during the window |
 | --- | --- |
 | ST1 | outage: every request answers 503 `ServiceUnavailable` |
-| ST2 | slow store: 1–10 s added latency with jitter |
+| ST2 | slow store: 1–10 s added latency with jitter, and a 2–16 MiB/s bandwidth cap shared by every request in the window (each direction) |
 | ST3 | 30% of requests answer 503, half of them `SlowDown` |
 
 `--storage-fault-seconds 15-45` sets the window length range (5–900 s), for example to find how long
