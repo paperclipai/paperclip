@@ -1,23 +1,29 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog, agents, closeRegisteredClients, companies, createDb, environmentLeases, environments,
-  executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issues, workspaceOperations,
+  executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issueRecoveryActions, issues, workspaceOperations,
 } from "@paperclipai/db";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import type { EnvironmentLease } from "@paperclipai/shared";
+import { remoteWorkspaceRunReferenceSchema, type EnvironmentLease } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { createStorageService } from "../storage/service.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
+import { createS3StorageProvider } from "../storage/s3-provider.js";
 import { remoteWorkspaceSnapshotRetentionService } from "./remote-workspace-snapshot-retention.js";
 import { beginWorkspaceSnapshot } from "./remote-workspace-snapshot-storage.js";
 import { captureRemoteWorkspaceDirectory } from "./remote-workspace-snapshot-archive.js";
+import { immutableRemoteWorkspaceRecoveryAttachment, verifiedWorkspaceRepairReceipt } from "./workspace-recovery-receipt.js";
+import { remoteWorkspaceReplacementEvidence } from "./native-runtime/native-safe-replacement.js";
+import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import {
   createSavedWorkspaceLoader, prepareRemoteWorkspace, readRemoteWorkspaceAuthority, reserveRemoteWorkspace, saveRemoteWorkspace,
 } from "./remote-workspaces.js";
@@ -103,9 +109,125 @@ describe.skipIf(!support.supported)("captured unchanged workspace snapshots", ()
       eq(executionWorkspaceSnapshots.companyId, companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, a.workspaceId)));
     const operations = () => db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, companyId),
       eq(workspaceOperations.heartbeatRunId, b.runId), eq(workspaceOperations.phase, "remote_workspace_snapshot")));
-    return { companyId, agentId, issueId, a, b, storage, puts, savedA, workspace, writer, save, snapshots, operations,
+    return { companyId, agentId, issueId, a, b, storage, puts, savedA, workspace, writer, save, snapshots, operations, target,
       captures: () => captures - capturesBefore };
   }
+
+  async function recoveredReuseFixture() {
+    const f = await fixture(), saved = await f.save();
+    const run = async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.b.runId)))[0]!;
+    const current = await run(), reference = remoteWorkspaceRunReferenceSchema.parse(current.runnerProfileJson?.remoteWorkspace);
+    const [originalLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.b.lease.id));
+    const [stoppedLease] = await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
+      metadata: { ...originalLease.metadata, remoteExecutionTermination: remoteTerminationReceipt(originalLease,
+        { providerLeaseId: originalLease.providerLeaseId!, state: "stopped" }) } }).where(eq(environmentLeases.id, originalLease.id)).returning();
+    await db.update(issues).set({ executionWorkspaceId: f.a.workspaceId }).where(eq(issues.id, f.issueId));
+    await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native", nativeIssueId: f.issueId, finishedAt: new Date(),
+      runnerProfileJson: { ...current.runnerProfileJson, nativeExecutionInput: { workspace: { cwd: reference.remoteCwd } } } })
+      .where(eq(heartbeatRuns.id, f.b.runId));
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "stranded_assigned_issue", cause: "fixture", fingerprint: randomUUID(), ownerType: "board",
+      nextAction: "Continue recovered work", evidence: { workspaceRecovery: { schema: "paperclip.workspace-recovery.v1",
+        runId: f.b.runId, status: "recovered", stage: "saving_receipts", attempt: 1, requestIds: [] } } }).returning();
+    const [receipt] = await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: f.issueId,
+      executionWorkspaceId: f.a.workspaceId, heartbeatRunId: f.b.runId, phase: "workspace_recovery", status: "succeeded",
+      metadata: { storage: "remote_workspace", recoveryActionId: action.id, leaseId: reference.leaseId,
+        providerLeaseId: reference.providerLeaseId, epoch: reference.epoch, snapshotId: saved.snapshotId,
+        sha256: saved.sha256, generation: saved.generation } }).returning();
+    return { ...f, saved, run, stoppedLease, receipt };
+  }
+
+  it("accepts a verified reused archive for recovery and stopped native replacement", async () => {
+    const f = await recoveredReuseFixture(), run = await f.run();
+    expect(await verifiedWorkspaceRepairReceipt(db, run)).toBe(f.receipt.id);
+    expect(await immutableRemoteWorkspaceRecoveryAttachment(db, run)).toMatchObject({ snapshotId: f.savedA.snapshotId,
+      operationId: f.receipt.id, generation: f.savedA.generation });
+    expect(await remoteWorkspaceReplacementEvidence(db, run, f.issueId, [f.stoppedLease]))
+      .toEqual({ workspacePreserved: true, providerStopped: true });
+    expect(await db.transaction(tx => remoteWorkspaceReplacementEvidence(tx, run, f.issueId, [f.stoppedLease], true)))
+      .toEqual({ workspacePreserved: true, providerStopped: true });
+    expect((await f.snapshots()).find(s => s.id === f.savedA.snapshotId)).toMatchObject({ sourceRunId: f.a.runId, epoch: 1 });
+  });
+
+  it("keeps an immutable recovery attachment after the next writer advances but refuses old execution authority", async () => {
+    const f = await recoveredReuseFixture(), run = await f.run(), next = await f.writer(f.a.workspaceId);
+    await writeFile(path.join(next.remoteRoot, "saved.txt"), "next writer contents\n");
+    await saveRemoteWorkspace({ db, storage: f.storage, workspace: await f.workspace(), runId: next.runId,
+      lease: next.lease, target: f.target(next.lease.id), assertOwned: async () => undefined });
+    expect((await f.snapshots()).find(s => s.id === f.savedA.snapshotId)!.status).toBe("superseded");
+    expect(await immutableRemoteWorkspaceRecoveryAttachment(db, run)).toMatchObject({ snapshotId: f.savedA.snapshotId });
+    expect(await verifiedWorkspaceRepairReceipt(db, run)).toBeNull();
+    expect(await remoteWorkspaceReplacementEvidence(db, run, f.issueId, [f.stoppedLease]))
+      .toEqual({ workspacePreserved: false, providerStopped: true });
+  });
+
+  it.each(["missing_marker", "pending_generation", "journaled_upload", "wrong_epoch", "wrong_lease",
+    "unfinished_work", "unknown_work", "wrong_generation", "wrong_boundary", "foreign_run"])(
+    "refuses an unverified reuse receipt for all recovery readers: %s", async fault => {
+      const f = await recoveredReuseFixture(), run = await f.run();
+      const operation = (await f.operations())[0]!, metadata = structuredClone(operation.metadata!);
+      const pending = (await f.snapshots()).find(s => s.sourceRunId === f.b.runId)!;
+      if (fault === "missing_marker") delete metadata.reusedSnapshotId;
+      if (fault === "wrong_epoch") metadata.epoch = Number(metadata.epoch) + 1;
+      if (fault === "wrong_generation") metadata.generation = Number(metadata.generation) + 1;
+      if (fault === "wrong_boundary") metadata.boundary = "repositories:checkpoint";
+      if (fault === "wrong_lease") metadata.exportCleanup = { ...(metadata.exportCleanup as Record<string, unknown>), leaseId: randomUUID() };
+      if (fault === "unfinished_work") metadata.saveWork = { ...(metadata.saveWork as Record<string, unknown>), activeIds: [randomUUID()] };
+      if (fault === "unknown_work") metadata.saveWork = { ...(metadata.saveWork as Record<string, unknown>), unknown: true };
+      await db.update(workspaceOperations).set({ metadata, ...(fault === "foreign_run" ? { heartbeatRunId: f.a.runId } : {}) })
+        .where(eq(workspaceOperations.id, operation.id));
+      if (fault === "pending_generation") await db.update(executionWorkspaceSnapshots).set({ status: "pending" })
+        .where(eq(executionWorkspaceSnapshots.id, pending.id));
+      if (fault === "journaled_upload") await db.update(executionWorkspaceSnapshots).set({ metadata: { uploads: [{ objectKey: "owned-uncertain-attempt" }] } })
+        .where(eq(executionWorkspaceSnapshots.id, pending.id));
+      expect(await verifiedWorkspaceRepairReceipt(db, run)).toBeNull();
+      expect(await immutableRemoteWorkspaceRecoveryAttachment(db, run)).toBeNull();
+      expect(await remoteWorkspaceReplacementEvidence(db, run, f.issueId, [f.stoppedLease]))
+        .toEqual({ workspacePreserved: false, providerStopped: true });
+    });
+
+  it.each(["retry", "missing", "forbidden"])("counts real S3 metadata attempts in save statistics: %s", async outcome => {
+    const f = await fixture(), parent = (await f.snapshots()).find(s => s.id === f.savedA.snapshotId)!;
+    let requests = 0;
+    const server = createServer((request, response) => {
+      requests++;
+      if (request.method !== "HEAD") { response.writeHead(405); response.end(); return; }
+      const status = outcome === "missing" ? 404 : outcome === "forbidden" ? 403 : requests === 1 ? 503 : 200;
+      response.writeHead(status, status === 200 ? { "content-length": String(parent.byteSize) } : {});
+      response.end();
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const names = ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_MAX_ATTEMPTS", "AWS_EC2_METADATA_DISABLED"];
+    const previous = new Map(names.map(name => [name, process.env[name]]));
+    process.env.AWS_ACCESS_KEY_ID = "snapshot-reuse-test";
+    process.env.AWS_SECRET_ACCESS_KEY = "snapshot-reuse-test-secret";
+    process.env.AWS_MAX_ATTEMPTS = "2";
+    process.env.AWS_EC2_METADATA_DISABLED = "true";
+    for (const name of ["AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_DEFAULT_PROFILE"]) delete process.env[name];
+    try {
+      const provider = createStorageService(createS3StorageProvider({ bucket: "snapshots", region: "us-east-1",
+        endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, forcePathStyle: true }));
+      vi.spyOn(f.storage, "headObject").mockImplementation(provider.headObject);
+      if (outcome === "forbidden") {
+        await expect(f.save()).rejects.toBeDefined();
+        expect(f.puts).not.toHaveBeenCalled();
+        expect(readRemoteWorkspaceAuthority((await f.workspace()).metadata)).toMatchObject({ dirty: true, writerRunId: f.b.runId });
+      } else {
+        const saved = await f.save();
+        if (outcome === "retry") expect(saved).toMatchObject({ snapshotId: f.savedA.snapshotId, unchanged: true });
+        else expect(saved.snapshotId).not.toBe(f.savedA.snapshotId);
+      }
+      const operation = (await f.operations())[0]!;
+      const timing = operation.metadata!.saveTiming as { storage: { requests: { requests: number; attempts: number; failedRequests: number } } };
+      expect(timing.storage.requests).toMatchObject({ requests: 1, attempts: outcome === "retry" ? 2 : 1,
+        failedRequests: outcome === "retry" ? 0 : 1 });
+      expect(requests).toBe(outcome === "retry" ? 2 : 1);
+    } finally {
+      for (const [name, value] of previous) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
 
   it("reuses the saved archive after a real capture and records finalization, replay, restore and waiter wake", async () => {
     const f = await fixture(), waiterId = randomUUID();
@@ -248,7 +370,7 @@ describe.skipIf(!support.supported)("captured unchanged workspace snapshots", ()
     await started.promise;
     try {
       await db.transaction(async tx => {
-        await tx.execute((await import("drizzle-orm")).sql`set local lock_timeout = '500ms'`);
+        await tx.execute(sql`set local lock_timeout = '500ms'`);
         expect(await tx.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.a.workspaceId)).for("update")).toHaveLength(1);
       });
     } finally { release.resolve(); }
@@ -268,6 +390,38 @@ describe.skipIf(!support.supported)("captured unchanged workspace snapshots", ()
     expect(f.puts).not.toHaveBeenCalled();
     expect(await f.operations()).toEqual([expect.objectContaining({ status: "succeeded" })]);
     expect((await f.snapshots()).filter(s => s.sourceRunId === f.b.runId)).toHaveLength(1);
+  });
+
+  it("reads a peer's completed receipt when its own registered save has not begun its snapshot", async () => {
+    const f = await fixture(), headStarted = deferred(), releaseHead = deferred(), beginStarted = deferred(), releaseBegin = deferred();
+    const head = f.storage.headObject.bind(f.storage), transaction = db.transaction.bind(db);
+    vi.spyOn(f.storage, "headObject").mockImplementationOnce(async (...args) => {
+      headStarted.resolve(); await releaseHead.promise; return head(...args);
+    });
+    const first = f.save();
+    await headStarted.promise;
+    let transactions = 0;
+    const delayed = vi.spyOn(db, "transaction").mockImplementation(async (action, config) => {
+      if (++transactions === 2) { beginStarted.resolve(); await releaseBegin.promise; }
+      return transaction(action, config);
+    });
+    const second = f.save();
+    try {
+      await beginStarted.promise;
+      releaseHead.resolve();
+      await expect(first).resolves.toMatchObject({ snapshotId: f.savedA.snapshotId, unchanged: true });
+      expect((await f.snapshots()).find(s => s.sourceRunId === f.b.runId)!.status).toBe("deleted");
+      releaseBegin.resolve();
+      await expect(second).resolves.toMatchObject({ snapshotId: f.savedA.snapshotId, unchanged: true });
+    } finally {
+      releaseHead.resolve(); releaseBegin.resolve();
+      await Promise.allSettled([first, second]);
+      delayed.mockRestore();
+    }
+    expect(f.captures()).toBe(1);
+    expect(f.puts).not.toHaveBeenCalled();
+    expect(await f.operations()).toEqual([expect.objectContaining({ status: "succeeded",
+      metadata: expect.objectContaining({ saveWork: expect.objectContaining({ activeIds: [], unknown: false }) }) })]);
   });
 
   it.each([false, true])("retires a prior save only when its work is known to be settled (unknown=%s)", async unknown => {
@@ -295,7 +449,12 @@ describe.skipIf(!support.supported)("captured unchanged workspace snapshots", ()
     const future = new Date(Date.now() + 30 * 86400_000);
     await db.update(executionWorkspaceSnapshots).set({ deleteAfter: new Date(0) }).where(eq(executionWorkspaceSnapshots.id, f.savedA.snapshotId));
     const retention = remoteWorkspaceSnapshotRetentionService(db, { storage: f.storage, now: () => future });
-    await retention.tick();
+    for (let pass = 0; pass < 10; pass++) {
+      const result = await retention.tick();
+      expect(result.failed).toBe(0);
+      if (!result.truncated) break;
+      expect(pass).toBeLessThan(9);
+    }
     const parent = (await f.snapshots()).find(s => s.id === f.savedA.snapshotId)!;
     expect(parent).toMatchObject({ status: "committed", deleteAfter: null });
     await expect(f.storage.headObject(f.companyId, parent.objectKey!)).resolves.toMatchObject({ exists: true });

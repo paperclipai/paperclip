@@ -107,24 +107,27 @@ export async function getWorkspaceSnapshot(db: Db, input: { companyId: string; w
 
 export async function findUnchangedWorkspaceSnapshot(input: {
   db: Db; storage: StorageService; snapshot: SnapshotRow; manifestDigest: string; archiveSha256: string; archiveBytes: number;
+  timing?: WorkspaceSnapshotStorageTiming;
 }): Promise<WorkspaceSnapshotRef | null> {
-  const { snapshot } = input;
-  if (!snapshot.parentSnapshotId || snapshot.status !== "pending" || snapshot.objectKey !== null
-    || snapshot.sha256 !== null || snapshot.byteSize !== null || snapshot.key !== null || snapshot.manifestDigest !== null
-    || snapshot.metadata?.uploads !== undefined
-      && (!Array.isArray(snapshot.metadata.uploads) || snapshot.metadata.uploads.length !== 0)) return null;
-  const [parent] = await input.db.select().from(executionWorkspaceSnapshots).where(and(
-    eq(executionWorkspaceSnapshots.companyId, snapshot.companyId),
-    eq(executionWorkspaceSnapshots.executionWorkspaceId, snapshot.executionWorkspaceId),
-    eq(executionWorkspaceSnapshots.id, snapshot.parentSnapshotId),
-    eq(executionWorkspaceSnapshots.status, "committed"),
-    eq(executionWorkspaceSnapshots.manifestDigest, input.manifestDigest)));
-  if (!parent) return null;
-  const ref = reference(parent);
-  const key = await snapshotKey(ref);
-  if (key.plaintextSha256 !== input.archiveSha256 || key.plaintextBytes !== input.archiveBytes) return null;
-  const head = await input.storage.headObject(ref.companyId, ref.objectKey);
-  return head.exists && head.contentLength === ref.byteSize ? ref : null;
+  return withRequestStats(input.timing, async () => {
+    const { snapshot } = input;
+    if (!snapshot.parentSnapshotId || snapshot.status !== "pending" || snapshot.objectKey !== null
+      || snapshot.sha256 !== null || snapshot.byteSize !== null || snapshot.key !== null || snapshot.manifestDigest !== null
+      || snapshot.metadata?.uploads !== undefined
+        && (!Array.isArray(snapshot.metadata.uploads) || snapshot.metadata.uploads.length !== 0)) return null;
+    const [parent] = await input.db.select().from(executionWorkspaceSnapshots).where(and(
+      eq(executionWorkspaceSnapshots.companyId, snapshot.companyId),
+      eq(executionWorkspaceSnapshots.executionWorkspaceId, snapshot.executionWorkspaceId),
+      eq(executionWorkspaceSnapshots.id, snapshot.parentSnapshotId),
+      eq(executionWorkspaceSnapshots.status, "committed"),
+      eq(executionWorkspaceSnapshots.manifestDigest, input.manifestDigest)));
+    if (!parent) return null;
+    const ref = reference(parent);
+    const key = await snapshotKey(ref);
+    if (key.plaintextSha256 !== input.archiveSha256 || key.plaintextBytes !== input.archiveBytes) return null;
+    const head = await input.storage.headObject(ref.companyId, ref.objectKey);
+    return head.exists && head.contentLength === ref.byteSize ? ref : null;
+  });
 }
 
 export async function recoverWorkspaceSnapshotArchive(input: {

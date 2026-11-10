@@ -883,14 +883,24 @@ export async function saveRemoteWorkspace(input: {
       replayedCommittedSave = true;
       return { snapshotId: snapshot.id, generation: snapshot.generation, sha256: snapshot.sha256!, savedAt: snapshot.updatedAt.toISOString() };
     }
-    if (operation.status === "succeeded" && snapshot.status === "deleted"
-      && operation.metadata?.reusedSnapshotId === snapshot.parentSnapshotId && snapshot.parentSnapshotId) {
-      const saved = await getWorkspaceSnapshot(input.db, { companyId: snapshot.companyId,
-        workspaceId: snapshot.executionWorkspaceId, snapshotId: snapshot.parentSnapshotId });
-      if (!saved) throw new Error("remote_workspace_snapshot_missing");
-      replayedCommittedSave = true;
-      return { snapshotId: saved.id, generation: saved.generation, sha256: saved.sha256,
-        savedAt: operation.finishedAt!.toISOString(), unchanged: true as const };
+    if (snapshot.status === "deleted" && snapshot.parentSnapshotId) {
+      const [completed] = await input.db.select().from(workspaceOperations).where(and(
+        eq(workspaceOperations.id, operation.id), eq(workspaceOperations.companyId, snapshot.companyId),
+        eq(workspaceOperations.executionWorkspaceId, snapshot.executionWorkspaceId),
+        eq(workspaceOperations.heartbeatRunId, input.runId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
+        eq(workspaceOperations.status, "succeeded"),
+        sql`${workspaceOperations.metadata}->>'boundary' = ${boundary}`,
+        sql`${workspaceOperations.metadata}->>'epoch' = ${String(expected.epoch)}`,
+        sql`${workspaceOperations.metadata}->>'reusedSnapshotId' = ${snapshot.parentSnapshotId}`));
+      if (completed?.finishedAt) {
+        const saved = await getWorkspaceSnapshot(input.db, { companyId: snapshot.companyId,
+          workspaceId: snapshot.executionWorkspaceId, snapshotId: snapshot.parentSnapshotId });
+        if (!saved || completed.metadata?.snapshotId !== saved.id || completed.metadata?.sha256 !== saved.sha256)
+          throw new Error("remote_workspace_snapshot_missing");
+        replayedCommittedSave = true;
+        return { snapshotId: saved.id, generation: saved.generation, sha256: saved.sha256,
+          savedAt: completed.finishedAt.toISOString(), unchanged: true as const };
+      }
     }
     const existingUpload = snapshot.status === "uploaded" ? await getWorkspaceSnapshot(input.db, { companyId: input.workspace.companyId,
       workspaceId: input.workspace.id, snapshotId: snapshot.id }) : null;
@@ -900,11 +910,13 @@ export async function saveRemoteWorkspace(input: {
     await input.assertOwned();
     const uploadStarted = performance.now();
     const storage = input.storage ?? getStorageService();
-    const unchanged = captured ? await findUnchangedWorkspaceSnapshot({ db: input.db, storage,
-      snapshot, manifestDigest: captured.manifestDigest, archiveSha256: captured.sha256, archiveBytes: captured.byteSize }) : null;
+    const storageTiming = timing.storage ??= newWorkspaceSnapshotStorageTiming();
+    const unchanged = captured && readSaveWork(operation.metadata)?.unknown === false
+      ? await findUnchangedWorkspaceSnapshot({ db: input.db, storage, snapshot, manifestDigest: captured.manifestDigest,
+        archiveSha256: captured.sha256, archiveBytes: captured.byteSize, timing: storageTiming }) : null;
     const saved = unchanged ?? await uploadWorkspaceSnapshot({ db: input.db, storage, snapshotId: snapshot.id,
       companyId: input.workspace.companyId, workspaceId: input.workspace.id, archivePath: captured?.archivePath ?? "",
-      manifestDigest: existingUpload?.manifestDigest ?? captured!.manifestDigest, timing: timing.storage ??= newWorkspaceSnapshotStorageTiming() });
+      manifestDigest: existingUpload?.manifestDigest ?? captured!.manifestDigest, timing: storageTiming });
     timing.uploadMs = Math.max(0, Math.round(performance.now() - uploadStarted));
     await input.assertOwned();
     const publishStarted = performance.now();

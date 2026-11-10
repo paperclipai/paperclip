@@ -627,6 +627,15 @@ keeps its recovery path; it cannot be discarded by this comparison. Changed
 contents still create a new version and retain the previous version for seven
 days after replacement. Active work and recovery references can extend retention.
 
+The reused archive keeps its original source run, generation and encryption
+binding. Recovery and native replacement verify the new run's final save through
+its succeeded operation and empty retired generation, including its epoch,
+workspace, sandbox location, content hash and settled work. They do not borrow
+the old run's authority. Read-only historical attachments keep this proof after
+a later writer advances the workspace. Existing saves from earlier releases
+keep their original receipt checks. Reuse metadata requests, including retries
+and failures, count toward the save's storage request statistics.
+
 A writer stopped mid-run, for example by reassignment, keeps its unsaved files
 in its stopped sandbox. When the run used a reusable (warm) sandbox, the stop
 leaves that lease `released` under its reusable policy with a stop-and-retain
