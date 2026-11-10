@@ -302,6 +302,19 @@ function admitTaskRetry(input: TaskRetryRequest) {
     }
     const busy = ["queued", "running", "scheduled_retry"].includes(latest.status);
     if (!busy) {
+      // A Retry cannot start while the task still has unresolved blockers: a
+      // deferred wakeup admitted here is only re-skipped by dispatch on every
+      // sweep, and the board sees a 202 with no reason (issue #20479).
+      const { issueService } = await import("./issues.js");
+      const dependencyReadiness = (await issueService(db)
+        .listDependencyReadiness(issue.companyId, [issue.id], db)).get(issue.id);
+      if (dependencyReadiness && !dependencyReadiness.isDependencyReady) {
+        return { requestId: null, accepted: false, stale: false, observedRunId: latest.id, chatActionId: undefined,
+          blockedBy: {
+            unresolvedBlockerIssueIds: dependencyReadiness.unresolvedBlockerIssueIds,
+            pendingFinalizeBlockerIssueIds: dependencyReadiness.pendingFinalizeBlockerIssueIds,
+          } };
+      }
       await preserveTaskRemoteWorkspaceWriter(db, issue.companyId, issue.id);
       // Historical deadline failures can predate their preservation record.
       // Register the exact prepared source; this proves neither a stopped
