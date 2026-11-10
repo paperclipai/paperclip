@@ -6,7 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, createDb, environmentLeases, environments, heartbeatRuns, nativeRunFinalizations, executionWorkspaceSnapshots, executionWorkspaces, issues, projects, workspaceOperations, type Db } from "@paperclipai/db";
+import { activityLog, agents, companies, createDb, environmentLeases, environments, heartbeatRuns, nativeRunFinalizations, executionWorkspaceSnapshots, executionWorkspaces, issues, projects, projectWorkspaces, workspaceOperations, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
@@ -46,11 +46,11 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     await db.execute(sql`drop trigger if exists cohort_commit_fault on workspace_operations`); await db.execute(sql`drop function if exists cohort_commit_fault()`);
     await db.execute(sql`drop trigger if exists cohort_reserve_fault on workspace_operations`); await db.execute(sql`drop function if exists cohort_reserve_fault()`);
     await db.delete(nativeRunFinalizations); await db.delete(environmentLeases); await db.delete(environments); await db.delete(heartbeatRuns);
-    await db.delete(issues); await db.delete(agents); await db.delete(executionWorkspaces); await db.delete(projects); await db.delete(companies);
+    await db.delete(issues); await db.delete(agents); await db.delete(executionWorkspaces); await db.delete(projectWorkspaces); await db.delete(projects); await db.delete(companies);
     vi.unstubAllEnvs(); await fs.rm(home, { recursive: true, force: true });
   });
-  async function fixture() {
-    const companyId = randomUUID(), projectId = randomUUID(), root = resolveManagedProjectWorkspaceDir({ companyId, projectId });
+  async function fixture(repoName?: string) {
+    const companyId = randomUUID(), projectId = randomUUID(), root = resolveManagedProjectWorkspaceDir({ companyId, projectId, repoName });
     await db.insert(companies).values({ id: companyId, name: "Cohort", issuePrefix: `C${companyId.slice(0, 6)}` });
     await db.insert(projects).values({ id: projectId, companyId, name: "Shared Git" });
     await fs.mkdir(root, { recursive: true }); await fs.writeFile(path.join(root, "saved.txt"), "committed base\n");
@@ -200,6 +200,88 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     await assertLocal(f);
     expect(await db.select().from(workspaceOperations)).toHaveLength(mode === "foreign" ? 3 : 2);
   });
+  it("resumes the same uploaded cohort after an archived companion is independently migrated", async () => {
+    const f = await fixture("cohort"), held = await recoverable(f), cwd = path.join(f.root, ".paperclip", "worktrees", "retired"), closedAt = new Date();
+    await git(f.root, "worktree", "add", "-qb", "retired", cwd);
+    await git(f.root, "worktree", "remove", cwd);
+    const receipt = await git(f.root, "branch", "-d", "retired");
+    const [projectWorkspace] = await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: f.projectId,
+      name: "Original repository", cwd: f.root, repoUrl: f.parent.repoUrl }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: f.companyId, projectId: f.projectId, title: "Retired companion" }).returning();
+    const [companion] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, projectId: f.projectId,
+      projectWorkspaceId: projectWorkspace.id, sourceIssueId: issue.id, name: "retired", mode: "isolated_workspace",
+      strategyType: "git_worktree", providerType: "git_worktree", cwd, providerRef: cwd, repoUrl: f.parent.repoUrl,
+      branchName: "retired", status: "archived", closedAt, metadata: { createdByRuntime: true, gitBranchOwnershipVersion: 1 } }).returning();
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: companion.id,
+      phase: "worktree_cleanup", status: "succeeded", command: "git branch -d retired", stdoutExcerpt: receipt,
+      startedAt: new Date(), finishedAt: new Date() });
+    const put = storage.putFile.bind(storage); let uploads = 0;
+    const upload = vi.spyOn(storage, "putFile").mockImplementation(async input => {
+      if (++uploads === 2) throw new Error("interrupted_cohort_upload");
+      return put(input);
+    });
+    await expect(run(f, { concurrency: 1 })).rejects.toThrow("interrupted_cohort_upload");
+    upload.mockRestore();
+    const saved = (await db.select().from(workspaceOperations)).filter(row => row.phase === "remote_workspace_migration");
+    expect(saved).toHaveLength(2);
+    const cohort = saved[0].metadata!.cohortMigration as { id: string; sourceProof: string; members: unknown[] };
+    const snapshots = await db.select().from(executionWorkspaceSnapshots);
+    expect(snapshots.some(row => row.status === "uploaded")).toBe(true);
+    await migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId: companion.id, apply: true,
+      signal: AbortSignal.timeout(50_000) });
+    const noStorage = new Proxy(storage, { get() { throw new Error("unexpected_storage_operation"); } });
+    await db.transaction(async tx => {
+      await expect(run(f, { db: tx as unknown as Db, storage: noStorage, apply: false }))
+        .resolves.toMatchObject({ applied: false, eligible: true, cohortId: cohort.id });
+    }, { accessMode: "read only" });
+    const other = createDb(database.connectionString, { maxConnections: 1 });
+    try {
+      await withWorkspaceSourceLocks(other, { companyId: f.companyId, projectIds: [f.projectId] }, async () => {
+        await expect(run(f, { storage: noStorage })).rejects.toThrow("workspace_source_busy");
+      }, true);
+      await other.transaction(async tx => {
+        expect(await tryLockNativeWorkspaceFinalization(tx as unknown as Db, { companyId: f.companyId, runId: held.runId })).toBe(true);
+        await expect(run(f, { storage: noStorage })).rejects.toThrow("remote_copyback_owned");
+      });
+    } finally { await other.$client.end({ timeout: 1 }); }
+    const inspect = onlineWorkspaceSource.inspectOnlineWorkspaceSource, cancelled = new AbortController(), calls = new Map<string, number>();
+    const probe = vi.spyOn(onlineWorkspaceSource, "inspectOnlineWorkspaceSource").mockImplementation(async (...args) => {
+      const result = await inspect(...args), count = (calls.get(args[1].id) ?? 0) + 1; calls.set(args[1].id, count);
+      if (count === 5) cancelled.abort(new Error("cancel_cohort_proof_refresh"));
+      return result;
+    });
+    await expect(run(f, { storage: noStorage, signal: cancelled.signal })).rejects.toThrow("cancel_cohort_proof_refresh");
+    probe.mockRestore();
+    const last = [...saved].sort((a, b) => a.executionWorkspaceId!.localeCompare(b.executionWorkspaceId!)).at(-1)!;
+    await db.execute(sql.raw(`create function cohort_reserve_fault() returns trigger language plpgsql as $$ begin if new.id='${last.id}'::uuid then raise exception 'cohort_proof_refresh_fault'; end if; return new; end $$`));
+    await db.execute(sql`create trigger cohort_reserve_fault before update on workspace_operations for each row execute function cohort_reserve_fault()`);
+    await expect(run(f, { storage: noStorage })).rejects.toThrow();
+    await db.execute(sql`drop trigger cohort_reserve_fault on workspace_operations`);
+    await db.execute(sql`drop function cohort_reserve_fault()`);
+    expect((await db.select().from(workspaceOperations)).filter(row => saved.some(old => old.id === row.id))).toEqual(saved);
+    await assertLocal(f);
+    await expect(run(f)).resolves.toMatchObject({ applied: true, cohortId: cohort.id });
+    const current = (await db.select().from(workspaceOperations)).filter(row => saved.some(old => old.id === row.id));
+    expect(current).toHaveLength(2);
+    for (const operation of current) {
+      const refreshed = operation.metadata!.cohortMigration as typeof cohort;
+      expect(refreshed).toMatchObject({ id: cohort.id, members: cohort.members });
+      expect(refreshed.sourceProof).not.toBe(cohort.sourceProof);
+      expect(operation.status).toBe("succeeded");
+    }
+    expect((await db.select().from(executionWorkspaceSnapshots)).filter(row => snapshots.some(old => old.id === row.id))).toHaveLength(snapshots.length);
+    await expect(run(f)).resolves.toMatchObject({ applied: true, replayed: true, cohortId: cohort.id });
+    for (const workspace of f.leaves) {
+      const [row] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+      const ref = (await getWorkspaceSnapshot(db, { companyId: f.companyId, workspaceId: row.id,
+        snapshotId: readRemoteWorkspaceAuthority(row.metadata)!.snapshotId! }))!;
+      const archivePath = path.join(home, `${workspace.name}-resumed.pcws`), targetDir = path.join(home, `${workspace.name}-resumed`);
+      await loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath: archivePath });
+      await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref.manifestDigest });
+      expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe(`${workspace.name} dirty tracked work\n`);
+      expect(await fs.readFile(path.join(targetDir, "untracked.txt"), "utf8")).toBe(`${workspace.name} untracked work\n`);
+    }
+  }, 60_000);
   it("resumes the exact membership after reservation stops halfway", async () => {
     const f = await fixture(), second = [...f.leaves].sort((a, b) => a.id.localeCompare(b.id))[1];
     await db.execute(sql.raw(`create function cohort_reserve_fault() returns trigger language plpgsql as $$ begin if new.execution_workspace_id='${second.id}'::uuid then raise exception 'cohort_reservation_fault'; end if; return new; end $$`));

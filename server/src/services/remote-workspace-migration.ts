@@ -741,6 +741,7 @@ export async function migrateRemoteWorkspaceCohort(input: {
   const sourceProof = createHash("sha256").update(canonical({ scope: scopeIdentity(members[0].onlineSource),
     members: initial.map(workspace => ({ workspaceId: workspace.id, fingerprint: fingerprint(workspace) })) })).digest("hex");
   const pending = [];
+  let unchangedMembers = true;
   for (const workspace of initial) {
     const marker = object(workspace.metadata?.remoteWorkspaceMigration);
     if (marker.schema !== SCHEMA || typeof marker.operationId !== "string") continue;
@@ -749,11 +750,14 @@ export async function migrateRemoteWorkspaceCohort(input: {
       eq(workspaceOperations.id, marker.operationId), eq(workspaceOperations.phase, "remote_workspace_migration")));
     if (!operation?.metadata?.cohortMigration) throw new Error("workspace_cohort_foreign_journal");
     if (operation.status !== "running" || operation.finishedAt !== null) throw new Error("workspace_cohort_journal_changed");
+    unchangedMembers &&= marker.sourceFingerprint === fingerprint(workspace)
+      && operation.metadata.sourceFingerprint === marker.sourceFingerprint;
     pending.push(cohortSchema.parse(operation.metadata.cohortMigration));
   }
-  const cohort: WorkspaceMigrationCohort = pending[0] ?? { schema: "paperclip.remote-workspace-cohort.v1", id: randomUUID(), companyId,
+  let cohort: WorkspaceMigrationCohort = pending[0] ?? { schema: "paperclip.remote-workspace-cohort.v1", id: randomUUID(), companyId,
     sourceProof, members: workspaceIds.map(workspaceId => ({ workspaceId, operationId: randomUUID() })) };
-  if (cohort.companyId !== companyId || cohort.sourceProof !== sourceProof
+  const refreshSourceProof = cohort.sourceProof !== sourceProof;
+  if (cohort.companyId !== companyId || refreshSourceProof && (pending.length !== workspaceIds.length || !unchangedMembers)
     || canonical(cohort.members.map(member => member.workspaceId)) !== canonical(workspaceIds)
     || new Set(cohort.members.map(member => member.operationId)).size !== workspaceIds.length
     || pending.some(marker => canonical(marker) !== canonical(cohort))) throw new Error("workspace_cohort_membership_changed");
@@ -785,6 +789,42 @@ export async function migrateRemoteWorkspaceCohort(input: {
       return reservation.value;
     });
     await lockMigrationRecovery(lock, plans, cohort);
+    if (refreshSourceProof) {
+      const refreshedCohort = { ...cohort, sourceProof };
+      const operations = await input.db.transaction(async tx => {
+        await lockMigrationParents(tx, companyId, null, plans.flatMap(plan => [plan.reserved.workspace.sourceIssueId!,
+          ...plan.reserved.legacyRecoverySources.map(source => source.issueId),
+          ...plan.onlineSource!.companions.flatMap(proof => proof.sources.map(source => source.issueId))]));
+        const locked = await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, companyId),
+          inArray(executionWorkspaces.id, workspaceIds))).orderBy(executionWorkspaces.id).for("update");
+        if (locked.length !== plans.length || plans.some(plan => {
+          const workspace = locked.find(row => row.id === plan.input.workspaceId)!;
+          return fingerprint(workspace) !== plan.reserved.sourceFingerprint
+            || canonical(workspace.metadata?.remoteWorkspaceMigration) !== canonical(plan.reserved.workspace.metadata?.remoteWorkspaceMigration);
+        })) throw new Error("workspace_cohort_source_changed");
+        await preflight(tx);
+        const updated = [];
+        for (const plan of plans) {
+          signal.throwIfAborted();
+          const operation = plan.reserved.operation!;
+          const [current] = await tx.update(workspaceOperations).set({ metadata: { ...operation.metadata,
+            cohortMigration: refreshedCohort }, updatedAt: new Date() }).where(and(
+            eq(workspaceOperations.companyId, companyId), eq(workspaceOperations.executionWorkspaceId, plan.input.workspaceId),
+            eq(workspaceOperations.id, operation.id), eq(workspaceOperations.phase, "remote_workspace_migration"),
+            eq(workspaceOperations.status, "running"), sql`${workspaceOperations.finishedAt} is null`,
+            sql`${workspaceOperations.issueId} is not distinct from ${operation.issueId}::uuid`,
+            sql`${workspaceOperations.cwd} is not distinct from ${operation.cwd}`,
+            eq(workspaceOperations.metadata, operation.metadata!))).returning();
+          if (!current) throw new Error("workspace_cohort_journal_changed");
+          updated.push(current);
+        }
+        await lock.execute(sql`select 1`);
+        signal.throwIfAborted();
+        return updated;
+      });
+      for (const [index, plan] of plans.entries()) plan.reserved.operation = operations[index];
+      cohort = refreshedCohort;
+    }
     const captures: Array<CapturedMigration | undefined> = Array(plans.length);
     const childVerifier = createMigrationChildVerifier(plans[0].input, plans[0].onlineSource, lock);
     let next = 0, failure: unknown;
