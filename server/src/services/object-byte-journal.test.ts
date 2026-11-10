@@ -257,6 +257,26 @@ describe("object byte journal", () => {
     expect(await journal.readRange(writer.head, 0, 100)).toEqual(Buffer.from("once"));
     expect(conflicts).toBe(2);
   });
+  it("waits for a just-written head to become readable instead of failing the claim as another writer's", async () => {
+    const s = storage(),
+      journal = createObjectByteJournal({ provider: s.provider, prefix: "c/r/log" });
+    let writer = await journal.claim({ assertAuthority: authority });
+    writer = await journal.append(writer, Buffer.from("kept"));
+    const original = s.provider.getObject;
+    let hidden = 3;
+    s.provider.getObject = async (input) => {
+      if (input.objectKey.endsWith("/head.json") && hidden > 0) {
+        hidden--;
+        throw Object.assign(new Error("not yet visible"), { name: "NoSuchKey", $metadata: { httpStatusCode: 404 } });
+      }
+      return original(input);
+    };
+    const next = await journal.claim({ assertAuthority: authority });
+    expect(next.head).toMatchObject({ generation: writer.head.generation + 1, end: 4 });
+    expect(next.head.owner).not.toBe(writer.head.owner);
+    expect(hidden).toBe(0);
+    expect(await journal.readRange(next.head, 0, 100)).toEqual(Buffer.from("kept"));
+  });
   it("does not accept a provider's 409 response as proof of conditional enforcement", async () => {
     const s = storage(),
       original = s.provider.putObjectConditional!;
