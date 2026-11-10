@@ -434,7 +434,7 @@ function createMuseBroker(db:Db, publicOrigin?:string) {
         const [current]=await tx.select().from(bindings).where(and(eq(bindings.id,b.id),eq(bindings.generation,b.generation),isNull(bindings.revokedAt))).for("update");if(!current)throw forbidden("Binding changed.");
         await assertMuseSubjectCredential(tx,s,s.credentialSource==="oauth"?connectionResource():undefined);
         await assertMuseCurrentAuthority(tx,current,true,true);
-        const disabled=!await identity.enabled();
+        const disabled=!await identity.enabled(tx);
         if(disabled)await assertMuseDisabledStopControlCredential(tx,s,s.credentialSource==="oauth"?connectionResource():undefined);
         const boundaries=tx.select({boundary:holds.stopBoundary}).from(holds).where(inArray(holds.id,museStopControlBoundaryIds(tx,current)));
         const rows=await tx.select().from(mailbox).where(and(eq(mailbox.bindingId,b.id),eq(mailbox.bindingGeneration,b.generation),gt(mailbox.id,q.after),

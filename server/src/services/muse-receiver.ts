@@ -96,7 +96,7 @@ function createReceiver(db:Db) {
       contacted = current;
       // Pausing suppresses ordinary work, while the worker still needs its
       // exact stop boundary to quiesce and report through authenticated control.
-      const disabled=!await museIdentity(db).enabled();
+      const disabled=!await museIdentity(db).enabled(tx);
       if(disabled&&!await hasMuseStopControlAccess(tx,current))return idle;
       const stopOnly = disabled || (agent.status === "paused" && !canConfigureAgentConnection(agent));
       const boundaries=tx.select({boundary:holds.stopBoundary}).from(holds).where(inArray(holds.id,museStopControlBoundaryIds(tx,current)));
