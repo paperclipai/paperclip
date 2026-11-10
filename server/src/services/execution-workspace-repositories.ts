@@ -98,7 +98,7 @@ export function resolveTaskRepository(request: PrepareWorkspaceRepository["repos
   const selected = request.kind === "catalog" ? available.find(repo => repo.id === request.id) : null;
   if (request.kind === "catalog" && !selected) throw forbidden("Repository access is no longer available; refresh the repository catalog");
   const source = normalizeProjectRepositoryUrl(selected?.url ?? (request.kind === "url" ? request.url : ""));
-  const match = selected ?? available.find(repo => normalizeProjectRepositoryUrl(repo.url).url.toLowerCase() === source.url.toLowerCase());
+  const match = selected ?? available.find(repo => (!repo.provider || repo.provider === "github") && normalizeProjectRepositoryUrl(repo.url).url.toLowerCase() === source.url.toLowerCase());
   return { repoUrl: source.url, repositoryIdentity: source.url.toLowerCase(), catalogRepositoryId: match?.id ?? null };
 }
 

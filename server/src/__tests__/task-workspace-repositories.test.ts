@@ -16,6 +16,13 @@ describe("task repository acquisition authority", () => {
       expect(() => resolveTaskRepository({ kind: "url", url }, [])).toThrow(/HTTPS GitHub/);
     }
   });
+  it("ignores other providers when matching a GitHub URL", () => {
+    const azure = { id: "azure-devops:contoso:repo", provider: "azure-devops" as const, fullName: "contoso/project/repo",
+      url: "https://dev.azure.com/contoso/project/_git/repo", connections: [] };
+    expect(resolveTaskRepository({ kind: "url", url: repository.url }, [azure, repository])).toMatchObject({ catalogRepositoryId: "123" });
+    expect(resolveTaskRepository({ kind: "url", url: "https://github.com/public/repo" }, [azure])).toMatchObject({ catalogRepositoryId: null });
+  });
+
   it("converges repository aliases into a stable contained path and rejects conflicting refs", () => {
     const source = resolveTaskRepository({ kind: "catalog", id: "123" }, [repository]);
     const alias = resolveTaskRepository({ kind: "url", url: "https://github.com/TEAM/SOURCE.git" }, [repository]);
