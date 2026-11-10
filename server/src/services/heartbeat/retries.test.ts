@@ -265,14 +265,25 @@ describe("heartbeat retry module callbacks", () => {
       ).toBeUndefined();
     });
 
-    it("returns retryNotBefore Date when present", () => {
-      const now = new Date("2026-11-06T14:30:00.000Z");
-      const structured = new Date("2026-11-06T15:00:00.000Z");
+    it.each(["retryNotBefore", "transientRetryNotBefore", "providerQuotaRetryNotBefore"])(
+      "returns %s plus a one-minute cushion when present", (field) => {
+        const now = new Date("2026-11-06T14:30:00.000Z");
+        const structured = new Date("2026-11-06T15:00:00.000Z");
+        const run = {
+          errorCode: "provider_quota",
+          resultJson: { errorFamily: "provider_quota", [field]: structured.toISOString() },
+        };
+        expect(extracted.readLimitResetRetryAt(run, now)).toEqual(new Date("2026-11-06T15:01:00.000Z"));
+      },
+    );
+
+    it("keeps the cushion when the reset passed less than a minute ago", () => {
+      const now = new Date("2026-11-06T15:00:30.000Z");
       const run = {
         errorCode: "provider_quota",
-        resultJson: { errorFamily: "provider_quota", retryNotBefore: structured.toISOString() },
+        resultJson: { errorFamily: "provider_quota", retryNotBefore: "2026-11-06T15:00:00.000Z" },
       };
-      expect(extracted.readLimitResetRetryAt(run, now)).toEqual(structured);
+      expect(extracted.readLimitResetRetryAt(run, now)).toEqual(new Date("2026-11-06T15:01:00.000Z"));
     });
 
     it("ensures retry date is in the future when retryNotBefore was in the past", () => {
@@ -724,7 +735,7 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect(await retries.retryScheduledRetryNow({ issueId: selected.issue.id, now })).toMatchObject({ outcome: "already_promoted" });
   });
 
-  it("schedules a single retry at reset time for a limit reset error", async () => {
+  it("schedules a single retry one minute after reset for a limit reset error", async () => {
     const { run, agent } = await fixture();
     const testNow = new Date("2026-10-08T14:00:00Z");
     const [failed] = await db.update(heartbeatRuns).set({
@@ -743,7 +754,7 @@ describePostgres("heartbeat retry module database wiring", () => {
       status: "scheduled_retry",
       scheduledRetryReason: "transient_failure",
       scheduledRetryAttempt: 1,
-      scheduledRetryAt: new Date("2026-10-08T15:00:00.000Z"),
+      scheduledRetryAt: new Date("2026-10-08T15:01:00.000Z"),
     });
   });
 
@@ -772,7 +783,7 @@ describePostgres("heartbeat retry module database wiring", () => {
       status: "scheduled_retry",
       scheduledRetryReason: "transient_failure",
       scheduledRetryAttempt: 2,
-      scheduledRetryAt: new Date("2026-10-08T15:00:00.000Z"),
+      scheduledRetryAt: new Date("2026-10-08T15:01:00.000Z"),
     });
     expect((successor?.contextSnapshot as Record<string, unknown> | null)?.providerQuotaRetryAttempt).toBe(1);
   });

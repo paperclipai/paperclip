@@ -319,7 +319,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } }).where(eq(heartbeatRuns.id, scheduled.run!.id));
     expect(await heartbeat.scheduleBoundedRetry(scheduled.run!.id, { now, random: () => 0 })).toMatchObject({ outcome: "retry_exhausted" });
   });
-  it("records pre-provider quota rejection, schedules the reset-time retry, and leaves the agent idle", async () => {
+  it("records pre-provider quota rejection, schedules retry one minute after reset, and leaves the agent idle", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
 
@@ -381,7 +381,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .then((rows) => rows[0] ?? null);
     expect(retryRun?.status).toBe("scheduled_retry");
     expect(retryRun?.scheduledRetryReason).toBe("transient_failure");
-    expect(retryRun?.scheduledRetryAt?.toISOString()).toBe("2030-04-22T21:00:00.000Z");
+    expect(retryRun?.scheduledRetryAt?.toISOString()).toBe("2030-04-22T21:01:00.000Z");
     expect((retryRun?.contextSnapshot as Record<string, unknown> | null)?.errorFamily).toBe("provider_quota");
     expect((retryRun?.contextSnapshot as Record<string, unknown> | null)?.providerQuotaRetryNotBefore).toBe(
       "2030-04-22T21:00:00.000Z",

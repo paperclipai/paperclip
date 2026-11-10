@@ -362,6 +362,8 @@ function isTemporaryCapacityFailure(run: {
   );
 }
 
+const PROVIDER_QUOTA_RESET_CUSHION_MS = 60_000;
+
 export function readLimitResetRetryAt(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson"> & {
     error?: string | null;
@@ -373,7 +375,9 @@ export function readLimitResetRetryAt(
 
   const retryNotBefore = transient.retryNotBefore;
   if (retryNotBefore) {
-    return new Date(Math.max(now.getTime() + 1_000, retryNotBefore.getTime()));
+    return new Date(
+      Math.max(now.getTime() + 1_000, retryNotBefore.getTime() + PROVIDER_QUOTA_RESET_CUSHION_MS),
+    );
   }
 
   if (isTemporaryCapacityFailure(run)) {
