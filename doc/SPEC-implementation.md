@@ -881,18 +881,6 @@ Agent-authenticated changes cannot set or restore host-executed process adapter
 configuration, including commands and environment values. Agent-authenticated
 rollbacks cannot restore host-executed workspace commands either.
 
-### Individual agent interaction restrictions
-
-The optional `agents.permissions.interactions` object holds independent incoming
-and outgoing controls for assignments, mentions, comments, task edits and peer
-configuration, plus a separate outgoing assignment-to-humans control. Absence
-adds no restriction; explicit false cannot be bypassed by grants or agent roles.
-Human permission managers alone write the subtree through the dedicated API/CLI.
-No migration, default write, grant backfill or UI is introduced. Mutation and
-pending-delivery authorization use current settings while preserving history and
-running work. See [the interaction permission contract](agent-interaction-permissions.md)
-for the settings, ownership rules, atomic updates and compatibility boundaries.
-
 ### 9.3.1 Shared default-open issue writes
 
 For standard-trust agents, issue comments, issue field/status updates, child
