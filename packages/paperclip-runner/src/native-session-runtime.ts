@@ -430,7 +430,8 @@ function isTurnTerminal(event: PrpEvent): boolean {
  * terminal does only when Runnerd reports the turn lost on restore: it emits
  * that cause after proving the old provider lifetime ended and restoring the
  * conversation (ACPX reports a restart-killed turn this way; Codex reports it
- * interrupted).
+ * interrupted). That event carries `providerTerminalObserved: false`, because
+ * the provider itself sent no terminal; the restart proof stands in for it.
  */
 function governedWaitTerminalProven(event: PrpEvent): boolean {
   if (event.eventType === "turn.failed") return isNativeRestartInterruption(event.payload.error);

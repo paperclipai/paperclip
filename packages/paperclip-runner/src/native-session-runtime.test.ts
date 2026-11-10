@@ -9633,7 +9633,7 @@ describe("executeNativeSession recovery", () => {
     const discardedToolEnd = turn(runnerEvent(4, "tool.execution.completed", { name: "request_human_input", status: "completed" }));
     const usage = turn(runnerEvent(5, "item.completed", { kind: "usage", usage: { runDelta: { inputTokens: 7, outputTokens: 3 }, runDeltaComplete: true } }));
     const stopped = lostOnRestore
-      ? turn(runnerEvent(6, "turn.failed", { status: "failed", error: { code: "provider_turn_lost_on_restore", recoverable: true } }))
+      ? turn(runnerEvent(6, "turn.failed", { provider: "acpx", status: "failed", providerTerminalObserved: false, code: "provider_turn_lost_on_restore", error: { code: "provider_turn_lost_on_restore", recoverable: true } }))
       : turn(runnerEvent(6, "turn.interrupted", { providerTerminalObserved: true }));
     const history: PrpEvent[] = [];
     let checkpoint: PersistedNativeSession | undefined;
