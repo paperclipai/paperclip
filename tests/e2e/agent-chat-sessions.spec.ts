@@ -390,13 +390,21 @@ test("secondary chat navigation preserves layout, separate conversations, histor
     await sidebar.locator(`a[href$="/${beta.id}"]`).click();
     await expect(page).toHaveURL(new RegExp(`${beta.id}$`));
     await expect(betaDraftEditor).toContainText("First Beta conversation draft");
-    await betaDraftEditor.fill("");
+    await betaDraftEditor.click();
+    await betaDraftEditor.press("ControlOrMeta+A");
+    await expect.poll(() => betaDraftEditor.evaluate(() => window.getSelection()?.toString())).toBe("First Beta conversation draft");
+    await betaDraftEditor.press("Backspace");
+    await expect(betaDraftEditor).toHaveText("");
     await sidebar.locator(`a[href$="/${secondBeta.id}"]`).click();
     await expect(page).toHaveURL(new RegExp(`${secondBeta.id}$`));
     await expect(betaDraftEditor).toContainText("Second Beta conversation draft");
     await page.reload();
     await expect(betaDraftEditor).toContainText("Second Beta conversation draft");
-    await betaDraftEditor.fill("");
+    await betaDraftEditor.click();
+    await betaDraftEditor.press("ControlOrMeta+A");
+    await expect.poll(() => betaDraftEditor.evaluate(() => window.getSelection()?.toString())).toBe("Second Beta conversation draft");
+    await betaDraftEditor.press("Backspace");
+    await expect(betaDraftEditor).toHaveText("");
 
     await compose.click();
     await picker.getByRole("combobox").fill("Alpha");
