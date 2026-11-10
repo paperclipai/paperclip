@@ -9773,6 +9773,8 @@ async function executePaperclipNativeSessionAttempt(
           startedAtMs: environmentStartedAtMs,
         })
       : null;
+  // The spans are recorded now; their run-log rows are written in the
+  // background so the provider start does not wait for one insert per span.
   await timeController("span_persistence", async () => {
     for (const span of preparationSpans) {
       const rootMilestone = isNativeRunRootHistoricalSpan(span.name);
@@ -9783,10 +9785,10 @@ async function executePaperclipNativeSessionAttempt(
           : environmentSpans.includes(span)
             ? "environment.startup"
             : "task.prepare",
-      });
+      }, { deferRunLog: true });
     }
     if (environmentScope) {
-      await trace.end(environmentScope, { endedAtMs: environmentEndedAtMs });
+      await trace.end(environmentScope, { endedAtMs: environmentEndedAtMs, deferRunLog: true });
     }
   });
   let retainedTransition: VerifiedWarmTransitionBinding | undefined;
