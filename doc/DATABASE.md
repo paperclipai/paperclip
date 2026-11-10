@@ -439,6 +439,22 @@ To compare both plans on a disposable local fixture:
 pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-workspace-activity.ts --baseline-ref=<pre-fix commit> --runs-per-workspace=3000
 ```
 
+The task page's created-from list (`createdFromIssueCondition` in
+`server/src/services/issue-creation-origin.ts`) reads created tasks through
+three index probes: the recorded origin task (`issues_company_origin_issue_idx`),
+the source task's runs (`heartbeat_runs_company_origin_issue_idx`) and then the
+tasks whose only origin is one of those runs, and the creation activity of those
+runs (`activity_log_run_id_idx`). Migration 0461 builds the partial index
+`issues_company_legacy_origin_run_idx` concurrently for the run step. It keys
+tasks by company and `origin_run_id`, only where `origin_issue_id` is null and
+`origin_run_id` is not null. The run branch must repeat that predicate textually.
+A recorded origin task still wins over a run, and a run over activity. To compare
+both plans on a disposable local fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-created-from-issues.ts --baseline-ref=<pre-fix commit>
+```
+
 GitHub review lookups use four indexes from migration 0456, which builds them
 concurrently. `chat_message_links_company_comment_idx` finds a source comment's
 link for inherited review waits and run-origin checks.
