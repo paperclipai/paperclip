@@ -2359,7 +2359,7 @@ export async function executeNativeSession(
             if (entry.sourceSeq !== afterSourceSeq + 1) gapObserved = true;
             if (entry.runId !== identity.runId || entry.normalizedSessionId !== identity.sessionId
               || entry.sourceInstanceId !== event.sourceInstanceId || !Number.isSafeInteger(entry.sourceSeq)
-              || entry.sourceSeq <= afterSourceSeq || (gapObserved && (governedReplay.length === 0
+              || entry.sourceSeq <= afterSourceSeq || (gapObserved && (governedReplay.length === 0 || !event.turnId
                 || !isGovernedDrainRetainedEvent(entry, event.turnId)))
               || governedReplay.length >= 10_000) throw new Error("native_governed_wait_replay_mismatch");
             governedReplay.push(entry);

@@ -9685,7 +9685,8 @@ describe("executeNativeSession recovery", () => {
 
     // A further recovery of the settled wait neither submits nor settles again.
     const settledCheckpoint = structuredClone(checkpoint);
-    await executeNativeSession({ ...options, persistedSession: settledCheckpoint }).catch(() => undefined);
+    await expect(executeNativeSession({ ...options, persistedSession: settledCheckpoint }))
+      .resolves.toMatchObject({ result: yieldedResult, turnId: trigger.turnId, terminal: { runTerminalState: "succeeded" } });
     expect(start).toHaveBeenCalledOnce();
     expect(cancel).toHaveBeenCalledTimes(lateTerminalSaved ? 0 : 1);
     expect(history.filter(event => event.sourceInstanceId === trigger.sourceInstanceId)).toEqual([trigger, acknowledgement, usage, stopped]);
