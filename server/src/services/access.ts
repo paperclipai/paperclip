@@ -1223,6 +1223,7 @@ export function accessService(db: Db) {
   return {
     isInstanceAdmin,
     decide,
+    decideProjectForIssueCreate: authorization.decideProjectForIssueCreate,
     decideReads: authorization.decideReads,
     projectDiscoveryCandidateIds: authorization.projectDiscoveryCandidateIds,
     canUser,
