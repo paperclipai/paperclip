@@ -43,7 +43,13 @@ try {
   const malformedReadyControls = [];
   let baselineExceedsWorkBudget = false;
   const budgetFailures: string[] = [];
-  for (const fixture of [{ name: "small", history: 20, payloadBytes: 0 }, { name: "retained-history", history: 1500, payloadBytes: 32 * 1024 }].filter(value => !process.argv.includes("--retained-only") || value.name === "retained-history")) {
+  // `--endpoint-history=<rows>` adds one endpoint with a long processed history
+  // and 4 KiB payloads, like a busy hosted bot. `--only=<name>` selects one fixture.
+  const endpointHistory = Number(process.argv.find(arg => arg.startsWith("--endpoint-history="))?.slice(19) ?? 0);
+  const only = process.argv.find(arg => arg.startsWith("--only="))?.slice(7) ?? (process.argv.includes("--retained-only") ? "retained-history" : undefined);
+  const fixtures = [{ name: "small", history: 20, payloadBytes: 0 }, { name: "retained-history", history: 1500, payloadBytes: 32 * 1024 },
+    ...(endpointHistory > 0 ? [{ name: "endpoint-history", history: endpointHistory, payloadBytes: 4096 }] : [])];
+  for (const fixture of fixtures.filter(value => !only || value.name === only)) {
     const f = await seedInboundDiscovery(db, fixture.history, fixture.payloadBytes);
     await db.$client.unsafe("begin");
     if (process.argv.includes("--jit-off")) await db.$client.unsafe("set local jit = off");
@@ -89,9 +95,21 @@ try {
             if (kind !== "ready" && newPlan.JIT) budgetFailures.push(`${kind}: unnecessary JIT on the retained-history fixture`);
             if (kind === "deadline" && newBuffers > 1000) budgetFailures.push(`${kind}: ${newBuffers} shared buffer accesses exceeds fixture budget 1000`);
           }
+          // The conversation head must start from open work. It must not visit
+          // the endpoint's processed delivery history to find the few open rows.
+          const deliveryRowsVisited = {} as Record<"before" | "after", number>;
+          for (const arm of ["before", "after"] as const) {
+            deliveryRowsVisited[arm] = nodes((plans[arm] as { Plan: Record<string, unknown> }[])[0]!.Plan)
+              .filter(node => node["Relation Name"] === "chat_deliveries")
+              .reduce((sum, node) => sum + (Number(node["Actual Rows"] ?? 0) + Number(node["Rows Removed by Filter"] ?? 0)) * Number(node["Actual Loops"] ?? 1), 0);
+          }
+          if (kind === "head" && fixture.name !== "small") {
+            baselineExceedsWorkBudget ||= deliveryRowsVisited.before > 100;
+            if (deliveryRowsVisited.after > 100) budgetFailures.push(`head: visits ${deliveryRowsVisited.after} delivery rows on the ${fixture.name} fixture; budget 100`);
+          }
           const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
-          results.push({ fixture, kind, equalPositionalRows: expected.length, before, after, samples, beforeMedianMs: median(samples.before), afterMedianMs: median(samples.after), actionLoops, plans });
-          process.stderr.write(`${fixture.name}/${kind}: ${median(samples.before).toFixed(2)} -> ${median(samples.after).toFixed(2)} ms; action scans ${actionLoops.before} -> ${actionLoops.after}\n`);
+          results.push({ fixture, kind, equalPositionalRows: expected.length, before, after, samples, beforeMedianMs: median(samples.before), afterMedianMs: median(samples.after), actionLoops, deliveryRowsVisited, plans });
+          process.stderr.write(`${fixture.name}/${kind}: ${median(samples.before).toFixed(2)} -> ${median(samples.after).toFixed(2)} ms; action scans ${actionLoops.before} -> ${actionLoops.after}; delivery rows visited ${deliveryRowsVisited.before} -> ${deliveryRowsVisited.after}\n`);
         }
       } finally { connection.release(); }
       if (fixture.name === "small") {
