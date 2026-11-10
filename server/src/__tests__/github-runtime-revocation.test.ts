@@ -144,7 +144,13 @@ describe("GitHub runtime project authorization", () => {
     const issueToken = (azureProjectRepositories: unknown[]) => createRuntimeToolsToken({ companyId: "company", agentId: "agent", runId: "run", responsibleUserId: "user",
       scope: "git_credentials", azureProjectRepositories: azureProjectRepositories as Array<{ projectId: string; repositoryUrl: string }> })!.token;
 
-    expect(verifyRuntimeToolsToken(issueToken(Array.from({ length: 101 }, (_, index) => ({ projectId: String(index), repositoryUrl: "https://dev.azure.com/org/project/_git/repo" }))), "git_credentials")).toBeNull();
+    const many = Array.from({ length: 101 }, (_, index) => ({ projectId: String(index), repositoryUrl: `https://dev.azure.com/org/project/_git/repo-${index}` }));
+    const largeToken = issueToken(many);
+    expect(largeToken.length).toBeLessThan(12_000);
+    expect(verifyRuntimeToolsToken(largeToken, "git_credentials")?.azure_project_repositories).toEqual(many);
+    const parts = largeToken.split(".");
+    expect(verifyRuntimeToolsToken(`${parts[0]}.${parts[1]}.${parts[2]}x`, "git_credentials")).toBeNull();
+    expect(() => issueToken(Array.from({ length: 1001 }, (_, index) => ({ projectId: String(index), repositoryUrl: "https://dev.azure.com/org/project/_git/repo" })))).toThrow(/too many/i);
     expect(verifyRuntimeToolsToken(issueToken([{ projectId: "project", repositoryUrl: "x".repeat(2049) }]), "git_credentials")).toBeNull();
     expect(verifyRuntimeToolsToken(issueToken([{ projectId: 42, repositoryUrl: "https://dev.azure.com/org/project/_git/repo" }]), "git_credentials")).toBeNull();
   });

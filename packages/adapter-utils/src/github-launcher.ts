@@ -72,8 +72,19 @@ function azureRemote(args, env) {
   const explicit = remaining.map(arg => arg.startsWith('--') && arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : arg).find(isAzure);
   if (explicit) return explicit;
   const remoteIndex = remaining.indexOf('--remote');
+  const optionValues = new Set(['--depth', '--deepen', '--shallow-since', '--shallow-exclude', '--jobs', '-j',
+    '--upload-pack', '--receive-pack', '--exec', '--server-option', '-o', '--filter', '--negotiation-tip',
+    '--refmap', '--push-option', '--bundle-uri', '--reference', '--reference-if-able']);
+  let positional;
+  for (let i = 0; i < remaining.length; i++) {
+    const value = remaining[i];
+    if (value === '--') { positional = remaining[i + 1]; break; }
+    if (optionValues.has(value)) { i++; continue; }
+    if (value.startsWith('-')) continue;
+    positional = value; break;
+  }
   const destination = remaining.find(arg => arg.startsWith('--remote='))?.slice('--remote='.length) ||
-    (remoteIndex >= 0 ? remaining[remoteIndex + 1] : undefined) || remaining.find(arg => !arg.startsWith('-'));
+    (remoteIndex >= 0 ? remaining[remoteIndex + 1] : undefined) || positional;
   const explicitOther = destination && /^(?:[a-z][a-z0-9+.-]*:\/\/|[^@/\s]+@[^/:\s]+:|\/|\.\.?\/|[^\s-][^\s]*\/)/i.test(destination) ? destination : null;
   if (explicitOther) {
     if (command === 'push') {
@@ -100,7 +111,7 @@ function azureRemote(args, env) {
   // the configured URL without running a shell or consulting credential helpers.
   const remoteOption = remaining.indexOf('--remote');
   const namedRemote = remaining.find(arg => arg.startsWith('--remote='))?.slice('--remote='.length) || (remoteOption >= 0 ? remaining[remoteOption + 1] : undefined);
-  let remote = namedRemote || remaining.find(arg => !arg.startsWith('-') && /^[A-Za-z0-9_.-]+$/.test(arg));
+  let remote = namedRemote || (destination && /^[A-Za-z0-9_.-]+$/.test(destination) ? destination : undefined);
   if (!remote && ['fetch', 'pull', 'push'].includes(command)) {
     const readGit = extra => {
       const result = spawnSync(executable, [...globalOptions, ...extra], { env, encoding: 'utf8', timeout: 5000, maxBuffer: 4096, windowsHide: true });
