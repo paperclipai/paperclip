@@ -10,7 +10,6 @@ import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
-import { isAbandonedPreparedRemoteWorkspace } from "./remote-workspace-abandoned-preparation.js";
 import { readFailedPreparationSettlement } from "./failed-preparation-settlement.js";
 import { hasVerifiedPreparationLog } from "./verified-preparation-log.js";
 import { executionStartedEventPredicate, isPreDispatchResourceWait, noRetainedExecutionPredicate } from "./pre-dispatch-execution-evidence.js";
@@ -152,11 +151,7 @@ export async function isInterruptedNativePreparation(db: Db, run: Run): Promise<
     || lease.metadata?.pendingCleanupInFlight === true
     || lease.provider !== "local" && !hasRemoteTerminationReceipt(lease))) return false;
   if (hasRequiredWorkspaceRecovery(run.resultJson) || run.runnerProfileJson?.remoteWorkspace != null
-    || run.runnerProfileJson?.nativeWorkspaceSync != null) {
-    if (await hasVerifiedWorkspaceRepair(db, run)) return true;
-    return !hasRequiredWorkspaceRecovery(run.resultJson) && run.resultJson?.workspaceRestoreFailure == null
-      && await isAbandonedPreparedRemoteWorkspace(db, run);
-  }
+    || run.runnerProfileJson?.nativeWorkspaceSync != null) return hasVerifiedWorkspaceRepair(db, run);
   return run.resultJson?.workspaceRestoreFailure == null;
 }
 
