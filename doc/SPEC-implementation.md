@@ -2755,7 +2755,7 @@ operation privacy metadata protect app-record disclosure; they do not grant or d
 filesystem execution or task-bound file browsing. Current trust and sandbox policy,
 publication receipts, binding checks, and lifecycle locks remain authoritative.
 
-A task's organizational project and filesystem workspace are independent. New tasks that need a filesystem and have no selected/configured workspace get a company/task directory, not the agent home. Plain tasks need neither Git nor a project. Existing bindings and admitted roots remain authoritative; changing project does not move files. Explicit workspace selections apply at a subsequent normal admission after prior execution and persistence obligations settle.
+A task's organizational project and filesystem workspace are independent. New tasks that need a filesystem and have no selected/configured workspace get a company/task directory, not the agent home. Plain tasks need neither Git nor a project. Existing bindings and admitted roots remain authoritative; changing project does not move files. When an unbound task has server-recorded project-default workspace settings and no selection, a project move adopts the new project's default source and settings. An explicit mode remains unchanged even when it equals the old project's default. Older settings without recorded provenance remain unchanged on a project move; an operator can select the destination workspace explicitly. Explicit workspace selections apply at a subsequent normal admission after prior execution and persistence obligations settle.
 
 The remote default also uses a task-owned empty source for an authorized project
 with no configured workspaces or explicit workspace policy. Its derived managed

@@ -10528,6 +10528,12 @@ export function issueService(db: Db) {
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as
             Record<string, unknown> | null | undefined) ?? null;
+        // Provenance is server-owned; a caller supplying settings makes an
+        // explicit choice, even when its mode equals the project default.
+        if (executionWorkspaceSettings) {
+          executionWorkspaceSettings = { ...executionWorkspaceSettings };
+          delete executionWorkspaceSettings.projectDefault;
+        }
         let inheritedWorkspaceSelection = false;
         const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
           ? null
@@ -10676,13 +10682,15 @@ export function issueService(db: Db) {
           executionWorkspaceId == null &&
           issueData.projectId
         ) {
-          executionWorkspaceSettings =
-            defaultIssueExecutionWorkspaceSettingsForProject(
-              gateProjectExecutionWorkspacePolicy(
-                await loadProjectPolicyOnce(),
-                isolatedWorkspacesEnabled,
-              ),
-            ) as Record<string, unknown> | null;
+          const projectDefault = defaultIssueExecutionWorkspaceSettingsForProject(
+            gateProjectExecutionWorkspacePolicy(
+              await loadProjectPolicyOnce(),
+              isolatedWorkspacesEnabled,
+            ),
+          );
+          executionWorkspaceSettings = projectDefault
+            ? { ...projectDefault, projectDefault: true }
+            : null;
         }
         if (!executionWorkspaceId && !projectWorkspaceId && issueData.projectId && workspaceIntent?.selection.kind !== "task_directory") {
           const project = await tx
@@ -11160,8 +11168,9 @@ export function issueService(db: Db) {
             if (!projectWorkspaceId)
               projectWorkspaceId = derived.defaultProjectWorkspaceId;
             if (executionWorkspaceSettings == null) {
-              executionWorkspaceSettings =
-                derived.defaultExecutionWorkspaceSettings;
+              executionWorkspaceSettings = derived.defaultExecutionWorkspaceSettings
+                ? { ...derived.defaultExecutionWorkspaceSettings, projectDefault: true }
+                : null;
             }
           }
           if (projectWorkspaceId) {
@@ -11810,8 +11819,34 @@ export function issueService(db: Db) {
           }
           Object.assign(patch, transition.patch);
         }
-        if (issueData.executionWorkspaceId !== undefined || issueData.projectWorkspaceId !== undefined ||
-            issueData.executionWorkspacePreference !== undefined || issueData.executionWorkspaceSettings !== undefined) {
+        // A project move may give an unbound task its first configured source.
+        // Keep existing workspace bindings and explicit selections intact: the
+        // organizational project does not relocate files already in use.
+        if (isolatedWorkspacesEnabled && issueData.projectId &&
+            issueData.projectId !== receiptExisting.projectId &&
+            !receiptExisting.projectWorkspaceId && !receiptExisting.executionWorkspaceId &&
+            !receiptExisting.workspaceSelection && !receiptExisting.workspacePendingSelection &&
+            issueData.projectWorkspaceId === undefined && issueData.executionWorkspaceId === undefined &&
+            issueData.executionWorkspacePreference === undefined && issueData.executionWorkspaceSettings === undefined) {
+          // The saved mode alone cannot distinguish an explicit choice from an
+          // inherited default. Legacy rows without provenance stay untouched.
+          if (receiptExisting.executionWorkspaceSettings?.projectDefault === true) {
+            const [newProject] = await tx.select({ executionWorkspacePolicy: projects.executionWorkspacePolicy }).from(projects)
+              .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, receiptExisting.companyId)));
+            const newPolicy = parseProjectExecutionWorkspacePolicy(newProject?.executionWorkspacePolicy);
+            patch.projectWorkspaceId = await resolveProjectDefaultWorkspaceId(tx, {
+              companyId: receiptExisting.companyId, projectId: issueData.projectId, policy: newPolicy,
+            });
+            const nextDefault = defaultIssueExecutionWorkspaceSettingsForProject(
+              gateProjectExecutionWorkspacePolicy(newPolicy, isolatedWorkspacesEnabled),
+            );
+            patch.executionWorkspaceSettings = nextDefault
+              ? { ...nextDefault, projectDefault: true }
+              : null;
+          }
+        }
+        if (patch.executionWorkspaceId !== undefined || patch.projectWorkspaceId !== undefined ||
+            patch.executionWorkspacePreference !== undefined || patch.executionWorkspaceSettings !== undefined) {
           Object.assign(patch, await executionWorkspaceService(db).prepareTaskWorkspaceUpdate({
             companyId: receiptExisting.companyId, issueId: receiptExisting.id, patch,
           }, tx));

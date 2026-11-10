@@ -270,6 +270,8 @@ function isAllowedTaskEgressCidr(cidr: string): boolean {
 export const issueExecutionWorkspaceSettingsSchema = z
   .object({
     mode: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional(),
+    /** Persisted provenance for a mode supplied by the project's default. */
+    projectDefault: z.literal(true).optional(),
     sharedWorkspaceConcurrency: z
       .enum(["auto", "serialize", "allow"])
       .optional(),
