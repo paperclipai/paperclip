@@ -150,6 +150,14 @@ describe("Retry after native finalization runs out of retries", () => {
       sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
       sql`${agentWakeupRequests.status} <> 'coalesced' or ${agentWakeupRequests.payload}#>>'{taskRetry,strategy}' <> 'finalize_result'`));
     await expect(providerRetries()).resolves.toHaveLength(0);
+    // A finalizer holds the coordinator (and would take the task next). A
+    // click must join without waiting on it, or the two could deadlock.
+    await db.transaction(async finalizer => {
+      await finalizer.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)).for("update");
+      const joined = await Promise.race([retry(issueId, runId, "refinalize-locked"),
+        new Promise(resolve => setTimeout(() => resolve("blocked on the coordinator lock"), 5_000))]);
+      expect(joined).toMatchObject({ accepted: true, requestId: receipt.requestId });
+    });
     // The Retry visibly took effect while the saved result is applied.
     await expect(presentation(issueId)).resolves.toMatchObject({ state: "working", canRetry: false,
       recoveryStep: "finishing_recovery" });

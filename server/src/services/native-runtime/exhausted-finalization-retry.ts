@@ -68,17 +68,34 @@ export async function rearmExhaustedNativeFinalization(tx: Db, input: {
     eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
     eq(heartbeatRuns.nativeIssueId, input.issueId), exhaustedNativeFinalizationCondition(),
   )).limit(1);
-  const [coordinator] = await tx.select().from(nativeRunFinalizations).where(and(
-    eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, input.runId),
-    eq(nativeRunFinalizations.issueId, input.issueId),
-  )).for("update");
+  // The caller holds the task row. The finalizer locks coordinator then task,
+  // so never wait for a coordinator that may be finalizing: read it unlocked,
+  // and lock it only when it rests terminal, where no finalizer holds it.
+  const readCoordinator = (lock: boolean) => {
+    const query = tx.select().from(nativeRunFinalizations).where(and(
+      eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, input.runId),
+      eq(nativeRunFinalizations.issueId, input.issueId)));
+    return (lock ? query.for("update") : query).then(rows => rows[0]);
+  };
+  const classify = (row: typeof nativeRunFinalizations.$inferSelect) => {
+    // Joining is read-only. If the earlier Retry goes terminal meanwhile, this
+    // click still starts no provider work and the task offers Retry again.
+    const earlier = row.phase === "terminal_failure" ? undefined
+      : row.recoveryHistory.findLast(entry => entry.kind === EXHAUSTED_FINALIZATION_RETRY_KIND);
+    return earlier ? { kind: "joined" as const, finalizing: row.phase !== "committed",
+      generationId: typeof earlier.generationId === "string" ? earlier.generationId : null } : { kind: "not_eligible" as const };
+  };
+  const exhausted = (row: typeof nativeRunFinalizations.$inferSelect) => row.phase === "terminal_failure"
+    && row.failureCode === EXHAUSTED_FINALIZATION_FAILURE_CODE && !row.leaseOwner;
+  const observed = await readCoordinator(false);
+  if (!observed?.resultId) return { kind: "not_eligible" };
+  if (!eligible || !exhausted(observed)) return classify(observed);
+  const coordinator = await readCoordinator(true);
   if (!coordinator?.resultId) return { kind: "not_eligible" };
-  if (!eligible || coordinator.phase !== "terminal_failure"
-      || coordinator.failureCode !== EXHAUSTED_FINALIZATION_FAILURE_CODE || coordinator.leaseOwner) {
-    const earlier = coordinator.phase === "terminal_failure" ? undefined
-      : coordinator.recoveryHistory.findLast(entry => entry.kind === EXHAUSTED_FINALIZATION_RETRY_KIND);
-    return earlier ? { kind: "joined", finalizing: coordinator.phase !== "committed",
-      generationId: typeof earlier.generationId === "string" ? earlier.generationId : null } : { kind: "not_eligible" };
+  if (!exhausted(coordinator)) {
+    const changed = classify(coordinator);
+    // Changed under us: fail closed rather than fall back to a provider Retry.
+    return changed.kind === "joined" ? changed : { kind: "joined", finalizing: true, generationId: null };
   }
   const now = new Date();
   const nextAttemptAt = new Date(now.getTime() + REFINALIZATION_FALLBACK_DELAY_MS);
