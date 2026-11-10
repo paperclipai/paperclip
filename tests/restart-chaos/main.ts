@@ -593,7 +593,11 @@ async function main(): Promise<number> {
         rules: Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.verdict])), T: grade.T.verdict,
         universal: Object.fromEntries(Object.entries(grade.universal ?? {}).map(([id, rule]) => [id, `${rule.verdict}${rule.enforced ? "" : " (warning)"}`])) });
     }
-    await storageAuditor?.checkSnapshots(evidenceDb, lab.companyId);
+    if (storageAuditor) {
+      storageChaos?.stop();
+      await credentialRotation?.settled();
+      await storageAuditor.checkSnapshots(evidenceDb, lab.companyId);
+    }
     await evidenceDb.$client.end({ timeout: 5 }).catch(() => undefined);
     await writeFile(path.join(waveDir, "faults.json"), `${JSON.stringify(faults, null, 2)}\n`, { mode: 0o600 });
     const speed = await (async () => {
