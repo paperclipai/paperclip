@@ -2,6 +2,7 @@ import { lstat, mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { parseObject } from "../adapters/utils.js";
+import { readIsolatedTaskPath, resolveIsolatedTaskDirectory } from "./isolated-task-paths.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 /** A repository-free sandbox task needs isolation, but has no Git base. */
@@ -31,28 +32,25 @@ export async function materializeIsolatedTaskDirectory(input: {
   reuseCwd?: string;
 }): Promise<string> {
   // Files belong to the task, so reassignment preserves the same workspace.
-  let identities = [input.companyId, input.issueId, ...(input.attemptId ? [input.attemptId] : [])];
+  const identities = [input.companyId, input.issueId, ...(input.attemptId ? [input.attemptId] : [])];
   if (identities.some((value) => !/^[a-zA-Z0-9_-]+$/.test(value))) {
     throw new Error("Invalid isolated task workspace identity");
   }
   const root = resolvePaperclipInstanceRoot();
   if (!input.reuseCwd) await mkdir(root, { recursive: true });
   let cwd = await realpath(root);
-  let namespace = input.attemptId ? "isolated-workspace-attempts" : "isolated-workspaces";
+  let segments: string[];
   if (input.reuseCwd) {
-    const segments = path.relative(cwd, input.reuseCwd).split(path.sep);
-    if (input.attemptId || path.resolve(input.reuseCwd) !== input.reuseCwd ||
-        segments[1] !== input.companyId || segments[2] !== input.issueId ||
-        !((segments[0] === "isolated-workspaces" && segments.length === 3) ||
-          (segments[0] === "isolated-workspace-attempts" && segments.length === 4 && /^[a-zA-Z0-9_-]+$/.test(segments[3])))) {
+    const identity = readIsolatedTaskPath(cwd, input.reuseCwd);
+    if (input.attemptId || path.resolve(input.reuseCwd) !== input.reuseCwd || !identity || identity.rest.length !== 0 ||
+        identity.companyId !== input.companyId || identity.issueId !== input.issueId) {
       throw new Error("Isolated task workspace path is not this task's directory");
     }
-    namespace = segments[0];
-    identities = segments.slice(1);
-  }
+    segments = path.relative(cwd, input.reuseCwd).split(path.sep);
+  } else segments = path.relative(cwd, await resolveIsolatedTaskDirectory(cwd, input)).split(path.sep);
   // A retry is a sibling namespace, never a descendant of the retained root.
   // An old copyback operation must not be able to overwrite its replacement.
-  for (const segment of [namespace, ...identities]) {
+  for (const segment of segments) {
     cwd = path.join(cwd, segment);
     if (!input.reuseCwd) await mkdir(cwd, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== "EEXIST") throw error;

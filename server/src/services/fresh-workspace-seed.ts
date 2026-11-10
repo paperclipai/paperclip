@@ -7,6 +7,8 @@ import { environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryAct
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import { isTaskOwnedLocalWorkspace, readableOwnGitRoot, recoveryGenerationSettled, sourceNeedsWorkspaceRepair,
   workspaceHasOtherWriter } from "./fresh-workspace-continuation.js";
+import { isolatedSeedDirectory } from "./isolated-task-paths.js";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { materializeIsolatedTaskDirectory } from "./isolated-task-directory.js";
 import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
 
@@ -92,7 +94,7 @@ export async function materializeFreshWorkspaceSeed(input: {
   const root = await materializeIsolatedTaskDirectory({
     companyId: input.companyId, issueId: input.issueId, attemptId: input.runId,
   });
-  const destination = path.join(root, "workspace");
+  const destination = isolatedSeedDirectory(await realpath(resolvePaperclipInstanceRoot()), root);
   const receiptPath = path.join(root, "seed.json");
   const existing = await lstat(destination).catch((error: NodeJS.ErrnoException) => {
     if (error.code !== "ENOENT") throw error;
@@ -125,7 +127,7 @@ export async function materializeFreshWorkspaceSeed(input: {
       const resolved = await execFile("git", ["-C", input.sourceCwd, "rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], gitOptions);
       commit = resolved.stdout.trim();
       if (!/^[a-f0-9]{40,64}$/.test(commit)) throw new Error("Invalid fresh workspace seed commit");
-      await execFile("git", ["clone", "--no-local", "--no-checkout", "--", input.sourceCwd, staging], gitOptions);
+      await execFile("git", [...(process.platform === "win32" ? ["-c", "core.longpaths=true"] : []), "clone", "--no-local", "--no-checkout", ...(process.platform === "win32" ? ["--config", "core.longpaths=true"] : []), "--", input.sourceCwd, staging], gitOptions);
       await execFile("git", ["-C", staging, "-c", "core.hooksPath=/dev/null", "checkout", "--detach", commit], gitOptions);
       // The old local directory is not a publication target for this attempt.
       await execFile("git", ["-C", staging, "remote", "remove", "origin"], gitOptions);

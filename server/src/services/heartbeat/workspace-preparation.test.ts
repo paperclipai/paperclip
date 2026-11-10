@@ -1,3 +1,5 @@
+import { readIsolatedTaskPath } from "../isolated-task-paths.js";
+import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, access, rename, symlink } from "node:fs/promises";
@@ -1213,8 +1215,9 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     input.task.freshWorkspace = { mode: "fresh_isolated_workspace", retryIntentId: input.run.id,
       sourceRunId: input.run.id, retainedSourceIds: [] };
     const prepared = await prepareHeartbeatWorkspace(db, input);
-    expect(prepared.executionWorkspace.cwd).toContain("/isolated-workspace-attempts/");
-    expect(prepared.executionWorkspace.cwd).toContain(`/${input.run.id}`);
+    expect(readIsolatedTaskPath(resolvePaperclipInstanceRoot(), prepared.executionWorkspace.cwd)).toMatchObject({
+      companyId: input.agent.companyId, issueId: issue.id, attemptId: input.run.id, rest: [],
+    });
     expect(prepared.executionWorkspace.cwd).not.toBe(source);
     await expect(access(join(prepared.executionWorkspace.cwd, "README.md"))).rejects.toThrow();
     expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");

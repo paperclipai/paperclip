@@ -146,6 +146,14 @@ Use `GIT_TEMPLATE_DIR` for an explicit template directory on this restore path.
 Isolated workspace rehomes also preserve it and allow Git-generated settings such
 as `core.symlinks=false`. On Windows, an expired source
 whose Git config is no longer available requires a shared base with long paths enabled.
+Fresh isolated attempts on Windows use a compact `w/` namespace with full UUIDs
+encoded in lowercase base36 and a short `w` seed directory. The identity remains
+reversible; source admission, task reuse and chat validation use the same parser.
+Existing legacy attempts stay in place and keep their files. Conflicting legacy
+and compact roots are rejected rather than silently switching directories.
+This shortens the published nested checkout as well as its clone staging path,
+so later HTTP fetches stay within Git for Windows' metadata path limit.
+
 
 ## Dependency Lockfile Policy
 

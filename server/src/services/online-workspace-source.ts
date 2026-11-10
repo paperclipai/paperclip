@@ -1,3 +1,4 @@
+import { compactIsolatedIssueRoot } from "./isolated-task-paths.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -179,6 +180,7 @@ export async function inspectOnlineWorkspaceSource(db: ReadDb, workspace: Worksp
   const gitSourceRoots = [...[...projectIds].map(id => path.join(instance, "projects", workspace.companyId, id)),
     ...issueIds.flatMap(id => ["isolated-workspaces", "isolated-workspace-attempts", "isolated-repository-sources"].map(kind =>
       path.join(instance, kind, workspace.companyId, id, ...(kind === "isolated-repository-sources" ? ["checkout"] : []))))].sort();
+  gitSourceRoots.push(...issueIds.map(id => compactIsolatedIssueRoot(instance, workspace.companyId, id)).filter((root): root is string => root !== null));
   const owned = (target: string) => gitSourceRoots.some(root => target === root || target.startsWith(root + path.sep));
   let after: string | undefined;
   for (let page = 0; ; page++) {

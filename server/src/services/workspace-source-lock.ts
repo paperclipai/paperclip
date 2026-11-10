@@ -1,3 +1,4 @@
+import { readIsolatedTaskPath } from "./isolated-task-paths.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { withDedicatedDbConnection, type Db } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
@@ -134,7 +135,13 @@ export async function managedProjectSourceIdentity(companyId: string, cwd: strin
 
 export async function isolatedTaskSourceIdentity(companyId: string, cwd: string): Promise<string | null> {
   const root = await canonicalRepositoryRoot(resolvePaperclipInstanceRoot());
-  const relative = path.relative(root, await canonicalRepositoryRoot(cwd)).split(path.sep);
+  const target = await canonicalRepositoryRoot(cwd);
+  const task = readIsolatedTaskPath(root, target);
+  if (task) {
+    if (task.companyId !== companyId) throw new Error("workspace_source_company_mismatch");
+    return /^[a-f0-9-]{36}$/.test(task.issueId) ? task.issueId : null;
+  }
+  const relative = path.relative(root, target).split(path.sep);
   if (!["isolated-workspaces", "isolated-workspace-attempts", "isolated-repository-sources"].includes(relative[0])) return null;
   if (relative[0] === "isolated-repository-sources" && relative[3] !== "checkout") return null;
   if (relative[1] !== companyId) throw new Error("workspace_source_company_mismatch");
