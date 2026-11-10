@@ -63,6 +63,7 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { runExclusiveWorkspaceRuntimeControl } from "../services/workspace-operations.js";
 import { withExecutionWorkspaceLifecycleLock } from "../services/execution-workspace-lifecycle-lock.js";
 import { resolveManagedWorkspaceInstanceId } from "../services/managed-workspace-identity.js";
+import { resolveWorkspaceRuntimeBase } from "../services/workspace-runtime-base.js";
 import { isVerifiedWorktreeSeedManifest } from "../worktree-seed-manifest.js";
 import {
   issueWorkspaceLoginHandoff,
@@ -424,6 +425,16 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       return;
     }
 
+    const registeredBaseCwd = action === "stop" ? workspaceCwd : await resolveWorkspaceRuntimeBase({
+      companyId: existing.companyId,
+      projectId: existing.projectId,
+      projectWorkspace,
+      workspaceCwd,
+    }).catch(error => {
+      throw unprocessable(error instanceof Error ? error.message : "Registered base workspace is unavailable.", {
+        code: "workspace_runtime_base_unavailable",
+      });
+    });
     let repairSeedSource: CanonicalWorktreeSeedSource | null = null;
     let repairPreviousAttemptId: string | null = null;
     let repairCliArgs: string[] | null = null;
@@ -445,7 +456,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       }
 
       try {
-        if (!projectWorkspace?.cwd) {
+        if (!projectWorkspace) {
           throw new Error("Workspace repair requires a registered base project workspace.");
         }
         const expectedTargetInstanceId = resolveManagedWorkspaceInstanceId(workspaceCwd);
@@ -453,8 +464,8 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
           throw new Error("Workspace repair cannot resolve the registered target instance.");
         }
         repairSeedSource = resolveCanonicalWorktreeSeedSource({
-          registeredBaseWorkspaceCwd: projectWorkspace.cwd,
-          explicitSourceConfigPath: resolveFallbackSeedSourceConfigPath(projectWorkspace.cwd),
+          registeredBaseWorkspaceCwd: registeredBaseCwd,
+          explicitSourceConfigPath: resolveFallbackSeedSourceConfigPath(registeredBaseCwd),
           targetConfigPath: path.join(workspaceCwd, ".paperclip", "config.json"),
           expectedTargetInstanceId,
           manifestSource: manifest.source,
@@ -605,7 +616,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
         const ensureWorkspaceAvailable = async () =>
           await withExecutionWorkspaceLifecycleLock(db, existing.id, () => ensurePersistedExecutionWorkspaceAvailable({
             base: {
-              baseCwd: projectWorkspace?.cwd ?? workspaceCwd,
+              baseCwd: registeredBaseCwd,
               source: existing.mode === "shared_workspace" ? "project_primary" : "task_session",
               projectId: existing.projectId,
               workspaceId: existing.projectWorkspaceId,

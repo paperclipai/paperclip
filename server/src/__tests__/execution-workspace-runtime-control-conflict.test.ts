@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { sql } from "drizzle-orm";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -93,7 +95,7 @@ vi.mock("../routes/workspace-runtime-service-authz.js", () => ({
 const executionWorkspaceId = "33333333-3333-4333-8333-333333333333";
 const projectId = "44444444-4444-4444-8444-444444444444";
 const projectWorkspaceId = "55555555-5555-4555-8555-555555555555";
-let registeredProjectWorkspace: { id: string; cwd: string; metadata: null } | null = null;
+let registeredProjectWorkspace: { id: string; cwd: string | null; repoUrl?: string; metadata: null } | null = null;
 
 function buildExecutionWorkspace(overrides: Record<string, unknown> = {}) {
   return {
@@ -450,6 +452,31 @@ describe("execution workspace runtime control conflict and failure reconciliatio
       executionWorkspaceId,
       expect.objectContaining({ metadata: expect.anything() }),
     );
+  });
+
+  it("starts a null-cwd registration with the verified managed base, not the task target", async () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-route-managed-base-")));
+    const previousHome = process.env.PAPERCLIP_HOME;
+    try {
+      process.env.PAPERCLIP_HOME = home;
+      const repoUrl = "https://example.com/owner/repo.git";
+      const baseCwd = resolveManagedProjectWorkspaceDir({ companyId: "company-1", projectId, repoName: "repo" });
+      fs.mkdirSync(baseCwd, { recursive: true });
+      execFileSync("git", ["init", "--quiet", baseCwd]);
+      execFileSync("git", ["-C", baseCwd, "remote", "add", "origin", repoUrl]);
+      mockStartRuntimeServices.mockResolvedValueOnce([]);
+      registeredProjectWorkspace = { id: projectWorkspaceId, cwd: null, repoUrl, metadata: null };
+      mockExecutionWorkspaceService.getById.mockResolvedValue(buildExecutionWorkspace({ projectId, projectWorkspaceId, repoUrl }));
+      const res = await request(await createApp()).post(`/api/execution-workspaces/${executionWorkspaceId}/runtime-services/start`).send({});
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockEnsurePersistedExecutionWorkspaceAvailable).toHaveBeenCalledWith(expect.objectContaining({
+        base: expect.objectContaining({ baseCwd }),
+      }));
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousHome;
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("returns 422 with a stable reason when the repair seed manifest is malformed", async () => {

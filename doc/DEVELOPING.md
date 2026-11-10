@@ -2765,6 +2765,8 @@ npx paperclipai worktree reseed \
   --seed-mode full
 ```
 
+Managed runtime start and repair resolve repository-only project registrations (with no configured `cwd`) to the existing company/project managed checkout. They verify its Git origin and canonical path, including the registered same-name collision alternate. They never substitute the task worktree as that registered base. A canonical `<home>/instances/<id>/config.json` uses its directory instance identity even when its adjacent `.env` has other settings but no instance pointer; an explicit conflicting pointer is rejected. Worktree configs still require their adjacent instance pointer.
+
 Managed workspace repair uses this same verified full-reseed contract through `POST /api/execution-workspaces/:id/runtime-commands/repair`. The exclusive, audited operation stops managed services, writes a recoverable pre-repair database backup under the isolated instance's backup directory, performs the full seed/migration/quarantine/rebinding sequence, and restarts only after terminal manifest and service-health validation. It preserves the worktree filesystem. On failure, services remain stopped while the database backup, seed manifest, bounded phase diagnostics, and operation log are retained for inspection; repair never retries itself in a loop.
 
 **`npx paperclipai worktree:make <name> [options]`** — Create `~/NAME` as a git worktree, then initialize an isolated Paperclip instance inside it. This combines `git worktree add` with `worktree init` in a single step.
