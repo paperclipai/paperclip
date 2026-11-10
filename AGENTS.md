@@ -175,9 +175,9 @@ for the full workflow. Structural checks are not production acceptance.
 
 ## 8. API and Auth
 
-Every route under `server/src/routes/` checks company access and actor
-permissions, logs mutations to the activity log, and returns consistent HTTP
-errors. See [`rules/api-route-expectations.mdc`](rules/api-route-expectations.mdc).
+Every route under `server/src/routes/` that reads or writes company data checks
+company access and actor permissions, logs mutations to the activity log, and
+returns consistent HTTP errors. See [`rules/api-route-expectations.mdc`](rules/api-route-expectations.mdc).
 
 ## 9. UI Expectations
 

@@ -1,6 +1,6 @@
 ---
-description: Only announcement dismissals, the announcement publication-ID registry, and personal workspace presentation preferences are instance-wide; they must still validate company membership for audit and grant no authority.
-globs: "packages/db/src/schema/announcement_dismissals.ts,packages/shared/src/announcements.ts,server/src/routes/announcements.ts,server/src/services/announcements.ts,server/src/services/announcement-feed.ts,packages/db/src/schema/user_workspace_preferences.ts,packages/shared/src/workspace-preferences.ts,server/src/routes/workspace-preferences.ts,server/src/services/workspace-preferences.ts"
+description: The known instance-wide data is announcement dismissals, the announcement publication-ID registry, personal workspace presentation preferences, and the per-user sidebar company order; these grant no authority, and a new exception must be added to this list.
+globs: "packages/db/src/schema/announcement_dismissals.ts,packages/shared/src/announcements.ts,server/src/routes/announcements.ts,server/src/services/announcements.ts,server/src/services/announcement-feed.ts,packages/db/src/schema/user_workspace_preferences.ts,packages/shared/src/workspace-preferences.ts,server/src/routes/workspace-preferences.ts,server/src/services/workspace-preferences.ts,packages/db/src/schema/user_sidebar_preferences.ts,packages/shared/src/types/sidebar-preferences.ts,server/src/routes/sidebar-preferences.ts,server/src/services/sidebar-preferences.ts"
 alwaysApply: false
 ---
 
@@ -9,9 +9,10 @@ alwaysApply: false
 ## Scope and purpose
 
 Every domain entity is scoped to a company, and routes and services enforce
-company boundaries. This rule lists the only data that is instance-wide and the
-conditions that keep it safe. It also applies to any change that adds a new
-table, route, or service that is not scoped to a company.
+company boundaries. This rule lists the known data that is instance-wide and the
+conditions that keep it safe. Its `globs` cover only the files of the listed
+exceptions. `AGENTS.md` section 5 sends any change that adds data without a
+company scope here.
 
 ## The exceptions
 
@@ -25,6 +26,9 @@ table, route, or service that is not scoped to a company.
   execution authority, change company capabilities or agent configuration, or
   rewrite canonical work records. Optional conversation guidance must retain the
   same action permissions.
+- **The sidebar company order** in `user_sidebar_preferences` is instance-wide by
+  user, because it orders the user's companies. Sidebar preferences inside one
+  company stay company-scoped in `company_user_sidebar_preferences`.
 
 ## Requirements
 
