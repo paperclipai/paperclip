@@ -1692,7 +1692,6 @@ mod tests {
 
     #[test]
     fn monitor_notes_length_error_reports_the_authorized_numeric_limit() {
-        // Read the published tool contract, rather than a duplicate test schema.
         let tools: Value = serde_json::from_str(include_str!(
             "../../../../generated/capability/semantic-tool-contracts.json"
         ))
