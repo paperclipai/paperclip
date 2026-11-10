@@ -1,6 +1,6 @@
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 export interface RuntimeRenderedNode { tag: string; role: string | null; text: string; href: string | null; inNavigation: boolean; color: string; background: string;
-  /** FORM nodes only: a visible labelled entry field and a visible submit control inside the form. */
+  /** FORM nodes only: a visible labelled email field and a visible submit control inside the form. */
   form?: { labelledField: boolean; submit: boolean } }
 /** Render only independently downloaded artifact bytes, with no scripts, network or authenticated storage. */
 export async function renderRuntimeArtifact(ctx: ChatCatalogContext, html: string): Promise<RuntimeRenderedNode[]> {
@@ -27,11 +27,16 @@ export async function renderRuntimeArtifact(ctx: ChatCatalogContext, html: strin
       const formShape = (form: Element) => {
         const fields = [...form.querySelectorAll("input, textarea")].filter(field => visible(field)
           && !["hidden", "submit", "button", "reset", "checkbox", "radio", "image"].includes((field.getAttribute("type") ?? "text").toLowerCase()));
-        const labelled = (field: Element) => !!field.getAttribute("aria-label")?.trim() || !!field.getAttribute("aria-labelledby")?.trim() || !!field.closest("label")
+        // A real accessible name: aria-label text, an existing aria-labelledby target with text, or a
+        // wrapping/for label with text. A signup field takes an email address.
+        const labelled = (field: Element) => !!field.getAttribute("aria-label")?.trim()
+          || (field.getAttribute("aria-labelledby") ?? "").split(/\s+/).filter(Boolean).some(id => !!form.ownerDocument.getElementById(id)?.textContent?.trim())
+          || !!field.closest("label")?.textContent?.trim()
           || (!!field.id && [...form.ownerDocument.querySelectorAll("label")].some(label => label.getAttribute("for") === field.id && !!label.textContent?.trim()));
+        const emailField = (field: Element) => (field.getAttribute("type") ?? "").toLowerCase() === "email" || /\bemail\b/i.test(field.getAttribute("autocomplete") ?? "");
         const submit = [...form.querySelectorAll("button, input[type=submit], input[type=image]")].some(control => visible(control)
           && !["button", "reset"].includes((control.getAttribute("type") ?? "submit").toLowerCase()));
-        return { labelledField: fields.some(labelled), submit };
+        return { labelledField: fields.some(field => labelled(field) && emailField(field)), submit };
       };
       return elements.filter(visible).map(element => { const style = getComputedStyle(element);
         return { tag: element.tagName, role: element.getAttribute("role"), text: text(element) || element.getAttribute("aria-label") || "", href: element.getAttribute("href"),
@@ -48,7 +53,7 @@ export function simplerWebsiteChecks(nodes: RuntimeRenderedNode[]) {
     && nodes.some(node => /\bAcorn\s+Notes\b/i.test(node.text));
   // A visible product paragraph; the request never named a <main> landmark.
   const content = nodes.some(node => ["MAIN", "SECTION", "P"].includes(node.tag) && node.text.length >= 40);
-  // A labelled signup action: structurally, a visible form with a labelled entry field and a submit
+  // A labelled signup action: structurally, a visible form with a labelled email field and a submit
   // control, whatever its button says ("Start writing free" is as valid as "Sign up"); or a visible
   // control that is itself labelled as a signup action.
   const signup = nodes.some(node => node.tag === "FORM" && node.form?.labelledField === true && node.form.submit === true)

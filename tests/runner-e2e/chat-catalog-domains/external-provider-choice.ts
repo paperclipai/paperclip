@@ -177,8 +177,10 @@ async function observeChoiceExplanation(
       }),
     );
   }
-  // The last completed message is the answer the person reads; earlier ones may be progress notes.
-  const selected = [...messages].reverse().find((m) => truthfulNotionChoices(m.body));
+  // The last completed message is the answer the person reads; earlier ones may be progress notes and
+  // cannot rescue a final answer that claims a connected account.
+  const last = messages.at(-1);
+  const selected = last && truthfulNotionChoices(last.body) ? last : undefined;
   if (selected) {
     await expect(
       ctx.input.page

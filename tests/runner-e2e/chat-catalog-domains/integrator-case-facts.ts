@@ -29,13 +29,14 @@ const tokens = (value: string) => value.toLowerCase().split(/[^a-z0-9]+/).filter
 /** A value may add clauses that only rule other platforms out ("desktop Safari unaffected",
  * "not on Chrome"): such a clause carries a negation and names a non-mobile platform or browser and
  * no mobile one. Every other clause together must still say exactly mobile Safari. */
-const NEGATION = new Set(["not", "unaffected", "no", "never", "excluded", "except", "doesn", "isn", "fine", "works"]);
+const EXCLUDES = /\b(?:unaffected|not (?:affected|impacted|reproducible)|(?:does not|doesn't|never) (?:occur|happen|reproduce)|works(?: fine)?|is fine)\b/i;
 const OTHER_PLATFORM = new Set(["desktop", "mac", "macos", "windows", "linux", "android", "chrome", "firefox", "edge", "laptop"]);
 function mobileSafariOnly(value: unknown) {
   if (typeof value !== "string") return false;
-  const clauses = value.split(/[;,()]|\s[-\u2013\u2014]\s|\bbut\b/i).map(tokens).filter(clause => clause.length > 0);
-  const exclusion = (t: string[]) => t.some(token => NEGATION.has(token)) && t.some(token => OTHER_PLATFORM.has(token)) && !t.some(token => MOBILE.has(token));
-  const t = clauses.filter(clause => !exclusion(clause)).flat();
+  const clauses = value.split(/[;,()]|\s[-\u2013\u2014]\s|\bbut\b/i).filter(clause => tokens(clause).length > 0);
+  const exclusion = (clause: string) => { const t = tokens(clause);
+    return EXCLUDES.test(clause) && !/\bnot\s+(?:excluded|unaffected)\b/i.test(clause) && t.some(token => OTHER_PLATFORM.has(token)) && !t.some(token => MOBILE.has(token)); };
+  const t = clauses.filter(clause => !exclusion(clause)).flatMap(tokens);
   return t.includes("safari") && t.some(token => MOBILE.has(token)) && t.every(token => token === "safari" || MOBILE.has(token));
 }
 function mobilePlatformOnly(value: unknown) { if (typeof value !== "string") return false; const t = tokens(value); return t.length > 0 && t.every(token => MOBILE.has(token)); }

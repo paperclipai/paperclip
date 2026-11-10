@@ -63,9 +63,9 @@ export function gradeAccounting(value: unknown) {
     // Requested facts (the per-agent dollars, the Launch total and the supporting receipt links) are
     // graded from the reply; incomplete accounting is graded structurally: the reply must point at the
     // record whose cost is unresolved (its task link or identifier, or the run) and must not give that
-    // record a zero or free amount. Words such as "subscription" or "incomplete" are not required.
+    // record a zero dollar amount. Words such as "subscription" or "incomplete" are not required.
     c.add("actual-agent-breakdown-and-incomplete-total", /Morgan[\s\S]{0,120}(?:\$|USD\s*)?1\.37/i.test(o.reply) && /Riley[\s\S]{0,120}(?:\$|USD\s*)?2\.63/i.test(o.reply)
-      && /(?:\$|USD\s*)4\.00/.test(o.reply) && !/\b(?:unresolved|pending|missing)\b[^.\n]{0,50}\b(?:free|no charge|zero cost)\b/i.test(o.reply)
+      && /(?:\$|USD\s*)4\.00/.test(o.reply)
       && unresolvedRecordIdentifiedNotFree(o.reply, o.state.preflightTask as Entity | undefined, String(o.state.originalRunId ?? ""))
       && hasLink(o, "issues", entity(o.state, "morganReceiptTask")) && hasLink(o, "issues", entity(o.state, "rileyReceiptTask")),
       "The actual answer breaks down the recorded scoped API dollars by real agent with supporting records, and points at the unresolved usage record without counting it as free.");
@@ -193,11 +193,13 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
 ];
 
 /** The reply identifies the record whose usage has no settled cost (its task by link or identifier,
- * or its run id), and no line or sentence that names it states a zero or free amount for it. */
+ * or its run id), and no line or sentence that names it states a zero amount for it. */
 export function unresolvedRecordIdentifiedNotFree(reply: string, record: Entity | undefined, runId: string): boolean {
   const keys = [record?.identifier, record?.id, runId || undefined, runId ? runId.slice(0, 8) : undefined].filter((key): key is string => typeof key === "string" && key.length > 0);
   if (!keys.length) return false;
   const names = (segment: string) => keys.some(key => new RegExp(`(?<![\\w-])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`).test(segment));
   const segments = reply.split(/\n|(?<=[.!?])\s+/).filter(segment => names(segment));
-  return segments.length > 0 && !segments.some(segment => /(?:\$|USD\s*)0(?:\.0+)?(?![.\d]*[1-9])|\bfree\b|\bno charge\b|\bzero cost\b/i.test(segment));
+  // Only a stated zero amount is graded; words such as "free" are left to a human reader ("ACO-5 must not
+  // be counted as free" is a correct sentence).
+  return segments.length > 0 && !segments.some(segment => /(?:\$|USD\s*)0(?:\.0+)?(?![.\d]*[1-9])/i.test(segment));
 }

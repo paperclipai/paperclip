@@ -304,8 +304,9 @@ async function observeGoalPhases(ctx: ChatCatalogContext, state: Record<string, 
     for (const card of cards) {
       if (card.createdByAgentId !== o.leadId || !o.runs.some(run => run.id === card.sourceRunId)
         || Date.parse(String(card.createdAt ?? "")) < Date.parse(foreignHuman.createdAt ?? "")) continue;
-      const questions = ((card.payload as { questions?: Array<{ prompt?: string }> } | undefined)?.questions ?? []).map(row => row.prompt ?? "");
-      finalPhaseReplies.push({ id: card.id, body: [card.title, card.summary, ...questions].filter(Boolean).join("\n") });
+      // Every user-visible field of the card, so the disclosure check also covers options and help text.
+      const visible = JSON.stringify(card.payload ?? {});
+      finalPhaseReplies.push({ id: card.id, body: [card.title, card.summary, visible].filter(Boolean).join("\n") });
     }
   }
   return { ...o, finalPhaseReplies };

@@ -52,7 +52,7 @@ describe("current case facts and real subsequent context", () => {
     // A clause that only rules another platform out is a clarification of the same fact.
     for (const browser of ["Mobile Safari only (iPhone/iPad); desktop Safari unaffected", "Mobile Safari only - desktop Safari and Chrome are not affected", "iOS Safari only, works on desktop"])
       expect(corrected({ browser }), browser).toBe(true);
-    for (const browser of ["Mobile Safari; desktop Safari also affected", "Mobile Safari only (not yet confirmed)", "Mobile Safari, not iOS", "Safari; desktop unaffected", "Mobile Safari and desktop Chrome"])
+    for (const browser of ["Mobile Safari; desktop Safari also affected", "Mobile Safari only (not yet confirmed)", "Mobile Safari, not iOS", "Mobile Safari; desktop Safari is not excluded", "Safari; desktop unaffected", "Mobile Safari and desktop Chrome"])
       expect(corrected({ browser }), browser).toBe(false);
     expect(corrected({ affectedBrowsers: ["iOS Safari"] })).toBe(true);
     for (const fields of [{ browser: "Safari (desktop and mobile Safari)", note: "only intermittent" }, { browser: "Safari; affected device not yet confirmed" }, { browser: "Desktop Safari only" },

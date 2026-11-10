@@ -257,6 +257,10 @@ it("grades each reply for existing and linking no app record other than the revi
   expect(reviewReplyStaysOnRecord("See [the notes app](http://127.0.0.1:3100/COM/apps/connection).", connection, "http://127.0.0.1:3100")).toBe(true);
   expect(reviewReplyStaysOnRecord("See [the notes app](http://127.0.0.1:3999/COM/apps/connection).", connection, "http://127.0.0.1:3100")).toBe(false);
   expect(reviewReplyStaysOnRecord("", connection)).toBe(false);
+  expect(reviewReplyStaysOnRecord("See [the app][x].\n\n[x]: /COM/apps/other-connection", connection)).toBe(false);
+  expect(reviewReplyStaysOnRecord("See /COM/apps/other-connection for details.", connection)).toBe(false);
+  expect(reviewReplyStaysOnRecord("See https://elsewhere.test/COM/apps/connection now.", connection)).toBe(false);
+  expect(reviewReplyStaysOnRecord("See [the app][x].\n\n[x]: /COM/apps/connection", connection)).toBe(true);
   expect(reviewReplyStaysOnRecord("Synthetic Launch Notes", undefined)).toBe(false);
   expect(launchUpdateFact("Public launch: 2030-11-08")).toBe(true);
   expect(launchUpdateFact("Launch moved to November 9,2030")).toBe(false);
