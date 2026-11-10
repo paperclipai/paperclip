@@ -168,7 +168,11 @@ snapshot retention hold after process loss.
 
 If an older server already expired members of an unpublished cohort,
 `supersedeExpiredRemoteWorkspaceMigrationCohort` accepts the exact saved cohort
-and the exact expired member IDs. It requires completed Git expiration and an
+and the exact expired member IDs. This is an internal service API for a privileged
+operator with a real database handle and reviewed company/cohort inputs. It does
+not add a CLI mode or an HTTP route. An operator calls the exported owner directly;
+its test and the reviewed one-time administrative qualification use that path.
+It requires completed Git expiration and an
 unexpired restore-point recipe for each missing member. Other members must retain
 their saved source fingerprints. Fresh source, lifecycle, finalizer and row locks
 protect one transaction that fails every old journal and removes only its matched

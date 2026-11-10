@@ -270,6 +270,16 @@ describe.skipIf(!support.supported)("bounded workspace cohort migration", () => 
     const compensate = (options: Partial<Parameters<typeof supersedeExpiredRemoteWorkspaceMigrationCohort>[0]> = {}) =>
       supersedeExpiredRemoteWorkspaceMigrationCohort({ db, companyId: f.companyId, cohort,
         expiredWorkspaceIds, signal: AbortSignal.timeout(60_000), ...options });
+    const [missingProof] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, expiredWorkspaceIds[0]));
+    const withoutRestorePoint = { ...(missingProof.metadata!.gitCacheRestoration as Record<string, unknown>), schema: "paperclip.git-cache-restoration.v1" };
+    delete (withoutRestorePoint as Record<string, unknown>).restorePoint;
+    await db.update(executionWorkspaces).set({ metadata: { ...missingProof.metadata, gitCacheRestoration: withoutRestorePoint } })
+      .where(eq(executionWorkspaces.id, missingProof.id));
+    const unverifiedRows = await rows(f);
+    await expect(compensate()).rejects.toThrow("migration_supersession_expiration_unverified");
+    expect(await rows(f)).toEqual(unverifiedRows); expect(await db.select().from(workspaceOperations)).toEqual(oldOperations);
+    expect(await db.select().from(executionWorkspaceSnapshots)).toEqual(oldSnapshots);
+    await db.update(executionWorkspaces).set({ metadata: missingProof.metadata }).where(eq(executionWorkspaces.id, missingProof.id));
     const [authorityRow] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, cohort.members[2].workspaceId));
     await db.update(executionWorkspaces).set({ metadata: { ...authorityRow.metadata, remoteWorkspace: {
       schema: "paperclip.remote-workspace.v1", epoch: 1, source: initialOperations[0].metadata!.source,
