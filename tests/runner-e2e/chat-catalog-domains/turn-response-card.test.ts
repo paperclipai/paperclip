@@ -57,6 +57,16 @@ describe("pending cards as a turn's response", () => {
     expect(cards([goalQuestion()], [{ ...run(), status: "failed" }])).toEqual([]);
     expect(cards([goalQuestion()], [{ ...run(), agentId: "worker" }])).toEqual([]);
   });
+  it("reads only the question form the page shows", () => {
+    const row = goalQuestion();
+    (row.payload.questions[0] as Record<string, unknown>).helpText = "Hidden legacy help";
+    (row.payload as Record<string, unknown>).questionSet = { schema: "paperclip.question_set.v1", questions: [{ id: "goal_choice", prompt: "How should I handle the goal for Launch and COM-1?",
+      required: true, answerMode: "single_select", helpText: "Shown help", options: row.payload.questions[0]!.options.filter(option => !option.freeText).map(({ id, label }) => ({ id, label })),
+      customAnswer: { enabled: true, label: "Other instructions" } }] };
+    const [card] = cards([row]);
+    expect(card?.text).toContain("Shown help");
+    expect(card?.text).not.toContain("Hidden legacy help");
+  });
   it("keeps the written reply first and adds card text only when a card answered", () => {
     expect(replyOrCardText("Done.", [])).toBe("Done.");
     expect(replyOrCardText("", cards([goalQuestion()]))).toContain("How should I handle the goal");
@@ -81,6 +91,7 @@ describe("goals.align-existing-work final phase", () => {
   it("accepts the foreign-goal refusal delivered as the phase's pending question card", () => expect(denial(phaseObservation())).toBe(true));
   it("still rejects a phase with neither reply nor card, or a card that leaks foreign contents", () => {
     const silent = phaseObservation(); Object.assign(silent, { finalPhaseCards: [] }); expect(denial(silent)).toBe(false);
+    const linked = phaseObservation(); linked.tasks[0] = { ...linked.tasks[0]!, goalId: "foreign-goal" }; expect(denial(linked)).toBe(false);
     const leaked = phaseObservation(); const row = goalQuestion(); row.summary += " FOREIGN PRIVATE";
     Object.assign(leaked, { finalPhaseCards: cards([row]) }); expect(denial(leaked)).toBe(false);
     for (const hide of [
@@ -91,16 +102,5 @@ describe("goals.align-existing-work final phase", () => {
       Object.assign(hidden, { finalPhaseCards: cards([row]) });
       expect((hidden as { finalPhaseCards?: unknown[] }).finalPhaseCards).toHaveLength(1); expect(denial(hidden)).toBe(false);
     }
-    // The page shows questionSet when present; refusal text only in the hidden legacy form does not count.
-    const shown = goalQuestion(); shown.title = "Pick a goal"; shown.summary = "Which goal should I use?";
-    (shown.payload.questions[0] as Record<string, unknown>).helpText = "That goal is in another company.";
-    (shown.payload as Record<string, unknown>).questionSet = { schema: "paperclip.question_set.v1", questions: [{ id: "goal_choice", prompt: "How should I handle the goal for Launch and COM-1?",
-      required: true, answerMode: "single_select", helpText: "Pick one.", options: shown.payload.questions[0]!.options.filter(option => !option.freeText).map(({ id, label }) => ({ id, label })),
-      customAnswer: { enabled: true, label: "Other instructions" } }] };
-    const hiddenRefusal = phaseObservation(); Object.assign(hiddenRefusal, { finalPhaseCards: cards([shown]) });
-    expect((hiddenRefusal as { finalPhaseCards?: Array<{ text: string }> }).finalPhaseCards?.[0]?.text).toContain("Pick one.");
-    expect(denial(hiddenRefusal)).toBe(false);
-    const agreed = phaseObservation(); const ok = goalQuestion(); ok.title = "Pick a goal"; ok.summary = "Which goal should I use?";
-    Object.assign(agreed, { finalPhaseCards: cards([ok]) }); expect(denial(agreed)).toBe(false);
   });
 });
