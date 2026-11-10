@@ -637,28 +637,42 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       branchName, strategyType: "git_worktree", providerType: "git_worktree", metadata: { createdByRuntime: true, gitBranchOwnershipVersion: 1 } }).where(eq(executionWorkspaces.id, f.workspaceId));
     return { ...f, cwd, base, upstream, commit, projectId, projectWorkspaceId, repoUrl, branchName };
   }
-  async function archivedPreparedFixture() {
+  async function archivedPreparedFixture(sourceKind: "recipe" | "cleanup" | "branch" = "recipe") {
     const base = await gitArchiveFixture(), f = { ...base, ...await failedCopybackFixture(base) };
-    await fs.writeFile(path.join(f.cwd, "saved.txt"), "archived staged edit\n"); await git(f.cwd, "add", "saved.txt");
-    await fs.writeFile(path.join(f.cwd, "saved.txt"), "archived unstaged edit\n");
-    await fs.writeFile(path.join(f.cwd, "untracked.txt"), "archived private file\n");
-    const captured = (await captureRestorePoint({ cwd: f.cwd, upstreamCommits: [f.upstream] }))!;
-    const id = randomUUID(), generation = 1, sealed = await sealRestorePoint(captured.payload,
-      { companyId: f.companyId, workspaceId: f.workspaceId, restorePointId: id, generation });
-    const objectKey = `${f.companyId}/git-restore-points/${f.workspaceId}/${generation}/${id}.pcrp`;
-    await storage.putFile({ companyId: f.companyId, namespace: "git-restore-points", objectKey,
-      originalFilename: "saved.pcrp", contentType: "application/octet-stream", body: sealed.ciphertext });
-    const restorePoint = { schema: "paperclip.git-restore-point.v1", id, generation, objectKey, byteSize: sealed.ciphertext.length,
-      sha256: sealed.sha256, key: sealed.key, head: captured.manifest.head, index: captured.manifest.index,
-      worktree: captured.manifest.worktree, ignored: captured.manifest.ignored, modes: captured.manifest.modes, headOnRemote: false };
-    const contents = await captureGitWorkspaceContents(f.cwd, { companyId: f.companyId, workspaceId: f.workspaceId }, []);
-    await db.update(executionWorkspaces).set({ status: "archived", closedAt: new Date(), metadata: {
-      createdByRuntime: true, gitBranchOwnershipVersion: 1, gitCacheRestoration: { schema: "paperclip.git-cache-restoration.v2",
-        companyId: f.companyId, workspaceId: f.workspaceId, sourceIssueId: f.issueId, repoUrl: f.repoUrl,
-        commit: f.commit, branchName: f.branchName, sourceKind: "managed_project", projectId: f.projectId,
-        sourcePath: f.base, worktreePath: f.cwd, gitBranchOwnershipVersion: 1, verifiedAt: new Date().toISOString(), restorePoint, contents },
-    } }).where(eq(executionWorkspaces.id, f.workspaceId));
-    await git(f.base, "worktree", "remove", "--force", f.cwd); await git(f.base, "branch", "-D", f.branchName);
+    let cleanup: typeof workspaceOperations.$inferSelect | null = null;
+    if (sourceKind === "recipe") {
+      await fs.writeFile(path.join(f.cwd, "saved.txt"), "archived staged edit\n"); await git(f.cwd, "add", "saved.txt");
+      await fs.writeFile(path.join(f.cwd, "saved.txt"), "archived unstaged edit\n");
+      await fs.writeFile(path.join(f.cwd, "untracked.txt"), "archived private file\n");
+      const captured = (await captureRestorePoint({ cwd: f.cwd, upstreamCommits: [f.upstream] }))!;
+      const id = randomUUID(), generation = 1, sealed = await sealRestorePoint(captured.payload,
+        { companyId: f.companyId, workspaceId: f.workspaceId, restorePointId: id, generation });
+      const objectKey = `${f.companyId}/git-restore-points/${f.workspaceId}/${generation}/${id}.pcrp`;
+      await storage.putFile({ companyId: f.companyId, namespace: "git-restore-points", objectKey,
+        originalFilename: "saved.pcrp", contentType: "application/octet-stream", body: sealed.ciphertext });
+      const restorePoint = { schema: "paperclip.git-restore-point.v1", id, generation, objectKey, byteSize: sealed.ciphertext.length,
+        sha256: sealed.sha256, key: sealed.key, head: captured.manifest.head, index: captured.manifest.index,
+        worktree: captured.manifest.worktree, ignored: captured.manifest.ignored, modes: captured.manifest.modes, headOnRemote: false };
+      const contents = await captureGitWorkspaceContents(f.cwd, { companyId: f.companyId, workspaceId: f.workspaceId }, []);
+      await db.update(executionWorkspaces).set({ status: "archived", closedAt: new Date(), metadata: {
+        createdByRuntime: true, gitBranchOwnershipVersion: 1, gitCacheRestoration: { schema: "paperclip.git-cache-restoration.v2",
+          companyId: f.companyId, workspaceId: f.workspaceId, sourceIssueId: f.issueId, repoUrl: f.repoUrl,
+          commit: f.commit, branchName: f.branchName, sourceKind: "managed_project", projectId: f.projectId,
+          sourcePath: f.base, worktreePath: f.cwd, gitBranchOwnershipVersion: 1, verifiedAt: new Date().toISOString(), restorePoint, contents },
+      } }).where(eq(executionWorkspaces.id, f.workspaceId));
+      await git(f.base, "worktree", "remove", "--force", f.cwd); await git(f.base, "branch", "-D", f.branchName);
+    } else {
+      await db.update(executionWorkspaces).set({ status: "archived", closedAt: new Date() }).where(eq(executionWorkspaces.id, f.workspaceId));
+      if (sourceKind === "cleanup") await git(f.base, "merge", "--ff-only", f.branchName);
+      await git(f.base, "worktree", "remove", f.cwd);
+      if (sourceKind === "cleanup") {
+        const receipt = await git(f.base, "branch", "-d", f.branchName);
+        [cleanup] = await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId,
+          phase: "worktree_cleanup", status: "succeeded", exitCode: 0, command: `git branch -d ${f.branchName}`,
+          cwd: f.base, stdoutExcerpt: receipt, startedAt: new Date(), finishedAt: new Date(),
+          metadata: { cleanupAction: "branch_delete", workspaceId: f.workspaceId, workspacePath: f.cwd, branchName: f.branchName } }).returning();
+      }
+    }
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
     const [environment] = await db.insert(environments).values({ name: f.runId, driver: "daytona" }).returning();
     const [lease] = await db.insert(environmentLeases).values({ id: f.reference.leaseId, companyId: f.companyId,
@@ -670,16 +684,55 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     const [hold] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
       kind: "active_run_watchdog", cause, ownerType: "board", ownerAgentId: null, returnOwnerAgentId: run.agentId,
       fingerprint: nativeSha256({ runId: f.runId, failureCode: cause }), nextAction: "Preserve retained remote files", evidence: { runId: f.runId } }).returning();
-    const [selected] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, sourceIssueId: f.issueId,
-      name: "Current task workspace", providerType: "local_fs", mode: "isolated_workspace", strategyType: "project_primary", cwd: path.join(root, "current-task") }).returning();
-    await db.update(issues).set({ status: "cancelled", executionWorkspaceId: selected.id }).where(eq(issues.id, f.issueId));
+    if (sourceKind === "recipe") {
+      const [selected] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+        name: "Current task workspace", providerType: "local_fs", mode: "isolated_workspace", strategyType: "project_primary", cwd: path.join(root, "current-task") }).returning();
+      await db.update(issues).set({ status: "cancelled", executionWorkspaceId: selected.id }).where(eq(issues.id, f.issueId));
+    } else await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issueId));
     await db.insert(activityLog).values({ companyId: f.companyId, actorType: "user", actorId: "original owner",
       action: "issue.updated", entityType: "issue", entityId: f.issueId, details: { retained: "original task history" } });
     const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
     const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     const history = await db.select().from(activityLog).where(eq(activityLog.entityId, f.issueId));
-    return { ...f, run, lease, hold, task, owner, history, before: await workspace(f.workspaceId) };
+    return { ...f, run, lease, hold, task, owner, history, cleanup, before: await workspace(f.workspaceId) };
   }
+  it.each(["cleanup", "branch"] as const)("preserves a no-recipe archived %s source with prepared recovery", async kind => {
+    const f = await archivedPreparedFixture(kind);
+    expect(await migrateRemoteWorkspace({ db, storage, ...f, apply: true })).toMatchObject({ applied: true });
+    const row = await workspace(f.workspaceId), authority = readRemoteWorkspaceAuthority(row.metadata)!;
+    expect(row.status).toBe("archived"); expect(row.closedAt).toEqual(f.before.closedAt);
+    expect(row.metadata).not.toHaveProperty("gitCacheRestoration");
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toEqual(f.task);
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.issueId))).toEqual(f.history);
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0]).toEqual(f.lease);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(f.owner);
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.hold.id)))[0]).toEqual(f.hold);
+    await expect(readMigratedLegacyWorkspaceSource(db, { companyId: f.companyId, runId: f.runId, reference: f.reference }))
+      .resolves.toMatchObject({ runId: f.runId, reference: f.reference });
+    if (f.cleanup) expect((await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, f.cleanup.id)))[0]).toEqual(f.cleanup);
+    else expect(await git(f.base, "rev-parse", `refs/heads/${f.branchName}`)).toBe(f.commit);
+    await expect(fs.access(f.cwd)).rejects.toMatchObject({ code: "ENOENT" });
+    const ref = (await getWorkspaceSnapshot(db, { ...f, snapshotId: authority.snapshotId! }))!;
+    const archivePath = path.join(root, "no-recipe.pcws"), targetDir = path.join(root, "restored-no-recipe");
+    await loadWorkspaceSnapshotArchive({ storage, reference: ref, targetPath: archivePath });
+    await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref.manifestDigest });
+    expect(await git(targetDir, "rev-parse", "HEAD")).toBe(f.commit);
+    expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("original saved work\n");
+  });
+  it.each(["cleanup", "branch"] as const)("refuses a no-recipe archived %s source changed during upload", async kind => {
+    const f = await archivedPreparedFixture(kind), put = storage.putFile.bind(storage); let uploaded = false;
+    storage.putFile = async input => { const saved = await put(input); uploaded = true;
+      if (f.cleanup) await db.update(workspaceOperations).set({ status: "failed" }).where(eq(workspaceOperations.id, f.cleanup.id));
+      else await git(f.base, "update-ref", `refs/heads/${f.branchName}`, f.upstream);
+      return saved; };
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow();
+    expect(uploaded).toBe(true);
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toEqual(f.task);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toEqual(f.run);
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0]).toEqual(f.lease);
+    await expect(fs.access(f.cwd)).rejects.toMatchObject({ code: "ENOENT" });
+  });
   it("preserves an unselected archived recipe and its pending native files without reopening the task", async () => {
     const f = await archivedPreparedFixture(), put = storage.putFile.bind(storage);
     let interrupt = true;
