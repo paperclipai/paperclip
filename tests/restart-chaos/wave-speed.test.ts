@@ -260,3 +260,86 @@ describe("wave speed grade", () => {
       .toEqual([{ kind: "K2", readyAt: 2_000, startedAt: 1_000, runIds: ["live", "during"] }]);
   });
 });
+
+// Receipts from wave w-20261110T115048-s302 (faults.json), trimmed to what the speed grade reads.
+const msReceipt = (kind: "MS1" | "MS2" | "MS3", times: { startedAt: number; readyAt: number; healthyAt?: number },
+  multi: Partial<NonNullable<FaultReceipt["multiServer"]>>): FaultReceipt => ({
+  faultId: "f", kind, requestedBy: "t", signal: "none", holdMs: 0, requestedAt: times.startedAt, startedAt: times.startedAt,
+  stoppedAt: null, restartedAt: null, healthyAt: times.healthyAt ?? null, readyAt: times.readyAt, phases: [],
+  serverLogOffsetAtStart: 0, serverLogOffsetAtReady: null, error: null,
+  multiServer: { kind, secondary: null, steps: [], ...multi },
+});
+const S302_MS2 = msReceipt("MS2", { startedAt: 1794311530823, readyAt: 1794311678390, healthyAt: 1794311647900 },
+  { primaryFreeze: { kind: "TM2", frozenAt: 1794311537833, thawedAt: 1794311647835 } });
+const S302_MS3 = msReceipt("MS3", { startedAt: 1794311934901, readyAt: 1794311992580 },
+  { secondary: { pid: 79488, port: 54688, spawnedAt: 1794311934902, readyAt: 1794311943511, stoppedAt: 1794311992577 }, primaryRestart: { stoppedAt: 1794311943796, restartedAt: 1794311943796, readyAt: 1794311949160, replacementPid: 80430 } });
+const MS1 = msReceipt("MS1", { startedAt: 1_000, readyAt: 120_000 }, {});
+
+describe("two-server faults in the speed grade", () => {
+  const live = [{ id: "r", createdAt: 0, finishedAt: null }];
+
+  it("takes no restart-recovery sample from MS1 or MS2: the primary never restarted", () => {
+    expect(faultRuns([MS1, S302_MS2], live)).toEqual([]);
+    // An MS2 primary that exited after the thaw and was replaced did restart: its replacement's health anchors it.
+    const replaced = { ...S302_MS2, multiServer: { ...S302_MS2.multiServer!, primaryFreeze: { kind: "TM2" as const,
+      frozenAt: 1794311537833, thawedAt: 1794311647835, serverExitedAfterThaw: { code: 1, signal: null } } } };
+    expect(faultRuns([replaced], live)).toEqual([{ kind: "MS2", readyAt: 1794311647900, startedAt: 1794311530823, runIds: ["r"] }]);
+  });
+
+  it("anchors an MS3 sample when the primary's replacement is ready, not when the second server stops", () => {
+    expect(faultRuns([S302_MS3], live)).toEqual([{ kind: "MS3", readyAt: 1794311949160, startedAt: 1794311934901, runIds: ["r"] }]);
+  });
+
+  it("removes only the time the primary could not serve", () => {
+    expect(outageWindows([MS1, S302_MS2, S302_MS3])).toEqual([
+      { startedAt: 1794311537833, readyAt: 1794311647835 },
+      // From the second server's readiness, when the primary was told to stop; it served until then.
+      { startedAt: 1794311943511, readyAt: 1794311949160 },
+    ]);
+  });
+
+  const traced = (runId: string, trace: number, spans: Array<[string, number, number]>, extra: Record<string, unknown> = {}) => ({
+    events: spans.map(([name, offset, duration], seq) => ({ seq, eventType: "run.performance.span",
+      createdAt: new Date(trace + offset + duration).toISOString(), payload: { span: name, startOffsetMs: offset, durationMs: duration } })),
+    sample: { id: runId, status: "succeeded", createdAt: new Date(trace).toISOString(), finishedAt: new Date(trace + 200_000).toISOString(), ...extra },
+  });
+  const collect = (runs: Array<ReturnType<typeof traced>>, faults: FaultReceipt[]) => {
+    const byId = new Map(runs.map(entry => [entry.sample.id, entry.events]));
+    const api = { get: async (route: string) => route.includes("workspace-operations") ? []
+      : byId.get(route.split("/")[3]!.split("?")[0]!) ?? [] } as unknown as ChaosApi;
+    return collectWaveSpeed(api, "local", [{ issueId: "i", adapter: "codex", samples: [{ runs: runs.map(entry => entry.sample) }] as never }], faults);
+  };
+
+  it("keeps a run an MS2 freeze hit before its first activity in its cold budget, with the freeze removed", async () => {
+    // Created 1 s before the freeze; first activity 115 s later, 110.002 s of it frozen: 4.998 s of real start.
+    const hit = traced("r1", 1794311536833, [["heartbeat.queue", 0, 100], ["task.time_to_first_agent_activity", 0, 115_000]]);
+    const speed = await collect([hit], [S302_MS2]);
+    expect(speed.rows.find(row => row.metric === "time_to_first_activity" && row.start === "cold")).toMatchObject({ measured: { n: 1, p50: 4_998 } });
+    expect(speed.rows.filter(row => row.start === "restart").every(row => row.measured.n === 0)).toBe(true);
+    expect(speed.singleRunBreaches).toBe(0);
+  });
+
+  it("grades a retry of a run that failed after an MS2 freeze as an ordinary warm run", async () => {
+    // The primary never restarted, so the retry starts on a serving server and keeps its warm budget.
+    const failed = traced("r1", 1794311500000, [["heartbeat.queue", 0, 100], ["task.time_to_first_agent_activity", 0, 4_000]],
+      { status: "failed" });
+    const retry = traced("r2", 1794311700000, [["heartbeat.queue", 0, 100], ["task.time_to_first_agent_activity", 0, 30_000]],
+      { retryOfRunId: "r1" });
+    const speed = await collect([failed, retry], [S302_MS2]);
+    expect(speed.rows.find(row => row.metric === "time_to_first_activity" && row.start === "warm")).toMatchObject({ measured: { n: 1, p50: 30_000 } });
+  });
+
+  it("grades s302's MS3 shape as a fast recovery, and MS2 not at all", () => {
+    // The run resumes 1.5 s after the replacement is ready; its next provider event after the second server
+    // stopped (s302: about 11 s later, while bench.sh ran quietly) is not a recovery.
+    const resumedAt = 1794311949160 + 1_500;
+    const recovered: BaselineRun = { runId: "r", adapter: "codex", environment: "local", phase: "cold", events: [
+      { eventType: "session.resumed", createdAt: new Date(resumedAt).toISOString() },
+      { eventType: "tool.execution.progressed", createdAt: new Date(1794311992580 + 11_000).toISOString() }] };
+    const faults = [S302_MS2, S302_MS3];
+    const speed = gradeWaveSpeed("local", [recovered], faultRuns(faults, live), 0, [],
+      { adjusted: 0, removedMs: 0, windows: outageWindows(faults) });
+    expect(speed.rows.find(row => row.metric === "restart_recovery_control_plane")).toMatchObject({ measured: { n: 1, p50: 1_500 }, breaches: [] });
+    expect(speed).toMatchObject({ singleRunBreaches: 0, breaches: 0 });
+  });
+});
