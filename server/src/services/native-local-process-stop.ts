@@ -243,18 +243,18 @@ function record(value: unknown): Record<string, unknown> {
  *   it requested a launch; or
  * - it failed before native selection (for example a refused budget
  *   reservation or a failed preparation query). Selection records the run's
- *   native session, runner instance and coordinator, and a runner launch needs
- *   them, so without any of them no runner or provider for this run can exist,
+ *   native issue, native session, runner instance and coordinator, and a
+ *   runner launch needs them, so without any of them no runner or provider for this run can exist,
  *   in any build.
  * Any launch request, identity record or runner event keeps the normal stop
  * proofs. */
 export async function nativeRunRefusedBeforeLaunch(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "runtimeMode" | "status" | "errorCode" | "processPid" | "processGroupId" |
-  "nativeSessionId" | "runnerInstanceId">): Promise<boolean> {
+  "nativeSessionId" | "runnerInstanceId" | "nativeIssueId">): Promise<boolean> {
   if (run.runtimeMode !== "native" || !SETTLED_RUN_STATUSES.includes(run.status) || run.processPid || run.processGroupId) return false;
   const quarantinedBeforeLaunch = run.status === "failed" && run.errorCode === "native_session_cleanup_quarantined";
   if (!quarantinedBeforeLaunch) {
-    if (run.nativeSessionId || run.runnerInstanceId) return false;
+    if (run.nativeSessionId || run.runnerInstanceId || run.nativeIssueId) return false;
     // Native selection writes the session, runner instance and coordinator
     // together. A coordinator alone still names a run that was selected.
     const [coordinator] = await db.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)

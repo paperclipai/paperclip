@@ -119,15 +119,17 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     const f = await seed();
     await db.update(heartbeatRuns).set({ processPid: null, errorCode }).where(eq(heartbeatRuns.id, f.sourceRunId));
     // A run that failed before native selection has no coordinator.
-    if (errorCode !== "native_session_cleanup_quarantined" && !coordinator)
+    if (errorCode !== "native_session_cleanup_quarantined" && !coordinator) {
       await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+      await db.update(heartbeatRuns).set({ nativeIssueId: null }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    }
     if (launched) await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId,
       seq: 1, eventType: "native.process_start_requested", stream: "system", level: "info", message: "launch requested",
       payload: { hostname: "another-host" } });
     if (runnerEvent) await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.sourceRunId, agentId: f.agentId,
       seq: 1, eventType: "session.started", stream: "system", level: "info", message: "runner event",
       sourceEventId: "runner-event-1", payload: {} });
-    if (prepared) await db.update(heartbeatRuns).set({ nativeSessionId: randomUUID(), runnerInstanceId: randomUUID() })
+    if (prepared) await db.update(heartbeatRuns).set({ nativeIssueId: f.issueId, nativeSessionId: randomUUID(), runnerInstanceId: randomUUID() })
       .where(eq(heartbeatRuns.id, f.sourceRunId));
     const { result, blocked } = await readAdmission(f, false);
     if (comment === null) expect(result).not.toBeNull();
