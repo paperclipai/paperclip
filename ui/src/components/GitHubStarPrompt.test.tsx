@@ -26,7 +26,11 @@ describe("GitHub star prompt", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     if (health) client.setQueryData(["health"], health);
     await act(async () => root.render(<QueryClientProvider client={client}><GitHubStarPrompt /></QueryClientProvider>));
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    // Let the onboarding and done-count queries settle, however slow the run.
+    for (let idle = 0, tick = 0; idle < 2 && tick < 100; tick++) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+      idle = client.isFetching() === 0 ? idle + 1 : 0;
+    }
   };
   const visible = () => Boolean(document.querySelector('[data-testid="github-star-prompt"]'));
   beforeEach(() => {
