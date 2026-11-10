@@ -69,7 +69,7 @@ export function MarkdownUrlLink({ href, children, title, style, knownState, exte
       data-external-liveness={externalStatus?.liveness}
       aria-label={preview ? `${target!.label} ${linkPreviewStateLabel[state]}: ${preview.title}` : externalStatus?.ariaLabel}
       data-link-state={target ? state : undefined}
-      className={target ? "link-preview-status" : undefined}
+      className={target ? `link-preview-status${externalStatus ? " paperclip-markdown-external-ref" : ""}` : undefined}
       data-state={target ? state : undefined}
       aria-describedby={describedBy}
       title={describedBy ? undefined : title ?? (github ? `${github.description}\n${href}` : undefined)}
