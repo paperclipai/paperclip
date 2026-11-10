@@ -103,7 +103,8 @@ export function persistedQueryScope(key: readonly unknown[], data: unknown, user
     return typeof companyId === "string" && companyIds.includes(companyId) ? companyId : undefined;
   }
   if (typeof second !== "string" || !companyIds.includes(second)) return undefined;
-  if (root === "link-preview" && key.length === 4 && third === userId && typeof key[3] === "string") return second;
+  if (root === "link-preview" && typeof key[3] === "string"
+    && hashKey(key) === hashKey(queryKeys.linkPreview(second, userId, key[3]))) return second;
   if (isLegacyInboxQuery(key) && Array.isArray(data)) return second;
   if (["sidebar-badges", "agents", "built-in-agents"].includes(String(root)) && key.length === 2) return second;
   if (root === "projects" && key.length <= 3) return second;

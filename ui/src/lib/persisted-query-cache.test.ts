@@ -40,10 +40,10 @@ afterEach(() => { for (const dispose of handles.splice(0)) dispose(); vi.useReal
 describe("persisted read cache", () => {
   it("restores learned PR status and negative reads without invalidating their demand-driven freshness", () => {
     const first = setup(); seed(first.client);
-    const key = ["link-preview", "company-one", "alice", "https://github.com/acme/web/pull/241"];
+    const key = queryKeys.linkPreview("company-one", "alice", "https://github.com/acme/web/pull/241");
     const result = { preview: { title: "Saved PR status", state: "merged" }, maxAgeMs: 60_000 };
     first.client.setQueryData(key, result);
-    const absentKey = ["link-preview", "company-one", "alice", "https://github.com/acme/web/pull/242"];
+    const absentKey = queryKeys.linkPreview("company-one", "alice", "https://github.com/acme/web/pull/242");
     first.client.setQueryData(absentKey, { preview: null, maxAgeMs: 60_000 });
     const updatedAt = first.client.getQueryState(key)!.dataUpdatedAt;
     first.handle.flush();
@@ -58,8 +58,8 @@ describe("persisted read cache", () => {
     const url = "https://github.com/acme/web/pull/241";
     const result = { preview: { title: "Private PR" }, maxAgeMs: 60_000 };
     const forbidden = [
-      ["link-preview", "company-one", "bob", url],
-      ["link-preview", "other-company", "alice", url],
+      queryKeys.linkPreview("company-one", "bob", url),
+      queryKeys.linkPreview("other-company", "alice", url),
       ["link-preview", "company-one", null, url],
       ["link-preview", "company-one", "alice"],
       ["link-preview", "company-one", "alice", url, "extra"],
@@ -75,13 +75,13 @@ describe("persisted read cache", () => {
     let now = Date.now();
     const first = setup(undefined, () => now); seed(first.client);
     for (let i = 0; i < 120; i += 1) first.client.setQueryData(
-      ["link-preview", "company-one", "alice", `https://github.com/acme/web/pull/${i + 1}`],
+      queryKeys.linkPreview("company-one", "alice", `https://github.com/acme/web/pull/${i + 1}`),
       { preview: { title: `PR ${i + 1}`, state: "open" }, maxAgeMs: 60_000 }, { updatedAt: now - 120 + i });
     first.handle.flush();
     const restored = setup(first.storage, () => now);
     expect(restored.client.getQueryCache().findAll({ queryKey: ["link-preview"] })).toHaveLength(100);
-    expect(restored.client.getQueryData(["link-preview", "company-one", "alice", "https://github.com/acme/web/pull/1"])).toBeUndefined();
-    expect(restored.client.getQueryData(["link-preview", "company-one", "alice", "https://github.com/acme/web/pull/120"])).toBeDefined();
+    expect(restored.client.getQueryData(queryKeys.linkPreview("company-one", "alice", "https://github.com/acme/web/pull/1"))).toBeUndefined();
+    expect(restored.client.getQueryData(queryKeys.linkPreview("company-one", "alice", "https://github.com/acme/web/pull/120"))).toBeDefined();
     first.client.removeQueries({ queryKey: ["link-preview"] });
     now += 10 * 60_000;
     first.handle.flush();
@@ -95,7 +95,7 @@ describe("persisted read cache", () => {
 
   it.each(["sign-out", "account-change", "membership-loss"])("removes persisted private PR reads on %s", action => {
     const first = setup(); seed(first.client);
-    const key = ["link-preview", "company-one", "alice", "https://github.com/acme/private/pull/241"];
+    const key = queryKeys.linkPreview("company-one", "alice", "https://github.com/acme/private/pull/241");
     first.client.setQueryData(key, { preview: { title: "Private PR status" }, maxAgeMs: 60_000 });
     first.handle.flush();
     expect([...first.storage.values.values()].join(" ")).toContain("Private PR status");
