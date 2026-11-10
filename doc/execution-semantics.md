@@ -1759,6 +1759,21 @@ it; a new message continues once the previous session has stopped. These rules
 read only `errorCode` and `runnerProfileJson.sessionCheckpoint`, so runs that
 earlier releases quarantined are shown the same way without a migration.
 
+A server restart in the middle of a host-tool callback (for example an assigned
+app tool or `connections_search`) must not cause that gate. The replacement
+controller restores the old controller's journal and asks the tool authority for
+the call's durable receipt. A receipt is replayed. Without one, the callback's
+owner is provably gone when an earlier controller dispatched it and this server
+process is not running it: the earlier controller's journal writer is retired
+and its checkpoint fence is superseded, so it can never record a result. The
+callback then settles as `tool_call_interrupted_by_restart` with an unknown
+outcome, and the agent is told to check the current state before repeating it.
+The tool is never executed again. Close can then prove the drain and settles
+normally. A callback that this server process still runs, or that this
+controller dispatched and saw fail, stays pending as before. The saved journal
+shape does not change, so a session that an earlier release left with such a
+callback settles at its next adoption without a migration.
+
 A continuation cancelled by the queued-run gate while waiting for review did not start a provider. Its matching dispatch-gate receipt and unclaimed execution fields keep this deliberate wait out of unknown-action reconciliation. Pending review and decision gates still apply. If an older server already created a recovery hold for this exact state, Retry or a new user message can request one fresh turn after the server verifies there is no provider, coordinator, or unfinished cleanup. Saved user input is reconsidered through the same admission path; the cancelled turn is not replayed.
 
 Other legacy queued-run gate cancellations also stay out of unknown-action reconciliation when the terminal run has no retained execution authority, session, workspace recovery, resources, or execution events. The same proof removes the effect of an old false recovery hold only for its exact company, task, and run; the audit row remains. Started or conflicting work retains its hold. Review waits retain their guarded Retry path. New work still passes the current approval, dependency, budget, pause, and ownership gates.

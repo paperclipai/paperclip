@@ -7168,7 +7168,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
     }
 
-  async #recoverSemanticToolInput(call: Parameters<NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>>[0]) {
+  async #recoverSemanticToolInput(call: Parameters<NonNullable<DurablePrpControlPlaneOptions["recoverSemanticToolInput"]>>[0]) {
     if (this.#retainsSourceInputs() || (this.#authorityRunId() !== undefined && call.correlation.runId !== this.#authorityRunId())) return null;
     if (this.#sourceRecoveryIdentity) throw new NativeRunnerSourceReconciliationRequiredError("semantic");
     if (call.operationId === "paperclip_finish" || call.operationId === "paperclip_block") {
