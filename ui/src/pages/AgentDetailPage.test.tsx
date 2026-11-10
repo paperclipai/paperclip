@@ -22,9 +22,11 @@ vi.mock("./AgentDetail", async () => {
   } };
 });
 vi.mock("@/plugins/slots", () => ({ usePluginSlots: () => state, PluginSlotMount: (props: unknown) => { mount(props); return <p>Plugin contribution</p>; } }));
-function view() {
+function view(environmentId = "local") {
   const client = new QueryClient();
-  client.setQueryData([...queryKeys.agents.detail("agent"), "company"], { id: "agent-id", companyId: "company", name: "Agent" });
+  client.setQueryData([...queryKeys.agents.detail("agent"), "company"], { id: "agent-id", companyId: "company", name: "Agent", defaultEnvironmentId: environmentId });
+  client.setQueryData([...queryKeys.agents.detail("agent-id"), "company"], { id: "agent-id", companyId: "company", defaultEnvironmentId: environmentId });
+  client.setQueryData(queryKeys.environments.list("company"), [{ id: "computer", driver: "plugin", config: { pluginKey: "example.computer", driverKey: "tasks" } }]);
   return <QueryClientProvider client={client}><BreadcrumbProvider companyName="Test company"><AgentDetailPage /></BreadcrumbProvider></QueryClientProvider>;
 }
 function render() {
@@ -71,4 +73,15 @@ it.each(["plugin:test.plugin:insights", "overview"])("updates headings on entry 
     act(() => { root.unmount(); });
     params.tab = "plugin:test.plugin:insights";
   }
+});
+
+it.each(["computer", "local"])("gates direct environment-specific views for %s", environmentId => {
+  const original = state.slots;
+  try {
+    state.slots = [...original, { pluginKey: "example.computer", id: "desktop", displayName: "Desktop", agentEnvironmentDriver: "tasks" }];
+    params.tab = "plugin:example.computer:desktop";
+    const markup = renderToStaticMarkup(view(environmentId));
+    expect(markup.includes("Plugin contribution")).toBe(environmentId === "computer");
+    if (environmentId === "local") expect(markup).toContain("This plugin view is unavailable");
+  } finally { state.slots = original; params.tab = "plugin:test.plugin:insights"; }
 });

@@ -29,6 +29,10 @@ Open Settings → Plugins where permitted, or the CLI plugin commands.
 
 Open `/plugins/:pluginId`, a registered plugin route, or its contributed company/project settings surface.
 
+Agent detail tabs with an `agentEnvironmentDriver` requirement appear in agent settings
+and task properties only when the target agent uses that plugin driver. An agent
+can inherit the instance default environment. Other contributions remain visible.
+
 ## Driving it with Playwright and the Paperclip CLI
 
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use a known local fixture plugin with bounded capabilities. Record installed version and any declared external dependencies.
@@ -41,7 +45,7 @@ Manual: Install the fixture, supply its configuration, activate it, and inspect 
 
 ### `plugin-contribution`
 
-Automated: [static plugin UI](../../server/src/__tests__/plugin-ui-static.test.ts) and [company settings contribution](../../ui/src/pages/CompanySettingsPluginPage.test.tsx) cover serving/host behavior.
+Automated: [agent environment slot filtering](../../ui/src/plugins/useAgentEnvironmentSlots.test.tsx), [agent navigation](../../ui/src/components/AgentContextualSidebar.test.tsx), [direct agent views](../../ui/src/pages/AgentDetailPage.test.tsx), and [task panels](../../ui/src/hooks/useTaskPluginPanels.test.tsx) cover the environment requirement. [static plugin UI](../../server/src/__tests__/plugin-ui-static.test.ts) and [company settings contribution](../../ui/src/pages/CompanySettingsPluginPage.test.tsx) cover serving/host behavior.
 
 Manual: Open the contributed page by navigation and cold deep link, perform a harmless plugin action, and inspect its real outcome. Switch company and test an actor without the capability. Reload with the plugin unavailable and verify the host reports that state.
 

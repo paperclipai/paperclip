@@ -8,6 +8,7 @@ import { useTaskRunLiveUpdates, useTranscriptLiveStream } from "@/context/LiveUp
 import { createLiveQueryRecovery } from "@/lib/live-query-recovery";
 import { QueryNotReadyError } from "@/lib/query-client";
 import { queryKeys } from "@/lib/queryKeys";
+import { useAgentEnvironmentSlots } from "@/plugins/useAgentEnvironmentSlots";
 import { usePluginSlots, type ResolvedPluginSlot } from "@/plugins/slots";
 
 export interface TaskPluginPanel {
@@ -133,13 +134,14 @@ export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = t
     && activations.some(panel => panel.pluginKey === slots[index]?.pluginKey && panel.slotId === slots[index]?.id));
   const availableKey = available.join(",");
   const agentId = (!runsError && run?.agentId) || issue?.assigneeAgentId;
-  const manualPanels = useMemo(() => savedTask && !errorMessage && agentId ? panels.map(slot => ({
+  const { slots: eligiblePanels, isLoading: environmentLoading } = useAgentEnvironmentSlots(panels, savedTask ? agentId : null, issue?.companyId);
+  const manualPanels = useMemo(() => savedTask && !errorMessage && agentId ? eligiblePanels.map(slot => ({
     entityId: agentId,
     ...(!runsError && run ? { runId: run.id } : {}),
     autoOpen: active && available[slots.indexOf(slot)] === true,
     slot,
   })) : EMPTY_PANELS,
-  [savedTask, errorMessage, agentId, panels, run?.id, runsError, active, slots, availableKey]);
+  [savedTask, errorMessage, agentId, eligiblePanels, run?.id, runsError, active, slots, availableKey]);
   return { panels: manualPanels, isLoading: savedTask && !errorMessage
-    && (isLoading || (panels.length > 0 && runsPending)) };
+    && (isLoading || environmentLoading || (panels.length > 0 && runsPending)) };
 }
