@@ -41,7 +41,7 @@ export function ProjectProviderGitAuthorization({ project }: { project: Project 
     <section aria-label="Azure DevOps project authorizations" className="flex flex-col gap-3 py-4">
       <h3 className="text-sm font-medium">Azure DevOps organization access</h3>
       <p className="text-sm text-muted-foreground">
-        Save a connection choice for each Azure DevOps organization used by this project. Workspace preparation does not use this choice yet.
+        Choose a connection for each Azure DevOps organization used by this project. Paperclip uses it when preparing additional project workspaces in the background.
       </p>
       {organizations.map((organization) => (
         <AzureOrganizationAuthorization key={organization.scopeKey} project={project} organization={organization} />
