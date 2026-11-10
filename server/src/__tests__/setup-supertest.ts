@@ -57,7 +57,7 @@ if (!SupertestTest.prototype.__paperclipLoopbackPatched) {
     const addr = app.address();
 
     if (!addr) {
-      this._server = app.listen(0) as SupertestServer;
+      this._server = app.listen(0, "127.0.0.1") as SupertestServer;
     }
 
     const listeningAddress = app.address() as AddressInfo | string | null;
