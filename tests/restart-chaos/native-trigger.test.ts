@@ -101,7 +101,7 @@ describe("native-triggered restart", () => {
     expect(trigger.receipts[0]).toMatchObject({ runId: "run-1", eventType: "session.started" });
   });
 
-  it("stays busy while a seen event waits out its delay and does not fail the wave when the task rests first", async () => {
+  it("stays busy while a seen event waits out its delay and still fails a wave in which no restart fired", async () => {
     const armedAt = 4_000_000;
     let open = true;
     const h = harness({ events: { "run-1": [{ seq: 1, eventType: NATIVE_START_EVENT, createdAt: iso(armedAt + 10) }] } });
@@ -116,7 +116,7 @@ describe("native-triggered restart", () => {
     expect(trigger.busy).toBe(false);
     const receipts = trigger.finish([]);
     expect(receipts[0]).toMatchObject({ missedReason: "task_rested_after_event", firedAt: null });
-    expect(nativeTriggerShortfall(receipts)).toBeNull();
+    expect(nativeTriggerShortfall(receipts)).toMatch(/1 saw the event, none fired/);
   });
 
   it("reads at most three event pages per run in one pass and resumes from its cursor", async () => {

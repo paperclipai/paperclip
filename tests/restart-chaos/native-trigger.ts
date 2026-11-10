@@ -162,8 +162,9 @@ export class NativeTrigger {
 
 export function nativeTriggerShortfall(receipts: readonly NativeTriggerReceipt[]): string | null {
   const fired = receipts.filter(receipt => receipt.firedAt !== null);
-  if (!fired.length && !receipts.some(receipt => receipt.seenAt !== null)) {
-    return `--native-trigger: no restart followed a matching run event (${receipts.length} armed, none fired)`;
+  if (!fired.length) {
+    const seen = receipts.filter(receipt => receipt.seenAt !== null).length;
+    return `--native-trigger: no restart followed a matching run event (${receipts.length} armed, ${seen} saw the event, none fired)`;
   }
   const unproven = fired.filter(receipt => !receipt.faultId);
   return unproven.length ? `--native-trigger: ${unproven.length} fired trigger(s) produced no fault: ${unproven.map(receipt => receipt.taskId).join(", ")}` : null;
