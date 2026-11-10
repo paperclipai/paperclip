@@ -3298,6 +3298,18 @@ results, intentional stops, and historical unmarked failures keep their existing
 terminal behavior. This continuation uses the already charged restart attempt and
 does not reset the provider-attempt budget.
 
+The same continuation applies when the runner is lost without a server restart and
+the run resumes itself after the retry delay (a local same-run exact-checkpoint
+resume). Three durable records must hold. First, the latest process record of the
+run is a verified stop of the previous runner (`native.local_process_stopped`) and
+that process is gone. Second, the resume claimed a provider attempt within the
+three-attempt budget from a `retryable_failure` coordinator. Third, that failure
+saved `recoveryMode: "exact_checkpoint_resume"`, `recoverable`,
+`providerSessionEstablished` and `checkpointExists`, with no replacement recorded,
+and the runner restores that same checkpointed conversation. A remote run, a
+bootstrap retry, an ambiguous state, a missing or superseded stop record, an
+exhausted budget, or a replacement session keeps the existing failure.
+
 A restart can also land after the agent proposed its result but before the
 provider turn ended. When the restored runner proves that turn ended with the
 result Paperclip accepted, it records a reconciliation and the run terminal,
