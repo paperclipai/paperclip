@@ -9,9 +9,22 @@ import { getWorkspaceSnapshot, openWorkspaceSnapshotRanges } from "./remote-work
 const ARCHIVE_MAGIC = Buffer.from("PCWS1\n");
 const ARCHIVE_SCHEMA = "paperclip.remote-workspace-archive.v1";
 const MAX_MANIFEST_BYTES = 64 * 1024 * 1024;
-const DEFAULT_INDEX_CACHE_BYTES = 128 * 1024 * 1024;
 const MAX_INDEX_ENTRIES = 500_000;
 const INDEX_ENTRY_BYTES = 256;
+const DEFAULT_INDEX_CACHE_BYTES = 256 * 1024 * 1024;
+const MAX_CONCURRENT_INDEX_BUILDS = 2;
+let activeIndexBuilds = 0;
+const indexBuildWaiters: Array<() => void> = [];
+
+async function withIndexBuildSlot<T>(work: () => Promise<T>): Promise<T> {
+  if (activeIndexBuilds >= MAX_CONCURRENT_INDEX_BUILDS) await new Promise<void>(resolve => indexBuildWaiters.push(resolve));
+  else activeIndexBuilds++;
+  try { return await work(); }
+  finally {
+    const next = indexBuildWaiters.shift();
+    if (next) next(); else activeIndexBuilds--;
+  }
+}
 
 export type SavedArchiveEntry = {
   path: string; name: string; type: "directory" | "file" | "symlink"; size: number; sha256: string | null; offset: number;
@@ -91,7 +104,7 @@ export function createSavedWorkspaceArchiveOpener(db: Db, storage: StorageServic
 } = {}): OpenSavedWorkspaceArchive {
   const maxEntries = Math.min(options.maxIndexEntries ?? MAX_INDEX_ENTRIES, MAX_INDEX_ENTRIES);
   const cacheBudget = options.indexCacheBytes ?? DEFAULT_INDEX_CACHE_BYTES;
-  const cache = new Map<string, ArchiveIndex>();
+  const cache = new Map<string, ArchiveIndex>(), building = new Map<string, Promise<ArchiveIndex>>();
   let cachedBytes = 0;
   const remember = (key: string, index: ArchiveIndex) => {
     const existing = cache.get(key);
@@ -115,20 +128,26 @@ export function createSavedWorkspaceArchiveOpener(db: Db, storage: StorageServic
     try {
       const key = `${saved.companyId}/${saved.workspaceId}/${saved.id}/${saved.manifestDigest}`;
       let index = cache.get(key);
+      const shared = index ? undefined : building.get(key);
       if (index) { cache.delete(key); cache.set(key, index); }
-      else {
-        const prefixLength = ARCHIVE_MAGIC.length + 4;
-        if (ranges.plaintextBytes < prefixLength) invalid("truncated");
-        const prefix = await readAll(await ranges.read(0, prefixLength, input.signal), prefixLength);
-        if (!prefix.subarray(0, ARCHIVE_MAGIC.length).equals(ARCHIVE_MAGIC)) invalid("invalid_header");
-        const manifestSize = prefix.readUInt32BE(ARCHIVE_MAGIC.length);
-        if (manifestSize > MAX_MANIFEST_BYTES || prefixLength + manifestSize > ranges.plaintextBytes) invalid("manifest_too_large");
-        const manifest = await readAll(await ranges.read(prefixLength, manifestSize, input.signal), manifestSize);
-        if (manifest.length !== manifestSize || createHash("sha256").update(manifest).digest("hex") !== saved.manifestDigest) {
-          invalid("manifest_mismatch");
-        }
-        index = buildIndex(manifest, ranges.plaintextBytes, maxEntries);
-        remember(key, index);
+      else if (shared) index = await shared.catch(() => undefined);
+      if (!index) {
+        const build = withIndexBuildSlot(async () => {
+          const prefixLength = ARCHIVE_MAGIC.length + 4;
+          if (ranges.plaintextBytes < prefixLength) invalid("truncated");
+          const prefix = await readAll(await ranges.read(0, prefixLength, input.signal), prefixLength);
+          if (!prefix.subarray(0, ARCHIVE_MAGIC.length).equals(ARCHIVE_MAGIC)) invalid("invalid_header");
+          const manifestSize = prefix.readUInt32BE(ARCHIVE_MAGIC.length);
+          if (manifestSize > MAX_MANIFEST_BYTES || prefixLength + manifestSize > ranges.plaintextBytes) invalid("manifest_too_large");
+          const manifest = await readAll(await ranges.read(prefixLength, manifestSize, input.signal), manifestSize);
+          if (manifest.length !== manifestSize || createHash("sha256").update(manifest).digest("hex") !== saved.manifestDigest) {
+            invalid("manifest_mismatch");
+          }
+          return buildIndex(manifest, ranges.plaintextBytes, maxEntries);
+        });
+        building.set(key, build);
+        try { index = await build; remember(key, index); }
+        finally { if (building.get(key) === build) building.delete(key); }
       }
       const built = index;
       return {

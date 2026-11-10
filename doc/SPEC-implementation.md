@@ -2846,7 +2846,8 @@ free temporary disk with a 256 MiB margin before writing. Cleanup releases the
 reservation. A file larger than the budget reports `too_large`. A storage read
 that sends no bytes for five minutes is closed. The process keeps parsed
 manifests of recent snapshots, charged by manifest size plus their entries, up
-to 128 MiB. Manifests are limited to 64 MiB, the archive format's limit, and
+to 256 MiB. Concurrent opens of one snapshot share one manifest read, and at most
+two manifests are read and parsed at once per process. Manifests are limited to 64 MiB, the archive format's limit, and
 500,000 entries; a larger saved copy reports `too_large`.
 Saved files carry no modification times, so the recent view of a saved copy is
 ordered by path. Availability batches share one verified access per execution

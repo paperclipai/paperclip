@@ -495,6 +495,19 @@ describeDatabase("remote workspace ordinary file routes", () => {
     } finally { await access?.close(); }
     const preview = await (await files(fitsOne).open(scope))!.read("docs/result.md", { maxBytes: 1024 });
     expect(preview.toString()).toBe("Remote useful result\n");
+    let freeSpaceChecked!: () => void;
+    const checking = new Promise<void>(resolve => { freeSpaceChecked = resolve; });
+    const slow = { ...fitsOne, availableBytes: async () => { await checking; return 1n << 40n; } };
+    const [first, second] = [await files(slow).open(scope), await files(slow).open(scope)];
+    try {
+      const together = Promise.allSettled([first!.download("docs/big.bin"), second!.download("docs/big.bin")]);
+      await new Promise(resolve => setTimeout(resolve, 50));
+      freeSpaceChecked();
+      const outcomes = await together;
+      expect(outcomes.filter(outcome => outcome.status === "fulfilled")).toHaveLength(1);
+      expect(outcomes.find(outcome => outcome.status === "rejected")).toMatchObject({ reason: { status: 422, details: { code: "workspace_unavailable" } } });
+      for (const outcome of outcomes) if (outcome.status === "fulfilled") { outcome.value.stream.destroy(); await outcome.value.cleanup(); }
+    } finally { await first?.close(); await second?.close(); }
   });
 
   it("closes the storage stream when a saved range read is abandoned or stalls", async () => {
@@ -533,8 +546,15 @@ describeDatabase("remote workspace ordinary file routes", () => {
     const input = { companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId: f.saved.id };
     const single = createSavedWorkspaceArchiveOpener(db, f.storage);
     const once = await single(input); const charge = once.cachedIndexBytes(); once.close();
+    const getObject = f.storage.getObject.bind(f.storage), manifestReads: unknown[] = [];
+    const spy = vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
+      if (args[2]?.range?.start === 19) manifestReads.push(args[2].range);
+      return getObject(...args);
+    });
     const overlapping = createSavedWorkspaceArchiveOpener(db, f.storage);
     const opened = await Promise.all([overlapping(input), overlapping(input), overlapping(input)]);
+    spy.mockRestore();
+    expect(manifestReads).toHaveLength(2);
     expect(opened.map(archive => archive.cachedIndexBytes())).toEqual([charge, charge, charge]);
     for (const archive of opened) archive.close();
     const capped = createRemoteWorkspaceFiles(db, { openSavedWorkspaceArchive: createSavedWorkspaceArchiveOpener(db, f.storage, { maxIndexEntries: 3 }) });

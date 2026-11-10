@@ -399,13 +399,15 @@ async function archiveDownload(archive: SavedWorkspaceArchive, relativePath: str
   const entry = archive.entry(relativePath);
   if (!entry || entry.type !== "file" || entry.size !== expected.byteSize) throw fileFailure("file_changed");
   if (entry.size > limits.maxReservedBytes) throw fileFailure("too_large");
-  if (savedFileDownloadReservedBytes + entry.size > limits.maxReservedBytes
-    || await limits.availableBytes() < BigInt(savedFileDownloadReservedBytes + entry.size + limits.freeSpaceMarginBytes)) {
-    throw fileFailure("workspace_unavailable");
-  }
+  if (savedFileDownloadReservedBytes + entry.size > limits.maxReservedBytes) throw fileFailure("workspace_unavailable");
   savedFileDownloadReservedBytes += entry.size;
   let released = false;
   const release = () => { if (!released) { released = true; savedFileDownloadReservedBytes -= entry.size; } };
+  try {
+    if (await limits.availableBytes() < BigInt(savedFileDownloadReservedBytes + limits.freeSpaceMarginBytes)) {
+      throw fileFailure("workspace_unavailable");
+    }
+  } catch (error) { release(); throw error; }
   let directory: string | undefined;
   const cleanup = async () => {
     try { if (directory) await fs.rm(directory, { recursive: true, force: true }); }
