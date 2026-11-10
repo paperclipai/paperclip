@@ -39,8 +39,8 @@ export function createGitHubLinkPreviewProvider(db: Db, options?: GitHubExternal
       const state: LinkPreviewState = data.merged === true ? "merged"
         : data.state === "closed" ? "closed"
         : data.state !== "open" ? "unknown"
-        : data.mergeable === false ? "conflicts"
-        : data.draft === true ? "draft" : "open";
+        : data.draft === true ? "draft"
+        : data.mergeable === false ? "conflicts" : "open";
       return {
         preview: {
           target, title: data.title, state,

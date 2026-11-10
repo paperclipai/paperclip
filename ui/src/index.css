@@ -2678,7 +2678,7 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 .link-preview-status[data-state="merged"] { color: var(--link-preview-merged); }
 .link-preview-status[data-state="conflicts"] { color: var(--link-preview-conflicts); }
 .link-preview-status:is([data-state="unknown"], [data-state="draft"], [data-state="closed"]) { color: var(--muted-foreground); }
-.paperclip-markdown a.link-preview-status { color: var(--muted-foreground); }
+.paperclip-markdown a.link-preview-status:is([data-state="unknown"], [data-state="draft"], [data-state="closed"]) { color: var(--muted-foreground); }
 .paperclip-markdown a.link-preview-status[data-state="open"] { color: var(--link-preview-open); }
 .paperclip-markdown a.link-preview-status[data-state="merged"] { color: var(--link-preview-merged); }
 .paperclip-markdown a.link-preview-status[data-state="conflicts"] { color: var(--link-preview-conflicts); }
