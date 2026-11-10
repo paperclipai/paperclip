@@ -98,6 +98,25 @@ describe("ST4 and ST7 planning", () => {
     }
   });
 
+  it("passes a part shorter than the truncation point through untouched", async () => {
+    let received = 0;
+    const server = createServer((incoming, outgoing) => {
+      incoming.on("data", (chunk: Buffer) => { received += chunk.length; });
+      incoming.on("end", () => outgoing.writeHead(200, { etag: "\"p\"" }).end());
+    });
+    server.listen(0, "127.0.0.1"); await once(server, "listening");
+    const proxy = await startStorageFaultProxy(`http://127.0.0.1:${(server.address() as { port: number }).port}`);
+    try {
+      proxy.setRules([{ fault: { kind: "truncate", afterBytes: MIB }, operations: ["UploadPart"] }]);
+      const response = await fetch(`${proxy.endpoint}/b/k?partNumber=9&uploadId=u`, { method: "PUT", body: Buffer.alloc(1024) });
+      expect([response.status, received]).toEqual([200, 1024]);
+      expect(proxy.counts()).toMatchObject({ injected: 0, injectedBy: {} });
+    } finally {
+      await proxy.close();
+      server.closeAllConnections(); server.close();
+    }
+  });
+
   it("lags reads of a key only after a successful object write and only for the lag", () => {
     let now = 1_000;
     const tracker = new ReadAfterWriteTracker(() => now);

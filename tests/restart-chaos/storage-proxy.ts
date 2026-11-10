@@ -123,7 +123,6 @@ export async function startStorageFaultProxy(endpoint: string, random: () => num
       let seen = 0;
       const cut = () => { if (incoming.socket.destroyed) return; note(method, "reset", true, cause); incoming.socket.destroy(); };
       incoming.on("data", (chunk: Buffer) => { seen += chunk.length; if (seen >= fault.afterBytes) cut(); });
-      incoming.on("end", cut);
       forward(incoming, outgoing);
       return;
     }

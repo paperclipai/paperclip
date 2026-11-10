@@ -69,7 +69,7 @@ export class StorageChaos {
   private timer: ReturnType<typeof setInterval> | null = null;
   readonly receipts: StorageFaultReceipt[] = [];
 
-  constructor(private readonly windows: readonly StorageFaultWindow[], private startedAt: number,
+  constructor(readonly windows: readonly StorageFaultWindow[], private startedAt: number,
     private readonly proxy: { setRules(rules: readonly StorageFaultRule[]): void; clear(): void },
     private readonly record: (kind: string, data: Record<string, unknown>) => void) {}
 
