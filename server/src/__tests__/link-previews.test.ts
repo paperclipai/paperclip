@@ -69,6 +69,23 @@ describe("demand-driven link preview cache", () => {
     expect(resolve).toHaveBeenCalledTimes(2);
     finish(unavailable);
   });
+  it("refreshes an expired timeout while the earlier operation ignores cancellation", async () => {
+    vi.useFakeTimers();
+    let finish!: (value: typeof unavailable) => void;
+    const resolve = vi.fn(async () => unavailable).mockImplementationOnce(
+      () => new Promise<typeof unavailable>(done => { finish = done; }),
+    );
+    const service = createLinkPreviewService([provider(resolve)], { timeoutMs: 20, maxConcurrent: 2 });
+    const first = service.get(scope, url);
+    await vi.advanceTimersByTimeAsync(21);
+    expect(await first).toEqual(unavailable);
+    await service.get(scope, url);
+    expect(resolve).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60_001);
+    await service.get(scope, url);
+    expect(resolve).toHaveBeenCalledTimes(2);
+    finish(unavailable);
+  });
   it("aborts a real stalled HTTP read while an unrelated lookup remains responsive", async () => {
     const server = createServer((_req, res) => { res.writeHead(200, { "content-type": "application/json" }); res.write("{"); });
     server.listen(0, "127.0.0.1");
