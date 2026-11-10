@@ -71,7 +71,6 @@ export class StorageTrigger {
 
   constructor(readonly target: StorageTriggerTarget, private readonly hooks: StorageTriggerHooks, private readonly holdMs = STORAGE_TRIGGER_HOLD_MS) {}
 
-  get armedCount(): number { return this.armed.length; }
   get busy(): boolean { return this.firing; }
 
   arm(fault: ArmedStorageFault): void {

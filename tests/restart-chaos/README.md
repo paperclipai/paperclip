@@ -389,8 +389,8 @@ server, so the restart provably interrupts the transfer.
 | `run-log` | `PUT`/`POST` under `run-logs/` (run-log journal segments) |
 
 `storage-trigger.json` records, per armed fault, the request that fired it (method, path with upload
-ids hidden, declared bytes, outcome `aborted`/`completed`), every other request in flight at that
-moment, and the fault id it produced. A fault whose task rested first, or that saw no matching request
+ids hidden, declared bytes, outcome `aborted`/`completed`), every request in flight at that
+moment (the held one included), and the fault id it produced. A fault whose task rested first, or that saw no matching request
 before the wave ended, is recorded with `missedReason` (`task_rested` or `no_matching_request`). The wave
 summary adds a "Storage trigger" section with each armed fault's result and the count not reached. It
 fails when no restart fired, or when a fired restart has no fault id or its held request was not
