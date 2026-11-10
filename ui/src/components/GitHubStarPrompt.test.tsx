@@ -3,16 +3,20 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import type { HealthStatus } from "@/api/health";
 import { GitHubStarPrompt, STAR_PROMPT_SEEN_KEY } from "./GitHubStarPrompt";
 
-const state = vi.hoisted(() => ({ companyId: "company", loading: false, onboardingOpen: false, done: 5, listCompact: vi.fn() }));
+const state = vi.hoisted(() => ({ companyId: "company", loading: false, onboardingOpen: false, onboardingStatus: null as string | null, done: 5, listCompact: vi.fn() }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: state.companyId, loading: state.loading }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogState: () => ({ onboardingOpen: state.onboardingOpen }) }));
-vi.mock("@/api/issues", () => ({ issuesApi: { listCompact: (...args: unknown[]) => {
-  state.listCompact(...args);
-  return Promise.resolve(Array.from({ length: state.done }, (_, i) => ({ id: `issue-${i}` })));
-} } }));
+vi.mock("@/api/issues", () => ({ issuesApi: {
+  list: () => Promise.resolve(state.onboardingStatus ? [{ id: "onboarding", originKind: ONBOARDING_FIRST_TASK_ORIGIN_KIND, status: state.onboardingStatus }] : []),
+  listCompact: (...args: unknown[]) => {
+    state.listCompact(...args);
+    return Promise.resolve(Array.from({ length: state.done }, (_, i) => ({ id: `issue-${i}` })));
+  },
+} }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("GitHub star prompt", () => {
@@ -26,7 +30,7 @@ describe("GitHub star prompt", () => {
   };
   const visible = () => Boolean(document.querySelector('[data-testid="github-star-prompt"]'));
   beforeEach(() => {
-    Object.assign(state, { companyId: "company", loading: false, onboardingOpen: false, done: 5 });
+    Object.assign(state, { companyId: "company", loading: false, onboardingOpen: false, onboardingStatus: null, done: 5 });
     state.listCompact.mockClear();
     window.localStorage.clear();
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
@@ -54,6 +58,29 @@ describe("GitHub star prompt", () => {
     await render();
     expect(visible()).toBe(false);
     await act(async () => { other.remove(); });
+    expect(visible()).toBe(true);
+  });
+
+  it("does not open after another tab has shown it", async () => {
+    const other = document.createElement("div");
+    other.setAttribute("role", "dialog"); other.setAttribute("data-state", "open");
+    document.body.append(other);
+    await render();
+    window.localStorage.setItem(STAR_PROMPT_SEEN_KEY, new Date().toISOString());
+    await act(async () => { window.dispatchEvent(new StorageEvent("storage", { key: STAR_PROMPT_SEEN_KEY })); });
+    await act(async () => { other.remove(); });
+    expect(visible()).toBe(false);
+  });
+
+  it("waits until the onboarding task is finished", async () => {
+    state.onboardingStatus = "in_progress";
+    await render();
+    expect(visible()).toBe(false);
+    expect(state.listCompact).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    state.onboardingStatus = "done";
+    await render();
     expect(visible()).toBe(true);
   });
 

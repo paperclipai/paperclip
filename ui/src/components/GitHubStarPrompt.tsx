@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { useCompany } from "@/context/CompanyContext";
 import { useDialogState } from "@/context/DialogContext";
 import { queryKeys } from "@/lib/queryKeys";
-import { MODAL_SELECTOR, useModalOpen } from "./AnnouncementWell";
+import { MODAL_SELECTOR, useModalOpen, useOnboardingInProgress } from "./AnnouncementWell";
 import { PaperclipMark } from "./PaperclipLockup";
 
 export const STAR_PROMPT_COMPLETED_TASKS = 5;
@@ -26,18 +26,20 @@ function markSeen() {
 /**
  * Asks self-hosted users to star the repository once they have finished
  * enough tasks to know whether Paperclip helps them. It shows at most once
- * per browser: showing it counts as seen, so a reload never repeats it.
- * It waits for any other dialog to close. Cloud instances, onboarding and
- * unknown state (loading or a failed read) keep it hidden.
+ * per browser: showing it counts as seen, so a reload or another open tab
+ * never repeats it. It waits for any other dialog to close. Cloud instances,
+ * unfinished onboarding and unknown state (loading or a failed read) keep it
+ * hidden.
  */
 export function GitHubStarPrompt() {
   const { selectedCompanyId, loading } = useCompany();
   const { onboardingOpen } = useDialogState();
   const [seen, setSeen] = useState(readSeen);
   const [open, setOpen] = useState(false);
+  const onboardingInProgress = useOnboardingInProgress(selectedCompanyId);
   const health = useQuery({ queryKey: queryKeys.health, queryFn: () => healthApi.get(), enabled: false });
   const selfHosted = health.isSuccess && !health.data.cloud;
-  const eligible = selfHosted && !seen && !loading && Boolean(selectedCompanyId) && !onboardingOpen;
+  const eligible = selfHosted && !seen && !loading && Boolean(selectedCompanyId) && !onboardingOpen && !onboardingInProgress;
   const done = useQuery({
     queryKey: queryKeys.issues.starPromptDone(selectedCompanyId ?? "__none__"),
     queryFn: ({ signal }) => issuesApi.listCompact(selectedCompanyId!, { status: "done", limit: STAR_PROMPT_COMPLETED_TASKS }, { signal }),
@@ -48,7 +50,18 @@ export function GitHubStarPrompt() {
   const otherModalOpen = useModalOpen(reached);
 
   useEffect(() => {
+    if (seen) return;
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === STAR_PROMPT_SEEN_KEY || event.key === null) setSeen(readSeen());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [seen]);
+
+  useEffect(() => {
     if (!reached || otherModalOpen || document.querySelector(MODAL_SELECTOR)) return;
+    // Another tab may have shown it after this one mounted.
+    if (readSeen()) { setSeen(true); return; }
     markSeen();
     setSeen(true);
     setOpen(true);
