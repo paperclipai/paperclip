@@ -65,42 +65,16 @@ Greptile setup.
 - `doc/`: operational and product docs
 - `rules/`: scoped repository rules (see section 2)
 
-## 4. Dev Setup (Auto DB)
-
-Prepare a new or updated worktree with one command:
+## 4. Dev Setup
 
 ```sh
-node scripts/agent-preflight.mjs
+node scripts/agent-preflight.mjs   # prepare a new or updated worktree
+pnpm dev                           # API and UI at http://localhost:3100
 ```
 
-Use it instead of running `pnpm install`, the Runner build, and `build:rust` by
-hand. It skips unchanged steps and reuses other worktrees' builds from a
-content-keyed cache in `~/.cache/paperclip/agent-build`. Do not share
-`CARGO_TARGET_DIR` between worktrees. See "Agent worktree preflight" in
+Leave `DATABASE_URL` unset to use the embedded database. See "Agent worktree
+preflight", "Start Dev", "Quick Health Checks", and "Database in Dev" in
 `doc/DEVELOPING.md`.
-
-Start the app. Leave `DATABASE_URL` unset to use embedded PGlite:
-
-```sh
-pnpm dev
-```
-
-This serves the API and the UI at `http://localhost:3100` (the API server serves
-the UI in dev middleware mode).
-
-Quick checks:
-
-```sh
-curl http://localhost:3100/api/health
-curl http://localhost:3100/api/companies
-```
-
-Reset the local dev DB. This deletes all local dev data:
-
-```sh
-rm -rf data/pglite
-pnpm dev
-```
 
 ## 5. Core Engineering Rules
 
@@ -148,27 +122,10 @@ This repo has three separate data paths. Do not confuse them. Match a change to 
 
 Before you change any of these paths or add a Telemetry caller, read [`rules/data-paths.mdc`](rules/data-paths.mdc) for the exact file paths and review requirements.
 
-## 6. Database Change Workflow
+## 6. Database Changes
 
-When changing data model:
-
-1. Edit `packages/db/src/schema/*.ts`
-2. Ensure new tables are exported from `packages/db/src/schema/index.ts`
-3. Generate migration:
-
-```sh
-pnpm db:generate
-```
-
-4. Validate compile:
-
-```sh
-pnpm -r typecheck
-```
-
-Notes:
-- `packages/db/drizzle.config.ts` reads compiled schema from `dist/schema/*.js`
-- `pnpm db:generate` compiles `packages/db` first
+Follow "Schema change workflow" in `doc/DATABASE.md`: edit the schema, run
+`pnpm db:generate`, then typecheck.
 
 ## 7. Verification Before Hand-off
 
@@ -239,41 +196,22 @@ and run `node scripts/storybook-catalog.mjs`. Indexes are generated and ignored;
 never commit them. See the [Storybook feature catalog](maps/storybook-map/README.md)
 for the full workflow. Structural checks are not production acceptance.
 
-## 8. API and Auth Expectations
+## 8. API and Auth
 
-- Base path: `/api`
-- Board access is treated as full-control operator context
-- Agent access uses bearer API keys (`agent_api_keys`), hashed at rest
-- Agent keys must not access other companies
-
-When adding endpoints:
-
-- apply company access checks
-- enforce actor permissions (board vs agent)
-- write activity log entries for mutations
-- return consistent HTTP errors (`400/401/403/404/409/422/500`)
+Every route under `server/src/routes/` checks company access and actor
+permissions, logs mutations to the activity log, and returns consistent HTTP
+errors. See [`rules/api-route-expectations.mdc`](rules/api-route-expectations.mdc).
 
 ## 9. UI Expectations
 
 - Keep routes and nav aligned with available API surface
 - Use company selection context for company-scoped pages
 - Surface failures clearly; do not silently ignore API errors
-- Form and wizard footers: keep Save & exit (or Cancel/Back) left and the primary action right in the same vertically aligned row. Each step owns the entire footer; never append Save & exit as a separate row. See `DESIGN.md`.
+- Follow `DESIGN.md` for every UI design decision, including the token-only rule and form footers. Run `pnpm check:token-gates` before committing UI changes.
 
-### Design system
+## 10. Pull Requests
 
-`DESIGN.md` at the repo root is the source of truth for UI design decisions. The token-only rule applies to all `ui/` changes: every color, spacing, radius, type, shadow, and motion value in `ui/src/components/**` and `ui/src/pages/**` comes from the token layer in `ui/src/index.css` — no hex, raw px, arbitrary Tailwind bracket values, or raw `font-size`/`fontSize` declarations in components, outside the documented allowlist in `ui/src/index.css`. Run `pnpm check:token-gates` (`scripts/check-token-gates.mjs`) before committing UI changes — it fails on any violation not covered by that allowlist.
-
-## 10. Pull Request Requirements
-
-When creating a pull request (via `gh pr create` or any other method), you **must** read and fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md). Do not craft ad-hoc PR bodies — use the template as the structure for your PR description. Required sections:
-
-- **Thinking Path** — trace reasoning from project context to this change (see `CONTRIBUTING.md` for examples)
-- **What Changed** — bullet list of concrete changes
-- **Verification** — how a reviewer can confirm it works
-- **Risks** — what could go wrong
-- **Model Used** — the AI model that produced or assisted with the change (provider, exact model ID, context window, capabilities). Write "None — human-authored" if no AI was used.
-- **Checklist** — all items checked
+Fill in every section of [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md), however you create the pull request. Do not write an ad-hoc body. See "PR Requirements" in `CONTRIBUTING.md` for the details and thinking-path examples.
 
 ## 11. Definition of Done
 

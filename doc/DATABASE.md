@@ -1164,6 +1164,29 @@ The database mode is controlled by `DATABASE_URL`:
 
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
 
+## Schema change workflow
+
+When you change the data model:
+
+1. Edit `packages/db/src/schema/*.ts`.
+2. Export each new table from `packages/db/src/schema/index.ts`.
+3. Generate the migration from the repository root:
+
+   ```sh
+   pnpm db:generate
+   ```
+
+4. Validate that everything compiles:
+
+   ```sh
+   pnpm -r typecheck
+   ```
+
+`pnpm db:generate` compiles `packages/db` first, because
+`packages/db/drizzle.config.ts` reads the compiled schema from `dist/schema/*.js`.
+Then update every layer that the change affects: `packages/shared` types and
+validators, `server` routes and services, and `ui` API clients and pages.
+
 ## Migration authoring checklist
 
 Older embedded databases can use `SQL_ASCII`. Test encoding-sensitive SQL on
