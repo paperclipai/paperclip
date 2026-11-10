@@ -4,6 +4,7 @@ import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js
 import { GENERIC_RUN_FAILURE_CODES, NATIVE_PRE_DISPATCH_FAILURE_CODE, NATIVE_PRE_DISPATCH_FAILURE_KEY, NATIVE_PRE_DISPATCH_FAILURE_RECORD, failureCauseFromAdapterResult, failureCauseFromError,
   isNativePreDispatchTransientFailure } from "./run-failure-cause.js";
 import { INTERRUPTED_PREPARATION_RETRY_REASON } from "../execution-recovery-attempt.js";
+import { hasNativeExecutionStartEvidence } from "../native-runtime/native-restart-recovery.js";
 import { withoutSqlStatementText } from "@paperclipai/shared";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
 import { boundOriginalMessage, describeRefusedExactResume, interruptedExactResumeCause } from "../native-runtime/native-exact-resume-failure.js";
@@ -37,8 +38,8 @@ import { accountRunCost } from "../run-cost-accounting.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import { isWorkspaceGitScanError } from "../workspace-git-operation-scheduler.js";
-import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
-import { heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { HttpError } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { normalizeResponsibleUserDenialCode } from "../responsible-user-denial-run-outcomes.js";
@@ -1134,12 +1135,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       // The executor records native.process_start_requested before any backend
       // may spawn a runner; runner events carry a source event ID. Any of them,
       // in this or an earlier controller generation, means work may have run.
-      const [started] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
-        eq(heartbeatRunEvents.companyId, row.companyId), eq(heartbeatRunEvents.runId, runId),
-        or(isNotNull(heartbeatRunEvents.sourceEventId), inArray(heartbeatRunEvents.eventType, ["adapter.invoke",
-          "native.process_start_requested", "native.process_identity_recorded", "tool.execution.started"])),
-      )).limit(1);
-      return started ? null : { [NATIVE_PRE_DISPATCH_FAILURE_KEY]: NATIVE_PRE_DISPATCH_FAILURE_RECORD };
+      // Restart recovery uses the same canonical proof.
+      if (await hasNativeExecutionStartEvidence(db, { companyId: row.companyId, id: runId })) return null;
+      return { [NATIVE_PRE_DISPATCH_FAILURE_KEY]: NATIVE_PRE_DISPATCH_FAILURE_RECORD };
     } catch (error) {
       logger.warn({ err: error, runId }, "could not prove a native failure started no provider work; keeping the native hold");
       return null;
