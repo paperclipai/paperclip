@@ -171,15 +171,23 @@ export function gradeU1(record: TaskRecord, bounds: UniversalBounds): Omit<Unive
 }
 
 export function gradeU2(record: TaskRecord, bounds: UniversalBounds): Omit<UniversalResult, "enforced"> {
-  const failed = [...finalRuns(record).values()].filter(run => FAILED_RUN.has(run.status) || run.status === "interrupted")
+  // Every finished run in creation order: a succeeded run between two failures is progress and ends the streak.
+  const finished = [...finalRuns(record).values()].filter(run => run.finishedSeenAt !== null)
     .sort((a, b) => (ms(a.createdAt) || a.firstSeenAt) - (ms(b.createdAt) || b.firstSeenAt));
-  if (!failed.length) return { verdict: "n/a", detail: "no failed run" };
-  let streak = 1, worst = 1, worstCode = `${failed[0]!.status}:${failed[0]!.errorCode ?? "none"}`;
-  for (let index = 1; index < failed.length; index += 1) {
-    const [previous, current] = [failed[index - 1]!, failed[index]!];
-    const same = `${previous.status}:${previous.errorCode}` === `${current.status}:${current.errorCode}`
+  const isFailure = (run: RunSample) => FAILED_RUN.has(run.status) || run.status === "interrupted";
+  if (!finished.some(isFailure)) return { verdict: "n/a", detail: "no failed run" };
+  let streak = 0, worst = 0, worstCode = "";
+  let previous: (typeof finished)[number] | null = null;
+  for (const current of finished) {
+    if (!isFailure(current)) {
+      // A cancellation (for example a superseded continuation) is neither progress nor a repeat.
+      if (current.status !== "cancelled") { streak = 0; previous = null; }
+      continue;
+    }
+    const same = previous !== null && `${previous.status}:${previous.errorCode}` === `${current.status}:${current.errorCode}`
       && previous.statusWhenFinished === current.statusWhenFinished;
     streak = same ? streak + 1 : 1;
+    previous = current;
     if (streak > worst) { worst = streak; worstCode = `${current.status}:${current.errorCode ?? "none"}`; }
   }
   return worst > bounds.sameFailureRuns

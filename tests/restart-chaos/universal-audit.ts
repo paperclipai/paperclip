@@ -50,20 +50,23 @@ export function auditWaves(roots: readonly string[], bounds: UniversalBounds = D
       }
       if (!graded.length) continue;
       report.waves += 1;
-      const waveGood = graded.every(entry => entry.grade.pass);
+      // Known-good is R1–R6 and T only: `grade.pass` on newer grades also includes enforced universal checks.
+      const known = (grade: TaskGrade) => grade.T.verdict === "pass" && Object.values(grade.rules).every(rule => rule.verdict !== "fail");
+      const waveGood = graded.every(entry => known(entry.grade));
       if (waveGood) report.knownGoodWaves += 1;
       for (const { task, record, grade } of graded) {
         report.tasks += 1;
-        if (grade.pass) report.knownGoodTasks += 1;
+        const passed = known(grade);
+        if (passed) report.knownGoodTasks += 1;
         const universal = gradeUniversal(record, { bounds, enforced: new Set() });
         for (const rule of RULES) {
-          if (grade.pass) for (const [name, value] of Object.entries(universal[rule].metrics ?? {})) metrics.set(name, [...(metrics.get(name) ?? []), value]);
+          if (passed) for (const [name, value] of Object.entries(universal[rule].metrics ?? {})) metrics.set(name, [...(metrics.get(name) ?? []), value]);
           if (universal[rule].verdict !== "fail") continue;
           report.byRule[rule].flagged += 1;
-          if (grade.pass) report.byRule[rule].onKnownGoodTasks += 1;
+          if (passed) report.byRule[rule].onKnownGoodTasks += 1;
           if (waveGood) report.byRule[rule].onKnownGoodWaves += 1;
           report.flags.push({ wave: `${path.basename(path.resolve(root, "../../.."))}:${wave}`, task, workload: record.plan.workload,
-            adapter: record.plan.adapter, taskPassed: grade.pass, waveGood, rule, detail: universal[rule].detail });
+            adapter: record.plan.adapter, taskPassed: passed, waveGood, rule, detail: universal[rule].detail });
         }
       }
     }
