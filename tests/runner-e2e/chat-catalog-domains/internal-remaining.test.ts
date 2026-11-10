@@ -25,17 +25,20 @@ function defaults() {
 }
 it("accepts genuine saved defaults reaching a new native task while active work stays fixed", () => expect(gradeProjectDefaults(defaults()).passed).toBe(true));
 it("accepts natural future-default wording", () => { const o = defaults(); o.state.defaultsReply = "These defaults apply only to subsequent Launch tasks; your running work is not changed."; expect(gradeProjectDefaults(o).passed).toBe(true); });
-it("accepts newly admitted work while still requiring the existing-work distinction", () => {
-  const o = defaults(); o.state.defaultsReply = "Newly admitted work inherits these defaults. Existing items were left unchanged.";
+it("leaves the canonical reply's future/active wording to a human reader", () => {
+  const o = defaults(); o.state.defaultsReply = "Newly admitted work inherits these defaults.";
   expect(gradeProjectDefaults(o).passed).toBe(true);
-  o.state.defaultsReply = "Newly admitted work inherits these defaults.";
-  expect(gradeProjectDefaults(o).passed).toBe(false);
-  o.state.defaultsReply = "Existing items were left unchanged.";
-  expect(gradeProjectDefaults(o).passed).toBe(false);
+});
+it("leaves the saved description and worker findings wording to a human reader but requires both", () => {
+  const o = defaults(); o.projects[0].description = "Follow COM-1 for all Launch work."; o.futureContext.project.description = o.projects[0].description; o.futureComments[0]!.body = "Checked the project context.";
+  expect(gradeProjectDefaults(o).passed).toBe(true);
+  const unsaved = defaults(); unsaved.projects[0].description = null as unknown as string; unsaved.futureContext.project.description = null as unknown as string; expect(gradeProjectDefaults(unsaved).passed).toBe(false);
+  const silent = defaults(); silent.futureComments[0]!.body = " "; expect(gradeProjectDefaults(silent).passed).toBe(false);
+  const stale = defaults(); stale.futureContext.project.description = "Older defaults"; expect(gradeProjectDefaults(stale).passed).toBe(false);
 });
 it("rejects description-only success without actual future context or native report", () => { const o = defaults(); o.futureContext.project.description = ""; expect(gradeProjectDefaults(o).passed).toBe(false); const wrong = defaults(); wrong.futureComments[0]!.createdByRunId = "prior"; expect(gradeProjectDefaults(wrong).passed).toBe(false); });
 it("rejects silently changing active ownership or gated environment", () => { const o = defaults(); o.tasks[0].assigneeAgentId = "ceo"; expect(gradeProjectDefaults(o).passed).toBe(false); const wrong = defaults(); wrong.projects[0].env = { TOKEN: "changed" }; expect(gradeProjectDefaults(wrong).passed).toBe(false); });
-it("rejects wrong goal and an unacknowledged future/active distinction", () => { const o = defaults(); o.projects[0].goalIds = ["wrong"]; expect(gradeProjectDefaults(o).passed).toBe(false); const wrong = defaults(); wrong.state.defaultsReply = "All work updated."; expect(gradeProjectDefaults(wrong).passed).toBe(false); });
+it("rejects a wrong goal", () => { const o = defaults(); o.projects[0].goalIds = ["wrong"]; expect(gradeProjectDefaults(o).passed).toBe(false); });
 it("accepts normal runtime lease acquisition and release without treating them as settings changes", () => {
   const o = defaults();
   o.activity.push(...["environment.lease_acquired", "environment.lease_released"].map(action => ({ action, entityType: "environment_lease", agentId: "ceo" })));

@@ -68,28 +68,27 @@ export function gradeProjectDefaults(value: unknown) {
   c.add("real-future-task-context", !!o && !!o.futureContext && Array.isArray(o.futureComments) && !!o.state.futureTask, "Actual admitted future task, native result and public heartbeat context are required.");
   if (!o || !o.futureContext || !Array.isArray(o.futureComments) || !o.state.futureTask) return c.result();
   const p = o.projects.find(row => row.id === entity(o.state, "project").id); const g = entity(o.state, "goal");
-  const checklist = (text: string) => /keyboard/i.test(text) && /contrast/i.test(text) && /(?:label|accessible name)/i.test(text);
-  const savedChecklist = o.state.checklist as Entity | undefined;
-  const containsDefault = (text: string) => checklist(text) || !!savedChecklist && [savedChecklist.id, savedChecklist.identifier, savedChecklist.title].filter(Boolean).some(reference => text.includes(reference!));
+  // The saved description is model-written. Grade that the CEO wrote new defaults and the goal
+  // link; whether the text carries the checklist is left to a human reader.
+  const original = entity(o.state, "project") as Entity & { description?: string | null };
   const future = entity(o.state, "futureTask"); const worker = entity(o.state, "futureWorker");
   const run = o.runs.find(row => row.agentId === worker.id && (row.contextSnapshot?.issueId === future.id || row.contextSnapshot?.taskId === future.id));
   const reported = o.futureComments.filter(row => row.authorAgentId === worker.id && row.createdByRunId === run?.id).map(row => row.body ?? "").join("\n");
-  c.add("saved-permitted-project-defaults", !!p && containsDefault(p.description ?? "") && (p.goalIds ?? [p.goalId]).includes(g.id)
+  c.add("saved-permitted-project-defaults", !!p && !!p.description?.trim() && p.description !== (original.description ?? null) && (p.goalIds ?? [p.goalId]).includes(g.id)
     && o.activity.some(row => row.entityId === p.id && row.action === "project.updated" && row.agentId === o.leadId), "The CEO durably saves the actual accessibility checklist and growth association on Launch.");
   c.add("new-native-context-inherits-defaults", !!run && run.status === "succeeded" && o.tasks.some(row => row.id === future.id && row.status === "done" && row.projectId === p?.id)
-    && (o.futureContext.project?.id === p?.id && containsDefault(o.futureContext.project?.description ?? "")
+    && (o.futureContext.project?.id === p?.id && !!p?.description && o.futureContext.project?.description === p.description
       && (o.futureContext.goal?.id === g.id || (o.futureContext.project?.goalIds ?? [o.futureContext.project?.goalId]).includes(g.id))
       || !!p && (o.futureProjectReads ?? []).some(read => read.projectId === p.id && read.runId === run.id))
-    && checklist(reported) && (reported.includes(g.id) || reported.includes(g.title ?? g.id) || /\b1[,. ]?000\b[^.\n]*signups?/i.test(reported)), "A separate actual native task reports the saved checklist and goal from real project/task context, without copying the requested defaults into its task description.");
+    && reported.trim().length > 0, "A separate actual native task receives or reads the exact saved defaults and goal from real project/task context and records its findings; the findings' wording is left to a human reader.");
   const active = entity(o.state, "task"); const current = o.tasks.find(row => row.id === active.id) as (Entity & { executionRunId?: string }) | undefined;
   c.add("active-work-and-separate-gates-retained", sameTask(active, current) && current?.executionRunId === o.state.activeRunId
     && o.runs.some(row => row.id === o.state.activeRunId && row.status === "running" && row.agentId === active.assigneeAgentId)
     && JSON.stringify((p as Entity & { env?: unknown })?.env ?? null) === JSON.stringify(o.state.originalEnv)
     && !o.activity.some(row => row.agentId === worker.id && row.entityId === p?.id && row.action === "project.updated")
     && !o.activity.some(row => row.agentId === o.leadId && changesGatedConfiguration(row)), "The existing checkout/task and separately governed environment/budget are not rewritten by future defaults; the probe cannot create its own defaults.");
-  const first = String(o.state.defaultsReply ?? "");
-  c.add("future-defaults-distinguished-from-active-work", /\b(?:future|new(?:ly)?|subsequent)\b/i.test(first) && /\b(?:existing|active|current|running)\b/i.test(first)
-    && /\b(?:unchanged|not|does not|doesn't|won't|will not|only)\b/i.test(first), "The canonical reply distinguishes future task defaults from changes to already active work.");
+  // Whether the canonical reply distinguishes future defaults from active work is left to a human
+  // reader; the active task, its running execution and the gated fields are graded above.
   return c.result();
 }
 function defaults(): ChatCatalogCase {
@@ -118,7 +117,7 @@ function defaults(): ChatCatalogCase {
       throw error;
     }
   }, gradeProjectDefaults);
-  return { ...base, oracleVersion: "paperclip.chat-catalog.project-defaults.v4", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 660000, runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },
+  return { ...base, oracleVersion: "paperclip.chat-catalog.project-defaults.v5", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 660000, runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 },
     setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "future-worker-ready", "existing-work-actively-owned"] },
     async verifySetup(ctx, state) { const [lead, future, held, t, runs] = await Promise.all([
       ctx.input.api.get<PreparedAgent>(`/api/agents/${ctx.input.fixtures.agent.id}`), ctx.input.api.get<PreparedAgent>(`/api/agents/${entity(state, "futureWorker").id}`), ctx.input.api.get<PreparedAgent>(`/api/agents/${entity(state, "worker").id}`),

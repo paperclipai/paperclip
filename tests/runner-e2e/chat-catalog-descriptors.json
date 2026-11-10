@@ -3989,7 +3989,7 @@
       "../e2e/fetch-allowed-port.ts",
       "run-observations.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.project-defaults.v4",
+    "oracleVersion": "paperclip.chat-catalog.project-defaults.v5",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "minimumRunCount": 3,
