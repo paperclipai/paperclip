@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import { applyJourneyOptions } from "./journey-matrix.js";
 import { takesJourneyTriggers } from "./journeys.js";
 import { STORAGE_FAULT_KINDS, type StorageFaultKind } from "./storage-chaos.js";
+import { validateMultiServerOptions } from "./multi-server.js";
 import { parseTimeFaultOptions } from "./time-faults-config.js";
 import { parseStorageTrigger } from "./storage-trigger.js";
 import { parseRepeatedRestartOptions } from "./repeated-restarts.js";
@@ -223,6 +224,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     || values["provider-fault-restart"] !== undefined || values["provider-fault-restart-after-seconds"] !== undefined) {
     throw new Error("--provider-fault-message, --provider-fault-delays and --provider-fault-restart need a provider fault (PV1, PV2 or PV3) in --faults");
   }
+  validateMultiServerOptions(options);
   Object.assign(options, parseTimeFaultOptions(options, values["time-age-hours"]));
   Object.assign(options, parseRepeatedRestartOptions(options, values["rr-gap-seconds"], values["rr-stop-on"]));
   const upgradeFrom = values["upgrade-from"];

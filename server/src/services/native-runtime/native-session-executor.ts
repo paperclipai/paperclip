@@ -26,7 +26,7 @@ import { prepareRemoteOpenCodeArtifacts, type OpenCodeLaunchArtifacts } from "./
 import { rehydratePinnedSkillAssets } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeRecoveryUsageDelivery } from "./native-recovery-usage-delivery.js";
-import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent } from "./native-usage-accounting.js";
+import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent, isNativeUsageDeliveryEvent } from "./native-usage-accounting.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 export { nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage } from "./native-usage-accounting.js";
 import { measureRunnerOperation, recordRunnerTimingReceipt } from "./runner-operation-timing.js";
@@ -1968,7 +1968,9 @@ class SessionAuthorityEpoch {
   }
 
   async acceptAccountingEvent(event: PrpEvent) {
-    if (!isNativeUsageAccountingEvent(event)) return;
+    if (!isNativeUsageDeliveryEvent(event)) return;
+    // A restore carries no usage; it never fails delivery for another run.
+    if (!isNativeUsageAccountingEvent(event) && event.runId !== this.runId && event.runId !== this.#drainingRun?.runId) return;
     this.#assertCurrent();
     if (event.runId !== this.runId && event.runId !== this.#drainingRun?.runId) throw new Error("native_usage_run_binding_mismatch");
     await (event.runId === this.runId ? this.onAccountingEvent : this.#drainingRun?.capture)?.(event);
