@@ -11,7 +11,7 @@ import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js"
 import { resumePreservedResultFinalization } from "./preserved-result-finalization.js";
 import { reclaimInactiveNativeProviderCache } from "./native-runtime/retained-provider-cache.js";
 import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL, sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
-import { and, asc, eq, gt, inArray, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, getTableColumns, gt, inArray, ne, notInArray, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, environmentLeases, executionWorkspaces, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
 import { remoteWorkspaceRunReferenceSchema, type Environment, type EnvironmentLease } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
@@ -584,6 +584,16 @@ export async function scheduleRecoveredWorkspaceCleanup(db: Db, run: typeof hear
     sql`${environmentLeases.metadata}->>'workspaceRecoveryCleanup' is null`)), { companyId: run.companyId, runId: run.id });
 }
 export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedOnly = false, obligationsOnly = false, inFlightRunIds: string[] = []) {
+  const now = Date.now();
+  const dueActions = db.select({
+    ...getTableColumns(issueRecoveryActions),
+    evidence: sql<Record<string, unknown>>`${issueRecoveryActions.evidence} #> '{}'`.as("evidence"),
+  }).from(issueRecoveryActions).where(and(
+    sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`,
+    sql`(${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' = 'null'::jsonb
+      or ${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' <= to_jsonb(${now}::bigint))`,
+    cursor ? gt(issueRecoveryActions.id, cursor) : undefined,
+  )).offset(sql.raw("0") as never).as("issue_recovery_actions");
   const cleanup = sql`(((${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,resourceDisposition}' = 'destroy'
     and ${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,leaseId}' is not null)
     or (${heartbeatRuns.runnerProfileJson}->>'nativeResourceDisposition' = 'destroy'
@@ -616,7 +626,7 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
       and ${issues.executionRunId} is null and ${issues.checkoutRunId} is null
       and (${issues.status} <> 'blocked' or
         ${issueRecoveryActions.evidence}#>>'{nativeBootstrapFailureBlock,statusVersion}' = ${issues.statusVersion}::text)))`;
-  return db.select({ action: issueRecoveryActions, run: heartbeatRuns }).from(issueRecoveryActions)
+  return db.select({ action: issueRecoveryActions, run: heartbeatRuns }).from(dueActions)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, issueRecoveryActions.companyId), eq(heartbeatRuns.id,
       sql`case when ${issueRecoveryActions.evidence}->>'runId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
         then (${issueRecoveryActions.evidence}->>'runId')::uuid end`)))
@@ -628,10 +638,10 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
           and coalesce(${issueRecoveryActions.evidence}->>'bootstrapPreparationContinuation', 'pending') = 'pending'))` : undefined,
       obligationsOnly ? sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
         or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete' and (${cleanup} or ${interruptedPreparation})) or ${waitingInput}
-        or ${retainedSourceFallbackDueCondition(Date.now())} or ${stopProofRearmDueCondition(Date.now())})` : undefined,
+        or ${retainedSourceFallbackDueCondition(now)} or ${stopProofRearmDueCondition(now)})` : undefined,
       sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence', 'complete', 'exhausted')
         and (${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' = 'null'::jsonb
-          or ${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' <= to_jsonb(${Date.now()}::bigint)))`,
+          or ${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' <= to_jsonb(${now}::bigint)))`,
       sql`(${issueRecoveryActions.evidence}#>>'{workspaceRecovery,status}' is distinct from 'recovered' or
         ${cleanup} or ${waitingInput} or ${interruptedPreparation})`,
       cursor ? gt(issueRecoveryActions.id, cursor) : undefined,

@@ -1,7 +1,7 @@
 import { writeExecutionControl } from "../services/execution-control-notifications.js";
 import { reconcileSafeNativeReplacements } from "../services/native-runtime/native-safe-replacement.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, applyPendingMigrations } from "@paperclipai/db";
@@ -447,6 +447,57 @@ describe.skipIf(!support.supported)("execution-control durable work", () => {
     await settle(); expect(wake).toHaveBeenCalledTimes(1); await quiet(c);
     const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, successor.id));
     expect(saved?.retryOfRunId).toBe(run.id);
+  });
+  it("detoasts due issue_recovery_actions evidence once per candidate in retainedWorkspaceCandidates", async () => {
+    const payloads = Array.from({ length: 5 }, () => randomBytes(120_000).toString("base64"));
+    for (let i = 0; i < 5; i += 1) {
+      const sourceIssueId = randomUUID();
+      await db.insert(issues).values({
+        id: sourceIssueId,
+        companyId,
+        title: `Retained workspace ${i}`,
+        status: "in_progress",
+        assigneeAgentId: agentId,
+      });
+      const run = await runRow("failed", sourceIssueId);
+      const state = createSystemRecovery(run.id);
+      await db.insert(issueRecoveryActions).values({
+        id: `00000000-000${i}-4000-8000-00000000000${i}`,
+        companyId,
+        sourceIssueId,
+        kind: "active_run_watchdog",
+        ownerType: "system",
+        cause: "native_workspace_sync_out_retry_exhausted",
+        fingerprint: run.id,
+        nextAction: "Save work",
+        evidence: {
+          runId: run.id,
+          systemRecovery: state,
+          workspaceRecovery: {
+            schema: "paperclip.workspace-recovery.v1",
+            runId: run.id,
+            status: "queued",
+            stage: "verifying_stop",
+            attempt: 0,
+            attemptLimit: 6,
+            requestIds: [],
+          },
+          largePayload: payloads[i],
+        },
+      });
+    }
+    const query = retainedWorkspaceCandidates(db, undefined, false, true);
+    const { sql: capturedSql, params: capturedParams } = query.toSQL();
+    const candidates = await query;
+    expect(candidates).toHaveLength(5);
+    expect(candidates.map(c => c.action.evidence?.largePayload)).toEqual(payloads);
+    expect(capturedSql).toContain("#> '{}'");
+    expect(capturedSql.toLowerCase()).toContain("offset 0");
+    const explained = await db.$client.unsafe(`explain (analyze, buffers, format json) ${capturedSql}`, capturedParams as never);
+    const plan = ((explained[0]?.["QUERY PLAN"] as Array<Record<string, unknown>> | undefined)?.[0]?.Plan ?? {}) as Record<string, unknown>;
+    const blocks = Number(plan["Shared Hit Blocks"] ?? 0) + Number(plan["Shared Read Blocks"] ?? 0);
+    expect(blocks).toBeGreaterThan(0);
+    expect(blocks).toBeLessThan(1_000);
   });
 
 });
