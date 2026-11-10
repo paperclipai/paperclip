@@ -26,7 +26,7 @@ import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspace-epoch-
 import { hasStopOnlyCleanup, prepareHistoricalSandboxStopVerification, prepareSandboxStopAndRetain, restoreSandboxStopAfterFailedRestart, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
 import { nativeWorkspaceFinalizationBlockSchema } from "./native-runtime/preserved-native-result-finalization.js";
 import { withNativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
-import { PERMANENT_SOURCE_RETRY_CLASSES, RETAINED_SOURCE_FALLBACK_CHECK_KEY, UNVERIFIABLE_SOURCE_CODES, isRetainedFileHold,
+import { NATIVE_NO_REPLAY_HOLD_CAUSE, PERMANENT_SOURCE_RETRY_CLASSES, RETAINED_SOURCE_FALLBACK_CHECK_KEY, UNVERIFIABLE_SOURCE_CODES, isRetainedFileHold,
   retainedHoldFallbackEligible } from "./workspace-recovery-fallback-discovery.js";
 import { captureReadOnlyWorkspaceArchive, sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
@@ -303,6 +303,27 @@ async function confirmSourceAllocationStopped(db: Db, input: Source & { environm
  * the recovery delivery starts one continuation. Bounded and idempotent: a
  * settled hold is never revisited, and a lost race leaves the hold unchanged.
  */
+/**
+ * Whether the task's Blocked status still belongs to this hold: its own
+ * receipt names the current status version or, for holds saved before
+ * receipts existed, this run's terminal failure set the block and nothing
+ * changed it since. Otherwise a newer decision owns the block.
+ */
+function holdOwnsBlockedStatus(action: typeof issueRecoveryActions.$inferSelect, issue: typeof issues.$inferSelect,
+  run: typeof heartbeatRuns.$inferSelect) {
+  const block = nativeWorkspaceFinalizationBlockSchema.safeParse(action.evidence.workspaceFinalizationBlock);
+  // A native no-replay hold records the Blocked status version its run's failure set.
+  const failureBlock = object(action.evidence.nativeFailureBlock);
+  const blockedAt = issue.blockedTransitionAt?.getTime();
+  return issue.status === "blocked" && (block.success
+    ? block.data.issueId === issue.id && block.data.runId === run.id
+      && block.data.statusVersion === Number(issue.statusVersion) && block.data.priorDecisionId === issue.lastStatusDecisionId
+    : action.evidence.nativeFailureBlock !== undefined
+      ? failureBlock.runId === run.id && failureBlock.statusVersion === Number(issue.statusVersion)
+      : action.evidence.workspaceFinalizationBlock === undefined && issue.lastStatusDecisionId === null && blockedAt !== undefined
+        && run.finishedAt !== null && blockedAt >= run.finishedAt.getTime() - 1_000 && blockedAt <= action.createdAt.getTime() + 60_000);
+}
+
 export async function continueFromLastSavedWorkspace(input: Source & {
   db: Db; environmentRuntime: EnvironmentRuntimeService; ownership: Ownership;
 }): Promise<RetainedSourceFallbackResult> {
@@ -346,17 +367,7 @@ export async function continueFromLastSavedWorkspace(input: Source & {
     // holds saved before receipts existed, a block set by this run's terminal
     // failure that nothing changed since) still names it. Otherwise a newer
     // decision owns the block: it is kept and no continuation is started.
-    const block = nativeWorkspaceFinalizationBlockSchema.safeParse(action.evidence.workspaceFinalizationBlock);
-    // A native no-replay hold records the Blocked status version its run's failure set.
-    const failureBlock = object(action.evidence.nativeFailureBlock);
-    const blockedAt = issue.blockedTransitionAt?.getTime();
-    const ownsBlock = issue.status === "blocked" && (block.success
-      ? block.data.issueId === issue.id && block.data.runId === run.id
-        && block.data.statusVersion === Number(issue.statusVersion) && block.data.priorDecisionId === issue.lastStatusDecisionId
-      : action.evidence.nativeFailureBlock !== undefined
-        ? failureBlock.runId === run.id && failureBlock.statusVersion === Number(issue.statusVersion)
-        : action.evidence.workspaceFinalizationBlock === undefined && issue.lastStatusDecisionId === null && blockedAt !== undefined
-          && blockedAt >= run.finishedAt!.getTime() - 1_000 && blockedAt <= action.createdAt.getTime() + 60_000);
+    const ownsBlock = holdOwnsBlockedStatus(action, issue, run);
     const dispatchable = issue.status !== "blocked" || ownsBlock;
     const userText = quarantine.state === "captured"
       ? "Paperclip could not verify the previous run's unsaved files, so the task continues from the last saved version. Those files are attached to the task, unapplied."
@@ -460,7 +471,7 @@ export async function settleExhaustedRetainedHold(input: Source & { db: Db; envi
  */
 export async function settleSiblingRecoveredHold(db: Db, input: Source) {
   const settled = await db.transaction(async tx => {
-    const [issue] = await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, input.companyId),
+    const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, input.companyId),
       eq(issues.id, input.issueId))).for("update");
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
       eq(heartbeatRuns.id, input.runId))).for("update");
@@ -468,10 +479,13 @@ export async function settleSiblingRecoveredHold(db: Db, input: Source) {
       eq(issueRecoveryActions.sourceIssueId, input.issueId), eq(issueRecoveryActions.id, input.actionId))).for("update");
     if (!issue || !run || !action || action.evidence.runId !== run.id) return null;
     if (object(action.evidence.siblingWorkspaceRecovery).schema === SIBLING_WORKSPACE_RECOVERY_SCHEMA) return "already" as const;
+    // isRetainedFileHold also accepts export holds; only the no-replay cause
+    // may release the status here. An export hold leaves it to its result.
+    const noReplayHold = action.cause === NATIVE_NO_REPLAY_HOLD_CAUSE && isRetainedFileHold(action);
     const system = readSystemRecovery(action.evidence);
     // A no-replay hold is recorded resolved-but-blocked. It blocks the task
     // until its run's files are saved, so a sibling's save settles it too.
-    if ((!["active", "escalated"].includes(action.status) && !isRetainedFileHold(action))
+    if ((!["active", "escalated"].includes(action.status) && !noReplayHold)
       || system?.state !== "exhausted" || system.sourceRunId !== run.id) return null;
     const receiptId = await verifiedWorkspaceRepairReceipt(tx as unknown as Db, run);
     const [receipt] = receiptId ? await tx.select({ metadata: workspaceOperations.metadata }).from(workspaceOperations).where(and(
@@ -498,6 +512,18 @@ export async function settleSiblingRecoveredHold(db: Db, input: Source) {
         siblingWorkspaceRecovery: { schema: SIBLING_WORKSPACE_RECOVERY_SCHEMA, receiptId, recoveryActionId: siblingActionId,
           recordedAt: now.toISOString() } },
     }).where(and(eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.id, action.id)));
+    // A no-replay hold that still owns the task's Blocked status releases it,
+    // so saved input and normal wakes continue the task. An export hold's
+    // status stays with its own result finalization. A newer decision's
+    // Blocked status is kept.
+    if (noReplayHold && holdOwnsBlockedStatus(action, issue, run)) {
+      await tx.update(issues).set({ status: "todo", unblockDescriptor: null, blockedTransitionAt: null,
+        blockedOwnerNotifiedAt: null, updatedAt: now }).where(eq(issues.id, issue.id));
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+      await notifyStatusCardIssueChange(tx, input.companyId);
+      await notifyRoutineExecutionStatus(tx, issue.id, input.companyId);
+    }
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
     return persistActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "system", actorId: "workspace-recovery",
       action: "issue.workspace_recovered", entityType: "issue", entityId: issue.id, runId: run.id,

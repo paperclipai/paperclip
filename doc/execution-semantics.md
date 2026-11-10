@@ -2801,7 +2801,12 @@ take the same path after deploy. An exhausted hold whose run's files a sibling
 recovery action already saved settles as recovered. This includes a no-replay
 hold recorded resolved-but-blocked: settling it removes its replay block, so it
 stops blocking the task, and starts no turn itself; the run's own result and
-any waiting input decide what continues.
+any waiting input decide what continues. When that no-replay hold still owns
+the task's Blocked status (its recorded failure block names the current status
+version), the task returns to `todo`; a newer decision's Blocked status is kept.
+A settled hold is never selected for recovery again. The worker handles several
+holds of one run one after another in the same pass, so a hold that stays
+selectable (for example while saved input waits) cannot starve a later one.
 
 An exhausted save whose last failure was `agent_stop_unconfirmed` is not a
 refusal of the saved files: its recovery window ran out before the agent's stop

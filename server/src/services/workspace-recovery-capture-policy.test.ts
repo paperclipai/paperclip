@@ -3,7 +3,7 @@ import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, executionWorkspaces, heartbeatRuns, issueRecoveryActions } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { getExecutionBlocker } from "./execution-blocker.js";
@@ -110,7 +110,7 @@ describe("saves exhausted under an older workspace capture policy", () => {
    * Its six attempts failed the same way and it was recorded
    * resolved-but-blocked. That second hold is the task's execution blocker.
    */
-  async function stagingIncident() {
+  async function stagingIncident(failureBlock: boolean) {
     const f = await exhaustedCaptureHold();
     const exportHold = await action(f.actionId);
     const recovery = { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.lease.id] };
@@ -129,6 +129,7 @@ describe("saves exhausted under an older workspace capture policy", () => {
         historicalWorkspaceSource: { schema: "paperclip.historical-workspace-source.v1", runId: f.runId, leaseIds: [f.lease.id] } } })
       .where(eq(issueRecoveryActions.id, f.actionId));
     const exhausted = readSystemRecovery((await action(f.actionId)).evidence)!;
+    const [task] = await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.issueId)).returning();
     const noReplayHoldId = randomUUID(), resolvedAt = new Date(Date.now() - 30 * 60_000);
     await db.insert(issueRecoveryActions).values({ id: noReplayHoldId, companyId: f.companyId, sourceIssueId: f.issueId,
       kind: "active_run_watchdog", status: "resolved", outcome: "blocked", ownerType: "board", resolvedAt,
@@ -140,12 +141,21 @@ describe("saves exhausted under an older workspace capture policy", () => {
         workspaceRecovery: exportHold.evidence.workspaceRecovery,
         originalFailureCode: "native_workspace_sync_out_retry_exhausted", continuationDelivery: "invalidated",
         systemRecoveryActiveAt: Date.now() - 40 * 60_000, workspaceRestoreFailure: "restore_failed",
-        workspaceRestoreRecovery: recovery, previousWorkspaceRecovery: null } });
-    return { ...f, noReplayHoldId };
+        workspaceRestoreRecovery: recovery, previousWorkspaceRecovery: null,
+        // Rows of the same release that recorded the Blocked status their run's
+        // failure set, and the historical source an older adoption named.
+        ...(failureBlock ? { nativeFailureBlock: { runId: f.runId, statusVersion: Number(task.statusVersion) },
+          historicalWorkspaceSource: { schema: "paperclip.historical-workspace-source.v1", runId: f.runId, leaseIds: [f.lease.id] } } : {}) } });
+    // The user's "try again" comment waits for the task to be free.
+    const [waiting] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: source.agentId, source: "on_demand",
+      reason: "issue_commented", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "operator",
+      payload: { issueId: f.issueId } }).returning();
+    return { ...f, noReplayHoldId, waitingInputId: waiting.id };
   }
 
-  it("settles the staging incident's export hold and its resolved no-replay sibling without a person", async () => {
-    const f = await stagingIncident();
+  it.each([["as recorded on staging", false], ["that owns the task's Blocked status", true]] as const)(
+    "settles the export hold and a resolved no-replay sibling %s without a person", async (_shape, failureBlock) => {
+    const f = await stagingIncident(failureBlock);
     // As on staging: the no-replay sibling is the execution blocker, and it
     // offers no task Retry.
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: f.noReplayHoldId,
@@ -154,13 +164,17 @@ describe("saves exhausted under an older workspace capture policy", () => {
     // The recovery worker's own discovery, as after a deploy: it runs while
     // work is due and goes idle once nothing is.
     const blockersSeenByContinuation: unknown[] = [];
-    const onRecovered = vi.fn(async () => { blockersSeenByContinuation.push(await getExecutionBlocker(db, f.companyId, f.issueId)); });
+    // Normal dispatch consumes the saved input once nothing blocks the task.
+    const onRecovered = vi.fn(async () => {
+      const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
+      blockersSeenByContinuation.push(blocker);
+      if (!blocker) await db.update(agentWakeupRequests).set({ status: "queued" }).where(eq(agentWakeupRequests.id, f.waitingInputId));
+    });
     let passes = 0;
     for (; passes < 6; passes += 1) {
       const due = await nextWorkspaceRecoveryAt(db);
       if (due === null || due > Date.now()) break;
-      await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, onRecovered, true) ?? []);
-    }
+      await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, onRecovered, true) ?? []);    }
     expect(passes).toBeGreaterThan(0);
     expect(passes).toBeLessThan(6);
 
@@ -182,11 +196,23 @@ describe("saves exhausted under an older workspace capture policy", () => {
     // The continuation hook ran once the task was free, so saved input is dispatched.
     expect(blockersSeenByContinuation.at(-1)).toBeNull();
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).map(row => row.id)).toEqual([f.runId]);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.waitingInputId)))[0]!.status).toBe("queued");
+    // A hold that owned the Blocked status releases it; otherwise the status is
+    // left to the run's own result finalization.
+    const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    if (failureBlock) expect(task!.status).toBe("todo");
     // Bounded: one re-arm, and the worker has nothing left to do.
     const next = await nextWorkspaceRecoveryAt(db);
     expect(next === null || next > Date.now()).toBe(true);
     expect((await db.select().from(activityLog).where(eq(activityLog.action, "issue.workspace_recovery_rearmed")))
       .filter(row => row.entityId === f.issueId)).toHaveLength(1);
+    // A later pass, even with new saved input, never selects or hands off the settled hold again.
+    await db.update(agentWakeupRequests).set({ status: "deferred_issue_execution" }).where(eq(agentWakeupRequests.id, f.waitingInputId));
+    expect((await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id)).not.toContain(f.noReplayHoldId);
+    expect((await retainedWorkspaceCandidates(db)).map(row => row.action.id)).not.toContain(f.noReplayHoldId);
+    await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, onRecovered, true) ?? []);
+    expect(await action(f.noReplayHoldId)).toEqual(sibling);
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
   }, 90_000);
 
   it("does not re-arm a save that the current policy already exhausted", async () => {
