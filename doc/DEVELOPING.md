@@ -1412,6 +1412,11 @@ The server typecheck builds only the Runner's TypeScript output. Use
 `pnpm --filter @paperclipai/paperclip-runner build` when a local check needs the
 Runner binary.
 
+If a compiler child terminates on a signal, the wrapper reports the signal,
+layer, command, and working directory on stderr, then stops with a nonzero exit.
+Compiler stdout and stderr remain visible. A signal such as `SIGKILL` alone does
+not establish that the process ran out of memory.
+
 `src/__tests__/tsconfig.json` holds the options for the test-tree layers, so an
 editor and the typecheck report the same errors. Server tests reach Daytona plugin
 source, but the root install does not install that plugin's dependencies. So this
