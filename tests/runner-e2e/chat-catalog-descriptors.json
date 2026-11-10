@@ -188,7 +188,7 @@
       "chat-scenarios/activity.yaml",
       "chat-catalog-domains/recorded-work-claims.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.activity-overview.grounded.v3",
+    "oracleVersion": "paperclip.chat-catalog.activity-overview.grounded.v4",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,

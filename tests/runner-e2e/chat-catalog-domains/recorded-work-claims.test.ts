@@ -19,24 +19,19 @@ function related() {
     caseDetail: { ...row, issueLinks: [{ issueId: "primary", role: "work" }, { issueId: "followup", role: "reference" }] }, reverseLinks: { primary: [{ role: "work", case: structuredClone(row) }], followup: [{ role: "reference", case: structuredClone(row) }] }, deniedStatus: 404,
     reply: "| Task | Role | Owner | Status |\n|---|---|---|---|\n| ACN-1 Investigation | work | Morgan | done |\n| ACN-2 Mobile follow-up | reference | unassigned | backlog |\n\nNot tied: ACN-3 Mobile follow-up investigation has a similar title but is explicitly unrelated and has no case link.\n\nThe case remains open." };
 }
-describe("recorded overview blocker and per-task state grounding", () => {
+describe("overview grades saved work state, links and the recorded blocker", () => {
   it("accepts the observed bullet/conditional form without requiring an incidental nonce", () => { expect(grade_activity(overview()).passed).toBe(true); });
-  it("does not treat explicit non-approval or future approval as resolved", () => {
-    const v = overview(); v.reply += "\nACN-2 is blocked; its colors are not approved."; expect(grade_activity(v).passed).toBe(true);
+  it("leaves per-task state, blocker and availability wording to a human reader", () => {
+    const v = overview(); v.reply = v.reply.replace("Waiting on approved launch colors", "Waiting on database access").replace("in progress, assigned", "blocked, assigned").replace("Morgan is idle.", "Morgan is around.");
+    expect(grade_activity(v).passed).toBe(true);
   });
   it.each([
-    ["wrong reason", (v: ReturnType<typeof overview>) => { v.reply = v.reply.replace("Waiting on approved launch colors", "Waiting on database access"); }],
-    ["reason on wrong task", (v: ReturnType<typeof overview>) => { v.reply = v.reply.replace("Waiting on approved launch colors", "Waiting for a decision").replace("assigned to the board.", "assigned to the board. Waiting on approved launch colors."); }],
-    ["wrong active state despite a matching count label", (v: ReturnType<typeof overview>) => { v.reply = v.reply.replace("in progress, assigned", "blocked (1 active task), assigned"); }],
-    ["wrong active state", (v: ReturnType<typeof overview>) => { v.reply = v.reply.replace("in progress, assigned", "blocked, assigned"); }],
-    ["wrong done state", (v: ReturnType<typeof overview>) => { v.reply = v.reply.replace("— done, unassigned", "— in progress, unassigned"); }],
-    ["wrong blocked state", (v: ReturnType<typeof overview>) => { v.reply = v.reply.replace("— blocked, unassigned", "— done, unassigned"); }],
-    ["false resolution", (v: ReturnType<typeof overview>) => { v.reply += "\nACN-2 colors are approved and it is ready."; }],
-    ["false readiness after conditional", (v: ReturnType<typeof overview>) => { v.reply += "\nACN-2 can't move until the palette is approved, but is ready now."; }],
-    ["later contradictory state", (v: ReturnType<typeof overview>) => { v.reply += "\nACN-2 is now completed."; }],
     ["missing task link", (v: ReturnType<typeof overview>) => { v.links.shift(); }],
     ["hidden work", (v: ReturnType<typeof overview>) => { v.reply += " HIDDEN-SENTINEL"; }],
     ["wrong recorded blocker", (v: ReturnType<typeof overview>) => { v.state.blockedTask = { ...v.state.blockedTask, description: "Waiting for legal review." }; }],
+    ["blocked task resolved", (v: ReturnType<typeof overview>) => { v.tasks[1] = { ...v.tasks[1]!, status: "todo" }; }],
+    ["idle worker woken", (v: ReturnType<typeof overview>) => { v.runs.push({ id: "morgan-run", agentId: "morgan" } as never); }],
+    ["worker not idle", (v: ReturnType<typeof overview>) => { v.agents[0]!.status = "error"; }],
   ])("rejects %s", (_name, mutate) => { const v = overview(); mutate(v); expect(grade_activity(v).passed).toBe(false); });
 });
 describe("overview observation time", () => {

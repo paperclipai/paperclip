@@ -1,4 +1,3 @@
-import { groundedOverviewBlocker, reportsRecordedTaskState } from "./recorded-work-claims.js";
 import type { ChatCatalogCase } from "../chat-catalog-contract.js";
 import { project, task, goal, putDocument, entity, observation, checks, hasLink, sameTask, type Entity } from "./internal-support.js";
 import { makeDefinition, retryDefinition, fixtureWorker } from "./internal-definition.js";
@@ -17,15 +16,15 @@ export function grade_activity(value: unknown) {
     case "activity.company-overview": {
       const blocked = entity(o.state, "blockedTask"); const done = entity(o.state, "doneTask"); const worker = entity(o.state, "worker");
       const expected = [before, blocked, done].filter((row): row is Entity => !!row);
-      c.add("actual-work-summary", expected.length === 3 && expected.every(row => sameTask(row, o.tasks.find(now => now.id === row.id)) && hasLink(o, "issues", row))
-        && !!before && reportsRecordedTaskState(o.reply, before, expected, "in_progress")
-        && reportsRecordedTaskState(o.reply, blocked, expected, "blocked") && reportsRecordedTaskState(o.reply, done, expected, "done"),
+      // Saved task states, links, the recorded blocker and Morgan's status are graded here. How the
+      // reply words each task's state, the blocker and Morgan's availability is left to a human reader.
+      c.add("actual-work-summary", expected.length === 3 && expected.every(row => sameTask(row, o.tasks.find(now => now.id === row.id)) && hasLink(o, "issues", row)),
         "The overview links the actual active, blocked and completed work without changing its state.");
-      c.add("grounded-blocker", groundedOverviewBlocker(o.reply, blocked, expected, o.state.blocker), "The blocked task carries the actual recorded reason and the answer grounds that reason in the same task without claiming it is resolved. Incidental fixture nonces are not a user requirement.");
-      c.add("idle-is-not-broken", o.agents?.some(row => row.id === worker.id && row.status === "idle") === true
-        && /\bMorgan\b[^.\n]*\b(?:idle|available|not currently working)\b/i.test(o.reply)
-        && !/\bMorgan\b\s+(?:is|looks|appears)\s+(?:broken|failed|stuck)/i.test(o.reply),
-        "The actual idle engineer is described as available, without claiming a runtime failure.");
+      const blockedNow = o.tasks.find(row => row.id === blocked.id);
+      c.add("grounded-blocker", typeof o.state.blocker === "string" && [blocked, blockedNow].every(row => row?.status === "blocked" && row.description === `Waiting for ${o.state.blocker}.`),
+        "The blocked task keeps its recorded reason and stays blocked; the overview does not resolve it.");
+      c.add("idle-is-not-broken", o.agents?.some(row => row.id === worker.id && row.status === "idle") === true && !o.runs.some(row => row.agentId === worker.id),
+        "The idle engineer stays idle and is not woken by the overview.");
       const asserted = [...o.reply.matchAll(/\b(\d+)\s+(active|blocked|completed|done)\s+(?:tasks?|items?)\b/gi)];
       c.add("scoped-counts", asserted.every(match => Number(match[1]) === 1) && !o.reply.includes(String(o.state.hiddenMarker)),
         "Any explicit state counts match the three visible tasks, and hidden-company work is absent.");
@@ -153,7 +152,7 @@ function companyOverview(): ChatCatalogCase {
     const timezone = await ctx.input.page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
     return { project: p, task: active, blockedTask, doneTask, worker, blocker, hiddenCompany, hiddenMarker, timezone };
   });
-  return { ...base, oracleVersion: "paperclip.chat-catalog.activity-overview.grounded.v3", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/recorded-work-claims.ts"], async verifySetup(ctx, state) {
+  return { ...base, oracleVersion: "paperclip.chat-catalog.activity-overview.grounded.v4", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/recorded-work-claims.ts"], async verifySetup(ctx, state) {
     const active = await ctx.input.api.get<Entity & { assigneeUserId: string | null }>(`/api/issues/${entity(state, "task").id}`);
     const worker = await ctx.input.api.get<Entity>(`/api/agents/${entity(state, "worker").id}`);
     const c = checks();

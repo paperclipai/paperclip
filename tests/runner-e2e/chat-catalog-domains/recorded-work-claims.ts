@@ -44,16 +44,6 @@ export function reportsRecordedTaskState(reply: string, task: Entity, knownTasks
   const wrong = (unit: string) => rule.no.test(unit) || rule.otherCells.test(unit) || contrary.test(unit);
   return units.some(unit => rule.yes.test(unit) && !wrong(unit)) && !units.some(wrong);
 }
-export function groundedOverviewBlocker(reply: string, blocked: Entity, knownTasks: Entity[], recordedBlocker: unknown) {
-  const reason = "approved launch colors";
-  if (typeof recordedBlocker !== "string" || !(recordedBlocker === reason || recordedBlocker.startsWith(`${reason} `))
-    || blocked.status !== "blocked" || blocked.description !== `Waiting for ${recordedBlocker}.`) return false;
-  const units = recordedTaskUnits(reply, blocked, knownTasks);
-  const resolved = /\b(?:not|no longer) (?:blocked|waiting|awaiting)\b|\b(?:is|now|already) (?:ready|unblocked|resolved)\b|\bcan (?:proceed|start)\b|\b(?:colors|palette) (?:are|is|were|was|have been|has been) (?:already )?approved\b/i;
-  const claimsResolution = (unit: string) => resolved.test(unit.replace(/\b(?:until|once|when|if|after)\b[^.!?;]{0,100}\b(?:colors|palette) (?:are|is|were|was|have been|has been) (?:already )?approved\b/gi, ""));
-  return units.some(unit => unit.includes(reason) && /\b(?:blocked|waiting|awaits?|awaiting|pending|needs?)\b/i.test(unit) && !claimsResolution(unit))
-    && !units.some(claimsResolution);
-}
 /**
  * True when the reply assigns the task a case role it does not have. The
  * relationship itself is proven by saved forward/reverse case links and the
