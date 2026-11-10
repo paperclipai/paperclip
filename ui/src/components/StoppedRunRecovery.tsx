@@ -100,8 +100,8 @@ function StoppedRunReview({ issueId, companyId, blocker, owner, className, onSav
     void client.invalidateQueries({ queryKey: queryKeys.issues.allRecoveryActions(issueId) });
   }
   const save = useMutation({ retry: false, // query-error-ok: explicit evidence submission; errors stay beside the retained draft.
-    mutationFn: async (mode: "save" | "recover") => {
-      if (mode === "recover") {
+    mutationFn: async (mode: "save" | "recover" | "retry") => {
+      if (mode === "recover" || mode === "retry") {
         try {
           const freshAccess = await access.refetch();
           if (!mounted.current || readOwner() !== owner) return;
@@ -113,7 +113,21 @@ function StoppedRunReview({ issueId, companyId, blocker, owner, className, onSav
           if (!prior) throw new Error(unconfirmedText);
           const result = await issuesApi.recoveryActions(issueId, { runId, actionId });
           if (!mounted.current || readOwner() !== owner) return;
-          confirmReceipt(result.actions.find(item => item.id === actionId), prior.decision, prior.returnOwner);
+          const existingReceipt = result.actions.find(item => item.id === actionId);
+          if (mode === "recover" || existingReceipt?.evidence.executionReconciliation) {
+            confirmReceipt(existingReceipt, prior.decision, prior.returnOwner);
+            return;
+          }
+          const fresh = boundAction(result);
+          if (!fresh || fresh.returnOwnerAgentId !== prior.returnOwner) throw new Error(changedText);
+          // Retry only the captured decision. The server's duplicate-safe endpoint
+          // resolves a concurrent first save without replaying the stopped execution.
+          const retried = await issuesApi.resolveRecoveryAction(issueId, {
+            actionId, outcome: "restored", sourceIssueStatus: "todo", executionReconciliation: prior.decision,
+          });
+          if (!mounted.current || readOwner() !== owner) return;
+          if (retried?.issue?.id !== issueId || retried.issue.companyId !== companyId) throw new Error(unconfirmedText);
+          confirmReceipt(retried.recoveryAction, prior.decision, prior.returnOwner);
         } finally { busy.current = false; }
         return;
       }
@@ -218,6 +232,9 @@ function StoppedRunReview({ issueId, companyId, blocker, owner, className, onSav
       <Button variant="outline" size="sm" className="h-auto min-h-9 max-w-full self-start whitespace-normal py-2"
         onClick={() => { if (!busy.current) { busy.current = true; save.mutate("recover"); } }}>
         {t("stoppedRun.checkSaved", { defaultValue: "Check saved review" })}</Button>
+      <Button variant="outline" size="sm" className="h-auto min-h-9 max-w-full self-start whitespace-normal py-2"
+        onClick={() => { if (!busy.current) { busy.current = true; save.mutate("retry"); } }}>
+        {t("stoppedRun.retrySaved", { defaultValue: "Retry same review" })}</Button>
     </> : null}
   </section>;
 }

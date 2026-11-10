@@ -223,6 +223,37 @@ describe("stopped-run review through the task interruption surface", () => {
     expect(container.textContent).toContain("Outcome review saved");
   });
 
+  it.each(["network", "503"])("retries the captured decision explicitly after a %s failure before save", async kind => {
+    api.resolve.mockRejectedValueOnce(kind === "503" ? new ApiError("Unavailable", 503, null) : new Error("Offline"));
+    await prepare(); await click("Save and continue");
+    expect(api.resolve).toHaveBeenCalledTimes(1);
+    expect(container.querySelector("textarea")?.value).toBe(evidence);
+    await click("Check saved review");
+    expect(api.resolve).toHaveBeenCalledTimes(1);
+    await click("Retry same review");
+    expect(api.resolve).toHaveBeenCalledTimes(2);
+    expect(api.resolve.mock.calls[1]).toEqual(api.resolve.mock.calls[0]);
+    expect(container.textContent).toContain("Outcome review saved");
+  });
+
+  it("checks the receipt before an explicit retry and does not resubmit a saved review", async () => {
+    api.resolve.mockRejectedValueOnce(new Error("Lost response"));
+    await prepare(); await click("Save and continue");
+    api.list.mockResolvedValue({ active: null, actions: [receipt().recoveryAction] });
+    await click("Retry same review");
+    expect(api.resolve).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Outcome review saved");
+  });
+
+  it("does not retry a captured decision after the return owner changes", async () => {
+    api.resolve.mockRejectedValueOnce(new Error("Offline"));
+    await prepare(); await click("Save and continue");
+    api.list.mockResolvedValue({ active: null, actions: [{ ...action, returnOwnerAgentId: "other" }] });
+    await click("Retry same review");
+    expect(api.resolve).toHaveBeenCalledTimes(1);
+    expect(container.textContent).not.toContain("Outcome review saved");
+  });
+
   it("does not accept another decision as the receipt for a lost response", async () => {
     api.resolve.mockRejectedValue(new Error("Connection lost"));
     await prepare(); await click("Save and continue");
@@ -232,6 +263,9 @@ describe("stopped-run review through the task interruption surface", () => {
     expect(container.textContent).not.toContain("Outcome review saved");
     expect(api.resolve).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("could not be confirmed");
+    await click("Retry same review");
+    expect(api.resolve).toHaveBeenCalledTimes(1);
+    expect(container.textContent).not.toContain("Outcome review saved");
   });
 
   it.each([403, 409, 503])("announces HTTP %s rejection without discarding the evidence or auto-resubmitting", async status => {
