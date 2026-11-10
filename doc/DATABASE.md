@@ -461,6 +461,21 @@ pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-chat-admission-i
 pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-chat-admission-index-migration.ts
 ```
 
+Native harness backup expiration finds the leases that reference one backup root
+by run, by `metadata.nativeHarnessBackup.sessionScopeSha256`, and by the
+identity's own lease ID, in one `OR` query. The partial expression index
+`environment_leases_native_backup_scope_idx` from migration 0459 keys leases by
+that scope digest. With it, every arm of the `OR` has an index, so PostgreSQL
+combines three index probes instead of reading every lease of the company and its
+metadata. The expression must stay identical to the one in
+`server/src/services/native-runtime/native-harness-backup-expiration.ts`; a
+regression test checks that the planner uses the index. The migration builds the
+index concurrently. To compare both plans on a disposable local fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-environment-lease-backup-lookup.ts
+```
+
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
 still match nothing. The query can use existing primary keys without adding a
