@@ -289,7 +289,7 @@ describe("S3 run log store", () => {
       .rejects.toThrow("object_journal_source_prefix_proof_invalid");
   });
 
-  it("reads a resumed run log while the store still hides the head it just published", async () => {
+  it("resumes a run log through the prefix read and proof while the store still hides the head it just published", async () => {
     const m = memory(),
       options = { provider: m.provider, keyPrefix: "logs", flushMs: 10, assertWriterAuthority: async () => undefined };
     const lagged = { ...input, runId: "lagged-run" };
@@ -302,7 +302,7 @@ describe("S3 run log store", () => {
     const hidden = new Map<string, number>();
     m.provider.getObject = async (i) => {
       const seen = hidden.get(i.objectKey) ?? 0;
-      if (i.objectKey.endsWith("lagged-run/head.json") && seen < 2) {
+      if (i.objectKey.endsWith("lagged-run/head.json")) {
         hidden.set(i.objectKey, seen + 1);
         throw Object.assign(Error("not yet visible"), { name: "NoSuchKey", $metadata: { httpStatusCode: 404 } });
       }
@@ -310,8 +310,13 @@ describe("S3 run log store", () => {
     };
     const read = await b.read(successor, { limitBytes: successor.initialBytes });
     expect(read.content.trim().split("\n").map((line) => JSON.parse(line).seq)).toEqual([1, 2, 3]);
-    expect(hidden.size).toBeGreaterThan(0);
+    await b.recordVerifiedSourcePrefix!(successor, 0);
+    expect(successor.initialSourcePrefixVerified).toBe(false);
+    expect(hidden.get([...hidden.keys()][0]!)).toBe(2);
     m.provider.getObject = original;
+    await b.append(successor, event(4));
+    const resumed = await b.read(successor);
+    expect(resumed.content.trim().split("\n").map((line) => JSON.parse(line).seq)).toEqual([1, 2, 3, 4]);
   });
   it("fails a read of a run log that was never written at once", async () => {
     const m = memory(),
