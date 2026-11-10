@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chatConversations, chatDeliveries, chatEndpointResources, chatEndpoints, chatExternalPrincipals,
   chatIdentityLinks, chatMessageLinks, companyMemberships, createDb, issueComments, type Db } from "@paperclipai/db";
@@ -145,12 +145,12 @@ describe("batched bound-chat authorization", () => {
       expect((await expectSameOutcomes(both()))[0]).toBeNull();
       await db.update(chatDeliveries).set({ principalId: f.principalId }).where(eq(chatDeliveries.id, f.deliveryId));
       // A verifying endpoint authorizes only deliveries from its current test.
-      await db.update(chatEndpoints).set({ status: "verifying", setup: { step: "test",
-        testStartedAt: new Date(Date.now() - 60_000).toISOString(), runtimeGeneration: 3 } })
+      await db.update(chatEndpoints).set({ status: "verifying", setup: sql`${JSON.stringify({ step: "test",
+        testStartedAt: new Date(Date.now() - 60_000).toISOString(), runtimeGeneration: 3 })}::jsonb` })
         .where(eq(chatEndpoints.id, f.endpointId));
       expect(await expectSameOutcomes(both())).toEqual([null, null]);
     } finally {
-      await db.update(chatEndpoints).set({ setup: {} }).where(eq(chatEndpoints.id, f.endpointId));
+      await db.update(chatEndpoints).set({ setup: sql`'{}'::jsonb` }).where(eq(chatEndpoints.id, f.endpointId));
       await restore();
     }
   });

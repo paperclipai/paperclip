@@ -29,6 +29,9 @@ const size = (name: string, fallback: number) => Number(process.env[name] ?? fal
 const WAITS = size("WAITS", 20), PEOPLE = size("PEOPLE", 5), NOISE_DELIVERIES = size("NOISE_DELIVERIES", 50_000);
 const EVENT_KIB = size("EVENT_KIB", 6), POOL = size("POOL", 10), PAIRS = size("PAIRS", 15);
 const CONCURRENT_PAGES = size("CONCURRENT_PAGES", 8);
+for (const [name, value] of Object.entries({ WAITS, PEOPLE, NOISE_DELIVERIES, EVENT_KIB, POOL, PAIRS, CONCURRENT_PAGES })) {
+  assert.ok(Number.isSafeInteger(value) && value > 0, `${name} must be a positive integer`);
+}
 const baselineRef = process.argv.find(arg => arg.startsWith("--baseline-ref="))?.slice(15);
 assert.ok(baselineRef, "Pass an explicit pre-fix --baseline-ref=<commit>");
 const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" });
@@ -183,7 +186,11 @@ try {
   const results = Object.fromEntries(await Promise.all(Object.entries(versions).map(async ([name, list]) =>
     [name, (await list(db!, f.companyId, issueIds)).map(wait => wait.issueId).sort()])));
   assert.deepEqual(results.treatment, results.baseline, "Both versions must return the same waits");
-  assert.equal((results.baseline as string[]).length, WAITS - Math.ceil(WAITS / PEOPLE),
+  // Every size works: count the waits of the suspended person from the data.
+  const [{ denied }] = await sql.unsafe(`select count(*)::int denied from chat_deliveries d
+    join chat_external_principals p on p.id = d.principal_id
+    where d.company_id = $1::uuid and d.provider_event_id like 'wait-%' and p.external_id = 'person-1'`, [f.companyId]);
+  assert.equal((results.baseline as string[]).length, WAITS - (denied as number),
     "Waits of the suspended person must be excluded");
 
   for (const list of Object.values(versions)) { await page(list)(); await pages(list)(); }
