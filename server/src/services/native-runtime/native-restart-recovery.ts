@@ -180,14 +180,29 @@ export function suspendedByCleanDrain(coordinator: {
  * before the crash. Each claim records the run's event-log position, so the
  * next claim judges only what happened after it. A resume the controller died
  * before starting, a runner that never admitted its provider, and a turn.start
- * the provider did not accept are not charged. Credit stops after
- * NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT controller generations, so a crash
- * loop that never starts the provider, or that makes progress and then crashes
- * the controller every time, is still bounded.
+ * the provider did not accept are not charged. After
+ * NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT controller generations only a proven
+ * unstarted attempt keeps credit, and only until NATIVE_NO_PROGRESS_RESTART_LIMIT
+ * consecutive restarts made no provider progress, so a crash loop that never
+ * starts the provider, or that makes progress and then crashes the controller
+ * every time, is still bounded.
  */
 export const NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT = PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT;
+export const NATIVE_NO_PROGRESS_RESTART_LIMIT = PROVIDER_ATTEMPT_CREDIT_GENERATION_LIMIT;
 
-type RecoveryClaimProgressEntry = { disposition?: unknown; progressWatermarkSeq?: unknown; progressAttempt?: unknown };
+type RecoveryClaimProgressEntry = {
+  disposition?: unknown; progressWatermarkSeq?: unknown; progressAttempt?: unknown; noProgressRestarts?: unknown;
+};
+
+function previousNoProgressRestarts(recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>): number {
+  for (let index = recoveryHistory.length - 1; index >= 0; index -= 1) {
+    const entry = recoveryHistory[index];
+    if (!RECOVERY_CLAIM_DISPOSITIONS.has(entry?.disposition)) continue;
+    const count = entry?.noProgressRestarts;
+    return typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : 0;
+  }
+  return 0;
+}
 
 /**
  * The most recent recovery claim's event-log position and the provider attempt
@@ -261,7 +276,9 @@ async function nativeRunEventWatermark(tx: Pick<Db, "select">, runId: string): P
  *   charge decision was never applied, so this claim carries it: the attempt
  *   ends at the attempt that resume was to run as, never above it.
  * - A claim history written before claims recorded their position charges.
- * At or after NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT every restart charges.
+ * At or after NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT a restart charges unless
+ * the interrupted attempt is proven unstarted and fewer than
+ * NATIVE_NO_PROGRESS_RESTART_LIMIT consecutive restarts made no progress.
  */
 export async function restartResumeKeepsAttempt(tx: Pick<Db, "select">, input: {
   runId: string;
@@ -270,14 +287,29 @@ export async function restartResumeKeepsAttempt(tx: Pick<Db, "select">, input: {
     controllerGeneration: number;
     recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>;
   };
-}): Promise<boolean> {
-  if (input.coordinator.attempt <= 0) return false;
-  if (input.coordinator.controllerGeneration >= NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT) return false;
+}): Promise<{ keepsAttempt: boolean; noProgressRestarts: number }> {
+  const outcome = await interruptedAttemptOutcome(tx, input);
+  const noProgressRestarts = outcome === "provider_progressed" ? 0
+    : previousNoProgressRestarts(input.coordinator.recoveryHistory) + 1;
+  const keepsAttempt = input.coordinator.controllerGeneration < NATIVE_PROGRESS_CREDIT_GENERATION_LIMIT
+    ? outcome !== "charged"
+    : outcome === "provider_not_started" && noProgressRestarts < NATIVE_NO_PROGRESS_RESTART_LIMIT;
+  return { keepsAttempt, noProgressRestarts };
+}
+
+async function interruptedAttemptOutcome(tx: Pick<Db, "select">, input: {
+  runId: string;
+  coordinator: {
+    attempt: number;
+    recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>;
+  };
+}): Promise<"provider_not_started" | "provider_progressed" | "charged"> {
+  if (input.coordinator.attempt <= 0) return "charged";
   const previous = previousRecoveryClaim(input.coordinator.recoveryHistory);
-  if (previous === "unrecorded") return false;
+  if (previous === "unrecorded") return "charged";
   if (previous !== "none" && previous.launchesRunner
     && !await nativeExecutionStartedSince(tx, input.runId, previous.watermark))
-    return input.coordinator.attempt >= previous.attempt;
+    return input.coordinator.attempt >= previous.attempt ? "provider_not_started" : "charged";
   const claimedAt = previous === "none" ? 0 : previous.watermark;
   // A reattachment adopted a provider that had already started, and it keeps
   // the attempt; a normal retry after it starts a new attempt.
@@ -287,13 +319,14 @@ export async function restartResumeKeepsAttempt(tx: Pick<Db, "select">, input: {
     : await providerAttemptWindowStart(tx, {
       runId: input.runId, sinceSeq: claimedAt, providerAttempt: input.coordinator.attempt,
     });
-  if (window === "unstarted") return true;
+  if (window === "unstarted") return "provider_not_started";
   const outcome = await readProviderAttemptOutcome(tx, {
     runId: input.runId,
     sinceSeq: window.seq,
     adoptedProviderWork,
   });
-  return !providerAttemptChargesBudget(outcome);
+  if (providerAttemptChargesBudget(outcome)) return "charged";
+  return outcome === "provider_progressed" ? outcome : "provider_not_started";
 }
 
 
@@ -1546,9 +1579,10 @@ export async function claimNativeRestartRecoveries(input: {
 
       // Read before this claim appends its own history entry.
       const cleanDrainSuspension = suspendedByCleanDrain(row.coordinator);
-      const resumeKeepsAttempt = cleanDrainSuspension || await restartResumeKeepsAttempt(tx, {
-        runId: row.run.id, coordinator: row.coordinator,
-      });
+      const restartCredit = cleanDrainSuspension
+        ? { keepsAttempt: true, noProgressRestarts: previousNoProgressRestarts(row.coordinator.recoveryHistory) }
+        : await restartResumeKeepsAttempt(tx, { runId: row.run.id, coordinator: row.coordinator });
+      const resumeKeepsAttempt = restartCredit.keepsAttempt;
       const classification = classifyNativeRunnerRecoveryEvidence({
         remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority),
         unclaimedBootstrap,
@@ -1781,7 +1815,8 @@ export async function claimNativeRestartRecoveries(input: {
                 : "bootstrap_incomplete",
           recoveryRequestId: input.recoveryRequestId ?? null,
           recoveryHistory: appendBoundedRecoveryHistory({
-            ...event, progressWatermarkSeq, progressAttempt, ...(attemptKeptForProgress ? { attemptKeptForProgress } : {}),
+            ...event, progressWatermarkSeq, progressAttempt, noProgressRestarts: restartCredit.noProgressRestarts,
+            ...(attemptKeptForProgress ? { attemptKeptForProgress } : {}),
           }),
           failureCode: null,
           nextAttemptAt: null,
