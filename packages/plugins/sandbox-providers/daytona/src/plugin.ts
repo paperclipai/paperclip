@@ -646,12 +646,42 @@ function isSandboxStateChangeInProgress(error: unknown): boolean {
   return /state change in progress/i.test(error instanceof Error ? error.message : String(error));
 }
 
+/**
+ * How long a sandbox may stay `stopping` before a start forces the stop. The
+ * host stops an idle sandbox gracefully with a 30 s budget, so a stop still
+ * pending after this is stuck, typically on a process that ignores SIGTERM.
+ * Daytona can leave such a sandbox `stopping` for many minutes.
+ */
+export const STUCK_STOPPING_FORCE_AFTER_MS = 30_000;
+const STUCK_STOPPING_FORCE_STOP_SECONDS = 30;
+
 async function waitOutSandboxTransition(sandbox: Sandbox, deadline: number, readTimeoutMs: number): Promise<void> {
-  while (SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "") && Date.now() + SANDBOX_TRANSITION_POLL_MS < deadline) {
-    await new Promise(resolve => setTimeout(resolve, SANDBOX_TRANSITION_POLL_MS));
-    await withLivenessTimeout("sandbox.refreshData", Math.min(readTimeoutMs, Math.max(1, deadline - Date.now())),
-      () => sandbox.refreshData());
-  }
+  if (!SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "")) return;
+  await traceLeaseStep("lease.wait_transition", async () => {
+    let stoppingSince: number | null = null;
+    let forcedStop = false;
+    while (SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "") && Date.now() + SANDBOX_TRANSITION_POLL_MS < deadline) {
+      stoppingSince = sandbox.state === "stopping" ? stoppingSince ?? Date.now() : null;
+      if (stoppingSince !== null && !forcedStop && Date.now() - stoppingSince >= STUCK_STOPPING_FORCE_AFTER_MS) {
+        // The sandbox is about to be started, so killing what holds the stop
+        // loses nothing a graceful stop would keep: the disk survives a stop.
+        // One attempt only. A refusal leaves the plain wait unchanged.
+        forcedStop = true;
+        const remainingSeconds = Math.max(1, Math.floor((deadline - Date.now()) / 1_000));
+        const stopSeconds = Math.min(STUCK_STOPPING_FORCE_STOP_SECONDS, remainingSeconds);
+        try {
+          await traceLeaseStep("lease.force_stop", () => withLivenessTimeout("sandbox.stop",
+            stopSeconds * 1_000 + LIVENESS_START_TIMEOUT_MARGIN_MS, () => sandbox.stop(stopSeconds, true)));
+        } catch {
+          // Keep waiting within the same deadline; the next read reports the state.
+        }
+        continue;
+      }
+      await new Promise(resolve => setTimeout(resolve, SANDBOX_TRANSITION_POLL_MS));
+      await withLivenessTimeout("sandbox.refreshData", Math.min(readTimeoutMs, Math.max(1, deadline - Date.now())),
+        () => sandbox.refreshData());
+    }
+  }, leaseStateAttributes(sandbox.state));
 }
 
 async function ensureSandboxStarted(sandbox: Sandbox, timeoutSeconds: number, scope: SandboxScope): Promise<void> {
