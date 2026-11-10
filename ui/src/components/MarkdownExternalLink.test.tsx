@@ -75,7 +75,8 @@ describe("MarkdownBody external object decoration", () => {
 
   it("decorates a known URL with the external status icon and metadata attributes", () => {
     const html = render("Take a look: https://github.com/acme/web/pull/241", successReference);
-    expect(html).toContain('class="paperclip-markdown-external-ref"');
+    expect(html).toContain('data-link-state="merged"');
+    expect(html).toContain("lucide-git-merge");
     expect(html).toContain('data-external-link="resolved"');
     expect(html).toContain('data-external-status="succeeded"');
     expect(html).toContain('data-external-liveness="fresh"');

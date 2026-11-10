@@ -538,6 +538,67 @@ it("retries a replacement whose staging failed before any process launched", asy
   }
 }, 15_000);
 
+it("fails instead of relaunching a runner that keeps exiting right after it is restored", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-restore-crash-loop-"));
+  const crash = "paperclip-runnerd: redacted display activity exceeds its schema bounds";
+  const children: ReturnType<typeof spawn>[] = [];
+  const exits: Promise<void>[] = [];
+  const launch = vi.fn((spec: durableControlPlane.RunnerProcessLaunchSpec) => {
+    const child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore" });
+    children.push(child);
+    exits.push(new Promise(resolveExit => child.once("exit", () => resolveExit())));
+    return {
+      child,
+      completion: new Promise<durableControlPlane.RunnerProcessResult>((resolveExit, rejectExit) => {
+        child.once("error", rejectExit);
+        child.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr: crash }));
+      }),
+      isExitConfirmed: () => child.exitCode !== null || child.signalCode !== null,
+    };
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(directory), stateDirectory: directory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    runnerReconnectGraceMs: 5_000, runnerProcessLauncher: launch,
+  });
+  const restored = () => bundle.evidence().diagnostics
+    .filter(line => line === "runner process restored its durable PRP session").length;
+  try {
+    await bundle.transport.request("thread/start", { cwd: directory });
+    children[0]!.kill("SIGKILL");
+    for (let restore = 1; restore <= 3; restore += 1) {
+      await vi.waitFor(() => expect(restored()).toBe(restore), { timeout: 4_000 });
+      children[restore]!.kill("SIGKILL");
+    }
+    await vi.waitFor(
+      () => expect(bundle.evidence().diagnostics).toContain(
+        `native_runner_process_exited: runnerd exited 3 times within 60000ms of being restored: ${crash}`,
+      ),
+      { timeout: 4_000 },
+    );
+    await new Promise(resolveWait => setTimeout(resolveWait, 500));
+    expect(launch).toHaveBeenCalledTimes(4);
+    expect(restored()).toBe(3);
+  } finally {
+    const providerPid = bundle.evidence().codexPid;
+    if (providerPid) { try { process.kill(providerPid, "SIGKILL"); } catch {} }
+    await bundle.transport.detachControllerForRestart!();
+    for (const child of children) child.kill("SIGKILL");
+    await Promise.all(exits);
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 20_000);
+
+it("counts only runner exits that follow a restore within the stable window", () => {
+  const count = runnerdRecoveryInternals.unstableRunnerRestoreCount;
+  expect(count(0, null, 1_000)).toBe(0);
+  expect(count(0, 1_000, 1_000)).toBe(1);
+  expect(count(2, 1_000, 60_999)).toBe(3);
+  expect(count(2, 1_000, 61_000)).toBe(0);
+  expect(count(5, null, 1_000)).toBe(0);
+});
+
 it.each(["alive", "pending_liveness", "pending_registration"] as const)(
   "bounds adopted runner authentication at its exact deadline with %s evidence",
   async (mode) => {
@@ -1295,7 +1356,8 @@ it.each([false, true])("uses the same API result envelope and fences handler pub
   try {
     await bundle.transport.request("thread/start", { cwd: tmpdir() });
     const call = { callId: "recovered-api", operationId: "call_api", input: { operationId: "POST /api/example" },
-      sourceEventId: "saved-event", sourceEventType: "semantic_tool.input", correlation: core.store.state.identity };
+      sourceEventId: "saved-event", sourceEventType: "semantic_tool.input", correlation: core.store.state.identity,
+      admission: "earlier_controller" as const };
     if (changedOwner) {
       owner = core.store.state.identity.runId;
       const pending = callbacks.onSemanticToolInput!(call);

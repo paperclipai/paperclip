@@ -13,8 +13,10 @@ export function gradeCompanyRename(value: unknown) {
     && o.companies.length === o.state.companyCount, "A similarly named company remains unchanged and no duplicate company is created.");
   c.add("work-retained", sameTask(entity(o.state, "task"), o.tasks.find(row => row.id === entity(o.state, "task").id))
     && o.projects.some(row => row.id === entity(o.state, "project").id), "Original task and project remain attached to the same company.");
-  c.add("agent-attributed-identity-change", o.activity.some(row => row.action === "company.updated" && row.entityId === before.id
-    && row.agentId === o.leadId && row.details?.name === "Acorn Studio"), "The requested mutation is recorded for the acting CEO.");
+  // PATCH /companies/{id} (company.updated) and PATCH /companies/{id}/branding (company.branding_updated)
+  // are both supported routes that save the company name; either audit record proves the rename.
+  c.add("agent-attributed-identity-change", o.activity.some(row => ["company.updated", "company.branding_updated"].includes(String(row.action)) && row.entityId === before.id
+    && row.agentId === o.leadId && row.details?.name === "Acorn Studio"), "The requested mutation is recorded for the acting CEO on a supported company-name route.");
   c.add("memberships-preserved", Array.isArray(o.state.membersBefore) && o.state.membersBefore.length > 0
     && JSON.stringify(o.state.membersBefore) === JSON.stringify(o.state.membersAfter), "The original member IDs, principals, roles and permissions remain unchanged.");
   return c.result();
@@ -26,6 +28,7 @@ export const companyIdentityCases = [identityDefinition("companies.rename-compan
   const companies = await ctx.input.api.get<unknown[]>("/api/companies");
   return { company, otherCompany, companyCount: companies.length, project: p, task: t, membersBefore: await membershipSnapshot(ctx) };
 }, gradeCompanyRename, {
+  oracleVersion: "paperclip.chat-catalog.company-rename.routes.v2",
   async observe(ctx, state) { state.membersAfter = await membershipSnapshot(ctx); return observeIdentity(ctx, state); },
   async verifyResult(ctx) {
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" });

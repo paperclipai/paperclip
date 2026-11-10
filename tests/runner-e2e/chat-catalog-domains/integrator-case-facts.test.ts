@@ -49,6 +49,11 @@ describe("current case facts and real subsequent context", () => {
   it("grades the saved browser by normalized tokens, not keywords anywhere in the fields", () => {
     for (const browser of ["Mobile Safari only", "mobile Safari", "iOS Safari", "Safari on iPhone/iPad only", "Safari (iOS)"]) expect(corrected({ browser }), browser).toBe(true);
     expect(corrected({ browser: "Safari", platform: "mobile only" })).toBe(true);
+    // A clause that only rules another platform out is a clarification of the same fact.
+    for (const browser of ["Mobile Safari only (iPhone/iPad); desktop Safari unaffected", "Mobile Safari only - desktop Safari and Chrome are not affected", "iOS Safari only, works on desktop", "Mobile Safari only; not on Chrome", "Mobile Safari only; desktop Safari excluded"])
+      expect(corrected({ browser }), browser).toBe(true);
+    for (const browser of ["Mobile Safari; desktop Safari also affected", "Mobile Safari only (not yet confirmed)", "Mobile Safari, not iOS", "Mobile Safari; desktop Safari not excluded", "Mobile Safari; desktop Safari is not excluded", "Safari; desktop unaffected", "Mobile Safari and desktop Chrome"])
+      expect(corrected({ browser }), browser).toBe(false);
     expect(corrected({ affectedBrowsers: ["iOS Safari"] })).toBe(true);
     for (const fields of [{ browser: "Safari (desktop and mobile Safari)", note: "only intermittent" }, { browser: "Safari; affected device not yet confirmed" }, { browser: "Desktop Safari only" },
       { browser: "not mobile Safari" }, { browser: "Safari", note: "mobile only" }, { browser: "Chrome and mobile Safari" }, { affectedBrowsers: ["iOS Safari", "Chrome"] }, { browser: "Safari; device unknown", affectedBrowser: "iOS Safari" }, {}])

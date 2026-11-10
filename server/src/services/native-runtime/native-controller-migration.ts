@@ -77,7 +77,7 @@ async function hasConfirmedOlderController(db: Db, selected: Selected,
   } catch { return false; }
 }
 
-async function* retainedSources(db: Db, signal?: AbortSignal, concurrency = 1) {
+async function* retainedSources(db: Db, signal?: AbortSignal, concurrency = 1, inspectDatabaseRecovery = false) {
   let after: string | undefined;
   for (;;) {
     signal?.throwIfAborted();
@@ -89,15 +89,20 @@ async function* retainedSources(db: Db, signal?: AbortSignal, concurrency = 1) {
         ${after ? sql`and s.id > ${after}::uuid` : sql``} order by s.id limit 100`);
     for (let offset = 0; offset < rows.length; offset += concurrency) {
       signal?.throwIfAborted();
-      const batch = await Promise.allSettled(rows.slice(offset, offset + concurrency).map(async selected => ({
-        selected, source: await findNativeSessionResumeRun(db, { companyId: selected.companyId, agentId: selected.agentId,
+      const batch = await Promise.allSettled(rows.slice(offset, offset + concurrency).map(async selected => {
+        const source = await findNativeSessionResumeRun(db, { companyId: selected.companyId, agentId: selected.agentId,
           issueId: selected.issueId, normalizedSessionId: selected.sessionId,
-          beforeCreatedAt: new Date(selected.createdAt), includeProgressBarrier: true }),
-      })));
+          beforeCreatedAt: new Date(selected.createdAt), includeProgressBarrier: true });
+        const databaseRecoveryPreserved = Boolean(inspectDatabaseRecovery && source && source.status !== "running"
+          && readNativeControllerRecovery(source.runnerProfileJson.nativeControllerRecovery, source.runnerProfileJson.sessionCheckpoint)
+          && await hasNativeRunnerCheckpoint(db, { companyId: selected.companyId, issueId: selected.issueId, runId: source.id }));
+        return { selected, source, databaseRecoveryPreserved };
+      }));
       for (const result of batch) {
         signal?.throwIfAborted();
         if (result.status === "rejected") throw result.reason;
-        if (result.value.source) yield { selected: result.value.selected, source: result.value.source };
+        if (result.value.source) yield { selected: result.value.selected, source: result.value.source,
+          databaseRecoveryPreserved: result.value.databaseRecoveryPreserved };
       }
     }
     if (rows.length < 100) return;
@@ -256,11 +261,9 @@ export async function hasLocalNativeControllerObligations(db: Db, storage?: Stor
     if (error.code === "ENOENT") return [] as string[]; throw error;
   });
   if (!roots.length) return false;
-  for await (const { selected, source } of retainedSources(db, undefined, 8)) {
+  for await (const { selected, source, databaseRecoveryPreserved } of retainedSources(db, undefined, 8, true)) {
     const binding = { companyId: selected.companyId, issueId: selected.issueId, runId: source.id };
-    if (source.status !== "running"
-      && readNativeControllerRecovery(source.runnerProfileJson.nativeControllerRecovery, source.runnerProfileJson.sessionCheckpoint)
-      && await hasNativeRunnerCheckpoint(db, binding)) continue;
+    if (databaseRecoveryPreserved) continue;
     if (source.status === "failed" && source.runnerProfileJson.sessionCheckpoint == null
       && preservedFailedCheckpoint(source, selected.sessionId, await loadNativeRunnerCheckpoint(db, binding))) continue;
     const paths = await localPaths(source);

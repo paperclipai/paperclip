@@ -663,16 +663,36 @@ export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRu
   if (!rows.length && !passiveSweep) rows = await retainedWorkspaceCandidates(db, undefined, false, obligationsOnly, inFlightRunIds);
   const work: Promise<void>[] = [];
   let hasUnvisited = false;
+  const advance = (actionId: string) => {
+    if (unfinished) unfinishedCursors.set(db, actionId);
+    else if (passiveSweep) passiveSweep.cursor = actionId;
+    else cursors.set(db, actionId);
+  };
+  // Several actions of one run (an export hold and a later no-replay hold)
+  // run one after another in that run's job. Skipping the later one would
+  // starve it while the earlier one stays selectable (for example while saved
+  // input waits for the later one to settle).
+  const groups = new Map<string, { run: typeof heartbeatRuns.$inferSelect; actions: (typeof issueRecoveryActions.$inferSelect)[] }>();
   for (const { action, run } of rows) {
+    const group = groups.get(run.id);
+    if (group) { group.actions.push(action); advance(action.id); continue; }
     if (pending.size >= 2) { hasUnvisited = true; break; }
-    if (unfinished) unfinishedCursors.set(db, action.id);
-    else if (passiveSweep) passiveSweep.cursor = action.id;
-    else cursors.set(db, action.id);
+    advance(action.id);
     if (pending.has(run.id)) continue;
     pending.add(run.id);
+    groups.set(run.id, { run, actions: [action] });
+  }
+  for (const { run, actions } of groups.values()) {
     const finish = beginIdleTrackedWork();
-    const physical = ["scheduled", "running", "awaiting_evidence"].includes(readSystemRecovery(action.evidence)?.state ?? "");
+    const physical = actions.some(action => ["scheduled", "running", "awaiting_evidence"].includes(readSystemRecovery(action.evidence)?.state ?? ""));
     work.push((async () => { try {
+      for (const action of actions) await recoverRunAction(action, run);
+    } finally { pending.delete(run.id); finish(); onFinished?.(physical || hasUnvisited); } })());
+  }
+  return work;
+
+  async function recoverRunAction(action: typeof issueRecoveryActions.$inferSelect, run: typeof heartbeatRuns.$inferSelect) {
+    try {
       await recoverRetainedWorkspace({ db, environmentRuntime: runtime, companyId: action.companyId, issueId: action.sourceIssueId, runId: run.id, actionId: action.id });
       const [updated] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
       const recovered = readWorkspaceRecovery(updated?.evidence ?? null)?.status === "recovered";
@@ -691,7 +711,5 @@ export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRu
         }
       }
     } catch { logger.warn({ runId: run.id }, "Retained workspace remains pending"); }
-    finally { pending.delete(run.id); finish(); onFinished?.(physical || hasUnvisited); } })());
   }
-  return work;
 }

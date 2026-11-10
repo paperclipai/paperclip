@@ -7,7 +7,7 @@ import { chromium, test, type Cookie } from "@playwright/test";
 import { validGrokRoutinePrivateInput, matchesConfiguredGrokRoutine, type GrokRoutinePrivateInput } from "./external-grok-private-contract.js";
 import { validSlackIdentityInput, validSlackWizardIdentityInput, matchingSlackIdentityPreview, type SlackIdentityPrivateInput } from "./external-slack-identity-contract.js";
 import { validSlackSetupPrivate, type SlackSetupPrivateInput } from "./external-slack-setup-private-contract.js";
-interface Request { mode: "secure-key" | "canary" | "gateway-token-rotation" | "company-secret-create" | "personal-secret-create" | "grok-routine-configure" | "slack-identity-confirm" | "slack-endpoint-configure" | "slack-wizard-confirm" | "slack-wizard-resume" | "slack-endpoint-reconnect" | "device-approve" | "device-expired"; device?: DevicePrivateInput; slackSetup?:SlackSetupPrivateInput; slackIdentity?:SlackIdentityPrivateInput; grok?:GrokRoutinePrivateInput; companyId?:string; companyMetadata?:{name?:string;key?:string}; personal?:{definitionId:string;userId:string;viaMySecrets?:boolean}; gateway?: { id: string; oldTokenId: string; otherToken: string; endpointPath: string; readName: string }; baseURL: string; setupURL: string; providerURL: string; credential: string; cookies: Cookie[]; executablePath?: string; channel?: string }
+interface Request { mode: "secure-key" | "canary" | "gateway-token-rotation" | "company-secret-create" | "personal-secret-create" | "grok-routine-configure" | "slack-identity-confirm" | "slack-endpoint-configure" | "slack-wizard-confirm" | "slack-wizard-resume" | "slack-endpoint-reconnect" | "device-approve" | "device-expired"; device?: DevicePrivateInput; slackSetup?:SlackSetupPrivateInput; slackIdentity?:SlackIdentityPrivateInput; grok?:GrokRoutinePrivateInput; companyId?:string; companyMetadata?:{name?:string;key?:string}; personal?:{definitionId:string;userId:string;viaMySecrets?:boolean}; gateway?: { id: string; oldTokenId: string; otherToken: string; endpointPath: string; readName: string; pendingTokenId?: string }; baseURL: string; setupURL: string; providerURL: string; credential: string; cookies: Cookie[]; executablePath?: string; channel?: string }
 /** Separate Node process: no Playwright Test worker, API-step listener or artifact
  * recorder exists. This module never enables tracing, video or screenshots. */
 async function main() {
@@ -251,7 +251,7 @@ async function main() {
     }
     if (input.mode === "gateway-token-rotation") {
       const g = input.gateway;
-      if (!g || !/^[a-f0-9-]{36}$/i.test(g.id) || !/^[a-f0-9-]{36}$/i.test(g.oldTokenId) || !g.otherToken || g.otherToken.length > 8192 || !g.readName || g.readName.length > 240) throw new Error("Invalid finite gateway rotation request");
+      if (!g || !/^[a-f0-9-]{36}$/i.test(g.id) || !/^[a-f0-9-]{36}$/i.test(g.oldTokenId) || (g.pendingTokenId !== undefined && !/^[a-f0-9-]{36}$/i.test(g.pendingTokenId)) || !g.otherToken || g.otherToken.length > 8192 || !g.readName || g.readName.length > 240) throw new Error("Invalid finite gateway rotation request");
       const setup = new URL(input.setupURL), endpoint = new URL(g.endpointPath, base.origin);
       if (!setup.pathname.endsWith(`/apps/gateways/${g.id}/tokens`) || endpoint.origin !== base.origin || !/^\/mcp\/gateways\/[^/]+$|^\/api\/tool-gateway\/gateways\/[^/]+\/mcp$/.test(endpoint.pathname)) throw new Error("Invalid gateway UI/protocol boundary");
       async function discover(token: string) {
@@ -260,18 +260,29 @@ async function main() {
         const body = await response.json() as {result?: {tools?: Array<{name: string}>}}; return {status, ok: body.result?.tools?.some(tool => tool.name === g!.readName) === true};
       }
       await page.goto(input.setupURL, {waitUntil:"domcontentloaded"});
-      await page.getByRole("button", {name:"Issue token",exact:true}).click();
-      await page.getByRole("textbox", {name:/^Token name/}).fill("Replacement test client");
-      const issued = page.waitForResponse(response => new URL(response.url()).pathname === `/api/tool-gateway/gateways/${g.id}/tokens` && response.request().method() === "POST" && response.status() === 201);
-      await page.locator("form").getByRole("button", {name:"Issue token",exact:true}).click();
-      const replacement = await (await issued).json() as {id: string; token: string};
+      let replacement: {id: string; token: string};
+      if (g.pendingTokenId) {
+        // The agent created the replacement; the person reveals its value once.
+        const waiting = page.getByRole("region", {name:"Tokens waiting to be revealed"});
+        const revealed = page.waitForResponse(response => new URL(response.url()).pathname === `/api/tool-gateway/gateway-tokens/${g.pendingTokenId}/reveal` && response.request().method() === "POST" && response.status() === 200);
+        await waiting.getByRole("button", {name:/^Reveal token /}).click();
+        replacement = await (await revealed).json() as {id: string; token: string};
+        if (replacement.id !== g.pendingTokenId) throw new Error("Revealed a different token than the agent created");
+      } else {
+        await page.getByRole("button", {name:"Issue token",exact:true}).click();
+        await page.getByRole("textbox", {name:/^Token name/}).fill("Replacement test client");
+        const issued = page.waitForResponse(response => new URL(response.url()).pathname === `/api/tool-gateway/gateways/${g.id}/tokens` && response.request().method() === "POST" && response.status() === 201);
+        await page.locator("form").getByRole("button", {name:"Issue token",exact:true}).click();
+        replacement = await (await issued).json() as {id: string; token: string};
+      }
       if (!/^[a-f0-9-]{36}$/i.test(replacement.id) || typeof replacement.token !== "string" || !replacement.token || replacement.token.length > 8192) throw new Error("Invalid one-time token");
       await page.getByText("New token — copy now", {exact:true}).waitFor();
       if (!await page.locator("code").filter({hasText:replacement.token}).count()) throw new Error("One-time token was not visibly delivered");
       const newWorkedBeforeRevocation = (await discover(replacement.token)).ok, oldWorkedUntilRevocation = (await discover(input.credential)).ok;
       if (!newWorkedBeforeRevocation || !oldWorkedUntilRevocation) throw new Error("Replacement must work before retiring old credential");
       await page.getByRole("button", {name:"Dismiss new token",exact:true}).click();
-      const oldRow = page.getByRole("row").filter({has:page.getByText("Old test client", {exact:true})});
+      // Identify the old token by its saved prefix: an agent may give the replacement the same name.
+      const oldRow = page.getByRole("row").filter({has:page.getByText(`pcgw_${g.oldTokenId.slice(0, 8)}•••`, {exact:true})});
       if (!await oldRow.isVisible()) await page.getByRole("button", {name:/Token history/}).click();
       await oldRow.getByRole("button", {name:"Revoke",exact:true}).click();
       const dialog = page.getByRole("dialog"); await dialog.getByLabel("Type the token name to confirm", {exact:true}).fill("Old test client");
@@ -279,7 +290,7 @@ async function main() {
       await dialog.getByRole("button", {name:"Revoke token",exact:true}).click(); await revoked; await dialog.waitFor({state:"hidden"});
       const old = await discover(input.credential), fresh = await discover(replacement.token), other = await discover(g.otherToken);
       await writeFile(path.join(path.dirname(process.argv[2]!), "token.json"), JSON.stringify({id:replacement.id,token:replacement.token}), {mode:0o600});
-      return {processIsolation:true,testRunnerAttached:false,tracingEnabled:false,videoEnabled:false,apiStepRecorder:false,newTokenId:replacement.id,tokenUiVisible:true,newWorkedBeforeRevocation,oldWorkedUntilRevocation,oldRevoked:true,newWorksAfter:fresh.ok,oldStatusAfter:old.status,otherWorksAfter:other.ok};
+      return {processIsolation:true,testRunnerAttached:false,tracingEnabled:false,videoEnabled:false,apiStepRecorder:false,newTokenId:replacement.id,tokenUiVisible:true,newWorkedBeforeRevocation,oldWorkedUntilRevocation,revealedPending:!!g.pendingTokenId,oldRevoked:true,newWorksAfter:fresh.ok,oldStatusAfter:old.status,otherWorksAfter:other.ok};
     }
     await page.goto(input.setupURL, { waitUntil: "domcontentloaded" });
     await page.getByRole("textbox", { name: "MCP server URL", exact: true }).fill(input.providerURL); await page.getByRole("button", { name: "Continue", exact: true }).click();
