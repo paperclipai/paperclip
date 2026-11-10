@@ -14,7 +14,7 @@ import { executionWorkspaceSnapshots, type Db } from "@paperclipai/db";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import type { StoredSecretVersionMaterial } from "../secrets/types.js";
 import type { StorageService } from "../storage/types.js";
-import { notifyRemoteWorkspaceSnapshots, REMOTE_WORKSPACE_SNAPSHOT_GRACE_MS } from "./remote-workspace-snapshot-retention.js";
+import { abortSnapshotAttemptUploads, notifyRemoteWorkspaceSnapshots, snapshotAttemptKeys, REMOTE_WORKSPACE_SNAPSHOT_GRACE_MS } from "./remote-workspace-snapshot-retention.js";
 import { WORKSPACE_ARCHIVE_IO_BUFFER_BYTES } from "./remote-workspace-archive-io.js";
 
 const SCHEMA = "paperclip.workspace-snapshot.v1";
@@ -296,6 +296,7 @@ async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, v
     const winning = updated ?? (await input.db.select().from(executionWorkspaceSnapshots).where(scope(input)))[0];
     if (!winning || !["uploaded", "committed", "superseded"].includes(winning.status)) failure("publication_changed");
     const saved = reference(winning!);
+    if (updated) await abortSnapshotAttemptUploads(input.storage, saved.companyId, snapshotAttemptKeys(updated));
     if (!recapture && saved.manifestDigest !== input.manifestDigest) failure("operation_content_changed");
     if (saved.objectKey !== attempt.objectKey) await verifyTimed(saved);
     return saved;
@@ -376,9 +377,17 @@ async function uploadVerifiedWorkspaceSnapshot(input: WorkspaceSnapshotUpload, v
     }
     // The object key is unique per attempt, so a late losing uploader cannot
     // overwrite an object already used by a committed generation.
-    const stored = await timedStep(input.timing, "putMs", "storage.snapshot.put", () => input.storage.putFile({ companyId: identity.companyId, namespace: "workspace-snapshots", objectKey: attempt.objectKey,
-      originalFilename: null, contentType: "application/octet-stream", body: createReadStream(encrypted, { highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }),
-      byteSize: attempt.byteSize, sha256: attempt.sha256, sourceFile: encrypted, signal: input.signal }));
+    let stored: Awaited<ReturnType<StorageService["putFile"]>>;
+    try {
+      stored = await timedStep(input.timing, "putMs", "storage.snapshot.put", () => input.storage.putFile({ companyId: identity.companyId, namespace: "workspace-snapshots", objectKey: attempt.objectKey,
+        originalFilename: null, contentType: "application/octet-stream", body: createReadStream(encrypted, { highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES }),
+        byteSize: attempt.byteSize, sha256: attempt.sha256, sourceFile: encrypted, signal: input.signal }));
+    } catch (error) {
+      if (input.signal?.aborted) throw error;
+      const saved = await getWorkspaceSnapshot(input.db, input);
+      if (!saved || (!recapture && saved.manifestDigest !== input.manifestDigest)) throw error;
+      await verifyTimed(saved); return saved;
+    }
     const uploaded = { schema: SCHEMA, ...identity, ...attempt } as WorkspaceSnapshotRef;
     // The backend checked every part of this upload against digests of these
     // exact bytes, so only its size needs confirming. Any other provider, and

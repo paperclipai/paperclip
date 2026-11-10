@@ -4078,7 +4078,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       if (isMobile) setMobilePropsOpen(true);
     }
   }, [pluginPanels, taskPanelAccountScope, issue?.companyId, issue?.id, openTaskSidePanel, isMobile]);
-  const browserQuery = useTaskBrowsers(issue?.id);
+  const browserQuery = useTaskBrowsers(issue?.id, issue?.companyId);
   const { openBrowserId, openBrowser: setOpenBrowserId, acknowledgeBrowserOpened: handleBrowserOpened } =
     useBrowserArrivals(currentUserId ?? "anonymous", issue?.id, browserQuery.data);
   useEffect(() => {

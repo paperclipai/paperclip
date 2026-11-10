@@ -2044,6 +2044,11 @@ export function heartbeatService(
     };
     let instructionWorkingCopy: ReturnType<typeof createHeartbeatInstructionWorkingCopy> | null = null;
     let nativeDispatchStarted = false;
+    // Set once the dispatch gate enters the adapter or native executor. Unlike
+    // nativeDispatchStarted it also covers a gate that fails after entering.
+    let dispatchGateEntered = false;
+    const nativeDispatchMayHaveStarted = () => nativeDispatchStarted || dispatchGateEntered || nativeOwnershipHeld
+      || Boolean(runOptions.nativeRestartRecovery || runOptions.nativeLeaseOwner);
     const leaveToNextController = async (error: unknown) => {
       if (!shutdownHandedOff() || legacyAdapterEntered || nativeDispatchStarted) return false;
       nativeSessionResumeScheduled = true;
@@ -3004,6 +3009,7 @@ export function heartbeatService(
         try {
           return await dispatchResolvedInteractionContinuationAfterAdmission((markDispatchStarted) => {
             entered = true;
+            dispatchGateEntered = true;
             return dispatch(markDispatchStarted);
           }, reservation);
         } catch (error) {
@@ -3837,6 +3843,7 @@ export function heartbeatService(
           session: { runtimeForAdapter, previousSessionParams, taskKey, configuredModel, sessionConfigMetadata },
           readFailureReportSecrets,
           runId, err, identityRedactor, requiredWorkspaceRestoreEvidence, legacyAdapterEntered,
+          nativeDispatchMayHaveStarted: nativeDispatchMayHaveStarted(),
           goalCheckpointSession, previousSessionDisplayId, taskSession,
         });
       }
@@ -3893,6 +3900,7 @@ export function heartbeatService(
           await runCompletion.failRunSetup({
             run, runId, outerErr, signal: executionControl.controller.signal,
             providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted,
+            nativeDispatchMayHaveStarted: nativeDispatchMayHaveStarted(),
             identityRedactor, readFailureReportSecrets,
           });
           legacyPreparationFailedBeforeDispatch = !legacyAdapterEntered && !nativeDispatchStarted;

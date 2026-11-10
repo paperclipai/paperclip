@@ -9,11 +9,34 @@ import { PassThrough, Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import type { PutObjectInput, PutObjectReceipt } from "./types.js";
 import { withS3FailureDiagnostics } from "./s3-failure.js";
-import { cleanupStorageFailure } from "./failure-cleanup.js";
+import { cleanupStorageFailure, STORAGE_FAILURE_CLEANUP_MS } from "./failure-cleanup.js";
 
 const bufferedPartSize = 8 * 1024 * 1024;
 const bufferedPayloadLimit = 4 * bufferedPartSize;
 let bufferedPayloadBytes = 0;
+const inFlightUploads = new Set<{ abort: (reason: unknown) => void; settled: Promise<void> }>();
+
+function trackUpload(abort: (reason: unknown) => void) {
+  let settle!: () => void;
+  const entry = { abort, settled: new Promise<void>(resolve => { settle = resolve; }) };
+  inFlightUploads.add(entry);
+  return () => { inFlightUploads.delete(entry); settle(); };
+}
+
+function settledWithin(entries: Array<{ settled: Promise<void> }>, ms: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([Promise.all(entries.map(entry => entry.settled)).then(() => undefined),
+    new Promise<void>(resolve => { timer = setTimeout(resolve, ms); })]).finally(() => clearTimeout(timer));
+}
+
+export async function abortInFlightMultipartUploads(reason: unknown, options: { graceMs?: number; timeoutMs?: number } = {}) {
+  if (options.graceMs && inFlightUploads.size) await settledWithin([...inFlightUploads], options.graceMs);
+  const entries = [...inFlightUploads];
+  if (!entries.length) return 0;
+  for (const entry of entries) entry.abort(reason);
+  await settledWithin(entries, options.timeoutMs ?? 2 * STORAGE_FAILURE_CLEANUP_MS);
+  return entries.length;
+}
 
 /** Each part is streamed too: multipart must not become another whole-file
  * buffer or a fixed part-count ceiling below the storage provider's limits. */
@@ -37,6 +60,7 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
   const onAbort = () => stop(input.signal!.reason);
   input.signal?.addEventListener("abort", onAbort, { once: true });
   if (input.signal?.aborted) onAbort();
+  const untrack = trackUpload(stop);
   const readNext = async () => {
     controller.signal.throwIfAborted();
     let abort!: () => void;
@@ -126,6 +150,7 @@ export async function putS3Multipart(client: S3Client, bucket: string, key: stri
     input.signal?.removeEventListener("abort", onAbort);
     source.destroy();
     await cleanupStorageFailure(async () => iterator.return?.());
+    untrack();
   }
 }
 
@@ -211,6 +236,7 @@ export async function putS3MultipartFile(
   const onAbort = () => controller.abort(input.signal!.reason);
   input.signal?.addEventListener("abort", onAbort, { once: true });
   if (input.signal?.aborted) onAbort();
+  const untrack = trackUpload(reason => { if (!controller.signal.aborted) controller.abort(reason); });
   // This path never reads the stream body; release its file descriptor now.
   if (input.body instanceof Readable) input.body.destroy();
   let uploadId: string | undefined;
@@ -283,5 +309,6 @@ export async function putS3MultipartFile(
     throw error;
   } finally {
     input.signal?.removeEventListener("abort", onAbort);
+    untrack();
   }
 }

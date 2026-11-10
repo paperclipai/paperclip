@@ -1301,6 +1301,17 @@ describe("openapi routes", () => {
     expect(spec.paths[base + "/event-test"].post.requestBody.content["application/json"].schema.properties.bindingId).toMatchObject({ type: "string", format: "uuid" });
   });
 
+  it("documents project environment compatibility and creation selection", () => {
+    const { spec } = loadSpecRoutes();
+    const operation = spec.paths["/api/companies/{companyId}/project-environments"].get;
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board_or_agent" });
+    expect(operation.responses["403"]).toBeDefined();
+    expect(operation.responses["200"].content["application/json"].schema.properties).toHaveProperty("defaultEnvironmentId");
+    const creation = spec.paths["/api/companies/{companyId}/projects"].post;
+    expect(creation.requestBody.content["application/json"].schema.properties.environmentId).toMatchObject({ type: "string", format: "uuid" });
+    expect(creation.requestBody.content["application/json"].schema.properties.expectedStorageProviderPluginId).toMatchObject({ type: "string", nullable: true });
+  });
+
   it("documents board-only repository discovery and selection", () => {
     const { spec } = loadSpecRoutes();
     const discovery = spec.paths["/api/companies/{companyId}/project-repositories"].get;

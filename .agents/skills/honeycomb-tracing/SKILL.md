@@ -33,7 +33,8 @@ Keep the repository's three paths distinct:
   another OTLP destination. With no endpoint, this tracing stays off.
 - **Telemetry:** first-party events under `packages/shared/src/telemetry/`, sent
   to Paperclip by default unless opted out. Adding these requires the generated
-  contract, Telemetry README, and privacy-review workflow in `AGENTS.md`.
+  contract, Telemetry README, and privacy-review workflow in
+  `rules/data-paths.mdc`.
 - **Run log:** local `heartbeat_run_events` and measured performance events.
   Useful for correlation, but a local event is not proof of Honeycomb export.
 
