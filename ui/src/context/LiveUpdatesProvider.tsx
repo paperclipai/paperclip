@@ -2428,6 +2428,10 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         // too. Reconcile that gap as well as reconnects: events are not replayed.
         const initialHealthyOpen = !hasOpenedSocket.current && !hasNeededSocketRecovery.current;
         hasOpenedSocket.current = true;
+        // Browser lists stop polling on an empty result. A reconcile that joins
+        // an older read needs one more read after it. Scan before reconciling,
+        // so the reconcile's own reads are not followed up again.
+        refreshPendingTaskBrowserReads(queryClient);
         void queryClient.invalidateQueries({
           type: "active",
           predicate: initialHealthyOpen ? (query) => {
@@ -2436,9 +2440,6 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
               && key !== JSON.stringify(queryKeys.auth.session) && key !== JSON.stringify(queryKeys.health);
           } : isLiveReconciledQuery,
         }, { cancelRefetch: false });
-        // Browser lists stop polling on an empty result; a reconcile that
-        // joined an older read needs one more read after it.
-        refreshPendingTaskBrowserReads(queryClient);
         reconnectAttempt = 0;
       };
 
@@ -2451,8 +2452,8 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           const parsed = JSON.parse(raw) as LiveEvent;
           if (transcripts.receive(parsed, recoverQueries)) {
             if ((parsed as { type: string }).type === "live.resync") {
-              void queryClient.invalidateQueries({ type: "active", predicate: isLiveReconciledQuery }, { cancelRefetch: false });
               refreshPendingTaskBrowserReads(queryClient);
+              void queryClient.invalidateQueries({ type: "active", predicate: isLiveReconciledQuery }, { cancelRefetch: false });
             }
             return;
           }

@@ -230,6 +230,28 @@ describe("LiveUpdatesProvider connection recovery", () => {
     expect(client.getQueryData(taskBrowsersQueryKey("task-1"))).toEqual(started);
   });
 
+  it("reads an idle task browser list once when the connection opens", async () => {
+    vi.stubGlobal("WebSocket", Socket);
+    const browsersRead = vi.fn<() => Promise<unknown>>().mockResolvedValue([]);
+    function Browsers() {
+      const connected = useHasCompanyLiveConnection("company-1");
+      useQuery({
+        queryKey: taskBrowsersQueryKey("task-1"), queryFn: browsersRead,
+        refetchInterval: (query) => taskBrowsersRefetchInterval(connected, query.state as Parameters<typeof taskBrowsersRefetchInterval>[1]),
+      });
+      return null;
+    }
+    await act(async () => root.render(
+      <QueryClientProvider client={client}><LiveUpdatesProvider><Browsers /></LiveUpdatesProvider></QueryClientProvider>,
+    ));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    browsersRead.mockClear();
+    await act(async () => Socket.instances[0].onopen?.());
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    // The open reconcile reads it once; it is not followed up as an older read.
+    expect(browsersRead).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps one-second polling for active work after the connection closes", async () => {
     vi.stubGlobal("WebSocket", Socket);
     pollRead.mockResolvedValue([{ id: "run-1", status: "running" }]);
