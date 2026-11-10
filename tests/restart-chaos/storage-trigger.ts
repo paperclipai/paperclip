@@ -18,9 +18,10 @@ export function storageTriggerMatches(target: StorageTriggerTarget, method: stri
   }
 }
 
-export function parseStorageTrigger(value: string, options: Pick<WaveOptions, "storage" | "stormMinutes" | "crashPoint" | "triggers" | "workloads">): StorageTriggerTarget {
+export function parseStorageTrigger(value: string, options: Pick<WaveOptions, "storage" | "stormMinutes" | "crashPoint" | "triggers" | "workloads" | "matrix">): StorageTriggerTarget {
   if (options.storage !== "s3") throw new Error("--storage-trigger needs --storage s3");
   if (options.stormMinutes || options.crashPoint) throw new Error("--storage-trigger arms each task's planned fault; a storm or crash-point wave has none");
+  if (options.matrix) throw new Error("--storage-trigger arms faults by time; --matrix plans trigger cells whose windows it would skip");
   if ((options.triggers ?? []).some(trigger => trigger !== "time")) throw new Error("--storage-trigger replaces the fault's trigger; use it with --triggers time");
   const board = options.workloads.filter(workload => STORAGE_TRIGGER_BOARD_WORKLOADS.includes(workload));
   if (board.length) throw new Error(`--storage-trigger keeps a fault armed after its planned time; board-acting workloads (${board.join(", ")}) would act before the restart`);
@@ -157,4 +158,9 @@ export function storageTriggerMarkdown(receipts: readonly StorageTriggerReceipt[
       ? `not reached (${receipt.missedReason ?? "unknown"})` : receipt.request?.outcome ?? "unknown"} | ${receipt.request
       ? `\`${receipt.request.method} ${receipt.request.path.split("/").slice(-3).join("/")}\`` : "-"} |`)];
   return `${lines.join("\n")}\n`;
+}
+
+export async function exposedAfterLaunch<T extends { done: boolean }>(launching: Promise<unknown> | null, launched: readonly T[]): Promise<T[]> {
+  await launching;
+  return launched.filter(candidate => !candidate.done);
 }

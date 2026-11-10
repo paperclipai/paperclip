@@ -17,7 +17,7 @@ import { BoardUi } from "./board-ui.js";
 import { DEFAULT_MINIO_BINARY, MINIO_RELEASE, minioBinary, objectStoreServerEnvironment, startMinio, type ObjectStore } from "./object-store.js";
 import { StorageChaos, planStorageFaults, replayStorageWindows, type StorageFaultReceipt } from "./storage-chaos.js";
 import { startStorageFaultProxy } from "./storage-proxy.js";
-import { StorageTrigger, storageTriggerMarkdown, storageTriggerShortfall } from "./storage-trigger.js";
+import { exposedAfterLaunch, StorageTrigger, storageTriggerMarkdown, storageTriggerShortfall } from "./storage-trigger.js";
 import { needsCredentialRotation, startCredentialRotation, type CredentialRotation } from "./storage-credentials.js";
 import { describeProviderFault, installProviderFaultSeam, resolveRealCodex, withProviderFaultCheck, type ProviderFaultSeam } from "./provider-faults.js";
 import { installAcpxSidecarSeam, withAcpxSidecarHook, type AcpxSidecarSeam } from "./acpx-provider-faults.js";
@@ -397,8 +397,7 @@ async function main(): Promise<number> {
         fire: armed => {
           faultsQueued += 1;
           const work = (async () => {
-            await launching;
-            const exposed = launched.filter(candidate => !candidate.done);
+            const exposed = await exposedAfterLaunch(launching, launched);
             await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
             const queued = faultWork.length;
             fireFault(armed.kind, armed.holdMs, armed.taskId, exposed);

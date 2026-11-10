@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseCommand } from "./config.js";
 import { startStorageFaultProxy } from "./storage-proxy.js";
-import { redactStorageUrl, storageTriggerMarkdown, storageTriggerMatches, storageTriggerShortfall, StorageTrigger, type StorageTriggerReceipt, type ArmedStorageFault, type StorageTriggerHooks } from "./storage-trigger.js";
+import { exposedAfterLaunch, redactStorageUrl, storageTriggerMarkdown, storageTriggerMatches, storageTriggerShortfall, StorageTrigger, type StorageTriggerReceipt, type ArmedStorageFault, type StorageTriggerHooks } from "./storage-trigger.js";
 import type { FaultReceipt } from "./types.js";
 
 const closers: Array<() => Promise<unknown>> = [];
@@ -74,6 +74,7 @@ describe("storage trigger targets", () => {
     expect(() => parseCommand([...base, "--storage", "s3", "--storage-trigger", "everything"])).toThrow(/takes one of/);
     expect(() => parseCommand([...base, "--workloads", "C1", "--triggers", "comment", "--storage", "s3", "--storage-trigger", "run-log"])).toThrow(/--triggers time/);
     expect(() => parseCommand([...base, "--workloads", "A1,G1", "--storage", "s3", "--storage-trigger", "run-log"])).toThrow(/board-acting workloads \(G1\)/);
+    expect(() => parseCommand([...base, "--workloads", "C1", "--matrix", "--storage", "s3", "--storage-trigger", "run-log"])).toThrow(/--matrix/);
   });
 });
 
@@ -177,5 +178,23 @@ describe("storage trigger receipts", () => {
     expect(text).toContain("1 of 2 armed faults interrupted a transfer; 1 not reached.");
     expect(text).toContain("| t01 | K1 | f01 | aborted | `PUT ws1/s1/u1.pcws` |");
     expect(text).toContain("| t02 | K1 | - | not reached (task_rested) | - |");
+  });
+});
+
+describe("storage-triggered restart exposure", () => {
+  it("waits for a launch in flight and exposes the task it launched", async () => {
+    const launched = [{ id: "t01", done: false }, { id: "t02", done: true }];
+    let finish!: () => void;
+    const launching = new Promise<void>(resolve => { finish = resolve; });
+    launched.push({ id: "t03", done: false });
+    const exposed = exposedAfterLaunch(launching, launched);
+    let settled = false;
+    void exposed.then(() => { settled = true; });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(settled).toBe(false);
+    launched.push({ id: "t04", done: false });
+    finish();
+    expect((await exposed).map(task => task.id)).toEqual(["t01", "t03", "t04"]);
+    expect((await exposedAfterLaunch(null, launched)).map(task => task.id)).toEqual(["t01", "t03", "t04"]);
   });
 });
