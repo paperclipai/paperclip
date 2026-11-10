@@ -327,6 +327,15 @@ function terminalFinalizationFailureMessage(failureCode: string, failureScope: "
 }
 
 const NATIVE_FINALIZATION_RETRY_LIMIT = 3;
+/**
+ * Contention while applying a saved, accepted, provider-succeeded result is
+ * transient. When its quick retries run out, the finalizer waits these longer
+ * delays and tries the same saved result again, with no provider work, before
+ * it hands the task to the board with a Retry. Bounded: one entry per delay.
+ */
+export const NATIVE_FINALIZATION_AUTOMATIC_BACKOFF_MS = [2 * 60_000, 10 * 60_000] as const;
+const TRANSIENT_FINALIZATION_FAILURE_CODES = new Set(["status_cas_exhausted", "side_effect_planning_failed"]);
+export const AUTOMATIC_FINALIZATION_BACKOFF_KIND = "automatic_finalization_backoff";
 
 /** Failed finalizations of this run's saved result. Rows saved before the count existed start at zero. */
 function readFinalizationFailureCount(resultJson: unknown) {
@@ -462,14 +471,31 @@ async function recordRetryableFailure(input: {
     // turn its first transient finalization failure into a terminal one and
     // strand an accepted result. The count lives on the run's result because
     // every claim clears the coordinator's failure detail.
-    const finalizationFailureCount = input.failureScope === "workspace"
+    let finalizationFailureCount = input.failureScope === "workspace"
       ? null
       : readFinalizationFailureCount(input.run.resultJson) + 1;
-    const exhausted =
+    const budgetExhausted =
       input.permanent === true ||
       (workspaceFinalizeAttempt !== null
         ? workspaceFinalizeAttempt >= 3
         : finalizationFailureCount! >= NATIVE_FINALIZATION_RETRY_LIMIT);
+    // A saved, accepted, provider-succeeded result that only lost status races
+    // is re-applied after a longer delay instead of stranding the task. Each
+    // delay is used once; the result is never recreated and no provider runs.
+    const automaticBackoffsUsed = input.coordinator.recoveryHistory
+      .filter((entry) => entry.kind === AUTOMATIC_FINALIZATION_BACKOFF_KIND).length;
+    const automaticBackoffMs = budgetExhausted && !supersededByNewerRun && input.permanent !== true
+      && input.failureScope !== "workspace" && Boolean(input.coordinator.resultId)
+      && acceptedRunTerminalState === "succeeded" && input.run.status !== "cancelled"
+      && !preservedResultHasStop(input.run.resultJson)
+      && TRANSIENT_FINALIZATION_FAILURE_CODES.has(input.failureCode)
+      ? NATIVE_FINALIZATION_AUTOMATIC_BACKOFF_MS[automaticBackoffsUsed] ?? null
+      : null;
+    const exhausted = budgetExhausted && automaticBackoffMs === null;
+    if (automaticBackoffMs !== null) {
+      nextAttemptAt.setTime(now.getTime() + automaticBackoffMs);
+      finalizationFailureCount = 0;
+    }
     const phase =
       supersededByNewerRun || exhausted
         ? ("terminal_failure" as const)
@@ -513,6 +539,13 @@ async function recordRetryableFailure(input: {
           nextAction: input.nextAction,
         },
         nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt,
+        ...(automaticBackoffMs === null ? {} : {
+          recoveryHistory: [...input.coordinator.recoveryHistory, {
+            kind: AUTOMATIC_FINALIZATION_BACKOFF_KIND, resultId: input.coordinator.resultId,
+            previousFailureCode: input.failureCode, delayMs: automaticBackoffMs,
+            nextAttemptAt: nextAttemptAt.toISOString(), at: now.toISOString(),
+          }],
+        }),
         updatedAt: now,
       })
       .where(eq(nativeRunFinalizations.runId, input.run.id));

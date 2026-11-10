@@ -455,6 +455,30 @@ describe("setup command failure evidence", () => {
   });
 });
 
+describe("saved result that ran out of finalization retries", () => {
+  const review = { ...issue, status: "in_review" };
+  const succeeded = { ...run, status: "succeeded", runtimeMode: "native" as const, errorCode: null, resultJson: null };
+
+  it("offers Retry for a succeeded run whose accepted result could not be finalized", () => {
+    expect(projectTaskInterruption(review, { run: { ...succeeded, nativeFinalizationRetry: true }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: true, observedRunId: "run" });
+  });
+
+  it("shows the saved result being applied after Retry", () => {
+    expect(projectTaskInterruption(review, { run: { ...succeeded, nativeFinalizationRetryPending: true }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "working", canRetry: false, recoveryStep: "finishing_recovery" });
+  });
+
+  it("keeps ordinary succeeded and failed runs unchanged", () => {
+    expect(projectTaskInterruption(review, { run: succeeded, agent, paused: false, approval: false }))
+      .toMatchObject({ state: "resolved", canRetry: false });
+    expect(projectTaskInterruption(review, { run: { ...succeeded, status: "failed", errorCode: "adapter_failed" }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption({ ...review, status: "done" }, { run: { ...succeeded, nativeFinalizationRetry: true },
+      agent, paused: false, approval: false })).toMatchObject({ state: "resolved", canRetry: false });
+  });
+});
+
 // Remote native run shape: the provider turn completed and its work was
 // saved, then a same-run recovery was refused by the cleanup gate. The task
 // showed "Couldn't finish this attempt" with a Retry the server refuses (409).

@@ -4932,6 +4932,29 @@ only while its recorded retry is still due or its matching retry run is verified
 live. An expired or missing retry, exhausted budget, or board-owned failure shows
 recovery needed rather than “Observing active run.”
 
+Finalization of a saved result has its own budget of three failed attempts,
+counted in `heartbeat_runs.result_json.finalizationFailureCount`. When the
+budget runs out on an accepted result of a provider-succeeded run and the cause
+was contention (`status_cas_exhausted` or `side_effect_planning_failed`), the
+finalizer tries the same saved result again after 2 minutes, then after 10
+minutes, each with a fresh budget, before it hands the task to the board. Each
+delay is recorded once in the coordinator's `recoveryHistory`
+(`automatic_finalization_backoff`). No provider work runs.
+
+When the coordinator still rests `terminal_failure` with
+`native_finalization_retry_exhausted` for an accepted result of a succeeded
+run, the task offers Retry. That Retry re-finalizes the saved result: it reopens
+the same coordinator with a fresh finalization budget, records
+`exhausted_finalization_retry` in its `recoveryHistory`, resolves the board
+card, writes a coalesced `task_retry` receipt with strategy `finalize_result`,
+and runs the finalizer for the same run. It starts no provider run and keeps
+the provider attempt count. Later clicks join that Retry. Until the result
+commits or the budget runs out again, the task shows work in progress
+("Finishing recovery of saved work"). If that finalization fails, the normal bounded
+finalization retries and recovery card apply, and Retry is offered again once
+they run out. Coordinators that older builds left in this state qualify with or
+without `finalizationFailureCount`; no migration is needed.
+
 Native recovery reads include a read-only `nativeRunActivity` projection, bound
 to the company, source issue, and exact `resume_native_run.runId`. It reports a
 queued/running native heartbeat, or a running `workspace_finalize` operation

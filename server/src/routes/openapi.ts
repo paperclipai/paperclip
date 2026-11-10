@@ -5128,6 +5128,26 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/project-environments",
+  tags: ["projects"],
+  summary: "List compatible project environments and the caller's default",
+  description: "Groups configured environments by repository storage owner. Returns names and IDs without provider configuration. Creation revalidates environmentId and stores its storage owner without overriding agent execution environments.",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: {
+    200: r.ok(z.object({
+      groups: z.array(z.object({
+        storageProviderPluginId: z.string().uuid().nullable(),
+        environments: z.array(z.object({ id: z.string().uuid(), name: z.string() })),
+      })),
+      defaultEnvironmentId: z.string().uuid().nullable(),
+      error: z.string().nullable(),
+    })),
+    401: r.unauthorized, 403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/project-repositories",
   tags: ["projects"],
   summary: "Discover GitHub repositories available to the current board user",
@@ -12886,6 +12906,7 @@ registerCurrentRoute({
   path: "/api/tool-gateway/gateways/{gatewayId}/tokens",
   tags: ["tool-gateway"],
   summary: "Create a named MCP gateway token",
+  description: "Person-only. Returns the new token's plaintext exactly once to the creator. Agent callers receive 403 gateway_token_requires_person with the gateway's Tokens page path, where a person creates the token and hands it to the client.",
   body: toolGatewayCompanyBodySchema,
   responses: {
     201: r.ok(),

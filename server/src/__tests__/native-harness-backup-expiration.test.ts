@@ -985,6 +985,60 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     await quiet();
   });
 
+  it("finds a backup root's leases by run, backup stamp and identity through indexes, within one company", async () => {
+    const session = await seedSession({ leaseStatus: "retained" });
+    const [stamped] = await db.select({ id: environmentLeases.id }).from(environmentLeases)
+      .where(eq(environmentLeases.companyId, session.companyId));
+    const [runLease] = await db.insert(environmentLeases).values({ companyId: session.companyId,
+      heartbeatRunId: session.runId, status: "released", metadata: {} }).returning();
+    const [own] = await db.insert(environmentLeases).values({ companyId: session.companyId, status: "active",
+      metadata: { nativeHarnessBackup: { sessionScopeSha256: "0".repeat(64) } } }).returning();
+    // Not references: another digest, a stamp that is not a string match, and
+    // the same digest in another company.
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({ id: otherCompanyId, name: "Other", issuePrefix: `O${otherCompanyId.slice(0, 6)}` });
+    await db.insert(environmentLeases).values([
+      { companyId: session.companyId, status: "retained", metadata: { nativeHarnessBackup: { sessionScopeSha256: "f".repeat(64) } } },
+      { companyId: session.companyId, status: "retained", metadata: { nativeHarnessBackup: { sessionScopeSha256: [session.scope] } } },
+      { companyId: session.companyId, status: "retained", metadata: { sessionScopeSha256: session.scope } },
+      { companyId: otherCompanyId, status: "retained", metadata: { nativeHarnessBackup: { sessionScopeSha256: session.scope } } },
+    ]);
+    // Unrelated lease history, so the planner prefers indexes to a company scan.
+    await db.$client.unsafe(`insert into environment_leases (company_id, status, metadata)
+      select $1::uuid, 'released', jsonb_build_object('sandbox', repeat('x', 512)) from generate_series(1, 2000)`, [session.companyId]);
+    await db.$client.unsafe("analyze environment_leases");
+    const statePath = path.join(session.root, "control-plane", "control-plane-state.json");
+    await fs.writeFile(statePath, JSON.stringify({ identity: {
+      runId: session.runId, normalizedSessionId: session.sessionId, environmentLeaseId: own!.id } }));
+
+    const queries: Array<{ text: string; params: unknown[] }> = [];
+    const previous = db.$client.options.debug;
+    db.$client.options.debug = (_connection, text, params) => { queries.push({ text, params: params as unknown[] }); };
+    let reconciled: Awaited<ReturnType<ReturnType<typeof service>["reconcileBackup"]>>;
+    try { reconciled = await service().reconcileBackup(session.scope); } finally { db.$client.options.debug = previous; }
+    expect([...reconciled!.dependencies.leaseIds].sort()).toEqual([stamped!.id, runLease!.id, own!.id].sort());
+
+    // Every arm of the company's lease lookup must be index-backed, or the
+    // planner reads each lease's metadata (environment_leases_native_backup_scope_idx).
+    const lookup = queries.find(query => query.text.startsWith('select "id" from "environment_leases"')
+      && query.text.includes("sessionScopeSha256"));
+    expect(lookup).toBeDefined();
+    const custom = JSON.stringify(await db.$client.unsafe(`explain (format json) ${lookup!.text}`, lookup!.params as never[]));
+    // A reused prepared statement gets a generic plan; the bound digest must
+    // still prove the partial index predicate.
+    const generic = JSON.stringify(await db.$client.begin(async tx => {
+      await tx.unsafe("set local plan_cache_mode = force_generic_plan");
+      await tx.unsafe(`prepare backup_lease_lookup as ${lookup!.text}`);
+      const values = lookup!.params.map(value => `'${String(value).replaceAll("'", "''")}'`).join(", ");
+      return tx.unsafe(`explain (format json) execute backup_lease_lookup(${values})`);
+    }));
+    for (const text of [custom, generic]) {
+      expect(text).toContain("environment_leases_native_backup_scope_idx");
+      expect(text).toContain("BitmapOr");
+      expect(text).not.toContain("Seq Scan");
+    }
+  });
+
   it("rejects destructive backup scopes outside the controller digest namespace", async () => {
     await emptyStateBase(); const remove = vi.spyOn(fs, "rm");
     await expect(service().expireBackup("../outside")).rejects.toThrow("Invalid native harness backup scope");
