@@ -248,7 +248,7 @@ function record(value: unknown): Record<string, unknown> {
  *   in any build.
  * Any launch request, identity record or runner event keeps the normal stop
  * proofs. */
-export async function nativeRunRefusedBeforeLaunch(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+export async function nativeRunNeverLaunched(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "runtimeMode" | "status" | "errorCode" | "processPid" | "processGroupId" |
   "nativeSessionId" | "runnerInstanceId" | "nativeIssueId">): Promise<boolean> {
   if (run.runtimeMode !== "native" || !SETTLED_RUN_STATUSES.includes(run.status) || run.processPid || run.processGroupId) return false;

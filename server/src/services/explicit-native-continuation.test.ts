@@ -109,15 +109,22 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       prepared: true, comment: "process_identity_missing", retry: "process_identity_missing" },
     { shape: "failed without a process record after native selection", errorCode: "adapter_failed", launched: false,
       coordinator: true, comment: "process_identity_missing", retry: "process_identity_missing" },
-  ] as Array<{ shape: string; errorCode: string; launched: boolean; runnerEvent?: boolean; prepared?: boolean; coordinator?: boolean;
+    { shape: "timed out before it requested a launch", status: "timed_out", errorCode: "timeout", launched: false,
+      comment: null, retry: null },
+    { shape: "timed out after a runner event without a process record", status: "timed_out", errorCode: "timeout", launched: false,
+      runnerEvent: true, comment: "process_identity_missing", retry: "process_identity_missing" },
+    { shape: "was interrupted without a process record after native selection", status: "interrupted", errorCode: "process_lost", launched: false,
+      coordinator: true, comment: "process_identity_missing", retry: "process_identity_missing" },
+  ] as Array<{ shape: string; status?: "timed_out" | "interrupted"; errorCode: string; launched: boolean; runnerEvent?: boolean; prepared?: boolean; coordinator?: boolean;
     comment: string | null; retry: string | null }>)("routes input after a run $shape to the gate that can clear it", async ({
-    errorCode, launched, runnerEvent, prepared, coordinator, comment, retry }) => {
+    status, errorCode, launched, runnerEvent, prepared, coordinator, comment, retry }) => {
     // s7532/t04: a Retry's run failed at the quarantine fence before it asked
     // for a runner. Input then waited for a stop record of a process that
     // never existed ("process_identity_missing", Retry still offered) instead
     // of the quarantine's own gate, which names the action that clears it.
     const f = await seed();
-    await db.update(heartbeatRuns).set({ processPid: null, errorCode }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(heartbeatRuns).set({ processPid: null, errorCode, ...(status ? { status } : {}) })
+      .where(eq(heartbeatRuns.id, f.sourceRunId));
     // A run that failed before native selection has no coordinator.
     if (errorCode !== "native_session_cleanup_quarantined" && !coordinator) {
       await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
