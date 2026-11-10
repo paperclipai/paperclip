@@ -235,11 +235,28 @@ describe("provider faults across a restart", () => {
     }
   });
 
+  it("cycles K1, K2 and K4 restarts across PV tasks and gives each workload its own message", () => {
+    const command = parseCommand(["--adapters", "codex", "--workloads", "S1,G1", "--faults", "PV1,PV2", "--provider-fault-restart", "K2,K4,K1",
+      "--provider-fault-message", "S1=interrupt_ack,terminal", "--tasks", "4", "--concurrency", "1", "--seed", "9"]);
+    if (command.mode !== "wave") throw new Error("expected a wave");
+    expect(command.options).toMatchObject({ providerFaultRestart: "K2", providerFaultRestartKinds: ["K2", "K4", "K1"],
+      providerFaultMessage: "terminal", providerFaultMessageByWorkload: { S1: "interrupt_ack" } });
+    const plan = planWave("w-20261110T000000-s9", command.options);
+    expect(plan.tasks.map(planned => planned.providerFault?.restart?.kind)).toEqual(["K2", "K4", "K1", "K2"]);
+    for (const planned of plan.tasks) {
+      expect(planned.providerFault?.message).toBe(planned.workload === "S1" ? "interrupt_ack" : "terminal");
+      const restart = planned.providerFault!.restart!;
+      expect(taskFaultSchedule(planned)).toEqual([{ kind: restart.kind, holdMs: restart.kind === "K4" ? 120_000 : 0, atMs: 0, trigger: "provider", delayMs: 3_000 }]);
+    }
+    expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV2", "--provider-fault-message", "Q2=terminal"])).toThrow(/not one of/);
+    expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV2", "--provider-fault-message", "terminal,interrupt_ack"])).toThrow(/one default/);
+  });
+
   it("rejects restarts that cannot straddle the fault", () => {
     expect(() => parseCommand(["--adapters", "claude", "--workloads", "Q1", "--faults", "PV3", "--provider-fault-restart", "K1"])).toThrow(/PV1 or PV2/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV1", "--provider-fault-delays", "5",
       "--provider-fault-restart", "K1", "--provider-fault-restart-after-seconds", "6"])).toThrow(/shorter than every PV1 delay/);
-    expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV2", "--provider-fault-restart", "K2"])).toThrow(/K1/);
+    expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "PV2", "--provider-fault-restart", "K6"])).toThrow(/K1, K2, K4/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "Q1", "--faults", "K1", "--provider-fault-restart", "K1"])).toThrow(/provider fault/);
     expect(() => parseCommand(["--adapters", "codex", "--workloads", "G1", "--faults", "PV2"])).toThrow(/G1 grades the board decision after a restart/);
     expect(parseCommand(["--adapters", "codex", "--workloads", "G1", "--faults", "PV2", "--provider-fault-restart", "K1", "--concurrency", "1"]).mode).toBe("wave");

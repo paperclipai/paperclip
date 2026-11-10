@@ -1,5 +1,5 @@
 /** Shared types for the control-plane restart chaos harness (plan §5). */
-import type { ProviderFaultEvent, ProviderFaultKind, ProviderFaultRule, ProviderMessage } from "./provider-faults.js";
+import type { ProviderFaultEvent, ProviderFaultKind, ProviderFaultRule, ProviderMessage, ProviderRestartKind } from "./provider-faults.js";
 import type { QuestionArtifacts, QuestionRecord } from "./question-handoff.js";
 import type { RepeatedRestartRecord, RestartStep } from "./repeated-restarts.js";
 import type { TimeFaultRecord } from "./time-faults.js";
@@ -102,6 +102,8 @@ export interface WaveOptions {
   /** Provider message faults from `--faults` (PV1 delay, PV2 drop, PV3 duplicate); see provider-faults.ts. */
   providerFaults?: ProviderFaultKind[];
   providerFaultMessage?: ProviderMessage;
+  /** `--provider-fault-message S1=interrupt_ack,...`: a workload's own message, over `providerFaultMessage`. */
+  providerFaultMessageByWorkload?: Partial<Record<WorkloadId, ProviderMessage>>;
   /** PV1 delays, cycled across tasks (`--provider-fault-delays`). */
   providerFaultDelaysMs?: number[];
   /** `--db-pressure <writers>`: harness-owned writers touching the wave's running run rows back to back (contention.ts). */
@@ -112,8 +114,10 @@ export interface WaveOptions {
   serverFrom?: string;
   /** TM2/TM3: how far every database timestamp is shifted back (`--time-age-hours`, default 26 h). */
   timeAgeMs?: number;
-  /** `--provider-fault-restart K1`: each PV1/PV2 task also kills -9 the control plane after its fault applied. */
-  providerFaultRestart?: "K1";
+  /** `--provider-fault-restart K1`: each PV1/PV2 task also restarts the control plane after its fault applied. */
+  providerFaultRestart?: ProviderRestartKind;
+  /** `--provider-fault-restart K2,K4,K1`: restart kinds cycled across PV1/PV2 tasks (the first is `providerFaultRestart`). */
+  providerFaultRestartKinds?: ProviderRestartKind[];
   providerFaultRestartAfterMs?: number;
   /** RR1–RR3: the gap from a replacement's health to the next stop (`--rr-gap-seconds`); absent keeps each kind's default. */
   rrGapMs?: [number, number];

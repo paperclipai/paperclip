@@ -29,6 +29,12 @@ export const PROVIDER_FAULT_ACTIONS: Record<ProviderFaultKind, "delay" | "drop" 
 export const PROVIDER_MESSAGES = ["terminal", "interrupt_ack"] as const;
 export type ProviderMessage = (typeof PROVIDER_MESSAGES)[number];
 
+/** Restarts a provider fault may straddle: K1 kill -9, K2 SIGTERM graceful restart, K4 kill -9 then an outage hold. */
+export const PROVIDER_RESTART_KINDS = ["K1", "K2", "K4"] as const;
+export type ProviderRestartKind = (typeof PROVIDER_RESTART_KINDS)[number];
+/** K4 outage hold after a provider fault: the low end of the seeded K4 range (scheduler.ts K4_HOLD_RANGE_MS). */
+export const PROVIDER_FAULT_K4_HOLD_MS = 120_000;
+
 /** PV1 default: the late terminal of PR #20330 (the old 15 s governed-wait drain against Codex's 30 s command window). */
 export const DEFAULT_PROVIDER_DELAY_MS = 18_000;
 /** Bound on a PV1 delay: beyond 10 minutes a message is effectively dropped (PV2). */
@@ -43,7 +49,7 @@ export interface ProviderFaultRule {
    * `--provider-fault-restart K1` (PV1, PV2): kill -9 the control plane this long after the fault
    * applied, so the held or dropped message straddles a restart.
    */
-  restart?: { kind: "K1"; afterAppliedMs: number };
+  restart?: { kind: ProviderRestartKind; afterAppliedMs: number; holdMs?: number };
 }
 
 /** Default gap between a provider fault applying and its K1: well inside the default 18 s PV1 hold. */
@@ -87,29 +93,57 @@ export function parseProviderDelays(raw: string | undefined): number[] | undefin
 }
 
 export function parseProviderMessage(raw: string | undefined): ProviderMessage | undefined {
-  if (raw === undefined) return undefined;
-  if (!(PROVIDER_MESSAGES as readonly string[]).includes(raw)) throw new Error(`--provider-fault-message must be one of ${PROVIDER_MESSAGES.join(", ")}`);
-  return raw as ProviderMessage;
+  return parseProviderMessages(raw).message;
+}
+
+/**
+ * `--provider-fault-message terminal` or `--provider-fault-message S1=interrupt_ack,terminal`: a bare
+ * message is the wave default; `WORKLOAD=message` overrides it for that workload's tasks (Codex ends a
+ * Stop without its terminal, so S1 needs `interrupt_ack` while Q1 and G1 keep `terminal`).
+ */
+export function parseProviderMessages(raw: string | undefined): { message?: ProviderMessage; byWorkload?: Partial<Record<WorkloadId, ProviderMessage>> } {
+  if (raw === undefined) return {};
+  const result: { message?: ProviderMessage; byWorkload?: Partial<Record<WorkloadId, ProviderMessage>> } = {};
+  const entries = raw.split(",").map(value => value.trim()).filter(Boolean);
+  if (!entries.length) throw new Error(`--provider-fault-message must be one of ${PROVIDER_MESSAGES.join(", ")}`);
+  for (const entry of entries) {
+    const [left, right] = entry.includes("=") ? entry.split("=", 2) as [string, string] : [undefined, entry];
+    if (!(PROVIDER_MESSAGES as readonly string[]).includes(right)) throw new Error(`--provider-fault-message must be one of ${PROVIDER_MESSAGES.join(", ")}`);
+    if (left === undefined) {
+      if (result.message) throw new Error("--provider-fault-message takes one default message");
+      result.message = right as ProviderMessage;
+    } else {
+      if (!PROVIDER_FAULT_WORKLOADS.includes(left as WorkloadId)) throw new Error(`--provider-fault-message: ${left} is not one of ${PROVIDER_FAULT_WORKLOADS.join(", ")}`);
+      result.byWorkload = { ...result.byWorkload, [left]: right as ProviderMessage };
+    }
+  }
+  return result;
 }
 
 /** Attach each provider-fault task's rule. Restart-fault tasks are unchanged. */
 export function withProviderFaultRules(tasks: TaskPlan[], options: Pick<WaveOptions, "providerFaultMessage" | "providerFaultDelaysMs"
-  | "providerFaultRestart" | "providerFaultRestartAfterMs">): TaskPlan[] {
+  | "providerFaultRestart" | "providerFaultRestartAfterMs" | "providerFaultRestartKinds" | "providerFaultMessageByWorkload">): TaskPlan[] {
   const delays = options.providerFaultDelaysMs?.length ? options.providerFaultDelaysMs : [DEFAULT_PROVIDER_DELAY_MS];
+  const restarts = options.providerFaultRestartKinds?.length ? options.providerFaultRestartKinds
+    : options.providerFaultRestart ? [options.providerFaultRestart] : [];
   let pv1 = 0;
+  let restarted = 0;
   return tasks.map(task => {
     if (!isProviderFault(task.fault)) return task;
-    const rule: ProviderFaultRule = { kind: task.fault, message: options.providerFaultMessage ?? "terminal",
+    const restartKind = restarts.length && task.fault !== "PV3" ? restarts[restarted++ % restarts.length]! : null;
+    const rule: ProviderFaultRule = { kind: task.fault,
+      message: options.providerFaultMessageByWorkload?.[task.workload] ?? options.providerFaultMessage ?? "terminal",
       ...(task.fault === "PV1" ? { delayMs: delays[pv1++ % delays.length]! } : {}),
-      ...(options.providerFaultRestart && task.fault !== "PV3"
-        ? { restart: { kind: options.providerFaultRestart, afterAppliedMs: options.providerFaultRestartAfterMs ?? DEFAULT_PROVIDER_FAULT_RESTART_AFTER_MS } } : {}) };
+      ...(restartKind
+        ? { restart: { kind: restartKind, afterAppliedMs: options.providerFaultRestartAfterMs ?? DEFAULT_PROVIDER_FAULT_RESTART_AFTER_MS,
+          ...(restartKind === "K4" ? { holdMs: PROVIDER_FAULT_K4_HOLD_MS } : {}) } } : {}) };
     return { ...task, providerFault: rule, fireAfterMs: 0, holdMs: 0 };
   });
 }
 
 export function describeProviderFault(rule: ProviderFaultRule): string {
   return `${rule.kind} ${PROVIDER_FAULT_ACTIONS[rule.kind]} ${rule.message}${rule.delayMs !== undefined ? ` ${rule.delayMs}ms` : ""}`
-    + (rule.restart ? ` +${rule.restart.kind}@${rule.restart.afterAppliedMs}ms` : "");
+    + (rule.restart ? ` +${rule.restart.kind}@${rule.restart.afterAppliedMs}ms${rule.restart.holdMs ? `/hold${rule.restart.holdMs}ms` : ""}` : "");
 }
 
 /** The Codex executable product code would resolve for this checkout (mirrors codex-command.ts). */

@@ -290,7 +290,7 @@ export function taskFaultSchedule(task: TaskPlan): ScheduledFault[] {
   // A storm crosses K13 tasks; a provider fault (PV*) and a matrix baseline (K0) restart nothing, unless
   // `--provider-fault-restart` asked for a K1 once the provider fault applied (the `provider` trigger).
   const restart = task.providerFault?.restart;
-  if (restart) return [{ kind: restart.kind, holdMs: 0, atMs: 0, trigger: "provider", delayMs: restart.afterAppliedMs }];
+  if (restart) return [{ kind: restart.kind, holdMs: restart.holdMs ?? 0, atMs: 0, trigger: "provider", delayMs: restart.afterAppliedMs }];
   if (task.fault === "K13" || task.fault === "K0" || isProviderFault(task.fault)) return [];
   const planned: ScheduledFault = { kind: task.fault, holdMs: task.holdMs, atMs: task.fireAfterMs,
     ...(task.restartSteps ? { restartSteps: task.restartSteps } : {}) };

@@ -570,7 +570,22 @@ after its fault applied, through the `provider` trigger. That delay must be shor
 so the message is still held, and the wave runs with `--concurrency 1`, because every K1 kills the whole control plane. K1 kills the runner with its provider and the held message, so the late
 or missing terminal straddles the restart: the replacement control plane must settle the saved wait
 without it. Planned restart faults (`--faults K1,PV2`) are still rejected, and PV3 does not combine with
-a restart, since a duplicate holds nothing. Such a task passes when:
+a restart, since a duplicate holds nothing.
+
+`--provider-fault-restart` also takes K2 (SIGTERM, a graceful restart whose shutdown drain meets the
+held or missing message) and K4 (kill -9, then the control plane stays down for 120 s, the low end of
+the seeded K4 range). A comma list such as `K1,K2,K4` cycles across the PV1/PV2 tasks in plan order,
+so one wave covers several restart kinds. `--provider-fault-message` takes `WORKLOAD=message` entries
+next to the default, for example `S1=interrupt_ack,terminal`: S1 tasks fault the interrupt
+acknowledgement (Codex ends a Stop without its terminal) while Q1 and G1 tasks fault the terminal.
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads S1,G1 --faults PV1,PV2 --provider-fault-restart K1,K2,K4,K2 \
+  --provider-fault-message S1=interrupt_ack,terminal --concurrency 1 --tasks 4 --seed 211
+```
+
+Such a task passes when:
 
 - `provider_fault_applied`: the fault applied once, the K1 started after it, and for PV1 no release
   came before the K1;
@@ -942,7 +957,11 @@ re-arms the task's own triggered faults instead of using their offsets.
 - Speed: an aggregate p50/p95 row can breach only with at least 5 samples; a
   smaller row is reported as `insufficient sample (n < 5)`. Every cold or warm run
   over its p95 budget, and every restart recovery whose Paperclip share exceeds
-  its p95 budget, still fails the wave on its own.
+  its p95 budget, still fails the wave on its own. `speed.json` keeps each graded
+  run's own split (`runs`): `bootMs` (Paperclip: claim to the provider accepting
+  the turn), `providerFirstActivityMs` (turn accepted to first visible activity),
+  and the spans before the turn, so a breach stays attributable after the
+  temporary instance is deleted.
 - Faults are serialized; each one hits every task running at that moment.
 - A `todo` or `in_progress` task with no live run and no named wait is not a rest. The observer keeps watching it until it resumes or passes the R5 stall limit.
 - R5 also fails a run that stays `running` with no live evidence (no new run event, `lastUsefulActionAt` or `execution.lastConfirmedActivityAt`, and no start) for more than 3 minutes after the server is ready. A `running` status alone is not proof of life. A quiet run is still live while a tool it started has not ended (for example a 4-minute `bench.sh`) or while its recorded local runner process still runs with the same PID and start time.

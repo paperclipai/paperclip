@@ -38,6 +38,10 @@ describe("wave speed grade", () => {
       events: [span("comment.to_run_created", 0, 4_000), span("heartbeat.queue", 4_000, 100), span("runner.turn.submit", 4_100, 900),
         span("task.time_to_first_agent_activity", 0, 9_000, { anchor: "comment" }), span("task.time_to_first_token", 0, 40_000, { anchor: "comment" })] };
     expect(firstActivityMs(withActivity)).toBe(5_000);
+    // Per-run detail splits Paperclip's boot from the provider's wait for first activity.
+    expect(gradeWaveSpeed("local", [withActivity], [], 0).runs).toEqual([{ runId: "a", adapter: "codex", start: "cold",
+      firstActivityMs: 5_000, bootMs: 900, queueMs: 100, providerFirstActivityMs: 4_000,
+      preTurnSteps: { "heartbeat.queue": 100, "runner.turn.submit": 900 }, breach: false }]);
     expect(firstActivityMs(run("b", "codex", 7_000))).toBe(7_000);
     const speed = gradeWaveSpeed("local", [withActivity], [], 0);
     expect(speed.rows.find(row => row.metric === "time_to_first_activity")).toMatchObject({ breaches: [], measured: { p50: 5_000 } });
