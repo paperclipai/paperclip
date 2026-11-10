@@ -1380,7 +1380,6 @@ const RUNTIME_TOOLS_SECURITY: Array<Record<string, string[]>> = [
 
 const RUNTIME_TOOLS_OPERATIONS = new Set([
   "POST /runtime-tools/github/credentials",
-  "POST /runtime-tools/git/credentials",
   "GET /mcp/runtime-tools",
   "POST /mcp/runtime-tools",
   "POST /runtime-tools/connections/search",
@@ -1759,7 +1758,7 @@ function applyDocumentFixups(document: any): any {
       scheme: "bearer",
       bearerFormat: "Heartbeat-bound runtime tools token",
       description:
-        "Scoped token bound to an active heartbeat run and presented in the Authorization bearer header. Git credentials require the git_credentials scope; the legacy GitHub endpoint also accepts github_credentials.",
+        "Scoped token bound to an active heartbeat run and presented in the Authorization bearer header. The GitHub credential endpoint requires the distinct github_credentials scope.",
     },
     [AGENT_RUN_AUTH_SCHEME]: {
       type: "http",
@@ -11458,19 +11457,10 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   method: "post",
-  path: "/runtime-tools/git/credentials",
-  tags: ["connection-intents"],
-  summary: "Resolve Git credentials for an authorized repository and active run",
-  body: z.object({ repositoryUrl: z.string().max(2048) }).strict(),
-  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 409: r.conflict },
-});
-
-registerCurrentRoute({
-  method: "post",
   path: "/runtime-tools/github/credentials",
   tags: ["connection-intents"],
   summary:
-    "Resolve GitHub operation credentials using a run capability; browser sessions are rejected",
+    "Resolve operation credentials using a run capability with github_credentials scope; browser sessions are rejected",
   responses: {
     200: r.ok(),
     401: r.unauthorized,

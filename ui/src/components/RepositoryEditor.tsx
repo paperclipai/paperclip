@@ -41,7 +41,9 @@ export function RepositoryEditor({ selected, onChange, state = "ready", availabl
   useEffect(() => {
     if (showPicker) picker.current?.querySelector<HTMLButtonElement>('[role="combobox"]')?.focus();
   }, [showPicker]);
-  const options = available.filter((repo) => !selected.some((item) => item.id === repo.id)).map((repo) => ({
+  const selectedIds = new Set(selected.map((repo) => repo.id));
+  const availableIds = new Set(available.map((repo) => repo.id));
+  const options = available.filter((repo) => !selectedIds.has(repo.id)).map((repo) => ({
     key: repo.id, value: repo.id, label: repo.fullName,
     searchText: repo.connections.join(" "), repo,
   }));
@@ -49,7 +51,7 @@ export function RepositoryEditor({ selected, onChange, state = "ready", availabl
   const providers = [...new Set(available.map((repo) => repo.provider ?? "github"))];
   const catalogLoaded = state === "ready" || state === "empty" || state === "disconnected";
   const unavailableSelected = catalogLoaded
-    ? selected.filter((repo) => !available.some((item) => item.id === repo.id))
+    ? selected.filter((repo) => !availableIds.has(repo.id))
     : [];
   const addLabel = selected.length ? "Add another repo" : "Add repository";
   return (

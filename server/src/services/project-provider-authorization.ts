@@ -84,11 +84,11 @@ export function projectProviderAuthorizationService(db: Db) {
           throw forbidden("Select an active Azure DevOps authorization for this organization");
         const identity = and(eq(projectProviderAuthorizations.companyId, companyId), eq(projectProviderAuthorizations.projectId, projectId),
           eq(projectProviderAuthorizations.provider, provider), eq(projectProviderAuthorizations.scopeKey, scopeKey));
+        if (grantId) await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
         if (grantId) await tx.insert(projectProviderAuthorizations).values({ companyId, projectId, provider, scopeKey, grantId, authorizedByUserId: userId })
           .onConflictDoUpdate({ target: [projectProviderAuthorizations.projectId, projectProviderAuthorizations.provider, projectProviderAuthorizations.scopeKey],
             set: { grantId, authorizedByUserId: userId, updatedAt: new Date() } });
         else await tx.delete(projectProviderAuthorizations).where(identity);
-        if (grantId) await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
         await recordProjectLifecycleEvent(reader, companyId, projectId);
         const { publication } = await persistActivity(reader, { companyId, actorType: "user", actorId: userId,
           action: grantId ? "project.git_authorized" : "project.git_authorization_revoked", entityType: "project", entityId: projectId,

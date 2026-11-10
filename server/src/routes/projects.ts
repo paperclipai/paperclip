@@ -758,12 +758,13 @@ export function projectRoutes(db: Db) {
         collectProjectWorkspaceCommandPaths(req.body),
       );
       await assertNoManagedSandboxWorkspacePath(req.body);
-      const workspaceExists = (await svc.listWorkspaces(id)).some((workspace) => workspace.id === workspaceId);
-      if (!workspaceExists) {
+      const currentWorkspace = (await svc.listWorkspaces(id)).find((workspace) => workspace.id === workspaceId);
+      if (!currentWorkspace) {
         res.status(404).json({ error: "Project workspace not found" });
         return;
       }
-      const workspace = await svc.updateWorkspace(id, workspaceId, await authorizeWorkspaceRepository(req, existing.companyId, req.body));
+      const input = req.body.repoUrl ? { ...req.body, metadata: { ...currentWorkspace.metadata, ...req.body.metadata } } : req.body;
+      const workspace = await svc.updateWorkspace(id, workspaceId, await authorizeWorkspaceRepository(req, existing.companyId, input));
       if (!workspace) {
         res.status(422).json({ error: "Invalid project workspace payload" });
         return;

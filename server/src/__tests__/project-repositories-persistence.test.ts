@@ -172,6 +172,11 @@ const support = await getEmbeddedPostgresTestSupport();
     } });
     expect(workspace?.metadata).not.toHaveProperty("githubRepositoryId");
 
+    await projectService(db).updateWorkspace(created.body.id, workspace!.id, { metadata: { ...workspace!.metadata, retainedSetting: "keep" } });
+    const edited = await request(app).patch(`/api/projects/${created.body.id}/workspaces/${workspace!.id}`).send({ repoUrl: repositoryUrl });
+    expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+    expect(edited.body.metadata).toMatchObject({ retainedSetting: "keep", repositoryProvider: "azure-devops", repositoryId });
+
     catalog.mockResolvedValueOnce({ repositories: [], connections: [], connectionCount: 0, failedConnectionCount: 0 });
     const denied = await request(app).post(`/api/companies/${companyId}/projects`).send({
       name: `Unconnected Azure workspace ${Date.now()}`, workspace: { name: "Azure source", repoUrl: "https://dev.azure.com/contoso/Platform/_git/missing" },

@@ -15,6 +15,19 @@ vi.mock("./ui/popover", () => ({
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("RepositoryEditor", () => {
+  it("checks large selections against the catalog with linear ID reads", async () => {
+    let reads = 0;
+    const repos = Array.from({ length: 400 }, (_, index) => ({
+      get id() { reads++; return `repo-${index}`; },
+      fullName: `org/repo-${index}`, url: `https://github.com/org/repo-${index}`, connections: [],
+    }));
+    const container = document.createElement("div"), root = createRoot(container);
+    try {
+      await act(async () => root.render(<RepositoryEditor selected={repos} available={repos} onChange={vi.fn()} onConnect={vi.fn()} onRetry={vi.fn()} />));
+      expect(reads).toBeLessThan(repos.length * 15);
+      expect(container.textContent).not.toContain("Restore the provider connection or repository access");
+    } finally { await act(async () => root.unmount()); }
+  });
   it("opens setup for the selected repository provider", async () => {
     const onConnect = vi.fn();
     const container = document.createElement("div");
