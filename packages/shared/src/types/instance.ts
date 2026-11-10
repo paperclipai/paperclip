@@ -101,6 +101,7 @@ export interface InstanceExperimentalSettings {
   enableLegacyComposerSubmit: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
+  enableAgentGraph: boolean;
   enableExternalObjects: boolean;
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;

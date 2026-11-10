@@ -619,6 +619,9 @@ export const queryKeys = {
     projectOrder: (companyId: string, userId: string) =>
       ["sidebar-preferences", "project-order", companyId, userId] as const,
   },
+  uiLayouts: {
+    mine: (companyId: string, surface: string) => ["ui-layouts", companyId, surface, "me"] as const,
+  },
   primaryAgent: {
     mine: (companyId: string, userId: string) => ["primary-agent", companyId, userId] as const,
   },

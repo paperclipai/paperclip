@@ -110,6 +110,7 @@ export interface RequestOptions {
   /** The `fetch` cache mode. Use `"no-store"` for a response that must never
    *  come from the browser's HTTP cache. */
   cache?: RequestCache;
+  keepalive?: boolean;
 }
 
 function abortError(): DOMException {
@@ -290,7 +291,12 @@ export const api = {
       ...(options?.headers ? { headers: options.headers } : {}),
     }),
   put: <T>(path: string, body: unknown, options?: RequestOptions) =>
-    request<T>(path, { method: "PUT", body: JSON.stringify(body), signal: options?.signal }),
+    request<T>(path, {
+      method: "PUT",
+      body: JSON.stringify(body),
+      signal: options?.signal,
+      ...(options?.keepalive ? { keepalive: true } : {}),
+    }),
   /** Raw binary upload (e.g. one chunked import-transfer part); the body travels as-is. */
   putRaw: <T>(path: string, body: Blob, options?: RequestOptions) =>
     request<T>(path, {

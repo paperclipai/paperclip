@@ -148,6 +148,7 @@ describe("instance settings service", () => {
       enableCases: false,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
+      enableAgentGraph: false,
       enableBuiltInAgents: true,
       enableBetaSkills: false,
       enableSummaries: false,

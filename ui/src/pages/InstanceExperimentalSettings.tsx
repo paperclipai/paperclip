@@ -230,6 +230,7 @@ export function InstanceExperimentalSettings() {
     experimentalQuery.data?.enableIssuePlanDecompositions === true;
   const enableExperimentalFileViewer =
     experimentalQuery.data?.enableExperimentalFileViewer === true;
+  const enableAgentGraph = experimentalQuery.data?.enableAgentGraph === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
   const enableBuiltInAgents = experimentalQuery.data?.enableBuiltInAgents === true;
   const enableBetaSkills = experimentalQuery.data?.enableBetaSkills === true;
@@ -307,6 +308,17 @@ export function InstanceExperimentalSettings() {
             Optional product features that are still being evaluated.
           </p>
         </div>
+
+        <ExperimentalToggleCard
+          title="Agent Graph"
+          description="Replace the static org chart with a graph canvas: pan, zoom, drag, multi-select, auto-layout, live status and a layout saved for each user."
+          checked={enableAgentGraph}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableAgentGraph: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableAgentGraph"
+          managed={managedKeys.enableAgentGraph}
+          ariaLabel="Toggle agent graph experimental setting"
+        />
 
         <ExperimentalToggleCard
           title="Assistant connections (MCP)"

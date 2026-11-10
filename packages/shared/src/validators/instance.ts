@@ -72,6 +72,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableLegacyComposerSubmit: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),
   enableExperimentalFileViewer: z.boolean().default(false),
+  enableAgentGraph: z.boolean().default(false),
   enableExternalObjects: z.boolean().default(false),
   enableSmokeLab: z.boolean().default(false),
   enableBuiltInAgents: z.boolean().default(false),

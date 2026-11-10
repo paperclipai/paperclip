@@ -17,6 +17,7 @@ import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
+import { useExperimentalFlag } from "../hooks/useExperimentalFlag";
 import { queryKeys } from "../lib/queryKeys";
 import { isPlatformManagedEnvironment } from "../lib/managed-sandbox-environment";
 import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge";
@@ -41,6 +42,7 @@ const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
 // Lazy-loaded so the roster page doesn't statically pull in the full
 // AgentConfigForm module graph (the modal reuses its adapter/model pickers).
+const AgentGraph = lazy(() => import("../features/agent-graph/AgentGraph").then(module => ({ default: module.AgentGraph })));
 const ConfigureBuiltInAgentModal = lazy(() =>
   import("../components/ConfigureBuiltInAgentModal").then((m) => ({
     default: m.ConfigureBuiltInAgentModal,
@@ -201,6 +203,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
   const location = useLocation();
   const { isMobile } = useSidebar();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const agentGraph = useExperimentalFlag("enableAgentGraph");
   const pathSegment = location.pathname.split("/").pop() ?? "all";
   const requestedTab: FilterTab = isFilterTab(pathSegment) ? pathSegment : "all";
   const [view, setView] = useState<AgentsView>(() => streamlinedUiEnabled ? initialView : "org");
@@ -350,6 +353,8 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
 
   const filtered = filterAgents(agents ?? [], tab, builtInAgentIds, query).filter(rosterFilters.matches);
   const filteredOrg = filterOrgTree(orgTree ?? [], tab, builtInAgentIds, query.trim() || rosterFilters.activeCount ? new Set(filtered.map(agent => agent.id)) : undefined);
+  const showAgentGraph = agentGraph.enabled && effectiveView === "org";
+  const graphAgentIdsKey = showAgentGraph ? filtered.map(agent => agent.id).join(",") : "";
   const environmentDataLoading = environmentsEnabled && environments === undefined;
   const showEnvironmentColumn = environmentsEnabled && (environments === undefined || environments.length > 1);
   const resolveRenderedEnvironment = (agentId: string) => (
@@ -481,7 +486,13 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
 
       {/* Org chart view */}
       {effectiveView === "org" && filteredOrg.length > 0 && (
-        <OrgChart embedded orgTree={filteredOrg} agents={agents ?? []} />
+        showAgentGraph && selectedCompanyId ? (
+          <Suspense fallback={<PageSkeleton variant="org-chart" />}>
+            <AgentGraph companyId={selectedCompanyId} agents={agents ?? []} visibleAgentIdsKey={graphAgentIdsKey} className="flex-1" />
+          </Suspense>
+        ) : (
+          <OrgChart embedded orgTree={filteredOrg} agents={agents ?? []} />
+        )
       )}
 
       {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (

@@ -1,0 +1,60 @@
+.agent-graph .react-flow {
+  --xy-background-color: var(--background);
+  --xy-background-pattern-color: var(--border);
+  --xy-edge-stroke: var(--border);
+  --xy-edge-stroke-selected: var(--primary);
+  --xy-connectionline-stroke: var(--primary);
+  --xy-node-border-radius: var(--radius);
+  --xy-handle-background-color: var(--muted-foreground);
+  --xy-handle-border-color: var(--background);
+  --xy-minimap-background-color: var(--card);
+  --xy-minimap-mask-background-color: color-mix(in oklab, var(--muted) 70%, transparent);
+  --xy-minimap-node-background-color: var(--muted-foreground);
+  --xy-controls-button-background-color: var(--card);
+  --xy-controls-button-background-color-hover: var(--accent);
+  --xy-controls-button-color: var(--foreground);
+  --xy-controls-button-color-hover: var(--accent-foreground);
+  --xy-controls-button-border-color: var(--border);
+  --xy-selection-background-color: color-mix(in oklab, var(--primary) 10%, transparent);
+  --xy-selection-border: 1px dashed var(--primary);
+  --xy-attribution-background-color: transparent;
+}
+
+.agent-graph .react-flow__edge.agent-graph-edge .react-flow__edge-path {
+  stroke-width: 1.5;
+}
+
+.agent-graph .react-flow__edge.agent-graph-edge.animated .react-flow__edge-path {
+  stroke: var(--status-agent-running);
+}
+
+.agent-graph .react-flow__node:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
+.agent-graph-node-live {
+  animation: agent-graph-live-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes agent-graph-live-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--status-agent-running) 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in oklab, var(--status-agent-running) 0%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-graph-node-live {
+    animation: none;
+    box-shadow: 0 0 0 2px color-mix(in oklab, var(--status-agent-running) 45%, transparent);
+  }
+
+  .agent-graph .react-flow__edge.animated .react-flow__edge-path {
+    animation: none;
+  }
+}

@@ -31,6 +31,16 @@ Every agent has access to their `chainOfCommand` — the list of managers from t
 - **Delegation** — managers can assign work to their reports
 - **Visibility** — managers can see what their reports are working on
 
+## Agent graph (experimental)
+
+Enable **Agent Graph** in **Instance Settings > Experimental** to replace the static org chart with a graph canvas. Your arrangement is saved for you, per organization.
+
+- **Move and select.** Drag nodes. Shift-drag draws a selection box. Ctrl or Cmd click adds to the selection. **Tidy up** arranges the graph top-down or left-right. **Keep manual positions** leaves the nodes that you placed where they are.
+- **Live status.** A node shows the status of its agent and pulses while a run is live.
+- **Details.** Select an agent to see its status, adapter, budget and recent runs. Pause, resume and terminate stay on the agent page.
+- **Hide.** Use **Hide from graph** to remove an agent from your view only. The toolbar shows hidden agents again.
+- **Shortcuts.** The keyboard button in the toolbar lists every shortcut.
+
 ## Rules
 
 - **No cycles** — the org tree is strictly acyclic
