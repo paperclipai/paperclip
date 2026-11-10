@@ -1342,6 +1342,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
   it.each(["journal", "ledger"])("respects historical %s generation reservations without changing the committed parent", async highest => {
     const reserved = await reserve({ kind: "empty" }), first = await target("reserved-generations");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "new-generation.txt"), "new workspace contents\n");
     const parent = readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.snapshotId;
     // A crash after journaling can leave no ledger row; retention can leave a
     // deleted ledger after the source operation is gone. Both remain reserved.
@@ -1399,6 +1400,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
   it("reserves distinct generations for competing boundaries and fences the losing publication", async () => {
     const reserved = await reserve({ kind: "empty" }), first = await target("competing-boundaries");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "competing-save.txt"), "new workspace contents\n");
     const parent = readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.snapshotId;
     let arrivals = 0, release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
@@ -1435,6 +1437,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
   it.each(["failed", "succeeded"])("protects an active duplicate after its peer %s and cleans it only after the last invocation settles", async peer => {
     const reserved = await reserve({ kind: "empty" }), first = await target("active-duplicate");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "duplicate-save.txt"), "new workspace contents\n");
     let release!: () => void, entered!: () => void, releaseOwnership!: () => void, postUpload!: () => void, uploads = 0, checks = 0;
     const blocked = new Promise<void>(resolve => { release = resolve; });
     const started = new Promise<void>(resolve => { entered = resolve; });
@@ -1503,6 +1506,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
   it.each(["untracked", "malformed-owner", "malformed-active"])("keeps adopted %s work pinned after a newer final save", async marker => {
     const reserved = await reserve({ kind: "empty" }), first = await target("unknown-save-work");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "adopted-save.txt"), "new workspace contents\n");
     const input = { db, storage, workspace: prepared.workspace, runId: ids.run, lease: prepared.lease,
       target: first, assertOwned: async () => undefined, boundary: "repository:legacy" };
     const failed: StorageService = { ...storage, putFile: async () => { throw new Error("old upload failed"); } };
@@ -1518,6 +1522,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     if (marker === "malformed-active") await db.update(workspaceOperations).set({ metadata: sql`jsonb_set(jsonb_set(${workspaceOperations.metadata},
       '{saveWork,unknown}', 'false'::jsonb), '{saveWork,activeIds}', '{"unfinished":"unknown"}'::jsonb)` })
       .where(eq(workspaceOperations.id, old!.sourceOperationId));
+    await fs.writeFile(path.join(prepared.remoteRoot, "after-adopted-save.txt"), "newer final workspace contents\n");
     const final = await saveRemoteWorkspace({ ...input, workspace: await workspace(reserved.id), boundary: "final" });
     const [held] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, old!.sourceOperationId));
     expect(held).toMatchObject({ status: "succeeded", metadata: { exportCleanup: { state: "pending" } } });

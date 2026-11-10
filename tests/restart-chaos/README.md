@@ -374,6 +374,9 @@ that re-resolves its credentials after a rejection keeps going. Rotations and pu
 
 `--storage-fault-seconds 15-45` sets the window length range (5–900 s), for example to find how long
 an outage a run survives. The windows are logged in the timeline and written to `storage-faults.json`.
+The speed grade removes storage fault window time from spans and restart recoveries the same way it
+removes restart outage time (overlap counted once), and reports the removed time on its own line in
+`SUMMARY.md` and as `storageFaultRemovedMs` in `speed.json`.
 
 With `--env daytona --storage s3`, each task's workspace is a remote workspace: the controller saves
 and restores it through the store, so the faults also hit workspace save, restore and copyback. R1
@@ -381,6 +384,30 @@ and restores it through the store, so the faults also hit workspace save, restor
 GitHub `origin` over https at its `origin/master` commit, so the sandbox clones the repository and its
 snapshots are Paperclip-sized. Its oracle reads the task's files through the board API, retrying for up
 to 4 minutes while the closing save makes the workspace readable, and runs its commands on a local copy.
+
+### Restart during a transfer (`--storage-trigger`)
+
+A time-based fault rarely lands while the server is moving bytes. `--storage-trigger <target>` turns
+each task's planned K fault into an armed fault: at its planned time (`--fault-after-seconds` pins it)
+the fault is armed, and it fires the moment the proxy sees the next matching server request. The
+proxy holds that request (up to 60 s) while the harness takes its pre-fault snapshot and restarts the
+server, so the restart provably interrupts the transfer.
+
+| Target | Matching request |
+| --- | --- |
+| `snapshot-upload` | `PUT` with a body under `workspace-snapshots/` (single PUT or multipart part; not create or complete) |
+| `snapshot-part` | multipart `UploadPart` (`PUT …?partNumber=`) under `workspace-snapshots/` |
+| `snapshot-download` | `GET` under `workspace-snapshots/` (restore) |
+| `run-log` | `PUT`/`POST` under `run-logs/` (run-log journal segments) |
+
+`storage-trigger.json` records, per armed fault, the request that fired it (method, path with upload
+ids hidden, declared bytes, outcome `aborted`/`completed`), every request in flight at that
+moment (the held one included), and the fault id it produced. A fault whose task rested first, or that saw no matching request
+before the wave ended, is recorded with `missedReason` (`task_rested` or `no_matching_request`). The wave
+summary adds a "Storage trigger" section with each armed fault's result and the count not reached. It
+fails when no restart fired, or when a fired restart has no fault id or its held request was not
+`aborted` (the hold expired first). It needs `--storage s3` and `--triggers time`, and does not take
+G1, H1 or Q1: their board actions would run while the fault waits for a request.
 
 Every Retry the grader needs is clicked in the real board UI: the harness opens the issue in a headless
 Chromium, waits for the visible Retry button and clicks it. A task whose Retry button is missing fails
@@ -644,7 +671,7 @@ its workload. They catch a stuck or misleading task that no scenario anticipated
 | --- | --- | --- |
 | U1 liveness | a non-terminal task has neither a live owner (a running run with recent evidence, a run queued within the queue bound, a scheduled retry, an accepted Retry that waits on the system within the queue bound, a system recovery action) nor a visible, actionable item (Retry, a question or `userAction`, a failed notice, a board recovery action, an execution blocker, `blocked` or `in_review`; none of these count while an accepted Retry waits on the system) for longer than the bound, counting only time with the server ready | 3 min ownerless (`RESTART_CHAOS_U1_ORPHAN_SECONDS`); a queued run or an accepted Retry's wait counts as an owner for 5 min (`RESTART_CHAOS_U1_QUEUED_SECONDS`) |
 | U2 retry loop | more than N consecutive failed runs with the same status and code while the issue status stays the same | 3 (`RESTART_CHAOS_U2_SAME_FAILURE_RUNS`) |
-| U3 diagnosable | a failed run has no code or a generic one (`adapter_failed`, `unknown`, `error`, ...), its stored error is empty or names only a bare cause (`last cause: Error`), or a recovery action's cause or next action is empty or bare | none |
+| U3 diagnosable | a failed run has no code or a generic one (`adapter_failed`, `unknown`, `error`, ...) and no recorded `failureCause` (a bounded code such as `40001`, `exit_code_137` or `provider_http_429`; a bare `Error` or `unknown_error` does not count), its stored error is empty or names only a bare cause (`last cause: Error`), or a recovery action's cause or next action is empty or bare | none |
 | U4 stale notice | a Retry or failed notice stays on a task after its latest run succeeded, longer than the bound or at rest | 60 s (`RESTART_CHAOS_U4_STALE_SECONDS`) |
 
 U1, U2 and U4 fail the task (signature `U<n>:...`). U3 is a warning: it is reported in each grade
@@ -675,7 +702,9 @@ only until its run is dispatched. It also flags ten tasks whose accepted Retry w
 for 8 minutes without starting a run (five in saved waves, five in the L1 waves above). U2 flags a claude task that failed four times in a
 row with `adapter_failed`. Every U3
 flag is `adapter_failed`, including three tasks that passed after a retry, which is why U3 stays a
-warning until `adapter_failed` names its cause. The audit saw only failure codes; the error-text
+warning until `adapter_failed` names its cause. Runs now record that cause as `failureCause` (shown
+by the board's run list), and U3 accepts it; saved waves from before the field show none, so U3
+remains a warning until fresh waves show it holds. The audit saw only failure codes; the error-text
 part of U3 is checked only in waves run with this harness.
 
 ## Time faults (TM1–TM3, `--time-age-hours`)
@@ -709,6 +738,11 @@ past. The shift covers:
 - every `timestamp` column;
 - every time inside a `jsonb` column: ISO datetime strings keep their format, and whole numbers in the
   wave's epoch-millisecond window move too.
+
+A process start (`process_started_at`, `controller_process_started_at`, and `processStartedAt` keys in
+JSON) is not aged. It is part of a process's identity: owners compare the stamp they saved with the
+start time the OS reports, and a real sleep never changes that. Aging it would make every live owner
+look like a different process, a harness artifact rather than a lapsed deadline.
 
 The JSON pass matters. Receipts and snapshots keep copies of times (a continuation receipt stores the
 comment's `updatedAt` and compares it later). Shifting only the columns would fail those comparisons, a
@@ -759,6 +793,48 @@ when the board decides after a day, and the approved subtask must exist exactly 
 - Times kept outside Postgres are not aged: in-memory timers and the runner's own state files.
   Neither are times inside `text` columns or HMACs computed over a time.
 
+## Repeated restarts (RR1–RR3, `--rr-gap-seconds`)
+
+```sh
+# Each kind across running tasks.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads A1,B5,C1 --faults RR1,RR2,RR3 --concurrency 3 --tasks 6 --seed 401
+# A second kill while an approval is pending.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads G1 --faults RR1 --triggers approval --concurrency 2 --tasks 2 --seed 402
+```
+
+Every other fault restarts the server once. Real deploy loops restart it again 5–60 s after it comes
+back, while it is still recovering the runs the first restart interrupted. An RR fault starts as a K1
+(`SIGKILL` the server tree, start a replacement at once). After each planned gap, measured from the
+moment the replacement reports healthy, it stops that replacement and starts another one.
+
+| Fault | Restarts | Default gap after health |
+| --- | --- | --- |
+| RR1 double crash | K1, then one more `SIGKILL` | 3–20 s |
+| RR2 crash, then graceful | K1, then one `SIGTERM` (as K2) | 3–20 s |
+| RR3 crash loop | 3–4 `SIGKILL`s in all; the last replacement stays up | 10–30 s |
+
+The gaps are seeded per task (`restartSteps` in `plan.json`), and drawn only for RR tasks, so the plans
+of existing seeds do not change. `--rr-gap-seconds <n>` or `<min>-<max>` (1–300) replaces every RR
+gap: for example `--rr-gap-seconds 5` for a stop that always lands in recovery, or `30-60` for a slow
+deploy loop. RR faults do not combine with `--storm-minutes`, whose faults carry no planned steps.
+
+**Evidence.** Each stop and replacement (the first kill included) is recorded with its signal, planned
+gap, stopped PID, the `/api/ready` status just before the stop (`recovering` means it landed inside
+recovery), and the stopped, restarted and healthy times:
+- in `<wave>/repeated-restarts/<faultId>.json`, also written when the sequence fails part way (the planned steps are recorded before the first kill, so a replay of a failed sequence keeps its gaps);
+- in the fault receipt (`repeatedRestart` in `faults.json`, and in each failure's `startup-phases.json`);
+- in the timeline (`repeated_restart_stop`, `repeated_restart_healthy`).
+
+**Grading.** The whole sequence is one fault receipt, so it is one fault window: from the first kill to
+the last replacement's ready. Crossing, R1's outage allowance, R5's ready clock, the T-oracle, task
+deadlines and the restart-recovery speed budget treat it as one fault. No check is relaxed: the task
+must reach its correct terminal state with no Retry (R3) and no duplicated work (R4). The observer does
+not click Retry and no other fault fires until the last replacement is ready. A `--replay` of an RR
+task restarts again after the same gaps. A replacement that exits on its own during a gap fails the
+fault as a harness error, with the stops so far recorded.
+
 ## Fault timing (`--triggers`)
 
 Each task samples one trigger with its cell. `time` (default) fires at the
@@ -787,7 +863,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 
 | File | Role |
 | --- | --- |
-| `supervisor.ts` | Owns the server. Reuses `tests/runner-e2e` process code (config, ports, env isolation, wrapper-owned Postgres, process-tree stopper, `replaceController`). Faults: K1 SIGKILL + immediate restart, K2 SIGTERM + restart, K4 SIGKILL + 2–5 min hold, K6 crash loop. The controller runtime cache is kept (discarding it is K11). |
+| `supervisor.ts` | Owns the server. Reuses `tests/runner-e2e` process code (config, ports, env isolation, wrapper-owned Postgres, process-tree stopper, `replaceController`). Faults: K1 SIGKILL + immediate restart, K2 SIGTERM + restart, K4 SIGKILL + 2–5 min hold, K6 crash loop, RR1–RR3 repeated restarts. The controller runtime cache is kept (discarding it is K11). |
 | `seed.ts` | Chaos Lab company, encrypted provider secrets, native Codex / ACPX Claude / OpenCode agents from the runner-e2e catalog, and the `chaos-sandbox` project (git repo: python CLI, one failing test, `bench.sh` ≈ 4 min) with isolated git-worktree workspaces. It first turns on the instance `enableIsolatedWorkspaces` setting; without it the server ignores the project policy and every repo task shares the primary checkout. |
 | `scheduler.ts` | Seeded plan: workload × adapter × fault cells and a random fire time per task. Saved to `results/<wave>/plan.json`. `--replay` reruns one task alone with the same choices and fires the recorded sequence of faults that crossed it (other tasks' faults included) at the same offsets from launch. |
 | `observer.ts` | Polls each issue and its runs. When a task rests needing Retry it calls `POST /api/issues/:id/retry` once (once more only if a later fault started after that click), with the body `useTaskRetry.ts` sends. Collects T-oracle artifacts and the R6 sweep. |
@@ -803,6 +879,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `acpx-provider-faults.ts`, `provider-shim/acpx-*` | PV1–PV3 for Claude (ACPX): the stand-in runner package, the server hook, the sidecar/provider tap, and `--provider-fault-restart`. |
 | `question-handoff.ts` | Q1 saved question: the board's answer step and its oracle. |
 | `time-faults.ts`, `time-faults-config.ts` | TM1–TM3: process freezing, database aging with recorded rows, and the time-corrected API the grader reads through. |
+| `repeated-restarts.ts` | RR1–RR3: seeded restart steps, `--rr-gap-seconds`, and the stop-and-replace loop the supervisor runs. |
 | `daytona-sweep.ts` | Daytona R6: read-only reconciliation of this wave's labelled sandboxes with leases; cleanup only through Paperclip. |
 
 ## Output (gitignored)

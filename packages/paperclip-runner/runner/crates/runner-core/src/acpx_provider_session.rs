@@ -29,6 +29,10 @@ const MAX_ID_CHARS: usize = 240;
 const MAX_MODEL_CHARS: usize = 240;
 pub(crate) const MAX_SYSTEM_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
 const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+// A healthy sidecar confirms cancellation within about a second. The runner
+// serves controller commands one at a time, so this bound must stay well below
+// the controller's 15 s governed-wait drain and 10 s close grace.
+const ACPX_TURN_CANCEL_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -355,6 +359,7 @@ pub struct AcpxProviderSession {
     transport_terminated: bool,
     rejected_start_resumable: bool,
     runtime_retired: bool,
+    cancelled_turn_id: Option<String>,
     completed_turn_observed: bool,
     generation_has_run_turn: bool,
     restarted_after_turn_from: Option<u32>,
@@ -416,6 +421,7 @@ impl AcpxProviderSession {
             transport_terminated: false,
             rejected_start_resumable: false,
             runtime_retired: false,
+            cancelled_turn_id: None,
             completed_turn_observed: false,
             generation_has_run_turn: false,
             restarted_after_turn_from: None,
@@ -798,11 +804,24 @@ impl AcpxProviderSession {
                 "ACPX interruption named a stale or inactive turn",
             ));
         }
-        let response = match self.transport.request(
-            GeneratedAcpxSidecarCommand::TurnCancel,
+        self.cancelled_turn_id = Some(turn_id.to_owned());
+        let response = match self.transport.request_turn_cancel(
             json!({"turnId":turn_id,"reason":bounded_reason(reason)}),
+            Instant::now()
+                + ACPX_TURN_CANCEL_ACK_TIMEOUT.min(self.config.transport.request_timeout),
         ) {
-            Ok(response) => response,
+            Ok(Some(response)) => response,
+            Ok(None) => {
+                // The cancel was delivered but its reply is missing. Its turn
+                // terminal still arrives through polling, and turn.stop can
+                // reap a provider that never stops. Failing closed here would
+                // block every controller command for the whole request bound
+                // and discard that terminal. The sidecar may have retired its
+                // runtime in the lost reply, so never admit another prompt.
+                // The caller receives no confirmation: Null is not a reply.
+                self.runtime_retired = true;
+                return Ok(Value::Null);
+            }
             Err(error) => return Err(self.fail_closed(error)),
         };
         if response.get("cancelled").and_then(Value::as_bool) != Some(true) {
@@ -1100,12 +1119,19 @@ impl AcpxProviderSession {
                 "error":Value::Null,
             })
         };
-        let response = match self
-            .transport
-            .request(GeneratedAcpxSidecarCommand::ToolResolve, resolution)
-        {
+        let response = match self.transport.request_tool_resolve(resolution) {
             Ok(response) => response,
-            Err(error) => return Err(self.fail_closed(error)),
+            // This session's own turn.cancel retired the call before its result
+            // arrived, and the turn terminal may still be buffered. The provider
+            // can never receive this result, exactly as after a polled terminal,
+            // so keep the durable result instead of failing the transport.
+            Err((_, true)) if self.cancelled_turn_id.as_deref() == Some(turn_id.as_str()) => {
+                self.state = next_state;
+                self.tool_bridge = next_bridge;
+                self.reserved_tool_bridge = next_reserved_bridge;
+                return Ok(());
+            }
+            Err((error, _)) => return Err(self.fail_closed(error)),
         };
         self.verify_resolution(&response, "tool")?;
         self.state = next_state;
@@ -2258,6 +2284,7 @@ mod mode_tests {
             transport_terminated: false,
             rejected_start_resumable: false,
             runtime_retired: false,
+            cancelled_turn_id: None,
             completed_turn_observed: false,
             generation_has_run_turn: false,
             restarted_after_turn_from: None,

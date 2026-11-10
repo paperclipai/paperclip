@@ -1,13 +1,15 @@
 /** Shared types for the control-plane restart chaos harness (plan §5). */
 import type { ProviderFaultEvent, ProviderFaultKind, ProviderFaultRule, ProviderMessage } from "./provider-faults.js";
 import type { QuestionArtifacts, QuestionRecord } from "./question-handoff.js";
+import type { RepeatedRestartRecord, RestartStep } from "./repeated-restarts.js";
 import type { TimeFaultRecord } from "./time-faults.js";
 
 /**
  * K14 (upgrade mid-run): a graceful stop, then the replacement starts from the current build (`--upgrade-from`).
  * TM1–TM3 (time faults, time-faults.ts): freeze the server, sleep with aged rows, or an aged outage.
+ * RR1–RR3 (repeated restarts, repeated-restarts.ts): a K1, then more restarts while the replacement recovers.
  */
-export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14", "TM1", "TM2", "TM3"] as const;
+export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14", "TM1", "TM2", "TM3", "RR1", "RR2", "RR3"] as const;
 export type FaultKind = (typeof FAULT_KINDS)[number];
 /**
  * A task's planned fault. "K13" (restart storm) tasks have none of their own; the wave's storm crosses them.
@@ -94,6 +96,7 @@ export interface WaveOptions {
   storageFaults?: Array<import("./storage-chaos.js").StorageFaultKind>;
   storageFaultMs?: [number, number];
   storageWindows?: import("./storage-chaos.js").StorageFaultWindow[];
+  storageTrigger?: import("./storage-trigger.js").StorageTriggerTarget;
   workspaceCommit?: string;
   workspaceGitUrl?: string;
   /** Provider message faults from `--faults` (PV1 delay, PV2 drop, PV3 duplicate); see provider-faults.ts. */
@@ -112,6 +115,8 @@ export interface WaveOptions {
   /** `--provider-fault-restart K1`: each PV1/PV2 task also kills -9 the control plane after its fault applied. */
   providerFaultRestart?: "K1";
   providerFaultRestartAfterMs?: number;
+  /** RR1–RR3: the gap from a replacement's health to the next stop (`--rr-gap-seconds`); absent keeps each kind's default. */
+  rrGapMs?: [number, number];
 }
 
 export interface StormFault {
@@ -149,6 +154,8 @@ export interface TaskPlan {
   replayFaults?: ScheduledFault[];
   /** PV1–PV3 tasks: the provider message rule armed for this task's nonce. */
   providerFault?: ProviderFaultRule;
+  /** RR1–RR3: the seeded restarts after the first kill. */
+  restartSteps?: RestartStep[];
 }
 
 export interface ScheduledFault {
@@ -156,6 +163,8 @@ export interface ScheduledFault {
   atMs: number;
   trigger?: TriggerId;
   delayMs?: number;
+  /** RR1–RR3: the restarts after the first kill. */
+  restartSteps?: RestartStep[];
 }
 
 export interface WavePlan {
@@ -182,6 +191,8 @@ export interface RunSample {
   startedAt: string | null;
   finishedAt: string | null;
   errorCode: string | null;
+  /** Bounded code naming why a generic `errorCode` (such as `adapter_failed`) failed, e.g. `40001`. */
+  failureCause?: string | null;
   retryOfRunId: string | null;
   wakeCommentIds: string[];
   livenessState: string | null;
@@ -254,6 +265,8 @@ export interface FaultReceipt {
   upgrade?: { fromRoot: string; fromSha: string | null; toRoot: string; toSha: string | null; switched: boolean };
   /** TM1–TM3: what was frozen and which rows were aged. */
   timeFault?: TimeFaultRecord;
+  /** RR1–RR3: every stop and replacement of the sequence, the first kill included. */
+  repeatedRestart?: RepeatedRestartRecord;
   serverLogOffsetAtStart: number;
   serverLogOffsetAtReady: number | null;
   error: string | null;
