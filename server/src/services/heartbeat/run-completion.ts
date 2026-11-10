@@ -1120,6 +1120,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       const [row] = await db.select({ companyId: heartbeatRuns.companyId, runtimeMode: heartbeatRuns.runtimeMode,
         processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId,
         processStartedAt: heartbeatRuns.processStartedAt, sessionIdAfter: heartbeatRuns.sessionIdAfter,
+        inheritedProcessIdentityRunId: sql<unknown>`${heartbeatRuns.runnerProfileJson}->>'inheritedProcessIdentityRunId'`,
         coordinator: { runId: nativeRunFinalizations.runId, phase: nativeRunFinalizations.phase,
           attempt: nativeRunFinalizations.attempt, leaseOwner: nativeRunFinalizations.leaseOwner,
           controllerBootId: nativeRunFinalizations.controllerBootId, resultId: nativeRunFinalizations.resultId } })
@@ -1129,8 +1130,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         .where(eq(heartbeatRuns.id, runId)).limit(1);
       if (!row || row.runtimeMode !== "native") return null;
       // A recorded process or provider session also means work may have run.
-      if (row.processPid !== null || row.processGroupId !== null || row.processStartedAt !== null
-        || row.sessionIdAfter !== null) return null;
+      // Runtime selection copies a warm predecessor's process identity onto a
+      // follow-up and names that run; such an inherited identity is not this
+      // run's process. Its own process would still record its start events.
+      const inheritedProcessIdentity = typeof row.inheritedProcessIdentityRunId === "string";
+      if ((!inheritedProcessIdentity && (row.processPid !== null || row.processGroupId !== null
+        || row.processStartedAt !== null)) || row.sessionIdAfter !== null) return null;
       // Runtime selection creates the coordinator unclaimed ("observed",
       // attempt 0). Only the executor, after entering dispatch, claims it with
       // a lease owner and controller; any claim, in any generation, disqualifies.

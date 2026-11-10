@@ -1553,6 +1553,15 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
     });
 
+    it("re-queues a follow-up whose process identity was inherited from its warm predecessor", async () => {
+      const f = await nativeFixture();
+      await db.update(heartbeatRuns).set({ processPid: 4242, runnerProfileJson: { inheritedProcessIdentityRunId: randomUUID() } })
+        .where(eq(heartbeatRuns.id, f.run.id));
+      await f.completion.failRun(f.preDispatch(contention(), false));
+      expect((await read(f.run.id)).resultJson).toMatchObject({ nativePreDispatchFailure: { version: 1, providerWorkStarted: false } });
+      expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledOnce();
+    });
+
     it("records the proof but does not re-queue a failure that is not a transient database fault", async () => {
       const f = await nativeFixture();
       await f.completion.failRun(f.preDispatch(new Error("adapter crashed"), false));
