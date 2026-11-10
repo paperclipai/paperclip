@@ -25,7 +25,9 @@ import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepR
 import { knownSecretValues, redactKnownSecrets, writeEvidenceBundle } from "./evidence.js";
 import { gradeTask } from "./grader.js";
 import { releaseInstance } from "../runner-e2e/instance-retention.js";
-import { checkPlanInvariants, summarizeViolations, type InvariantCheck } from "./invariants.js";
+import { checkPlanInvariants, readUniversalDbEvidence, summarizeViolations, type InvariantCheck } from "./invariants.js";
+import { collectContentionEvidence, RunRowPressure } from "./contention.js";
+import { createDb } from "../../packages/db/src/index.js";
 import { appendLedger, ledgerLine, writeSummary, type LedgerLine } from "./ledger.js";
 import { collectWaveSpeed, speedMarkdown } from "./wave-speed.js";
 import { TaskObserver, childSpeedTasksInTurn } from "./observer.js";
@@ -198,6 +200,22 @@ async function main(): Promise<number> {
   const pointResults: Array<PointResult & { baseline?: Set<string> }> = [];
   let currentPoint: (PointResult & { baseline: Set<string> }) | null = null;
   let databaseUrl: string | null = null;
+  // The wave's own isolated database (never another instance's).
+  const waveDatabaseUrl = () => {
+    if (!databaseUrl) {
+      const config = JSON.parse(readFileSync(supervisor.paths.configPath, "utf8")) as { database?: { connectionString?: string } };
+      databaseUrl = config.database?.connectionString ?? null;
+      if (!databaseUrl) throw new Error("The instance config has no database connection string");
+    }
+    return databaseUrl;
+  };
+  let pressure: RunRowPressure | null = null;
+  const stopPressure = async () => {
+    if (!pressure) return;
+    const stats = await pressure.stop();
+    pressure = null;
+    timeline.add("db_pressure_stopped", { ...stats });
+  };
   const violationKey = (violation: { rule: string; kind: string; recordId: string }) => `${violation.rule}:${violation.kind}:${violation.recordId}`;
   if (crashPoint) {
     supervisor.crashPointHoldMs = plan.options.crashPointHoldMs ?? 0;
@@ -285,6 +303,11 @@ async function main(): Promise<number> {
         sweeper = new DaytonaWaveSweeper({ apiKey: process.env.DAYTONA_API_KEY!, companyId: owned.companyId, environmentId: owned.environmentId, api });
       } });
     spendTarget = { api, companyId: lab.companyId };
+    // --db-pressure: contend with the wave's running run rows from outside the server (contention.ts).
+    if (plan.options.dbPressure) {
+      pressure = new RunRowPressure(waveDatabaseUrl(), lab.companyId, plan.options.dbPressure).start();
+      timeline.add("db_pressure_started", { writers: plan.options.dbPressure });
+    }
     // The instance root holds the secrets master key and the database: oracle code may not read it.
     const protectedRoots = [os.homedir(), supervisor.paths.temporaryRoot, resultsRoot];
     board = serverEnvironment.SERVE_UI === "false" ? null : new BoardUi(supervisor.baseUrl);
@@ -351,12 +374,7 @@ async function main(): Promise<number> {
     };
 
     const invariantsNow = async () => {
-      if (!databaseUrl) {
-        const config = JSON.parse(readFileSync(supervisor.paths.configPath, "utf8")) as { database?: { connectionString?: string } };
-        databaseUrl = config.database?.connectionString ?? null;
-        if (!databaseUrl) throw new Error("Crash-point wave: the instance config has no database connection string");
-      }
-      return checkPlanInvariants({ connectionString: databaseUrl, companyId: lab.companyId,
+      return checkPlanInvariants({ connectionString: waveDatabaseUrl(), companyId: lab.companyId,
         paperclipHome: supervisor.paths.home, instanceId: "default" });
     };
     const startCrashPoint = async (batch: TaskObserver[]) => {
@@ -462,6 +480,7 @@ async function main(): Promise<number> {
       await delay(1_000);
     }
     await Promise.all(faultWork);
+    await stopPressure();
     checkWorktree("wave_end");
     if (worktreeChanged) harnessError ??= new Error("The worktree changed during the wave (build, install or branch switch); later restarts may have run different code");
     // A storm whose task pool ran dry early did not cover its storm; it is not a passing wave.
@@ -488,6 +507,15 @@ async function main(): Promise<number> {
     }
     const attributed = new Set<string>();
     const secrets = knownSecretValues();
+    // U3 and L1 read the wave database once, before the instance is removed.
+    const evidenceDb = createDb(waveDatabaseUrl());
+    const universalByIssue = await readUniversalDbEvidence(evidenceDb, lab.companyId).catch(error => {
+      timeline.add("universal_db_evidence_failed", { error: String(error) }); return null; });
+    const allRunMessages = new Map([...(universalByIssue?.values() ?? [])].flatMap(entry => [...entry.runMessages]));
+    const costSummary = launched.some(observer => observer.plan.workload === "L1")
+      ? await api.get<Record<string, unknown>>(`/api/companies/${lab.companyId}/costs/summary?period=all`)
+        .then(summary => typeof summary.spendCents === "number"
+          ? { spendCents: summary.spendCents, pendingRunCount: Number(summary.pendingRunCount ?? 0) } : null).catch(() => null) : null;
     for (const observer of launched) {
       observer.record.sweep = await observer.sweep();
       if (sandboxSweep) {
@@ -499,11 +527,16 @@ async function main(): Promise<number> {
       let artifacts: OracleArtifacts | null = null;
       if (observer.record.issueId) artifacts = await observer.collectArtifacts().catch(() => null);
       if (artifacts && providerFaults && observer.plan.providerFault) artifacts.providerFaultEvents = await providerFaults.eventsFor(observer.plan.nonce);
+      if (artifacts && observer.plan.workload === "L1") {
+        const runIds = [...new Set(observer.record.samples.flatMap(sample => (sample.runs ?? []).map(run => run.id)))];
+        artifacts.contention = await collectContentionEvidence(evidenceDb, lab.companyId, runIds, costSummary);
+      }
       const graded = artifacts ? observer.definition.grade(observer.plan.nonce, artifacts, observer.workloadAgents())
         : { verdict: "fail" as const, checks: [{ name: "artifacts_collected", ok: false, detail: observer.record.launchError ?? "collection failed" }] };
       // A provider-fault task whose fault never happened tested nothing.
       const oracle = withProviderFaultCheck(graded, observer.plan, artifacts?.providerFaultEvents ?? []);
-      const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, oracle);
+      const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, oracle, universalByIssue ? {
+        runMessages: allRunMessages, recoveryActions: universalByIssue.get(observer.record.issueId ?? "")?.recoveryActions ?? [] } : undefined);
       let evidence: string | null = null;
       if (!grade.pass) {
         anyFailure = true;
@@ -514,8 +547,10 @@ async function main(): Promise<number> {
       await writeFile(path.join(waveDir, `${observer.plan.taskId}.grade.json`), `${JSON.stringify({ record: observer.record, grade }, null, 2)}\n`, { mode: 0o600 });
       lines.push(ledgerLine(plan, observer.record, grade, gitSha, evidence, faults));
       timeline.add("task_graded", { taskId: observer.plan.taskId, pass: grade.pass, crossed: grade.crossed, signature: grade.signature,
-        rules: Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.verdict])), T: grade.T.verdict });
+        rules: Object.fromEntries(Object.entries(grade.rules).map(([id, rule]) => [id, rule.verdict])), T: grade.T.verdict,
+        universal: Object.fromEntries(Object.entries(grade.universal ?? {}).map(([id, rule]) => [id, `${rule.verdict}${rule.enforced ? "" : " (warning)"}`])) });
     }
+    await evidenceDb.$client.end({ timeout: 5 }).catch(() => undefined);
     await writeFile(path.join(waveDir, "faults.json"), `${JSON.stringify(faults, null, 2)}\n`, { mode: 0o600 });
     const speed = await (async () => {
       const childTasks = await childSpeedTasksInTurn(launched);
@@ -562,6 +597,7 @@ async function main(): Promise<number> {
     harnessError = error;
     timeline.add("harness_error", { error: error instanceof Error ? error.stack ?? error.message : String(error) });
   } finally {
+    await stopPressure().catch(error => timeline.add("db_pressure_stop_failed", { error: String(error) }));
     // Best effort for an interrupted or failed wave; the server may already be down.
     if (supervisor.serverReady) await recordWaveSpend().catch(() => undefined);
     await board?.close().catch(() => undefined);

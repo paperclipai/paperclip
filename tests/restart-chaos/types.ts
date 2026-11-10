@@ -12,7 +12,8 @@ export type FaultKind = (typeof FAULT_KINDS)[number];
 export type TaskFaultKind = FaultKind | "K13" | ProviderFaultKind;
 
 /** G1: an approval-gated action across a restart. H1: a budget hard stop crossed mid-run with a restart (its own wave). */
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1"] as const;
+/** L1: high-output, high-accounting run for database contention (contention.ts). */
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
@@ -90,6 +91,8 @@ export interface WaveOptions {
   providerFaultMessage?: ProviderMessage;
   /** PV1 delays, cycled across tasks (`--provider-fault-delays`). */
   providerFaultDelaysMs?: number[];
+  /** `--db-pressure <writers>`: harness-owned writers touching the wave's running run rows back to back (contention.ts). */
+  dbPressure?: number;
 }
 
 export interface StormFault {
@@ -256,6 +259,8 @@ export interface OracleArtifacts {
   question?: QuestionArtifacts;
   /** PV1–PV3: the shim's log lines for this task. */
   providerFaultEvents?: ProviderFaultEvent[];
+  /** L1: accounting and run-log evidence read from the wave database at rest. */
+  contention?: import("./contention.js").ContentionEvidence;
 }
 
 /** What the board did for a governance task (G1, H1), and what the observer saw. */
@@ -348,6 +353,8 @@ export interface TaskGrade {
   crossingFaults: string[];
   rules: Record<RuleId, RuleResult>;
   T: OracleResult;
+  /** Universal checks U1–U4 (universal.ts); absent on grades written before them. */
+  universal?: import("./universal.js").UniversalGrade;
   pass: boolean;
   signature: string | null;
 }
