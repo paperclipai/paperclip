@@ -40,7 +40,7 @@ import {
   runnerLifecycleDefaultNeedsLeaseProbe,
   resolveWarmRunnerIdleTimeoutMsForRun,
 } from "./runner-environment-lifecycle.js";
-import { environmentService } from "./environments.js";
+import { assertEnvironmentCompanyBinding, environmentService } from "./environments.js";
 import {
   environmentRuntimeService,
   buildEnvironmentLeaseContext,
@@ -209,6 +209,7 @@ export function environmentRunOrchestrator(
       });
     }
 
+    await assertEnvironmentCompanyBinding(db, environment.id, input.companyId);
     return environment;
   }
 
@@ -229,6 +230,7 @@ export function environmentRunOrchestrator(
     adapterType: string | null;
     warmRunnerIdleTimeoutMs?: number;
     runnerReconnectGraceMs?: number;
+    assertCompanyBinding: true;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
       return await environmentRuntime.acquireRunLease(input);
@@ -361,6 +363,7 @@ export function environmentRunOrchestrator(
       adapterType: input.adapterType ?? null,
       warmRunnerIdleTimeoutMs,
       runnerReconnectGraceMs,
+      assertCompanyBinding: true as const,
     };
     let leaseRecord: EnvironmentRuntimeLeaseRecord;
     if (input.reattachRemoteLease) {

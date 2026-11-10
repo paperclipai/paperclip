@@ -1,6 +1,6 @@
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
-import { withDefaultProjectStorage, type ProjectCreationEnvironment } from "./project-environments.js";
+import { resolveProjectEnvironment, type ProjectCreationEnvironment } from "./project-environments.js";
 import { listProjectWorkspaceProviders, resolveProjectWorkspaceProvider } from "./project-workspace-provider.js";
 import { retireRemovedPluginWorkspaceDependents } from "./plugin-workspaces.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -53,6 +53,12 @@ export async function lockProjectRootMutation(tx: ProjectTransaction, projectId:
 }
 
 type ProjectRow = typeof projects.$inferSelect;
+
+function legacyProjectEnvironmentId(policy: Record<string, unknown> | null | undefined) {
+  const id = policy?.environmentId;
+  return typeof id === "string" || id === null ? id : undefined;
+}
+
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
@@ -675,7 +681,14 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
     // skipped validation whenever `goalIds: []` and `goalId` arrive
     // together (goalIds wins resolution, mirroring the update path).
     const legacyGoalId = ids?.[0] ?? null;
-    const executionWorkspacePolicy = await withDefaultProjectStorage(db, companyId, projectData.executionWorkspacePolicy ?? null, environment) as typeof projectData.executionWorkspacePolicy;
+    const legacyEnvironmentId = legacyProjectEnvironmentId(projectData.executionWorkspacePolicy);
+    const workspacePolicy = parseProjectExecutionWorkspacePolicy(projectData.executionWorkspacePolicy);
+    const selected = await resolveProjectEnvironment(db, companyId,
+      legacyEnvironmentId !== undefined ? workspacePolicy : projectData.executionWorkspacePolicy ?? null, {
+        ...environment, environmentId: environment.environmentId ?? projectData.environmentId ?? legacyEnvironmentId ?? undefined,
+      });
+    const executionWorkspacePolicy = selected.executionWorkspacePolicy as typeof projectData.executionWorkspacePolicy;
+    projectData.environmentId = selected.environmentId;
 
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
@@ -971,17 +984,36 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
 
     update: async (
       id: string,
-      data: Partial<typeof projects.$inferInsert> & { goalIds?: string[] },
+      data: Partial<typeof projects.$inferInsert> & { goalIds?: string[]; expectedStorageProviderPluginId?: string | null },
     ): Promise<ProjectWithGoals | null> => db.transaction(async tx => {
       const db = tx as unknown as Db;
-      const { goalIds: inputGoalIds, ...projectData } = data;
+      const { goalIds: inputGoalIds, expectedStorageProviderPluginId, ...projectData } = data;
       const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
       const existingProject = await db
-        .select({ id: projects.id, companyId: projects.companyId, name: projects.name, archivedAt: projects.archivedAt, executionWorkspacePolicy: projects.executionWorkspacePolicy })
+        .select({ id: projects.id, companyId: projects.companyId, name: projects.name, archivedAt: projects.archivedAt, environmentId: projects.environmentId, executionWorkspacePolicy: projects.executionWorkspacePolicy })
         .from(projects)
         .where(eq(projects.id, id)).for("update")
         .then((rows) => rows[0] ?? null);
       if (!existingProject) return null;
+      const legacyEnvironmentId = legacyProjectEnvironmentId(projectData.executionWorkspacePolicy);
+      if (projectData.environmentId === undefined && legacyEnvironmentId !== undefined) {
+        projectData.environmentId = legacyEnvironmentId;
+      }
+      if (legacyEnvironmentId !== undefined) {
+        const normalized = parseProjectExecutionWorkspacePolicy(projectData.executionWorkspacePolicy);
+        projectData.executionWorkspacePolicy = normalized ? { ...normalized } : null;
+      }
+      const requestedStorage = parseProjectExecutionWorkspacePolicy(projectData.executionWorkspacePolicy)?.storageProviderPluginId;
+      const currentStorage = parseProjectExecutionWorkspacePolicy(existingProject.executionWorkspacePolicy)?.storageProviderPluginId;
+      const storageChanged = requestedStorage !== undefined && requestedStorage !== currentStorage;
+      const selectedEnvironmentId = projectData.environmentId === undefined && storageChanged
+        ? existingProject.environmentId : projectData.environmentId;
+      if (selectedEnvironmentId && (selectedEnvironmentId !== existingProject.environmentId || storageChanged || expectedStorageProviderPluginId !== undefined)) {
+        const selected = await resolveProjectEnvironment(db, existingProject.companyId,
+          projectData.executionWorkspacePolicy ?? existingProject.executionWorkspacePolicy,
+          { environmentId: selectedEnvironmentId, expectedStorageProviderPluginId });
+        projectData.executionWorkspacePolicy = selected.executionWorkspacePolicy as typeof projectData.executionWorkspacePolicy;
+      }
       if (projectData.executionWorkspacePolicy !== undefined) {
         const attachedPluginId = parseProjectExecutionWorkspacePolicy(existingProject.executionWorkspacePolicy)?.storageProviderPluginId;
         const requestedPluginId = parseProjectExecutionWorkspacePolicy(projectData.executionWorkspacePolicy)?.storageProviderPluginId;
@@ -1071,6 +1103,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       const rows = await db
         .select({
           id: projects.id,
+          environmentId: projects.environmentId,
           executionWorkspacePolicy: projects.executionWorkspacePolicy,
         })
         .from(projects)
@@ -1079,10 +1112,11 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       let cleared = 0;
       for (const row of rows) {
         const policy = parseProjectExecutionWorkspacePolicy(row.executionWorkspacePolicy);
-        if (policy?.environmentId !== environmentId) continue;
+        if (row.environmentId !== environmentId && legacyProjectEnvironmentId(row.executionWorkspacePolicy) !== environmentId) continue;
 
         await projectService(db).update(row.id, {
-          executionWorkspacePolicy: { ...policy, environmentId: null },
+          environmentId: null,
+          ...(legacyProjectEnvironmentId(row.executionWorkspacePolicy) === environmentId ? { executionWorkspacePolicy: policy ? { ...policy } : null } : {}),
         });
         cleared += 1;
       }

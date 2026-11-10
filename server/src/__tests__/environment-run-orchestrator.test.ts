@@ -32,6 +32,7 @@ vi.mock("../services/workspace-realization.js", () => ({
 }));
 
 vi.mock("../services/environments.js", () => ({
+  assertEnvironmentCompanyBinding: vi.fn(async () => {}),
   environmentService: vi.fn(() => ({
     ensureLocalEnvironment: vi.fn(),
     getById: mockGetEnvironment,

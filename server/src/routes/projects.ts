@@ -173,9 +173,9 @@ export function projectRoutes(db: Db) {
     return false;
   }
 
-  async function assertProjectWorkspaceWriteAllowed(req: Request, res: Response, project: { id: string; companyId: string }) {
+  async function assertProjectWorkspaceWriteAllowed(req: Request, res: Response, project: { id?: string; companyId: string }) {
     const assigneeAgentId = req.actor.type === "agent" ? req.actor.agentId ?? null : null;
-    const decision = await access.decide({ actor: req.actor, action: "project:write_workspace",
+    const decision = await access.decide({ actor: req.actor, action: project.id ? "project:write_workspace" : "tasks:assign",
       resource: { type: "issue", companyId: project.companyId, projectId: project.id, assigneeAgentId },
       scope: { projectId: project.id, assigneeAgentId } });
     if (decision.allowed) return true;
@@ -401,6 +401,8 @@ export function projectRoutes(db: Db) {
     projectData.privacyOwnerUserId = req.actor.type === "board" ? req.actor.userId ?? null : req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
     const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
       ? await projectToolContext(db, req.actor, true) : null;
+    if ((environmentId || readProjectPolicyEnvironmentId(projectData.executionWorkspacePolicy))
+      && !(await assertProjectWorkspaceWriteAllowed(req, res, { companyId }))) return;
     await assertProjectEnvironmentSelection(
       companyId,
       readProjectPolicyEnvironmentId(projectData.executionWorkspacePolicy),
@@ -522,6 +524,9 @@ export function projectRoutes(db: Db) {
     if (!existing) return;
     if (!(await assertProjectReadAllowed(req, res, existing))) return;
     const body = { ...req.body };
+    const nextEnvironmentId = body.environmentId !== undefined ? body.environmentId : readProjectPolicyEnvironmentId(body.executionWorkspacePolicy);
+    const environmentChanged = nextEnvironmentId !== undefined && nextEnvironmentId !== (existing.environmentId ?? null);
+    if (environmentChanged && !(await assertProjectWorkspaceWriteAllowed(req, res, existing))) return;
     if (body.visibility !== undefined) {
       if (!(await assertCanManageProjectPrivacy(req, res, existing))) return;
     }
@@ -530,10 +535,9 @@ export function projectRoutes(db: Db) {
       req,
       collectProjectExecutionWorkspaceCommandPaths(body.executionWorkspacePolicy),
     );
-    await assertProjectEnvironmentSelection(
-      existing.companyId,
-      readProjectPolicyEnvironmentId(body.executionWorkspacePolicy),
-    );
+    if (environmentChanged && body.environmentId === undefined) {
+      await assertProjectEnvironmentSelection(existing.companyId, nextEnvironmentId);
+    }
     if (typeof body.archivedAt === "string") {
       body.archivedAt = new Date(body.archivedAt);
     }
