@@ -354,7 +354,7 @@ type ComposerAttachment = {
 type QueuedEditBackup = {
   body: string;
   attachments: ComposerAttachment[];
-  pendingMode: IssueWorkMode;
+  pendingMode: IssueWorkMode | null;
   pendingAssignee: string | null;
 };
 
@@ -451,17 +451,9 @@ export function TaskChatComposer({
     useState<HTMLElement | null>(null);
   const [takeoverControlsSlot, setTakeoverControlsSlot] =
     useState<HTMLElement | null>(null);
-  const [localPendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
-  const previousWorkMode = useRef(workMode);
-  useEffect(() => {
-    // An optimistic save can still roll back; retain the last settled baseline.
-    if (submitting) return;
-    const previous = previousWorkMode.current;
-    previousWorkMode.current = workMode;
-    // Adopt refreshed task data without replacing a locally chosen draft mode.
-    setPendingMode((current) => current === previous ? workMode : current);
-  }, [workMode, submitting]);
-  const pendingMode = creation ? workMode : localPendingMode;
+  const [pendingModeOverride, setPendingMode] = useState<IssueWorkMode | null>(null);
+  const modeChoiceGeneration = useRef(0);
+  const pendingMode = creation ? workMode : pendingModeOverride ?? workMode;
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
   const coordinator = useCoordinatorPresentation();
   const [localRunSettings, setLocalRunSettings] = useState<ComposerRunSettings | null>(null);
@@ -565,7 +557,7 @@ export function TaskChatComposer({
         queuedEditBackupRef.current = {
           body: bodyRef.current,
           attachments: attachmentsRef.current,
-          pendingMode,
+          pendingMode: pendingModeOverride,
           pendingAssignee: pendingAssigneeRef.current,
         };
         if (draftKey) saveDraft(draftKey, bodyRef.current);
@@ -593,7 +585,7 @@ export function TaskChatComposer({
     }
 
     previousQueuedEditIdRef.current = nextId;
-  }, [draftKey, pendingMode, queuedEdit]);
+  }, [draftKey, pendingModeOverride, queuedEdit]);
 
   useEffect(() => {
     if (!draftKey || queuedEdit) return;
@@ -713,6 +705,7 @@ export function TaskChatComposer({
   }
 
   function changeMode(mode: IssueWorkMode) {
+    modeChoiceGeneration.current += 1;
     setPendingMode(mode);
     if (creation) void onWorkModeChange?.(mode);
   }
@@ -935,6 +928,7 @@ export function TaskChatComposer({
     const submittedBody = bodyRef.current;
     const submittedAttachments = attachmentsRef.current;
     const submittedAssignee = pendingAssigneeRef.current;
+    const submittedModeGeneration = modeChoiceGeneration.current;
     const trimmed = submittedBody.trim();
     const goalCommand = queuedEdit
       ? ({ matched: false } as const)
@@ -1107,6 +1101,7 @@ export function TaskChatComposer({
       if (draftKey) settleDraftSubmission(draftKey, attemptId,
         mountedTaskKey.current === draftKey ? bodyRef.current : undefined);
       if (mountedTaskKey.current !== draftKey) return;
+      if (modeChoiceGeneration.current === submittedModeGeneration) setPendingMode(null);
       const submittedIds = new Set(submittedAttachments.map((item) => item.id));
       setAttachments((current) =>
         current.filter((item) => !submittedIds.has(item.id)),
