@@ -1,9 +1,10 @@
 import type { FaultKind, FaultReceipt, WaveOptions, WorkloadId } from "./types.js";
 import type { RestartStep } from "./repeated-restarts.js";
+import { storageFaultRules, type StorageFaultWindow } from "./storage-chaos.js";
 
 export const NATIVE_TRIGGER_TARGETS = ["native-start", "provider-event"] as const;
 export type NativeTriggerTarget = typeof NATIVE_TRIGGER_TARGETS[number];
-export interface NativeTriggerSpec { target: NativeTriggerTarget; delayMs: number }
+export interface NativeTriggerSpec { target: NativeTriggerTarget; delayMs: number; outageMs?: number }
 
 export const NATIVE_TRIGGER_BOARD_WORKLOADS: readonly WorkloadId[] = ["G1", "H1", "Q1"];
 export const NATIVE_START_EVENT = "native.process_start_requested";
@@ -30,6 +31,19 @@ export function parseNativeTrigger(value: string, options: Pick<WaveOptions, "st
   return { target: target as NativeTriggerTarget, delayMs: seconds * 1000 };
 }
 
+export function parseNativeTriggerOutage(value: string, options: Pick<WaveOptions, "nativeTrigger" | "storage" | "storageFaults">): number {
+  if (!options.nativeTrigger) throw new Error("--native-trigger-outage needs --native-trigger");
+  if (options.storage !== "s3") throw new Error("--native-trigger-outage needs --storage s3");
+  if (options.storageFaults?.length) throw new Error("--native-trigger-outage starts its own ST1 window; drop --storage-faults");
+  const seconds = /^\d+$/.test(value) ? Number(value) : NaN;
+  if (!(seconds >= 10 && seconds <= 900)) throw new Error("--native-trigger-outage takes 10 to 900 seconds");
+  return seconds * 1000;
+}
+
+export function triggeredOutageWindow(startMs: number, durationMs: number): StorageFaultWindow {
+  return { kind: "ST1", startMs, durationMs, rules: storageFaultRules("ST1", () => 0) };
+}
+
 export interface ArmedNativeFault { taskId: string; kind: FaultKind; holdMs: number; armedAt: number; restartSteps?: RestartStep[] }
 
 export interface NativeTriggerReceipt {
@@ -38,13 +52,21 @@ export interface NativeTriggerReceipt {
   firedAt: number | null; missedAt: number | null; missedReason?: string; faultId?: string;
 }
 
+export function runningRunIds(rows: readonly unknown[] | null): string[] {
+  return (rows ?? []).flatMap(row => {
+    const run = row as { runId?: unknown; id?: unknown; status?: unknown } | null;
+    const id = run?.runId ?? run?.id;
+    return typeof id === "string" && run?.status === "running" ? [id] : [];
+  });
+}
+
 export interface NativeTriggerEvent { seq: number; eventType: string; createdAt: string }
 
 export interface NativeTriggerHooks {
   canFire(): boolean;
   isOpen(taskId: string): boolean;
   issueId(taskId: string): string | null;
-  runs(issueId: string): Promise<Array<{ id: string; status: string }> | null>;
+  runs(issueId: string): Promise<unknown[] | null>;
   events(runId: string, afterSeq: number, limit: number): Promise<NativeTriggerEvent[] | null>;
   fire(armed: ArmedNativeFault): Promise<void>;
   record(kind: string, data: Record<string, unknown>): void;
@@ -95,23 +117,23 @@ export class NativeTrigger {
     const issueId = this.hooks.issueId(receipt.taskId);
     if (!issueId) return;
     const runs = await this.hooks.runs(issueId).catch(() => null);
-    for (const run of (runs ?? []).filter(candidate => candidate.status === "running")) {
-      let afterSeq = this.cursors.get(run.id) ?? 0;
+    for (const runId of runningRunIds(runs)) {
+      let afterSeq = this.cursors.get(runId) ?? 0;
       for (;;) {
-        const events = await this.hooks.events(run.id, afterSeq, EVENT_PAGE).catch(() => null);
+        const events = await this.hooks.events(runId, afterSeq, EVENT_PAGE).catch(() => null);
         if (!events?.length) break;
         for (const event of events) {
           afterSeq = Math.max(afterSeq, event.seq);
           const at = Date.parse(event.createdAt);
           if (receipt.seenAt === null && Number.isFinite(at) && at >= receipt.armedAt && nativeTriggerMatches(this.spec.target, event.eventType)) {
             receipt.seenAt = at;
-            receipt.runId = run.id;
+            receipt.runId = runId;
             receipt.eventType = event.eventType;
           }
         }
         if (events.length < EVENT_PAGE) break;
       }
-      this.cursors.set(run.id, afterSeq);
+      this.cursors.set(runId, afterSeq);
       if (receipt.seenAt !== null) return;
     }
   }

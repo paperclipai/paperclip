@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { parseCommand } from "./config.js";
-import { NATIVE_START_EVENT, NativeTrigger, nativeTriggerMarkdown, nativeTriggerMatches, nativeTriggerShortfall, type ArmedNativeFault, type NativeTriggerEvent, type NativeTriggerHooks } from "./native-trigger.js";
+import { NATIVE_START_EVENT, NativeTrigger, runningRunIds, triggeredOutageWindow, nativeTriggerMarkdown, nativeTriggerMatches, nativeTriggerShortfall, type ArmedNativeFault, type NativeTriggerEvent, type NativeTriggerHooks } from "./native-trigger.js";
 import type { FaultReceipt } from "./types.js";
 
-function harness(options: { events?: Record<string, NativeTriggerEvent[]>; runs?: Array<{ id: string; status: string }>; open?: boolean; canFire?: () => boolean } = {}) {
+function harness(options: { events?: Record<string, NativeTriggerEvent[]>; runs?: unknown[]; open?: boolean; canFire?: () => boolean } = {}) {
   const fired: ArmedNativeFault[] = [];
   const recorded: string[] = [];
   const events = options.events ?? {};
@@ -11,7 +11,7 @@ function harness(options: { events?: Record<string, NativeTriggerEvent[]>; runs?
     canFire: options.canFire ?? (() => true),
     isOpen: () => options.open ?? true,
     issueId: taskId => `issue-${taskId}`,
-    runs: async () => options.runs ?? [{ id: "run-1", status: "running" }],
+    runs: async () => options.runs ?? [{ runId: "run-1", status: "running" }],
     events: async (runId, afterSeq, limit) => (events[runId] ?? []).filter(event => event.seq > afterSeq).slice(0, limit),
     fire: async armed => { fired.push(armed); },
     record: kind => { recorded.push(kind); },
@@ -38,6 +38,22 @@ describe("--native-trigger parsing", () => {
     expect(() => parseCommand([...base, "--storage", "s3", "--storage-trigger", "run-log", "--native-trigger", "native-start"])).toThrow(/pick one/);
     expect(() => parseCommand([...base, "--workloads", "C1", "--triggers", "comment", "--native-trigger", "native-start"])).toThrow(/--triggers time/);
     expect(() => parseCommand([...base, "--workloads", "A1,G1", "--native-trigger", "native-start"])).toThrow(/board-acting workloads \(G1\)/);
+  });
+
+  it("starts an ST1 outage when the trigger fires only with s3 storage and no planned storage faults", () => {
+    const parsed = parseCommand([...base, "--storage", "s3", "--native-trigger", "native-start+5", "--native-trigger-outage", "120"]);
+    expect(parsed.mode === "wave" && parsed.options.nativeTrigger).toEqual({ target: "native-start", delayMs: 5_000, outageMs: 120_000 });
+    expect(() => parseCommand([...base, "--storage", "s3", "--native-trigger-outage", "120"])).toThrow(/needs --native-trigger/);
+    expect(() => parseCommand([...base, "--native-trigger", "native-start", "--native-trigger-outage", "120"])).toThrow(/needs --storage s3/);
+    expect(() => parseCommand([...base, "--storage", "s3", "--storage-faults", "ST1", "--native-trigger", "native-start", "--native-trigger-outage", "120"])).toThrow(/drop --storage-faults/);
+    expect(() => parseCommand([...base, "--storage", "s3", "--native-trigger", "native-start", "--native-trigger-outage", "5"])).toThrow(/10 to 900/);
+    expect(triggeredOutageWindow(4_000, 120_000)).toEqual({ kind: "ST1", startMs: 4_000, durationMs: 120_000,
+      rules: [{ fault: { kind: "outage", status: 503 } }] });
+  });
+
+  it("reads running run ids from the issue runs API shape", () => {
+    expect(runningRunIds([{ runId: "a", status: "running" }, { runId: "b", status: "failed" }, { id: "c", status: "running" }, null])).toEqual(["a", "c"]);
+    expect(runningRunIds(null)).toEqual([]);
   });
 
   it("matches native start and the first provider events only", () => {
@@ -72,7 +88,7 @@ describe("native-triggered restart", () => {
     let free = false;
     const armedAt = 2_000_000;
     const h = harness({ canFire: () => free,
-      runs: [{ id: "old", status: "failed" }, { id: "run-1", status: "running" }],
+      runs: [{ runId: "old", status: "failed" }, { runId: "run-1", status: "running" }],
       events: { old: [{ seq: 1, eventType: NATIVE_START_EVENT, createdAt: iso(armedAt + 500) }],
         "run-1": [{ seq: 7, eventType: "session.started", createdAt: iso(armedAt + 1_000) }] } });
     const trigger = new NativeTrigger({ target: "provider-event", delayMs: 0 }, h.hooks);

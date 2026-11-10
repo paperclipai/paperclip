@@ -15,11 +15,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ChaosApi, isSocketTypeOfServiceRace } from "./api.js";
 import { BoardUi } from "./board-ui.js";
 import { DEFAULT_MINIO_BINARY, MINIO_RELEASE, minioBinary, objectStoreServerEnvironment, startMinio, type ObjectStore } from "./object-store.js";
-import { StorageChaos, planStorageFaults, replayStorageWindows, type StorageFaultReceipt } from "./storage-chaos.js";
+import { StorageChaos, planStorageFaults, replayStorageWindows, type StorageFaultReceipt, type StorageFaultWindow } from "./storage-chaos.js";
 import { startStorageFaultProxy } from "./storage-proxy.js";
 import { StorageAuditor, auditsStorage, storageAuditMarkdown } from "./storage-audit.js";
 import { exposedAfterLaunch, StorageTrigger, storageTriggerMarkdown, storageTriggerShortfall } from "./storage-trigger.js";
-import { NativeTrigger, nativeTriggerMarkdown, nativeTriggerShortfall } from "./native-trigger.js";
+import { NativeTrigger, nativeTriggerMarkdown, nativeTriggerShortfall, triggeredOutageWindow } from "./native-trigger.js";
 import { needsCredentialRotation, startCredentialRotation, type CredentialRotation } from "./storage-credentials.js";
 import { describeProviderFault, installProviderFaultSeam, resolveRealCodex, withProviderFaultCheck, type ProviderFaultSeam } from "./provider-faults.js";
 import { installAcpxSidecarSeam, withAcpxSidecarHook, type AcpxSidecarSeam } from "./acpx-provider-faults.js";
@@ -416,12 +416,19 @@ async function main(): Promise<number> {
       });
       storageProxy.observe(storageTrigger.listener);
     }
+    const outageMs = plan.options.nativeTrigger?.outageMs;
+    const outageWindows: StorageFaultWindow[] = [];
+    const outageClock = Date.now();
+    if (outageMs && storageProxy && !storageChaos) {
+      storageChaos = new StorageChaos(outageWindows, outageClock, credentialRotation?.wrap(storageProxy) ?? storageProxy, (kind, data) => timeline.add(kind, data));
+      storageChaos.start(1_000, outageClock);
+    }
     if (plan.options.nativeTrigger) {
       nativeTrigger = new NativeTrigger(plan.options.nativeTrigger, {
         canFire: () => !interrupted && !faultsQueued && !supervisor.faultInProgress && supervisor.serverReady,
         isOpen: taskId => observers.some(observer => observer.plan.taskId === taskId && !observer.done && observer.record.restAt === null),
         issueId: taskId => observers.find(observer => observer.plan.taskId === taskId)?.record.issueId ?? null,
-        runs: issueId => api.get<Array<{ id: string; status: string }>>(`/api/issues/${issueId}/runs`, 5_000),
+        runs: issueId => api.get<unknown[]>(`/api/issues/${issueId}/runs`, 5_000),
         events: (runId, afterSeq, limit) => api.get(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=${limit}`, 5_000),
         record: (kind, data) => timeline.add(kind, data),
         fire: armed => {
@@ -430,6 +437,7 @@ async function main(): Promise<number> {
             const exposed = await exposedAfterLaunch(launching, launched);
             await Promise.all(exposed.map(candidate => candidate.snapshotBeforeFault()));
             const queued = faultWork.length;
+            if (outageMs) outageWindows.push(triggeredOutageWindow(Date.now() - outageClock, outageMs));
             fireFault(armed.kind, armed.holdMs, armed.taskId, exposed, undefined, undefined, armed.restartSteps);
             await faultWork[queued];
           })().finally(() => { faultsQueued -= 1; });

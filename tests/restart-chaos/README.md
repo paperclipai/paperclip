@@ -434,6 +434,10 @@ per armed fault, the run and event that fired it, the delay after the event, and
 that saw no matching event, is recorded with `missedReason` (`task_rested` or `no_matching_event`). The wave summary adds a "Native
 trigger" section and fails when no restart fired. It takes `--triggers time` only, not `--storage-trigger`, and not G1, H1 or Q1.
 
+`--native-trigger-outage <seconds>` (10-900, with `--storage s3` and no `--storage-faults`) also starts an ST1 outage of that
+length the moment each trigger fires, just before the restart. The recovered run then prepares while the store is down. The
+windows are written to `storage-faults.json` and removed from the speed grade like planned storage faults.
+
 Every Retry the grader needs is clicked in the real board UI: the harness opens the issue in a headless
 Chromium, waits for the visible Retry button and clicks it. A task whose Retry button is missing fails
 R3 as `ui_retry_button_missing (user saw: …)`; a click that sends no retry request fails as
