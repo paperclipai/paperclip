@@ -562,6 +562,37 @@ describeDatabase("remote workspace ordinary file routes", () => {
       .rejects.toMatchObject({ status: 422, details: { code: "too_large" } });
   });
 
+  it("lets a cancelled saved open stop waiting for a busy manifest build", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const held = async () => {
+      const f = await savedFileFixture(false);
+      const getObject = f.storage.getObject.bind(f.storage);
+      vi.spyOn(f.storage, "getObject").mockImplementation(async (...args) => {
+        if (args[2]?.range?.start === 19) await gate;
+        return getObject(...args);
+      });
+      const opener = createSavedWorkspaceArchiveOpener(db, f.storage);
+      return { opener, input: { companyId: f.ids.company, workspaceId: f.ids.workspace, snapshotId: f.saved.id } };
+    };
+    const [first, second, third] = [await held(), await held(), await held()];
+    const busy = [first.opener(first.input), second.opener(second.input)];
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const queued = new AbortController(), sharing = new AbortController();
+    const queuedOpen = third.opener({ ...third.input, signal: queued.signal });
+    const sharedOpen = first.opener({ ...first.input, signal: sharing.signal });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const started = performance.now();
+    queued.abort(new Error("request closed")); sharing.abort(new Error("request closed"));
+    await expect(queuedOpen).rejects.toThrow("request closed");
+    await expect(sharedOpen).rejects.toThrow("request closed");
+    expect(performance.now() - started).toBeLessThan(1000);
+    release();
+    for (const archive of await Promise.all(busy)) { expect(archive.entry("docs/result.md")).toBeDefined(); archive.close(); }
+    const reopened = await third.opener(third.input);
+    expect(reopened.entry("docs/result.md")).toBeDefined(); reopened.close();
+  });
+
   it("keeps a production saved preview available when cleanup clears its location during archive loading", async () => {
     const f = await savedFileFixture(true);
     const requestTemp = await fs.mkdtemp(path.join(os.tmpdir(), "saved-file-location-request-"));

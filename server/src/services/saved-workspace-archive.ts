@@ -16,9 +16,31 @@ const MAX_CONCURRENT_INDEX_BUILDS = 2;
 let activeIndexBuilds = 0;
 const indexBuildWaiters: Array<() => void> = [];
 
-async function withIndexBuildSlot<T>(work: () => Promise<T>): Promise<T> {
-  if (activeIndexBuilds >= MAX_CONCURRENT_INDEX_BUILDS) await new Promise<void>(resolve => indexBuildWaiters.push(resolve));
-  else activeIndexBuilds++;
+function untilAborted<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    work.then(value => { signal.removeEventListener("abort", abort); resolve(value); },
+      error => { signal.removeEventListener("abort", abort); reject(error); });
+  });
+}
+
+async function withIndexBuildSlot<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted();
+  if (activeIndexBuilds >= MAX_CONCURRENT_INDEX_BUILDS) {
+    await new Promise<void>((resolve, reject) => {
+      const granted = () => { signal?.removeEventListener("abort", abort); resolve(); };
+      const abort = () => {
+        const waiting = indexBuildWaiters.indexOf(granted);
+        if (waiting >= 0) indexBuildWaiters.splice(waiting, 1);
+        reject(signal!.reason);
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      indexBuildWaiters.push(granted);
+    });
+  } else activeIndexBuilds++;
   try { return await work(); }
   finally {
     const next = indexBuildWaiters.shift();
@@ -130,7 +152,7 @@ export function createSavedWorkspaceArchiveOpener(db: Db, storage: StorageServic
       let index = cache.get(key);
       const shared = index ? undefined : building.get(key);
       if (index) { cache.delete(key); cache.set(key, index); }
-      else if (shared) index = await shared.catch(() => undefined);
+      else if (shared) index = await untilAborted(shared.catch(() => undefined), input.signal);
       if (!index) {
         const build = withIndexBuildSlot(async () => {
           const prefixLength = ARCHIVE_MAGIC.length + 4;
@@ -144,7 +166,7 @@ export function createSavedWorkspaceArchiveOpener(db: Db, storage: StorageServic
             invalid("manifest_mismatch");
           }
           return buildIndex(manifest, ranges.plaintextBytes, maxEntries);
-        });
+        }, input.signal);
         building.set(key, build);
         try { index = await build; remember(key, index); }
         finally { if (building.get(key) === build) building.delete(key); }
