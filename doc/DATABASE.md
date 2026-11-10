@@ -438,6 +438,15 @@ indexes also serve the comment and delivery `on delete set null` actions. Issue
 lists share one external review-wait read per issue between the review and
 blocked-inbox attention maps.
 
+Migration 0457 builds `heartbeat_runs_company_native_session_idx` concurrently.
+It keys runs by company and `native_session_id`, partial on a non-null session.
+Native retention, recovery, resume and archive reads find a session's runs
+through it instead of reading the agent's whole run history. To measure it:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-native-session-run-index.ts
+```
+
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
 still match nothing. The query can use existing primary keys without adding a
