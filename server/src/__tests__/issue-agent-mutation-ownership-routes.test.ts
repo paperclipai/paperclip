@@ -1930,7 +1930,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const loggedDetails = mockLogActivity.mock.calls.map(([, input]) => input.details)
       .find((details): details is Record<string, unknown> =>
-        Boolean(details) && typeof details === "object" && "unblockDescriptorFingerprint" in details);
+        details != null && typeof details === "object" && "unblockDescriptorFingerprint" in details);
     expect(loggedDetails).toBeDefined();
     const stored = redactCurrentUserValue(sanitizeRecord(loggedDetails!),
       { userNames: ["alice"], homeDirs: ["/home/alice"] });
