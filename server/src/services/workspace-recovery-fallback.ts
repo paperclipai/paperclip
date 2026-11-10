@@ -469,7 +469,10 @@ export async function settleSiblingRecoveredHold(db: Db, input: Source) {
     if (!issue || !run || !action || action.evidence.runId !== run.id) return null;
     if (object(action.evidence.siblingWorkspaceRecovery).schema === SIBLING_WORKSPACE_RECOVERY_SCHEMA) return "already" as const;
     const system = readSystemRecovery(action.evidence);
-    if (!["active", "escalated"].includes(action.status) || system?.state !== "exhausted" || system.sourceRunId !== run.id) return null;
+    // A no-replay hold is recorded resolved-but-blocked. It blocks the task
+    // until its run's files are saved, so a sibling's save settles it too.
+    if ((!["active", "escalated"].includes(action.status) && !isRetainedFileHold(action))
+      || system?.state !== "exhausted" || system.sourceRunId !== run.id) return null;
     const receiptId = await verifiedWorkspaceRepairReceipt(tx as unknown as Db, run);
     const [receipt] = receiptId ? await tx.select({ metadata: workspaceOperations.metadata }).from(workspaceOperations).where(and(
       eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.id, receiptId))) : [];
@@ -487,7 +490,9 @@ export async function settleSiblingRecoveredHold(db: Db, input: Source) {
     await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: now, updatedAt: now,
       ownerType: "system", ownerAgentId: null, ownerUserId: null, nextAction: "Saved work recovered.",
       resolutionNote: "workspace_recovered_by_sibling_action", wakePolicy: null, monitorPolicy: null,
-      evidence: { ...action.evidence,
+      // With the files saved, a no-replay hold no longer blocks the task.
+      // Settling starts no turn; the run's own result decides what continues.
+      evidence: { ...action.evidence, automaticRecovery: undefined,
         workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: run.id, status: "recovered", stage: "saving_receipts",
           attempt: prior?.attempt ?? system.attempts, attemptLimit: prior?.attemptLimit ?? 6, requestIds: prior?.requestIds ?? [], retryable: false },
         siblingWorkspaceRecovery: { schema: SIBLING_WORKSPACE_RECOVERY_SCHEMA, receiptId, recoveryActionId: siblingActionId,

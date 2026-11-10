@@ -160,7 +160,8 @@ export function retainedSourceFallbackPendingCondition() {
         and exists (select 1 from heartbeat_runs source where source.company_id = ${issueRecoveryActions.companyId}
           and source.id = ${sourceRunId}
           and source.runner_profile_json#>>'{remoteWorkspace,state}' = 'prepared'))
-      or (${issueRecoveryActions.status} in ('active', 'escalated') and exists (select 1 from issue_recovery_actions sibling
+      or ((${issueRecoveryActions.status} in ('active', 'escalated') or ${retainedFileHoldCondition()})
+        and exists (select 1 from issue_recovery_actions sibling
         where sibling.company_id = ${issueRecoveryActions.companyId} and sibling.source_issue_id = ${issueRecoveryActions.sourceIssueId}
           and sibling.id <> ${issueRecoveryActions.id} and sibling.evidence->>'runId' = ${issueRecoveryActions.evidence}->>'runId'
           and sibling.evidence#>>'{systemRecovery,state}' = 'complete'

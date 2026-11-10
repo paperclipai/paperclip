@@ -3,9 +3,10 @@ import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, executionWorkspaces, issueRecoveryActions } from "@paperclipai/db";
+import { activityLog, executionWorkspaces, heartbeatRuns, issueRecoveryActions } from "@paperclipai/db";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
+import { getExecutionBlocker } from "./execution-blocker.js";
 import { REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION } from "./remote-workspace-snapshot-archive.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { nextWorkspaceRecoveryAt } from "./system-recovery.js";
@@ -99,6 +100,94 @@ describe("saves exhausted under an older workspace capture policy", () => {
     expect(rearmed).toEqual([expect.objectContaining({ actorType: "system", entityId: f.issueId, runId: f.runId,
       details: expect.objectContaining({ reason: "capture_policy_changed" }) })]);
   }, 60_000);
+
+  /**
+   * The full staging record of the same incident. The run's export hold
+   * (cause native_workspace_sync_out_retry_exhausted) names its source through
+   * historicalWorkspaceSource and the run's workspaceRestoreRecovery. A later
+   * "try again" comment opened a second, no-replay hold for the same run
+   * (native_continuation_requires_reconciliation, preserve_without_replay_v1).
+   * Its six attempts failed the same way and it was recorded
+   * resolved-but-blocked. That second hold is the task's execution blocker.
+   */
+  async function stagingIncident() {
+    const f = await exhaustedCaptureHold();
+    const exportHold = await action(f.actionId);
+    const recovery = { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.lease.id] };
+    const source = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]!;
+    await db.update(heartbeatRuns).set({ errorCode: "native_workspace_sync_out_retry_exhausted",
+      error: "Saving the workspace failed after 3 attempts. The agent's result is kept; follow the run's recovery action to repair the workspace. "
+        + "Last cause: remote_workspace_archive_unsafe_symlink",
+      resultJson: { ...source.resultJson, failureCode: "native_workspace_sync_out_retry_exhausted",
+        failureCause: "remote_workspace_archive_unsafe_symlink", nextAttemptAt: null, finalizationPhase: "terminal_failure",
+        originalFailureCode: "native_workspace_sync_out_failed", workspaceRestoreFailure: "restore_failed",
+        workspaceRestoreRecovery: recovery, systemRecoveryAdoption: { actionId: f.actionId, policyVersion: 1 } } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(issueRecoveryActions).set({ kind: "active_run_watchdog", returnOwnerAgentId: source.agentId, maxAttempts: 3,
+      evidence: { ...exportHold.evidence, coordinatorAttempt: 1, originalFailureCode: "native_workspace_sync_out_failed",
+        systemRecoveryActiveAt: Date.now() - 50 * 60_000, workspaceFinalizeAttempt: 3, previousWorkspaceRecovery: null,
+        historicalWorkspaceSource: { schema: "paperclip.historical-workspace-source.v1", runId: f.runId, leaseIds: [f.lease.id] } } })
+      .where(eq(issueRecoveryActions.id, f.actionId));
+    const exhausted = readSystemRecovery((await action(f.actionId)).evidence)!;
+    const noReplayHoldId = randomUUID(), resolvedAt = new Date(Date.now() - 30 * 60_000);
+    await db.insert(issueRecoveryActions).values({ id: noReplayHoldId, companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "active_run_watchdog", status: "resolved", outcome: "blocked", ownerType: "board", resolvedAt,
+      cause: "native_continuation_requires_reconciliation", fingerprint: `native-workspace:${f.runId}`,
+      nextAction: exportHold.nextAction, evidence: { runId: f.runId,
+        systemRecovery: { ...exhausted, generationId: randomUUID(), attemptId: randomUUID() },
+        automaticRecovery: { runId: f.runId, policy: "preserve_without_replay_v1", replay: "blocked",
+          recordedAt: resolvedAt.toISOString(), actionOutcome: "unknown" },
+        workspaceRecovery: exportHold.evidence.workspaceRecovery,
+        originalFailureCode: "native_workspace_sync_out_retry_exhausted", continuationDelivery: "invalidated",
+        systemRecoveryActiveAt: Date.now() - 40 * 60_000, workspaceRestoreFailure: "restore_failed",
+        workspaceRestoreRecovery: recovery, previousWorkspaceRecovery: null } });
+    return { ...f, noReplayHoldId };
+  }
+
+  it("settles the staging incident's export hold and its resolved no-replay sibling without a person", async () => {
+    const f = await stagingIncident();
+    // As on staging: the no-replay sibling is the execution blocker, and it
+    // offers no task Retry.
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: f.noReplayHoldId,
+      workspaceRepairRequired: true, canRetry: false });
+
+    // The recovery worker's own discovery, as after a deploy: it runs while
+    // work is due and goes idle once nothing is.
+    const blockersSeenByContinuation: unknown[] = [];
+    const onRecovered = vi.fn(async () => { blockersSeenByContinuation.push(await getExecutionBlocker(db, f.companyId, f.issueId)); });
+    let passes = 0;
+    for (; passes < 6; passes += 1) {
+      const due = await nextWorkspaceRecoveryAt(db);
+      if (due === null || due > Date.now()) break;
+      await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, onRecovered, true) ?? []);
+    }
+    expect(passes).toBeGreaterThan(0);
+    expect(passes).toBeLessThan(6);
+
+    const saved = await action(f.actionId);
+    expect(readSystemRecovery(saved.evidence)).toMatchObject({ state: "complete", capturePolicyVersion: REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION });
+    expect(readWorkspaceRecovery(saved.evidence)?.status).toBe("recovered");
+    expect(saved.ownerType).toBe("system");
+
+    // The no-replay sibling of the same run is settled by that save and no
+    // longer holds the task. Settling it replays nothing.
+    const sibling = await action(f.noReplayHoldId);
+    expect(sibling).toMatchObject({ status: "resolved", outcome: "restored", ownerType: "system",
+      resolutionNote: "workspace_recovered_by_sibling_action" });
+    expect(sibling.evidence.automaticRecovery).toBeUndefined();
+    expect(sibling.evidence.siblingWorkspaceRecovery).toMatchObject({ recoveryActionId: f.actionId });
+    expect(readWorkspaceRecovery(sibling.evidence)?.status).toBe("recovered");
+    expect(String(sibling.nextAction)).not.toMatch(adminText);
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    // The continuation hook ran once the task was free, so saved input is dispatched.
+    expect(blockersSeenByContinuation.at(-1)).toBeNull();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).map(row => row.id)).toEqual([f.runId]);
+    // Bounded: one re-arm, and the worker has nothing left to do.
+    const next = await nextWorkspaceRecoveryAt(db);
+    expect(next === null || next > Date.now()).toBe(true);
+    expect((await db.select().from(activityLog).where(eq(activityLog.action, "issue.workspace_recovery_rearmed")))
+      .filter(row => row.entityId === f.issueId)).toHaveLength(1);
+  }, 90_000);
 
   it("does not re-arm a save that the current policy already exhausted", async () => {
     const f = await exhaustedCaptureHold(REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION);
