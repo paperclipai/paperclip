@@ -12,6 +12,7 @@ import {
   companies,
   completionContracts,
   createDb,
+  subscribeDatabaseWork,
   heartbeatRunEvents,
   heartbeatRuns,
   issueRecoveryActions,
@@ -48,6 +49,7 @@ import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionPoolMember } from "@pa
 import { recordVerifiedRouterQuotaCooldown, recoverNativePoolAttribution } from "../heartbeat/run-completion.js";
 import { NativeProviderTerminalFailure } from "../../vendor/paperclip-runner/index.js";
 import { fenceQuotaReplacementStop } from "./native-cancellation-request.js";
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { executionControlSchedule } from "../execution-control-work.js";
 import { reconcileSafeNativeReplacements } from "./native-safe-replacement.js";
 
@@ -324,7 +326,11 @@ describe("native provider capacity failure persistence", () => {
             } });
           },
         );
-      await expect(
+      let terminalWakes = 0;
+      const unsubscribeTerminal = subscribeDatabaseWork(db, DELIVERY_QUEUES.executionReplacement, event => {
+        if (event === "settled") terminalWakes++;
+      });
+      try { await expect(
         executePaperclipNativeSession({
           db,
           execution,
@@ -342,7 +348,9 @@ describe("native provider capacity failure persistence", () => {
             },
           },
         }),
-      ).rejects.toThrow(failureMessage);
+      ).rejects.toThrow(failureMessage); }
+      finally { unsubscribeTerminal(); }
+      if (recoveringAttribution) expect(terminalWakes).toBeGreaterThan(0);
 
       expect(provider.execute).toHaveBeenCalledTimes(1);
       const [coordinator] = await db

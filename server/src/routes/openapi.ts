@@ -11,6 +11,7 @@ import {
 import { Router } from "express";
 import { subscriptionPriceSchema, mergeSubscriptionsSchema } from "@paperclipai/shared";
 import { z } from "zod";
+import { getHiddenSettings } from "../services/settings-visibility.js";
 import {
   gitHubRepositoryPageQuerySchema,
   toggleAllGitHubRepositoriesSchema,
@@ -5342,11 +5343,42 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+// A plugin-managed routine is still an ordinary routine row, so agents read it
+// through the routine routes; say there who owns it and where it is changed.
+const PLUGIN_MANAGED_ROUTINE_GUIDANCE =
+  "A routine with a non-null `managedByPlugin` is a plugin-managed routine: that plugin created it and owns its definition "
+  + "(title, instructions, schedule, assignee), and the plugin can reset it to its manifest defaults. "
+  + "It is changed through the settings that plugin exposes, which a board user opens at "
+  + "[plugin settings](/<prefix>/company/settings/instance/plugins/<pluginId>), with `managedByPlugin.pluginId` as <pluginId> "
+  + "and this conversation's company prefix as <prefix>. "
+  + "Do not rewrite, detach or duplicate a plugin-managed routine to imitate a change, and do not search for another route: "
+  + "reply now with that link and the routine's page link.";
+// When the hosting operator hides plugin management, that settings page redirects
+// away, so the guidance names the operator instead of linking it.
+const PLUGIN_MANAGED_ROUTINE_OPERATOR_GUIDANCE =
+  "A routine with a non-null `managedByPlugin` is a plugin-managed routine: that plugin created it and owns its definition "
+  + "(title, instructions, schedule, assignee), and the plugin can reset it to its manifest defaults. "
+  + "On this instance the hosting operator manages plugins, so no Paperclip page offers that change. "
+  + "Do not rewrite, detach or duplicate a plugin-managed routine to imitate a change, and do not search for another route: "
+  + "reply now that the hosting operator controls this plugin's settings, with the routine's page link.";
+
+/** Picks the plugin-managed routine guidance that matches plugin settings visibility. */
+export function applyPluginSettingsVisibility(document: any, hidden: ReadonlySet<string> = getHiddenSettings()): any {
+  if (!hidden.has("instance.plugins")) return document;
+  for (const operation of [document.paths?.["/api/routines/{id}"]?.get, document.paths?.["/api/routines/{id}"]?.patch]) {
+    if (typeof operation?.description === "string") {
+      operation.description = operation.description.replace(PLUGIN_MANAGED_ROUTINE_GUIDANCE, PLUGIN_MANAGED_ROUTINE_OPERATOR_GUIDANCE);
+    }
+  }
+  return document;
+}
+
 registry.registerPath({
   method: "get",
   path: "/api/routines/{id}",
   tags: ["routines"],
   summary: "Get a routine",
+  description: `Routine details including triggers. ${PLUGIN_MANAGED_ROUTINE_GUIDANCE}`,
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
@@ -5356,6 +5388,7 @@ registry.registerPath({
   path: "/api/routines/{id}",
   tags: ["routines"],
   summary: "Update a routine",
+  description: `Agents can update only routines assigned to them and cannot reassign them. ${PLUGIN_MANAGED_ROUTINE_GUIDANCE}`,
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(updateRoutineSchema),
@@ -13399,7 +13432,7 @@ for (const [method, path, body] of experimentalApiPaths) {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function buildOpenApiDocument(): any {
-  return applyDocumentFixups({
+  return applyPluginSettingsVisibility(applyDocumentFixups({
     openapi: "3.0.0",
     info: {
       title: "Paperclip API",
@@ -13409,7 +13442,7 @@ export function buildOpenApiDocument(): any {
     servers: [{ url: "/" }],
     components: registry.buildComponents(),
     paths: registry.buildPaths(),
-  });
+  }));
 }
 
 export const buildOpenApiSpec = buildOpenApiDocument;

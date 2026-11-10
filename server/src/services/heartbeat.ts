@@ -1,6 +1,7 @@
 import { effectiveAiConnectionInput } from "@paperclipai/shared";
 
 import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
+import { endStorageOutageWaitOn, runInOwnStorageScope } from "../storage/storage-unavailable.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
 import type { StopInvocationOptions } from "./heartbeat/run-control.js";
@@ -1875,7 +1876,7 @@ export function heartbeatService(
       onNativeExecutionLeaseAcquired?: () => Promise<void>;
     } = {},
   ) {
-    return withRunExecutionTiming(runId, () => executeRunAttempt(runId, runOptions));
+    return withRunExecutionTiming(runId, () => runInOwnStorageScope(() => executeRunAttempt(runId, runOptions)));
   }
 
   const { deferRunForProviderLimit } = createProviderLimitWait(db, {
@@ -2014,6 +2015,7 @@ export function heartbeatService(
     activeRunExecutions.add(run.id);
     const timePreparation = createHeartbeatPreparationTiming(run.id);
     const executionControl = createAdapterExecutionControl();
+    endStorageOutageWaitOn(executionControl.controller.signal);
     // This coarse scope also covers host finalization after the adapter returns.
     // Nested scopes refine the label without making any termination claim.
     executionControl.phases.enter("host_execution");
@@ -3256,6 +3258,7 @@ export function heartbeatService(
         appendRunEvent, getCurrentUserRedactionOptions,
         assertWriterAuthority: createRunLogWriterAuthority(db, run, runOptions.nativeLeaseOwner),
         runtimeLogSecretValues: observabilitySecretValues(observability),
+        signal: executionControl.controller.signal,
       });
       const goalCheckpointSession: {
         current: {

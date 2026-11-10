@@ -364,6 +364,21 @@ through the partial index `heartbeat_runs_tree_hold_suppression_idx`. The index
 covers only cancelled runs with a `treeHoldSuppression` marker, keyed by company and
 hold. Migration 0436 builds it concurrently.
 
+The budget worker finds committed budget Stops that are not delivered yet
+through the partial index `heartbeat_runs_pending_budget_cancellation_idx`. The
+index covers only runs whose `result_json.startupCancellation.budgetEnforcement`
+is an object without `deliveredAt`, keyed by company. Its predicate must stay
+identical to `pendingBudgetRunCancellationPredicate` in
+`server/src/services/heartbeat/budget-cancellation.ts`; a regression test checks
+that the planner uses it. The worker check, run control, and the idle-sleep
+check therefore read a few index entries, not every run's result JSON. The
+migration builds the index concurrently. To compare both plans on a disposable
+local fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-budget-cancellation-scan.ts --runs=20000 --payload-kib=16
+```
+
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
 still match nothing. The query can use existing primary keys without adding a
@@ -1928,6 +1943,22 @@ This disposable fixture compares the real ownership, recovery-action and status
 delivery queries, including complete positional results and database plans.
 All data is synthetic. Query timings exclude process liveness probes, HTTP and
 provider work.
+
+The reconciler's lost-wake check for user comments reads in three stages.
+The first stage keeps recent user comments that no wake request carries. The
+second stage removes comments with a live or later run, and it requires an
+earlier run. Each stage probes native and legacy run bindings separately with
+existing indexes. Only the remaining comments reach the steer check, which
+reads run event payloads. An OR across both bindings let PostgreSQL hash the
+runs by company only and test each comment against every run of its company.
+No new index or migration is needed.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-comment-wake-check.ts --baseline-ref=02bfe71a6b
+```
+
+This disposable fixture compares the complete check result, the complete
+positional SQL rows, plans, and timings with and without nested-loop joins.
 
 ### Agent runtime synchronization journal
 

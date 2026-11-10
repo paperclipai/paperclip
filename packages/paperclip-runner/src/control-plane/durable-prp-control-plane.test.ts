@@ -1542,6 +1542,8 @@ it.each([
     expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
     const failure = onProtocolIntegrityError.mock.calls[0]![0] as Error;
     expect(failure).toMatchObject({ reason: "runner_event_commit_stalled", detail: `${code} at source seq 1` });
+    expect(core.store.state.ackedSourceSeq).toBe(0);
+    expect(core.store.state.committedEvents).toHaveLength(0);
     expect(failure.message).toContain("runner_event_commit_stalled");
     expect(failure.message).not.toContain("private-host-fixture");
     expect(failure.message).not.toContain("private query");
