@@ -36,6 +36,7 @@ import { matrixMayLaunch, planMatrixWave } from "./journey-matrix.js";
 import { StormRun, TASK_FAULT_LOG, observedFaultSchedule, planWave, replayOnCurrentBuild, replayRecordFor, replayWave, type TaskFaultLog } from "./scheduler.js";
 import { chaosLifecycleOverrides, seedChaosLab } from "./seed.js";
 import { ChaosSupervisor } from "./supervisor.js";
+import { TimeShiftedApi } from "./time-faults.js";
 import { isBrokenStdoutError, markTimelineEchoBroken, Timeline } from "./timeline.js";
 import { guardedRunnerOutputs, worktreeFingerprint } from "./wave-guard.js";
 import type { FaultKind, FaultReceipt, OracleArtifacts, TriggerId, WavePlan } from "./types.js";
@@ -293,8 +294,10 @@ async function main(): Promise<number> {
       timeline.add("provider_faults_installed", { realCodex: realCodex.command, codexVersion: realCodex.version,
         rules: plan.tasks.flatMap(task => task.providerFault ? [`${task.taskId}:${describeProviderFault(task.providerFault)}`] : []) });
     }
+    if (plan.options.timeAgeMs) supervisor.timeAgeMs = plan.options.timeAgeMs;
     await supervisor.start(serverEnvironment);
-    const api = new ChaosApi(supervisor.baseUrl);
+    // TM2/TM3 age the database; the observer and grader read run times back at their real times.
+    const api: ChaosApi = new TimeShiftedApi(supervisor.baseUrl, supervisor.agingShifts);
     const lab = await seedChaosLab({ api, env: plan.options.env, waitForReadyAgents: true, cancelled: () => interrupted, daytonaImage: plan.options.daytonaImage, daytonaCpu: plan.options.daytonaCpu,
       daytonaReuseLease: plan.options.daytonaReuseLease,
       adapters: [...new Set([...plan.tasks.map(task => task.adapter),

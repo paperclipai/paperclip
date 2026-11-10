@@ -1,6 +1,7 @@
 import { isProviderFault, withProviderFaultRules } from "./provider-faults.js";
 import { takesJourneyTriggers } from "./journeys.js";
 import { workloadDefinitions } from "./workloads.js";
+import { isTimeFault, timeFaultHoldMs } from "./time-faults-config.js";
 import type { AdapterId, FaultKind, ScheduledFault, StormFault, StormPlan, TaskFaultKind, TaskPlan, TriggerId, WavePlan, WaveOptions, WorkloadId } from "./types.js";
 import type { ReplayRef } from "./config.js";
 
@@ -121,7 +122,7 @@ export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloa
       ...cellRest,
       ...(trigger === "time" ? {} : { trigger, triggerDelayMs: rng.int(...TRIGGER_DELAY_RANGE_MS[trigger]) }),
       fireAfterMs: cell.fault === "K13" ? 0 : pinnedFireAfterMs(options.faultAfterMs, rng.int(fireMin, fireMax)),
-      holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : 0,
+      holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : isTimeFault(cell.fault) ? timeFaultHoldMs(cell.fault, rng.int) : 0,
       followUpAfterMs: definition.followUpWindowMs ? rng.int(definition.followUpWindowMs[0], definition.followUpWindowMs[1]) : null,
       nonce: rng.hex(8),
     });
