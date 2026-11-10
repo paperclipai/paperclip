@@ -214,6 +214,14 @@ describe("additive project access", () => {
     await expect(assertTaskWorkspaceExecutionAccess(db, actor, companyId, { issueId: personalTask.id })).resolves.toMatchObject({ task: { id: personalTask.id } });
     await expect(assertTaskWorkspaceSourceProjectAccess(db, actor, companyId, personal!.id)).rejects.toThrow(/not an access member/);
 
+    // An execution workspace from the personal project is not a bare container.
+    const [ownerFiles] = await db.insert(executionWorkspaces).values({ companyId, projectId: personal!.id, name: "Owner workspace",
+      cwd: "/tmp/personal-owner-workspace", mode: "isolated_workspace", strategyType: "git_worktree" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: ownerFiles!.id }).where(eq(issues.id, personalTask.id));
+    await expect(assertTaskWorkspaceExecutionAccess(db, actor, companyId, { issueId: personalTask.id, workspaceId: ownerFiles!.id }))
+      .rejects.toThrow(/not an access member/);
+    await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.id, personalTask.id));
+
     // A shared private project, or a personal project that provides files, still needs membership.
     const sharedTask = await task(shared!.id);
     await db.update(issues).set({ privacyRootIssueId: sharedTask.id }).where(eq(issues.id, sharedTask.id));
