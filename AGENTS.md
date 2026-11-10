@@ -25,15 +25,29 @@ Read the doc that matches your change before you start:
 
 ### Scoped repository rules
 
-Before editing or reviewing files, read the matching rules in `rules/*.mdc`.
-Each rule has Markdown content and YAML frontmatter: `globs` contains
-comma-separated, repository-relative file patterns, and `alwaysApply: true`
-means the rule applies throughout the repository. Read all rules whose scope
-matches the affected files. These rules supplement this file and any applicable
-nested `AGENTS.md` instructions.
+`rules/*.mdc` holds the architecture rules that reviewers apply to a pull
+request. Each file starts with a short header: `description` is a one-sentence
+summary of the rule, `globs` lists the files it covers, and `alwaysApply: true`
+means it covers the whole repository.
 
-The frontmatter is the source of truth for scope, so this file does not list the
-rules. See [`rules/README.md`](rules/README.md) for rule authoring and Greptile setup.
+You do not need to read the rule bodies before every change. List the headers to
+see which rules exist and what each one asks for:
+
+```sh
+grep -E '^(description|globs|alwaysApply):' rules/*.mdc
+```
+
+Write the change so that it satisfies the descriptions of the rules that cover
+your files. Read the full body of a rule only in these cases:
+
+- You are making a design decision in the area the rule covers, such as adding a
+  module, a background worker, or persisted state.
+- The description does not tell you whether your change complies.
+- A reviewer cites the rule.
+
+These rules supplement this file and any applicable nested `AGENTS.md`
+instructions. See [`rules/README.md`](rules/README.md) for rule authoring and
+Greptile setup.
 
 ## 3. Repo Map
 
