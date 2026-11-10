@@ -15917,26 +15917,32 @@ export function issueRoutes(
 
       if (enteringBlocked) {
         const blockedIssue = issue;
-        let ownerNotifiedAt: Date | null = null;
         await deliverAgentUnblockNotification({
           issue: blockedIssue,
           wakeup: heartbeat.wakeup,
           markNotified: async (blockedOwnerNotifiedAt) => {
-            ownerNotifiedAt = blockedOwnerNotifiedAt;
+            await db
+              .update(issueRows)
+              .set({ blockedOwnerNotifiedAt })
+              .where(
+                and(
+                  eq(issueRows.id, blockedIssue.id),
+                  eq(issueRows.companyId, blockedIssue.companyId),
+                ),
+              );
+            issue = { ...blockedIssue, blockedOwnerNotifiedAt };
+          },
+          onError: async (err) => {
+            logger.warn(
+              {
+                err,
+                issueId: blockedIssue.id,
+                unblockOwner: blockedIssue.unblockDescriptor?.owner ?? null,
+              },
+              "failed to deliver agent unblock notification after issue update",
+            );
           },
         });
-        if (ownerNotifiedAt) {
-          await db
-            .update(issueRows)
-            .set({ blockedOwnerNotifiedAt: ownerNotifiedAt })
-            .where(
-              and(
-                eq(issueRows.id, blockedIssue.id),
-                eq(issueRows.companyId, blockedIssue.companyId),
-              ),
-            );
-          issue = { ...blockedIssue, blockedOwnerNotifiedAt: ownerNotifiedAt };
-        }
       }
 
       let cancelledStatusRunId: string | null = null;
