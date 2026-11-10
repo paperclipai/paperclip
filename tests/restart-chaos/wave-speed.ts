@@ -311,7 +311,7 @@ export async function collectWaveSpeed(api: ChaosApi, environment: EnvironmentKi
         const stamped = stampProviderLoadStarts(raw);
         const restartOnly = withoutOutage(stamped, windows);
         const trimmed = withoutOutage(stamped, [...windows, ...storageWindows]);
-        outage.adjusted += trimmed.adjusted; outage.removedMs += restartOnly.removedMs;
+        outage.adjusted += restartOnly.adjusted; outage.removedMs += restartOnly.removedMs;
         outage.storageRemovedMs += trimmed.removedMs - restartOnly.removedMs;
         runs.push(trimmed.run);
         timing.push({ id: run.id, createdAt: Date.parse(run.createdAt!), finishedAt: run.finishedAt ? Date.parse(run.finishedAt) : null });

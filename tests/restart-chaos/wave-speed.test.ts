@@ -121,7 +121,7 @@ describe("wave speed grade", () => {
     const speed = await collectWaveSpeed(api, "local", [{ issueId: "i", adapter: "claude", samples: [sample] }], [],
       [{ kind: "ST1", startedAt: 1_005_000, endedAt: 1_065_000, rules: [] }]);
     expect(speed.rows.find(row => row.metric === "time_to_first_activity")).toMatchObject({ measured: { p50: 10_000 } });
-    expect(speed).toMatchObject({ storageFaultWindows: 1, storageFaultRemovedMs: 60_000, outageRemovedMs: 0 });
+    expect(speed).toMatchObject({ storageFaultWindows: 1, storageFaultRemovedMs: 60_000, outageRemovedMs: 0, outageAdjustedSpans: 0 });
   });
 
   it("has no budget for remote environments or unbudgeted adapters", () => {
