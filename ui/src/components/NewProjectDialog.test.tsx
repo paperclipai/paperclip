@@ -113,7 +113,7 @@ describe("project environment selection", () => {
     act(() => { select.value = "sandbox"; select.dispatchEvent(new Event("change", { bubbles: true })); });
     act(() => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
     await settle();
-    expect(projectsApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ environmentId: "sandbox" }));
+    expect(projectsApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ environmentId: "sandbox", executionWorkspacePolicy: { enabled: true, storageProviderPluginId: null } }));
     expect(select.value).toBe("sandbox");
   });
 

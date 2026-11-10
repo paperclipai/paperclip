@@ -116,7 +116,6 @@ export async function ensurePersonalPrivateProject(dbOrTx: any, companyId: strin
         visibility: "private",
         personalOwnerUserId: userId,
         privacyOwnerUserId: userId,
-        executionWorkspacePolicy: await withDefaultProjectStorage(dbOrTx, companyId, null, { userId }) as Record<string, unknown> | null,
       })
       .onConflictDoNothing()
       .returning()

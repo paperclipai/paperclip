@@ -50,9 +50,15 @@ change a durable storage choice.
 The server validates the choice again and stores its storage owner. The project
 is then available to the compatible environments in that group; no single run
 environment is pinned. An explicit `executionWorkspacePolicy.storageProviderPluginId`
-continues to work. If both fields are supplied, they must agree. Without either,
+continues to work. The UI sends both the environment and its observed storage
+owner, so a changed environment cannot silently select different storage. If
+both fields are supplied, they must agree. Without either,
 storage follows the caller's effective environment. A plugin's
 `defaultForProjects` claim alone no longer attaches a project to that plugin.
+
+The hidden repository-free “My private tasks” project is independent of
+environment/storage availability, so creating a private note never requires
+repairing an environment.
 
 An unavailable configured default produces an error and permits an explicit
 available choice. It does not silently select another storage owner. Existing

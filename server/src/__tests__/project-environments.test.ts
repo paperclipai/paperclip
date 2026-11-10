@@ -3,9 +3,10 @@ import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, builtInManagedResources, companies, createDb, environments, instanceSettings, plugins, userCompanyPreferences } from "@paperclipai/db";
+import { agents, authUsers, companyMemberships, builtInManagedResources, companies, createDb, environments, instanceSettings, plugins, userCompanyPreferences } from "@paperclipai/db";
 import { projectEnvironmentOptions, withDefaultProjectStorage } from "../services/project-environments.js";
 import { assertProjectStorageEnvironment, projectStorageForEnvironment } from "../services/project-workspace-provider.js";
+import { issueService } from "../services/issues.js";
 import { projectService } from "../services/projects.js";
 import { preparePluginWorkspace } from "../services/plugin-workspaces.js";
 import { projectRoutes } from "../routes/projects.js";
@@ -29,7 +30,7 @@ describe.skipIf(!support.supported)("project environment compatibility", () => {
     const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
     plugin.manifestJson = { ...plugin.manifestJson,
       capabilities: [...plugin.manifestJson.capabilities, "environment.drivers.register"],
-      environmentDrivers: [{ driverKey: "tasks", supportsTasks: true, displayName: "Computers" }],
+      environmentDrivers: [{ driverKey: "tasks", supportsTasks: true, displayName: "Computers", configSchema: { type: "object", properties: {} } }],
       workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, defaultForProjects: { mode: "isolated_workspace", strategy: "git_worktree" } },
     };
     await db.update(plugins).set({ manifestJson: plugin.manifestJson }).where(eq(plugins.id, plugin.id));
@@ -134,6 +135,27 @@ describe.skipIf(!support.supported)("project environment compatibility", () => {
     await expect(withDefaultProjectStorage(db, f.companyId, null)).rejects.toMatchObject({ status: 409 });
   });
 
+  it.each(["instance", "primary"] as const)("creates repository-free private tasks despite an archived %s default", async source => {
+    const f = await fixture();
+    const userId = randomUUID();
+    const now = new Date();
+    await db.insert(authUsers).values({ id: userId, name: "Person", email: `${userId}@example.com`, createdAt: now, updatedAt: now });
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: userId,
+      status: "active", membershipRole: "operator" });
+    await db.update(environments).set({ status: "archived" }).where(eq(environments.id, f.computer.id));
+    if (source === "instance") await db.update(instanceSettings).set({ defaultEnvironmentId: f.computer.id });
+    else {
+      await db.update(agents).set({ defaultEnvironmentId: f.computer.id }).where(eq(agents.id, f.input.agentId));
+      await db.insert(userCompanyPreferences).values({ companyId: f.companyId, userId, primaryAgentId: f.input.agentId });
+    }
+    const task = await issueService(db).create(f.companyId, { title: "Private note", visibility: "private", createdByUserId: userId });
+    expect(task.visibility).toBe("private");
+    const project = await projectService(db).getById(task.projectId!);
+    expect(project?.name).toBe("My private tasks");
+    expect(project?.executionWorkspacePolicy).toBeNull();
+    expect(project?.workspaces).toEqual([]);
+  });
+
   it("honors managed-only and forced Kubernetes execution policy", async () => {
     const f = await fixture();
     await db.update(environments).set({ metadata: { managedByPaperclip: true, managedKubernetesSandbox: true } }).where(eq(environments.id, f.sandbox.id));
@@ -167,6 +189,11 @@ describe.skipIf(!support.supported)("project environment compatibility", () => {
     expect((await request(app({ type: "none" })).get(`${url}/project-environments`)).status).toBe(401);
     const agent = app({ type: "agent", agentId: f.input.agentId, companyId: f.companyId });
     expect((await request(agent).get(`${url}/project-environments`)).status).toBe(200);
+    await db.update(environments).set({ driver: "plugin", config: f.computer.config }).where(eq(environments.id, f.ssh.id));
+    const changed = await request(board).post(`${url}/projects`).send({ name: "Changed storage", environmentId: f.ssh.id,
+      executionWorkspacePolicy: { enabled: true, storageProviderPluginId: null } });
+    expect(changed.status).toBe(409);
+    expect(changed.body.details.code).toBe("project_environment_incompatible");
     const invalid = await request(board).post(`${url}/projects`).send({ name: "Invalid", environmentId: randomUUID() });
     expect(invalid.status).toBe(409);
   });

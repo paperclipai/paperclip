@@ -25,16 +25,12 @@ Agent access: [companion](../agent-access-map/projects.md).
 ### `project-list`
 
 Open `/projects`, create a project, and enter its overview or Issues view.
-When environments use incompatible repository storage, **Available in** groups
-compatible environments and follows the creator's effective default. See
-[compatibility and defaults](../../doc/project-environment-compatibility.md).
 
 ### `repository-settings`
 
 Open `/projects/:projectId/configuration` and its repository/workspace settings.
 Workspace storage shows the saved provider or Core/local choice. Plugin-backed
-projects retain that storage owner. Creation chooses storage from the effective
-environment rather than a plugin default claim alone.
+projects retain their storage owner.
 
 ### `project-access`
 
@@ -52,10 +48,7 @@ Manual: Create a project, add a task from its view, and reload. Verify the task 
 
 ### `repository-settings`
 
-Automated: [provider defaults and API overrides](../../server/src/__tests__/project-workspace-provider.integration.test.ts) and [storage selection UI](../../ui/src/components/ProjectProperties.concurrency.test.tsx) cover saved storage, explicit overrides, and configuration errors.
-[Environment compatibility](../../server/src/__tests__/project-environments.test.ts)
-and [creation controls](../../ui/src/components/NewProjectDialog.test.tsx) cover
-compatible groups, defaults, denied choices, and load/retry states. These offline checks do not qualify live provider storage.
+Automated: [provider defaults and API overrides](../../server/src/__tests__/project-workspace-provider.integration.test.ts) and [storage selection UI](../../ui/src/components/ProjectProperties.concurrency.test.tsx) cover saved storage, explicit overrides, and configuration errors. These offline checks do not qualify live provider storage.
 
 Automated: [repository persistence](../../server/src/__tests__/project-repositories-persistence.test.ts) and [repository browser suite](../../tests/e2e/project-repositories.spec.ts) cover configured repository workflows.
 

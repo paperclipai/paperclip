@@ -19,8 +19,7 @@ Review: `baseline`.
 
 API: `present` — representative operation IDs:
 
-- `GET /api/companies/{companyId}/project-environments`.
-- `POST /api/companies/{companyId}/projects` (optional `environmentId` chooses repository storage).
+- `POST /api/companies/{companyId}/projects`.
 - `PATCH /api/projects/{id}`.
 - `DELETE /api/projects/{id}`.
 
@@ -38,12 +37,7 @@ Assert the relevant denied actor, owner, company or mode from Policy. Review the
 remaining operations before qualifying the whole capability.
 
 Gaps: Actual data operations exist; project discovery and private-resource permissions
-still apply. Creation defaults follow the requesting agent's environment, or the
-person's primary agent and instance fallback. Explicit environment choices are
-revalidated for storage compatibility and company availability. See
-[storage contract](../../doc/project-environment-compatibility.md) and the offline
-[API regression tests](../../server/src/__tests__/project-environments.test.ts).
-These tests do not qualify a live agent run.
+still apply.
 
 ## `task-context`
 
