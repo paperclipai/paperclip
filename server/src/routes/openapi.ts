@@ -10153,6 +10153,26 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/link-preview",
+  tags: ["companies"],
+  summary: "Read optional link metadata for the current board user",
+  description: "Company access and board authentication are required. This read uses a viewer-scoped cache and returns a quiet null preview when provider access is unavailable. It does not change tasks or schedule background work.",
+  request: { params: z.object({ companyId: z.string() }), query: z.object({ url: z.string().max(2048) }) },
+  responses: {
+    200: r.ok(z.object({
+      preview: z.object({
+        target: z.object({ provider: z.string(), kind: z.string(), canonicalUrl: z.string(), label: z.string() }),
+        title: z.string(), state: z.enum(["unknown", "open", "draft", "merged", "closed", "conflicts"]),
+        author: z.string().nullable(), updatedAt: z.string().nullable(),
+      }).nullable(),
+      maxAgeMs: z.number(),
+    })),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/issues/{id}/external-objects",
   tags: ["issues"],
   summary: "List external objects mentioned by an issue",
