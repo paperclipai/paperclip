@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { parseCommand } from "./config.js";
-import { actionRequestRows, JourneyDriver, questionAnswer, reviewClockNames, shiftReviewClockWith, type JourneyHost } from "./journey-driver.js";
+import { actionRequestRows, JourneyDriver, q3AgentScript, questionAnswer, reviewClockNames, shiftReviewClockWith, type JourneyHost } from "./journey-driver.js";
+import { waveServerUrlEnvironment } from "./supervisor.js";
+import { buildPaperclipServerEnvironment } from "../runner-e2e/harness-env.js";
+import { execFile } from "node:child_process";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { matrixCells, matrixMayLaunch, planMatrixWave } from "./journey-matrix.js";
 import { pkceChallenge, startOAuthApp } from "./journey-oauth-app.js";
 import {
@@ -310,5 +316,39 @@ describe("Q3 review clock", () => {
     const connectionUpdate = queries.find(entry => entry.query.startsWith("UPDATE tool_connections"))!;
     expect(JSON.parse(String(connectionUpdate.params[1])).oauth.expiresAt).toBe("2026-11-10T01:59:00.000Z");
     expect(connectionUpdate.params[2]).toBeNull();
+  });
+});
+
+describe("wave server URL", () => {
+  it("pins the wave's loopback origin over an ambient public API URL", () => {
+    const environment = buildPaperclipServerEnvironment(
+      { PAPERCLIP_API_URL: "https://dev-machine.example.ts.net", PATH: "/bin" },
+      { PORT: "50187", ...waveServerUrlEnvironment(50187) });
+    expect(environment.PAPERCLIP_API_URL).toBe("http://127.0.0.1:50187");
+  });
+
+  it("sends the Q3 agent's run key only to the PAPERCLIP_API_URL its server assigned", async () => {
+    const requests: Array<{ url: string; authorization: string | undefined }> = [];
+    const server = createServer((request, response) => {
+      requests.push({ url: request.url ?? "", authorization: request.headers.authorization });
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify(request.url?.endsWith("/interactions")
+        ? [{ status: "pending", payload: { toolAction: { tool: "create_page" } } }] : {}));
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const output = await new Promise<string>((resolve, reject) => execFile(process.execPath,
+        ["--input-type=module", "-e", q3AgentScript("connection-1", "Chaos page")],
+        { env: { PATH: process.env.PATH, PAPERCLIP_API_URL: `${origin}/api/`, PAPERCLIP_API_KEY: "run-key",
+          PAPERCLIP_RUN_ID: "run-1", PAPERCLIP_TASK_ID: "issue-1" }, timeout: 20_000 },
+        (error, stdout, stderr) => error ? reject(new Error(`${error.message}\n${stderr}`)) : resolve(stdout)));
+      expect(output).toContain("Waiting for the saved review");
+      expect(requests.map(request => request.url)).toContain("/api/issues/issue-1/interactions");
+      expect(requests.every(request => request.url.startsWith("/api/") && request.authorization === "Bearer run-key")).toBe(true);
+    } finally {
+      server.close();
+    }
   });
 });
