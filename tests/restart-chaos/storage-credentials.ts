@@ -1,14 +1,10 @@
-import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
-import type { ObjectStore } from "./object-store.js";
+import { launchMinio, type ObjectStore } from "./object-store.js";
 import { CREDENTIAL_ERROR_CODES, type StorageFaultRule } from "./storage-proxy.js";
 
-export const CREDENTIAL_FAULT_KINDS = ["ST5", "ST5R"] as const;
-export type CredentialFaultKind = typeof CREDENTIAL_FAULT_KINDS[number];
+export type CredentialFaultKind = "ST5" | "ST5R";
 export const ROTATING_PROFILE = "chaos-rotating";
 export const ROTATION_HOLD_MS = 5_000;
 
@@ -67,44 +63,12 @@ export async function writeRotatingCredentialSource(root: string, initial: Store
   };
 }
 
-async function freePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
-  const port = (server.address() as { port: number }).port;
-  await new Promise<void>(resolve => server.close(() => resolve()));
-  return port;
-}
-
 export async function restartMinioWithCredentials(store: ObjectStore, binary: string, next: StoreCredentials,
   readyTimeoutMs = 30_000): Promise<void> {
   await store.stop();
-  const address = new URL(store.endpoint).host;
-  const consolePort = await freePort();
-  const child = spawn(binary, ["server", store.dataDir, "--address", address, "--console-address", `127.0.0.1:${consolePort}`, "--quiet"], {
-    env: { PATH: process.env.PATH ?? "", HOME: path.dirname(store.dataDir), MINIO_ROOT_USER: next.accessKeyId,
-      MINIO_ROOT_PASSWORD: next.secretAccessKey, MINIO_BROWSER: "off", MINIO_UPDATE: "off" },
-    stdio: ["ignore", "ignore", "pipe"],
-  });
-  let stderr = "";
-  let spawnError: Error | null = null;
-  child.on("error", error => { spawnError = error; });
-  child.stderr?.on("data", chunk => { stderr = `${stderr}${chunk}`.slice(-4_000); });
-  const stop = async () => {
-    if (spawnError || child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
-    const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
-    child.kill("SIGTERM");
-    await Promise.race([exited, delay(10_000).then(() => { child.kill("SIGKILL"); return exited; })]);
-  };
+  const stop = await launchMinio({ binary, dataDir: store.dataDir, address: new URL(store.endpoint).host, home: path.dirname(store.dataDir),
+    accessKeyId: next.accessKeyId, secretAccessKey: next.secretAccessKey, readyTimeoutMs });
   Object.assign(store, { stop, accessKeyId: next.accessKeyId, secretAccessKey: next.secretAccessKey });
-  const deadline = Date.now() + readyTimeoutMs;
-  for (;;) {
-    if (spawnError) throw new Error(`MinIO could not restart: ${(spawnError as Error).message}`);
-    if (child.exitCode !== null) throw new Error(`MinIO exited during credential rotation (${child.exitCode}): ${stderr}`);
-    const attempt = AbortSignal.timeout(Math.max(1, Math.min(2_000, deadline - Date.now())));
-    if (await fetch(`${store.endpoint}/minio/health/live`, { signal: attempt }).then(response => response.ok).catch(() => false)) return;
-    if (Date.now() > deadline) throw new Error(`MinIO did not come back after credential rotation: ${stderr}`);
-    await delay(200);
-  }
 }
 
 export class CredentialRotation {

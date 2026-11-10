@@ -144,7 +144,7 @@ process.on("SIGTERM", () => process.exit(0));
     try {
       const started = Date.now();
       await expect(restartMinioWithCredentials(store, await fakeMinio(root, "hang"), freshCredentials(), 1_500))
-        .rejects.toThrow(/did not come back/);
+        .rejects.toThrow(/did not become ready/);
       expect(Date.now() - started).toBeLessThan(6_000);
     } finally {
       await store.stop();
