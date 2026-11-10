@@ -27,7 +27,17 @@ for (const theme of ["light", "dark"]) {
       const first = page.getByTestId("first-mention").getByRole("link");
       const second = page.getByTestId("second-mention").getByRole("link");
       const card = page.getByRole("tooltip");
+      await expect(first).toHaveAttribute("data-link-state", "unknown");
+      await first.hover({ position: { x: 5, y: 8 } });
       await expect(card).toBeVisible();
+      if (["loading", "unavailable", "failed-read"].includes(state)) {
+        if (state === "loading") await expect(card.getByRole("status")).toHaveText("Loading pull request…");
+        else await expect(card.getByRole("status")).toHaveCount(0);
+        await expect(first).toHaveAttribute("data-link-state", "unknown");
+      } else {
+        await expect(first).toHaveAttribute("data-link-state", state === "narrow" ? "merged" : state);
+        await expect(second).toHaveAttribute("data-link-state", state === "narrow" ? "merged" : state);
+      }
       // Fixture fetches are handled inside the browser and do not become network requests.
       expect(remote).toEqual([]);
       expect(requests).toEqual([]);

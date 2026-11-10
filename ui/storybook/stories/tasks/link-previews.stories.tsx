@@ -1,6 +1,5 @@
 import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, waitFor, within } from "storybook/test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { recognizeLinkPreview, type LinkPreviewState } from "@paperclipai/shared";
 import { MarkdownBody } from "@/components/MarkdownBody";
@@ -53,7 +52,7 @@ const meta = {
   parameters: {
     paperclip: {
       capabilities: ["tasks/discussion"], status: "current", implementation: "production", boundary: "fixtures",
-      notes: "Production MarkdownBody, LinkPreviewProvider, query cache, and anchored hover card. HTTP fixtures cover deferred lookup, shared duplicate status, known PR states, loading, unavailable and failed reads. No live GitHub authorization, task persistence, or provider mutations.",
+      notes: "Production MarkdownBody, LinkPreviewProvider, query cache, and anchored hover card. HTTP fixtures cover deferred lookup, shared duplicate status, known PR states, loading, unavailable and failed reads. Real pointer and keyboard interactions are checked in tests/storybook-visual/link-previews.spec.ts. No live GitHub authorization, task persistence, or provider mutations.",
     },
   },
 } satisfies Meta<PreviewArgs>;
@@ -61,33 +60,15 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Neutral: Story = {};
-const openPreview: Story["play"] = async ({ canvasElement, args }) => {
-  const canvas = within(canvasElement);
-  const first = within(canvas.getByTestId("first-mention")).getByRole("link");
-  await expect(first).toHaveAttribute("data-link-state", "unknown");
-  await userEvent.tab();
-  await expect(first).toHaveFocus();
-  const body = within(canvasElement.ownerDocument.body);
-  await waitFor(() => expect(body.getByRole("tooltip")).toBeVisible());
-  if (args.mode === "ready") {
-    await waitFor(() => expect(first).toHaveAttribute("data-link-state", args.state));
-    await expect(within(canvas.getByTestId("second-mention")).getByRole("link")).toHaveAttribute("data-link-state", args.state);
-  } else if (args.mode === "loading") {
-    await expect(body.getByRole("status")).toHaveTextContent("Loading pull request…");
-  } else {
-    await waitFor(() => expect(body.queryByRole("status")).toBeNull());
-    await expect(first).toHaveAttribute("data-link-state", "unknown");
-  }
-};
-export const Open: Story = { play: openPreview };
-export const Merged: Story = { args: { state: "merged" }, play: openPreview };
-export const Conflicts: Story = { args: { state: "conflicts" }, play: openPreview };
-export const Draft: Story = { args: { state: "draft" }, play: openPreview };
-export const Closed: Story = { args: { state: "closed" }, play: openPreview };
-export const Loading: Story = { args: { mode: "loading" }, play: openPreview };
-export const Unavailable: Story = { args: { mode: "unavailable" }, play: openPreview };
-export const FailedRead: Story = { args: { mode: "failure" }, play: openPreview };
+export const Open: Story = {};
+export const Merged: Story = { args: { state: "merged" } };
+export const Conflicts: Story = { args: { state: "conflicts" } };
+export const Draft: Story = { args: { state: "draft" } };
+export const Closed: Story = { args: { state: "closed" } };
+export const Loading: Story = { args: { mode: "loading" } };
+export const Unavailable: Story = { args: { mode: "unavailable" } };
+export const FailedRead: Story = { args: { mode: "failure" } };
 export const Narrow: Story = {
-  args: { state: "merged", longTitle: true }, play: openPreview,
+  args: { state: "merged", longTitle: true },
   globals: { viewport: { value: "mobile1", isRotated: false } }, parameters: { waitForViewport: true },
 };
