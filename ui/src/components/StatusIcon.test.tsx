@@ -138,3 +138,20 @@ describe("Slack idle status presentation", () => {
     expect(renderToStaticMarkup(<IssueStatusBadge status="done" externalConversationState="waiting" />)).toContain(">Done<");
   });
 });
+
+
+describe("Monitoring presentation", () => {
+  it("shows a static blue clock while retaining the canonical status picker", () => {
+    const html = renderToStaticMarkup(<StatusIcon status="in_progress" displayStatus="monitoring" showLabel onChange={() => {}} />);
+    expect(html).toContain("lucide-clock");
+    expect(html).toContain("var(--status-task-icon-monitoring)");
+    expect(html).toContain("Monitoring");
+    expect(html).not.toContain("animate-spin");
+  });
+  it("keeps terminal and review states ahead of stale Monitoring snapshots", () => {
+    for (const status of ["done", "cancelled", "blocked", "in_review"]) {
+      const html = renderToStaticMarkup(<StatusIcon status={status} displayStatus="monitoring" showLabel />);
+      expect(html).not.toContain("lucide-clock");
+    }
+  });
+});

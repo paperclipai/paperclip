@@ -1,3 +1,4 @@
+import { skillPackageStore, skillVersionMetadataColumns } from "../skill-package-store.js";
 import { skillAccessService } from "../skill-access.js";
 import { buildReviewPathRecoveryDisposition } from "../recovery/review-path-recovery.js";
 import type { AuthorizationActor } from "../authorization.js";
@@ -68,6 +69,8 @@ import {
   toolProfiles,
 } from "@paperclipai/db";
 import { HttpError } from "../../errors.js";
+import { isAiConnectionIncompatible } from "../ai-connection-runtime.js";
+import { ReviewedChatBindingNotReadyError, type ReviewedChatBindingDenialReason } from "../reviewed-chat-binding-diagnostics.js";
 import { filterResolvedGitHubConnectionsForRun } from "../git-credentials.js";
 import type {
   AdapterRuntimeMcpAccess,
@@ -160,6 +163,13 @@ export class ConfigurationIncompleteFailure extends Error {
   }
 }
 
+export function classifyManagedProjectAuthFailure(error: unknown, agentId: string): unknown {
+  if (!isAiConnectionIncompatible(error)) return error;
+  return new ConfigurationIncompleteFailure(error.message, {
+    configurationIncomplete: { reason: "ai_connection_incompatible", actionUrl: `/agents/${agentId}/runtime` },
+  });
+}
+
 const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "issue_assigned",
   "issue_checked_out",
@@ -168,6 +178,7 @@ const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "issue_reopened_via_comment",
   "issue_blockers_resolved",
   "issue_children_completed",
+  "issue_blocker_stalled",
   "issue_status_changed",
   "issue_tree_restored",
   "issue_recovery_action_restored",
@@ -226,10 +237,12 @@ const LOW_TRUST_SENSITIVE_ENV_KEY_RE =
 // 3. Any other PAPERCLIP_*-named binding is user data and flows through to
 //    the run env like any non-prefixed binding.
 const FORBIDDEN_ENV_BINDING_KEYS = new Set([
+  "BASH_ENV", "ZDOTDIR", "GH_CONFIG_DIR",
   CONFIGURED_ENVIRONMENT_KEYS,
   "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
   "PAPERCLIP_RUNNER_NETWORK_ACCESS",
   "PAPERCLIP_RUNNER_NETWORK_ROOTS",
+  "PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME",
   "PAPERCLIP_API_KEY",
   "PAPERCLIP_GITHUB_AUTH_MODE",
   "PAPERCLIP_GITHUB_HOST_HOME",
@@ -391,76 +404,31 @@ export async function resolveExecutionRunAdapterConfig(input: {
   // no binding before resolving any secret value. Missing bindings short-circuit
   // to a configuration-incomplete blocker routed to a human owner instead of a
   // dispatched-then-failed run (which previously surfaced as opaque setup_failed).
-  if (typeof input.secretsSvc.collectMissingRuntimeBindings === "function") {
-    const missingBindings: MissingRuntimeBinding[] = [];
-    if (environmentEnv && input.environmentId) {
-      missingBindings.push(
-        ...(await input.secretsSvc.collectMissingRuntimeBindings(
-          input.companyId,
-          environmentEnv,
-          {
-            consumerType: "environment",
-            consumerId: input.environmentId,
-            responsibleUserId: input.responsibleUserId ?? null,
-          },
-        )),
-      );
-    }
+  const collectMissing = input.secretsSvc.collectMissingRuntimeBindings;
+  if (typeof collectMissing === "function") {
+    const checks: Array<() => Promise<MissingRuntimeBinding[]>> = [];
+    const checkEnv = (env: unknown, consumerType: "environment" | "agent" | "project" | "routine", consumerId: string) => {
+      checks.push(() => collectMissing(input.companyId, env, {
+        consumerType, consumerId, responsibleUserId: input.responsibleUserId ?? null,
+      }));
+    };
+    if (environmentEnv && input.environmentId) checkEnv(environmentEnv, "environment", input.environmentId);
     if (input.agentId) {
-      missingBindings.push(
-        ...(await input.secretsSvc.collectMissingRuntimeBindings(
-          input.companyId,
-          parseObject(executionRunConfig.env),
-          {
-            consumerType: "agent",
-            consumerId: input.agentId,
-            responsibleUserId: input.responsibleUserId ?? null,
-          },
-        )),
-      );
-      if (
-        typeof input.secretsSvc.collectMissingAdapterConfigRuntimeBindings ===
-        "function"
-      ) {
-        missingBindings.push(
-          ...(await input.secretsSvc.collectMissingAdapterConfigRuntimeBindings(
-            input.companyId,
-            executionRunConfig,
-            input.adapterType ?? null,
-            {
-              consumerType: "agent",
-              consumerId: input.agentId,
-              responsibleUserId: input.responsibleUserId ?? null,
-            },
-          )),
-        );
+      checkEnv(parseObject(executionRunConfig.env), "agent", input.agentId);
+      const collectAdapterMissing = input.secretsSvc.collectMissingAdapterConfigRuntimeBindings;
+      if (typeof collectAdapterMissing === "function") {
+        checks.push(() => collectAdapterMissing(input.companyId, executionRunConfig, input.adapterType ?? null, {
+          consumerType: "agent", consumerId: input.agentId!, responsibleUserId: input.responsibleUserId ?? null,
+        }));
       }
     }
-    if (projectEnv && input.projectId) {
-      missingBindings.push(
-        ...(await input.secretsSvc.collectMissingRuntimeBindings(
-          input.companyId,
-          projectEnv,
-          {
-            consumerType: "project",
-            consumerId: input.projectId,
-            responsibleUserId: input.responsibleUserId ?? null,
-          },
-        )),
-      );
-    }
-    if (routineEnv && input.routineId) {
-      missingBindings.push(
-        ...(await input.secretsSvc.collectMissingRuntimeBindings(
-          input.companyId,
-          routineEnv,
-          {
-            consumerType: "routine",
-            consumerId: input.routineId,
-            responsibleUserId: input.responsibleUserId ?? null,
-          },
-        )),
-      );
+    if (projectEnv && input.projectId) checkEnv(projectEnv, "project", input.projectId);
+    if (routineEnv && input.routineId) checkEnv(routineEnv, "routine", input.routineId);
+    const results = await Promise.allSettled(checks.map(check => Promise.resolve().then(check)));
+    const missingBindings: MissingRuntimeBinding[] = [];
+    for (const result of results) {
+      if (result.status === "rejected") throw result.reason;
+      missingBindings.push(...result.value);
     }
     if (requiredScopedEnvBinding) {
       const requiredEnvKeys = new Set(requiredScopedEnvBinding.keys);
@@ -860,6 +828,7 @@ export interface WakeupOptions {
   idempotencyKey?: string | null;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
+  requestedByActorCompanyId?: string;
   contextSnapshot?: Record<string, unknown>;
   issueStateGuard?: {
     statuses: string[];
@@ -1801,7 +1770,12 @@ function normalizeInteractionContinuationWakeContext(
   contextSnapshot: Record<string, unknown>,
   payload: Record<string, unknown> | null | undefined,
 ) {
-  if (isInteractionResolutionWakePayload(payload)) return;
+  if (isInteractionResolutionWakePayload(payload)) {
+    if (contextSnapshot.interactionKind === "ask_user_questions") {
+      contextSnapshot.mutation = "interaction";
+    }
+    return;
+  }
   clearInteractionContinuationWakeContext(contextSnapshot);
 }
 
@@ -2049,6 +2023,15 @@ export async function resolveExternalChatWakeProvider(input: {
 }
 
 /** Bind an already-claimed chat/reply turn without checking out or approving it. */
+const CHAT_ATTACHMENT_DENIAL_REASONS: ReadonlyMap<
+  string,
+  ReviewedChatBindingDenialReason
+> = new Map<string, ReviewedChatBindingDenialReason>([
+  ["paperclip_runner_chat_attachment_binding_denied", "binding_denied"],
+  ["paperclip_runner_chat_attachment_destination_denied", "destination_denied"],
+  ["paperclip_runner_chat_attachment_principal_denied", "principal_denied"],
+]);
+
 export async function attestReviewedExternalChatRun(input: {
   db: Db;
   companyId: string;
@@ -2058,12 +2041,19 @@ export async function attestReviewedExternalChatRun(input: {
   contextSnapshot: Record<string, unknown>;
   /** Diagnostic-only value from the committed, authorized answer; never a wake field. */
   onQuestionResponseAttested?: (answeredAtMs: number) => void;
+  /** Receives the closed label of the first failed check when attestation is denied. */
+  onDenied?: (reason: ReviewedChatBindingDenialReason) => void;
 }): Promise<boolean> {
   const attempt = () =>
     input.db.transaction(
       async (
         transaction,
-      ): Promise<boolean | "pending_delivery" | { answeredAtMs: number }> => {
+      ): Promise<
+        | true
+        | { denied: ReviewedChatBindingDenialReason }
+        | "pending_delivery"
+        | { answeredAtMs: number }
+      > => {
         const tx = transaction as unknown as Db;
         const [issue] = await tx
           .select()
@@ -2099,25 +2089,27 @@ export async function attestReviewedExternalChatRun(input: {
           )
           .for("update", { noWait: true })
           .limit(1);
+        if (!issue || !run || !actor) return { denied: "binding_missing" };
         if (
-          !issue ||
-          !run ||
-          !actor ||
           !(
             issue.status === "in_review" ||
             (input.contextSnapshot.source === "issue.interaction.respond" &&
               issue.status === "in_progress")
-          ) ||
-          issue.assigneeAgentId !== input.agentId ||
-          issue.executionRunId !== input.runId ||
-          run.status !== "running" ||
-          (run.nativeIssueId !== null && run.nativeIssueId !== input.issueId) ||
-          // This attestation precedes execution-start's transition to running.
-          // A prior run's error projection is invokable, unlike an operator
-          // pause, termination, or pending approval; all binding checks remain.
-          DIRECT_NON_INVOKABLE_STATUSES.has(actor.status)
+          )
         )
-          return false;
+          return { denied: "issue_status" };
+        if (issue.assigneeAgentId !== input.agentId)
+          return { denied: "assignee_mismatch" };
+        if (issue.executionRunId !== input.runId)
+          return { denied: "owner_mismatch" };
+        if (run.status !== "running") return { denied: "run_not_running" };
+        if (run.nativeIssueId !== null && run.nativeIssueId !== input.issueId)
+          return { denied: "native_issue_mismatch" };
+        // This attestation precedes execution-start's transition to running.
+        // A prior run's error projection is invokable, unlike an operator
+        // pause, termination, or pending approval; all binding checks remain.
+        if (DIRECT_NON_INVOKABLE_STATUSES.has(actor.status))
+          return { denied: "agent_not_invokable" };
         const admittedContext = parseObject(run.contextSnapshot);
         const admittedIds = extractWakeCommentIds(admittedContext);
         const suppliedIds = extractWakeCommentIds(input.contextSnapshot);
@@ -2129,8 +2121,8 @@ export async function attestReviewedExternalChatRun(input: {
           admittedIds.length !== suppliedIds.length ||
           admittedIds.some((id, index) => id !== suppliedIds[index])
         )
-          return false;
-        try {
+          return { denied: "context_mismatch" };
+        const authorize = async (): Promise<true | { answeredAtMs: number } | { denied: "question_response_missing" }> => {
           const answer =
             admittedContext.source === "issue.interaction.respond"
               ? await resolveExternalChatQuestionResponse(
@@ -2142,7 +2134,7 @@ export async function attestReviewedExternalChatRun(input: {
                 )
               : null;
           if (admittedContext.source === "issue.interaction.respond" && !answer)
-            return false;
+            return { denied: "question_response_missing" };
           // The marker is built here only after proving the real execution owner.
           // The shared boundary then verifies current provider/resource/principal
           // access for every admitted message; no lifecycle state is mutated.
@@ -2160,7 +2152,11 @@ export async function attestReviewedExternalChatRun(input: {
             input.contextSnapshot[EXTERNAL_CHAT_QUESTION_RESPONSE_KEY] =
               answer.marker;
           return answer ? { answeredAtMs: answer.answeredAtMs } : true;
+        };
+        try {
+          return await authorize();
         } catch (error) {
+          let authorizationError = error;
           if (
             error instanceof Error &&
             error.message === "paperclip_runner_chat_attachment_binding_denied"
@@ -2205,17 +2201,25 @@ export async function attestReviewedExternalChatRun(input: {
             ) {
               return "pending_delivery";
             }
+            if (
+              admittedIds.every((id) =>
+                links.some((link) => link.commentId === id),
+              ) &&
+              links.every((link) => link.state === "processed")
+            ) {
+              try {
+                return await authorize();
+              } catch (retryError) {
+                authorizationError = retryError;
+              }
+            }
           }
-          if (
-            error instanceof Error &&
-            [
-              "paperclip_runner_chat_attachment_binding_denied",
-              "paperclip_runner_chat_attachment_destination_denied",
-              "paperclip_runner_chat_attachment_principal_denied",
-            ].includes(error.message)
-          )
-            return false;
-          throw error;
+          const denied =
+            authorizationError instanceof Error
+              ? CHAT_ATTACHMENT_DENIAL_REASONS.get(authorizationError.message)
+              : undefined;
+          if (denied) return { denied };
+          throw authorizationError;
         }
       },
     );
@@ -2225,6 +2229,10 @@ export async function attestReviewedExternalChatRun(input: {
   for (let attemptNumber = 0; attemptNumber < 51; attemptNumber += 1) {
     try {
       const result = await attempt();
+      if (typeof result === "object" && "denied" in result) {
+        input.onDenied?.(result.denied);
+        return false;
+      }
       if (typeof result === "object") {
         // The transaction (including COMMIT) must succeed before any attempt-
         // local timing is accepted. A retry/rollback cannot publish this value.
@@ -2238,7 +2246,39 @@ export async function attestReviewedExternalChatRun(input: {
     if (attemptNumber < 50)
       await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error("reviewed_chat_execution_binding_not_ready");
+  throw new ReviewedChatBindingNotReadyError();
+}
+
+export async function readHeartbeatWakeComments(db: Db, companyId: string, issueId: string | null, commentIds: string[]) {
+  if (commentIds.length === 0) return [];
+  return db
+    .select({
+      id: issueComments.id,
+      companyId: issueComments.companyId,
+      issueId: issueComments.issueId,
+      body: issueComments.body,
+      origin: issueComments.origin,
+      authorType: issueComments.authorType,
+      authorAgentId: issueComments.authorAgentId,
+      authorUserId: issueComments.authorUserId,
+      presentation: issueComments.presentation,
+      metadata: issueComments.metadata,
+      deletedAt: issueComments.deletedAt,
+      deletedByType: issueComments.deletedByType,
+      deletedByAgentId: issueComments.deletedByAgentId,
+      deletedByUserId: issueComments.deletedByUserId,
+      deletedByRunId: issueComments.deletedByRunId,
+      sourceTrust: issueComments.sourceTrust,
+      createdAt: issueComments.createdAt,
+    })
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.companyId, companyId),
+        issueId ? eq(issueComments.issueId, issueId) : undefined,
+        inArray(issueComments.id, commentIds),
+      ),
+    );
 }
 
 export async function buildPaperclipWakePayload(input: {
@@ -2247,6 +2287,7 @@ export async function buildPaperclipWakePayload(input: {
   agentId?: string | null;
   runId?: string | null;
   contextSnapshot: Record<string, unknown>;
+  wakeCommentRows?: Awaited<ReturnType<typeof readHeartbeatWakeComments>>;
   continuationSummary?: {
     key: string;
     title: string | null;
@@ -2311,36 +2352,9 @@ export async function buildPaperclipWakePayload(input: {
   )
     return null;
 
-  const commentRows =
-    commentIds.length === 0
-      ? []
-      : await input.db
-          .select({
-            id: issueComments.id,
-            issueId: issueComments.issueId,
-            body: issueComments.body,
-            origin: issueComments.origin,
-            authorType: issueComments.authorType,
-            authorAgentId: issueComments.authorAgentId,
-            authorUserId: issueComments.authorUserId,
-            presentation: issueComments.presentation,
-            metadata: issueComments.metadata,
-            deletedAt: issueComments.deletedAt,
-            deletedByType: issueComments.deletedByType,
-            deletedByAgentId: issueComments.deletedByAgentId,
-            deletedByUserId: issueComments.deletedByUserId,
-            deletedByRunId: issueComments.deletedByRunId,
-            sourceTrust: issueComments.sourceTrust,
-            createdAt: issueComments.createdAt,
-          })
-          .from(issueComments)
-          .where(
-            and(
-              eq(issueComments.companyId, input.companyId),
-              issueId ? eq(issueComments.issueId, issueId) : undefined,
-              inArray(issueComments.id, commentIds),
-            ),
-          );
+  const commentRows = input.wakeCommentRows
+    ? input.wakeCommentRows.filter(row => row.companyId === input.companyId && (!issueId || row.issueId === issueId) && commentIds.includes(row.id))
+    : await readHeartbeatWakeComments(input.db, input.companyId, issueId, commentIds);
 
   const commentsById = new Map(
     commentRows.map((comment) => [comment.id, comment]),
@@ -2740,6 +2754,7 @@ export async function buildPaperclipWakePayload(input: {
       : [],
     childIssueSummaryTruncated:
       input.contextSnapshot.childIssueSummaryTruncated === true,
+    blockerStall: input.contextSnapshot.blockerStall ?? null,
     dispositionRepair:
       buildReviewPathRecoveryDisposition(input.contextSnapshot) ??
       (input.contextSnapshot.legacyDispositionEpisode ? {
@@ -2956,10 +2971,11 @@ export function createHeartbeatRunPreparation(db: Db) {
       .select({
         testRunId: companySkillTestRuns.id,
         skillId: companySkillTestRuns.skillId,
+        skillKey: companySkillsTable.key,
         inputId: companySkillTestRuns.inputId,
         skillVersionId: companySkillTestRuns.skillVersionId,
         outputDocumentKey: companySkillTestRuns.outputDocumentKey,
-        fileInventory: companySkillVersions.fileInventory,
+        version: skillVersionMetadataColumns,
         revisionNumber: companySkillVersions.revisionNumber,
         label: companySkillVersions.label,
       })
@@ -2969,8 +2985,13 @@ export function createHeartbeatRunPreparation(db: Db) {
         and(
           eq(companySkillVersions.id, companySkillTestRuns.skillVersionId),
           eq(companySkillVersions.companyId, companySkillTestRuns.companyId),
+          eq(companySkillVersions.companySkillId, companySkillTestRuns.skillId),
         ),
       )
+      .innerJoin(companySkillsTable, and(
+        eq(companySkillsTable.id, companySkillTestRuns.skillId),
+        eq(companySkillsTable.companyId, companySkillTestRuns.companyId),
+      ))
       .where(
         and(
           eq(companySkillTestRuns.companyId, companyId),
@@ -2979,8 +3000,9 @@ export function createHeartbeatRunPreparation(db: Db) {
       )
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
-    const fileInventory = Array.isArray(row.fileInventory)
-      ? row.fileInventory.flatMap((entry) => {
+    const savedFiles = await skillPackageStore(db).versionFiles(row.version);
+    const fileInventory = Array.isArray(savedFiles)
+      ? savedFiles.flatMap((entry) => {
           if (!entry || typeof entry !== "object" || Array.isArray(entry))
             return [];
           const record = entry as unknown as Record<string, unknown>;
@@ -2998,6 +3020,7 @@ export function createHeartbeatRunPreparation(db: Db) {
     return {
       testRunId: row.testRunId,
       skillId: row.skillId,
+      skillKey: row.skillKey,
       inputId: row.inputId ?? null,
       skillVersionId: row.skillVersionId,
       revisionNumber: row.revisionNumber,

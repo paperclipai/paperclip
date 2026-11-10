@@ -36,6 +36,32 @@ export const GENERATED_ACPX_SIDECAR_EVENT_TYPES = [
 export type GeneratedAcpxSidecarEventType =
   (typeof GENERATED_ACPX_SIDECAR_EVENT_TYPES)[number];
 
+export const GENERATED_ACPX_SIDECAR_OPEN_PARAMS = [
+  "runtimeDirectory",
+  "normalizedSessionId",
+  "workingDirectory",
+  "agent",
+  "model",
+  "permissionMode",
+  "mode",
+  "piThinkingLevel",
+  "claudeEffort",
+  "grokEffort",
+  "grokDisableWebSearch",
+  "permissionModePinned",
+  "providerPolicy",
+  "systemInstructions",
+  "runtimeContext",
+  "tools",
+  "providerSessionKey",
+  "expectedIdentity",
+  "candidateAdmission",
+] as const;
+
+export const GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS = [
+  "readOnly",
+] as const;
+
 export type GeneratedAcpxToolOperation =
   | "read"
   | "search"

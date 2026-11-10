@@ -1,3 +1,5 @@
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { notifyApprovalQueueWork } from "./approval-work-notifications.js";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -272,8 +274,11 @@ export function workProductService(
       return row ? toIssueWorkProduct(row) : null;
     },
 
-    createForIssue: async (issueId: string, companyId: string, data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">) => {
+    createForIssue: async (issueId: string, companyId: string, data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">, actorAgentId?: string | null) => {
       const row = await db.transaction(async (tx) => {
+        await assertAgentInteraction(tx, { companyId, actorAgentId, operation: "edit", issueId,
+          texts: [data.title, data.summary ?? ""], lock: true });
+        await notifyNativeStatusReassessment(tx, { companyId, issueId });
         if (data.type === "pull_request") {
           await notifyTerminalWorkspaceWork(tx, `issue:${issueId}`);
           await notifyApprovalQueueWork(tx, companyId);
@@ -304,7 +309,7 @@ export function workProductService(
       return row ? toIssueWorkProduct(row) : null;
     },
 
-    update: async (id: string, patch: Partial<typeof issueWorkProducts.$inferInsert>) => {
+    update: async (id: string, patch: Partial<typeof issueWorkProducts.$inferInsert>, actorAgentId?: string | null) => {
       const row = await db.transaction(async (tx) => {
         const existing = await tx
           .select()
@@ -312,6 +317,19 @@ export function workProductService(
           .where(eq(issueWorkProducts.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
+        await assertAgentInteraction(tx, { companyId: existing.companyId, actorAgentId, operation: "edit", issueId: existing.issueId,
+          texts: [
+            ...(patch.title !== undefined && patch.title !== existing.title ? [patch.title] : []),
+            ...(patch.summary !== undefined && patch.summary !== existing.summary ? [patch.summary ?? ""] : []),
+          ], lock: true });
+        if ((patch.issueId && patch.issueId !== existing.issueId) || (patch.companyId && patch.companyId !== existing.companyId)) {
+          await assertAgentInteraction(tx, { companyId: patch.companyId ?? existing.companyId, actorAgentId,
+            operation: "edit", issueId: patch.issueId ?? existing.issueId, lock: true });
+        }
+        await notifyNativeStatusReassessment(tx, { companyId: existing.companyId, issueId: existing.issueId });
+        if ((patch.companyId && patch.companyId !== existing.companyId) || (patch.issueId && patch.issueId !== existing.issueId)) {
+          await notifyNativeStatusReassessment(tx, { companyId: patch.companyId ?? existing.companyId, issueId: patch.issueId ?? existing.issueId });
+        }
 
         if (existing.type === "pull_request" || patch.type === "pull_request") {
           await notifyTerminalWorkspaceWork(tx, `issue:${existing.issueId}`);
@@ -351,7 +369,7 @@ export function workProductService(
      * imported rows themselves. We reproduce "last primary wins" within each
      * (issue, type) group and insert the whole batch in chunked statements.
      */
-    createManyForImport: async (rows: ImportIssueWorkProductRow[]): Promise<void> => {
+    createManyForImport: async (rows: ImportIssueWorkProductRow[], actorAgentId?: string | null, actorCompanyId?: string | null): Promise<void> => {
       if (rows.length === 0) return;
       const lastPrimaryIndexByGroup = new Map<string, number>();
       rows.forEach((row, index) => {
@@ -385,6 +403,11 @@ export function workProductService(
       // prefix behind (which a retry would then duplicate). Mirrors the
       // per-writer transaction the batched issue/document writers use.
       await db.transaction(async (tx) => {
+        for (const row of rows) await assertAgentInteraction(tx, { companyId: row.companyId, actorAgentId, actorCompanyId: actorCompanyId ?? undefined,
+          operation: "mention", issueId: row.issueId, texts: [row.title, row.summary ?? ""], lock: true });
+        for (const scope of new Map(values.map(value => [value.issueId, { companyId: value.companyId, issueId: value.issueId }])).values()) {
+          await notifyNativeStatusReassessment(tx, scope);
+        }
         for (const companyId of new Set(values.filter(value => value.type === "pull_request").map(value => value.companyId))) {
           await notifyApprovalQueueWork(tx, companyId);
         }
@@ -395,10 +418,13 @@ export function workProductService(
       });
     },
 
-    remove: async (id: string) => {
+    remove: async (id: string, actorAgentId?: string | null) => {
       const row = await db.transaction(async tx => {
         const [existing] = await tx.select({ type: issueWorkProducts.type, issueId: issueWorkProducts.issueId, companyId: issueWorkProducts.companyId })
           .from(issueWorkProducts).where(eq(issueWorkProducts.id, id));
+        if (existing) await assertAgentInteraction(tx, { companyId: existing.companyId, actorAgentId,
+          operation: "edit", issueId: existing.issueId, lock: true });
+        if (existing) await notifyNativeStatusReassessment(tx, { companyId: existing.companyId, issueId: existing.issueId });
         if (existing?.type === "pull_request") {
           await notifyTerminalWorkspaceWork(tx, `issue:${existing.issueId}`);
           await notifyApprovalQueueWork(tx, existing.companyId);

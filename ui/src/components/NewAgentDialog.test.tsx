@@ -186,7 +186,7 @@ it("does not navigate after closing while an adapter save is pending", async () 
   expect(state.navigate).not.toHaveBeenCalled();
 });
 it("can save the name when the process adapter is disabled", async () => {
-  await act(async () => cache.setQueryData(queryKeys.adapters.all, [...state.adapters, { type: "process", loaded: true, disabled: true }]));
+  await act(async () => cache.setQueryData(queryKeys.adapters.availability("company-1", null), [...state.adapters, { type: "process", loaded: true, disabled: true }]));
   await name();
   expect(agents.create.mock.calls[0][1]).toMatchObject({ adapterType: "codex_local", metadata: { setupAdapterPending: true } });
   expect(document.querySelector('input[name="new-agent-adapter"]:checked')).toBeNull();
@@ -218,6 +218,54 @@ it("offers one Codex harness without a runner/provider tile", async () => {
   expect(document.querySelectorAll('input[value="codex_local"]')).toHaveLength(1);
   expect(document.querySelector("select")).toBeNull();
 });
+it("opens native Cursor Cloud from the ordinary hosted adapter picker", async () => {
+  await act(async () => {
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+    cache.setQueryData(queryKeys.adapters.availability("company-1", null), [...state.adapters,
+      { type: "cursor_cloud", loaded: true, supportedRunners: ["paperclip"], defaultRunner: "paperclip" }]);
+  });
+  await name();
+  const cursor = document.querySelector<HTMLInputElement>('input[value="cursor_cloud"]');
+  expect(cursor).not.toBeNull();
+  await act(async () => cursor!.click());
+  await click("Configure agent");
+  expect(agents.update).toHaveBeenCalledWith(agents.create.mock.calls[0][1].setupId, expect.objectContaining({
+    adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: { provider: "cursor_cloud" },
+  }), "company-1");
+  const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
+  expect(query.get("adapterType")).toBe("paperclip_runner");
+  expect(query.get("runnerProvider")).toBe("cursor_cloud");
+  expect(query.get("runner")).toBe("paperclip");
+});
+
+it("hides explicitly unsupported harnesses while keeping the qualified Cursor API card", async () => {
+  await act(async () => {
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+    cache.setQueryData(queryKeys.adapters.availability("company-1", null), [
+      { type: "codex_local", loaded: true, supportedRunners: [] },
+      { type: "opencode_local", loaded: true, supportedRunners: [] },
+      { type: "paperclip_runner", loaded: true, supportedRunners: [] },
+      { type: "cursor_cloud", loaded: true, supportedRunners: ["paperclip"], defaultRunner: "paperclip" },
+    ]);
+  });
+  await name();
+  expect(document.querySelector('input[value="codex_local"]')).toBeNull();
+  expect(document.querySelector('input[value="opencode_local"]')).toBeNull();
+  expect(document.querySelector('input[value="copilot_runtime"]')).toBeNull();
+  expect(document.querySelector('input[value="antigravity_runtime"]')).toBeNull();
+  expect(document.querySelector('input[value="cursor_cloud"]')).not.toBeNull();
+});
+
+it.each(["gate off", "native unavailable"])("keeps hosted Cursor Cloud hidden when %s", async reason => {
+  await act(async () => {
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: true } });
+    if (reason === "gate off") cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner: false });
+    cache.setQueryData(queryKeys.adapters.availability("company-1", null), [...state.adapters,
+      { type: "cursor_cloud", loaded: true, supportedRunners: reason === "native unavailable" ? ["legacy"] : ["paperclip"], defaultRunner: "legacy" }]);
+  });
+  await name();
+  expect(document.querySelector('input[value="cursor_cloud"]')).toBeNull();
+});
 it.each([true, false, undefined])("opens saved-token Copilot setup without an experimental override (%s)", async enableNativeRunner => {
   await act(async () => cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner }));
   await name();
@@ -228,9 +276,35 @@ it.each([true, false, undefined])("opens saved-token Copilot setup without an ex
   expect(query.get("runnerProvider")).toBe("copilot");
 });
 it("hides Copilot when its runtime adapter is disabled", async () => {
-  await act(async () => cache.setQueryData(queryKeys.adapters.all, state.adapters.map((entry: any) => entry.type === "paperclip_runner" ? { ...entry, disabled: true } : entry)));
+  await act(async () => cache.setQueryData(queryKeys.adapters.availability("company-1", null), state.adapters.map((entry: any) => entry.type === "paperclip_runner" ? { ...entry, disabled: true } : entry)));
   await name();
   expect(document.querySelector('input[value="copilot_runtime"]')).toBeNull();
+});
+it.each([true, false])("offers Google Antigravity in the ordinary picker while execution is pending (experimental=%s)", async enableNativeRunner => {
+  await act(async () => cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner }));
+  await name();
+  const choice = document.querySelector<HTMLInputElement>('input[value="antigravity_runtime"]');
+  expect(choice).not.toBeNull();
+  expect(choice!.disabled).toBe(false);
+  expect(choice!.closest("label")?.textContent).toContain("Google Antigravity");
+  expect(choice!.closest("label")?.textContent).toContain("Not available yet");
+  expect(choice!.closest("details")).toBeNull();
+  await act(async () => choice!.click());
+  await click("Configure agent");
+  const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
+  expect(query.get("adapterType")).toBe("paperclip_runner");
+  expect(query.get("runnerProvider")).toBe("antigravity");
+  expect(query.get("setupAgentId")).toBe(agents.create.mock.calls[0][1].setupId);
+  expect(agents.update).toHaveBeenCalledWith(agents.create.mock.calls[0][1].setupId, {
+    name: "Ada & Co", metadata: { setupAdapterPending: true,
+      setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" } },
+  }, "company-1");
+  expect(agents.create.mock.calls[0][1]).toMatchObject({ adapterType: "process", metadata: { setupAdapterPending: true } });
+});
+it("hides Google Antigravity when the runtime adapter is disabled", async () => {
+  await act(async () => cache.setQueryData(queryKeys.adapters.availability("company-1", null), state.adapters.map((entry: any) => entry.type === "paperclip_runner" ? { ...entry, disabled: true } : entry)));
+  await name();
+  expect(document.querySelector('input[value="antigravity_runtime"]')).toBeNull();
 });
 it.each(["grok", "opencode"])("preserves explicit experimental %s creation in Advanced", async provider => {
   await name();
@@ -248,7 +322,7 @@ it.each(["grok", "opencode"])("preserves explicit experimental %s creation in Ad
 it.each(["gate off", "disabled adapter"])("hides experimental native creation when %s", async reason => {
   await act(async () => {
     if (reason === "gate off") cache.setQueryData(queryKeys.instance.experimentalSettings, { enableNativeRunner: false });
-    else cache.setQueryData(queryKeys.adapters.all, state.adapters.map((entry: any) => entry.type === "paperclip_runner" ? { ...entry, disabled: true } : entry));
+    else cache.setQueryData(queryKeys.adapters.availability("company-1", null), state.adapters.map((entry: any) => entry.type === "paperclip_runner" ? { ...entry, disabled: true } : entry));
   });
   await name();
   expect(document.querySelector('[aria-label="Experimental harness"]')).toBeNull();

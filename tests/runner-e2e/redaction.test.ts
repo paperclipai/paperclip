@@ -1,8 +1,8 @@
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, expect, it } from "vitest";
-import { findSecretLeak, findSecretLeakInDirectory, findSecretLeakMatch, normalizedSecrets, secretScanFailureEvidence } from "./redaction.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { findSecretLeak, findSecretLeakInDirectory, findSecretLeakInJsonValues, findSecretLeakInPersistedState, findSecretLeakMatch, normalizedSecrets, sanitizeJson, secretScanFailureEvidence } from "./redaction.js";
 
 const tokens = {
   account_id: "identity-canary-private-90123",
@@ -124,4 +124,56 @@ it("allows the exact upstream rollout ownership field while scanning all convers
   }
   await writeFile(file, JSON.stringify(metadata) + '\n' + JSON.stringify({ type: "response_item", payload: { text: tokens.account_id } }));
   expect(await findSecretLeakInDirectory(root, secrets, options)).toMatchObject({ file });
+});
+
+describe("product-delivered credential persisted-state scope", () => {
+  // The invitation join link the agent hands the person is saved in the reply,
+  // so the embedded database may hold it. Nothing else may.
+  const joinToken = "pcp_invite_ProductDeliveredFixtureToken-0123456789abcdef";
+  const otherSecret = "unregistered-private-canary-0123456789";
+  async function home(files: Record<string, string>) {
+    const root = await mkdtemp(path.join(tmpdir(), "delivered-scan-")); directories.push(root);
+    const paperclipHome = path.join(root, "paperclip-home");
+    await mkdir(paperclipHome, { recursive: true });
+    for (const [relative, text] of Object.entries(files)) {
+      await mkdir(path.dirname(path.join(paperclipHome, relative)), { recursive: true });
+      await writeFile(path.join(paperclipHome, relative), text);
+    }
+    return paperclipHome;
+  }
+  const dbFile = "instances/runner-e2e-1/db/base/16384/24601";
+  const scan = (root: string, productStateRoot?: string) =>
+    findSecretLeakInPersistedState(root, [joinToken, otherSecret], [joinToken], { includeShapes: false, ...(productStateRoot ? { productStateRoot } : {}) });
+
+  it("accepts the registered join token inside the embedded database only", async () => {
+    const paperclipHome = await home({ [dbFile]: `reply /invite/${joinToken}`, "instances/runner-e2e-1/db/pg_wal/000000010000000000000001": joinToken });
+    expect(await scan(paperclipHome, paperclipHome)).toBeNull();
+  });
+
+  it.each([
+    ["agent run log", "instances/runner-e2e-1/data/run-logs/company/agent/run.ndjson"],
+    ["server log", "instances/runner-e2e-1/logs/server.log"],
+    ["other instance data", "instances/runner-e2e-1/data/storage/attachment.txt"],
+  ])("still rejects the join token in the %s", async (_label, relative) => {
+    const paperclipHome = await home({ [dbFile]: joinToken, [relative]: `link /invite/${joinToken}` });
+    expect(await scan(paperclipHome, paperclipHome)).toMatchObject({ file: path.join(paperclipHome, relative), reason: "exact secret value" });
+  });
+
+  it("still rejects the join token in the workspace and in published evidence", async () => {
+    const workspace = await home({ "notes.md": joinToken });
+    expect(await scan(workspace)).toMatchObject({ reason: "exact secret value" });
+    // Published evidence never gets the database scope, even for a database-shaped path.
+    const published = await home({ [dbFile]: joinToken });
+    expect(await scan(published)).toMatchObject({ reason: "exact secret value" });
+    const reply = { body: `[Join](http://127.0.0.1:3100/invite/${joinToken})` };
+    expect(findSecretLeakInJsonValues(reply, [joinToken])).not.toBeNull();
+    const safe = sanitizeJson(reply, [joinToken]);
+    expect(JSON.stringify(safe)).not.toContain(joinToken);
+    expect(findSecretLeakInJsonValues(safe, [joinToken])).toBeNull();
+  });
+
+  it("still rejects a different unregistered secret inside the embedded database", async () => {
+    const paperclipHome = await home({ [dbFile]: `${joinToken} ${otherSecret}` });
+    expect(await scan(paperclipHome, paperclipHome)).toMatchObject({ file: path.join(paperclipHome, dbFile), reason: "exact secret value" });
+  });
 });

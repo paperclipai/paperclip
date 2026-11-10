@@ -7,12 +7,14 @@ use std::time::Duration;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
+use paperclip_runner_core::acpx_candidate_admission::AcpxCandidateAdmission;
 use paperclip_runner_core::durable::{
-    capture_bootstrap_ticket, redact_diagnostic_text, run_durable_runner, AcpxLaunchProfile,
+    capture_bootstrap_ticket, redact_diagnostic_text, AcpxLaunchProfile, CursorCloudLaunchProfile,
     DurableRunnerConfig, OpenCodeLaunchProfile, QualifiedLaunchArtifact,
 };
 use paperclip_runner_core::local_runner::{run_local_runner, LocalRunnerError, RunnerConfig};
 use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
+use paperclip_runner_core::oom_score::{parse_oom_score_adj, set_own_oom_score_adj};
 use serde_json::json;
 
 const RUNNERD_BUILD_METADATA_SCHEMA: &str = "paperclip-runner/runnerd-build-metadata/v1";
@@ -113,12 +115,14 @@ fn install_crypto_provider() {
 }
 
 fn build_metadata() -> serde_json::Value {
-    json!({
+    let mut metadata = json!({
         "schema": RUNNERD_BUILD_METADATA_SCHEMA,
         "binaryName": "paperclip-runnerd",
         "packageName": "@paperclipai/paperclip-runner",
         "packageVersion": env!("CARGO_PKG_VERSION"),
         "binaryContractVersion": 2,
+        "recoveryIntegrityVersion": 1,
+        "acpxRecoveryIntegrityVersion": 1,
         "durableSessionCapabilities": ["unlimited_runtime", "connection_lease_renewal"],
         "externalProviderCapabilities": ["openai_dot_mcp", "grok_bot_mcp", "muse_external_v1"],
         "nativeExecutionVersion": 1,
@@ -129,7 +133,11 @@ fn build_metadata() -> serde_json::Value {
             "maximumVersion": 2
         },
         "prpTransportModes": ["dial_ws_loopback", "dial_wss", "listen_ws"]
-    })
+    });
+    if cfg!(unix) {
+        metadata["privateHostControlVersion"] = json!(1);
+    }
+    metadata
 }
 
 // The publisher seals image installations. Check only path metadata at startup;
@@ -235,6 +243,13 @@ fn optional_value(args: &[String], name: &str) -> Result<Option<String>, LocalRu
         .ok_or_else(|| LocalRunnerError::invalid(format!("missing value for {name}")))
 }
 
+/// Launches without `--lifecycle-mode` (older controllers) and warm launches
+/// keep the turn-end provider restart; only an explicit per-turn lifecycle,
+/// whose Runner exits with its run, skips it.
+fn turn_scoped(args: &[String]) -> Result<bool, LocalRunnerError> {
+    Ok(optional_value(args, "--lifecycle-mode")?.as_deref() == Some("per_turn"))
+}
+
 fn optional_u64(args: &[String], name: &str) -> Result<Option<u64>, LocalRunnerError> {
     let Some(index) = args.iter().position(|argument| argument == name) else {
         return Ok(None);
@@ -249,6 +264,9 @@ fn optional_u64(args: &[String], name: &str) -> Result<Option<u64>, LocalRunnerE
 }
 
 fn acpx_launch_profile(args: &[String]) -> Result<Option<AcpxLaunchProfile>, LocalRunnerError> {
+    let candidate_admission = optional_value(args, "--acpx-candidate-admission-json")?
+        .map(|encoded| AcpxCandidateAdmission::parse_json(&encoded))
+        .transpose()?;
     let authority_digest = optional_value(args, "--acpx-launch-authority-digest")?;
     let command = optional_value(args, "--acpx-sidecar-command")?;
     let command_sha256 = optional_value(args, "--acpx-sidecar-command-sha256")?;
@@ -261,7 +279,7 @@ fn acpx_launch_profile(args: &[String]) -> Result<Option<AcpxLaunchProfile>, Loc
         sidecar,
         sidecar_sha256,
     ) {
-        (None, None, None, None, None) => Ok(None),
+        (None, None, None, None, None) if candidate_admission.is_none() => Ok(None),
         (
             Some(authority_digest),
             Some(command),
@@ -272,6 +290,7 @@ fn acpx_launch_profile(args: &[String]) -> Result<Option<AcpxLaunchProfile>, Loc
             let command = PathBuf::from(command);
             let sidecar = PathBuf::from(sidecar);
             Ok(Some(AcpxLaunchProfile {
+                candidate_admission,
                 authority_digest,
                 command: command.clone(),
                 args: vec![sidecar.to_string_lossy().into_owned()],
@@ -338,6 +357,33 @@ fn opencode_launch_profile(
     }
 }
 
+fn cursor_cloud_launch_profile(
+    args: &[String],
+) -> Result<Option<CursorCloudLaunchProfile>, LocalRunnerError> {
+    let command = optional_value(args, "--cursor-cloud-proxy-command")?;
+    let command_sha256 = optional_value(args, "--cursor-cloud-proxy-command-sha256")?;
+    let proxy_script = optional_value(args, "--cursor-cloud-proxy-script")?;
+    let proxy_script_sha256 = optional_value(args, "--cursor-cloud-proxy-script-sha256")?;
+    match (command, command_sha256, proxy_script, proxy_script_sha256) {
+        (None, None, None, None) => Ok(None),
+        (Some(command), Some(command_sha256), Some(proxy_script), Some(proxy_script_sha256)) => {
+            Ok(Some(CursorCloudLaunchProfile {
+                command: QualifiedLaunchArtifact {
+                    path: PathBuf::from(command),
+                    sha256: command_sha256,
+                },
+                proxy_script: QualifiedLaunchArtifact {
+                    path: PathBuf::from(proxy_script),
+                    sha256: proxy_script_sha256,
+                },
+            }))
+        }
+        _ => Err(LocalRunnerError::invalid(
+            "Cursor Cloud launch profile requires command, proxy, and both SHA-256 digests",
+        )),
+    }
+}
+
 fn usize_value(args: &[String], name: &str, default: usize) -> Result<usize, LocalRunnerError> {
     optional_u64(args, name)?.map_or(Ok(default), |value| {
         usize::try_from(value)
@@ -382,6 +428,38 @@ fn durable_connect_url(args: &[String], run_id: &str) -> Result<String, LocalRun
 }
 
 fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
+    #[cfg(unix)]
+    let host_control = if let Some(fd) = optional_u64(args, "--host-control-fd")? {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        use std::os::unix::fs::FileTypeExt;
+        if fd != 4
+            || !fs::metadata("/dev/fd/4")
+                .map(|metadata| metadata.file_type().is_socket())
+                .unwrap_or(false)
+        {
+            return Err(LocalRunnerError::invalid(
+                "host control requires an inherited socket at fd 4",
+            ));
+        }
+        // SAFETY: fd 4 was inherited from the trusted host and verified open.
+        // No other Runner owner takes or closes it; HostControl sets CLOEXEC
+        // before any provider can spawn and validates connected AF_UNIX STREAM.
+        let socket = std::os::unix::net::UnixStream::from(unsafe { OwnedFd::from_raw_fd(4) });
+        Some(
+            paperclip_runner_core::host_control::HostControl::new(socket)
+                .map_err(|error| LocalRunnerError::invalid(error.to_string()))?,
+        )
+    } else {
+        None
+    };
+    #[cfg(not(unix))]
+    let host_control = if args.iter().any(|arg| arg == "--host-control-fd") {
+        return Err(LocalRunnerError::invalid(
+            "host control is unavailable on this platform",
+        ));
+    } else {
+        None
+    };
     let ticket = capture_bootstrap_ticket()
         .map_err(|error| LocalRunnerError::invalid(error.to_string()))?
         .ok_or_else(|| {
@@ -419,35 +497,186 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         runner_digest: value(args, "--runner-digest")?,
         acpx_launch_profile: acpx_launch_profile(args)?,
         opencode_launch_profile: opencode_launch_profile(args)?,
+        cursor_cloud_launch_profile: cursor_cloud_launch_profile(args)?,
         max_outbox_bytes: usize_value(args, "--max-outbox-bytes", 16 * 1024 * 1024)?,
         p0_reserve_bytes: usize_value(args, "--p0-reserve-bytes", 1024 * 1024)?,
         max_frame_bytes: usize_value(args, "--max-frame-bytes", 1024 * 1024)?,
         reconnect_delay: duration("--reconnect-delay-ms", 250)?,
         reconnect_grace: optional_u64(args, "--reconnect-grace-ms")?.map(Duration::from_millis),
         max_runtime: duration("--max-runtime-ms", 0)?,
+        turn_scoped: turn_scoped(args)?,
     };
+    if host_control.is_some() && !config.connect_url.starts_with("listen://") {
+        return Err(LocalRunnerError::invalid(
+            "host control requires trusted Runner listener mode",
+        ));
+    }
+    #[cfg(unix)]
+    std::env::set_var(
+        paperclip_runner_core::runtime_notifications::CONTEXT_ENV,
+        paperclip_runner_core::runtime_notifications::context_path(
+            &std::path::absolute(&state_dir)
+                .map_err(|error| LocalRunnerError::invalid(error.to_string()))?,
+        ),
+    );
+    #[cfg(unix)]
+    {
+        let key = paperclip_runner_core::runtime_notifications::HELPER_ENV;
+        std::env::remove_var(key);
+        if let Ok(executable) = std::env::current_exe() {
+            std::env::set_var(key, executable);
+        }
+    }
+    // Journal every provider's process lineage before any provider starts, so
+    // a controller can stop and prove gone the provider and its tools if this
+    // process dies. Without the journal the controller keeps its fail-closed
+    // cleanup quarantine; the run itself is unaffected.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Err(error) = paperclip_runner_core::process_lineage::enable_journal(&state_dir) {
+        eprintln!("paperclip-runnerd: process lineage journal unavailable: {error}");
+    }
     let executor = NativeProviderCommandExecutor::with_runner_config(state_dir, &config);
-    run_durable_runner(config, ticket, executor)
-        .map_err(|error| LocalRunnerError::invalid(error.to_string()))
+    paperclip_runner_core::durable::run_durable_runner_with_host_control(
+        config,
+        ticket,
+        executor,
+        host_control,
+    )
+    .map_err(|error| LocalRunnerError::invalid(error.to_string()))
+}
+
+fn apply_oom_score_adj(args: &[String]) -> Result<(), LocalRunnerError> {
+    let Some(value) = optional_value(args, "--oom-score-adj")? else {
+        return Ok(());
+    };
+    let score = parse_oom_score_adj(&value).ok_or_else(|| {
+        LocalRunnerError::invalid("invalid --oom-score-adj: expected -1000..=1000")
+    })?;
+    // Without the privilege, Runner is only less protected than requested.
+    if let Err(error) = set_own_oom_score_adj(score) {
+        eprintln!("paperclip-runnerd: failed to set --oom-score-adj: {error}");
+    }
+    Ok(())
+}
+
+/// `--trusted-launch-root <dir>`: the host asserts that `<dir>` is an
+/// immutable, digest-pinned image (the agent computer's Runner ROM). Launch
+/// artifacts the root admits run in place instead of from a sealed copy. A root
+/// that fails its startup checks only loses that speedup, never protection.
+fn apply_trusted_launch_root(args: &[String]) -> Result<(), LocalRunnerError> {
+    let Some(path) = optional_value(args, "--trusted-launch-root")? else {
+        return Ok(());
+    };
+    match paperclip_runner_core::qualified_launch::TrustedLaunchRoot::open(Path::new(&path)) {
+        Ok(root) => paperclip_runner_core::qualified_launch::set_trusted_launch_root(root),
+        Err(reason) => eprintln!(
+            "paperclip-runnerd: ignoring --trusted-launch-root {path}: {reason}; launch artifacts keep sealed snapshots"
+        ),
+    }
+    Ok(())
+}
+
+fn apply_task_memory_cgroup(args: &[String]) -> Result<(), LocalRunnerError> {
+    if let Some(path) = optional_value(args, "--task-memory-cgroup")? {
+        paperclip_runner_core::task_memory::set_task_cgroup(PathBuf::from(path));
+    }
+    Ok(())
+}
+
+/// `reap-lineage --state-dir <dir> --runner-pid <pid> [--grace-ms N] [--deadline-ms N]`
+///
+/// Run by the controller after it confirmed that runnerd exited. Prints one
+/// JSON report and exits 0 only when every journalled process is proven gone.
+fn reap_lineage(args: &[String]) -> Result<(), LocalRunnerError> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let state_dir = PathBuf::from(value(args, "--state-dir")?);
+        let runner_pid = value(args, "--runner-pid")?
+            .parse::<i32>()
+            .ok()
+            .filter(|pid| *pid > 1)
+            .ok_or_else(|| LocalRunnerError::invalid("--runner-pid must be a process ID"))?;
+        let grace = Duration::from_millis(optional_u64(args, "--grace-ms")?.unwrap_or(1_000));
+        let deadline =
+            Duration::from_millis(optional_u64(args, "--deadline-ms")?.unwrap_or(10_000));
+        let report = paperclip_runner_core::process_lineage::reap_journals(
+            &state_dir,
+            runner_pid,
+            grace,
+            deadline.max(grace),
+        );
+        println!(
+            "{}",
+            serde_json::to_string(&report)
+                .map_err(|error| LocalRunnerError::invalid(error.to_string()))?
+        );
+        if report.verified {
+            Ok(())
+        } else {
+            Err(LocalRunnerError::invalid(format!(
+                "process lineage not proven stopped: {}",
+                report.reason.unwrap_or("unknown")
+            )))
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = args;
+        Err(LocalRunnerError::invalid(
+            "process lineage reaping is unavailable on this platform",
+        ))
+    }
 }
 
 fn run(args: &[String]) -> Result<(), LocalRunnerError> {
+    #[cfg(unix)]
+    if matches!(
+        args.first().map(String::as_str),
+        Some("notification-context" | "record-activity")
+    ) {
+        return paperclip_runner_core::runtime_notifications::run_cli(args)
+            .map_err(|error| LocalRunnerError::invalid(error.to_string()));
+    }
     if args.first().map(String::as_str) == Some("--stdio-mcp")
         && (args.len() == 2 || (args.len() == 3 && args[2] == "--content-images"))
     {
         return paperclip_runner_core::stdio_mcp::run_proxy(Path::new(&args[1]), args.len() == 3)
             .map_err(|e| LocalRunnerError::invalid(e.to_string()));
     }
+    if args.first().map(String::as_str) == Some("reap-lineage") {
+        return reap_lineage(args);
+    }
     if args.first().map(String::as_str) == Some("--build-metadata") {
         println!("{}", metadata_with_provider_packs(args)?);
         return Ok(());
     }
+    if args.iter().any(|arg| arg == "--source-reconcile") {
+        return Err(LocalRunnerError::invalid(
+            "--source-reconcile is no longer supported; use ordinary durable recovery",
+        ));
+    }
+    apply_oom_score_adj(args)?;
+    apply_task_memory_cgroup(args)?;
+    apply_trusted_launch_root(args)?;
     if args.iter().any(|argument| argument == "--connect-url")
         || args.iter().any(|argument| argument == "--listen-address")
         || args.iter().any(|argument| argument == "--listen-port")
         || args.iter().any(|argument| argument == "--listen-path")
     {
         return run_durable(args);
+    }
+    if args
+        .iter()
+        .any(|argument| argument == "--acpx-candidate-admission-json")
+    {
+        return Err(LocalRunnerError::invalid(
+            "ACPX candidate admission requires trusted durable runner startup",
+        ));
+    }
+    if args.iter().any(|arg| arg == "--host-control-fd") {
+        return Err(LocalRunnerError::invalid(
+            "host control requires trusted durable runner startup",
+        ));
     }
     run_local_runner(RunnerConfig {
         run_id: value(args, "--run-id")?,
@@ -494,6 +723,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_a_per_turn_lifecycle_is_turn_scoped() {
+        let args = |values: &[&str]| {
+            values
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert!(turn_scoped(&args(&["--lifecycle-mode", "per_turn"])).unwrap());
+        assert!(!turn_scoped(&args(&[
+            "--lifecycle-mode",
+            "warm",
+            "--idle-timeout-ms",
+            "1"
+        ]))
+        .unwrap());
+        assert!(!turn_scoped(&args(&[])).unwrap());
+        assert!(turn_scoped(&args(&["--lifecycle-mode"])).is_err());
+    }
+
+    #[test]
+    fn cursor_cloud_launch_flags_are_optional_as_a_whole_and_required_as_an_exact_pin_set() {
+        assert!(cursor_cloud_launch_profile(&[]).unwrap().is_none());
+        let complete = vec![
+            "--cursor-cloud-proxy-command",
+            "/runtime/node",
+            "--cursor-cloud-proxy-command-sha256",
+            "sha256:node",
+            "--cursor-cloud-proxy-script",
+            "/runtime/cursor-cloud-proxy.cjs",
+            "--cursor-cloud-proxy-script-sha256",
+            "sha256:proxy",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+        let profile = cursor_cloud_launch_profile(&complete).unwrap().unwrap();
+        assert_eq!(profile.command.path, PathBuf::from("/runtime/node"));
+        assert_eq!(
+            profile.proxy_script.path,
+            PathBuf::from("/runtime/cursor-cloud-proxy.cjs")
+        );
+        for missing in (0..complete.len()).step_by(2) {
+            let partial = complete
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index < missing || *index > missing + 1)
+                .map(|(_, value)| value.clone())
+                .collect::<Vec<_>>();
+            assert!(cursor_cloud_launch_profile(&partial).is_err());
+        }
+    }
+
+    #[test]
     fn listener_port_is_configurable_and_defaults_to_43127() {
         let base: Vec<String> = [
             "--listen-address",
@@ -531,8 +813,31 @@ mod tests {
     }
 
     #[test]
+    fn legacy_source_mode_is_rejected_before_any_startup() {
+        let error = run(&[
+            "--listen-port".to_owned(),
+            "1234".to_owned(),
+            "--source-reconcile".to_owned(),
+        ])
+        .unwrap_err();
+        assert!(error.to_string().contains("no longer supported"));
+    }
+
+    #[test]
     fn build_metadata_advertises_the_remote_transport_contract() {
         let metadata = build_metadata();
+        assert_eq!(metadata["recoveryIntegrityVersion"], 1);
+        assert!(metadata.get("sourceRecoveryVersion").is_none());
+        assert!(metadata.get("codexSourceRecoveryVersion").is_none());
+        assert_eq!(metadata["acpxRecoveryIntegrityVersion"], 1);
+        assert!(metadata.get("acpxSourceRecoveryVersion").is_none());
+        assert!(metadata.get("hostedParkingVersion").is_none());
+        assert!(metadata.get("releaseResumeVersion").is_none());
+        if cfg!(unix) {
+            assert_eq!(metadata["privateHostControlVersion"], 1);
+        } else {
+            assert!(metadata.get("privateHostControlVersion").is_none());
+        }
         assert_eq!(metadata["schema"], RUNNERD_BUILD_METADATA_SCHEMA);
         assert_eq!(metadata["binaryContractVersion"], 2);
         assert_eq!(
@@ -547,6 +852,56 @@ mod tests {
             metadata["prpTransportModes"],
             json!(["dial_ws_loopback", "dial_wss", "listen_ws"])
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn host_control_rejects_other_fds_before_bootstrap_or_provider_startup() {
+        let args = vec!["--host-control-fd".to_owned(), "3".to_owned()];
+        assert_eq!(
+            run_durable(&args).unwrap_err().to_string(),
+            "host control requires an inherited socket at fd 4"
+        );
+        assert_eq!(
+            run(&args).unwrap_err().to_string(),
+            "host control requires trusted durable runner startup"
+        );
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn candidate_startup_requires_a_complete_trusted_launch_profile() {
+        let profiles: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../../acpx-profiles.json")).unwrap();
+        let distributions: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../antigravity-distributions.json"
+        ))
+        .unwrap();
+        let encoded = json!({
+            "schema":"paperclip.acpx-candidate-admission.v1", "companyId":"company-1", "agent":"antigravity", "model":"exact-model",
+            "profileDigest":profiles["profiles"]["antigravity"]["commandDigest"],
+            "nativeClosureDigest":format!("sha256:{}",distributions["platforms"]["darwin-arm64"]["closureSha256"].as_str().unwrap()),
+            "platform":"darwin", "architecture":"arm64", "expiresAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000,
+            "runId":"run-1", "normalizedSessionId":"session-1"
+        }).to_string();
+        let mut args = vec!["--acpx-candidate-admission-json".to_owned(), encoded];
+        assert!(acpx_launch_profile(&args).is_err());
+        assert!(run(&args).is_err());
+        args.extend([
+            "--acpx-launch-authority-digest".to_owned(),
+            format!("sha256:{}", "a".repeat(64)),
+            "--acpx-sidecar-command".to_owned(),
+            "/qualified/node".to_owned(),
+            "--acpx-sidecar-command-sha256".to_owned(),
+            format!("sha256:{}", "b".repeat(64)),
+            "--acpx-sidecar-script".to_owned(),
+            "/qualified/sidecar.cjs".to_owned(),
+            "--acpx-sidecar-script-sha256".to_owned(),
+            format!("sha256:{}", "c".repeat(64)),
+        ]);
+        let parsed = acpx_launch_profile(&args).unwrap().unwrap();
+        assert_eq!(parsed.candidate_admission.unwrap().run_id, "run-1");
+        assert!(acpx_launch_profile(&[]).unwrap().is_none());
     }
 
     #[test]
@@ -598,10 +953,15 @@ mod tests {
             args.extend(options.into_iter().map(str::to_owned));
             assert!(metadata_with_provider_packs(&args).is_err());
         }
+        let missing_root = if cfg!(windows) {
+            r"C:\missing-provider-pack"
+        } else {
+            "/missing-provider-pack"
+        };
         let metadata = metadata_with_provider_packs(&[
             "--build-metadata".to_owned(),
             "--provider-pack-root".to_owned(),
-            "/missing-provider-pack".to_owned(),
+            missing_root.to_owned(),
         ])
         .unwrap();
         assert_eq!(metadata["binaryContractVersion"], 2);

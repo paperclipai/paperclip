@@ -7,6 +7,7 @@ import {
 } from "../runner-e2e/dashboard.js";
 import { buildRunnerCampaign } from "../runner-e2e/history.js";
 import type { MatrixExecution, RunnerE2EResult } from "../runner-e2e/types.js";
+import { projectTaskChatThread } from "../runner-e2e/task-chat.js";
 
 const reportUrl = "http://runner-e2e.test/campaign/";
 
@@ -72,6 +73,27 @@ function resultFor(
     evidenceFiles: ["final-state.png"],
   };
 }
+
+test("expanding test details exposes the complete saved task conversation", async ({ page }) => {
+  const execution = runnerExecutionById("core-compatibility.runner-codex.local.message-marker");
+  const entry = resultFor(execution, "passed");
+  const longReply = "Here is the result.\n\n" + "Retained paragraph. ".repeat(200) + "END OF COMPLETE REPLY";
+  entry.result.taskChat = { schema: "paperclip.runner-e2e.task-chat/v1", capturedAt: "2026-10-28T12:01:00Z",
+    status: "complete", missing: [], threads: [projectTaskChatThread(
+      { id: "task", title: "Find the saved artifact", identifier: "E2E-1", description: "Find our saved report.", createdAt: "2026-10-28T12:00:00Z" },
+      [{ id: "request", body: "Please include the download link.", createdAt: "2026-10-28T12:00:01Z" },
+        { id: "reply", authorAgentId: "agent", body: longReply, createdAt: "2026-10-28T12:00:02Z" }], [], new Map([["agent", "Morgan"]]))] };
+  await openReport(page, renderRunnerE2EDashboard({ title: "Task chat recording", catalog: [execution], entries: [entry], expected: [execution.id], generatedAt: "2026-10-28T12:01:00Z" }));
+  const chat = page.getByRole("region", { name: "Task chat", exact: true });
+  await expect(chat).not.toBeVisible();
+  await page.getByText("Test details", { exact: true }).click();
+  await expect(chat).toBeVisible();
+  await expect(chat.getByText("Find our saved report.", { exact: true })).toBeVisible();
+  await expect(chat.getByText("Please include the download link.", { exact: true })).toBeVisible();
+  await expect(chat.getByText("Morgan", { exact: true })).toBeVisible();
+  await expect(chat.locator(".transcript-text").last()).toHaveText(longReply);
+  await expect(chat.getByText(/END OF COMPLETE REPLY/)).toBeVisible();
+});
 
 test("filters execution previews and pages through the filtered screenshot gallery", async ({
   page,

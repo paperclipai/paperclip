@@ -1,3 +1,4 @@
+import { notifyVoiceReports } from "./voice-report-notifications.js";
 import { notifyVoiceInbound } from "./voice-inbound-notifications.js";
 import { notifyVoiceReplies } from "./voice-reply-notifications.js";
 import type { Db } from "@paperclipai/db";
@@ -20,6 +21,7 @@ export async function notifyVoiceChange(tx: object, scope?: VoiceRecoveryScope) 
   await notifyVoiceRecovery(tx, scope);
   await notifyVoiceReplies(tx, scope);
   await notifyVoiceInbound(tx, scope);
+  if (scope?.kind === "session") await notifyVoiceReports(tx, { kind: "session", id: scope.id });
 }
 export function withVoiceSessionChange<T>(db: Db, id: string, write: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => PromiseLike<T>, options: { replyDelivery?: boolean } = {}): Promise<T> {
   return db.transaction(async tx => {

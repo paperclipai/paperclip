@@ -1,4 +1,17 @@
+import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
+import { superviseRollingDeployment } from "./rolling-deployment-supervisor.js";
+import { isLegacyWorkspaceMigration } from "./legacy-workspace-migration.js";
+import { superviseLegacyWorkspaceMigration } from "./legacy-workspace-migration-supervisor.js";
+import { teamRuntimeCatalogServerEnvironment } from "./chat-catalog-domains/external-team-runtime-fixture.js";
+import { stopSetupHealthIfRequested } from "./chat-setup-health.js";
+import { publishInvitationSourceProof, invitationSourceProofPath } from "./chat-catalog-domains/identity-invite-source-proof.js";
+import { readSelectedVaultServerEnvironment } from "./chat-vault-private-server.js";
+import { readValidatedPublicOriginReceipt, publicOriginServerOverrides, PUBLIC_ORIGIN_RECEIPT_ENV, PUBLIC_ORIGIN_CONTROL_ENV } from "./chat-public-origin.js";
+import { dockerDatabaseSupervisorEnvironment } from "./docker-postgres.js";
+import { CHAT_INSTALL_PLAN, refreshInstalledChatPins, publishInstalledChatReceipt } from "./chat-installed-lane.js";
+import { resolveRunnerE2ESource } from "./source.js";
 import { readRestartRequest, type RestartRequest } from "./server-restart-request.js";
+import { startCursorCloudCallbackProxy } from "./cursor-cloud-callback-proxy.js";
 import { prepareControllerDatabase } from "./controller-database.js";
 import { readUpgradeArtifacts, verifyUpgradeArtifact, assertServingArtifact, upgradeArtifactKey, type ServingArtifact } from "./upgrade-artifacts.js";
 import { createControllerRecoveryObserver } from "./controller-recovery-observer.js";
@@ -10,15 +23,16 @@ import { CREDENTIAL_NAMES } from "./types.js";
 import { EVAL_OBSERVABILITY_SECRET_NAMES } from "./braintrust.js";
 import { usesInstalledCli, verifyInstalledCli } from "./installed-cli.js";
 import { runnerMatrix } from "./catalog.js";
+import { remoteWorkspaceStorageServerEnvironment } from "./remote-workspace-storage.js";
 import { createRunnerE2EServerStopper, runnerE2EServerDetached } from "./server-stop.js";
 import { runnerE2ETypeScriptProcessArgs } from "./web-server-command.js";
 import { qualifyLegacyClaudeCli } from "./legacy-claude-cli.js";
 import { prepareSourceServerDependencies } from "./source-startup.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { prepareRunnerE2EServerConfig } from "./server-config.js";
+import { prepareSupervisorServerConfig } from "./server-config.js";
 import { installedReleaseEnvironment, installedReleaseLaunch } from "./installed-release.js";
 import {
   assertIsolatedServerEnvironment,
@@ -42,6 +56,7 @@ const paperclipCli = path.join(repositoryRoot, "tests/runner-e2e/server-entry.ts
 const executionIds: string[] = JSON.parse(process.env.PAPERCLIP_RUNNER_E2E_EXECUTION_IDS ?? "[]");
 const upgradeArtifacts = await readUpgradeArtifacts(process.env[upgradeArtifactKey]);
 let artifactIndex = 0;
+let kimiCandidateAdmission: RestartRequest["kimiCandidateAdmission"];
 const selectedExecutions = usesInstalledCli(process.env) || upgradeArtifacts ? executionIds.map(id => {
   const execution = runnerMatrix.find(row => row.id === id);
   if (!execution) throw new Error("Unknown installed CLI proof execution");
@@ -56,10 +71,21 @@ const restartTimeoutMs = 180_000;
 const gracefulStopTimeoutMs = 30_000;
 const initialCli = upgradeArtifacts?.artifacts.A.pins.PAPERCLIP_RUNNER_E2E_INSTALLED_CLI ?? process.env.PAPERCLIP_RUNNER_E2E_INSTALLED_CLI;
 const installedRelease = initialCli ? installedReleaseLaunch(initialCli) : null;
+const workspaceStorage = remoteWorkspaceStorageServerEnvironment({
+  executions: executionIds.map(id => runnerMatrix.find(execution => execution.id === id)).filter((execution): execution is typeof runnerMatrix[number] => Boolean(execution)),
+  env: process.env, instanceId: required("PAPERCLIP_INSTANCE_ID"),
+});
 const servingArtifacts = new WeakMap<ChildProcess, ServingArtifact>();
+const dockerEnvironment = await dockerDatabaseSupervisorEnvironment({ temporaryRoot, env: process.env });
+const sourceEnvironment = { ...dockerEnvironment.source };
+const publicOriginReceipt = process.env[PUBLIC_ORIGIN_RECEIPT_ENV] ? await readValidatedPublicOriginReceipt({ receiptPath: required(PUBLIC_ORIGIN_RECEIPT_ENV), executionId: executionIds.length === 1 ? executionIds[0]! : "", attemptId: required("PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID"), backendOrigin: `http://127.0.0.1:${port}` }) : undefined;
+if (publicOriginReceipt && process.env.PAPERCLIP_RUNNER_E2E_PUBLIC_MCP !== "1") throw new Error("Owned public origin requires the exact authenticated selected case");
+for (const key of [PUBLIC_ORIGIN_RECEIPT_ENV, PUBLIC_ORIGIN_CONTROL_ENV, "PAPERCLIP_PUBLIC_URL", "PAPERCLIP_AUTH_PUBLIC_BASE_URL", "PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL", "PAPERCLIP_ALLOWED_HOSTNAMES"]) delete sourceEnvironment[key];
+const vaultEnvironment = await readSelectedVaultServerEnvironment({ executionIds, temporaryRoot, backendOrigin: `http://127.0.0.1:${port}`, env: process.env });
+const teamCatalogEnvironment = await teamRuntimeCatalogServerEnvironment({ executionIds, temporaryRoot, repositoryRoot });
 const serverEnvironment = buildPaperclipServerEnvironment(installedRelease
-  ? installedReleaseEnvironment(process.env, repositoryRoot, path.join(temporaryRoot, "provider-bin"))
-  : process.env, {
+  ? installedReleaseEnvironment(sourceEnvironment, repositoryRoot, path.join(temporaryRoot, "provider-bin"))
+  : sourceEnvironment, {
   NODE_ENV: "test",
   PORT: port,
   // Keep provider caches attempt-private without changing Playwright's browser
@@ -83,6 +109,7 @@ const serverEnvironment = buildPaperclipServerEnvironment(installedRelease
     PAPERCLIP_PUBLIC_URL: `http://127.0.0.1:${port}`,
     PAPERCLIP_AUTH_PUBLIC_BASE_URL: `http://127.0.0.1:${port}`,
     PAPERCLIP_AUTH_BASE_URL_MODE: "explicit",
+    ...publicOriginServerOverrides(publicOriginReceipt),
     // Use empty provider configuration as the managed homes' seed. A local
     // operator's installed plugins, MCP connections and auth are not fixtures.
     CODEX_HOME: path.join(temporaryRoot, "provider-config", "codex"),
@@ -99,11 +126,15 @@ const serverEnvironment = buildPaperclipServerEnvironment(installedRelease
   // Onboarding normally opens the app after listen. Browser ownership belongs
   // to Playwright in this harness, so never create a developer desktop tab.
   PAPERCLIP_OPEN_ON_LISTEN: "false",
+  ...vaultEnvironment,
+  ...teamCatalogEnvironment,
+  ...workspaceStorage,
 });
 assertIsolatedServerEnvironment(serverEnvironment, {
   temporaryRoot,
   paperclipHome,
   configPath,
+  workspaceStorage,
 });
 const definedServerEnvironment = Object.fromEntries(
   Object.entries(serverEnvironment).filter(
@@ -111,7 +142,9 @@ const definedServerEnvironment = Object.fromEntries(
   ),
 );
 
-await prepareSourceServerDependencies(repositoryRoot, definedServerEnvironment, Boolean(installedRelease));
+await prepareSourceServerDependencies(repositoryRoot, definedServerEnvironment, usesInstalledCli(process.env), {
+  temporaryRoot, executionIds, sourceRevision: resolveRunnerE2ESource().sha,
+});
 
 await Promise.all([
   mkdir(path.dirname(logPath), { recursive: true }),
@@ -186,10 +219,12 @@ function describeChildExit(candidate: ChildProcess) {
   return `server exited code=${String(candidate.exitCode)} signal=${String(candidate.signalCode)}`;
 }
 
+let invitationSourceGeneration: string | undefined;
 async function startServer() {
   if (shutdownRequested()) {
     throw new Error("Refusing to start Paperclip after wrapper shutdown");
   }
+  if (process.env[CHAT_INSTALL_PLAN]) refreshInstalledChatPins(process.env, selectedExecutions[0]!.id);
   // Recheck bytes and dependency resolution on every controller restart.
   const selected = upgradeArtifacts?.sequence[artifactIndex];
   if (upgradeArtifacts && !selected) throw new Error("Upgrade artifact sequence exhausted");
@@ -198,14 +233,19 @@ async function startServer() {
   const launch = installed ? installedReleaseLaunch(installed.entry) : null;
   // The serving process must report its baked-in revision, never a test-supplied SHA.
   const environment = { ...definedServerEnvironment };
+  if (kimiCandidateAdmission) environment.PAPERCLIP_ACPX_CANDIDATE_ADMISSION = JSON.stringify(kimiCandidateAdmission);
   if (upgradeArtifacts) {
     delete environment.PAPERCLIP_BUILD_COMMIT;
     delete environment[upgradeArtifactKey];
     environment.GIT_CEILING_DIRECTORIES = upgradeArtifacts.artifacts[selected!].root;
   }
+  invitationSourceGeneration = undefined;
+  await rm(invitationSourceProofPath(temporaryRoot), { force: true });
+  const sourceArgs = runnerE2ETypeScriptProcessArgs(repositoryRoot, paperclipCli, ["onboard", "--yes", "--run"]);
+  const sourceSpawnedAt = new Date().toISOString();
   const candidate = spawn(
     process.execPath,
-    installed ? [installed.entry, "onboard", "--yes", "--run"] : runnerE2ETypeScriptProcessArgs(repositoryRoot, paperclipCli, ["onboard", "--yes", "--run"]),
+    installed ? [installed.entry, "onboard", "--yes", "--run"] : sourceArgs,
     {
       cwd: launch?.cwd ?? repositoryRoot,
       env: environment,
@@ -217,6 +257,7 @@ async function startServer() {
   );
   child = candidate;
   if (verified) servingArtifacts.set(candidate, verified.receipt);
+  if (process.env[CHAT_INSTALL_PLAN] && candidate.pid) publishInstalledChatReceipt(process.env, selectedExecutions[0]!.id, candidate.pid);
 
   candidate.stdout?.on("data", (chunk) => {
     process.stdout.write(chunk);
@@ -250,6 +291,11 @@ async function startServer() {
     void stopWithFeedback(candidate, shutdownSignal).catch(() => {});
   }
   await stopServer.watch(candidate);
+  const invitationAttemptId = process.env.PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID;
+  if (!installed && candidate.pid && invitationAttemptId) {
+    invitationSourceGeneration = await publishInvitationSourceProof({ temporaryRoot, sourceRoot: repositoryRoot, apiOrigin: `http://127.0.0.1:${port}`,
+      attemptId: invitationAttemptId, executionIds, pid: candidate.pid, argv: sourceArgs, spawnedAt: sourceSpawnedAt });
+  }
   return candidate;
 }
 
@@ -333,6 +379,7 @@ async function writeRestartAck(
       status,
       controllerCacheDiscarded,
       completedAt: new Date().toISOString(),
+      ...(invitationSourceGeneration ? { invitationSourceGeneration } : {}),
       ...(message ? { message } : {}),
       ...(crashBoundary ? { crashBoundary } : {}),
       ...(controllerOutage ? { controllerOutage } : {}),
@@ -342,7 +389,7 @@ async function writeRestartAck(
   await rename(temporaryAckPath, restartAckPath);
 }
 
-async function restartServer({ requestId, preserveRunner, discardControllerCache, crashAfterResult, controllerOutage, recoveryBinding, controllerDowntimeMs = 0 }: RestartRequest) {
+async function restartServer({ requestId, kimiCandidateAdmission: stagedKimiAdmission, preserveRunner, discardControllerCache, crashAfterResult, controllerOutage, recoveryBinding, controllerDowntimeMs = 0 }: RestartRequest) {
   activeRestartRequestId = requestId;
   appendLog(`\nRestart request ${requestId}: stopping Paperclip\n`);
   const previous = child;
@@ -404,6 +451,7 @@ async function restartServer({ requestId, preserveRunner, discardControllerCache
     throw new Error("Wrapper shutdown interrupted the Paperclip restart");
   }
 
+  if (stagedKimiAdmission) kimiCandidateAdmission = stagedKimiAdmission;
   appendLog(`Restart request ${requestId}: starting Paperclip\n`);
   const replacement = await startServer();
   await waitForHealth(replacement);
@@ -429,23 +477,38 @@ async function supervise() {
   if (executionIds.some(id => id.includes(".legacy-claude.local.") || /\.assistant-claude-(?:haiku|sonnet)\.local\./.test(id))) {
     definedServerEnvironment.PATH = await qualifyLegacyClaudeCli(temporaryRoot, definedServerEnvironment);
   }
-  const databaseReservation = await prepareRunnerE2EServerConfig({
+  const databaseReservation = await prepareSupervisorServerConfig({
     temporaryRoot,
     configPath,
     serverPort: Number(port),
+    database: dockerEnvironment,
   });
   // Postgres needs the socket itself; release immediately before child spawn.
   await databaseReservation?.close();
-  if (upgradeArtifacts || executionIds.some(id => id.endsWith(".recover-controller"))) {
+  const legacyMigration = executionIds.some(id => { const execution = runnerMatrix.find(row => row.id === id); return execution && isLegacyWorkspaceMigration(execution); });
+  if (upgradeArtifacts || legacyMigration || executionIds.some(id => id.endsWith(".recover-controller"))) {
     // The wrapper owns this sibling process. Killing the serving child must
     // leave Postgres available to the stopped-controller observer and successor.
     controllerDatabase = await prepareControllerDatabase(configPath, temporaryRoot);
+  }
+  if (legacyMigration) {
+    if (upgradeArtifacts || installedRelease) throw new Error("Migration source qualification cannot claim installed-artifact evidence");
+    await superviseLegacyWorkspaceMigration({ temporaryRoot, repositoryRoot, configPath, port: Number(port),
+      environment: definedServerEnvironment, executionIds, cancelled: shutdownRequested });
+    return;
+  }
+  if (executionIds.some(id => { const execution = runnerMatrix.find(row => row.id === id); return execution && isRollingWebDeployment(execution); })) {
+    if (upgradeArtifacts || installedRelease) throw new Error("Rolling source qualification cannot claim installed-artifact evidence");
+    await superviseRollingDeployment({ temporaryRoot, repositoryRoot, configPath, port: Number(port),
+      environment: definedServerEnvironment, executionIds, cancelled: shutdownRequested });
+    return;
   }
   const initial = await startServer();
   if (upgradeArtifacts) await waitForHealth(initial);
   let lastRestartRequestId: string | null = null;
   while (!shutdownRequested()) {
     if (unexpectedChildFailure) throw unexpectedChildFailure;
+    if (await stopSetupHealthIfRequested({ executionIds, temporaryRoot, stop: () => stopServer.stopAll("SIGTERM") })) { shutdownSignal ??= "SIGTERM"; continue; }
     const request = await readRestartRequest(restartRequestPath, executionIds);
     if (request && request.requestId !== lastRestartRequestId) {
       lastRestartRequestId = request.requestId;
@@ -459,7 +522,9 @@ async function supervise() {
 }
 
 let exitCode = 0;
+let closeCursorCloudCallbackProxy: (() => Promise<void>) | undefined;
 try {
+  if (executionIds.some(id => id.startsWith("cursor-cloud."))) closeCursorCloudCallbackProxy = await startCursorCloudCallbackProxy({ port: Number(required("PAPERCLIP_CURSOR_CLOUD_CALLBACK_PORT")), appPort: Number(port) });
   await supervise();
 } catch (error) {
   exitCode = 1;
@@ -487,5 +552,6 @@ catch (error) {
   exitCode = 1;
   appendLog(`Qualification database cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`);
 }
+await closeCursorCloudCallbackProxy?.();
 await new Promise<void>((resolve) => log.end(resolve));
 process.exitCode = exitCode;

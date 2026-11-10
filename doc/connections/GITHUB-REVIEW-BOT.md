@@ -200,6 +200,26 @@ and submits the reviewed commit, findings, rationale, and coverage. Paperclip
 validates the result and computes the **Paperclip Review** check. The default
 threshold is 5/5; choose 1–5 or report-only as needed.
 
+Finding categories come from the repository's review policy. Both manual and
+automatic review instructions list the configured categories. `begin_review`
+returns `findingCategories` from the assessment's saved policy snapshot; use
+these exact values in `findings[].category`. Metadata also includes
+`reviewPolicy.findingCategories`. The discovery schema describes this dynamic
+constraint rather than imposing a global enum. Unknown categories remain invalid;
+the error lists the accepted values. If no category applies, put the finding in
+the summary. An empty category list permits no structured findings.
+
+`submit_review.summary` contains the review body: the change, findings, and
+verdict. `rationale` adds evidence for the score and remaining risk without
+repeating the summary. Paperclip renders the bot-name/score heading and the
+reviewed-commit, coverage, and task/run footer from the structured fields. Agents
+must not copy these generated sections from an earlier published comment into
+either text field. This contract is included in new bots' tool schemas and in
+the review instructions generated for existing bots. Publication also removes
+leading copied score headings for the current bot, with a plain or Markdown-escaped
+name, or the legacy **Paperclip Review** name. Other review sections and the saved
+assessment remain intact.
+
 | Score | Assessment rubric |
 | --- | --- |
 | 0 | No usable assessment; explain what prevented evaluation. |

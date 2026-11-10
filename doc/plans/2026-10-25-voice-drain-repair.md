@@ -60,3 +60,13 @@ owner test now advances the actual retained nextWakeAt, waits for row removal,
 and checks disarm. Before resume it also proves a stable idle snapshot through a
 minute of quiet. All 11 retention cases pass in /tmp/sleep24-drain-tests.log.
 No production scheduling deadline or dispatch behavior changed for this repair.
+
+## Report resume assertion
+
+The report test had the same active-counter-only flush assumption. It now checks
+idle snapshot stability while paused, advances the retained nextWakeAt on resume,
+and verifies one fetch and the available durable report before testing rollback.
+All 14 report cases pass in /tmp/sleep25-drain-tests.log. An intermediate new
+assertion incorrectly expected state=completed; the schema uses status=available.
+That test-authoring failure is retained in /tmp/sleep25-drain-invalid-assertion.log.
+The scheduler repair and business deadlines were not changed to satisfy tests.

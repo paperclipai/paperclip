@@ -1,7 +1,8 @@
 import {
   authSessionSchema,
   currentUserProfileSchema,
-  type AuthSession,
+  type BoardBootstrapSession,
+  readBoardBootstrap,
   type CurrentUserProfile,
   type UpdateCurrentUserProfile,
 } from "@paperclipai/shared";
@@ -38,13 +39,15 @@ export class AuthApiError extends Error {
   }
 }
 
-function toSession(value: unknown): AuthSession | null {
+function toSession(value: unknown): BoardBootstrapSession | null {
   const direct = authSessionSchema.safeParse(value);
-  if (direct.success) return direct.data;
+  if (direct.success) {
+    const boardBootstrap = readBoardBootstrap((value as Record<string, unknown>).boardBootstrap, direct.data.user.id);
+    return boardBootstrap ? { ...direct.data, boardBootstrap } : direct.data;
+  }
 
   if (!value || typeof value !== "object") return null;
-  const nested = authSessionSchema.safeParse((value as Record<string, unknown>).data);
-  return nested.success ? nested.data : null;
+  return toSession((value as Record<string, unknown>).data);
 }
 
 /** The server's own explanation on an auth error body, if it sent one. */
@@ -160,7 +163,7 @@ async function authPatch<T>(path: string, body: Record<string, unknown>, parse: 
 }
 
 export const authApi = {
-  getSession: async (): Promise<AuthSession | null> => {
+  getSession: async (): Promise<BoardBootstrapSession | null> => {
     const res = await apiFetch("/api/auth/get-session", {
       credentials: "include",
       headers: { Accept: "application/json" },

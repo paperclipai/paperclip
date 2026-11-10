@@ -12,6 +12,8 @@
  * by hand-rolled fetches (health, uploads) classify the same way.
  */
 
+import { CancelledError } from "@tanstack/react-query";
+
 export type ErrorKind =
   | "transient"
   | "auth"
@@ -159,7 +161,8 @@ export function errorCodes(err: unknown): string[] {
 export function isRawErrorCode(value: string): boolean {
   const text = value.trim();
   if (!text || /\s/.test(text)) return false;
-  return /^[A-Za-z0-9]+(?:[_.][A-Za-z0-9]+)+$/.test(text) || /^[A-Z][A-Z0-9_]{2,}$/.test(text);
+  return Object.hasOwn(KIND_COPY, text) || text === "unauthorized"
+    || /^[A-Za-z0-9]+(?:[_.][A-Za-z0-9]+)+$/.test(text) || /^[A-Z][A-Z0-9_]{2,}$/.test(text);
 }
 
 /** A server message that is safe to show: not a raw code, not a generic status line. */
@@ -180,8 +183,9 @@ function readableServerMessage(err: unknown): string | null {
 // --- Classification ---------------------------------------------------------------
 
 function isAbortError(err: unknown): boolean {
-  const name = record(err)?.name;
-  return name === "AbortError" || name === "CancelledError";
+  // React Query's `CancelledError` keeps the default `name` ("Error"), so it
+  // can only be recognized by class.
+  return record(err)?.name === "AbortError" || err instanceof CancelledError;
 }
 
 function isNetworkTypeError(err: unknown): boolean {

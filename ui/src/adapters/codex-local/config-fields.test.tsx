@@ -214,6 +214,56 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).toContain("future-provider");
     expect(html).not.toContain('aria-label="Permission mode"');
   });
+  it("shows cloud repository settings without local permission or warm-process controls", async () => {
+    const html = await renderRunner({ provider: "cursor_cloud", repoUrl: "https://github.com/acme/repo", repoRef: "feature" });
+    expect(html).toContain("GitHub repository");
+    expect(html).toContain("Cursor cloud environment");
+    expect(html).toContain("effective model identity is unavailable");
+    expect(html).toContain("Agent environment settings support only CURSOR_API_KEY");
+    expect(html).toContain("Configure hosted secrets in your Cursor Cloud environment");
+    expect(html).toContain("https://github.com/acme/repo");
+    expect(html).not.toContain('aria-label="Permission mode"');
+    expect(html).not.toContain("Runner lifecycle");
+    expect(html).not.toContain("Warm idle timeout");
+  });
+  it.each(["create", "edit"] as const)("clears hidden Codex settings when explicitly choosing Cursor Cloud during %s", async mode => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const initial = { provider: "codex", model: "gpt-5.6-sol", codexPermissionMode: "never", lifecycleMode: "warm",
+      modelReasoningEffort: "high", reasoningEffort: "high", effort: "high", modelParams: [{ id: "reasoning", value: "high" }], homeMode: "preconfigured" };
+    let currentConfig: Record<string, unknown> = initial;
+    let currentValues: CreateConfigValues = { ...defaultCreateValues, adapterType: "paperclip_runner", model: initial.model,
+      thinkingEffort: "high", adapterSchemaValues: initial };
+    function Fixture() {
+      const [config, setConfig] = useState(currentConfig);
+      const [values, setValues] = useState(currentValues);
+      currentConfig = config;
+      currentValues = values;
+      return <CodexLocalConfigFields mode={mode} isCreate={mode === "create"} adapterType="paperclip_runner"
+        values={mode === "create" ? values : null} set={patch => setValues(previous => ({ ...previous, ...patch }))}
+        config={config} eff={(_group, _field, original) => original}
+        mark={(_group, field, value) => setConfig(previous => ({ ...previous, [field]: value }))}
+        models={[]} hideInstructionsFile />;
+    }
+    try {
+      await act(async () => root.render(<QueryClientProvider client={new QueryClient()}><TooltipProvider><Fixture /></TooltipProvider></QueryClientProvider>));
+      const picker = container.querySelector<HTMLButtonElement>('[aria-label="Harness"]')!;
+      await act(async () => picker.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+      const cloudOption = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent?.includes("Cursor Cloud"));
+      expect(cloudOption).toBeDefined();
+      await act(async () => cloudOption!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+      const saved = mode === "create" ? currentValues.adapterSchemaValues! : currentConfig;
+      expect(saved.provider).toBe("cursor_cloud");
+      expect(saved.lifecycleMode).toBe("per_turn");
+      for (const key of ["modelReasoningEffort", "reasoningEffort", "effort", "modelParams", "homeMode", "codexPermissionMode"]) expect(saved[key], key).toBeUndefined();
+      if (mode === "create") {
+        expect(currentValues.thinkingEffort).toBe("");
+        expect(buildPaperclipRunnerConfig({ ...currentValues, model: "caller-cloud-model" })).toMatchObject({ provider: "cursor_cloud", model: "caller-cloud-model", lifecycleMode: "per_turn" });
+      }
+      expect(container.textContent).toContain("Cursor manages command permissions");
+    } finally { await act(async () => root.unmount()); container.remove(); }
+  });
   it("keeps Dot out of the general harness picker and hides that picker for Dot", async () => {
     expect(await renderRunner({ provider: "codex" }, "Harness", true)).not.toContain("OpenAI Dot");
     const dot = await renderRunner({ provider: "openai_dot" });

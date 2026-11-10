@@ -17,9 +17,11 @@ import {
   companyMemberships,
   companySkills,
   createDb,
+  environments,
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
+  plugins,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -31,6 +33,7 @@ import express from "express";
 import request from "supertest";
 import { instanceSettingsRoutes } from "../routes/instance-settings.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -295,6 +298,75 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       unsubscribe();
       await heartbeat.drainActiveRunExecutions();
       rmSync(counterDir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it("preserves the plugin worker manager when DELETE releases a queued sandbox run", async () => {
+    const { companyId, agentId, issueId } = await seedAgentAndIssue();
+    const environmentId = randomUUID();
+    const pluginId = randomUUID();
+    const pluginKey = `test.drain-sandbox.${pluginId}`;
+    const provider = "drain-sandbox";
+    const acquisitionFailure = "drain_release_plugin_acquisition_reached";
+    const calls: Array<{ pluginId: string; method: string; params: unknown }> = [];
+    const pluginWorkers = {
+      isRunning: (id: string) => id === pluginId,
+      getWorker: () => ({ supportedMethods: ["environmentAcquireLease"] }),
+      call: async (id: string, method: string, params: unknown) => {
+        calls.push({ pluginId: id, method, params });
+        throw new Error(acquisitionFailure);
+      },
+    } as unknown as PluginWorkerManager;
+    const heartbeat = heartbeatService(db, { pluginWorkerManager: pluginWorkers });
+    try {
+      await db.insert(plugins).values({
+        id: pluginId, pluginKey, packageName: "@test/drain-sandbox", version: "1.0.0", apiVersion: 1,
+        categories: ["automation"], status: "ready",
+        manifestJson: {
+          id: pluginKey, apiVersion: 1, version: "1.0.0", displayName: "Drain sandbox",
+          description: "Task-drain release fixture", author: "Paperclip", categories: ["automation"],
+          capabilities: ["environment.drivers.register"], entrypoints: { worker: "worker.js" },
+          environmentDrivers: [{ driverKey: provider, kind: "sandbox_provider", displayName: "Drain sandbox", configSchema: { type: "object" } }],
+        },
+      });
+      await db.insert(environments).values({ id: environmentId, name: `Drain sandbox ${environmentId}`,
+        driver: "sandbox", status: "active", config: { provider } });
+      await db.update(agents).set({ defaultEnvironmentId: environmentId }).where(eq(agents.id, agentId));
+      startTaskDrain({});
+      await heartbeat.wakeup(agentId, {
+        source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+        payload: { issueId }, contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+        requestedByActorType: "system", requestedByActorId: "issue_assignment",
+      });
+      await heartbeat.drainActiveRunExecutions();
+      const [queued] = await db.select().from(heartbeatRuns);
+      expect(queued).toMatchObject({ status: "queued", startedAt: null });
+      expect(calls).toEqual([]);
+
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => {
+        req.actor = { type: "board", userId: "local-board", source: "local_implicit", isInstanceAdmin: true };
+        next();
+      });
+      app.use("/api", instanceSettingsRoutes(db, pluginWorkers));
+      app.use(errorHandler);
+      await request(app).delete("/api/instance/task-drain").expect(200);
+      await heartbeat.drainActiveRunExecutions();
+      const runs = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, error: heartbeatRuns.error })
+        .from(heartbeatRuns);
+      expect(runs).toHaveLength(1);
+      expect.soft(runs[0]).toMatchObject({ id: queued!.id, status: "failed", error: expect.stringContaining(acquisitionFailure) });
+      expect.soft(calls).toEqual([{
+        pluginId, method: "environmentAcquireLease",
+        params: expect.objectContaining({ driverKey: provider, companyId, environmentId,
+          issueId, agentId, runId: queued!.id, adapterType: "process" }),
+      }]);
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+      await db.update(agents).set({ defaultEnvironmentId: null }).where(eq(agents.id, agentId));
+      await db.delete(environments).where(eq(environments.id, environmentId));
+      await db.delete(plugins).where(eq(plugins.id, pluginId));
     }
   }, 20_000);
 

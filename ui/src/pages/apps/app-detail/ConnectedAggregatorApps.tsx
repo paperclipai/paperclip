@@ -6,6 +6,7 @@ import { AGGREGATOR_APP_CATALOG } from "@paperclipai/shared/aggregator-app-catal
 import { AGGREGATOR_NAMES, type AggregatorAppSnapshot, isAppAggregator } from "@paperclipai/shared/aggregator-apps";
 import { useAccountIdentity } from "@/api/companies-query";
 import { toolsApi } from "@/api/tools";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { queryKeys } from "@/lib/queryKeys";
 import { AppLogo } from "../AppLogo";
@@ -22,10 +23,10 @@ export function ConnectedAggregatorApps({ connection }: { connection: ToolConnec
     queryKey,
     queryFn: () => toolsApi.listAggregatorApps(connection.id),
     enabled: settled,
-    retry: false,
     refetchOnWindowFocus: "always",
     refetchInterval: query => query.state.data?.sync.status === "syncing" ? 1500 : 60_000,
   });
+  const queryView = useQueryView(query);
   const refresh = useMutation({
     mutationFn: (_viewingUserId: string | null) => toolsApi.syncAggregatorApps(connection.id, true),
     onSuccess: (result, viewingUserId) => queryClient.setQueryData(queryKeys.tools.aggregatorApps(connection.id, viewingUserId), result),
@@ -35,8 +36,10 @@ export function ConnectedAggregatorApps({ connection }: { connection: ToolConnec
   const providerName = isAppAggregator(provider) ? AGGREGATOR_NAMES[provider] : "provider";
   const waitingForFirstRefresh = settled && data?.discovery.availability === "available" && firstRefreshFor.current !== identityKey;
   const syncing = waitingForFirstRefresh || refresh.isPending || data?.sync.status === "syncing";
-  const loadFailed = query.isError || failed;
-  const syncFailed = refresh.isError || data?.sync.status === "error";
+  const queryPending = query.isLoading || queryView.kind === "reconnecting";
+  // A transient refetch failure (`stale`) keeps the last loaded apps; only a real failure counts.
+  const loadFailed = queryView.kind === "error" || failed;
+  const syncFailed = Boolean(refresh.error) || data?.sync.status === "error";
   const unavailable = data && data.discovery.availability !== "available";
   const apps = useMemo(() => {
     const grouped = new Map<string, AggregatorAppSnapshot[]>();
@@ -56,19 +59,20 @@ export function ConnectedAggregatorApps({ connection }: { connection: ToolConnec
     <div className="flex flex-wrap items-center justify-between gap-3">
       <h2 id="connected-aggregator-apps-heading" className="text-sm font-semibold">Connected apps</h2>
       <Button variant="outline" size="sm" aria-label={`Refresh ${providerName}`}
-        disabled={!settled || query.isLoading || syncing || Boolean(unavailable)}
+        disabled={!settled || queryPending || syncing || Boolean(unavailable)}
         onClick={() => refresh.mutate(userId)}>
         <RefreshCw className={syncing ? "size-4 animate-spin" : "size-4"} aria-hidden="true" />
         {syncing ? "Refreshing…" : `Refresh ${providerName}`}
       </Button>
     </div>
-    {loadFailed || syncFailed ? <p role="alert" className="text-sm text-destructive">
+    {queryView.kind === "error" ? <QueryErrorState error={query.error} action={`load ${providerName} apps`} onRetry={queryView.retry} retrying={queryView.isFetching} /> : null}
+    {failed || syncFailed ? <p role="alert" className="text-sm text-destructive">
       Couldn’t refresh {providerName} apps.{apps.length ? " Last known apps are shown." : " Try refreshing again."}
     </p> : null}
     {syncing ? <p role="status" className="text-sm text-muted-foreground">
       Refreshing apps…{data?.sync.total ? ` ${data.sync.checked} of ${data.sync.total}` : ""}
     </p> : refresh.isSuccess && !syncFailed && !unavailable ? <p role="status" className="text-sm text-muted-foreground">Apps refreshed.</p> : null}
-    {(!settled && !failed) || query.isLoading ? <p role="status" className="text-sm text-muted-foreground">Loading apps…</p>
+    {(!settled && !failed) || queryPending ? <p role="status" className="text-sm text-muted-foreground">Loading apps…</p>
       : apps.length ? <ul aria-label={`Connected ${providerName} apps`} tabIndex={0}
         className="max-h-80 overflow-y-auto rounded-lg border border-border divide-y divide-border">
         {apps.map(snapshots => {

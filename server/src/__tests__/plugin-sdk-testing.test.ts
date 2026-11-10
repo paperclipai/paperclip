@@ -1,6 +1,45 @@
 import { describe, expect, it } from "vitest";
-import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { Issue, PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
+
+function seededIssue(input: Partial<Issue> & Pick<Issue, "id" | "companyId" | "title">): Issue {
+  const now = new Date();
+  return {
+    workMode: "standard",
+    reviewPolicy: null,
+    responsibleUserId: null,
+    projectId: null,
+    projectWorkspaceId: null,
+    goalId: null,
+    parentId: null,
+    description: null,
+    status: "todo",
+    priority: "medium",
+    assigneeAgentId: null,
+    assigneeUserId: null,
+    checkoutRunId: null,
+    executionRunId: null,
+    executionAgentNameKey: null,
+    executionLockedAt: null,
+    createdByAgentId: null,
+    createdByUserId: null,
+    issueNumber: null,
+    identifier: null,
+    requestDepth: 0,
+    billingCode: null,
+    assigneeAdapterOverrides: null,
+    executionWorkspaceId: null,
+    executionWorkspacePreference: null,
+    executionWorkspaceSettings: null,
+    startedAt: null,
+    completedAt: null,
+    cancelledAt: null,
+    hiddenAt: null,
+    createdAt: now,
+    updatedAt: now,
+    ...input,
+  };
+}
 
 describe("plugin SDK test harness", () => {
   it("returns scoped execution workspace metadata with the read capability", async () => {
@@ -122,13 +161,13 @@ describe("plugin SDK test harness", () => {
     };
     const harness = createTestHarness({ manifest });
     harness.seed({
-      issues: [{
+      issues: [seededIssue({
         id: "issue-1",
         companyId: "company-1",
         title: "Comment redaction",
         status: "todo",
         priority: "medium",
-      }],
+      })],
       issueComments: [{
         id: "comment-1",
         companyId: "company-1",
@@ -137,7 +176,7 @@ describe("plugin SDK test harness", () => {
         authorAgentId: null,
         authorUserId: "user-1",
         body: "secret plugin-visible body",
-        presentation: { kind: "system_notice", tone: "warning" },
+        presentation: { kind: "system_notice", tone: "warning", detailsDefaultOpen: false },
         metadata: { version: 1, sections: [{ rows: [{ type: "text", text: "secret plugin metadata" }] }] },
         deletedAt: new Date("2026-06-03T12:00:00.000Z"),
         deletedByType: "user",
@@ -175,13 +214,13 @@ describe("plugin SDK test harness", () => {
     };
     const harness = createTestHarness({ manifest });
     harness.seed({
-      issues: [{
+      issues: [seededIssue({
         id: "issue-1",
         companyId: "company-1",
         title: "Human attribution",
         status: "todo",
         priority: "medium",
-      }],
+      })],
       // A suspended member must not satisfy the active-human-member check —
       // the harness mirrors the host's `requireActiveHumanMember` guard so a
       // plugin test cannot pass an attribution production would reject.
@@ -220,13 +259,13 @@ describe("plugin SDK test harness", () => {
     };
     const harness = createTestHarness({ manifest });
     harness.seed({
-      issues: [{
+      issues: [seededIssue({
         id: "issue-1",
         companyId: "company-1",
         title: "Human attribution",
         status: "todo",
         priority: "medium",
-      }],
+      })],
       accessMembers: [{
         id: "member-viewer",
         companyId: "company-1",
@@ -259,13 +298,13 @@ describe("plugin SDK test harness", () => {
     };
     const harness = createTestHarness({ manifest });
     harness.seed({
-      issues: [{
+      issues: [seededIssue({
         id: "issue-1",
         companyId: "company-1",
         title: "Human attribution",
         status: "todo",
         priority: "medium",
-      }],
+      })],
       accessMembers: [{
         id: "member-active",
         companyId: "company-1",

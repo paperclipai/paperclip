@@ -1,0 +1,47 @@
+name: Read-only retained chat TestOps verification
+run-name: Read-only retained chat verification / origin 41217990335 / ${{ github.run_id }}
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: chat-feature-testops-retained-verification
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: runner-e2e-testops-reporting
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - name: Check the credential-free retained-verification controls
+        run: node --test tests/runner-e2e/chat-feature-testops-retained-verification.node-test.mjs
+      - name: Read only the fixed retained measurement with separate executor identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTOPS_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+          ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+          NODE_OPTIONS: ''
+          NODE_PATH: ''
+        run: node tests/runner-e2e/testops-chat-retained-verification.mjs
+      - name: Retain only closed verification metadata
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: chat-testops-retained-verification-${{ github.run_id }}-1
+          path: |
+            ${{ runner.temp }}/chat-testops-retained-verification/retained-verification.json
+            ${{ runner.temp }}/chat-testops-retained-verification/failure.json
+          if-no-files-found: error
+          retention-days: 30

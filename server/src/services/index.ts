@@ -40,6 +40,7 @@ export {
   ISSUE_LIST_MAX_LIMIT,
   issueService,
   type IssueFilters,
+  type IssueListOptions,
 } from "./issues.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
 export { githubConnectionEventService, type GitHubConnectionEventPollResult } from "./github-connection-events.js";
@@ -145,7 +146,7 @@ export {
   type ManagedInstanceConfig,
 } from "./managed-config.js";
 export { bootstrapExecutionPolicyFromEnv } from "./execution-policy-bootstrap.js";
-export { applyManagedEnvironments } from "./managed-environments.js";
+export { applyManagedEnvironments, createManagedEnvironmentRecovery } from "./managed-environments.js";
 export { buildExportFidelityReport, collectExportFidelityCounts } from "./export-fidelity.js";
 export { companyPortabilityService } from "./company-portability.js";
 export { teamsCatalogService } from "./teams-catalog.js";

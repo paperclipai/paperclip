@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it, vi } from "vitest";
-import { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
+import { DurablePrpControlPlane, type RunnerProcessResult } from "../control-plane/durable-prp-control-plane.js";
 import { createCapabilityRunnerdCodexTransport, defaultCapabilityRunnerdBinary, readRunnerdArtifactBinding, runnerdRecoveryInternals } from "./runnerd-codex-transport.js";
 
 it.each(["resolved", "rejected"] as const)("keeps the checkpoint behind controller retirement (%s)", async outcome => {
@@ -39,7 +39,7 @@ it.each(["drain", "timeout", "external_close"] as const)("joins an output flush 
   const artifact = readRunnerdArtifactBinding(binary);
   let core!: DurablePrpControlPlane;
   const start = DurablePrpControlPlane.prototype.start;
-  const startSpy = vi.spyOn(DurablePrpControlPlane.prototype, "start").mockImplementation(function (port) {
+  const startSpy = vi.spyOn(DurablePrpControlPlane.prototype, "start").mockImplementation(function (this: DurablePrpControlPlane, port) {
     core = this;
     return start.call(this, port);
   });
@@ -81,7 +81,7 @@ it.each(["drain", "timeout", "external_close"] as const)("joins an output flush 
       let stderr = "";
       owned.stderr?.on("data", chunk => { stderr += String(chunk); });
       exit = new Promise(resolveExit => owned.once("exit", () => resolveExit()));
-      const completion = new Promise<{ code: number | null; signal: string | null; stdout: string; stderr: string }>((resolveExit, reject) => {
+      const completion = new Promise<RunnerProcessResult>((resolveExit, reject) => {
         owned.once("error", reject);
         owned.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr }));
       });

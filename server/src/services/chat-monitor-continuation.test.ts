@@ -1,5 +1,7 @@
+import { nativeResponsePresentationWork } from "./native-runtime/native-response-presentation-work.js";
+import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { randomBytes, randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agents, agentWakeupRequests, authUsers, chatConversations, chatEndpoints, chatMessageLinks,
@@ -16,14 +18,18 @@ import { createHeartbeatQueueTestDependencies } from "../__tests__/helpers/heart
 import { createHeartbeatQueue } from "./heartbeat/queue.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_MONITOR_CONTINUATION_TEST_DATABASE_URL");
+const support = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 if (!support.supported) console.warn(`Monitor publication database unavailable: ${support.reason}`);
 (support.supported ? describe : describe.skip)("monitor conversation continuation", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("paperclip-monitor-publications-");
-    db = createDb(temporary.connectionString);
+    if (external) db = createDb(external);
+    else {
+      temporary = await startEmbeddedPostgresTestDatabase("paperclip-monitor-publications-");
+      db = createDb(temporary.connectionString);
+    }
     await db.insert(authUsers).values({ id: "requester", name: "Requester", email: "requester@example.test", createdAt: new Date(), updatedAt: new Date() });
   });
   afterAll(async () => { await temporary?.cleanup(); });
@@ -235,7 +241,7 @@ if (!support.supported) console.warn(`Monitor publication database unavailable: 
     expect(await f.bindings()).toEqual([]);
   });
 
-  it("recovers the accepted continuation explanation after interrupted finalization without another provider result", async () => {
+  it.each([false, true])("recovers the accepted continuation explanation without another provider result (missing presentation: %s)", async missingPresentation => {
     const f = await fixture();
     const executionPayload = randomBytes(128 * 1024).toString("base64");
     await db.update(heartbeatRuns).set({
@@ -281,6 +287,20 @@ if (!support.supported) console.warn(`Monitor publication database unavailable: 
     expect(settledRun.stdoutExcerpt).toBe(executionPayload);
     const priorComments = await db.select({ body: issueComments.body }).from(issueComments).where(eq(issueComments.createdByRunId, f.source.id));
     expect(priorComments).toEqual([{ body: summary }]);
+    expect(await nativeResponsePresentationWork(db).load({ companyId: f.company.id, runId: f.source.id })).toEqual([]);
+    if (missingPresentation) {
+      await db.transaction(async tx => {
+        await tx.delete(chatPublications).where(eq(chatPublications.issueId, f.issue.id));
+        await tx.delete(issueComments).where(eq(issueComments.createdByRunId, f.source.id));
+        await tx.update(heartbeatRuns).set({ resultJson: sql`${heartbeatRuns.resultJson} - 'presentationDecision'` })
+          .where(eq(heartbeatRuns.id, f.source.id));
+      });
+      const work = nativeResponsePresentationWork(db);
+      const entries = await work.load({ companyId: f.company.id, runId: f.source.id });
+      expect(entries).toHaveLength(1);
+      await expect(work.check(entries[0])).resolves.toBeNull();
+      expect(await work.load({ companyId: f.company.id, runId: f.source.id })).toEqual([]);
+    }
     expect(await repair()).toBe(false);
     expect(await repair()).toBe(false);
     const comments = await db.select().from(issueComments).where(eq(issueComments.createdByRunId, f.source.id));
