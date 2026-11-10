@@ -1692,10 +1692,14 @@ mod tests {
 
     #[test]
     fn monitor_notes_length_error_reports_the_authorized_numeric_limit() {
-        let tools: Value = serde_json::from_str(include_str!(
-            "../../../../generated/capability/semantic-tool-contracts.json"
-        ))
+        let contract = std::fs::read_to_string(
+            std::path::Path::new(file!())
+                .parent()
+                .unwrap()
+                .join("../../../../generated/capability/semantic-tool-contracts.json"),
+        )
         .unwrap();
+        let tools: Value = serde_json::from_str(&contract).unwrap();
         let tool = tools
             .as_array()
             .unwrap()
