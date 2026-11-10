@@ -362,7 +362,7 @@
       "chat-catalog-domains/runtime-agent-chat.ts",
       "chat-scenarios/agent-chat.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.runtime.reopen-conversation.v3",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "setupHumanMessageCount": 1,

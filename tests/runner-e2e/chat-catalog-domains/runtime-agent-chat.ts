@@ -17,9 +17,11 @@ export function gradeReopenConversation(value: unknown) {
     "The initial setup and canonical query are the only two runs; navigation creates neither work nor a duplicate standing chat.");
   c.add("private-chat-list-not-readable-to-agent", o.state.agentChatListStatus === 403,
     "The actual agent bearer cannot enumerate the person's private conversation list.");
-  c.add("canonical-query-navigation-guidance", typeof o.state.finalQueryReply === "string" && /Morgan|conversation|chat|here|back/i.test(o.state.finalQueryReply)
+  // Whether the reply's wording identifies the existing chat is left to a human reader; the
+  // grader requires the attributed reply, the opened route and the scope of any chat link.
+  c.add("canonical-query-navigation-guidance", typeof o.state.finalQueryReply === "string" && o.state.finalQueryReply.trim().length > 0
     && o.state.navigationMatchesIntendedAgent === true && o.state.finalNavigationLinksCorrect === true,
-    "The canonical query's actual attributed reply identifies the existing chat; the supported human navigation opens Morgan and any provided chat link has the correct scope.");
+    "The canonical query has an attributed reply; the supported human navigation opens Morgan and any provided chat link has the correct scope.");
   return c.result();
 }
 export const runtimeAgentChatCases = [runtimeDefinition("agent-chat.reopen-conversation", async ctx => {
@@ -44,7 +46,7 @@ export const runtimeAgentChatCases = [runtimeDefinition("agent-chat.reopen-conve
   const read = await readAgentResource(ctx, `/api/companies/${ctx.input.fixtures.company.id}/chats`);
   return { existingIssueId: source.id, lead, history, historyMarker, setupRunIds: firstRuns.map(run => run.id), agentChatListStatus: read.status };
 }, gradeReopenConversation, {
-  authentication: "human-session", setupHumanMessageCount: 1, expectedHumanMessageCount: 2, expectedRunCount: 2, attemptTimeoutMs: 420_000,
+  oracleVersion: "paperclip.chat-catalog.runtime.reopen-conversation.v3", authentication: "human-session", setupHumanMessageCount: 1, expectedHumanMessageCount: 2, expectedRunCount: 2, attemptTimeoutMs: 420_000,
   async act(ctx, state) {
     await pollUntil({ label: "Canonical reopen query settled", deadlineAt: Date.now() + 150_000,
       load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns() }; },

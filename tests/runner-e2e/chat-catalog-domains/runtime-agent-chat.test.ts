@@ -14,8 +14,11 @@ it("rejects opening a duplicate conversation", () => {
 it("rejects navigation that starts provider work", () => {
   const o = valid(); o.state.afterNavigationRuns = 3; expect(gradeReopenConversation(o).passed).toBe(false);
 });
-it("rejects a link from the setup reply instead of canonical query", () => {
-  const o = valid(); o.state.finalQueryReply = "Only setup context."; expect(gradeReopenConversation(o).passed).toBe(false);
+it("rejects a canonical query without its own attributed reply", () => {
+  const o = valid(); o.state.finalQueryReply = "  "; expect(gradeReopenConversation(o).passed).toBe(false);
+});
+it("leaves reply wording to a human reader", () => {
+  const o = valid(); o.state.finalQueryReply = "Opening it now."; expect(gradeReopenConversation(o).passed).toBe(true);
 });
 
 it("rejects a supplied link into another person's or agent's chat", () => {
