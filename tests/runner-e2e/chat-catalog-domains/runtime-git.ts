@@ -27,9 +27,12 @@ export function gradeInspectGit(value: unknown) {
     && o.state.headerAfter === o.state.headerBefore && o.state.notesAfter === o.state.notesBefore,
   "Both real synthetic edits and the committed baseline remain byte-for-byte unchanged by this inspection.");
   c.add("actual-diff-summary-with-file-references", /header\.html/.test(o.reply) && /Launch later/i.test(o.reply) && /Launch sooner/i.test(o.reply)
-    && /existing-notes\.txt/.test(o.reply) && /uncommitted|working (?:tree|copy)|not (?:yet )?committed/i.test(o.reply)
+    // The changed files and values are the setup's own literals, so the reply must report them. That the work
+    // is uncommitted is proven by the unchanged HEAD/status above; the reply need not use the word, only
+    // make no commit/push claim.
+    && /existing-notes\.txt/.test(o.reply)
     && !/(?:I(?:'ve| have)? |successfully )(?:pushed|committed|published|deployed)|remote.*(?:has been|was) updated/i.test(o.reply),
-  "The answer describes the observed header and unrelated diff, distinguishes uncommitted work and makes no remote-update claim.");
+  "The answer describes the observed header and unrelated diff and makes no commit, push or remote-update claim.");
   c.add("real-native-inspection-only", o.runs.length === 2 && o.runs.every(run => run.status === "succeeded")
     && o.runs.filter(run => run.agentId === o.leadId).length === 1,
   "The real prior workspace setup and one native inspection are the only provider executions.");
@@ -55,7 +58,7 @@ export const runtimeGitCases = [runtimeDefinition("workspaces.inspect-git", asyn
     headerBefore: await readFile(header, "utf8"), notesBefore: await readFile(notes, "utf8") };
 }, gradeInspectGit, {
   sourceFiles: ["chat-catalog-domains/runtime-git.ts", "chat-catalog-domains/runtime-workspaces.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/workspaces.yaml"],
-  expectedRunCount: 2, attemptTimeoutMs: 540_000,
+  oracleVersion: "paperclip.chat-catalog.inspect-git.structural.v3", expectedRunCount: 2, attemptTimeoutMs: 540_000,
   async observe(ctx, state) {
     const cwd = String(state.nativeInspectionCwd);
     state.workspaceAfter = await ctx.input.api.get(`/api/issues/${(state.task as Entity).id}/workspace`);

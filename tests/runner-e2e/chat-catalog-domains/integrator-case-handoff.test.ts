@@ -28,6 +28,9 @@ describe("real Morgan same-primary review handoff", () => {
     expect(gradeIntegratorCaseHandoff(valid()).passed).toBe(true); expect(gradeIntegratorCaseHandoff(undefined).passed).toBe(false);
     const natural = valid(); natural.handoffs[1]!.instructions = "Mobile Safari: touch on the checkout button produces no response. The keyboard works.";
     expect(gradeIntegratorCaseHandoff(natural).passed).toBe(true);
+    const pointer = valid(); pointer.handoffs[1]!.instructions = "Review the saved investigation findings document `findings` on this same task (COM-1) against the customer observations in `brief`.";
+    expect(gradeIntegratorCaseHandoff(pointer).passed).toBe(true);
+    const empty = valid(); empty.handoffs[1]!.instructions = "Please review."; expect(gradeIntegratorCaseHandoff(empty).passed).toBe(false);
   });
   it("rejects CEO roleplay, a replacement primary, direct chat authority and missing original findings", () => {
     const ceo = valid(); ceo.actingAgent.name = "CEO"; ceo.actingAgent.role = "ceo"; expect(gradeIntegratorCaseHandoff(ceo).passed).toBe(false);

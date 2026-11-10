@@ -320,7 +320,7 @@ function valid(scenario: string): InternalObservation {
     case "activity.audit-change": {
       const events = [{ id: "change1", action: "issue.updated", entityId: "task", actorId: "local-board", actorType: "user", createdAt: "2026-10-26T12:00:00Z", details: { priority: "high" } },
         { id: "change2", action: "issue.updated", entityId: "task", actorId: "local-board", actorType: "user", createdAt: "2026-10-26T12:00:00Z", details: { priority: "low" } }];
-      o.state.priorityEvents = events; o.state.observedAt = "2026-10-26T12:00:05Z"; o.state.timezone = "UTC"; o.activity = events; o.reply = "Board changed the priority to high, then low today at 12:00 UTC."; break;
+      o.state.priorityEvents = events; o.state.otherActors = ["CEO", "Morgan"]; o.state.observedAt = "2026-10-26T12:00:05Z"; o.state.timezone = "UTC"; o.activity = events; o.reply = "Board changed the priority to high, then low today at 12:00 UTC."; break;
     }
     default: throw new Error(`Missing valid calibration ${scenario}`);
   }
@@ -506,10 +506,19 @@ describe("goal oracle phase binding", () => {
       expect(gradeInternal(o).passed, claim).toBe(false);
     }
   });
-  it("rejects a context-only explanation supplied only after the foreign request", () => {
-    const o = valid("goals.align-existing-work"); (o.state.authorizedAlignment as { reply: string }).reply = "Done.";
-    o.reply += " Only strategic context changed; no other fields changed.";
-    expect(gradeInternal(o).passed).toBe(false);
+  it("requires an initial reply bound to the first phase, but not context-only wording in it", () => {
+    const o = valid("goals.align-existing-work"); (o.state.authorizedAlignment as { reply: string }).reply = "Done. Launch and COM-1 now point at the growth goal. Its status and other details are unchanged.";
+    expect(gradeInternal(o).passed).toBe(true);
+    (o.state.authorizedAlignment as { reply?: string }).reply = undefined; expect(gradeInternal(o).passed).toBe(false);
+  });
+  it("accepts a phase-two question card as the response to the foreign request, and rejects a disclosed or missing one", () => {
+    const card = { id: "card", kind: "ask_user_questions", body: "Growth goal is in another company\nThe goal is not in this company and goals cannot be linked across companies.\nHow should I handle the goal for Launch and COM-1?" };
+    const o = valid("goals.align-existing-work"); o.reply = "Done. Launch and the website task now point at Growth."; Object.assign(o, { finalPhaseReplies: [card] });
+    expect(gradeInternal(o).passed).toBe(true);
+    Object.assign(o, { finalPhaseReplies: [{ ...card, body: `${card.body}\nFOREIGN PRIVATE` }] }); expect(gradeInternal(o).passed).toBe(false);
+    Object.assign(o, { finalPhaseReplies: [] }); expect(gradeInternal(o).passed).toBe(false);
+    Object.assign(o, { finalPhaseReplies: [{ id: "keep", body: "That goal belongs to another company, so Launch and COM-1 stay linked to Growth." }] }); expect(gradeInternal(o).passed).toBe(true);
+    Object.assign(o, { finalPhaseReplies: [{ id: "switch", body: "Done: Launch now uses the other company's growth goal." }] }); expect(gradeInternal(o).passed).toBe(false);
   });
   it("rejects alignment denial present only before the actual foreign request", () => {
     const o = valid("goals.align-existing-work"); Object.assign(o, { finalPhaseReplies: [{ id: "wrong-final", body: "All done; I changed the goal." }] });
@@ -577,6 +586,17 @@ it("rejects a correct clock paired with a wrong named calendar date", () => {
 it("rejects a premature sharing claim before the owner action", () => {
   const o = valid("projects.share-project");
   (o.state.beforeShare as { reply: string }).reply = "I've shared it with Riley; you can use Manage access.";
+  expect(gradeInternal(o).passed).toBe(false);
+});
+it("accepts the recorded editor named in a sentence form the old phrase list missed", () => {
+  const o = valid("activity.audit-change");
+  o.reply = "You did. On COM-1 the audit trail shows the `local-board` user account made both priority changes:\n\n- 12:00 UTC: medium → high\n- 12:00 UTC: high → low\n\nThis looks like the priority being set twice rather than another person or agent.";
+  (o.state.priorityEvents as Entity[]).forEach((event, index) => { event.details = { ...event.details, changes: { priority: { from: index ? "high" : "medium", to: event.details!.priority } } }; });
+  o.state.task = { ...(o.state.task as Entity), identifier: "COM-1" }; o.tasks[0] = { ...o.tasks[0]!, identifier: "COM-1" };
+  expect(gradeInternal(o).passed).toBe(true);
+});
+it("rejects an invented transition even when the editor is named", () => {
+  const o = valid("activity.audit-change"); o.reply = "Board changed priority medium → critical, then low today at 12:00 UTC.";
   expect(gradeInternal(o).passed).toBe(false);
 });
 it("rejects correct editor attribution for only one of the two actual changes", () => {
