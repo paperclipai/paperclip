@@ -18,7 +18,7 @@ export async function isAbandonedPreparedRemoteWorkspace(db: Db, run: Run): Prom
   return receipts.some(receipt => {
     const location = receipt?.location as Record<string, unknown> | undefined;
     return receipt?.schema === REMOTE_WORKSPACE_ABANDONED_EPOCH_SCHEMA && receipt.runId === run.id
-      && receipt.epoch === reference.epoch && (receipt.snapshotId ?? null) === (reference.snapshotId ?? null)
+      && receipt.epoch === reference.epoch
       && location?.leaseId === reference.leaseId && location?.providerLeaseId === reference.providerLeaseId
       && location?.remoteCwd === reference.remoteCwd;
   });

@@ -173,15 +173,16 @@ suite("held interrupted preparations on the shared ownership path", () => {
     expect(await hold(f.holdId)).toEqual(before);
   });
 
-  async function preparedRemoteWorkspace(runId: string, issueId: string, options: { receipt?: Record<string, unknown> } = {}) {
+  async function preparedRemoteWorkspace(runId: string, issueId: string, options: { receipt?: Record<string, unknown>; savedSnapshotId?: string | null } = {}) {
     const workspaceId = randomUUID(), leaseId = randomUUID(), providerLeaseId = `sandbox-${leaseId}`;
     const remoteCwd = `/home/daytona/paperclip-workspace/.paperclip-workspaces/${workspaceId}-1-${leaseId}`;
     const location = { environmentId, leaseId, providerLeaseId, remoteCwd };
     const source = { kind: "git", repoUrl: "https://github.com/paperclipai/paperclip.git", ref: "a".repeat(40),
       branchMode: "create", branchName: "IPH-1-change" };
-    const authority = { schema: "paperclip.remote-workspace.v1", epoch: 2, source, location: null, dirty: false, writerRunId: null, snapshotId: null };
+    const authority = { schema: "paperclip.remote-workspace.v1", epoch: 2, source, location: null, dirty: false, writerRunId: null,
+      snapshotId: options.savedSnapshotId ?? null };
     const receipts = [{ schema: "paperclip.remote-workspace-abandoned-epoch.v1", epoch: 1, runId,
-      snapshotId: null, location, providerRef: remoteCwd, abandonedAt: new Date().toISOString(), ...options.receipt }];
+      snapshotId: options.savedSnapshotId ?? null, location, providerRef: remoteCwd, abandonedAt: new Date().toISOString(), ...options.receipt }];
     await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, sourceIssueId: issueId, mode: "isolated_workspace",
       strategyType: "git_worktree", name: "Remote workspace", status: "active", providerType: "git_worktree",
       metadata: { remoteWorkspace: authority, remoteWorkspaceAbandonedEpochs: receipts } });
@@ -190,10 +191,13 @@ suite("held interrupted preparations on the shared ownership path", () => {
         providerLeaseId, remoteCwd, snapshotId: null } } }).where(eq(heartbeatRuns.id, runId));
   }
 
-  it("replays a remote preparation whose unsaved epoch the workspace already retired", async () => {
+  it.each([
+    ["before its first save finished", null],
+    ["after its first save committed", randomUUID()],
+  ] as const)("replays a remote preparation whose unsaved epoch the workspace already retired %s", async (_label, savedSnapshotId) => {
     heartbeatService(db);
     const f = await interruptedPreparation();
-    await preparedRemoteWorkspace(f.runId, f.issueId);
+    await preparedRemoteWorkspace(f.runId, f.issueId, { savedSnapshotId });
     expect(await pass()).toMatchObject({ inProgress: 1, settled: 1 });
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "in_progress" });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId))).toHaveLength(1);
