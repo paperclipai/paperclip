@@ -1,4 +1,5 @@
 import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
+import { registerCompletedTurnCleanupResumer } from "./native-runtime/completed-turn-cleanup-hold-settlement.js";
 import { endStorageOutageWaitOn, reportStorageOutageWaitsTo, runInOwnStorageScope } from "../storage/storage-unavailable.js";
 import { createStorageWaitNotice } from "./heartbeat/storage-wait-notice.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
@@ -1539,10 +1540,12 @@ export function heartbeatService(
   }
   // The interrupted-preparation ownership kind settles a hold, then replays the
   // preparation through this same resume path (bounded, uncharged retry).
-  registerHeldPreparationResumer(async ({ companyId, runId }) => {
+  const resumeSettledRun = async ({ companyId, runId }: { companyId: string; runId: string }) => {
     const run = await getRun(runId);
     if (run && run.companyId === companyId) await resumeRemoteStopComments(run);
-  });
+  };
+  registerHeldPreparationResumer(resumeSettledRun);
+  registerCompletedTurnCleanupResumer(resumeSettledRun);
 
   function cancelRunInternal(...args: Parameters<typeof runControl.cancelRunInternal>) {
     return runControl.cancelRunInternal(...args);
