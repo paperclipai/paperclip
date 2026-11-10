@@ -11,6 +11,7 @@ import Markdown, { defaultUrlTransform, type Components, type Options } from "re
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
 import { MarkdownUrlLink } from "./MarkdownUrlLink";
+import { recognizeLinkPreview, type LinkPreviewState } from "@paperclipai/shared";
 import { Link, useCaseHref } from "@/lib/router";
 import { useTheme } from "../context/ThemeContext";
 import { useOptionalCompany } from "../context/CompanyContext";
@@ -279,6 +280,18 @@ function MarkdownExternalLink({
     `${displayKey} — ${statusLabel}${livenessSuffix}`,
   ];
   const title = titleParts.filter(Boolean).join(" · ");
+  if (recognizeLinkPreview(href)) {
+    const knownState: LinkPreviewState = reference.statusIconKey === "git-merge" || reference.statusLabel === "Merged" ? "merged"
+      : reference.statusLabel === "Merge conflicts" ? "conflicts"
+      : reference.statusLabel === "Draft" ? "draft"
+      : reference.statusCategory === "open" ? "open"
+      : reference.statusCategory === "closed" ? "closed" : "unknown";
+    return <MarkdownUrlLink href={href} title={title} knownState={knownState}
+      externalStatus={{ category: reference.statusCategory, liveness: reference.liveness,
+        ariaLabel: `${displayKey} ${statusLabel}${livenessSuffix}: ${reference.displayTitle ?? href}` }}>
+      {children}
+    </MarkdownUrlLink>;
+  }
   return (
     <a
       href={href}
