@@ -454,11 +454,13 @@ export function TaskChatComposer({
   const [localPendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
   const previousWorkMode = useRef(workMode);
   useEffect(() => {
+    // An optimistic save can still roll back; retain the last settled baseline.
+    if (submitting) return;
     const previous = previousWorkMode.current;
     previousWorkMode.current = workMode;
     // Adopt refreshed task data without replacing a locally chosen draft mode.
     setPendingMode((current) => current === previous ? workMode : current);
-  }, [workMode]);
+  }, [workMode, submitting]);
   const pendingMode = creation ? workMode : localPendingMode;
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
   const coordinator = useCoordinatorPresentation();
