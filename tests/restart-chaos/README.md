@@ -293,6 +293,68 @@ pending is retried for the same settle window; if it is still blocked then, the
 wave fails (not as a harness error) and the instance is kept, because its
 database owns the cleanup work. The result is in `<wave>/sandbox-sweep.json`.
 
+## Provider message faults (PV1–PV3) and the saved question (Q1)
+
+```sh
+# A Codex governed wait whose interruption terminal arrives 18 s late (PR #20330's boundary).
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads Q1 --faults PV1 --provider-fault-delays 18 --concurrency 1 --tasks 1 --seed 101
+# Sweep the window around the 15 s / 30 s deadlines, two tasks at a time.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads Q1 --faults PV1 --provider-fault-delays 5,14,25,29 --concurrency 2 --tasks 4 --seed 102
+# The saved question's terminal never arrives during shutdown (PR #20336's boundary).
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads Q1 --faults PV2 --concurrency 1 --tasks 1 --seed 103
+```
+
+The third fault family: the provider stays alive, but one protocol message between the runner and the
+Codex app-server is late, missing or repeated. `--faults` takes them next to restart faults:
+
+| Fault | The chosen message |
+| --- | --- |
+| PV1 | is held for the task's delay (`--provider-fault-delays`, seconds, cycled across tasks; default 18) |
+| PV2 | is dropped |
+| PV3 | is sent twice |
+
+`--provider-fault-message terminal` (default) picks the `turn/completed` notification that follows a
+`turn/interrupt`, which a governed wait (a saved question or approval) or a board Stop sends.
+`interrupt_ack` picks the response to that `turn/interrupt`. Each rule applies once per task, to the
+first matching message. A PV task fires no restart. Provider faults run only with `--env local --adapters
+codex`, only with workloads that interrupt a turn (Q1, S1, G1), and not yet in the same wave as restart
+faults: a restart kills the shim with any held message. A PV1 task passes `provider_fault_applied` only when
+the held message was released; a provider that exited first turned the delay into a drop.
+
+**Seam.** Product code finds the local Codex by resolving the installed `@openai/codex/package.json`.
+The harness starts the server with `NODE_OPTIONS=--import provider-shim/codex-resolve-hook.mjs`. That
+hook answers only this lookup, with a stand-in package in the instance temp root. The stand-in's
+`codex` bin is `provider-shim/codex-shim.mjs`, which starts the real Codex with the same arguments and
+relays its JSON-lines stdio unchanged. It changes only the message that the task's rule names. The
+hook removes itself from `NODE_OPTIONS`, so the server's children do not load it. The stand-in links the real
+platform package, so Codex's sandbox still gets its native executable. A process is bound to a task
+when the task's nonce appears in its traffic, such as the prompt or a tool result. Product code is
+unchanged, so the same harness can run against an older product commit: copy `tests/restart-chaos`
+into a worktree at that commit. Every shim decision is logged in `<wave>/provider-faults.jsonl`. A PV
+task also fails `provider_fault_applied` when its fault never happened. A pass where nothing was
+injected proves nothing.
+
+Claude is not covered. It runs through the ACPX sidecar against a hash-verified provider pack, and it
+speaks ACP, where a cancel has no acknowledgement and the prompt response is the terminal. The
+same resolve-hook idea would need a different shim and an integrity exception.
+
+**Q1** asks the agent to save one single-select question with `request_human_input`, end its turn,
+and, once answered, write a `brief` containing the board's answer. The harness answers through
+`POST /api/issues/:id/interactions/:interactionId/respond`. The nonce fixes the answer as `ALPHA` or
+`BRAVO`. The harness answers only after no run of the task is queued or running, so the saved
+question must settle on its own first. The oracle checks these points:
+
+- exactly one question was asked;
+- the asking run ended `succeeded`;
+- no run of the task failed;
+- nothing started between the question and the answer;
+- the brief carries the answer.
+
+Q1 is not a default workload.
+
 ## Fault timing (`--triggers`)
 
 Each task samples one trigger with its cell. `time` (default) fires at the
@@ -327,6 +389,8 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, M1 delegation, G1 approval across a restart, H1 budget hard stop across a restart, with their T-oracles. |
 | `evidence.ts`, `ledger.ts` | Evidence bundle for each failure and the JSONL ledger plus `SUMMARY.md`. |
 | `daytona-image.ts` | Docker-free extraction of the image's runnerd and provider pack, cached per digest, and the controller/image content-ID check. |
+| `provider-faults.ts`, `provider-shim/` | PV1–PV3: the resolve hook, the Codex stdio shim, per-task rules and the `provider_fault_applied` check. |
+| `question-handoff.ts` | Q1 saved question: the board's answer step and its oracle. |
 | `daytona-sweep.ts` | Daytona R6: read-only reconciliation of this wave's labelled sandboxes with leases; cleanup only through Paperclip. |
 
 ## Output (gitignored)

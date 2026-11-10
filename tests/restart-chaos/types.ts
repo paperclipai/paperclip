@@ -1,13 +1,18 @@
 /** Shared types for the control-plane restart chaos harness (plan §5). */
+import type { ProviderFaultEvent, ProviderFaultKind, ProviderFaultRule, ProviderMessage } from "./provider-faults.js";
+import type { QuestionArtifacts, QuestionRecord } from "./question-handoff.js";
 
 /** K14 (upgrade mid-run): a graceful stop, then the replacement starts from the current build (`--upgrade-from`). */
 export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14"] as const;
 export type FaultKind = (typeof FAULT_KINDS)[number];
-/** A task's planned fault. "K13" (restart storm) tasks have none of their own; the wave's storm crosses them. */
-export type TaskFaultKind = FaultKind | "K13";
+/**
+ * A task's planned fault. "K13" (restart storm) tasks have none of their own; the wave's storm crosses them.
+ * PV1–PV3 (provider message faults, provider-faults.ts) restart nothing: the task's rule is armed in the Codex shim.
+ */
+export type TaskFaultKind = FaultKind | "K13" | ProviderFaultKind;
 
 /** G1: an approval-gated action across a restart. H1: a budget hard stop crossed mid-run with a restart (its own wave). */
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1"] as const;
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
@@ -80,6 +85,11 @@ export interface WaveOptions {
   storageWindows?: import("./storage-chaos.js").StorageFaultWindow[];
   workspaceCommit?: string;
   workspaceGitUrl?: string;
+  /** Provider message faults from `--faults` (PV1 delay, PV2 drop, PV3 duplicate); see provider-faults.ts. */
+  providerFaults?: ProviderFaultKind[];
+  providerFaultMessage?: ProviderMessage;
+  /** PV1 delays, cycled across tasks (`--provider-fault-delays`). */
+  providerFaultDelaysMs?: number[];
 }
 
 export interface StormFault {
@@ -115,6 +125,8 @@ export interface TaskPlan {
    * its offset from the task's launch. Replaces the single planned fault.
    */
   replayFaults?: ScheduledFault[];
+  /** PV1–PV3 tasks: the provider message rule armed for this task's nonce. */
+  providerFault?: ProviderFaultRule;
 }
 
 export interface ScheduledFault {
@@ -240,6 +252,10 @@ export interface OracleArtifacts {
   approvals?: Array<{ id: string; status: string; title: string | null }>;
   /** G1 and H1: the board's actions and what the observer saw around them. */
   governance?: GovernanceRecord;
+  /** Q1: the saved question and the task's runs. */
+  question?: QuestionArtifacts;
+  /** PV1–PV3: the shim's log lines for this task. */
+  providerFaultEvents?: ProviderFaultEvent[];
 }
 
 /** What the board did for a governance task (G1, H1), and what the observer saw. */
@@ -323,6 +339,8 @@ export interface TaskRecord {
   governance?: GovernanceRecord;
   /** K14 waves: the build serving when the task launched. */
   serverBuildAtLaunch?: "upgrade_from" | "current";
+  /** Q1: the saved question and the board's answer. */
+  question?: QuestionRecord;
 }
 
 export interface TaskGrade {

@@ -1,3 +1,5 @@
+import { assertAgentInteraction } from "../agent-interaction-policy.js";
+import { authorizationDeniedDetails } from "../authorization.js";
 import { budgetServiceInTransaction } from "../budgets.js";
 import { resolveTaskWatchdogMutationScope, taskWatchdogScopeAllowsIssueMutation } from "../task-watchdog-scope.js";
 import { resolveNewTaskParent } from "../issue-hierarchy.js";
@@ -1215,7 +1217,7 @@ export class PaperclipRunnerToolAuthority {
       if (!this.definitions().some(tool => tool.name === DOWNLOAD_ARTIFACT) || current.issue.workMode !== "standard") throw forbidden("Artifact installation is unavailable to this run or provider");
       const decision = await authorizationService(this.db).decide({ actor: this.#privacyActor(current.run), action: "issue:mutate",
         resource: { type: "issue", companyId: this.binding.companyId, issueId: current.issue.id } });
-      if (!decision.allowed) throw forbidden(decision.explanation);
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       const freshAsset = await assetService(this.db).getById(input.artifactId);
       if (!freshAsset || freshAsset.companyId !== asset.companyId || freshAsset.objectKey !== asset.objectKey || freshAsset.byteSize !== input.byteSize || freshAsset.sha256 !== input.sha256
         || !(await canActorReadAssetContent(this.db, { ...this.#privacyActor(current.run), keyScope: this.#apiScope(current) }, freshAsset))) throw forbidden("Artifact is not available to this actor");
@@ -1279,7 +1281,7 @@ export class PaperclipRunnerToolAuthority {
       if (!this.#imageGenerationAdvertised(current.issue.workMode)) throw forbidden("Image generation is unavailable to this run or provider");
       const decision = await authorizationService(this.db).decide({ actor: this.#privacyActor(current.run), action: "issue:mutate",
         resource: { type: "issue", companyId: this.binding.companyId, issueId: current.issue.id } });
-      if (!decision.allowed) throw forbidden(decision.explanation);
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       // #boundContext checks company and agent budgets; spending also needs the task's project.
       if (current.issue.projectId && await budgetServiceInTransaction(this.db).getInvocationBlock(this.binding.companyId, this.binding.agentId,
         { issueId: current.issue.id, projectId: current.issue.projectId })) throw forbidden("Company or budget authority unavailable");
@@ -1940,7 +1942,10 @@ export class PaperclipRunnerToolAuthority {
           type: "issue", companyId: this.binding.companyId, issueId: parent.id, projectId: parent.projectId,
           parentIssueId: parent.parentId, assigneeAgentId: parent.assigneeAgentId, assigneeUserId: parent.assigneeUserId, status: parent.status,
         }, scope: { issueId: parent.id, projectId: parent.projectId, parentIssueId: parent.parentId } });
-        if (!decision.allowed) return decision.explanation;
+        if (!decision.allowed) {
+          if (decision.interactionDenial) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+          return decision.explanation;
+        }
       }
       return null;
     };
@@ -2014,7 +2019,7 @@ export class PaperclipRunnerToolAuthority {
         resource: { type: "issue", companyId: this.binding.companyId, ...scope },
         scope,
       });
-      if (!decision.allowed) throw forbidden(decision.explanation);
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       if (assigneeAgentId) await assertAssignableAgent(tx, this.binding.companyId, assigneeAgentId, { kind: "work" });
       if (assigneeUserId) await this.#assertCompanyPerson(tx, assigneeUserId);
       const project = projectId
@@ -2231,7 +2236,7 @@ export class PaperclipRunnerToolAuthority {
           parentIssueId: target.parentId, assigneeAgentId: action === "tasks:assign" ? assigneeAgentId : target.assigneeAgentId,
           assigneeUserId: action === "tasks:assign" ? assigneeUserId : target.assigneeUserId, status: target.status,
         }, scope: { issueId: taskId, projectId: target.projectId, parentIssueId: target.parentId, assigneeAgentId, assigneeUserId } });
-        if (!decision.allowed) throw forbidden(decision.explanation);
+        if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       }
       if (assigneeAgentId) await assertAssignableAgent(tx, this.binding.companyId, assigneeAgentId, { kind: "work" });
       if (assigneeUserId) await this.#assertCompanyPerson(tx, assigneeUserId);
@@ -2250,6 +2255,13 @@ export class PaperclipRunnerToolAuthority {
         throw new Error("paperclip_runner_reassignment_conflict: refresh search_tasks before deciding again");
       }
     };
+    const assertReassignmentComment = async (tx: Db, target: typeof issues.$inferSelect) => {
+      if (target.assigneeAgentId === assigneeAgentId && target.assigneeUserId === assigneeUserId) return;
+      await assertAgentInteraction(tx, { companyId: this.binding.companyId, actorAgentId: this.binding.agentId,
+        operation: "comment", issueId: taskId, texts: [reason], lock: true });
+      await assertAgentInteraction(tx, { companyId: this.binding.companyId, actorAgentId: this.binding.agentId,
+        operation: "comment", targetAgentId: assigneeAgentId, delivery: true, lock: true });
+    };
     // Stop outside row locks: the runtime needs those locks to acknowledge cancellation.
     // A second locked check below prevents any intervening ownership/version change.
     const prepared = receiptOnly ? null : await this.db.transaction(async (tx) => {
@@ -2258,6 +2270,7 @@ export class PaperclipRunnerToolAuthority {
       const target = await authorize(tx as unknown as Db, context.run);
       if (await priorReceipt(tx as unknown as Db)) return null;
       validate(target);
+      await assertReassignmentComment(tx as unknown as Db, target);
       return target;
     });
     // Cancellation and ownership commit cannot share locks. If the second
@@ -2319,6 +2332,7 @@ export class PaperclipRunnerToolAuthority {
         if (run && ["running", "queued", "scheduled_retry"].includes(run.status)) throw new Error("paperclip_runner_reassignment_stop_unconfirmed");
       }
       const changed = target.assigneeAgentId !== assigneeAgentId || target.assigneeUserId !== assigneeUserId;
+      await assertReassignmentComment(tx, target);
       const updated = changed ? await issueService(tx).update(taskId, {
         companyGuard: this.binding.companyId, assigneeAgentId, assigneeUserId,
         status: target.status === "in_progress" ? "todo" : target.status,
@@ -2420,7 +2434,7 @@ export class PaperclipRunnerToolAuthority {
           type: "issue", companyId: this.binding.companyId, issueId: target.id,
           status: target.status, assigneeAgentId: target.assigneeAgentId, assigneeUserId: target.assigneeUserId,
         } });
-        if (!decision.allowed) throw forbidden(decision.explanation);
+        if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       }
       await assertCanManageIssueMonitor(access, { actor }, target.companyId, target.assigneeAgentId, true);
       if (target.assigneeAgentId !== this.binding.agentId || target.assigneeUserId ||
@@ -3070,6 +3084,7 @@ export class PaperclipRunnerToolAuthority {
     };
     return this.db.transaction(async tx => {
       if (operationId === "create_task") {
+        await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, this.binding.companyId)).for("no key update");
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${this.binding.companyId}`}, 0))`);
       }
       return mutate(tx);
@@ -3133,7 +3148,7 @@ export class PaperclipRunnerToolAuthority {
           projectId: context.issue.projectId, parentIssueId: context.issue.parentId,
           status: context.issue.status, assigneeAgentId: context.issue.assigneeAgentId, assigneeUserId: context.issue.assigneeUserId },
       });
-      if (!decision.allowed) throw forbidden(decision.explanation);
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       await this.binding.assertBridgeAuthority?.(tx);
     }
     await assertNoCaseHandoffMutation(tx, this.binding.runId, this.binding.issueId);

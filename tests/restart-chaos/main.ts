@@ -17,6 +17,7 @@ import { BoardUi } from "./board-ui.js";
 import { DEFAULT_MINIO_BINARY, MINIO_RELEASE, minioBinary, objectStoreServerEnvironment, startMinio, type ObjectStore } from "./object-store.js";
 import { StorageChaos, planStorageFaults, replayStorageWindows, type StorageFaultReceipt } from "./storage-chaos.js";
 import { startStorageFaultProxy } from "./storage-proxy.js";
+import { describeProviderFault, installProviderFaultSeam, resolveRealCodex, withProviderFaultCheck, type ProviderFaultSeam } from "./provider-faults.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
 import { assertControllerMatchesImage, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
 import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
@@ -224,6 +225,7 @@ async function main(): Promise<number> {
   let objectStore: ObjectStore | null = null;
   let storageChaos: StorageChaos | null = null;
   let storageProxy: Awaited<ReturnType<typeof startStorageFaultProxy>> | null = null;
+  let providerFaults: ProviderFaultSeam | null = null;
   let speedSection: string | null = null;
   let harnessError: unknown;
   process.on("uncaughtException", error => {
@@ -257,6 +259,17 @@ async function main(): Promise<number> {
       storageProxy = await startStorageFaultProxy(objectStore.endpoint);
       Object.assign(serverEnvironment, objectStoreServerEnvironment(objectStore, storageProxy.endpoint, `chaos/${plan.waveId}/`));
       timeline.add("object_store_started", { release: MINIO_RELEASE, endpoint: objectStore.endpoint, proxy: storageProxy.endpoint, bucket: objectStore.bucket });
+    }
+    if (plan.tasks.some(task => task.providerFault)) {
+      // PV1–PV3: route the server's Codex launches through the fault shim (no product change).
+      const realCodex = resolveRealCodex(repositoryRoot);
+      providerFaults = await installProviderFaultSeam({ root: supervisor.paths.temporaryRoot, logPath: path.join(waveDir, "provider-faults.jsonl"),
+        realCommand: realCodex.command, realVersion: realCodex.version, realManifestPath: realCodex.manifestPath,
+        ...(process.env.NODE_OPTIONS ? { inheritedNodeOptions: process.env.NODE_OPTIONS } : {}) });
+      await providerFaults.arm(plan.tasks);
+      Object.assign(serverEnvironment, providerFaults.serverEnvironment);
+      timeline.add("provider_faults_installed", { realCodex: realCodex.command, codexVersion: realCodex.version,
+        rules: plan.tasks.flatMap(task => task.providerFault ? [`${task.taskId}:${describeProviderFault(task.providerFault)}`] : []) });
     }
     await supervisor.start(serverEnvironment);
     const api = new ChaosApi(supervisor.baseUrl);
@@ -485,8 +498,11 @@ async function main(): Promise<number> {
       }
       let artifacts: OracleArtifacts | null = null;
       if (observer.record.issueId) artifacts = await observer.collectArtifacts().catch(() => null);
-      const oracle = artifacts ? observer.definition.grade(observer.plan.nonce, artifacts, observer.workloadAgents())
+      if (artifacts && providerFaults && observer.plan.providerFault) artifacts.providerFaultEvents = await providerFaults.eventsFor(observer.plan.nonce);
+      const graded = artifacts ? observer.definition.grade(observer.plan.nonce, artifacts, observer.workloadAgents())
         : { verdict: "fail" as const, checks: [{ name: "artifacts_collected", ok: false, detail: observer.record.launchError ?? "collection failed" }] };
+      // A provider-fault task whose fault never happened tested nothing.
+      const oracle = withProviderFaultCheck(graded, observer.plan, artifacts?.providerFaultEvents ?? []);
       const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, oracle);
       let evidence: string | null = null;
       if (!grade.pass) {

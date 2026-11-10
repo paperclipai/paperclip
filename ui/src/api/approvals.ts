@@ -1,10 +1,11 @@
 import type { Approval, ApprovalComment, Issue } from "@paperclipai/shared";
-import { api } from "./client";
+import { api, type RequestOptions } from "./client";
 
 export const approvalsApi = {
-  list: (companyId: string, status?: string) =>
+  list: (companyId: string, status?: string, options?: RequestOptions) =>
     api.get<Approval[]>(
       `/companies/${companyId}/approvals${status ? `?status=${encodeURIComponent(status)}` : ""}`,
+      options,
     ),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Approval>(`/companies/${companyId}/approvals`, data),
