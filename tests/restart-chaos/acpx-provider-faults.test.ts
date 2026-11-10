@@ -280,6 +280,10 @@ describe("provider faults across a restart", () => {
     expect(withProviderFaultCheck(pass, task("aa", k2), [applied, { ...applied, event: "released", at: 10_000 }], 4_000, 20_000).checks.at(-1))
       .toMatchObject({ ok: false, detail: expect.stringContaining("releasedBeforeRestart") });
     expect(withProviderFaultCheck(pass, task("aa", k2), [applied, { ...applied, event: "released", at: 25_000 }], 4_000, 20_000).verdict).toBe("pass");
+    // The same for a held message the drain discarded with the provider.
+    expect(withProviderFaultCheck(pass, task("aa", k2), [applied, { ...applied, event: "held_message_discarded", at: 10_000 }], 4_000, 20_000).checks.at(-1))
+      .toMatchObject({ ok: false, detail: expect.stringContaining("discardedBeforeRestart") });
+    expect(withProviderFaultCheck(pass, task("aa", k2), [applied, { ...applied, event: "held_message_discarded", at: 25_000 }], 4_000, 20_000).verdict).toBe("pass");
     // A provider that closed first took the held message with it before the K1: nothing straddled the restart.
     expect(withProviderFaultCheck(pass, task("aa", rule), [applied, { ...applied, event: "held_message_discarded", at: 3_000 }], 4_000).checks.at(-1))
       .toMatchObject({ ok: false, detail: expect.stringContaining("discardedBeforeRestart") });

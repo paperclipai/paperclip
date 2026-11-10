@@ -585,14 +585,14 @@ acknowledgement (Codex ends a Stop without its terminal) while Q1 tasks fault th
 
 ```sh
 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
-  --adapters codex --workloads Q1,S1 --faults PV1,PV2 --provider-fault-restart K2,K4 \
+  --adapters codex --workloads Q1,S1 --faults PV1,PV2 --provider-fault-restart K2,K4 --provider-fault-delays 40 \
   --provider-fault-message S1=interrupt_ack,terminal --concurrency 1 --tasks 4 --seed 211
 ```
 
 Such a task passes when:
 
-- `provider_fault_applied`: the fault applied once, the K1 started after it, and for PV1 no release
-  came before the K1;
+- `provider_fault_applied`: the fault applied once, the restart started after it, and the held message
+  was neither released nor discarded before the old control plane stopped;
 - the ordinary grade passes: R1–R6 for a restart-crossing task and the workload's T-oracle. For Q1
   that means one question, the asking run `succeeded`, no failed run, nothing started before the
   answer, and the brief carries the answer.

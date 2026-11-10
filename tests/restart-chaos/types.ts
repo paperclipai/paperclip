@@ -11,6 +11,8 @@ import type { TimeFaultRecord } from "./time-faults.js";
  */
 export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14", "TM1", "TM2", "TM3", "RR1", "RR2", "RR3"] as const;
 export type FaultKind = (typeof FAULT_KINDS)[number];
+/** The shortest seeded K4 outage (scheduler.ts K4_HOLD_RANGE_MS), also the K4 hold after a provider fault. */
+export const K4_MIN_HOLD_MS = 120_000;
 /**
  * A task's planned fault. "K13" (restart storm) tasks have none of their own; the wave's storm crosses them.
  * PV1–PV3 (provider message faults, provider-faults.ts) restart nothing: the task's rule is armed in the Codex shim.

@@ -121,7 +121,7 @@ export function withAcpxSidecarHook(nodeOptions: string | undefined): string {
 export function parseProviderFaultRestart(raw: string | undefined, afterRaw: string | undefined, kinds: readonly ProviderFaultKind[],
   delaysMs: readonly number[] | undefined): Pick<WaveOptions, "providerFaultRestart" | "providerFaultRestartAfterMs" | "providerFaultRestartKinds"> {
   if (raw === undefined) {
-    if (afterRaw !== undefined) throw new Error("--provider-fault-restart-after-seconds needs --provider-fault-restart K1");
+    if (afterRaw !== undefined) throw new Error("--provider-fault-restart-after-seconds needs --provider-fault-restart (K1, K2 or K4)");
     return {};
   }
   const restartKinds = raw.split(",").map(value => value.trim()).filter(Boolean) as ProviderRestartKind[];

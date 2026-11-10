@@ -19,7 +19,7 @@ import { chmod, copyFile, mkdir, readFile, rename, symlink, writeFile } from "no
 import { readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
-import type { OracleResult, TaskPlan, WaveOptions, WorkloadId } from "./types.js";
+import { K4_MIN_HOLD_MS, type OracleResult, type TaskPlan, type WaveOptions, type WorkloadId } from "./types.js";
 
 export const PROVIDER_FAULT_KINDS = ["PV1", "PV2", "PV3"] as const;
 export type ProviderFaultKind = (typeof PROVIDER_FAULT_KINDS)[number];
@@ -32,8 +32,8 @@ export type ProviderMessage = (typeof PROVIDER_MESSAGES)[number];
 /** Restarts a provider fault may straddle: K1 kill -9, K2 SIGTERM graceful restart, K4 kill -9 then an outage hold. */
 export const PROVIDER_RESTART_KINDS = ["K1", "K2", "K4"] as const;
 export type ProviderRestartKind = (typeof PROVIDER_RESTART_KINDS)[number];
-/** K4 outage hold after a provider fault: the low end of the seeded K4 range (scheduler.ts K4_HOLD_RANGE_MS). */
-export const PROVIDER_FAULT_K4_HOLD_MS = 120_000;
+/** K4 outage hold after a provider fault: the low end of the seeded K4 range. */
+export const PROVIDER_FAULT_K4_HOLD_MS = K4_MIN_HOLD_MS;
 
 /** PV1 default: the late terminal of PR #20330 (the old 15 s governed-wait drain against Codex's 30 s command window). */
 export const DEFAULT_PROVIDER_DELAY_MS = 18_000;
@@ -46,13 +46,13 @@ export interface ProviderFaultRule {
   /** PV1 only. */
   delayMs?: number;
   /**
-   * `--provider-fault-restart K1` (PV1, PV2): kill -9 the control plane this long after the fault
-   * applied, so the held or dropped message straddles a restart.
+   * `--provider-fault-restart K1|K2|K4` (PV1, PV2): restart the control plane this long after the fault
+   * applied, so the held or dropped message straddles a restart. `holdMs` is the K4 outage.
    */
   restart?: { kind: ProviderRestartKind; afterAppliedMs: number; holdMs?: number };
 }
 
-/** Default gap between a provider fault applying and its K1: well inside the default 18 s PV1 hold. */
+/** Default gap between a provider fault applying and its restart: well inside the default 18 s PV1 hold. */
 export const DEFAULT_PROVIDER_FAULT_RESTART_AFTER_MS = 3_000;
 
 /** One shim log line (JSONL, `provider-faults.jsonl` in the wave directory). */
