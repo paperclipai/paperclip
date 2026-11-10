@@ -1,6 +1,6 @@
 import { Readable } from "node:stream";
 import express from "express";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -403,6 +403,34 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
     );
     expect(incompatibleKind.status).toBe(200);
     expect(incompatibleKind.body).toEqual({ artifacts: [], nextCursor: null });
+  });
+
+  it("lists only artifacts on tasks the caller can read", async () => {
+    const previousMode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+    process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
+    try {
+      const { companyId } = await seedArtifacts();
+      await db.update(issues).set({ visibility: "private", privacyRootIssueId: sql`${issues.id}`, responsibleUserId: "owner-user" })
+        .where(eq(issues.companyId, companyId));
+      const list = async (userId: string) => {
+        const app = express();
+        app.use((req, _res, next) => {
+          req.actor = { type: "board", userId, source: "session", companyIds: [companyId],
+            memberships: [{ companyId, membershipRole: "viewer", status: "active" }] };
+          next();
+        });
+        app.use("/api/companies", companyRoutes(db, createStorageService()));
+        app.use(errorHandler);
+        return request(app).get(`/api/companies/${companyId}/artifacts?limit=50`);
+      };
+      const outsider = await list("user-1");
+      expect(outsider.status).toBe(200);
+      expect(outsider.body.artifacts).toEqual([]);
+      expect((await list("owner-user")).body.artifacts.length).toBeGreaterThan(0);
+    } finally {
+      if (previousMode === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousMode;
+    }
   });
 
   it("returns an empty starred view for agent callers", async () => {
