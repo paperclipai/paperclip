@@ -29,8 +29,13 @@ import { inspectOnlineWorkspaceSource, requiresOnlineWorkspaceSource, type Onlin
 import { withWorkspaceSourceLocks, withIndependentWorkspaceSourceLocks, IsolatedRepositorySourceBusy } from "./workspace-source-lock.js";
 import { inspectOnlineLegacyWorkspaceRecoverySource, inspectOnlineLegacyWorkspaceRecoveryHold, lockOnlineLegacyWorkspaceRecoverySources, ONLINE_LEGACY_WORKSPACE_PRESERVATION, type OnlineLegacyWorkspaceRecoveryHold } from "./online-legacy-workspace-recovery.js";
 import { inspectNativeWorkspaceMigration, nativeWorkspaceMigrationMarker } from "./native-runtime/native-workspace-migration.js";
+import { readGitCacheExpiration, GIT_CACHE_EXPIRATION_REASON } from "./git-workspace-restoration.js";
 
 const SCHEMA = "paperclip.remote-workspace-migration.v1";
+const SUPERSESSION = "paperclip.remote-workspace-migration-supersession.v1";
+const supersessionSchema = z.object({ schema: z.literal(SUPERSESSION), companyId: z.string().uuid(), workspaceId: z.string().uuid(),
+  cohortId: z.string().uuid(), operationId: z.string().uuid(), supersessionId: z.string().uuid(), snapshotIds: z.array(z.string().uuid()).max(8) }).strict();
+const successorSchema = supersessionSchema.extend({ generation: z.number().int().min(1).max(2_147_483_647) });
 type Workspace = typeof executionWorkspaces.$inferSelect;
 type ReadDb = Pick<Db, "select">;
 type OnlineRecoveryHold = OnlineLegacyWorkspaceRecoveryHold & { actionId: string };
@@ -347,7 +352,7 @@ type MigrationInput = {
 };
 type MigrationTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
-async function resolveMigrationSource(input: MigrationInput) {
+async function resolveMigrationSource(input: Pick<MigrationInput, "db" | "companyId" | "workspaceId" | "writersStopped">) {
   const [sourceWorkspace] = !input.writersStopped ? await input.db.select().from(executionWorkspaces).where(and(
     eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId))) : [];
   const onlineSource = sourceWorkspace && !readRemoteWorkspaceAuthority(sourceWorkspace.metadata)
@@ -408,10 +413,19 @@ async function reserveMigration(input: MigrationInput, onlineSource?: OnlineWork
       if (canonical(operation.metadata?.onlineRecoveryHolds ?? []) !== canonical(current.onlineRecoveryHolds)) throw new Error("remote_workspace_migration_source_changed");
       return { workspace, authority: null, operation, source, sourceFingerprint, issueBinding, retainedDirectory: current.retainedDirectory, archivedGitSource: current.archivedGitSource, legacyRecoverySources: current.legacyRecoverySources, finalizedRecoveryHolds: current.finalizedRecoveryHolds, onlineRecoveryHolds: current.onlineRecoveryHolds, archivedRepositoryIntents: current.archivedRepositoryIntents };
     }
+    let migrationSupersession;
+    if (workspace.metadata?.remoteWorkspaceMigrationSupersession != null) {
+      const predecessor = supersessionSchema.parse(workspace.metadata.remoteWorkspaceMigrationSupersession);
+      if (predecessor.companyId !== workspace.companyId || predecessor.workspaceId !== workspace.id) throw new Error("migration_supersession_lineage_changed");
+      const [latest] = await tx.select({ generation: sql<number>`coalesce(max(${executionWorkspaceSnapshots.generation}),0)` }).from(executionWorkspaceSnapshots)
+        .where(and(eq(executionWorkspaceSnapshots.companyId, workspace.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id)));
+      migrationSupersession = successorSchema.parse({ ...predecessor, generation: Number(latest.generation) + 1 });
+    }
     const [operation] = await tx.insert(workspaceOperations).values({ ...(cohort ? { id: cohort.members.find(member => member.workspaceId === input.workspaceId)!.operationId } : {}), companyId: workspace.companyId, executionWorkspaceId: workspace.id,
       issueId: workspace.sourceIssueId, cwd: workspace.cwd ?? workspace.providerRef, phase: "remote_workspace_migration", status: "running",
       metadata: { schema: SCHEMA, sourceFingerprint, source, sourceIssueBinding: current.issueBinding,
         ...(cohort ? { cohortMigration: cohort } : {}),
+        ...(migrationSupersession ? { migrationSupersession } : {}),
         ...(nativeSessionContinuity ? { nativeSessionContinuity } : {}),
         nestedWorkspaceScope: { version: 1, state: "pending" },
         ...(current.finalizedRecoveryHolds.length ? { finalizedRecoveryHolds: current.finalizedRecoveryHolds } : {}),
@@ -488,8 +502,11 @@ async function captureMigration(input: MigrationInput, reserved: ReservedMigrati
     if (!refreshed) throw new Error("remote_workspace_migration_operation_changed");
     operation = refreshed;
   }
+  const predecessor = operation.metadata?.migrationSupersession == null ? null : successorSchema.parse(operation.metadata.migrationSupersession);
+  if (predecessor && (predecessor.companyId !== input.companyId || predecessor.workspaceId !== input.workspaceId))
+    throw new Error("migration_supersession_lineage_changed");
   const snapshot = await beginWorkspaceSnapshot(input.db, { companyId: input.companyId, workspaceId: input.workspaceId,
-    operationId: operation.id, generation: 1, epoch: 1 });
+    operationId: operation.id, generation: predecessor?.generation ?? 1, epoch: 1 });
   const scratch = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-migration-")));
   try {
     input.signal?.throwIfAborted();
@@ -931,4 +948,119 @@ export async function migrateRemoteWorkspaceCohort(input: {
   }, true, input.sourceLockWaitMs === undefined ? undefined : { waitMs: input.sourceLockWaitMs, signal });
   for (const publication of publications) publishActivity(publication);
   return result;
+}
+
+
+export async function supersedeExpiredRemoteWorkspaceMigrationCohort(input: {
+  db: Db; companyId: string; cohort: unknown; expiredWorkspaceIds: readonly string[]; signal: AbortSignal; sourceLockWaitMs?: number;
+}) {
+  const companyId = z.string().uuid().parse(input.companyId).toLowerCase(), cohort = cohortSchema.parse(input.cohort);
+  const expired = z.array(z.string().uuid()).min(1).max(8).parse(input.expiredWorkspaceIds).map(id => id.toLowerCase()).sort();
+  const ids = cohort.members.map(member => member.workspaceId), operationIds = cohort.members.map(member => member.operationId);
+  if (cohort.companyId !== companyId || ids.length > 8 || new Set(ids).size !== ids.length
+    || new Set(operationIds).size !== ids.length || canonical(ids) !== canonical([...ids].sort())
+    || new Set(expired).size !== expired.length || expired.some(id => !ids.includes(id))) throw new Error("migration_supersession_membership_changed");
+  input.signal.throwIfAborted();
+  const readRows = async (db: ReadDb) => ({
+    workspaces: await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, companyId), inArray(executionWorkspaces.id, ids))).orderBy(executionWorkspaces.id),
+    operations: await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, companyId), inArray(workspaceOperations.id, operationIds))).orderBy(workspaceOperations.id),
+    snapshots: await db.select().from(executionWorkspaceSnapshots).where(and(eq(executionWorkspaceSnapshots.companyId, companyId), inArray(executionWorkspaceSnapshots.sourceOperationId, operationIds))).orderBy(executionWorkspaceSnapshots.id),
+  });
+  const initial = await readRows(input.db);
+  if (initial.workspaces.length !== ids.length || initial.operations.length !== ids.length
+    || initial.operations.some(operation => operation.phase !== "remote_workspace_migration"
+      || cohort.members.find(member => member.operationId === operation.id)?.workspaceId !== operation.executionWorkspaceId
+      || canonical(operation.metadata?.cohortMigration) !== canonical(cohort))
+    || initial.snapshots.some(snapshot => !["pending", "uploaded"].includes(snapshot.status)
+      || cohort.members.find(member => member.operationId === snapshot.sourceOperationId)?.workspaceId !== snapshot.executionWorkspaceId))
+    throw new Error("migration_supersession_journal_changed");
+  const previous = object(initial.operations[0].metadata?.lastFailure);
+  const receipt = (supersessionId: string, replayed: boolean) => ({ superseded: true, migrationCompleted: false, replayed,
+    companyId, cohortId: cohort.id, supersessionId, members: cohort.members.map(member => ({ ...member,
+      snapshotIds: initial.snapshots.filter(snapshot => snapshot.sourceOperationId === member.operationId).map(snapshot => snapshot.id) })) });
+  if (initial.operations.every(operation => operation.status === "failed" && operation.finishedAt !== null
+    && object(operation.metadata?.lastFailure).schema === SUPERSESSION
+    && object(operation.metadata?.lastFailure).code === "source_expired_during_import"
+    && object(operation.metadata?.lastFailure).operationId === operation.id
+    && object(operation.metadata?.lastFailure).workspaceId === operation.executionWorkspaceId
+    && object(operation.metadata?.lastFailure).companyId === companyId
+    && object(operation.metadata?.lastFailure).cohortId === cohort.id
+    && object(operation.metadata?.lastFailure).supersessionId === previous.supersessionId
+    && canonical(object(operation.metadata?.lastFailure).expiredWorkspaceIds) === canonical(expired)
+    && !Object.hasOwn(operation.metadata ?? {}, "retiredSave")) && typeof previous.supersessionId === "string") return receipt(previous.supersessionId, true);
+  if (initial.operations.some(operation => operation.status !== "running" || operation.finishedAt !== null || operation.metadata?.uncertain === true
+    || Object.hasOwn(operation.metadata ?? {}, "lastFailure") || Object.hasOwn(operation.metadata ?? {}, "retiredSave")))
+    throw new Error("migration_supersession_journal_changed");
+  const observe = async (db: ReadDb) => {
+    const rows = await readRows(db), members = [];
+    if (JSON.stringify(rows) !== JSON.stringify(initial)) throw new Error("migration_supersession_source_changed");
+    for (const workspace of rows.workspaces) {
+      input.signal.throwIfAborted();
+      const operation = rows.operations.find(row => row.executionWorkspaceId === workspace.id)!, marker = object(workspace.metadata?.remoteWorkspaceMigration);
+      if (readRemoteWorkspaceAuthority(workspace.metadata) || marker.schema !== SCHEMA || marker.operationId !== operation.id
+        || marker.sourceFingerprint !== operation.metadata?.sourceFingerprint || canonical(marker.source) !== canonical(operation.metadata?.source)
+        || workspace.metadata?.remoteWorkspaceMigrationSupersession != null || operation.issueId !== workspace.sourceIssueId
+        || operation.cwd !== (workspace.cwd ?? workspace.providerRef)) throw new Error("migration_supersession_source_changed");
+      const memberInput = { db: db as Db, companyId, workspaceId: workspace.id, signal: input.signal };
+      const onlineSource = await resolveMigrationSource(memberInput), current = await inspect(db, { ...memberInput, onlineSource }, cohort);
+      if (current.reasons.length) throw new Error(`remote_workspace_migration_blocked:${current.reasons.join(",")}`);
+      if (expired.includes(workspace.id)) {
+        const expiration = readGitCacheExpiration(workspace), recipe = current.archivedGitSource?.recipe;
+        if (workspace.status !== "archived" || workspace.cleanupReason !== GIT_CACHE_EXPIRATION_REASON
+          || !expiration?.completed || !expiration.workspaceRemoved || !recipe?.restorePoint || recipe.restoredAt
+          || fingerprint(workspace) === marker.sourceFingerprint) throw new Error("migration_supersession_expiration_unverified");
+      } else if (!onlineSource || fingerprint(workspace) !== marker.sourceFingerprint) throw new Error("migration_supersession_source_changed");
+      members.push({ workspace, operation, onlineSource, current });
+    }
+    return members;
+  };
+  const observed = await observe(input.db), projectIds = [...new Set(observed.flatMap(member => member.onlineSource?.projectIds
+    ?? (member.workspace.projectId ? [member.workspace.projectId] : [])))].sort();
+  const issueIds = [...new Set(observed.flatMap(member => member.onlineSource?.issueIds ?? [member.workspace.sourceIssueId!]))].sort();
+  const lifecycleIds = [...new Set(observed.flatMap(member => [member.workspace.id, ...(member.onlineSource?.workspaceIds ?? [])]))].sort();
+  const publications: Parameters<typeof publishActivity>[0][] = [], supersessionId = randomUUID();
+  await withIndependentWorkspaceSourceLocks(input.db, { companyId, projectIds, issueIds }, async lock => {
+    for (const id of lifecycleIds) if (!await tryAcquireExecutionWorkspaceLifecycleLock(lock, id)) throw new IsolatedRepositorySourceBusy("workspace_source_busy");
+    const current = await observe(input.db);
+    if (canonical(current) !== canonical(observed)) throw new Error("migration_supersession_source_changed");
+    const sources = current.flatMap(member => [...member.current.legacyRecoverySources,
+      ...(member.onlineSource?.companions.flatMap(proof => proof.sources) ?? [])]);
+    const holds = current.flatMap(member => [...member.current.onlineRecoveryHolds,
+      ...(member.onlineSource?.companions.flatMap(proof => proof.holds) ?? [])]);
+    if (!await lockOnlineLegacyWorkspaceRecoverySources(lock as unknown as Db, { companyId, sources, holds }))
+      throw new Error("remote_workspace_migration_blocked:remote_copyback_owned");
+    await lock.transaction(async tx => {
+      await lockMigrationParents(tx, companyId, null, [...observed.map(member => member.workspace.sourceIssueId!),
+        ...sources.map(source => source.issueId)]);
+      await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, companyId), inArray(executionWorkspaces.id, ids))).orderBy(executionWorkspaces.id).for("update", { noWait: true });
+      await tx.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, companyId), inArray(workspaceOperations.id, operationIds))).orderBy(workspaceOperations.id).for("update", { noWait: true });
+      for (const snapshot of initial.snapshots) await tx.select().from(executionWorkspaceSnapshots).where(and(
+        eq(executionWorkspaceSnapshots.companyId, companyId), eq(executionWorkspaceSnapshots.id, snapshot.id))).for("update", { noWait: true });
+      const checked = await observe(tx);
+      if (canonical(checked) !== canonical(current)) throw new Error("migration_supersession_source_changed");
+      const at = new Date();
+      for (const member of checked) {
+        input.signal.throwIfAborted();
+        if (member.current.archivedGitSource) await lockArchivedGitMigrationSources(tx, member.workspace, member.current.archivedGitSource);
+        const snapshotIds = initial.snapshots.filter(snapshot => snapshot.sourceOperationId === member.operation.id).map(snapshot => snapshot.id);
+        const lineage = { schema: SUPERSESSION, companyId, workspaceId: member.workspace.id, cohortId: cohort.id,
+          operationId: member.operation.id, supersessionId, snapshotIds };
+        const [operation] = await tx.update(workspaceOperations).set({ status: "failed", finishedAt: at, updatedAt: at,
+          metadata: { ...member.operation.metadata, lastFailure: { ...lineage, code: "source_expired_during_import", at: at.toISOString(), expiredWorkspaceIds: expired } } }).where(and(
+          eq(workspaceOperations.companyId, companyId), eq(workspaceOperations.executionWorkspaceId, member.workspace.id), eq(workspaceOperations.id, member.operation.id),
+          eq(workspaceOperations.phase, "remote_workspace_migration"), eq(workspaceOperations.status, "running"), sql`${workspaceOperations.finishedAt} is null`, eq(workspaceOperations.metadata, member.operation.metadata!))).returning();
+        const metadata: Record<string, unknown> = { ...member.workspace.metadata, remoteWorkspaceMigrationSupersession: lineage }; delete metadata.remoteWorkspaceMigration;
+        const [workspace] = await tx.update(executionWorkspaces).set({ metadata, updatedAt: at }).where(and(
+          eq(executionWorkspaces.companyId, companyId), eq(executionWorkspaces.id, member.workspace.id), eq(executionWorkspaces.metadata, member.workspace.metadata!))).returning();
+        if (!operation || !workspace) throw new Error("migration_supersession_compare_and_swap_failed");
+        publications.push((await persistActivity(tx as unknown as Db, { companyId, actorType: "system", actorId: "remote-workspace-migration",
+          action: "workspace.migration_failed", entityType: "execution_workspace", entityId: workspace.id,
+          details: { code: "source_expired_during_import", cohortId: cohort.id, operationId: operation.id, supersessionId, snapshotIds } })).publication);
+      }
+      await notifyRemoteWorkspaceSnapshots(tx, `cohort:${cohort.id}`);
+      input.signal.throwIfAborted();
+    });
+  }, true, input.sourceLockWaitMs === undefined ? undefined : { waitMs: input.sourceLockWaitMs, signal: input.signal });
+  for (const publication of publications) publishActivity(publication);
+  return receipt(supersessionId, false);
 }

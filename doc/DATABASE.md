@@ -161,6 +161,33 @@ cohort proof for all members. Cancellation or a changed journal rolls back the
 whole refresh. Partial reservations still require the original aggregate proof.
 Archives, recovery obligations and publication checks retain their existing owners.
 
+Git cache expiration treats a saved migration marker or unfinished migration
+journal as a durable consumer. It checks this under the lifecycle lock. A failed
+migration with `lastFailure` and no `retiredSave` also keeps its source and
+snapshot retention hold after process loss.
+
+If an older server already expired members of an unpublished cohort,
+`supersedeExpiredRemoteWorkspaceMigrationCohort` accepts the exact saved cohort
+and the exact expired member IDs. This is an internal service API for a privileged
+operator with a real database handle and reviewed company/cohort inputs. It does
+not add a CLI mode or an HTTP route. An operator calls the exported owner directly;
+its test and the reviewed one-time administrative qualification use that path.
+It requires completed Git expiration and an
+unexpired restore-point recipe for each missing member. Other members must retain
+their saved source fingerprints. Fresh source, lifecycle, finalizer and row locks
+protect one transaction that fails every old journal and removes only its matched
+active marker. It does not report migration success or change task state. The
+old cohort proof, operations, snapshots and object references remain unchanged.
+The failure receipt retains those objects through the existing failed-save hold.
+The optional `sourceLockWaitMs` uses the existing bounded source-lock queue.
+The default still refuses a busy source immediately. Cancellation targets this
+waiter only. All source and recovery checks run again after lock admission.
+
+New canonical imports use the current archived recipe or current online source.
+They record the old operation and supersession IDs and reserve a snapshot
+generation above the existing ledger maximum. A successful new import does not
+retire the old hold. Release of those historical objects requires separate review.
+
 ### Original local Git sources for archived workspaces
 
 When an archived runtime branch has an exact successful deletion receipt, its
