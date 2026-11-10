@@ -5,6 +5,7 @@ import { BreadcrumbBar } from "@/components/BreadcrumbBar";
 import { LockedIssueChip } from "@/components/LockedIssueChip";
 import { StatusIcon } from "@/components/StatusIcon";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
+import { useSidebar } from "@/context/SidebarContext";
 import { useLocation } from "@/lib/router";
 import { PluginLauncherProvider } from "@/plugins/launchers";
 
@@ -22,6 +23,7 @@ function TaskBreadcrumbPreview({
   source?: "Tasks" | "Mine";
 }) {
   const { setBreadcrumbs } = useBreadcrumbs();
+  const { isMobile } = useSidebar();
   const location = useLocation();
   useEffect(() => {
     setBreadcrumbs([
@@ -30,12 +32,12 @@ function TaskBreadcrumbPreview({
         label: privateParent ? "Private task" : parentTitle,
         identifier: "PAP-120",
         href: privateParent ? undefined : "/issues/PAP-120",
-        control: privateParent ? <LockedIssueChip identifier="PAP-120" /> : undefined,
+        control: privateParent ? <LockedIssueChip identifier={isMobile ? null : "PAP-120"} /> : undefined,
         controlKey: privateParent ? "private-parent" : undefined,
       }] : []),
       { label: title, identifier: "PAP-121", leading: <StatusIcon status="in_progress" className="size-3" />, leadingKey: "in_progress" },
     ]);
-  }, [parentTitle, title, showParent, privateParent, source, setBreadcrumbs]);
+  }, [parentTitle, title, showParent, privateParent, source, isMobile, setBreadcrumbs]);
 
   return (
     <div className="min-h-dvh w-full bg-background text-foreground">
@@ -108,5 +110,16 @@ export const PrivateParent: Story = {
     await expect(within(nav).queryByRole("link", { name: /private/i })).not.toBeInTheDocument();
     await expect(within(nav).getByTestId("locked-issue-chip")).toBeVisible();
     await expect(nav.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
+  },
+};
+export const PrivateParentMobile: Story = {
+  ...PrivateParent,
+  globals: { viewport: { value: "mobile1", isRotated: false } },
+  play: async (context) => {
+    await PrivateParent.play!(context);
+    const nav = await within(context.canvasElement).findByRole("navigation", { name: "breadcrumb" });
+    await expect(within(nav).getByTestId("locked-issue-chip")).toHaveTextContent("Private");
+    await expect(nav).not.toHaveTextContent("PAP-120");
+    await expect(nav).toHaveTextContent("PAP-121");
   },
 };

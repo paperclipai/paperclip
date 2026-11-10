@@ -5979,7 +5979,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           : createIssueDetailPath(breadcrumbParent.identifier ?? breadcrumbParent.id),
         onClick: isLockedIssueStub(breadcrumbParent) ? undefined : rememberBreadcrumbParent,
         control: isLockedIssueStub(breadcrumbParent)
-          ? <LockedIssueChip identifier={breadcrumbParent.identifier} />
+          ? <LockedIssueChip identifier={isMobile ? null : breadcrumbParent.identifier} />
           : undefined,
         controlKey: isLockedIssueStub(breadcrumbParent) ? "private-parent" : undefined,
       }] : []),
@@ -5998,6 +5998,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     breadcrumbTitle,
     breadcrumbIdentifier,
     breadcrumbParent,
+    isMobile,
     rememberBreadcrumbParent,
     hasLiveRuns,
     setBreadcrumbs,

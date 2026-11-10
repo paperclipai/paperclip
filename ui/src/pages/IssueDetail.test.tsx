@@ -2953,7 +2953,8 @@ describe("IssueDetail", () => {
     });
   });
 
-  it("does not link to or reveal the title of a private parent in the global breadcrumbs", async () => {
+  it.each([false, true])("renders a noninteractive private parent with mobile=%s", async (isMobile) => {
+    mockSidebarState.isMobile = isMobile;
     mockIssuesApi.get.mockResolvedValue(createIssue({
       ancestors: [{ id: "private-parent", identifier: "PAP-0", locked: true }] as unknown as Issue["ancestors"],
     }));
@@ -2967,7 +2968,9 @@ describe("IssueDetail", () => {
     const parentCrumb = mockSetBreadcrumbs.mock.calls.at(-1)![0][1];
     expect(parentCrumb.onClick).toBeUndefined();
     await act(async () => { renderIssueView(parentCrumb.control); });
-    expect(container.querySelector('[data-testid="locked-issue-chip"]')).not.toBeNull();
+    const chip = container.querySelector('[data-testid="locked-issue-chip"]');
+    expect(chip).not.toBeNull();
+    expect(chip?.textContent).toBe(isMobile ? "Private" : "PAP-0");
     expect(container.querySelector('a, [role="link"]')).toBeNull();
   });
 
