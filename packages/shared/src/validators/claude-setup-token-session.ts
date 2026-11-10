@@ -88,6 +88,7 @@ export type ClaudeSetupTokenSessionPrompt =
 // public response.
 export const claudeSetupTokenSessionOwnerResponseSchema =
   claudeSetupTokenSessionResponseSchema.extend({
+    agentId: z.string().guid().optional(),
     panelMode: adapterAuthPanelModeSchema,
     prompt: claudeSetupTokenSessionPromptSchema.nullable(),
     aiConnection: aiConnectionLoginIntentSchema.optional(),

@@ -233,6 +233,7 @@ export interface AdapterAuthSessionOwnerResponse extends AdapterAuthSessionRespo
 // The request that starts a login session for one adapter in one environment.
 // The owner principal comes from the authenticated caller, not from this body.
 export interface StartAdapterAuthSessionRequest {
+  agentId?: string;
   aiConnection?: AiConnectionLoginIntent;
   environmentId: string;
   adapterType: AgentAdapterType;
