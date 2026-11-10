@@ -294,7 +294,8 @@ async function main(): Promise<number> {
     }
     if (plan.tasks.some(task => task.providerFault)) {
       // PV1–PV3: route the server's Codex launches through the fault shim (no product change).
-      const realCodex = resolveRealCodex(repositoryRoot);
+      // The provider the server actually runs: `--server-from` serves another checkout.
+      const realCodex = resolveRealCodex(plan.options.serverFrom ?? repositoryRoot);
       providerFaults = await installProviderFaultSeam({ root: supervisor.paths.temporaryRoot, logPath: path.join(waveDir, "provider-faults.jsonl"),
         realCommand: realCodex.command, realVersion: realCodex.version, realManifestPath: realCodex.manifestPath,
         ...(process.env.NODE_OPTIONS ? { inheritedNodeOptions: process.env.NODE_OPTIONS } : {}) });
