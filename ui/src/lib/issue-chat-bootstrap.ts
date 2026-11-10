@@ -42,44 +42,75 @@ const SHARE_WINDOW_MS = 2_000;
 export const CHAT_BOOTSTRAP_SHARE_DEADLINE_MS = 5_000;
 
 /**
- * One task's part of a bootstrap request. `userId` is the account that sent
- * it: an entry is never used by another account.
+ * The account a request was sent for: a user id, `null` when the session has
+ * no user, or `undefined` while this document has not read its session yet.
+ * `revoked` marks a request whose answer must never be used.
  */
-type Entry = { promise: Promise<ChatBootstrapItem | undefined>; userId: string | null; startedAt: number; settledAt?: number };
+type Owner = { account: string | null | undefined; revoked: boolean };
+
+/** One task's part of a bootstrap request. It is never used by another account. */
+type Entry = { promise: Promise<ChatBootstrapItem | undefined>; owner: Owner; startedAt: number; settledAt?: number };
 const entries = new Map<string, Entry>();
 
 function refKey(ref: string) {
   return /^[0-9a-f-]{36}$/i.test(ref) ? ref.toLowerCase() : ref.toUpperCase();
 }
 
-/** The signed-in user, or null for a local board. */
-function sessionUserId(queryClient: QueryClient) {
-  const session = queryClient.getQueryData<{ user?: { id?: unknown } | null } | null>(queryKeys.auth.session);
+/** The session's user id, `null` without a user, `undefined` before the first session read. */
+function sessionAccount(queryClient: QueryClient): string | null | undefined {
+  const session = queryClient.getQueryState<{ user?: { id?: unknown } | null } | null>(queryKeys.auth.session)?.data;
+  if (session === undefined) return undefined;
   return typeof session?.user?.id === "string" ? session.user.id : null;
+}
+
+/**
+ * Whether `owner`'s answer may be used now. A request sent before the first
+ * session read (a hard load's early fetch) can only have used this
+ * document's original sign-in, so it belongs to the first account the
+ * session reports; a session without a user revokes it.
+ */
+function ownerMatches(owner: Owner, current: string | null | undefined) {
+  if (owner.revoked) return false;
+  if (owner.account !== undefined) return owner.account === current;
+  if (current === undefined) return true;
+  if (current === null) {
+    owner.revoked = true;
+    return false;
+  }
+  owner.account = current;
+  return true;
+}
+
+/** Owners sent before the first session read, bound as soon as the session is known. */
+const pendingOwners = new Set<Owner>();
+let stopWatchingSession: (() => void) | null = null;
+
+function newOwner(queryClient: QueryClient): Owner {
+  const owner: Owner = { account: sessionAccount(queryClient), revoked: false };
+  if (owner.account !== undefined) return owner;
+  pendingOwners.add(owner);
+  stopWatchingSession ??= queryClient.getQueryCache().subscribe(() => {
+    const current = sessionAccount(queryClient);
+    if (current === undefined) return;
+    // Bind (or, for a session without a user, revoke) before anything else
+    // can sign in, so a later account never inherits these answers.
+    for (const pending of pendingOwners) ownerMatches(pending, current);
+    pendingOwners.clear();
+    stopWatchingSession?.();
+    stopWatchingSession = null;
+  });
+  return owner;
 }
 
 function isExpired(entry: Entry, now: number) {
   return entry.settledAt !== undefined && now - entry.settledAt >= ISSUE_CHAT_BOOTSTRAP_FRESH_MS;
 }
 
-/**
- * Whether an answer requested by `requestedBy` may be used by the account
- * signed in now. A request sent before the session was known (a hard load's
- * early fetch, or a local board) belongs to the first account that uses it.
- */
-function sameAccount(requestedBy: string | null, current: string | null) {
-  return requestedBy === null || requestedBy === current;
-}
-
 /** This account's entry for `ref` that is loading or loaded recently. */
 function currentEntry(queryClient: QueryClient, ref: string, now = Date.now()) {
   const entry = entries.get(refKey(ref));
   if (!entry || isExpired(entry, now)) return undefined;
-  const current = sessionUserId(queryClient);
-  if (!sameAccount(entry.userId, current)) return undefined;
-  // An unowned entry now belongs to this account; another account cannot use it.
-  entry.userId ??= current;
-  return entry;
+  return ownerMatches(entry.owner, sessionAccount(queryClient)) ? entry : undefined;
 }
 
 /** Remove `entry` from every ref that still points at it. */
@@ -94,10 +125,10 @@ function forget(entry: Entry) {
  * same task twice, even while a request is in flight. Expired entries are
  * dropped, so answers do not stay in memory.
  */
-function track(queryClient: QueryClient, refs: readonly string[], userId: string | null, startedAt: number, promise: Promise<ChatBootstrapItem | undefined>) {
+function track(queryClient: QueryClient, refs: readonly string[], owner: Owner, startedAt: number, promise: Promise<ChatBootstrapItem | undefined>) {
   const now = Date.now();
   for (const [key, entry] of entries) if (isExpired(entry, now)) entries.delete(key);
-  const entry: Entry = { startedAt, userId, promise };
+  const entry: Entry = { startedAt, owner, promise };
   for (const ref of refs) entries.set(refKey(ref), entry);
   void promise.then((item) => {
     entry.settledAt = Date.now();
@@ -118,12 +149,12 @@ type Wanted = { ref: string; refs: string[] };
 function startChunk(queryClient: QueryClient, companyId: string, wanted: readonly Wanted[]) {
   const refs = wanted.map((target) => target.ref);
   const requestedAt = Date.now();
-  const userId = sessionUserId(queryClient);
+  const owner = newOwner(queryClient);
   // A synchronous throw (bad input) is only a missed preload as well.
   const request = Promise.resolve().then(() => issuesApi.chatBootstrap(companyId, refs)).then((response) => {
     const byRef = new Map<string, ChatBootstrapItem>();
     // Never seed or share an answer read with the previous account's cookie.
-    if (!sameAccount(userId, sessionUserId(queryClient))) return byRef;
+    if (!ownerMatches(owner, sessionAccount(queryClient))) return byRef;
     for (const item of response.items) {
       if (!seedIssueChatBootstrap(queryClient, item, { companyId, requestedAt })) continue;
       byRef.set(refKey(item.ref), item);
@@ -131,7 +162,7 @@ function startChunk(queryClient: QueryClient, companyId: string, wanted: readonl
     return byRef;
   });
   for (const target of wanted) {
-    track(queryClient, target.refs, userId, requestedAt, request.then((byRef) => byRef.get(refKey(target.ref)), () => undefined));
+    track(queryClient, target.refs, owner, requestedAt, request.then((byRef) => byRef.get(refKey(target.ref)), () => undefined));
   }
   return request.then(() => undefined, () => undefined);
 }
@@ -188,10 +219,10 @@ function adoptEarlyChatBootstrap(queryClient: QueryClient, companyId: string | n
   const startedAt = typeof early.startedAt === "number" ? early.startedAt : Date.now();
   // A page that took this long to start reads the task itself.
   if (Date.now() - startedAt >= ISSUE_CHAT_BOOTSTRAP_FRESH_MS) return false;
-  const userId = sessionUserId(queryClient);
-  track(queryClient, [ref], userId, startedAt, early.promise.then((item) => {
+  const owner = newOwner(queryClient);
+  track(queryClient, [ref], owner, startedAt, early.promise.then((item) => {
     // The answer belongs to the account that loaded the page.
-    if (!item?.issue || !sameAccount(userId, sessionUserId(queryClient))) return undefined;
+    if (!item?.issue || !ownerMatches(owner, sessionAccount(queryClient))) return undefined;
     // The route's task is the one the page opens; a known company must match it.
     const ownerCompanyId = companyId ?? item.issue.companyId;
     return seedIssueChatBootstrap(queryClient, item, { companyId: ownerCompanyId, requestedAt: startedAt }) ? item : undefined;
@@ -205,10 +236,10 @@ function adoptEarlyChatBootstrap(queryClient: QueryClient, companyId: string | n
  */
 function startSingle(queryClient: QueryClient, ref: string) {
   const requestedAt = Date.now();
-  const userId = sessionUserId(queryClient);
+  const owner = newOwner(queryClient);
   const path = `/issues/${encodeURIComponent(ref)}/chat-bootstrap`;
-  track(queryClient, [ref], userId, requestedAt, Promise.resolve().then(() => api.get<ChatBootstrapItem>(path, { cache: "no-store" })).then((item) => {
-    if (!item?.issue || !sameAccount(userId, sessionUserId(queryClient))) return undefined;
+  track(queryClient, [ref], owner, requestedAt, Promise.resolve().then(() => api.get<ChatBootstrapItem>(path, { cache: "no-store" })).then((item) => {
+    if (!item?.issue || !ownerMatches(owner, sessionAccount(queryClient))) return undefined;
     return seedIssueChatBootstrap(queryClient, item, { companyId: item.issue.companyId, requestedAt }) ? item : undefined;
   }, () => undefined));
 }
@@ -279,6 +310,9 @@ export function sameIds(a: readonly string[], b: readonly string[]) {
 /** Test seam. */
 export function resetIssueChatBootstrapsForTest() {
   entries.clear();
+  pendingOwners.clear();
+  stopWatchingSession?.();
+  stopWatchingSession = null;
 }
 
 /** Test seam: how many refs hold an entry. */

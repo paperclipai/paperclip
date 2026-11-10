@@ -300,6 +300,36 @@ describe("safeguards", () => {
     expect(read).toHaveBeenCalledOnce();
   });
 
+  it("never seeds a pre-session early answer after a sign-out, nor for the next account", async () => {
+    let answer!: (value: unknown) => void;
+    (window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL] = {
+      ref: "ABC-3", startedAt: Date.now(), promise: new Promise((resolve) => { answer = resolve; }),
+    };
+    // Adopted before the first session read finishes.
+    startIssueChatBootstrap(client, null, "ABC-3");
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    // user-1 signs out, then user-2 signs in, before the answer arrives.
+    client.setQueryData(queryKeys.auth.session, null);
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+    answer(item("ABC-3"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(client.getQueryData([...queryKeys.issues.detail("ABC-3"), "core"])).toBeUndefined();
+    const read = vi.fn().mockResolvedValue([]);
+    await readFromIssueChatBootstrap(client, ["unread"], "ABC-3", (bootstrap) => bootstrap.recentActivity, read);
+    expect(read).toHaveBeenCalledOnce();
+  });
+
+  it("revokes a pre-session early answer when the first session has no user", async () => {
+    (window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL] = { ref: "ABC-3", startedAt: Date.now(), promise: new Promise(() => {}) };
+    startIssueChatBootstrap(client, null, "ABC-3");
+    client.setQueryData(queryKeys.auth.session, null);
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+    const read = vi.fn().mockResolvedValue([]);
+    await readFromIssueChatBootstrap(client, ["unread"], "ABC-3", (bootstrap) => bootstrap.recentActivity, read);
+    expect(read).toHaveBeenCalledOnce();
+  });
+
   it("stamps an early answer with its request time and ignores one that is already stale", async () => {
     const startedAt = Date.now() - 5_000;
     (window as unknown as Record<string, unknown>)[EARLY_CHAT_BOOTSTRAP_GLOBAL] = { ref: "ABC-3", startedAt, promise: Promise.resolve(item("ABC-3")) };
