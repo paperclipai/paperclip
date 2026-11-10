@@ -759,6 +759,48 @@ when the board decides after a day, and the approved subtask must exist exactly 
 - Times kept outside Postgres are not aged: in-memory timers and the runner's own state files.
   Neither are times inside `text` columns or HMACs computed over a time.
 
+## Repeated restarts (RR1–RR3, `--rr-gap-seconds`)
+
+```sh
+# Each kind across running tasks.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads A1,B5,C1 --faults RR1,RR2,RR3 --concurrency 3 --tasks 6 --seed 401
+# A second kill while an approval is pending.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads G1 --faults RR1 --triggers approval --concurrency 2 --tasks 2 --seed 402
+```
+
+Every other fault restarts the server once. Real deploy loops restart it again 5–60 s after it comes
+back, while it is still recovering the runs the first restart interrupted. An RR fault starts as a K1
+(`SIGKILL` the server tree, start a replacement at once). After each planned gap, measured from the
+moment the replacement reports healthy, it stops that replacement and starts another one.
+
+| Fault | Restarts | Default gap after health |
+| --- | --- | --- |
+| RR1 double crash | K1, then one more `SIGKILL` | 3–20 s |
+| RR2 crash, then graceful | K1, then one `SIGTERM` (as K2) | 3–20 s |
+| RR3 crash loop | 3–4 `SIGKILL`s in all; the last replacement stays up | 10–30 s |
+
+The gaps are seeded per task (`restartSteps` in `plan.json`), and drawn only for RR tasks, so the plans
+of existing seeds do not change. `--rr-gap-seconds <n>` or `<min>-<max>` (1–300) replaces every RR
+gap: for example `--rr-gap-seconds 5` for a stop that always lands in recovery, or `30-60` for a slow
+deploy loop. RR faults do not combine with `--storm-minutes`, whose faults carry no planned steps.
+
+**Evidence.** Each stop and replacement (the first kill included) is recorded with its signal, planned
+gap, stopped PID, the `/api/ready` status just before the stop (`recovering` means it landed inside
+recovery), and the stopped, restarted and healthy times:
+- in `<wave>/repeated-restarts/<faultId>.json`, also written when the sequence fails part way;
+- in the fault receipt (`repeatedRestart` in `faults.json`, and in each failure's `startup-phases.json`);
+- in the timeline (`repeated_restart_stop`, `repeated_restart_healthy`).
+
+**Grading.** The whole sequence is one fault receipt, so it is one fault window: from the first kill to
+the last replacement's ready. Crossing, R1's outage allowance, R5's ready clock, the T-oracle, task
+deadlines and the restart-recovery speed budget treat it as one fault. No check is relaxed: the task
+must reach its correct terminal state with no Retry (R3) and no duplicated work (R4). The observer does
+not click Retry and no other fault fires until the last replacement is ready. A `--replay` of an RR
+task restarts again after the same gaps. A replacement that exits on its own during a gap fails the
+fault as a harness error, with the stops so far recorded.
+
 ## Fault timing (`--triggers`)
 
 Each task samples one trigger with its cell. `time` (default) fires at the
@@ -787,7 +829,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 
 | File | Role |
 | --- | --- |
-| `supervisor.ts` | Owns the server. Reuses `tests/runner-e2e` process code (config, ports, env isolation, wrapper-owned Postgres, process-tree stopper, `replaceController`). Faults: K1 SIGKILL + immediate restart, K2 SIGTERM + restart, K4 SIGKILL + 2–5 min hold, K6 crash loop. The controller runtime cache is kept (discarding it is K11). |
+| `supervisor.ts` | Owns the server. Reuses `tests/runner-e2e` process code (config, ports, env isolation, wrapper-owned Postgres, process-tree stopper, `replaceController`). Faults: K1 SIGKILL + immediate restart, K2 SIGTERM + restart, K4 SIGKILL + 2–5 min hold, K6 crash loop, RR1–RR3 repeated restarts. The controller runtime cache is kept (discarding it is K11). |
 | `seed.ts` | Chaos Lab company, encrypted provider secrets, native Codex / ACPX Claude / OpenCode agents from the runner-e2e catalog, and the `chaos-sandbox` project (git repo: python CLI, one failing test, `bench.sh` ≈ 4 min) with isolated git-worktree workspaces. It first turns on the instance `enableIsolatedWorkspaces` setting; without it the server ignores the project policy and every repo task shares the primary checkout. |
 | `scheduler.ts` | Seeded plan: workload × adapter × fault cells and a random fire time per task. Saved to `results/<wave>/plan.json`. `--replay` reruns one task alone with the same choices and fires the recorded sequence of faults that crossed it (other tasks' faults included) at the same offsets from launch. |
 | `observer.ts` | Polls each issue and its runs. When a task rests needing Retry it calls `POST /api/issues/:id/retry` once (once more only if a later fault started after that click), with the body `useTaskRetry.ts` sends. Collects T-oracle artifacts and the R6 sweep. |
@@ -803,6 +845,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `acpx-provider-faults.ts`, `provider-shim/acpx-*` | PV1–PV3 for Claude (ACPX): the stand-in runner package, the server hook, the sidecar/provider tap, and `--provider-fault-restart`. |
 | `question-handoff.ts` | Q1 saved question: the board's answer step and its oracle. |
 | `time-faults.ts`, `time-faults-config.ts` | TM1–TM3: process freezing, database aging with recorded rows, and the time-corrected API the grader reads through. |
+| `repeated-restarts.ts` | RR1–RR3: seeded restart steps, `--rr-gap-seconds`, and the stop-and-replace loop the supervisor runs. |
 | `daytona-sweep.ts` | Daytona R6: read-only reconciliation of this wave's labelled sandboxes with leases; cleanup only through Paperclip. |
 
 ## Output (gitignored)

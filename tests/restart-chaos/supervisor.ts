@@ -16,7 +16,7 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createWriteStream, readFileSync, statSync, writeFileSync, type WriteStream } from "node:fs";
-import { mkdir, readFile, symlink } from "node:fs/promises";
+import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -35,6 +35,8 @@ import { runnerE2ETypeScriptProcessArgs } from "../runner-e2e/web-server-command
 import type { MatrixExecution } from "../runner-e2e/types.js";
 import { DEFAULT_TIME_AGE_MS, ProcessFreezer, ageWaveDatabase, databaseUrlFromConfig, runFreezeFault, type AgingShift, type TimeFaultRecord } from "./time-faults.js";
 import type { Timeline } from "./timeline.js";
+import { isRepeatedRestartFault, planRestartSteps, runRepeatedRestarts, type RepeatedRestartKind,
+  type RepeatedRestartRecord, type RestartStep } from "./repeated-restarts.js";
 import type { FaultKind, FaultReceipt, TriggerId } from "./types.js";
 
 /** First boot applies every migration; a loaded host can need longer (RESTART_CHAOS_HEALTH_TIMEOUT_MS). */
@@ -46,7 +48,7 @@ const READY_TIMEOUT_MS = 300_000;
 const STOP_TIMEOUT_MS = 30_000;
 
 export const FAULT_SIGNAL: Record<FaultKind, "SIGKILL" | "SIGTERM" | "SIGSTOP"> = { K1: "SIGKILL", K2: "SIGTERM", K4: "SIGKILL", K6: "SIGKILL", K14: "SIGTERM",
-  TM1: "SIGSTOP", TM2: "SIGSTOP", TM3: "SIGKILL" };
+  TM1: "SIGSTOP", TM2: "SIGSTOP", TM3: "SIGKILL", RR1: "SIGKILL", RR2: "SIGKILL", RR3: "SIGKILL" };
 
 /** The checkout's commit, for the K14 receipt. */
 function checkoutSha(root: string): string | null {
@@ -400,15 +402,16 @@ export class ChaosSupervisor {
   }
 
   /** Faults are serialized: one control plane, one outage at a time. */
-  fault(kind: FaultKind, holdMs: number, requestedBy: string, trigger?: { trigger: TriggerId; delayMs: number }): Promise<FaultReceipt> {
+  fault(kind: FaultKind, holdMs: number, requestedBy: string, trigger?: { trigger: TriggerId; delayMs: number },
+    restartSteps?: readonly RestartStep[]): Promise<FaultReceipt> {
     const requestedAt = Date.now();
-    const run = this.faultChain.then(() => this.executeFault(kind, holdMs, requestedBy, requestedAt, trigger));
+    const run = this.faultChain.then(() => this.executeFault(kind, holdMs, requestedBy, requestedAt, trigger, restartSteps));
     this.faultChain = run.catch(() => undefined);
     return run;
   }
 
   private async executeFault(kind: FaultKind, holdMs: number, requestedBy: string, requestedAt: number,
-    trigger?: { trigger: TriggerId; delayMs: number }): Promise<FaultReceipt> {
+    trigger?: { trigger: TriggerId; delayMs: number }, restartSteps?: readonly RestartStep[]): Promise<FaultReceipt> {
     const previous = this.child;
     this.faultCount += 1;
     const receipt: FaultReceipt = {
@@ -463,6 +466,7 @@ export class ChaosSupervisor {
         if (!this.child) throw new Error("K6 crash loop has no replacement server to kill");
         receipt.healthyAt = await this.waitForHealth(await this.crashLoop(this.child, receipt), receipt.phases);
       }
+      if (isRepeatedRestartFault(kind)) receipt.healthyAt = await this.repeatedRestarts(kind, receipt, restartSteps, previous.pid);
       receipt.readyAt = await this.waitForReadyPhase(receipt.phases);
       receipt.serverLogOffsetAtReady = this.serverLogOffset();
       this.timeline.add("fault_ready", { faultId: receipt.faultId, replacementPid: this.child?.pid ?? outage?.replacementPid,
@@ -530,6 +534,59 @@ export class ChaosSupervisor {
     this.timeline.add("upgrade_switched", { faultId, ...upgrade });
     this.log.write(`\n[restart-chaos] ${faultId} K14 upgrade ${upgrade.fromSha ?? fromRoot} -> ${upgrade.toSha ?? this.repositoryRoot}${switched ? "" : " (already upgraded)"}\n`);
     return upgrade;
+  }
+
+  /**
+   * RR1–RR3: the first kill (as K1) has a healthy replacement. Stop it again after each planned gap,
+   * while it is still recovering, and start another. The sequence is one receipt: one fault window.
+   * Each stop and replacement is written to `<wave>/repeated-restarts/<faultId>.json`.
+   */
+  private async repeatedRestarts(kind: RepeatedRestartKind, receipt: FaultReceipt, planned: readonly RestartStep[] | undefined,
+    firstPid: number): Promise<number> {
+    // A fault fired outside a planned task (none today) still gets a sequence of its kind.
+    const steps = planned?.length ? [...planned] : planRestartSteps(kind, (min, max) => min + Math.floor(Math.random() * (max - min + 1)));
+    const record: RepeatedRestartRecord = { kind, planned: steps.map(step => ({ ...step })), restarts: [{
+      index: 0, signal: "SIGKILL", gapMs: null, pid: firstPid, phaseAtStop: "ready", stopAt: receipt.startedAt, stoppedAt: receipt.stoppedAt,
+      restartedAt: receipt.restartedAt, replacementPid: this.child?.pid ?? null, healthyAt: receipt.healthyAt }] };
+    receipt.repeatedRestart = record;
+    const evidenceDir = path.join(path.dirname(this.paths.serverLogPath), "repeated-restarts");
+    record.evidencePath = path.join(evidenceDir, `${receipt.faultId}.json`);
+    const first = this.child;
+    try {
+      if (!first || receipt.healthyAt === null) throw new Error(`${kind} has no healthy replacement after its first kill`);
+      const result = await runRepeatedRestarts({ record, steps, server: first, healthyAt: receipt.healthyAt, hooks: {
+        now: () => Date.now(),
+        sleep: ms => delay(ms),
+        cancelled: () => this.shuttingDown,
+        pidOf: server => server.pid ?? null,
+        exitStatus: server => this.exited(server) ? { code: server.exitCode, signal: server.signalCode } : null,
+        readPhase: () => this.readPhase(),
+        stop: async (server, signal) => {
+          if (signal === "SIGKILL") await this.stopper.crashForRestart(server);
+          else await this.stopper(server, "SIGTERM");
+          if (this.child === server) this.child = null;
+          await this.waitForHealthToStop();
+        },
+        start: () => this.spawnServer(),
+        waitHealthy: server => this.waitForHealth(server, receipt.phases),
+        onEntry: (entry, stage) => {
+          if (stage === "stopping") {
+            this.timeline.add("repeated_restart_stop", { faultId: receipt.faultId, index: entry.index, signal: entry.signal, gapMs: entry.gapMs,
+              pid: entry.pid, phaseAtStop: entry.phaseAtStop });
+            this.log.write(`\n[restart-chaos] ${receipt.faultId} ${kind} restart ${entry.index} ${entry.signal} pid=${entry.pid} phase=${entry.phaseAtStop} gap=${entry.gapMs}ms\n`);
+          } else {
+            this.timeline.add("repeated_restart_healthy", { faultId: receipt.faultId, index: entry.index, replacementPid: entry.replacementPid,
+              downMs: (entry.healthyAt ?? 0) - entry.stopAt });
+          }
+        },
+      } });
+      return result.healthyAt;
+    } finally {
+      // Written on failure too: the receipt in faults.json carries the same record.
+      await mkdir(evidenceDir, { recursive: true })
+        .then(() => writeFile(record.evidencePath!, `${JSON.stringify({ faultId: receipt.faultId, requestedBy: receipt.requestedBy, ...record }, null, 2)}\n`, { mode: 0o600 }))
+        .catch(error => { this.log.write(`[restart-chaos] ${receipt.faultId} could not write repeated-restart evidence: ${error instanceof Error ? error.message : String(error)}\n`); });
+    }
   }
 
   private async waitForCrashLoopPhase(child: ChildProcess, target: (typeof CRASH_LOOP_TARGETS)[number],
