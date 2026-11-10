@@ -1,3 +1,4 @@
+import { questionHandoffWorkload } from "./question-handoff.js";
 import type { OracleArtifacts, OracleResult, WorkloadId } from "./types.js";
 
 /** Deterministic bench output: sum of squares 1..240. */
@@ -166,6 +167,7 @@ function budgetChecks(artifacts: OracleArtifacts) {
 }
 
 export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
+  Q1: questionHandoffWorkload,
   G1: {
     id: "G1",
     label: "Approval-gated action across a restart",

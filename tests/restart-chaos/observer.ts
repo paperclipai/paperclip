@@ -15,6 +15,7 @@ import type {
 import { restartProcessStartMatches } from "../runner-e2e/process-tree-owner.js";
 import type { UiRetryClick } from "./board-ui.js";
 import { runOracleCommand } from "./oracle-sandbox.js";
+import { awaitingQuestionAnswer, collectQuestionArtifacts, questionStep } from "./question-handoff.js";
 import { captureRemoteWorkspaceFiles, readRemoteWorkspaceFile } from "./remote-workspace-files.js";
 import { taskFaultSchedule } from "./scheduler.js";
 import { g1ChildTitle, g1Decision, workloadDefinitions, type WorkloadAgents } from "./workloads.js";
@@ -725,6 +726,7 @@ export class TaskObserver {
     const governance = this.record.governance;
     if (this.plan.workload === "G1") return Boolean(governance?.approvalSeenAt) && !governance?.decision;
     if (this.plan.workload === "H1") return Boolean(governance?.budgetPausedAt) && !governance?.resume && !governance?.pauseLostAt;
+    if (this.plan.workload === "Q1") return awaitingQuestionAnswer(this.record);
     return false;
   }
 
@@ -758,6 +760,10 @@ export class TaskObserver {
     if (!sample.reachable || !this.record.issueId) return;
     if (this.plan.workload === "G1") await this.approvalStep(sample, now);
     if (this.plan.workload === "H1") await this.budgetStep(sample, now);
+    if (this.plan.workload === "Q1") {
+      await questionStep({ api: this.api, issueId: this.record.issueId, nonce: this.plan.nonce, record: this.record, sample, now,
+        boardMayAct: this.boardMayAct(sample), note: (kind, data) => this.timeline.add(kind, { taskId: this.plan.taskId, ...data }) });
+    }
   }
 
   private async approvalStep(sample: TaskSample, now: number): Promise<void> {
@@ -935,6 +941,7 @@ export class TaskObserver {
       ...(this.plan.workload === "G1" ? { approvals: await this.collectApprovals(issueId) } : {}),
       ...(this.plan.workload === "H1" ? await this.finalPauseCheck(issueId) : {}),
       ...(this.record.governance ? { governance: this.record.governance } : {}),
+      ...(this.plan.workload === "Q1" ? { question: await collectQuestionArtifacts(this.api, issueId, this.record) } : {}),
     };
   }
 

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { STORAGE_FAULT_KINDS } from "./storage-chaos.js";
+import { PROVIDER_FAULT_KINDS, isProviderFault, parseProviderDelays, parseProviderMessage, type ProviderFaultKind } from "./provider-faults.js";
 import {
   ADAPTER_IDS, ENVIRONMENT_KINDS, FAULT_KINDS, TRIGGER_IDS, WORKLOAD_IDS,
   type AdapterId, type EnvironmentKind, type FaultKind, type TriggerId, type WaveOptions, type WorkloadId,
@@ -103,13 +104,15 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       storage: { type: "string" },
       "storage-faults": { type: "string" },
       "storage-fault-seconds": { type: "string" },
+      "provider-fault-message": { type: "string" },
+      "provider-fault-delays": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "fault-after-seconds"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "fault-after-seconds", "provider-fault-message", "provider-fault-delays"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -142,6 +145,10 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   }
   if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm" && lifecycle !== "default") throw new Error("--lifecycle must be per_turn, warm or default");
   const adapters = list<AdapterId>(values.adapters, ADAPTER_IDS, "adapters", ["codex", "claude"]);
+  // `--faults` takes restart faults (K*) and provider message faults (PV*, provider-faults.ts).
+  const allFaults = list<FaultKind | ProviderFaultKind>(values.faults, [...FAULT_KINDS, ...PROVIDER_FAULT_KINDS], "faults",
+    stormMinutes ? STORM_DEFAULT_FAULTS : crashPoint ? ["K1"] : ["K1", "K2", "K4"]);
+  const providerFaults = allFaults.filter(isProviderFault);
   const options: WaveOptions = {
     env,
     adapters,
@@ -149,7 +156,8 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1"
       && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
-    faults: list<FaultKind>(values.faults, FAULT_KINDS, "faults", stormMinutes ? STORM_DEFAULT_FAULTS : crashPoint ? ["K1"] : ["K1", "K2", "K4"]),
+    faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault)),
+    ...(providerFaults.length ? { providerFaults } : {}),
     triggers: list<TriggerId>(values.triggers, TRIGGER_IDS, "triggers", ["time"]),
     concurrency: integer(values.concurrency, "concurrency", 4, 1, 20),
     tasks: integer(values.tasks, "tasks", stormMinutes ? 200 : 8, 1, 200),
@@ -177,6 +185,18 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     throw new Error("--fault-after-seconds fires faults by time; use it with --triggers time");
   }
   if (!crashPoint && values["crash-point-hold-ms"] !== undefined) throw new Error("--crash-point-hold-ms applies only to --crash-point");
+  if (providerFaults.length) {
+    if (stormMinutes) throw new Error("Provider message faults (PV*) are planned per task; do not combine them with --storm-minutes");
+    if (env !== "local") throw new Error("Provider message faults (PV*) shim the local Codex executable; run them with --env local");
+    if (adapters.some(adapter => adapter !== "codex")) throw new Error("Provider message faults (PV*) cover Codex only; pass --adapters codex");
+    const message = parseProviderMessage(values["provider-fault-message"]);
+    if (message) options.providerFaultMessage = message;
+    const delays = parseProviderDelays(values["provider-fault-delays"]);
+    if (delays && !providerFaults.includes("PV1")) throw new Error("--provider-fault-delays sets PV1 delays; add PV1 to --faults");
+    if (delays) options.providerFaultDelaysMs = delays;
+  } else if (values["provider-fault-message"] !== undefined || values["provider-fault-delays"] !== undefined) {
+    throw new Error("--provider-fault-message and --provider-fault-delays need a provider fault (PV1, PV2 or PV3) in --faults");
+  }
   const upgradeFrom = values["upgrade-from"];
   if (options.faults.includes("K14") !== (upgradeFrom !== undefined)) {
     throw new Error("K14 (upgrade mid-run) and --upgrade-from <older checkout> go together: pass both or neither");
