@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { STORAGE_FAULT_KINDS } from "./storage-chaos.js";
-import { PROVIDER_FAULT_KINDS, isProviderFault, parseProviderDelays, parseProviderMessage, type ProviderFaultKind } from "./provider-faults.js";
+import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, isProviderFault, parseProviderDelays, parseProviderMessage, type ProviderFaultKind } from "./provider-faults.js";
 import {
   ADAPTER_IDS, ENVIRONMENT_KINDS, FAULT_KINDS, TRIGGER_IDS, WORKLOAD_IDS,
   type AdapterId, type EnvironmentKind, type FaultKind, type TriggerId, type WaveOptions, type WorkloadId,
@@ -189,6 +189,11 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     if (stormMinutes) throw new Error("Provider message faults (PV*) are planned per task; do not combine them with --storm-minutes");
     if (env !== "local") throw new Error("Provider message faults (PV*) shim the local Codex executable; run them with --env local");
     if (adapters.some(adapter => adapter !== "codex")) throw new Error("Provider message faults (PV*) cover Codex only; pass --adapters codex");
+    // A restart kills the shim with any held message and its once-per-task claim, so the two families do not mix yet.
+    if (options.faults.length) throw new Error("Provider message faults (PV*) do not combine with restart faults (K*) yet; run them in their own wave");
+    // Every planned task gets the fault; only these workloads send the turn/interrupt the rules target.
+    const idle = options.workloads.filter(id => !PROVIDER_FAULT_WORKLOADS.includes(id));
+    if (idle.length) throw new Error(`Provider message faults (PV*) need workloads that interrupt a Codex turn (${PROVIDER_FAULT_WORKLOADS.join(", ")}); remove ${idle.join(", ")} from --workloads`);
     const message = parseProviderMessage(values["provider-fault-message"]);
     if (message) options.providerFaultMessage = message;
     const delays = parseProviderDelays(values["provider-fault-delays"]);

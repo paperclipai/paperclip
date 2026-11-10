@@ -319,8 +319,10 @@ Codex app-server is late, missing or repeated. `--faults` takes them next to res
 `--provider-fault-message terminal` (default) picks the `turn/completed` notification that follows a
 `turn/interrupt`, which a governed wait (a saved question or approval) or a board Stop sends.
 `interrupt_ack` picks the response to that `turn/interrupt`. Each rule applies once per task, to the
-first matching message. A PV task fires no restart. With `--faults K1,PV1` the wave mixes restart tasks
-and provider-fault tasks. Provider faults run only with `--env local --adapters codex`.
+first matching message. A PV task fires no restart. Provider faults run only with `--env local --adapters
+codex`, only with workloads that interrupt a turn (Q1, S1, G1), and not yet in the same wave as restart
+faults: a restart kills the shim with any held message. A PV1 task passes `provider_fault_applied` only when
+the held message was released; a provider that exited first turned the delay into a drop.
 
 **Seam.** Product code finds the local Codex by resolving the installed `@openai/codex/package.json`.
 The harness starts the server with `NODE_OPTIONS=--import provider-shim/codex-resolve-hook.mjs`. That

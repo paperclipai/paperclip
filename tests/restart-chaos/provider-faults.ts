@@ -19,7 +19,7 @@ import { chmod, copyFile, mkdir, readFile, rename, symlink, writeFile } from "no
 import { readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
-import type { OracleResult, TaskPlan, WaveOptions } from "./types.js";
+import type { OracleResult, TaskPlan, WaveOptions, WorkloadId } from "./types.js";
 
 export const PROVIDER_FAULT_KINDS = ["PV1", "PV2", "PV3"] as const;
 export type ProviderFaultKind = (typeof PROVIDER_FAULT_KINDS)[number];
@@ -54,6 +54,9 @@ export interface ProviderFaultEvent {
   turnStatus?: string | null;
   [key: string]: unknown;
 }
+
+/** Workloads whose run sends turn/interrupt: a saved question (Q1), a board Stop (S1), an approval wait (G1). */
+export const PROVIDER_FAULT_WORKLOADS: readonly WorkloadId[] = ["Q1", "S1", "G1"];
 
 export function isProviderFault(value: string): value is ProviderFaultKind {
   return (PROVIDER_FAULT_KINDS as readonly string[]).includes(value);
@@ -199,9 +202,10 @@ export function withProviderFaultCheck(oracle: OracleResult, plan: TaskPlan, eve
   const rule = plan.providerFault;
   const applied = events.filter(event => event.event === "applied" && event.kind === rule.kind && event.message === rule.message);
   const released = events.filter(event => event.event === "released" && event.kind === rule.kind);
-  // A held message the provider took with it when it exited still counts: the delay happened.
+  // A held message the provider took with it when it exited never reached the runner: that tested a
+  // drop (PV2), not a late message. It stays in the detail for diagnosis but does not count.
   const discarded = events.filter(event => event.event === "held_message_discarded" && event.kind === rule.kind);
-  const exercised = applied.length === 1 && (rule.kind !== "PV1" || released.length + discarded.length === 1);
+  const exercised = applied.length === 1 && (rule.kind !== "PV1" || released.length === 1);
   const checks = [...oracle.checks, { name: "provider_fault_applied", ok: exercised,
     detail: `${describeProviderFault(rule)}: applied=${applied.length}${rule.kind === "PV1" ? ` released=${released.length} discarded=${discarded.length}` : ""}`
       + (applied[0]?.turnStatus ? ` turnStatus=${applied[0].turnStatus}` : "") }];
