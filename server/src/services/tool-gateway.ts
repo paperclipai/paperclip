@@ -1,3 +1,4 @@
+import { assertAgentToolAssignmentInteractions } from "./connection-management.js";
 import { isNewHumanIntentAfterToolRejection } from "./tool-action-replay-intent.js";
 import { approvalSnapshotsMatch, approvalTargetChangeMessage, oauthApprovalConfig,
   approvalGrantTenantIdentity, externalCredentialApprovalIdentity } from "./tool-approval-target.js";
@@ -60,6 +61,7 @@ import {
   asc,
   desc,
   eq,
+  gt,
   inArray,
   isNull,
   lte,
@@ -136,7 +138,7 @@ import type {
   AgentToolDescriptor,
   PluginToolDispatcher,
 } from "./plugin-tool-dispatcher.js";
-import { logActivity, type LogActivityInput } from "./activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication, type LogActivityInput } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { connectionGrantCredentialRef, resolveConnectionGrantSecret } from "./connection-credentials.js";
 import { railwayCommandBudgetMs, createRailwayClient, isRailwayConnection, isRailwayEndpoint, isRailwayToolBlocked, normalizeRailwayToolName, RAILWAY_API_URL, RAILWAY_TOOL_PREFIX, RailwayError } from "./railway.js";
@@ -677,6 +679,14 @@ function executionAuditFromError(
 
 function generateGatewayToken(sessionId: string) {
   return `pcgt_${sessionId}.${randomBytes(32).toString("base64url")}`;
+}
+
+interface NamedGatewayTokenInput {
+  companyId: string;
+  gatewayId: string;
+  body: CreateToolMcpGatewayToken;
+  actor?: { agentId?: string | null; userId?: string | null };
+  managementContext?: ConnectionManagementContext;
 }
 
 function generateNamedGatewayToken(tokenId: string) {
@@ -6999,6 +7009,85 @@ export function createToolGatewayService(
     };
   }
 
+  async function insertNamedGatewayToken(input: NamedGatewayTokenInput, pendingReveal: boolean) {
+    await input.managementContext?.reauthorize();
+    const [gateway] = await db
+      .select()
+      .from(toolMcpGateways)
+      .where(
+        and(
+          eq(toolMcpGateways.companyId, input.companyId),
+          eq(toolMcpGateways.id, input.gatewayId),
+        ),
+      )
+      .limit(1);
+    if (!gateway)
+      throw new ToolGatewayHttpError(
+        404,
+        "MCP gateway not found",
+        "gateway_not_found",
+      );
+    if (input.actor?.agentId && !input.managementContext && input.body.subjectType !== "heartbeat_run") {
+      throw new ToolGatewayHttpError(403, "Agent client tokens require delegated authority", "gateway_token_run_context_invalid");
+    }
+    if (input.managementContext?.actor.type === "agent" && input.body.subjectType === "heartbeat_run" &&
+        (!input.managementContext.actor.runId || input.body.subjectId !== input.managementContext.actor.runId)) {
+      throw new ToolGatewayHttpError(403, "Heartbeat tokens must bind the authenticated run", "gateway_token_run_context_invalid");
+    }
+    const tokenId = randomUUID();
+    const token = generateNamedGatewayToken(tokenId);
+    const tokenPrefix = `pcgw_${tokenId.slice(0, 8)}`;
+    const now = new Date();
+    const [row] = await db.transaction(async tx => {
+      if (input.body.expiresAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.gatewayCredentialExpiry);
+      return tx
+        .insert(toolMcpGatewayTokens)
+        .values({
+          id: tokenId,
+          companyId: input.companyId,
+          gatewayId: input.gatewayId,
+          name: input.body.name,
+          // A pending token's stored hash is of a value nobody receives.
+          tokenHash: hashGatewayToken(token),
+          tokenPrefix,
+          pendingReveal,
+          subjectType: input.body.subjectType ?? "gateway_client",
+          subjectId: input.body.subjectId ?? null,
+          clientLabel: input.body.clientLabel,
+          ownerNote: input.body.ownerNote,
+          allowedActions: input.body.allowedActions ?? [
+            "tools/list",
+            "tools/call",
+            "resources/list",
+            "resources/read",
+            "prompts/list",
+            "prompts/get",
+          ],
+          expiresAt: input.body.expiresAt ?? null,
+          expiryOverrideReason: input.body.expiryOverrideReason ?? null,
+          expiryOverrideByAgentId:
+            input.actor?.agentId && input.body.expiryOverrideReason
+              ? input.actor.agentId
+              : null,
+          expiryOverrideByUserId:
+            input.actor?.userId && input.body.expiryOverrideReason
+              ? input.actor.userId
+              : null,
+          expiryOverrideAt: input.body.expiryOverrideReason ? now : null,
+          responsibleUserId: input.managementContext?.actor.type === "agent" ? input.managementContext.responsibleUserId : null,
+          createdByAgentId: input.actor?.agentId ?? null,
+          createdByUserId: input.actor?.userId ?? null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+    });
+    if (input.managementContext) await logActivity(db, { companyId: input.companyId, ...input.managementContext.audit,
+      action: "tool_gateway.token_created", entityType: "tool_mcp_gateway", entityId: input.gatewayId,
+      details: { tokenId: row.id, subjectType: row.subjectType, allowedActions: row.allowedActions, ...(pendingReveal ? { pendingReveal } : {}) } });
+  return { row, token };
+}
+
   function toGatewayToken(
     row: typeof toolMcpGatewayTokens.$inferSelect,
   ): ToolMcpGatewayToken {
@@ -7023,6 +7112,7 @@ export function createToolGatewayService(
       createdByAgentId: row.createdByAgentId,
       createdByUserId: row.createdByUserId,
       responsibleUserId: row.responsibleUserId,
+      pendingReveal: row.pendingReveal,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -7442,6 +7532,15 @@ export function createToolGatewayService(
         gatewayPublicId: input.gatewayPublicId,
         bearerToken,
         reasonCode: "gateway_token_revoked",
+        clientMetadata,
+      });
+    }
+    if (row.token.pendingReveal) {
+      await recordNamedGatewayAuthFailure({
+        gatewayId: input.gatewayId,
+        gatewayPublicId: input.gatewayPublicId,
+        bearerToken,
+        reasonCode: "gateway_token_invalid",
         clientMetadata,
       });
     }
@@ -9111,54 +9210,60 @@ export function createToolGatewayService(
         input.body.displaySlug ??
         input.body.slug ??
         slugSegment(input.body.name, "gateway");
-      const [gateway] = await db
-        .insert(toolMcpGateways)
-        .values({
-          companyId: input.companyId,
-          name: input.body.name,
-          slug,
-          displaySlug: slug,
-          description: input.body.description ?? null,
-          defaultProfileMode: input.body.defaultProfileMode ?? "gateway_only",
-          contextScopeType: input.body.contextScopeType ?? "none",
-          contextScopeId: input.body.contextScopeId ?? null,
-          profileId: input.body.profileId,
-          agentId: input.body.agentId ?? null,
-          projectId: input.body.projectId ?? null,
-          issueId: input.body.issueId ?? null,
-          approvalIssueId: input.body.approvalIssueId ?? null,
-          ...(input.body.authConfig !== undefined
-            ? { authConfig: input.body.authConfig }
-            : {}),
-          ...(input.body.headerPolicy !== undefined
-            ? { headerPolicy: input.body.headerPolicy }
-            : {}),
-          ...(input.body.metadataPolicy !== undefined
-            ? { metadataPolicy: input.body.metadataPolicy }
-            : {}),
-          ...(input.body.onDemandToolsConfig !== undefined
-            ? { onDemandToolsConfig: input.body.onDemandToolsConfig }
-            : {}),
-          metadata: input.body.metadata ?? {},
-          createdByAgentId: input.actor?.agentId ?? null,
-          createdByUserId: input.actor?.userId ?? null,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning();
-      await db
-        .insert(toolProfileBindings)
-        .values({
-          companyId: input.companyId,
-          profileId: input.body.profileId,
-          targetType: "gateway",
-          targetId: gateway.id,
-          priority: 10,
-          metadata: { source: "named_mcp_gateway" },
-          createdByAgentId: input.actor?.agentId ?? null,
-          createdByUserId: input.actor?.userId ?? null,
-        })
-        .onConflictDoNothing();
+      const gateway = await db.transaction(async tx => {
+        await assertAgentToolAssignmentInteractions(tx as unknown as Db,
+          input.managementContext?.actor.type === "agent" ? input.managementContext.actor.agentId : input.actor?.agentId,
+          input.companyId, input.body.agentId ? [input.body.agentId] : []);
+        const [gateway] = await tx
+          .insert(toolMcpGateways)
+          .values({
+            companyId: input.companyId,
+            name: input.body.name,
+            slug,
+            displaySlug: slug,
+            description: input.body.description ?? null,
+            defaultProfileMode: input.body.defaultProfileMode ?? "gateway_only",
+            contextScopeType: input.body.contextScopeType ?? "none",
+            contextScopeId: input.body.contextScopeId ?? null,
+            profileId: input.body.profileId,
+            agentId: input.body.agentId ?? null,
+            projectId: input.body.projectId ?? null,
+            issueId: input.body.issueId ?? null,
+            approvalIssueId: input.body.approvalIssueId ?? null,
+            ...(input.body.authConfig !== undefined
+              ? { authConfig: input.body.authConfig }
+              : {}),
+            ...(input.body.headerPolicy !== undefined
+              ? { headerPolicy: input.body.headerPolicy }
+              : {}),
+            ...(input.body.metadataPolicy !== undefined
+              ? { metadataPolicy: input.body.metadataPolicy }
+              : {}),
+            ...(input.body.onDemandToolsConfig !== undefined
+              ? { onDemandToolsConfig: input.body.onDemandToolsConfig }
+              : {}),
+            metadata: input.body.metadata ?? {},
+            createdByAgentId: input.actor?.agentId ?? null,
+            createdByUserId: input.actor?.userId ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+        await tx
+          .insert(toolProfileBindings)
+          .values({
+            companyId: input.companyId,
+            profileId: input.body.profileId,
+            targetType: "gateway",
+            targetId: gateway.id,
+            priority: 10,
+            metadata: { source: "named_mcp_gateway" },
+            createdByAgentId: input.actor?.agentId ?? null,
+            createdByUserId: input.actor?.userId ?? null,
+          })
+          .onConflictDoNothing();
+        return gateway;
+      });
       await writeAudit({
         session: {
           id: `gateway:${gateway.id}`,
@@ -9211,205 +9316,188 @@ export function createToolGatewayService(
       managementContext?: ConnectionManagementContext;
     }): Promise<ToolMcpGatewayWithTokens> {
       await input.managementContext?.reauthorize();
-      const [existing] = await db
-        .select()
-        .from(toolMcpGateways)
-        .where(
-          and(
-            eq(toolMcpGateways.companyId, input.companyId),
-            eq(toolMcpGateways.id, input.gatewayId),
-          ),
-        )
-        .limit(1);
-      if (!existing)
-        throw new ToolGatewayHttpError(
-          404,
-          "MCP gateway not found",
-          "gateway_not_found",
-        );
-      await assertGatewayContext({
-        companyId: input.companyId,
-        profileId: input.body.profileId ?? existing.profileId,
-        agentId:
-          input.body.agentId === undefined
-            ? existing.agentId
-            : input.body.agentId,
-        projectId:
-          input.body.projectId === undefined
-            ? existing.projectId
-            : input.body.projectId,
-        issueId:
-          input.body.issueId === undefined
-            ? existing.issueId
-            : input.body.issueId,
-      });
-      const [updated] = await db
-        .update(toolMcpGateways)
-        .set({
-          ...(input.body.name !== undefined ? { name: input.body.name } : {}),
-          ...(input.body.slug !== undefined ||
-          input.body.displaySlug !== undefined
-            ? { slug: input.body.displaySlug ?? input.body.slug }
-            : {}),
-          ...(input.body.slug !== undefined ||
-          input.body.displaySlug !== undefined
-            ? { displaySlug: input.body.displaySlug ?? input.body.slug }
-            : {}),
-          ...(input.body.description !== undefined
-            ? { description: input.body.description ?? null }
-            : {}),
-          ...(input.body.status !== undefined
-            ? { status: input.body.status }
-            : {}),
-          ...(input.body.profileId !== undefined
-            ? { profileId: input.body.profileId }
-            : {}),
-          ...(input.body.defaultProfileMode !== undefined
-            ? { defaultProfileMode: input.body.defaultProfileMode }
-            : {}),
-          ...(input.body.contextScopeType !== undefined
-            ? { contextScopeType: input.body.contextScopeType }
-            : {}),
-          ...(input.body.contextScopeId !== undefined
-            ? { contextScopeId: input.body.contextScopeId ?? null }
-            : {}),
-          ...(input.body.agentId !== undefined
-            ? { agentId: input.body.agentId ?? null }
-            : {}),
-          ...(input.body.projectId !== undefined
-            ? { projectId: input.body.projectId ?? null }
-            : {}),
-          ...(input.body.issueId !== undefined
-            ? { issueId: input.body.issueId ?? null }
-            : {}),
-          ...(input.body.approvalIssueId !== undefined
-            ? { approvalIssueId: input.body.approvalIssueId ?? null }
-            : {}),
-          ...(input.body.authConfig !== undefined
-            ? { authConfig: input.body.authConfig }
-            : {}),
-          ...(input.body.headerPolicy !== undefined
-            ? { headerPolicy: input.body.headerPolicy }
-            : {}),
-          ...(input.body.metadataPolicy !== undefined
-            ? { metadataPolicy: input.body.metadataPolicy }
-            : {}),
-          ...(input.body.onDemandToolsConfig !== undefined
-            ? { onDemandToolsConfig: input.body.onDemandToolsConfig }
-            : {}),
-          ...(input.body.metadata !== undefined
-            ? { metadata: input.body.metadata ?? {} }
-            : {}),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(toolMcpGateways.companyId, input.companyId),
-            eq(toolMcpGateways.id, input.gatewayId),
-          ),
-        )
-        .returning();
-      if (input.body.profileId && input.body.profileId !== existing.profileId) {
-        await db
-          .insert(toolProfileBindings)
-          .values({
-            companyId: input.companyId,
-            profileId: input.body.profileId,
-            targetType: "gateway",
-            targetId: input.gatewayId,
-            priority: 10,
-            metadata: { source: "named_mcp_gateway" },
+      const updated = await db.transaction(async tx => {
+        const [existing] = await tx
+          .select()
+          .from(toolMcpGateways)
+          .where(
+            and(
+              eq(toolMcpGateways.companyId, input.companyId),
+              eq(toolMcpGateways.id, input.gatewayId),
+            ),
+          )
+          .limit(1).for("update");
+        if (!existing)
+          throw new ToolGatewayHttpError(
+            404,
+            "MCP gateway not found",
+            "gateway_not_found",
+          );
+        const targets = [...new Set([existing.agentId, input.body.agentId].filter((id): id is string => Boolean(id)))];
+        await assertAgentToolAssignmentInteractions(tx as unknown as Db,
+          input.managementContext?.actor.type === "agent" ? input.managementContext.actor.agentId : null, input.companyId, targets);
+        await assertGatewayContext({
+          companyId: input.companyId,
+          profileId: input.body.profileId ?? existing.profileId,
+          agentId:
+            input.body.agentId === undefined
+              ? existing.agentId
+              : input.body.agentId,
+          projectId:
+            input.body.projectId === undefined
+              ? existing.projectId
+              : input.body.projectId,
+          issueId:
+            input.body.issueId === undefined
+              ? existing.issueId
+              : input.body.issueId,
+        });
+        const [updated] = await tx
+          .update(toolMcpGateways)
+          .set({
+            ...(input.body.name !== undefined ? { name: input.body.name } : {}),
+            ...(input.body.slug !== undefined ||
+            input.body.displaySlug !== undefined
+              ? { slug: input.body.displaySlug ?? input.body.slug }
+              : {}),
+            ...(input.body.slug !== undefined ||
+            input.body.displaySlug !== undefined
+              ? { displaySlug: input.body.displaySlug ?? input.body.slug }
+              : {}),
+            ...(input.body.description !== undefined
+              ? { description: input.body.description ?? null }
+              : {}),
+            ...(input.body.status !== undefined
+              ? { status: input.body.status }
+              : {}),
+            ...(input.body.profileId !== undefined
+              ? { profileId: input.body.profileId }
+              : {}),
+            ...(input.body.defaultProfileMode !== undefined
+              ? { defaultProfileMode: input.body.defaultProfileMode }
+              : {}),
+            ...(input.body.contextScopeType !== undefined
+              ? { contextScopeType: input.body.contextScopeType }
+              : {}),
+            ...(input.body.contextScopeId !== undefined
+              ? { contextScopeId: input.body.contextScopeId ?? null }
+              : {}),
+            ...(input.body.agentId !== undefined
+              ? { agentId: input.body.agentId ?? null }
+              : {}),
+            ...(input.body.projectId !== undefined
+              ? { projectId: input.body.projectId ?? null }
+              : {}),
+            ...(input.body.issueId !== undefined
+              ? { issueId: input.body.issueId ?? null }
+              : {}),
+            ...(input.body.approvalIssueId !== undefined
+              ? { approvalIssueId: input.body.approvalIssueId ?? null }
+              : {}),
+            ...(input.body.authConfig !== undefined
+              ? { authConfig: input.body.authConfig }
+              : {}),
+            ...(input.body.headerPolicy !== undefined
+              ? { headerPolicy: input.body.headerPolicy }
+              : {}),
+            ...(input.body.metadataPolicy !== undefined
+              ? { metadataPolicy: input.body.metadataPolicy }
+              : {}),
+            ...(input.body.onDemandToolsConfig !== undefined
+              ? { onDemandToolsConfig: input.body.onDemandToolsConfig }
+              : {}),
+            ...(input.body.metadata !== undefined
+              ? { metadata: input.body.metadata ?? {} }
+              : {}),
+            updatedAt: new Date(),
           })
-          .onConflictDoNothing();
-      }
+          .where(
+            and(
+              eq(toolMcpGateways.companyId, input.companyId),
+              eq(toolMcpGateways.id, input.gatewayId),
+            ),
+          )
+          .returning();
+        if (input.body.profileId && input.body.profileId !== existing.profileId) {
+          await tx
+            .insert(toolProfileBindings)
+            .values({
+              companyId: input.companyId,
+              profileId: input.body.profileId,
+              targetType: "gateway",
+              targetId: input.gatewayId,
+              priority: 10,
+              metadata: { source: "named_mcp_gateway" },
+            })
+            .onConflictDoNothing();
+        }
+        return updated;
+      });
       if (input.managementContext) await logActivity(db, { companyId: input.companyId, ...input.managementContext.audit,
         action: "tool_gateway.updated", entityType: "tool_mcp_gateway", entityId: updated.id,
         details: { profileId: updated.profileId, status: updated.status } });
       return getGatewayWithTokens(input.companyId, updated.id);
     },
 
-    async createNamedGatewayToken(input: {
-      companyId: string;
-      gatewayId: string;
-      body: CreateToolMcpGatewayToken;
-      actor?: { agentId?: string | null; userId?: string | null };
-      managementContext?: ConnectionManagementContext;
-    }): Promise<ToolMcpGatewayTokenCreated> {
-      await input.managementContext?.reauthorize();
-      const [gateway] = await db
-        .select()
-        .from(toolMcpGateways)
-        .where(
-          and(
-            eq(toolMcpGateways.companyId, input.companyId),
-            eq(toolMcpGateways.id, input.gatewayId),
-          ),
-        )
-        .limit(1);
-      if (!gateway)
-        throw new ToolGatewayHttpError(
-          404,
-          "MCP gateway not found",
-          "gateway_not_found",
-        );
-      if (input.actor?.agentId && !input.managementContext && input.body.subjectType !== "heartbeat_run") {
-        throw new ToolGatewayHttpError(403, "Agent client tokens require delegated authority", "gateway_token_run_context_invalid");
-      }
-      if (input.managementContext?.actor.type === "agent" && input.body.subjectType === "heartbeat_run" &&
-          (!input.managementContext.actor.runId || input.body.subjectId !== input.managementContext.actor.runId)) {
-        throw new ToolGatewayHttpError(403, "Heartbeat tokens must bind the authenticated run", "gateway_token_run_context_invalid");
-      }
-      const tokenId = randomUUID();
-      const token = generateNamedGatewayToken(tokenId);
-      const tokenPrefix = `pcgw_${tokenId.slice(0, 8)}`;
-      const now = new Date();
-      const [row] = await db.transaction(async tx => {
-        if (input.body.expiresAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.gatewayCredentialExpiry);
-        return tx
-          .insert(toolMcpGatewayTokens)
-          .values({
-            id: tokenId,
-            companyId: input.companyId,
-            gatewayId: input.gatewayId,
-            name: input.body.name,
-            tokenHash: hashGatewayToken(token),
-            tokenPrefix,
-            subjectType: input.body.subjectType ?? "gateway_client",
-            subjectId: input.body.subjectId ?? null,
-            clientLabel: input.body.clientLabel,
-            ownerNote: input.body.ownerNote,
-            allowedActions: input.body.allowedActions ?? [
-              "tools/list",
-              "tools/call",
-              "resources/list",
-              "resources/read",
-              "prompts/list",
-              "prompts/get",
-            ],
-            expiresAt: input.body.expiresAt ?? null,
-            expiryOverrideReason: input.body.expiryOverrideReason ?? null,
-            expiryOverrideByAgentId:
-              input.actor?.agentId && input.body.expiryOverrideReason
-                ? input.actor.agentId
-                : null,
-            expiryOverrideByUserId:
-              input.actor?.userId && input.body.expiryOverrideReason
-                ? input.actor.userId
-                : null,
-            expiryOverrideAt: input.body.expiryOverrideReason ? now : null,
-            responsibleUserId: input.managementContext?.actor.type === "agent" ? input.managementContext.responsibleUserId : null,
-            createdByAgentId: input.actor?.agentId ?? null,
-            createdByUserId: input.actor?.userId ?? null,
-            createdAt: now,
-            updatedAt: now,
-          })
-          .returning();
-      });
-      if (input.managementContext) await logActivity(db, { companyId: input.companyId, ...input.managementContext.audit,
-        action: "tool_gateway.token_created", entityType: "tool_mcp_gateway", entityId: input.gatewayId,
-        details: { tokenId: row.id, subjectType: row.subjectType, allowedActions: row.allowedActions } });
+    async createNamedGatewayToken(input: NamedGatewayTokenInput): Promise<ToolMcpGatewayTokenCreated> {
+      const { row, token } = await insertNamedGatewayToken(input, false);
       return { ...toGatewayToken(row), token };
     },
+
+    /**
+     * Saves an agent-created client token without a usable value. The value is
+     * generated only when the responsible person reveals it, so the creating
+     * agent never receives it in a tool result.
+     */
+    async createPendingRevealGatewayToken(input: NamedGatewayTokenInput): Promise<ToolMcpGatewayToken> {
+      return toGatewayToken((await insertNamedGatewayToken(input, true)).row);
+    },
+
+    async revealNamedGatewayToken(input: {
+      companyId: string;
+      tokenId: string;
+      userId: string;
+    }): Promise<ToolMcpGatewayTokenCreated> {
+      const [existing] = await db.select().from(toolMcpGatewayTokens).where(and(
+        eq(toolMcpGatewayTokens.companyId, input.companyId),
+        eq(toolMcpGatewayTokens.id, input.tokenId),
+      )).limit(1);
+      if (!existing) throw new ToolGatewayHttpError(404, "MCP gateway token not found", "gateway_token_not_found");
+      if (!existing.pendingReveal) throw new ToolGatewayHttpError(409, "This token's value was already shown once. Issue a new token to get a new value.", "gateway_token_already_revealed");
+      if (existing.revokedAt) throw new ToolGatewayHttpError(409, "This token was revoked before its value was revealed.", "gateway_token_revoked");
+      if (existing.expiresAt && existing.expiresAt.getTime() <= Date.now()) {
+        throw new ToolGatewayHttpError(409, "This token expired before its value was revealed. Create a new token instead.", "gateway_token_expired");
+      }
+      if (existing.responsibleUserId && existing.responsibleUserId !== input.userId) {
+        throw new ToolGatewayHttpError(403, "Only the person this agent-created token acts for can reveal its value.", "gateway_token_reveal_requires_responsible_person");
+      }
+      const token = generateNamedGatewayToken(existing.id);
+      const now = new Date();
+      // Conditional on pendingReveal so concurrent reveals produce one value.
+      // The value exists only in this response, so the reveal and its audit
+      // entry commit together: a failed audit write leaves the token pending.
+      const publications: ActivityPublication[] = [];
+      const row = await db.transaction(async tx => {
+        const [updated] = await tx.update(toolMcpGatewayTokens)
+          .set({ tokenHash: hashGatewayToken(token), pendingReveal: false, updatedAt: now })
+          .where(and(
+            eq(toolMcpGatewayTokens.companyId, input.companyId),
+            eq(toolMcpGatewayTokens.id, input.tokenId),
+            eq(toolMcpGatewayTokens.pendingReveal, true),
+            isNull(toolMcpGatewayTokens.revokedAt),
+            or(isNull(toolMcpGatewayTokens.expiresAt), gt(toolMcpGatewayTokens.expiresAt, now)),
+          ))
+          .returning();
+        if (!updated) throw new ToolGatewayHttpError(409, "This token's value was already shown once. Issue a new token to get a new value.", "gateway_token_already_revealed");
+        await logActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "user", actorId: input.userId,
+          action: "tool_gateway.token_revealed", entityType: "tool_mcp_gateway", entityId: updated.gatewayId,
+          details: { tokenId: updated.id } }, publications);
+        return updated;
+      });
+      for (const publication of publications) publishActivity(publication);
+      return { ...toGatewayToken(row), token };
+    },
+
 
     async revokeNamedGatewayToken(input: {
       companyId: string;

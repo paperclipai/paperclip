@@ -3817,8 +3817,10 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
   });
 
   it.each([
-    { label: "declared provider startup budget", timeoutMs: null, defaultAcquireTimeoutMs: 300_000, expectedRpcTimeoutMs: 330_000 },
-    { label: "explicit startup budget", timeoutMs: 120_000, defaultAcquireTimeoutMs: 300_000, expectedRpcTimeoutMs: 150_000 },
+    // A run's resume budget is capped at 90s rather than the provider's whole
+    // start deadline; a 61s start still fits.
+    { label: "declared provider startup budget", timeoutMs: null, defaultAcquireTimeoutMs: 300_000, expectedRpcTimeoutMs: 90_000 },
+    { label: "explicit startup budget", timeoutMs: 120_000, defaultAcquireTimeoutMs: 300_000, expectedRpcTimeoutMs: 90_000 },
   ])("resumes the same sandbox after a slow start within its $label", async (options) => {
     const seeded = await seedReusablePluginSandboxLease("paperclip_runner", options);
     let signalResumeStarted!: () => void;
@@ -6288,11 +6290,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
   it("forwards a requested expiry to the acquire RPC and records only a provider-attested expiry", async () => {
     const pluginId = randomUUID();
     let receivedRequestedExpiresAt: unknown;
+    let receivedPurpose: unknown, receivedCommand: unknown;
     const workerManager = {
       isRunning: vi.fn(() => true),
       call: vi.fn(async (_pluginId: string, method: string, params: Record<string, unknown>) => {
         if (method === "environmentAcquireLease") {
           receivedRequestedExpiresAt = params.requestedExpiresAt;
+          receivedPurpose = params.purpose; receivedCommand = params.loginCommandKey;
           // The provider grants no expiry.
           return { providerLeaseId: "plugin-lease-no-expiry", metadata: { remoteCwd: "/workspace" } };
         }
@@ -6310,10 +6314,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       heartbeatRunId: runId,
       persistedExecutionWorkspace: null,
       requestedExpiresAt,
+      purpose: "login", loginCommandKey: "codex",
     });
 
     // The acquire RPC receives the requested expiry as an ISO 8601 string.
     expect(receivedRequestedExpiresAt).toBe(requestedExpiresAt.toISOString());
+    expect(receivedPurpose).toBe("login"); expect(receivedCommand).toBe("codex");
     // The provider gave no expiry, so the lease row records no expiry. The runtime
     // never synthesizes the requested deadline as evidence of provider enforcement.
     expect(acquired.lease.expiresAt ?? null).toBeNull();

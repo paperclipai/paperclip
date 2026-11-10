@@ -1,3 +1,4 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { NativeControllerContainmentRecovery } from "../components/IssueRecoveryActionCard";
 import { useIssueIdBatches } from "@/hooks/useIssueIdBatches";
 import { TaskChatLoadingShell } from "@/components/task-chat/TaskChatLoadingShell";
@@ -87,6 +88,7 @@ import {
   recentIssueRunWindowQueryKey,
   type RecentIssueRunWindow,
 } from "../lib/issue-chat-history-queries";
+import { readFromIssueChatBootstrap, sameIds, startIssueChatBootstrap } from "../lib/issue-chat-bootstrap";
 import {
   heartbeatsApi,
   type ActiveRunForIssue,
@@ -103,7 +105,6 @@ import {
 } from "../lib/recovery-reconcile";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
-import { projectsApi } from "../api/projects";
 import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -1504,7 +1505,14 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const inputCommentIds = issueInputCommentIds(comments);
   const inputFacts = useIssueIdBatches(
     issueCommentInputFactsQueryKey(issueQueryRef), inputCommentIds,
-    ids => activityApi.inputFactsForIssue(issueQueryRef, ids), !!issueId && !historyExpanded,
+    ids => readFromIssueChatBootstrap(
+      queryClient,
+      [...issueCommentInputFactsQueryKey(issueQueryRef), "batch", ids],
+      issueQueryRef,
+      // The bootstrap answers exactly the saved recent-window comments.
+      (item) => sameIds(issueInputCommentIds(item.recentComments.comments), ids) ? item.commentInputFacts : undefined,
+      () => activityApi.inputFactsForIssue(issueQueryRef, ids),
+    ), !!issueId && !historyExpanded,
   );
   const {
     data: liveRuns,
@@ -1513,7 +1521,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     refetch: refetchLiveRuns,
   } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueQueryRef),
-    queryFn: () => heartbeatsApi.liveRunsForIssue(issueQueryRef),
+    queryFn: () => readFromIssueChatBootstrap(queryClient, queryKeys.issues.liveRuns(issueQueryRef), issueQueryRef, (item) => item.liveRuns, () => heartbeatsApi.liveRunsForIssue(issueQueryRef)),
     enabled: !!issueId,
     refetchInterval: (query) => liveRunRefetchInterval(hasLiveConnection, query.state, 1000),
     placeholderData:
@@ -1530,7 +1538,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     refetch: refetchActiveRun,
   } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueQueryRef),
-    queryFn: () => heartbeatsApi.activeRunForIssue(issueQueryRef),
+    queryFn: () => readFromIssueChatBootstrap(queryClient, queryKeys.issues.activeRun(issueQueryRef), issueQueryRef, (item) => item.activeRun, () => heartbeatsApi.activeRunForIssue(issueQueryRef)),
     enabled: activeRunQueryEnabled,
     refetchInterval: (query) => liveRunCount > 0 ? false : liveRunRefetchInterval(hasLiveConnection, query.state, 1000),
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
@@ -3313,6 +3321,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [location.state, resolvedIssueDetailState],
   );
 
+  // A cold open sends one bootstrap request for everything the chat's first
+  // frame needs; the reads below wait for its answer instead of fanning out.
+  // A task preloaded by the list is already cached, so this is a no-op.
+  const bootstrapCompanyId = companies.find((company) => company.issuePrefix === companyPrefix?.toUpperCase())?.id ?? selectedCompanyId;
+  if (issueId && !conversation && queryClient.getQueryData([...queryKeys.issues.detail(issueId), "core"]) === undefined) {
+    startIssueChatBootstrap(queryClient, bootstrapCompanyId, issueId);
+  }
+  // The core issue keeps its own small, fast read so the header never waits
+  // for the larger chat bootstrap; a preloaded task already has it cached.
   const coreIssueQuery = useQuery({
     ...getIssueCoreQueryOptions(queryClient, issueId!),
     enabled: !!issueId,
@@ -3521,7 +3538,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     refetch: refetchInteractions,
   } = useQuery({
     queryKey: queryKeys.issues.interactions(issueId!),
-    queryFn: () => issuesApi.listInteractions(issueId!),
+    queryFn: () => readFromIssueChatBootstrap(queryClient, queryKeys.issues.interactions(issueId!), issueId!, (item) => item.interactions, () => issuesApi.listInteractions(issueId!)),
     enabled: !!issueId,
     // A review can be committed between the initial fetch and live-socket
     // subscription. Reconcile even after its originating run has ended.
@@ -3538,7 +3555,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     refetch: refetchAttachments,
   } = useQuery({
     queryKey: queryKeys.issues.attachments(issueId!),
-    queryFn: () => issuesApi.listAttachments(issueId!),
+    queryFn: () => readFromIssueChatBootstrap(queryClient, queryKeys.issues.attachments(issueId!), issueId!, (item) => item.attachments, () => issuesApi.listAttachments(issueId!)),
     enabled: !!issueId,
     placeholderData: keepPreviousDataForSameQueryTail<IssueAttachment[]>(
       issueId ?? "pending",
@@ -3716,8 +3733,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
 
   const { data: projects = EMPTY_PROJECTS } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    ...companyProjectsQuery(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
@@ -4079,7 +4095,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       if (isMobile) setMobilePropsOpen(true);
     }
   }, [pluginPanels, taskPanelAccountScope, issue?.companyId, issue?.id, openTaskSidePanel, isMobile]);
-  const browserQuery = useTaskBrowsers(issue?.id);
+  const browserQuery = useTaskBrowsers(issue?.id, issue?.companyId);
   const { openBrowserId, openBrowser: setOpenBrowserId, acknowledgeBrowserOpened: handleBrowserOpened } =
     useBrowserArrivals(currentUserId ?? "anonymous", issue?.id, browserQuery.data);
   useEffect(() => {
@@ -5953,6 +5969,18 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
 
   const conversationAgent = conversation?.agent ?? agents?.find(agent => agent.id === issue?.conversationAgentId);
+  const breadcrumbParent = issue?.ancestors?.[0];
+  const breadcrumbParentRef = breadcrumbParent && !isLockedIssueStub(breadcrumbParent)
+    ? breadcrumbParent.identifier ?? breadcrumbParent.id
+    : null;
+  const rememberBreadcrumbParent = useCallback(() => {
+    if (!breadcrumbParentRef) return;
+    rememberIssueDetailLocationState(
+      breadcrumbParentRef,
+      resolvedIssueDetailState ?? location.state,
+      location.search,
+    );
+  }, [breadcrumbParentRef, resolvedIssueDetailState, location.state, location.search]);
   useEffect(() => {
     if (conversationAgent) {
       setBreadcrumbs([{ label: "Chat" }]);
@@ -5960,6 +5988,18 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     }
     setBreadcrumbs([
       sourceBreadcrumb,
+      ...(breadcrumbParent ? [{
+        label: isLockedIssueStub(breadcrumbParent) ? "Private task" : breadcrumbParent.title,
+        identifier: breadcrumbParent.identifier ?? undefined,
+        href: isLockedIssueStub(breadcrumbParent)
+          ? undefined
+          : createIssueDetailPath(breadcrumbParent.identifier ?? breadcrumbParent.id),
+        onClick: isLockedIssueStub(breadcrumbParent) ? undefined : rememberBreadcrumbParent,
+        control: isLockedIssueStub(breadcrumbParent)
+          ? <LockedIssueChip identifier={isMobile ? null : breadcrumbParent.identifier} />
+          : undefined,
+        controlKey: isLockedIssueStub(breadcrumbParent) ? `private-parent:${isMobile}` : undefined,
+      }] : []),
       {
         // The status glyph (leading) already conveys in-progress/live state;
         // no redundant 🔵 emoji prefix on the title.
@@ -5974,6 +6014,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     coordinatorWorkspaceEnabled,
     breadcrumbTitle,
     breadcrumbIdentifier,
+    breadcrumbParent,
+    isMobile,
+    rememberBreadcrumbParent,
     hasLiveRuns,
     setBreadcrumbs,
     sourceBreadcrumb.href,

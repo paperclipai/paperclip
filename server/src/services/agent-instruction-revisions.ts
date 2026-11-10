@@ -1,3 +1,6 @@
+import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
+import { extractAgentMentionIds } from "@paperclipai/shared";
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { createHash } from "node:crypto";
 import { adoptAgentFiles, agentFileToken, isAgentFileSaveRecorded } from "./agent-file-store.js";
@@ -164,13 +167,14 @@ export function agentInstructionRevisionService(db: Db) {
     return currentRow(target, state.entryFile, bytes, actor);
   }
   function currentRow(target: InstructionTarget, entryFile: string, bytes: Buffer, actor?: RevisionActor): Revision {
+    const origin = currentPluginInteractionOrigin();
     return { ...target, id: agentFileToken(bytes), entryFile, contentBase64: bytes.toString("base64"),
       contentHash: createHash("sha256").update(bytes).digest("hex"), byteLength: bytes.length,
       parentRevisionId: null, baseRevisionId: null, restoredFromRevisionId: null, source: "api",
-      actorAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
-      actorUserId: actor?.type === "board" ? actor.userId ?? null : null,
-      responsibleUserId: actor?.type === "board" ? actor.userId ?? null : actor?.type === "agent" ? actor.onBehalfOfUserId ?? null : null,
-      sourceRunId: actor && actor.type !== "plugin" ? actor.runId ?? null : null, createdAt: new Date(0) };
+      actorAgentId: origin?.agentId ?? (actor?.type === "agent" ? actor.agentId ?? null : null),
+      actorUserId: origin ? null : actor?.type === "board" ? actor.userId ?? null : null,
+      responsibleUserId: origin ? null : actor?.type === "board" ? actor.userId ?? null : actor?.type === "agent" ? actor.onBehalfOfUserId ?? null : null,
+      sourceRunId: origin ? origin.runId ?? null : actor && actor.type !== "plugin" ? actor.runId ?? null : null, createdAt: new Date(0) };
   }
   async function getRevision(
     tx: Tx,
@@ -224,6 +228,11 @@ export function agentInstructionRevisionService(db: Db) {
     instructionPath(input.entryFile);
     const bytes = "content" in input ? instructionBytes(input.content) : null;
     const result = await db.transaction(async (tx) => {
+      const restoredInput = "restoreRevisionId" in input
+        ? await getRevision(tx, input, input.entryFile, input.restoreRevisionId) : null;
+      const submittedContent = (bytes ?? Buffer.from(restoredInput!.contentBase64, "base64")).toString("utf8");
+      await assertAgentInteraction(tx, { companyId: input.companyId, actorAgentId: actor.type === "agent" ? actor.agentId : null,
+        operation: "configure", targetAgentId: input.agentId, lockAgentIds: extractAgentMentionIds(submittedContent), lock: "update" });
       const state = await lockTarget(tx, input, actor.type === "plugin" ? undefined : actor);
       const bound = actor.type === "plugin"
         ? await authorizePluginReset(tx, actor, input, state.agent)
@@ -250,10 +259,15 @@ export function agentInstructionRevisionService(db: Db) {
             )
           : null;
       const candidate = bytes ?? Buffer.from(restored!.contentBase64, "base64");
+      if (current?.contentBase64 !== candidate.toString("base64")) {
+        await assertAgentInteraction(tx, { companyId: input.companyId, actorAgentId: bound.type === "agent" ? bound.agentId : null,
+          operation: "mention", texts: [submittedContent] });
+      }
+      const origin = currentPluginInteractionOrigin();
       const recordSave = (row: Revision) => tx.insert(activityLog).values({ companyId: input.companyId,
-        actorType: bound.type === "plugin" ? "plugin" : bound.type === "board" ? "user" : "agent",
-        actorId: (bound.type === "plugin" ? bound.pluginId : bound.type === "board" ? bound.userId : bound.agentId)!,
-        agentId: bound.type === "agent" ? bound.agentId : null, runId: row.sourceRunId,
+        actorType: origin ? "agent" : bound.type === "plugin" ? "plugin" : bound.type === "board" ? "user" : "agent",
+        actorId: origin?.agentId ?? (bound.type === "plugin" ? bound.pluginId : bound.type === "board" ? bound.userId : bound.agentId)!,
+        agentId: origin?.agentId ?? (bound.type === "agent" ? bound.agentId : null), runId: row.sourceRunId,
         responsibleUserId: row.responsibleUserId, action: "agent.files_updated", entityType: "agent", entityId: input.agentId,
         details: { path: input.entryFile, contentHash: row.contentHash, created: current === null, source: restored ? "legacy_restore" : (input as InstructionCommitInput).source } });
       const bindEntry = async () => {

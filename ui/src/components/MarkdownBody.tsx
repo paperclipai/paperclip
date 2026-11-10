@@ -11,6 +11,7 @@ import Markdown, { defaultUrlTransform, type Components, type Options } from "re
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
 import { MarkdownUrlLink } from "./MarkdownUrlLink";
+import { recognizeLinkPreview, type LinkPreviewState } from "@paperclipai/shared";
 import { Link, useCaseHref } from "@/lib/router";
 import { useTheme } from "../context/ThemeContext";
 import { useOptionalCompany } from "../context/CompanyContext";
@@ -130,8 +131,8 @@ interface MarkdownBodyProps {
   resolveLinkHref?: (href: string) => string | null;
   /** Called when a user clicks an inline image */
   onImageClick?: (src: string, image: HTMLImageElement) => void;
-  /** Keep untrusted decision media inert: image references and diagram source only. */
-  mediaMode?: "render" | "reference";
+  /** Keep media inert as references, or omit images in compact text previews. */
+  mediaMode?: "render" | "reference" | "omit";
   /**
    * Resolver that decides which inline-code workspace file paths may be linked
    * to the issue file viewer. Omitting it (or returning null) leaves every
@@ -279,6 +280,18 @@ function MarkdownExternalLink({
     `${displayKey} — ${statusLabel}${livenessSuffix}`,
   ];
   const title = titleParts.filter(Boolean).join(" · ");
+  if (recognizeLinkPreview(href)) {
+    const knownState: LinkPreviewState = reference.statusIconKey === "git-merge" || reference.statusLabel === "Merged" ? "merged"
+      : reference.statusLabel === "Merge conflicts" ? "conflicts"
+      : reference.statusLabel === "Draft" ? "draft"
+      : reference.statusCategory === "open" ? "open"
+      : reference.statusCategory === "closed" ? "closed" : "unknown";
+    return <MarkdownUrlLink href={href} title={title} knownState={knownState}
+      externalStatus={{ category: reference.statusCategory, liveness: reference.liveness,
+        ariaLabel: `${displayKey} ${statusLabel}${livenessSuffix}: ${reference.displayTitle ?? href}` }}>
+      {children}
+    </MarkdownUrlLink>;
+  }
   return (
     <a
       href={href}
@@ -967,7 +980,9 @@ function MarkdownBodyImpl({
       );
     },
     };
-    if (mediaMode === "reference") {
+    if (mediaMode === "omit") {
+      map.img = () => null;
+    } else if (mediaMode === "reference") {
       map.img = ({ src, alt, title }) => (
         <span data-markdown-image-reference title={title}>
           Image: {alt || "Untitled image"}{src ? ` (${src})` : ""}

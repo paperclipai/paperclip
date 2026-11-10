@@ -39,6 +39,7 @@ import {
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
 import { settleAbandonedRemoteSnapshotSave, settleAbandonedWorkspaceCommandOperation, settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
 import { settlePreparationOnlyRemoteWorkspaceEpoch } from "./remote-workspace-unsaved-files-settlement.js";
+import { settleAbandonedRemoteSnapshotLedger } from "./remote-snapshot-ledger-settlement.js";
 import { LOCAL_WORKSPACE_COMMAND_PHASES, runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
 import { copybackOwnerHoldOwner, settleCopybackOwnerHold } from "./copyback-owner-hold.js";
 import { applyObservedFenceProviderProof, observedWorkspaceFenceOwner, settleObservedWorkspaceFence } from "./observed-workspace-fence.js";
@@ -49,6 +50,7 @@ import { settleIssueLock } from "./issue-lock-settlement.js";
 import { settleAgentLifecycleLease } from "./agent-lifecycle-lease-settlement.js";
 import { legacyControllerOwnerStamp, settleLegacyControllerLease } from "../legacy-controller-lease.js";
 import { heldInterruptedPreparationWhere, settleHeldInterruptedPreparation } from "../interrupted-preparation-hold-settlement.js";
+import { completedTurnCleanupHoldWhere, settleCompletedTurnCleanupHolds } from "../native-runtime/completed-turn-cleanup-hold-settlement.js";
 import {
   nativeLeaseHolderStamp,
   readNativeLeaseHolder,
@@ -946,7 +948,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
   },
   {
     id: "remote_snapshot_ledger", title: "Remote snapshot ledger", obligation: "workspace_preservation",
-    storage: "database", settle: null, invariantChecks: [2],
+    storage: "database", settle: settleAbandonedRemoteSnapshotLedger, invariantChecks: [2],
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaceSnapshots.id, companyId: executionWorkspaceSnapshots.companyId,
         sourceRunId: executionWorkspaceSnapshots.sourceRunId, updatedAt: executionWorkspaceSnapshots.updatedAt })
@@ -1075,6 +1077,15 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
         return stamp ? { kind: "process", stamp } : { kind: "none" };
       }),
     settle: settleHeldInterruptedPreparation,
+  },
+  {
+    // No-replay holds of a run that completed its turn and was then refused by
+    // the in-process cleanup gate. Its owner is the controller that closed the
+    // session (the coordinator's stamp); once that process is proven gone, so
+    // is its gate, and the holds settle without replaying anything.
+    ...nrfKind("native_completed_turn_cleanup_hold", "Completed-turn cleanup hold", "ownership",
+      completedTurnCleanupHoldWhere()),
+    settle: settleCompletedTurnCleanupHolds,
   },
   runKind("detached_process_marker", "Detached-process marker", "ownership",
     and(eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.errorCode, "process_detached")),

@@ -1,5 +1,6 @@
 import { UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST, type FaultReceipt, type OracleResult, type RuleId, type RuleResult, type TaskGrade, type TaskRecord, type TaskSample } from "./types.js";
 import { g1Decision } from "./workloads.js";
+import { enforcedUniversalFailures, gradeUniversal, type UniversalDbEvidence } from "./universal.js";
 
 /** Pure R1–R6 grading over observer samples (plan §2). No I/O. */
 
@@ -245,7 +246,8 @@ export function gradeR6(record: TaskRecord): RuleResult {
   return leaks.length ? { verdict: "fail", detail: `leak: ${leaks.join("; ")}` } : { verdict: "pass", detail: "clean rest" };
 }
 
-export function gradeTask(record: TaskRecord, faults: readonly FaultReceipt[], budgetMs: number, oracle: OracleResult): TaskGrade {
+export function gradeTask(record: TaskRecord, faults: readonly FaultReceipt[], budgetMs: number, oracle: OracleResult,
+  universalDb?: UniversalDbEvidence): TaskGrade {
   const crossing = crossingFaults(record, faults);
   const rules: Record<RuleId, RuleResult> = {
     R1: gradeR1(record, budgetMs, faults),
@@ -256,9 +258,13 @@ export function gradeTask(record: TaskRecord, faults: readonly FaultReceipt[], b
     R6: gradeR6(record),
   };
   const failed = (Object.entries(rules) as Array<[RuleId, RuleResult]>).find(([, rule]) => rule.verdict === "fail");
-  const pass = !failed && oracle.verdict === "pass";
+  // Universal checks run on every task whatever its workload; only enforced ones fail it (universal.ts).
+  const universal = gradeUniversal(record, universalDb ? { db: universalDb } : {});
+  const [universalFailure] = enforcedUniversalFailures(universal);
+  const pass = !failed && oracle.verdict === "pass" && !universalFailure;
   let signature: string | null = null;
   if (failed) signature = `${failed[0]}:${failed[1].detail.split(/[\s:(]/)[0]}:${record.plan.workload}:${record.plan.fault}`;
   else if (oracle.verdict === "fail") signature = `T:${oracle.checks.find(check => !check.ok)?.name ?? "unknown"}:${record.plan.workload}:${record.plan.fault}`;
-  return { crossed: crossing.length > 0, crossingFaults: crossing, rules, T: oracle, pass, signature };
+  else if (universalFailure) signature = `${universalFailure[0]}:${universalFailure[1].detail.split(/[\s:(]/)[0]}:${record.plan.workload}:${record.plan.fault}`;
+  return { crossed: crossing.length > 0, crossingFaults: crossing, rules, T: oracle, universal, pass, signature };
 }

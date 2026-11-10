@@ -1,6 +1,10 @@
+import { credentialFaultRules } from "./storage-credentials.js";
 import type { StorageFaultRule } from "./storage-proxy.js";
+import { bandwidthDraw } from "./storage-bandwidth.js";
+import { lagFaultRules } from "./storage-lag.js";
+import { multipartFaultRules } from "./storage-multipart.js";
 
-export const STORAGE_FAULT_KINDS = ["ST1", "ST2", "ST3"] as const;
+export const STORAGE_FAULT_KINDS = ["ST1", "ST2", "ST3", "ST4", "ST5", "ST5R", "ST7"] as const;
 export type StorageFaultKind = typeof STORAGE_FAULT_KINDS[number];
 
 export interface StorageFaultWindow { kind: StorageFaultKind; startMs: number; durationMs: number; rules: StorageFaultRule[] }
@@ -20,9 +24,12 @@ export function storageFaultRules(kind: StorageFaultKind, random: () => number):
     case "ST1": return [{ fault: { kind: "outage", status: 503 } }];
     case "ST2": {
       const ms = 1_000 + Math.round(random() * 9_000);
-      return [{ fault: { kind: "latency", ms, jitterMs: Math.round(ms / 4) } }];
+      return [{ fault: { kind: "latency", ms, jitterMs: Math.round(ms / 4), bytesPerSecond: bandwidthDraw(random) } }];
     }
     case "ST3": return [{ fault: { kind: "errors", rate: 0.3, status: 503, slowDown: random() < 0.5 } }];
+    case "ST4": return multipartFaultRules(random);
+    case "ST5": case "ST5R": return credentialFaultRules(kind, random);
+    case "ST7": return lagFaultRules(random);
   }
 }
 
@@ -62,7 +69,7 @@ export class StorageChaos {
   private timer: ReturnType<typeof setInterval> | null = null;
   readonly receipts: StorageFaultReceipt[] = [];
 
-  constructor(private readonly windows: readonly StorageFaultWindow[], private startedAt: number,
+  constructor(readonly windows: readonly StorageFaultWindow[], private startedAt: number,
     private readonly proxy: { setRules(rules: readonly StorageFaultRule[]): void; clear(): void },
     private readonly record: (kind: string, data: Record<string, unknown>) => void) {}
 

@@ -239,6 +239,18 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     return { companyId, agentId, issueSvc, projectId, routine, svc, wakeups };
   }
 
+  it("checks the author of an agent-edited routine revision when dispatching later work", async () => {
+    const f = await seedFixture();
+    const editorId = randomUUID();
+    await db.insert(agents).values({ id: editorId, companyId: f.companyId, name: "Editor", status: "active", adapterType: "process" });
+    await f.svc.update(f.routine.id, { description: "Agent-authored instructions" }, { agentId: editorId });
+    await db.update(agents).set({ permissions: { interactions: { canAssignTasksToAgents: false } } }).where(eq(agents.id, editorId));
+    await expect(f.svc.runRoutine(f.routine.id, { source: "api" }, {})).rejects.toMatchObject({ status: 403,
+      details: expect.objectContaining({ permission: "canAssignTasksToAgents", actorAgentId: editorId }) });
+    expect(await db.select().from(routineRuns).where(eq(routineRuns.routineId, f.routine.id))).toEqual([]);
+    expect(f.wakeups).toEqual([]);
+  });
+
   it("preserves creation ancestry through regular webhooks, child tasks, and standalone follow-ups", async () => {
     vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", randomUUID().repeat(2));
     const f = await seedFixture();

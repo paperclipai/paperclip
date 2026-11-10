@@ -4,6 +4,7 @@ import { activityApi, type RunForIssue } from "@/api/activity";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { issuesApi } from "@/api/issues";
 import { prefetchIssueIdBatches } from "@/hooks/useIssueIdBatches";
+import { readFromIssueChatBootstrap } from "@/lib/issue-chat-bootstrap";
 import { queryKeys } from "@/lib/queryKeys";
 
 // The compact task chat reveals its first frame only after these reads settle
@@ -53,8 +54,12 @@ export function prefetchIssueCommentInputFacts(queryClient: QueryClient, issueRe
 
 /** Recent activity, merged with events already observed while the task is open. */
 export async function fetchRecentIssueActivity(queryClient: QueryClient, issueRef: string) {
-  const recent = await activityApi.recentForIssue(issueRef);
-  const previous = queryClient.getQueryData<ActivityEvent[]>(recentIssueActivityQueryKey(issueRef)) ?? [];
+  const cached = queryClient.getQueryData<ActivityEvent[]>(recentIssueActivityQueryKey(issueRef));
+  // A cold open may already have this in a loading bootstrap; a refresh asks the server.
+  const recent = cached
+    ? await activityApi.recentForIssue(issueRef)
+    : await readFromIssueChatBootstrap(queryClient, recentIssueActivityQueryKey(issueRef), issueRef, (item) => item.recentActivity, () => activityApi.recentForIssue(issueRef));
+  const previous = cached ?? [];
   return [...new Map([...previous, ...recent].map((event) => [event.id, event])).values()];
 }
 
@@ -65,8 +70,10 @@ export async function fetchRecentIssueRunWindow(
   options: { conversationMode?: boolean } = {},
 ): Promise<RecentIssueRunWindow> {
   const key = recentIssueRunWindowQueryKey(issueRef);
-  let recent = await activityApi.recentRunsForIssue(issueRef);
   const previousWindow = queryClient.getQueryData<RecentIssueRunWindow>(key);
+  let recent = previousWindow
+    ? await activityApi.recentRunsForIssue(issueRef)
+    : await readFromIssueChatBootstrap(queryClient, key, issueRef, (item) => item.recentRuns, () => activityApi.recentRunsForIssue(issueRef));
   let previous = previousWindow?.runs ?? [];
   let reconciledFullHistory = false;
   if (previous.some((run) =>
@@ -81,6 +88,18 @@ export async function fetchRecentIssueRunWindow(
     const existingRunIds = new Set(recent.map((run) => run.runId));
     previous = previous.filter((run) => existingRunIds.has(run.runId));
   }
+  return buildRecentIssueRunWindow(recent, previous, !reconciledFullHistory && previousWindow?.hasEarlierRuns === true);
+}
+
+/**
+ * The run window for a `/runs?view=recent` answer. `previous` holds runs
+ * already observed while the task is open; a cold open passes none.
+ */
+export function buildRecentIssueRunWindow(
+  recent: RunForIssue[],
+  previous: RunForIssue[] = [],
+  previouslyHadEarlierRuns = false,
+): RecentIssueRunWindow {
   // The second row refreshes a just-finished predecessor. Start with only
   // the latest run, then keep every run observed while this task is open.
   const visible = new Set([...previous.map((run) => run.runId), ...recent.slice(0, 1).map((run) => run.runId)]);
@@ -89,7 +108,7 @@ export async function fetchRecentIssueRunWindow(
     // A first run is already visible. The disclosure needs evidence of an
     // omitted run, and must retain that evidence as later turns arrive.
     hasEarlierRuns: recent.some((run) => !visible.has(run.runId))
-      || (!reconciledFullHistory && recent.length >= 2 && previousWindow?.hasEarlierRuns === true),
+      || (recent.length >= 2 && previouslyHadEarlierRuns),
   };
 }
 

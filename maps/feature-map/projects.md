@@ -29,8 +29,8 @@ Open `/projects`, create a project, and enter its overview or Issues view.
 ### `repository-settings`
 
 Open `/projects/:projectId/configuration` and its repository/workspace settings.
-Workspace storage shows the inherited installed default and allows an explicit
-provider or Core/local choice. Conflicting defaults remain visible for repair.
+Workspace storage shows the saved provider or Core/local choice. Plugin-backed
+projects retain their storage owner.
 
 ### `project-access`
 
@@ -48,7 +48,7 @@ Manual: Create a project, add a task from its view, and reload. Verify the task 
 
 ### `repository-settings`
 
-Automated: [provider defaults and API overrides](../../server/src/__tests__/project-workspace-provider.integration.test.ts) and [storage selection UI](../../ui/src/components/ProjectProperties.concurrency.test.tsx) cover inherited choices, explicit overrides, and configuration errors. These offline checks do not qualify live provider storage.
+Automated: [provider defaults and API overrides](../../server/src/__tests__/project-workspace-provider.integration.test.ts) and [storage selection UI](../../ui/src/components/ProjectProperties.concurrency.test.tsx) cover saved storage, explicit overrides, and configuration errors. These offline checks do not qualify live provider storage.
 
 Automated: [repository persistence](../../server/src/__tests__/project-repositories-persistence.test.ts) and [repository browser suite](../../tests/e2e/project-repositories.spec.ts) cover configured repository workflows.
 

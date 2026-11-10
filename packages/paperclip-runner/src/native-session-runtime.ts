@@ -418,6 +418,36 @@ function isTurnTerminal(event: PrpEvent): boolean {
   ].includes(event.eventType);
 }
 
+/**
+ * The only provider facts a governed-wait accounting drain persists after its
+ * trigger: usage, the turn terminal and cancellation acknowledgements of the
+ * parked turn. The drain discards every other numbered event, so the saved
+ * replay has sequence gaps exactly where those discarded events were.
+ */
+/**
+ * A parked turn's terminal proves the provider stopped its work. An interrupted
+ * or cancelled terminal does unless the provider never confirmed it. A failed
+ * terminal does only when Runnerd reports the turn lost on restore: it emits
+ * that cause after proving the old provider lifetime ended and restoring the
+ * conversation (ACPX reports a restart-killed turn this way; Codex reports it
+ * interrupted). That event carries `providerTerminalObserved: false`, because
+ * the provider itself sent no terminal; the restart proof stands in for it.
+ */
+function governedWaitTerminalProven(event: PrpEvent): boolean {
+  if (event.eventType === "turn.failed") return isNativeRestartInterruption(event.payload.error);
+  return event.payload.providerTerminalObserved !== false;
+}
+
+function isGovernedDrainRetainedEvent(event: PrpEvent, turnId: string | undefined): boolean {
+  if (event.turnId !== turnId) return false;
+  return isTurnTerminal(event)
+    || (event.eventType === "item.completed"
+      && (event.payload.kind === "usage" || event.payload.kind === "interrupt_acknowledgement"))
+    || event.eventType === "runtime_request.cancelled"
+    || event.eventType === "runtime_request.expired"
+    || (event.eventType === "run.terminal" && ["failed", "cancelled"].includes(String(event.payload.runTerminalState)));
+}
+
 function terminalFromEvent(
   event: PrpEvent,
   disposition: PrpTerminalState["reportedWorkDisposition"],
@@ -1206,14 +1236,10 @@ async function consumeTurn(
           if (next.done || drainAbort.signal.aborted) return;
           const trailing = next.value;
           const terminal = isTurnTerminal(trailing);
-          const usage = trailing.eventType === "item.completed" && trailing.payload.kind === "usage";
-          // These already-numbered cancellation facts carry no new work
-          // authority. Retain them so later receipts have contiguous replay.
-          const cancellation = trailing.eventType === "runtime_request.cancelled"
-            || trailing.eventType === "runtime_request.expired"
-            || (trailing.eventType === "item.completed" && trailing.payload.kind === "interrupt_acknowledgement")
-            || (trailing.eventType === "run.terminal" && ["failed", "cancelled"].includes(String(trailing.payload.runTerminalState)));
-          if (trailing.turnId === event.turnId && (usage || terminal || cancellation)) {
+          // Usage, the terminal and already-numbered cancellation facts carry
+          // no new work authority. Everything else is discarded, leaving gaps
+          // that governed-wait recovery replay accepts only for these facts.
+          if (isGovernedDrainRetainedEvent(trailing, event.turnId)) {
             const receipt = await controlPlane.appendEvent(trailing, {
               signal: drainAbort.signal,
               ...(terminal && trailing.turnId && trailing.eventType !== "turn.failed" && trailing.payload.providerTerminalObserved !== false
@@ -1223,7 +1249,7 @@ async function consumeTurn(
             eventCount += receipt.disposition === "committed" ? 1 : 0;
             highestContiguousSourceSeq = Math.max(highestContiguousSourceSeq, receipt.highestContiguousSourceSeq);
             if (terminal) {
-              if (trailing.eventType === "turn.failed" || trailing.payload.providerTerminalObserved === false) {
+              if (!governedWaitTerminalProven(trailing)) {
                 throw new NativeProviderTerminalFailure("governed_wait_provider_terminal_unproven", false);
               }
               governedProviderTerminalObserved = true;
@@ -2333,14 +2359,22 @@ export async function executeNativeSession(
       timeoutMessage: "native governed-wait recovery replay timed out",
       operation: async signal => {
         let afterSourceSeq = event.sourceSeq - 1;
+        let gapObserved = false;
         while (true) {
           const page = await options.controlPlane.replayEvents({ runId: identity.runId,
             sourceInstanceId: options.runnerInstanceId, afterSourceSeq, limit: 1_000 }, { signal });
           signal.throwIfAborted();
           if (!page.events.length) break;
           for (const entry of page.events) {
+            // The trigger must be the first replayed event. After it, the
+            // accounting drain persisted only facts of the parked turn and
+            // discarded the rest, so a gap is legitimate only when every later
+            // event is one of those facts. Identity never relaxes.
+            if (entry.sourceSeq !== afterSourceSeq + 1) gapObserved = true;
             if (entry.runId !== identity.runId || entry.normalizedSessionId !== identity.sessionId
-              || entry.sourceInstanceId !== event.sourceInstanceId || entry.sourceSeq !== afterSourceSeq + 1
+              || entry.sourceInstanceId !== event.sourceInstanceId || !Number.isSafeInteger(entry.sourceSeq)
+              || entry.sourceSeq <= afterSourceSeq || (gapObserved && (governedReplay.length === 0 || !event.turnId
+                || !isGovernedDrainRetainedEvent(entry, event.turnId)))
               || governedReplay.length >= 10_000) throw new Error("native_governed_wait_replay_mismatch");
             governedReplay.push(entry);
             afterSourceSeq = entry.sourceSeq;
@@ -2697,10 +2731,10 @@ export async function executeNativeSession(
       message: { role: "user" as const, text: JSON.stringify({
         schema: "paperclip.native-continuation.v1",
         events: [
-          "This is a resumed session after a Paperclip control-plane restart. Paperclip restored this same conversation and workspace; the restart interrupted the previous turn.",
+          "This is a resumed session. The process running the previous turn was lost, for example in a Paperclip restart. Paperclip restored this same conversation and workspace; that loss interrupted the previous turn.",
           "Continue the current user request from the recorded progress and preserved workspace.",
           ...(steeredMessages.length > 0 ? [
-            "During the interrupted turn the user sent the messages in steeredMessages. The restart happened before you read them. Handle each one in this turn, oldest first, together with the current request.",
+            "During the interrupted turn the user sent the messages in steeredMessages. The interruption happened before you read them. Handle each one in this turn, oldest first, together with the current request.",
           ] : []),
           "Shell commands and background processes started in earlier turns may no longer be running, and their tool sessions may be gone. Do not block only because such a process or its tool session cannot be found or inspected.",
           "Reconcile any unfinished tool or command before proceeding: check the workspace for the outputs or artifacts it should have produced. If the expected output is present, use it. If the expected output is missing, re-run the command.",
@@ -2850,7 +2884,7 @@ export async function executeNativeSession(
 
     const governedTerminal = governedWait ? governedReplay.find(event =>
       event.turnId === governedWait!.sourceEvent.turnId && isTurnTerminal(event)) : undefined;
-    if (governedTerminal?.eventType === "turn.failed" || governedTerminal?.payload.providerTerminalObserved === false) {
+    if (governedTerminal && !governedWaitTerminalProven(governedTerminal)) {
       throw new NativeProviderTerminalFailure("governed_wait_provider_terminal_unproven", false);
     }
     if (governedWait && recoveredActiveTurnId && recoveredActiveTurnId !== governedWait.sourceEvent.turnId) {

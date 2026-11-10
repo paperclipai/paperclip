@@ -1,15 +1,18 @@
+import { catalogTeamInstallSchema, catalogTeamPreviewSchema } from "@paperclipai/shared";
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
 import { ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
 import { agentCaseHandoffSchema, caseWorkflowDocumentTextSchema, doneCaseHandoffSchema, createWorkflowSchema, updateWorkflowSchema, listWorkflowsSchema, readWorkflowQuerySchema } from "@paperclipai/shared";
 import {
+  experimentalApiDocs,
   experimentalApiPaths,
   experimentalApiQueries,
 } from "./experimental-api-paths.js";
 import { Router } from "express";
 import { subscriptionPriceSchema, mergeSubscriptionsSchema } from "@paperclipai/shared";
 import { z } from "zod";
+import { getHiddenSettings } from "../services/settings-visibility.js";
 import {
   gitHubRepositoryPageQuerySchema,
   toggleAllGitHubRepositoriesSchema,
@@ -52,6 +55,8 @@ import {
   updatePrimaryAgentSchema,
   updateAgentPermissionsSchema,
   updateAgentPermissionGrantSchema,
+  updateAgentInteractionPermissionsSchema,
+  agentInteractionPermissionsSchema,
   addAgentProjectAccessSchema,
   updateAgentInstructionsPathSchema,
   updateAgentInstructionsBundleSchema,
@@ -1578,6 +1583,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/chat-identity-links/request-access",
   "POST /api/chat-endpoints/{endpointId}/publications/{publicationId}/resolve",
   "POST /api/chat-endpoints/{endpointId}/actions/{actionId}/resolve",
+  // Task-tree pause, cancel and resume controls are board-only (assertBoard in routes/issue-tree-control.ts).
   "GET /api/issues/{id}/tree-control/state",
   "POST /api/issues/{id}/tree-control/preview",
   "GET /api/issues/{id}/tree-holds",
@@ -2126,6 +2132,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/timeline",
   tags: ["companies"],
   summary: "Get company work timeline",
+  description: "Read-only company-scoped progress history for a requested time window. Inspect visible work spans and saved ownership or delegation events, then follow source issue activity for recorded actors and status transitions. Comments and run outcomes alone do not establish who reassigned work or why it paused. A failed verification command can occur within a successful run. Preserve the requested window, source links and task visibility boundaries.",
   request: {
     params: z.object({ companyId: z.string() }),
     query: workTimelineQuerySchema,
@@ -2545,6 +2552,19 @@ for (const operation of githubBotOperations) {
     },
   });
 }
+
+registry.registerPath({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/chat-endpoints/{endpointId}/provider-work/{actionId}/retry",
+  tags: ["chat-channels"],
+  summary: "Retry retained provider receipt work",
+  description: "Requires current company connection-management access. Rearms only the same authorized retained Slack receipt or cleanup responsibility. Does not create a new form or spend a trigger. Revoked, foreign, or changed ownership is refused.",
+  request: { params: z.object({ endpointId: z.string().uuid(), actionId: z.string().uuid() }), body: jsonBody(z.object({}).strict()) },
+  responses: { 200: r.ok(z.object({ actionId: z.string().uuid(), state: z.enum(["scheduled", "already_scheduled", "complete"]) })),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
 
 registry.registerPath({
   "x-paperclip-transport": "rest",
@@ -3171,6 +3191,8 @@ for (const route of [
     path: route[1],
     tags: ["teams"],
     summary: route[2],
+    body: route[1].endsWith("/preview") ? catalogTeamPreviewSchema
+      : route[1].endsWith("/install") ? catalogTeamInstallSchema : undefined,
     ...(route[1] === "/api/teams/catalog" ? {
       query: z.object({
         q: z.string().optional().describe("Case-insensitive text matched against team names, descriptions and tags."),
@@ -3761,8 +3783,15 @@ registry.registerPath({
   method: "get",
   path: "/api/agents/me/inbox/mine",
   tags: ["agents"],
-  summary: "Get current agent assigned inbox items",
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  summary: "List a person's Mine inbox tasks",
+  description: "Agent read of one board user's personal inbox: the tasks that person participated in and has not archived, the same set as their Mine list, which they open at /<prefix>/inbox/mine. Use it when a person asks what is in their inbox or needs their attention; it is not your own work queue (GET /api/agents/me/inbox-lite) and a company-wide task search is not a substitute. userId is required: use the person's user id, such as the authorUserId of their message.",
+  request: {
+    query: z.object({
+      userId: z.string().min(1).describe("The person's user id, such as the authorUserId of their message. Required."),
+      status: z.string().optional().describe("Comma-separated task statuses; defaults to the Mine list statuses (cancelled excluded)."),
+    }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
@@ -3839,6 +3868,26 @@ registry.registerPath({
   description: "Board-only. Requires users:manage_permissions in the agent's company. Enables an unscoped grant or removes that permission key without replacing other grants. Does not reactivate inactive memberships or start agent work. Writes an activity record in the same transaction.",
   request: { params: z.object({ id: z.string().uuid() }), body: jsonBody(updateAgentPermissionGrantSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+const agentInteractionPermissionsResponse = z.object({
+  agentId: z.string().uuid(), companyId: z.string().uuid(), overrides: agentInteractionPermissionsSchema,
+  effective: agentInteractionPermissionsSchema.required(),
+});
+registry.registerPath({
+  method: "get", path: "/api/agents/{id}/interaction-permissions", tags: ["agents"],
+  summary: "Read individual agent interaction restrictions",
+  description: "Requires agent configuration read access. Returns sparse saved overrides and effective restriction values; true does not grant authority denied by other policies.",
+  request: { params: z.object({ id: z.string().uuid() }) },
+  responses: { 200: r.ok(agentInteractionPermissionsResponse), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registry.registerPath({
+  method: "patch", path: "/api/agents/{id}/interaction-permissions", tags: ["agents"],
+  summary: "Set individual agent interaction restrictions",
+  description: "Human permission managers only: requires board authentication and users:manage_permissions. A partial map sets true/false; null removes the override. Missing values preserve existing behavior. Does not change grants or start work. Every change is audited atomically.",
+  request: { params: z.object({ id: z.string().uuid() }), body: jsonBody(updateAgentInteractionPermissionsSchema) },
+  responses: { 200: r.ok(agentInteractionPermissionsResponse), 400: r.badRequest, 401: r.unauthorized,
+    403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 const agentProjectAccessResponse = z.object({ projectIds: z.array(z.string().uuid()), canManage: z.boolean() });
@@ -4359,12 +4408,35 @@ registry.registerPath({
   path: "/api/companies/{companyId}/issues/summaries",
   tags: ["issues"],
   summary: "Get authorized recent-task summaries",
-  description: "Accepts only the ids query parameter: one to five comma-separated UUIDs, bounded before deduplication. IDs are trimmed and normalized to lowercase. Repeated, array and nested query syntax is rejected, including mixed forms. Returns accessible, visible tasks in request order; unavailable IDs are omitted. This private, no-store read excludes full task and workspace enrichment.",
+  description: "Accepts only the ids query parameter: one to fifty comma-separated UUIDs, bounded before deduplication. IDs are trimmed and normalized to lowercase. Repeated, array and nested query syntax is rejected, including mixed forms. Returns accessible, visible tasks in request order; unavailable IDs are omitted. This private, no-store read excludes full task and workspace enrichment.",
   request: {
     params: z.object({ companyId: z.string() }),
-    query: z.object({ ids: z.string().min(1).describe("One to five comma-separated task UUIDs; repeated query parameters are rejected") }),
+    query: z.object({ ids: z.string().min(1).describe("One to fifty comma-separated task UUIDs; repeated query parameters are rejected") }),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/issues/chat-bootstrap",
+  tags: ["issues"],
+  summary: "Read what the task chat needs before its first frame, for up to ten tasks",
+  description: "Accepts only the ids query parameter: one to ten comma-separated task UUIDs or identifiers, normalized (UUID lowercase, identifier uppercase) and deduplicated. Returns { items } in request order; each item has the normalized ref plus issue (GET /issues/{id}?view=core), recentComments (/recent-comments), commentInputFacts (/activity?view=comment-inputs for the recent comments), recentActivity (/activity?view=recent), recentRuns (/runs?view=recent), interactions, attachments, liveRuns and activeRun, each in that endpoint's shape. Missing, foreign and unreadable tasks are omitted. Read-only, without break-glass; private, no-store. Task-bridge keys are rejected.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ ids: z.string().min(1).describe("One to ten comma-separated task UUIDs or identifiers; other query parameters are rejected") }),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{ref}/chat-bootstrap",
+  tags: ["issues"],
+  summary: "Read what the task chat needs before its first frame, for one task",
+  description: "The single-task form of /companies/{companyId}/issues/chat-bootstrap for a hard load of a task URL. Returns one item (not wrapped in items), identical to the batch item for the same ref. 404 when the task is missing or unreadable. Read-only, without break-glass; private, no-store.",
+  request: { params: z.object({ ref: z.string().describe("A task UUID or identifier") }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -4735,6 +4807,7 @@ registry.registerPath({
   path: "/api/issues/{id}/comments",
   tags: ["issues"],
   summary: "List issue comments",
+  description: "Lists discussion comments, not complete status or assignment history. For progress walkthroughs and handoff attribution, use GET /api/companies/{companyId}/timeline for the requested interval and GET /api/issues/{id}/activity for saved transitions and their recorded actors. Do not infer prior ownership from the current assignee or from successful runs.",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
@@ -5068,6 +5141,26 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/project-environments",
+  tags: ["projects"],
+  summary: "List compatible project environments and the caller's default",
+  description: "Groups configured environments by repository storage owner. Returns names and IDs without provider configuration. Creation revalidates environmentId and stores its storage owner without overriding agent execution environments.",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: {
+    200: r.ok(z.object({
+      groups: z.array(z.object({
+        storageProviderPluginId: z.string().uuid().nullable(),
+        environments: z.array(z.object({ id: z.string().uuid(), name: z.string() })),
+      })),
+      defaultEnvironmentId: z.string().uuid().nullable(),
+      error: z.string().nullable(),
+    })),
+    401: r.unauthorized, 403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/project-repositories",
   tags: ["projects"],
   summary: "Discover GitHub repositories available to the current board user",
@@ -5310,11 +5403,42 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+// A plugin-managed routine is still an ordinary routine row, so agents read it
+// through the routine routes; say there who owns it and where it is changed.
+const PLUGIN_MANAGED_ROUTINE_GUIDANCE =
+  "A routine with a non-null `managedByPlugin` is a plugin-managed routine: that plugin created it and owns its definition "
+  + "(title, instructions, schedule, assignee), and the plugin can reset it to its manifest defaults. "
+  + "It is changed through the settings that plugin exposes, which a board user opens at "
+  + "[plugin settings](/<prefix>/company/settings/instance/plugins/<pluginId>), with `managedByPlugin.pluginId` as <pluginId> "
+  + "and this conversation's company prefix as <prefix>. "
+  + "Do not rewrite, detach or duplicate a plugin-managed routine to imitate a change, and do not search for another route: "
+  + "reply now with that link and the routine's page link.";
+// When the hosting operator hides plugin management, that settings page redirects
+// away, so the guidance names the operator instead of linking it.
+const PLUGIN_MANAGED_ROUTINE_OPERATOR_GUIDANCE =
+  "A routine with a non-null `managedByPlugin` is a plugin-managed routine: that plugin created it and owns its definition "
+  + "(title, instructions, schedule, assignee), and the plugin can reset it to its manifest defaults. "
+  + "On this instance the hosting operator manages plugins, so no Paperclip page offers that change. "
+  + "Do not rewrite, detach or duplicate a plugin-managed routine to imitate a change, and do not search for another route: "
+  + "reply now that the hosting operator controls this plugin's settings, with the routine's page link.";
+
+/** Picks the plugin-managed routine guidance that matches plugin settings visibility. */
+export function applyPluginSettingsVisibility(document: any, hidden: ReadonlySet<string> = getHiddenSettings()): any {
+  if (!hidden.has("instance.plugins")) return document;
+  for (const operation of [document.paths?.["/api/routines/{id}"]?.get, document.paths?.["/api/routines/{id}"]?.patch]) {
+    if (typeof operation?.description === "string") {
+      operation.description = operation.description.replace(PLUGIN_MANAGED_ROUTINE_GUIDANCE, PLUGIN_MANAGED_ROUTINE_OPERATOR_GUIDANCE);
+    }
+  }
+  return document;
+}
+
 registry.registerPath({
   method: "get",
   path: "/api/routines/{id}",
   tags: ["routines"],
   summary: "Get a routine",
+  description: `Routine details including triggers. ${PLUGIN_MANAGED_ROUTINE_GUIDANCE}`,
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
@@ -5324,6 +5448,7 @@ registry.registerPath({
   path: "/api/routines/{id}",
   tags: ["routines"],
   summary: "Update a routine",
+  description: `Agents can update only routines assigned to them and cannot reassign them. ${PLUGIN_MANAGED_ROUTINE_GUIDANCE}`,
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(updateRoutineSchema),
@@ -5849,7 +5974,12 @@ registry.registerPath({
   method: "post",
   path: "/api/approvals/{id}/resubmit",
   tags: ["approvals"],
-  summary: "Resubmit an approval",
+  summary: "Revise and resubmit a changes-requested approval",
+  description:
+    "Replace the payload of an approval whose status is revision_requested, or resubmit its existing payload. " +
+    "Use this operation to revise a changes-requested hire proposal, such as changing its agent configuration to a cheaper model, and send it back for board review. " +
+    "An agent must be the original requesting agent; board callers still need access to the company and approval. " +
+    "The approval returns to pending. This operation does not approve the request or create or execute the hire.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(resubmitApprovalSchema),
@@ -7193,6 +7323,17 @@ registry.registerPath({
   description: "With idleSleepSafety=1, the exact current idle owner can retire idle native sessions before a fresh safety inspection. Busy or failed retirement prevents sleep. Native retirement is skipped for diagnostic inspection. scheduledWake=domain-deadlines-v1 requires signed Cloud authority with idleCapabilities.deadlineCatalog=domain_deadlines_v1 and returns a mandatory deadlineProof even when no wake is scheduled. Cloud must acknowledge any returned durable alarm and revalidate the report before stopping the instance.",
   request: { query: z.object({ upgradeReadiness: z.literal("1").optional().describe("Instance operators can request a bounded aggregate report of current remote-runner recovery eligibility. This read does not hold admission or detach runners."), ownerId: z.string().uuid().optional(), idleSleepSafety: z.literal("1").optional().describe("Instance admins can request a conservative durable-work report while admission and ingress are held. Unknown or present work must prevent automatic sleep."), scheduledWake: z.enum(["1", "2", "domain-deadlines-v1"]).optional().describe("Cloud control callers may request routine deadlines (1), routines and issue monitors (2), or the domain deadline catalog (domain-deadlines-v1). The domain catalog requires signed Cloud authority with idleCapabilities.deadlineCatalog=domain_deadlines_v1 and returns a deadlineProof even when no wake is scheduled. Cloud must acknowledge any returned durable alarm and revalidate this report before stopping the instance.") }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/instance/task-drain/status",
+  tags: ["instance"],
+  summary: "Read task-drain status with body-bound signed Cloud idle capabilities",
+  description: "Requires the task-drain:read-body Cloud control assertion bound to the exact raw JSON SHA256. The body alone and browser administrator access do not grant this authority. Uses the same status/idle-safety reader and owner/scheduled-wake semantics as GET; does not start or stop a drain.",
+  request: { body: jsonBody(z.object({ idleCapabilities: z.unknown().describe("Complete closed incoming-wake and deadline catalogs, validated by the existing capability parser after signature and exact raw-body binding") }).strict()),
+    query: z.object({ upgradeReadiness: z.literal("1").optional(), ownerId: z.string().uuid().optional(), idleSleepSafety: z.literal("1").optional(), scheduledWake: z.enum(["1", "2", "domain-deadlines-v1"]).optional() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
 });
 
 registry.registerPath({
@@ -10012,6 +10153,26 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/link-preview",
+  tags: ["companies"],
+  summary: "Read optional link metadata for the current board user",
+  description: "Company access and board authentication are required. This read uses a viewer-scoped cache and returns a quiet null preview when provider access is unavailable. It does not change tasks or schedule background work.",
+  request: { params: z.object({ companyId: z.string() }), query: z.object({ url: z.string().max(2048) }) },
+  responses: {
+    200: r.ok(z.object({
+      preview: z.object({
+        target: z.object({ provider: z.string(), kind: z.string(), canonicalUrl: z.string(), label: z.string() }),
+        title: z.string(), state: z.enum(["unknown", "open", "draft", "merged", "closed", "conflicts"]),
+        author: z.string().nullable(), updatedAt: z.string().nullable(),
+      }).nullable(),
+      maxAgeMs: z.number(),
+    })),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/issues/{id}/external-objects",
   tags: ["issues"],
   summary: "List external objects mentioned by an issue",
@@ -12754,6 +12915,7 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/tools/gateways",
   tags: ["tool-gateway"],
   summary: "Create a named MCP gateway",
+  description: "Creates a gateway that exposes a tool access profile to external MCP clients. Agents with delegated connection management may create it; agent responses also include gatewayPath (/<prefix>/apps/gateways/<gatewayId>/overview) and tokensPath (/<prefix>/apps/gateways/<gatewayId>/tokens). Link the person to them as Markdown links. A client needs a gateway client token to connect; see POST /api/tool-gateway/gateways/{gatewayId}/tokens.",
   body: createToolMcpGatewaySchema,
   responses: {
     201: r.ok(),
@@ -12789,6 +12951,7 @@ registerCurrentRoute({
   path: "/api/tool-gateway/gateways/{gatewayId}/tokens",
   tags: ["tool-gateway"],
   summary: "Create a named MCP gateway token",
+  description: "Creates a client token for an external MCP client. A person caller receives the token value once in the response. An agent with delegated connection management may create the token for its responsible person, but receives only metadata (id, tokenPrefix, expiresAt, pendingReveal: true) plus tokensPath, the gateway's Tokens page (/<prefix>/apps/gateways/<gatewayId>/tokens). The value does not exist until that person reveals it there; send the person to tokensPath as a Markdown link, and never ask for, accept, or repeat token values in chat. To rotate, create the replacement and leave the old token active in that turn: its client keeps working on it until the person installs the new value. Revoke the old token only after the person says the client works with the new one, or let them revoke it on the Tokens page.",
   body: toolGatewayCompanyBodySchema,
   responses: {
     201: r.ok(),
@@ -12802,11 +12965,30 @@ registerCurrentRoute({
 
 registerCurrentRoute({
   "x-paperclip-transport": "rest",
+  method: "post",
+  path: "/api/tool-gateway/gateway-tokens/{tokenId}/reveal",
+  tags: ["tool-gateway"],
+  summary: "Reveal an agent-created MCP gateway token value",
+  description: "Person-only. Generates the value of an agent-created client token that is pending reveal and returns it once. Only the token's responsible person can reveal it; a second reveal, or a reveal after the token expired or was revoked, returns 409. Agent callers receive 403 gateway_token_requires_person.",
+  body: toolGatewayCompanyQuerySchema.required({ companyId: true }),
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:gateway",
   method: "post",
   path: "/api/tool-gateway/gateway-tokens/{tokenId}/revoke",
   tags: ["tool-gateway"],
   summary: "Revoke a named MCP gateway token",
+  description: "Revokes a gateway client token immediately; clients using it stop working. Agents with delegated connection management may revoke. When rotating, revoke the old token only after the replacement works.",
   body: toolGatewayCompanyQuerySchema.required({ companyId: true }),
   responses: {
     200: r.ok(),
@@ -13264,16 +13446,16 @@ for (const [method, path, body, summary] of [
 for (const [method, path, body] of experimentalApiPaths) {
   const query = experimentalApiQueries[`${method.toUpperCase()} ${path}`];
   const metadata = experimentalApiMetadata[`${method.toUpperCase()} ${path}`];
+  const docs = experimentalApiDocs[`${method.toUpperCase()} ${path}`];
   registry.registerPath({
     method,
     path,
     tags: ["Experimental"],
-    summary: `${method.toUpperCase()} ${path
+    summary: docs?.summary ?? `${method.toUpperCase()} ${path
       .replace(/\{[^}]+\}/g, "")
       .replace(/\/api\//, "")
       .replaceAll("/", " ")}`,
-    description:
-      "Experimental API; the corresponding instance feature must be enabled. Existing route authorization applies.",
+    description: `${docs ? `${docs.description} ` : ""}Experimental API; the corresponding instance feature must be enabled. Existing route authorization applies.`,
     request: {
       params: z.object(
         Object.fromEntries(
@@ -13326,7 +13508,7 @@ for (const [method, path, body] of experimentalApiPaths) {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function buildOpenApiDocument(): any {
-  return applyDocumentFixups({
+  return applyPluginSettingsVisibility(applyDocumentFixups({
     openapi: "3.0.0",
     info: {
       title: "Paperclip API",
@@ -13336,7 +13518,7 @@ export function buildOpenApiDocument(): any {
     servers: [{ url: "/" }],
     components: registry.buildComponents(),
     paths: registry.buildPaths(),
-  });
+  }));
 }
 
 export const buildOpenApiSpec = buildOpenApiDocument;

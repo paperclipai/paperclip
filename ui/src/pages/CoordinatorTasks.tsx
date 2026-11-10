@@ -1,3 +1,4 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { readTaskListSortParams, taskListOrderToIssueSort, type TaskListSort } from "@/lib/task-list";
 import { useDeferredValue, useEffect, useRef, useState, type ReactNode } from "react";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
@@ -8,7 +9,6 @@ import { agentsApi } from "@/api/agents";
 import { attentionApi } from "@/api/attention";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { issuesApi } from "@/api/issues";
-import { projectsApi } from "@/api/projects";
 import { EmptyState } from "@/components/EmptyState";
 import { KanbanBoard } from "@/components/KanbanBoard";
 import { TaskList, type TaskListItem } from "@/components/TaskList";
@@ -150,7 +150,7 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
     enabled: !!companyId,
   })) });
   const agents = useQuery({ queryKey: queryKeys.agents.list(companyId!), queryFn: () => agentsApi.list(companyId!), enabled: !!companyId });
-  const projects = useQuery({ queryKey: queryKeys.projects.list(companyId!, { includeArchived: true }), queryFn: () => projectsApi.list(companyId!, { includeArchived: true }), enabled: !!companyId });
+  const projects = useQuery({ ...companyProjectsQuery(companyId!, { includeArchived: true }), enabled: !!companyId });
   const directory = useQuery({ queryKey: queryKeys.access.companyUserDirectory(companyId!), queryFn: () => accessApi.listUserDirectory(companyId!), enabled: !!companyId });
   const labels = useQuery({ queryKey: queryKeys.issues.labels(companyId!), queryFn: () => issuesApi.listLabels(companyId!), enabled: !!companyId });
   const sharedLiveRuns = useSharedPollingQuery({ companyId, resourceKey: "live-runs", queryKey: queryKeys.liveRuns(companyId!), enabled: !!companyId, refetchInterval: false, leaderOnly: true });
@@ -292,7 +292,7 @@ export function CoordinatorTasks({ viewControl }: { viewControl?: ReactNode } = 
         items={(needsAttention ? collection.matchingItems : collection.visibleItems).map(enrichItem)} allItems={collection.companyItems.map(enrichItem)}
         preferenceLocation={userId ? { companyId, collectionKey: `coordinator-tasks:${userId}` } : undefined}
         collectionKey={JSON.stringify([companyId, userId, needsAttention, deferredQuery, participantAgentId, workspaceIds, collection.view, collection.filters])}
-        sort={sort} onSortChange={setSort}
+        sort={sort} onSortChange={setSort} preloadCompanyId={collection.layout === "list" ? companyId : null}
         issueLinkState={issueLinkState} collapsedIds={collection.collapsedIds} onCollapsedIdsChange={collection.setCollapsedIds} /> : empty}</div>
       {collection.layout === "board" ? collection.matchingItems.length
         ? <KanbanBoard showOverflowFades issues={collection.matchingItems.map(item => enrichIssueRow(item.issue))} agents={agents.data} onUpdateIssue={(id, data) => update.mutate({ id, data })} /> : empty : null}
