@@ -249,7 +249,7 @@
     "packages/shared/src/external-objects.ts": "a9953c4e3f77f2bad03cb7832914ffc0b1a1266a",
     "packages/shared/src/fast-response.ts": "a81332a2b46b59c1f6953cfc4da659eae2326beb",
     "packages/shared/src/feature-catalog.test.ts": "d3e000c039492daad1fe0b7302b34e7c3816a8ce",
-    "packages/shared/src/feature-catalog.ts": "977cc34dca42bca47734fa64e1e423cb4b8a2c96",
+    "packages/shared/src/feature-catalog.ts": "9d7acac2ab26e0b48e59cd134b145793dc663b36",
     "packages/shared/src/frontmatter-runner-contract.test.ts": "cd121330e10aaa9da36c16293bcd9760561b6b41",
     "packages/shared/src/frontmatter.test.ts": "ee9e36feda9469f6c16fb3dc4dbf7b39c7ea37cc",
     "packages/shared/src/frontmatter.ts": "59cfd440d528bc0f2c21da3f7208abe8bfd9ae01",
