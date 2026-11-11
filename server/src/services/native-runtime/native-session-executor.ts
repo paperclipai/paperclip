@@ -280,7 +280,7 @@ import {
   remoteRecoveryProbeReason,
 } from "./remote-runner-recovery-diagnostics.js";
 import { readRemoteRunnerRecoveryProbe, REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS } from "./remote-runner-recovery-probe.js";
-import { isSettledReadyRunnerState } from "./settled-runner-state.js";
+import { isIdleProviderCheckpoint, isSettledReadyRunnerState } from "./settled-runner-state.js";
 import { describeOwnFailedAttachment, inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, summarizePostTerminalEvents, type RemoteWarmSessionRecovery, unsettledControllerCommands } from "./remote-warm-session-recovery.js";
 import { assertNativeWarmIngressRetirement, nativeWarmIngressAllocation, nativeWarmIngressIdentity, type NativeWarmIngressClaim, type NativeWarmIngressOwner } from "./native-warm-ingress-ownership.js";
 import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
@@ -6171,6 +6171,7 @@ async function migrateRunnerdStateRootForExecution(input: {
         claim: input.restartRecovery, target: input.runnerExecutionTarget, identity,
         runId: input.execution.binding.runId, normalizedSessionId: nativeSessionKey(input.execution),
         providerAttempt: input.restartRecovery.providerAttempt,
+        providerStateFilename: runnerProviderStateFilename(input.execution),
       });
       return;
     }
@@ -14270,8 +14271,9 @@ export async function readRemoteRunnerState(input: {
   runner: CommandManagedRuntimeRunner;
   stateDirectory: string;
   recoveryDeadline?: number;
+  filename?: string;
 }): Promise<Record<string, unknown>> {
-  const statePath = posix.join(input.stateDirectory, "runner-state.json");
+  const statePath = posix.join(input.stateDirectory, input.filename ?? "runner-state.json");
   const escapedPath = statePath.replaceAll("'", "'\\''");
   const request = {
     command: "sh",
@@ -14512,7 +14514,7 @@ export async function verifyRemoteRunnerReattachment(input: {
 }
 
 export async function verifyRemoteRunnerOrSettledExit(
-  input: Parameters<typeof verifyRemoteRunnerReattachment>[0] & { providerAttempt: number },
+  input: Parameters<typeof verifyRemoteRunnerReattachment>[0] & { providerAttempt: number; providerStateFilename?: string },
 ) {
   const recoveryDeadline = Math.min(input.recoveryDeadline ?? Number.POSITIVE_INFINITY,
     Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS);
@@ -14528,11 +14530,19 @@ export async function verifyRemoteRunnerOrSettledExit(
         (diagnostic.runnerLifecycle !== "suspended" && diagnostic.runnerLifecycle !== "ready") ||
         diagnostic.runnerSettled !== true ||
         target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) throw error;
-    const state = await readRemoteRunnerState({ runner: target.runner,
-      stateDirectory: remoteRunnerStateDirectory(target.remoteCwd, input.normalizedSessionId), recoveryDeadline });
-    const restorable = state.lifecycle === "suspended" ? describeExitedRemoteRunner(state).runnerSettled
-      : isSettledReadyRunnerState(state);
-    if (REMOTE_RUNNER_IDENTITY_FIELDS.some(field => state[field] !== input.identity[field]) || !restorable) throw error;
+    const stateDirectory = remoteRunnerStateDirectory(target.remoteCwd, input.normalizedSessionId);
+    const state = await readRemoteRunnerState({ runner: target.runner, stateDirectory, recoveryDeadline });
+    if (REMOTE_RUNNER_IDENTITY_FIELDS.some(field => state[field] !== input.identity[field])) throw error;
+    if (state.lifecycle === "suspended") {
+      if (!describeExitedRemoteRunner(state).runnerSettled) throw error;
+      return undefined;
+    }
+    // The journal stays `ready` during a turn. Only an idle provider checkpoint
+    // proves that this settled cut was taken between turns.
+    if (!isSettledReadyRunnerState(state) || !input.providerStateFilename) throw error;
+    const providerState = await readRemoteRunnerState({ runner: target.runner, stateDirectory, recoveryDeadline,
+      filename: input.providerStateFilename }).catch(() => { throw error; });
+    if (!isIdleProviderCheckpoint(providerState)) throw error;
     return undefined;
   }
 }
@@ -15177,7 +15187,8 @@ async function prepareRemoteExternalRunner({ input, target, runner, root, identi
   const adoptExistingRunner = input.restartRecovery?.kind === "reattach_remote_runner"
     ? await verifyRemoteRunnerOrSettledExit({ claim: input.restartRecovery, target, identity: { ...identity },
         runId: input.execution.binding.runId, normalizedSessionId: nativeSessionKey(input.execution),
-        providerAttempt: input.restartRecovery.providerAttempt }) : undefined;
+        providerAttempt: input.restartRecovery.providerAttempt,
+        providerStateFilename: runnerProviderStateFilename(input.execution) }) : undefined;
   if (adoptExistingRunner) { spawned(); identityReady(); }
   const launch = createRemoteRunnerProcessLauncher({ target, runner, remoteBinary,
     processIdentityPath: posix.join(runnerStateDirectory, "runner-process.identity"), stateDirectory: runnerStateDirectory,

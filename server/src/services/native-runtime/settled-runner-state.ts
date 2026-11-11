@@ -13,3 +13,18 @@ export function isSettledReadyRunnerState(state: Record<string, unknown>): boole
       return typeof status === "string" && status !== "" && status !== "pending" && status !== "indeterminate";
     });
 }
+
+const emptyIfPresent = (value: unknown) => value === undefined ||
+  (Array.isArray(value) ? value.length === 0 : value !== null && typeof value === "object" && Object.keys(value).length === 0);
+
+/** The Runner journal stays `ready` while a turn runs; only the provider
+ * checkpoint records the active turn. A settled `ready` journal is between
+ * turns only when this checkpoint has no active, ambiguous or unconfirmed turn
+ * and nothing queued. An unknown checkpoint shape is never idle. */
+export function isIdleProviderCheckpoint(state: Record<string, unknown>): boolean {
+  return Array.isArray(state.pendingEvents) && state.pendingEvents.length === 0 &&
+    emptyIfPresent(state.queuedEvents) && emptyIfPresent(state.pendingToolCalls) &&
+    emptyIfPresent(state.pendingRuntimeRequests) && emptyIfPresent(state.ambiguousToolDeliveries) &&
+    (state.activeProviderTurnId ?? null) === null && (state.activeTurnId ?? null) === null &&
+    state.ambiguousTurnStartPending !== true && state.providerExitUnconfirmed !== true;
+}
