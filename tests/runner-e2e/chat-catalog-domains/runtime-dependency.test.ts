@@ -55,3 +55,11 @@ it("identifies blocked-interaction runs only from server-stamped context", () =>
   expect(isBlockedInteractionRun(interaction(), { id: "website" }, { id: "design" }, "ceo")).toBe(false);
   expect(isBlockedInteractionRun({ id: "x", status: "succeeded", agentId: "morgan" }, { id: "website" }, { id: "design" }, "morgan")).toBe(false);
 });
+it("declares a run bound that admits one blocked-interaction reply and no other extra run", async () => {
+  const { gradeChatCatalogRuns } = await import("../chat-catalog-run-policy.js");
+  const { runtimeDependencyCases } = await import("./runtime-dependency.js");
+  const run = (id: string, agentId: string) => ({ id, companyId: "company", agentId, status: "succeeded", runtimeMode: "native" });
+  const grade = (count: number) => gradeChatCatalogRuns({ implementation: runtimeDependencyCases[0]!, companyId: "company", leadId: "ceo",
+    runs: ["save-edge", "triage", "implement", "report", "extra"].slice(0, count).map(id => run(id, id === "triage" || id === "implement" ? "morgan" : "ceo")) }).passed;
+  expect([2, 3, 4, 5].map(grade)).toEqual([false, true, true, false]);
+});
