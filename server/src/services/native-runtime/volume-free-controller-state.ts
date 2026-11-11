@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
+import { link, lstat, mkdir, open, readdir, rm, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { nativeHarnessStateBase } from "./native-harness-backup-stamp.js";
@@ -58,7 +58,14 @@ export async function claimVolumeFreeControllerState(volumeFree: boolean, base =
     await handle.writeFile(JSON.stringify({ schema: ownerSchema, claimedAt: new Date().toISOString(), pid: process.pid }));
     await handle.sync();
   } finally { await handle.close(); }
-  await rename(temporary, join(base, ownerFile));
+  try {
+    await link(temporary, join(base, ownerFile));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    return await volumeFreeControllerStateOwned(base) ? "owned" : "unclaimed";
+  } finally {
+    await unlink(temporary);
+  }
   const directory = await open(base, constants.O_RDONLY);
   try { await directory.sync(); } finally { await directory.close(); }
   return "claimed";

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
@@ -24,6 +24,15 @@ it("claims only an empty state directory and releases the claim outside volume-f
   expect(await claimVolumeFreeControllerState(false, dir)).toBe("absent");
   expect(await claimVolumeFreeControllerState(true, dir)).toBe("unclaimed");
   expect(await volumeFreeControllerStateOwned(dir)).toBe(false);
+});
+
+it("lets only one of several concurrent starts claim the directory", async () => {
+  const dir = await base();
+  const results = await Promise.all(Array.from({ length: 8 }, () => claimVolumeFreeControllerState(true, dir)));
+  expect(results.filter(result => result === "claimed")).toHaveLength(1);
+  expect(results.every(result => ["claimed", "owned", "unclaimed"].includes(result))).toBe(true);
+  expect(await volumeFreeControllerStateOwned(dir)).toBe(true);
+  expect((await readdir(dir)).filter(name => name !== ".volume-free-owner.json")).toEqual([]);
 });
 
 it("ignores a marker with the wrong schema", async () => {
