@@ -172,6 +172,16 @@ It does not qualify a deployed plugin, live account, or production WSS proxy.
 
 ## Workspace completion and maintenance
 
+A storage provider can declare `workspaceProvider.workspaceVerificationVersion: 1`.
+Before creating a fresh workspace for an admitted Retry, Core may send the
+original task-owned workspace's `prepare` request with `verifyExisting: true`.
+The provider must verify a completed checkout without creating or fetching
+one and return `prepared` with `created: false`. Core checks prior writer
+settlement and continues normal preparation on the retained workspace after
+verification. A missing or unconfirmed checkout leaves the fresh retry
+fallback in place. Local workspaces use the same ownership and writer
+checks with Core's existing local Git verification.
+
 A storage provider can declare `workspaceProvider.finalizationVersion: 1`.
 Core then sends `workspaceOperation` with `operation.kind: "finalize"`, the retained
 binding, lifecycle generation, and originating `runId` and `agentId`. The operation

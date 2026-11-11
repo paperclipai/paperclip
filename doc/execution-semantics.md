@@ -1458,6 +1458,16 @@ provider failure as the reason, retries automatically, and on exhaustion becomes
 `blocked` with a specific recovery notice and a Retry. Because no provider work
 started, no execution-reconciliation hold is created.
 
+Lease acquisition precedes provider work by construction, so the same budget
+covers every lease acquisition failure that carries structured transient evidence,
+not only a provider status: the provider's acquisition deadline or an unfinished
+provisional creation (the validated acquisition diagnostic the runtime recorded
+for that run), the plugin RPC deadline, and a database driver error while the
+lease is recorded. A definite non-transient status (for example HTTP 401 or 404)
+still fails as `setup_failed`. On exhaustion the task's recovery action is
+system-owned (cause `environment_provider_unavailable`), not a board escalation:
+nothing needs board repair, and the task's Retry starts a new acquisition.
+
 A saved workspace that cannot be restored into a new allocation before provider
 dispatch fails with `remote_workspace_restore_failed`. The run error names the
 server step (`snapshot_lookup`, `snapshot_download`, or `sandbox_restore`) and,

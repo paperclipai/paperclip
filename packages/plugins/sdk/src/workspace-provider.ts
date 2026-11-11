@@ -50,6 +50,7 @@ export const workspaceProviderOperationSchema = z.discriminatedUnion("kind", [
       baseRef: z.string().nullable(),
       existing: workspaceProviderBindingSchema.nullable(),
       fresh: freshWorkspaceSchema.optional(),
+      verifyExisting: z.literal(true).optional(),
     })
     .strict(),
   // Verify the retained workspace and flush run writes. This does not certify
