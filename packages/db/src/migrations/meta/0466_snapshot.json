@@ -1,6 +1,6 @@
 {
-  "id": "f409684f-c629-4648-9123-a5e1064308ef",
-  "prevId": "f93ccf18-7e86-4788-be77-b17430c86b2f",
+  "id": "d39ddd45-622e-4af1-bccf-63bf72d044e3",
+  "prevId": "38dbf2b9-da26-4c3a-b813-f37d0c19cba2",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -6233,7 +6233,7 @@
           "name": "issuer",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "account_id": {
           "name": "account_id",
@@ -6309,11 +6309,11 @@
         }
       },
       "indexes": {
-        "account_issuer_account_id_uq": {
-          "name": "account_issuer_account_id_uq",
+        "account_provider_account_id_uq": {
+          "name": "account_provider_account_id_uq",
           "columns": [
             {
-              "expression": "issuer",
+              "expression": "provider_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -49107,6 +49107,93 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.plugin_lifecycle_resource_cursors": {
+      "name": "plugin_lifecycle_resource_cursors",
+      "schema": "",
+      "columns": {
+        "plugin_id": {
+          "name": "plugin_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resource_type": {
+          "name": "resource_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resource_id": {
+          "name": "resource_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "acknowledged_through_id": {
+          "name": "acknowledged_through_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "plugin_lifecycle_resource_cursors_plugin_id_plugins_id_fk": {
+          "name": "plugin_lifecycle_resource_cursors_plugin_id_plugins_id_fk",
+          "tableFrom": "plugin_lifecycle_resource_cursors",
+          "tableTo": "plugins",
+          "columnsFrom": [
+            "plugin_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "plugin_lifecycle_resource_cursors_company_id_companies_id_fk": {
+          "name": "plugin_lifecycle_resource_cursors_company_id_companies_id_fk",
+          "tableFrom": "plugin_lifecycle_resource_cursors",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "plugin_lifecycle_resource_cursors_pk": {
+          "name": "plugin_lifecycle_resource_cursors_pk",
+          "columns": [
+            "plugin_id",
+            "company_id",
+            "resource_type",
+            "resource_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.plugin_logs": {
       "name": "plugin_logs",
       "schema": "",
@@ -50971,6 +51058,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "git_authorization_grant_id": {
           "name": "git_authorization_grant_id",
           "type": "uuid",
@@ -51120,6 +51213,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "projects_environment_id_environments_id_fk": {
+          "name": "projects_environment_id_environments_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "environments",
+          "columnsFrom": [
+            "environment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "projects_git_authorization_grant_id_connection_grants_id_fk": {
@@ -59516,6 +59622,13 @@
           "notNull": true,
           "default": "''"
         },
+        "pending_reveal": {
+          "name": "pending_reveal",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "allowed_actions": {
           "name": "allowed_actions",
           "type": "jsonb",
@@ -65050,6 +65163,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "dot_device_cutover": {
+          "name": "dot_device_cutover",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         },
         "device_cutover_stack_id": {
           "name": "device_cutover_stack_id",
