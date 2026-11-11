@@ -101,8 +101,7 @@ The card's `closeModes` lists its supported actions. A successful close records
 GET /api/companies/{companyId}/attention/history
 ```
 
-History includes resolved interactions, decisions, approvals, and personal close
-records. `scope=mine` shows work handled by or for the caller. `scope=all`
+History includes resolved interactions, decisions, and approvals. `scope=mine` shows work handled by or for the caller. `scope=all`
 shows accessible company history. `handledForMe=true` narrows it to work handled
 for the caller. Filters include `search`, `outcome`, `agentId`, `projectId`,
 `since`, `sort=newest|oldest`, `limit` (maximum 100), and `cursor`.
