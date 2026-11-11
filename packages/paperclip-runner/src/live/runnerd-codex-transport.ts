@@ -6120,6 +6120,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     this.#assertStartupOpen();
     const admissionDeadline = this.#coldAdmissionDeadline();
+    // Waits on one absolute deadline share the stall it already credited.
+    const admissionStall = admissionDeadline === undefined ? undefined : { ms: 0 };
     const bootstrapTicket = core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
     await core.flushCheckpoint();
     this.#assertStartupOpen();
@@ -6172,8 +6174,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#pump = setInterval(() => this.#pumpEventsSafely(), 5);
     await this.#waitCommand("run.prepare", undefined, undefined, true);
     this.#startupSteps?.advance("runner.process.launch", "provider.session.load");
-    await this.#waitCommand("session.open", undefined, admissionDeadline, true);
-    await this.#waitForProviderIdentity(undefined, admissionDeadline);
+    await this.#waitCommand("session.open", undefined, admissionDeadline, true, admissionStall);
+    await this.#waitForProviderIdentity(undefined, admissionDeadline, admissionStall);
     this.#startupSteps?.end();
     this.#startupComplete = true;
     this.#diagnostic("runnerd authenticated to the durable PRP control plane");
@@ -6944,6 +6946,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const admissionDeadline = this.#sourceAttachmentDeadline === null
       ? this.#coldAdmissionDeadline(adoptedRunner === undefined)
       : Math.min(Date.now() + 30_000, this.#sourceAttachmentDeadline);
+    // Recovery barriers on one absolute deadline share the stall it already credited.
+    const admissionStall = admissionDeadline === undefined ? undefined : { ms: 0 };
     // An adopted runner is already live: no launch step (a launch span means a fresh process).
     if (adoptedRunner) this.#startupSteps?.end();
     else this.#startupSteps?.begin("runner.process.launch");
@@ -7099,7 +7103,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     // one deadline across every recovery barrier; live adoption stays at 30 s.
     if (runAttachment) {
       try {
-        await this.#waitCommand("run.attach", runAttachment.commandId, admissionDeadline, true);
+        await this.#waitCommand("run.attach", runAttachment.commandId, admissionDeadline, true, admissionStall);
       } catch (error) {
         // A restart can cut off this run's own attachment after the runner
         // journaled it. The restored runner settles it as
@@ -7109,7 +7113,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         const reattachment = cutOffRunAttachmentPayload(core.store.state);
         if (!reattachment) throw error;
         const retry = core.queueCommand("run.attach", reattachment, undefined, true);
-        await this.#waitCommand("run.attach", retry.commandId, admissionDeadline, true);
+        await this.#waitCommand("run.attach", retry.commandId, admissionDeadline, true, admissionStall);
       }
     }
     // A launched runner normally advanced at authentication, before run.attach
@@ -7117,7 +7121,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (adoptedRunner) this.#startupSteps?.begin("provider.session.load");
     else this.#startupSteps?.advance("runner.process.launch", "provider.session.load");
     if (recoveryProbeCommandId !== null) {
-      await this.#waitCommand(sourceAttachmentTarget ? "session.open" : "runner.drain", recoveryProbeCommandId, admissionDeadline, true);
+      await this.#waitCommand(sourceAttachmentTarget ? "session.open" : "runner.drain", recoveryProbeCommandId, admissionDeadline, true, admissionStall);
       if (this.#checkpointProviderIdentityExpectation !== null) {
         // A replacement runner can restore the exact provider while its fresh
         // session.resumed event is compacted or delayed behind the completed
@@ -7125,7 +7129,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         // waiting only on the bounded event replay. The authenticated command
         // result is still checked against the exact database checkpoint, so a
         // missing or changed provider identity continues to fail closed.
-        const snapshot = await this.#commandResult("session.snapshot", {}, admissionDeadline, true);
+        const snapshot = await this.#commandResult("session.snapshot", {}, admissionDeadline, true, admissionStall);
         this.#confirmCheckpointProviderIdentity(
           snapshot,
           "authenticated recovery session.snapshot",
@@ -7144,6 +7148,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         ? "session.resumed"
         : undefined,
       admissionDeadline,
+      admissionStall,
     );
     this.#startupSteps?.end();
     this.#startupComplete = true;
@@ -7615,13 +7620,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     payload: Record<string, unknown>,
     deadline?: number,
     abortOnClose = false,
+    stallCredit?: RunnerWaitStallCredit,
   ): Promise<Record<string, unknown>> {
     this.#assertRunWorkAdmission(type);
     const core = this.#core;
     if (core === null) throw new Error("PRP provider thread is not started");
     const commandId = `command_lab_${randomUUID().replaceAll("-", "")}`;
     core.queueCommand(type, payload, commandId, true);
-    await this.#waitCommand(type, commandId, deadline, abortOnClose);
+    await this.#waitCommand(type, commandId, deadline, abortOnClose, stallCredit);
     const command = core.getCommand(commandId);
     if (command?.status !== "completed" || command.type !== type) {
       throw new Error(`PRP command ${type} omitted its durable result`);
@@ -7696,15 +7702,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #waitForProviderIdentity(
     expectedEventType?: "harness.ready" | "session.started" | "session.resumed",
     deadline = Date.now() + 30_000,
+    stallCredit?: RunnerWaitStallCredit,
   ): Promise<void> {
-    return this.options.measureOperation ? this.options.measureOperation("runner.transport.provider_identity", () => this.#waitForProviderIdentityWork(expectedEventType, deadline)) : this.#waitForProviderIdentityWork(expectedEventType, deadline);
+    return this.options.measureOperation ? this.options.measureOperation("runner.transport.provider_identity", () => this.#waitForProviderIdentityWork(expectedEventType, deadline, stallCredit)) : this.#waitForProviderIdentityWork(expectedEventType, deadline, stallCredit);
   }
 
   async #waitForProviderIdentityWork(
     expectedEventType?: "harness.ready" | "session.started" | "session.resumed",
     deadline = Date.now() + 30_000,
+    stallCredit?: RunnerWaitStallCredit,
   ): Promise<void> {
-    while (Date.now() < deadline) {
+    const remaining = stallTolerantDeadline(deadline, stallCredit);
+    while (remaining()) {
       this.#throwIfFailed();
       if (this.#closed) throw new Error("runnerd transport closed during provider startup");
       this.#pumpEvents();
@@ -7730,8 +7739,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     commandId?: string,
     deadline = Date.now() + 30_000,
     abortOnClose = false,
+    stallCredit?: RunnerWaitStallCredit,
   ): Promise<void> {
-    return this.options.measureOperation ? this.options.measureOperation("runner.transport.command_ack", () => this.#waitCommandWork(type, commandId, deadline, abortOnClose)) : this.#waitCommandWork(type, commandId, deadline, abortOnClose);
+    return this.options.measureOperation ? this.options.measureOperation("runner.transport.command_ack", () => this.#waitCommandWork(type, commandId, deadline, abortOnClose, stallCredit)) : this.#waitCommandWork(type, commandId, deadline, abortOnClose, stallCredit);
   }
 
   async #waitCommandWork(
@@ -7739,10 +7749,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     commandId?: string,
     deadline = Date.now() + 30_000,
     abortOnClose = false,
+    stallCredit?: RunnerWaitStallCredit,
   ): Promise<void> {
     await waitForRunnerCommand({
       type,
       deadline,
+      stallCredit,
       abortOnClose,
       isClosed: () => this.#closed,
       throwIfFailed: () => this.#throwIfFailed(),
@@ -9165,10 +9177,46 @@ function closedAcpxRejection(message: unknown): string | null {
     ? message : null;
 }
 
+/**
+ * A poll loop that sees a gap this long between its own iterations (it sleeps
+ * 10 ms) was not running: SIGSTOP, host sleep, or a whole-process stall.
+ */
+export const RUNNER_POLL_STALL_THRESHOLD_MS = 5_000;
+
+/** Wall time a waiter lost while stopped, shared by waits on one deadline. */
+export type RunnerWaitStallCredit = { ms: number };
+
+/**
+ * Returns a check that is true while a poll loop's deadline has time left.
+ * Time this process spent stopped is not waiting time: the Runner it polls is
+ * usually stopped with it (same host sleep or process tree), and could not
+ * answer. The wall clock still passes the deadline, so without this credit a
+ * thaw reports a timeout before either process ran (chaos t01: "runner.drain
+ * timed out" 45 s into a 30 s wait that had a 44 s freeze). Only the part of a
+ * gap beyond the threshold is credited, so a slow but running loop still
+ * reaches its deadline. A shared credit carries a stall to later waits on the
+ * same absolute deadline. Gaps outside the loop are never credited.
+ */
+export function stallTolerantDeadline(
+  deadline: number,
+  credit: RunnerWaitStallCredit = { ms: 0 },
+  now: () => number = Date.now,
+): () => boolean {
+  let last = now();
+  return () => {
+    const at = now();
+    if (at - last > RUNNER_POLL_STALL_THRESHOLD_MS) credit.ms += at - last - RUNNER_POLL_STALL_THRESHOLD_MS;
+    last = at;
+    return at - credit.ms < deadline;
+  };
+}
+
 /** Shared polling path keeps startup cancellation separate from owned cleanup commands. */
 export async function waitForRunnerCommand(input: {
   type: string;
   deadline: number;
+  /** Shared with other waits on the same absolute deadline. */
+  stallCredit?: RunnerWaitStallCredit;
   abortOnClose: boolean;
   isClosed: () => boolean;
   throwIfFailed: () => void;
@@ -9176,7 +9224,8 @@ export async function waitForRunnerCommand(input: {
   runnerHasExited: () => Promise<boolean>;
   failureCode: () => string;
 }): Promise<void> {
-  while (Date.now() < input.deadline) {
+  const remaining = stallTolerantDeadline(input.deadline, input.stallCredit);
+  while (remaining()) {
     input.throwIfFailed();
     if (input.abortOnClose && input.isClosed()) {
       throw new Error(`runnerd transport closed while waiting for ${input.type}`);
