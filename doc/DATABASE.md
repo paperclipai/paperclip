@@ -2405,3 +2405,22 @@ but those values no longer select the active workspace. API reads derive
 retain the existing account and company-audit checks. Replaying the migration
 preserves explicit Classic choices. Agent Chat ignores its retired stored flag
 without rewriting instance settings. No task, agent, or execution state changes.
+
+## Project environment rolling compatibility
+
+New projects select repository storage rather than a persistent run environment.
+The nullable `projects.environment_id` column remains a database compatibility
+field for older servers; the current project API omits it and does not use it
+for placement.
+
+When migrations `0466_drop_project_environment.sql` and
+`0467_fair_human_torch.sql` are both pending, the canonical migration runner
+qualifies their exact SQL hashes and applies them in one transaction. It locks
+`projects`, saves every nonnull legacy environment value, executes both published
+migrations and records both genuine ledger entries, then restores those values
+before commit. Old readers and writers wait for the table lock and continue
+against the retained column. Any failure rolls back the DDL, values and receipts.
+If `0466` was already committed, `0467` adds the nullable column and its original
+`ON DELETE SET NULL` foreign key normally; it cannot recover values previously
+removed by that committed migration. Deployments that pre-stage this pair must
+use this migration runner rather than execute the SQL files independently.
