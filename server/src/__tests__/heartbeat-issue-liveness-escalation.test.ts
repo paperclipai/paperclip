@@ -1533,8 +1533,16 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       .select({ id: issues.id, status: issues.status })
       .from(issues)
       .where(eq(issues.companyId, companyId));
-    for (const row of afterStatuses) {
-      expect(row.status).toBe(statusById.get(row.id));
+    // A woken blocked/todo dependent may checkout to in_progress from the
+    // wake's fire-and-forget executeRun (checkout in executeRunAttempt,
+    // not awaited by reconcile), so its status at this point is timing
+    // dependent and intentionally not asserted. in_review never auto-
+    // checkouts and in_progress conflicts on checkout, and the blocker and
+    // negative controls issue no wake at all, so their statuses are
+    // synchronous guarantees.
+    const afterStatusById = new Map(afterStatuses.map((row) => [row.id, row.status]));
+    for (const id of [inReviewId, inProgressId, blockerIssueId, backlogId, doneId, cancelledId, nullAssigneeId]) {
+      expect(afterStatusById.get(id)).toBe(statusById.get(id));
     }
 
     const wakes = await db
@@ -1546,7 +1554,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       .filter((value): value is string => typeof value === "string")
       .sort();
     expect(wokenIssueIds).toEqual([blockedIssueId, inReviewId, inProgressId, todoId].sort());
-    const negativeIds = new Set([backlogId, doneId, cancelledId, nullAssigneeId]);
+    const negativeIds = new Set<string>([backlogId, doneId, cancelledId, nullAssigneeId]);
     expect(wokenIssueIds.some((id) => negativeIds.has(id))).toBe(false);
 
     const events = await db
