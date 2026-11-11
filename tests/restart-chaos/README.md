@@ -414,6 +414,53 @@ How the product saves the link itself (skip it, keep it, or record it) is not
 graded. F1 is meaningful with a remote workspace (`--env daytona`, with
 `--storage s3` as on staging). Locally it is a plain repository task.
 
+## Sandbox disk full (DF1)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-cpu 3 \
+  --adapters codex --workloads R1 --workspace-repo "$PWD" --faults DF1 --storage s3 --concurrency 2 --tasks 2 --seed 9412
+```
+
+On staging, saving a run's result back from its sandbox failed because the sandbox disk was full
+(census class F, `doc/plans/2026-11-11-staging-failures-vs-chaos-coverage.md`). The product then
+ends saved-work recovery at once with cause `sandbox_disk_full` and offers a Retry (#20758).
+
+A full disk cannot be made on demand, so DF1 uses a test-only hook in the server
+(`server/src/services/sandbox-disk-full-fault.ts`). The harness starts its server with
+`PAPERCLIP_DISK_FULL_FAULT_CONTROL=<file>` and `PAPERCLIP_DISK_FULL_FAULT_RECEIPT=<wave>/disk-full-faults.jsonl`.
+The hook reads the variable once at startup and ignores it when `NODE_ENV=production`. Without it the
+hook is one comparison and the save uses its own target.
+
+- **Armed**: when a DF1 task launches, the harness writes its issue id to the control file. Each
+  final workspace save of that task (finalization's copy-back and recovery's re-save) then gets what
+  a full sandbox returns: every capture command exits 1 with the product's disk-full message, and
+  the provider download fails with `No space left on device`. The product's own code does the rest.
+  The server appends one receipt per faulted save.
+- **Cleared**: when the task rests with the cause `sandbox_disk_full` (or is `done`), the harness
+  records what the board shows, removes the id, and then the observer clicks Retry, as a person who
+  freed space would. A board-owned recovery can look like a rest while it still checks the saved
+  source; the harness keeps waiting there for up to 10 minutes (`DISK_FULL_REST_SETTLE_MS`) before it
+  clears the fault anyway, so that recovery's own save cannot hide the disk-full rest.
+
+The task passes when:
+
+- the fault reached at least one save (a receipt for the task);
+- it rested with recovery cause `sandbox_disk_full` and a Retry offered (T check `disk_full_fault`);
+- exactly one Retry, after the fault cleared, finished the task (R3). A needed Retry is expected
+  here, so R3 passes on it. Whether that Retry starts a new run is not graded.
+
+The ledger line records `diskFull: { faultedSaves, restedDiskFull, retryOffered, retryWorked }`.
+
+DF1 restarts nothing and needs `--env daytona --storage s3`: only a remote workspace has a sandbox
+save, so the harness refuses other setups. Use R1 with `--workspace-repo`. With the chaoscli fixture
+(B1) on Daytona, the workspace is a local worktree synced into the sandbox, so no remote save runs
+and the task fails as `not_applied` (wave `w-20261111T131314-s9411`). An unchanged workspace also
+skips the capture.
+
+The observer clicks Retry in the board UI, as for every other cell. In waves `w-20261111T131941-s9412`
+and `w-20261111T134316-s9413` the disk-full rest showed "Recover saved files", not a Retry button, while the API reported
+`canRetry: true`; R3 records this as `ui_retry_button_missing`.
+
 ## Config faults (CF1–CF3, `config-wave.ts`)
 
 ```sh
@@ -681,9 +728,9 @@ Codex app-server is late, missing or repeated. `--faults` takes them next to res
 
 `--provider-fault-message terminal` (default) picks the turn's end after an interruption, which a
 governed wait (a saved question or approval) or a board Stop sends. `interrupt_ack` picks the
-acknowledgement of that interruption. Each rule applies once per task, to the first matching message.
-Provider faults run only with `--env local --adapters codex,claude` (either or both) and only with
-workloads that interrupt a turn (Q1, S1). G1 does not: its agent asks for approval through `call_api`
+acknowledgement of that interruption. Each rule applies once per task, to the first matching message
+(Q4: the second). Provider faults run only with `--env local --adapters codex,claude` (either or both) and only with
+workloads that interrupt a turn (Q1, Q4, S1). G1 does not: its agent asks for approval through `call_api`
 and ends its own turn, so no rule ever applied there (waves w-20261110T050407-s206, w-20261110T063253-s208,
 w-20261110T085554-s211) and the board waited for a restart that never came. A PV1 task passes `provider_fault_applied` only when the
 held message was released; a provider that exited first turned the delay into a drop.
@@ -784,6 +831,25 @@ question must settle on its own first. The oracle checks these points:
 - the brief carries the answer.
 
 Q1 is not a default workload.
+
+**Q4** is Q1 twice in a row. The first answer wakes a resolved-interaction continuation run, and
+that run saves the second question. A provider fault on a Q4 task takes the task's second matching
+message (`occurrence` 2 in the rule): the interruption terminal of the second governed wait is late
+(PV1) or lost (PV2). The wait must still settle without a failed or cancelled run. On a local Codex
+runner the cancelled turn still settles inside the 30 s bound (waves w-20261111T151810-s111 and
+w-20261111T152016-s111), so this cell does not by itself reach `native_governed_wait_settlement_pending`;
+the run-dispatch adapter test covers that state's same-run resume. Staging run e892cf75 (2026-11-11) instead ended `cancelled` with
+`execution_reconciliation_required`: the dispatch gate of the continuation treated the run's own
+scheduled resume as a reconciliation hold, and the task stayed blocked with no Retry.
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local \
+  --adapters codex --workloads Q4 --faults PV2 --concurrency 1 --tasks 1 --seed 111
+```
+
+The Q4 oracle checks that two questions were asked and both were answered, that both asking runs
+ended `succeeded`, that no run of the task failed or was cancelled, and that the brief carries both
+answers. Q4 is not a default workload.
 
 ## Session replaced under a retained owner (SR1)
 
@@ -1169,6 +1235,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `journeys.ts`, `journey-driver.ts`, `journey-oauth-app.ts`, `journey-matrix.ts` | Q2 and Q3 definitions and oracles, the board's side of each, Q3's loopback OAuth/MCP app, and the `--matrix` planner. |
 | `evidence.ts`, `ledger.ts` | Evidence bundle for each failure and the JSONL ledger plus `SUMMARY.md`. |
 | `daytona-image.ts` | Docker-free extraction of the image's runnerd and provider pack, cached per digest, and the controller/image content-ID check. |
+| `disk-full-faults.ts` | DF1: the control file for the server's test-only disk-full hook, the rest evidence, and the `disk_full_fault` check and R3 rule. |
 | `provider-faults.ts`, `provider-shim/` | PV1–PV3: the resolve hook, the Codex stdio shim, per-task rules and the `provider_fault_applied` check. |
 | `acpx-provider-faults.ts`, `provider-shim/acpx-*` | PV1–PV3 for Claude (ACPX): the stand-in runner package, the server hook, the sidecar/provider tap, and `--provider-fault-restart`. |
 | `question-handoff.ts` | Q1 saved question: the board's answer step and its oracle. |

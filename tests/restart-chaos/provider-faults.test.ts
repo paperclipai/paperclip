@@ -128,6 +128,17 @@ describe("provider message fault shim", () => {
     expect((await turnThroughShim(root, "nonce cccc2222")).terminals).toHaveLength(1);
   });
 
+  it("occurrence 2 passes the task's first interrupted terminal and drops its second (Q4)", async () => {
+    const { seam: installed, root } = await seam();
+    await installed.arm([task("ffff5555", { kind: "PV2", message: "terminal", occurrence: 2 })]);
+    expect((await turnThroughShim(root, "nonce ffff5555")).terminals).toHaveLength(1);
+    expect((await turnThroughShim(root, "nonce ffff5555")).terminals).toHaveLength(0);
+    expect((await turnThroughShim(root, "nonce ffff5555")).terminals).toHaveLength(1);
+    const events = await installed.eventsFor("ffff5555");
+    expect(events.filter(event => event.event === "passed")).toMatchObject([{ kind: "PV2", occurrence: 2, seen: 1 }]);
+    expect(events.filter(event => event.event === "applied")).toMatchObject([{ kind: "PV2", message: "terminal", action: "drop" }]);
+  });
+
   it("targets the interruption acknowledgement", async () => {
     const { seam: installed, root } = await seam();
     await installed.arm([task("dddd3333", { kind: "PV2", message: "interrupt_ack" })]);

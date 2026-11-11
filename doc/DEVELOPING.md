@@ -3781,9 +3781,10 @@ boundary. `managed-skill-content.test.ts` covers the focused domain behavior;
 `ephemeral-skills-process.test.ts` requires independent disposable Postgres and
 S3 fixtures and starts separate Node processes. The optional
 `PAPERCLIP_TEST_POSTGRES_ADMIN_URL` creates a random test database per suite.
-On hosts with unavailable Tailscale, set `PAPERCLIP_TAILNET_BIND_HOST=127.0.0.1`
-for local fixtures to avoid repeated CLI discovery. Do not use fixture timings
-collected during builds as hosted performance evidence.
+The server starts the `tailscale` command only when the bind configuration reads
+a tailnet address, and at most one time per process, so local fixtures need no
+`PAPERCLIP_TAILNET_BIND_HOST`. Do not use fixture timings collected during
+builds as hosted performance evidence.
 
 ## App-Shipped Skills Catalog
 

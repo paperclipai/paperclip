@@ -11,7 +11,7 @@
 // Rules are armed per task in the control file, by the task's nonce. A process is
 // bound to a nonce once the nonce appears in its traffic (the task's prompt or a
 // tool result). Every rule applies at most once per task (an exclusive marker file
-// survives provider restarts). Every decision is appended to the log file.
+// survives provider restarts), to its `occurrence`-th matching message (default the first). Every decision is appended to the log file.
 // Plain Node built-ins only: this runs in the provider process, not the harness.
 import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -66,8 +66,20 @@ function parse(line) {
 }
 
 function claim(rule) {
-  const marker = path.join(config.stateDirectory, `${rule.nonce}.${rule.kind}.${rule.message}.applied`);
-  try { writeFileSync(marker, String(process.pid), { flag: "wx" }); return true; } catch { return false; }
+  const base = path.join(config.stateDirectory, `${rule.nonce}.${rule.kind}.${rule.message}`);
+  // `occurrence` N (default 1): pass the first N-1 matching messages of the task, take the Nth.
+  // The count is a file, so it survives provider restarts like the marker does.
+  const occurrence = Number.isSafeInteger(rule.occurrence) && rule.occurrence > 1 ? rule.occurrence : 1;
+  if (occurrence > 1) {
+    let seen = 0;
+    try { seen = readFileSync(`${base}.seen`, "utf8").length; } catch { /* none yet */ }
+    if (seen < occurrence - 1) {
+      try { appendFileSync(`${base}.seen`, "x"); } catch { /* best effort */ }
+      log({ event: "passed", nonce: rule.nonce, kind: rule.kind, message: rule.message, occurrence, seen: seen + 1 });
+      return false;
+    }
+  }
+  try { writeFileSync(`${base}.applied`, String(process.pid), { flag: "wx" }); return true; } catch { return false; }
 }
 
 const child = spawn(config.realCommand, process.argv.slice(2), { stdio: ["pipe", "pipe", "inherit"], env: process.env });
