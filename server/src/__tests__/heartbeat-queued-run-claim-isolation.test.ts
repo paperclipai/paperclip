@@ -295,9 +295,6 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
     expect(mockAdapterExecute).toHaveBeenCalledOnce();
   });
 
-  // Interrupt after a person accepts a confirmation card during a run. The
-  // coalesced receipt names the answer, not comments, and the successor run
-  // carries the same answer in its context.
   async function insertCardAnswerInterruptRun(fault?: "other-answer" | "other-resolver") {
     const { companyId, agentId } = await insertAgent();
     const userId = `card-owner-${randomUUID()}`;

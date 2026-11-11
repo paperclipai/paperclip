@@ -54,8 +54,6 @@ export async function explicitOperatorRunIdentity(
   }
   const ids = queuedCommentIdsFromWakePayload(receipt.payload);
   if (!ids.length) {
-    // A queued card answer carries its interaction, not comments. The run must
-    // deliver that same answer, and the clicking user must be the one who gave it.
     const interactionId = queuedInteractionId(receipt.payload);
     const [interaction] = interactionId && run.contextSnapshot?.interactionId === interactionId
       ? await executor.select({ resolvedByUserId: issueThreadInteractions.resolvedByUserId })
