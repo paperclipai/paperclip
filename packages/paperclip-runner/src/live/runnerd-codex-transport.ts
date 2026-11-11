@@ -115,6 +115,8 @@ const packageRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const executableSuffix = process.platform === "win32" ? ".exe" : "";
 const MAX_NOTIFICATION_COUNT = 2_048;
 const MAX_NOTIFICATION_BYTES = 4 * 1024 * 1024;
+// How often the event pump retries events that it is holding back itself.
+const PUMP_HELD_RETRY_MS = 5;
 const RUNNER_CLIENT_VERSION = "0.3.0";
 const RUNNER_BOOTSTRAP_TICKET_TTL_MS = 60_000;
 const RUNNER_RESTORE_STABLE_MS = 60_000;
@@ -3950,7 +3952,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #lostRunnerHandle: RunnerProcessHandle | null = null;
   #adoptedRunnerMonitor: NodeJS.Timeout | null = null;
   #adoptedRunnerAuthenticated = false;
-  #pump: NodeJS.Timeout | null = null;
+  /** Events are delivered only between session start and release, retirement, failure or close. */
+  #pumpActive = false;
+  #pumpWake: NodeJS.Immediate | null = null;
+  #pumpRetry: NodeJS.Timeout | null = null;
+  #stopFollowingCore: (() => void) | null = null;
   #eventSourceSeq = 0;
   #eventIdentity: DurableRecoveryIdentity | null = null;
   #sourceRecoveryIdentity: DurableRecoveryIdentity | null = null;
@@ -4640,8 +4646,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   #quietReleasedRunner(): void {
-    if (this.#pump !== null) clearInterval(this.#pump);
-    this.#pump = null;
+    this.#stopPump();
     if (this.#adoptedRunnerMonitor !== null) clearInterval(this.#adoptedRunnerMonitor);
     this.#adoptedRunnerMonitor = null;
   }
@@ -4768,10 +4773,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       await this.#awaitRegistrationReady(registration?.ready);
       this.#assertStartupOpen();
     }
-    if (this.#pump === null) {
-      this.#pump = setInterval(() => this.#pumpEventsSafely(), 5);
-      this.#pump.unref?.();
-    }
+    if (!this.#pumpActive) this.#startPump();
     if (this.options.adoptExistingRunner && this.#adoptedRunnerMonitor === null) this.#watchAdoptedRunner(this.options.adoptExistingRunner);
   }
 
@@ -5017,6 +5019,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#eventSourceSeq = 0;
       this.#deferredTurnStartEvents = [];
       this.#durableTurnId = desired.turnId;
+      this.#wakePump();
       if (!previousReleased) await previousRelease?.();
       previousReleased = true;
       this.#controlPlaneRelease = registration?.release ?? null;
@@ -5101,6 +5104,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#pendingDriverTraceInterpretations.length < 4_096
     ) {
       this.#pendingDriverTraceInterpretations.push(structuredClone(input));
+      this.#retryPumpWhile(true);
     } else if (traceResult === "retry") {
       this.#traceRehydrationSpoolOverflow = true;
     }
@@ -5378,8 +5382,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   async #retireControllerForRecovery(deadline: number): Promise<void> {
-    if (this.#pump !== null) clearInterval(this.#pump);
-    this.#pump = null;
+    this.#stopPump();
     if (this.#adoptedRunnerMonitor !== null)
       clearInterval(this.#adoptedRunnerMonitor);
     this.#adoptedRunnerMonitor = null;
@@ -5614,8 +5617,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#pendingDriverTraceInterpretations = [];
       this.#traceFrameIndex.clear();
     }
-    if (this.#pump !== null) clearInterval(this.#pump);
-    this.#pump = null;
+    this.#stopPump();
+    this.#stopFollowingCore?.();
+    this.#stopFollowingCore = null;
     if (this.#adoptedRunnerMonitor !== null)
       clearInterval(this.#adoptedRunnerMonitor);
     this.#adoptedRunnerMonitor = null;
@@ -6089,6 +6093,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       connectionLeaseTtlMs: 60 * 60 * 1_000,
     });
     this.#core = core;
+    this.#followCommittedEvents(core);
     this.#carriedCommandCount = core.store.state.commands.length;
     // Externally launched runners own their state directory (for example in a
     // Daytona sandbox). Do not create an empty controller-side placeholder:
@@ -6180,7 +6185,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#evidence.runnerPid = handle.child.pid ?? null;
     this.#evidence.runnerProcessGroupId = handle.processGroupId ?? null;
     this.#publish();
-    this.#pump = setInterval(() => this.#pumpEventsSafely(), 5);
+    this.#startPump();
     await this.#waitCommand("run.prepare", undefined, undefined, true);
     this.#startupSteps?.advance("runner.process.launch", "provider.session.load");
     await this.#waitCommand("session.open", undefined, admissionDeadline, true);
@@ -6665,6 +6670,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       connectionLeaseTtlMs: 60 * 60 * 1_000,
     });
     this.#core = core;
+    this.#followCommittedEvents(core);
     this.#carriedCommandCount = core.store.state.commands.length;
     // Reusing resources still requires current environment authorization. The
     // optional hook avoids re-preparation after controller storage is lost.
@@ -7133,7 +7139,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       }
     }
     this.#assertStartupOpen();
-    this.#pump = setInterval(() => this.#pumpEventsSafely(), 5);
+    this.#startPump();
     if (adoptedRunner) {
       await this.#awaitAdoptedRunnerConnection(
         adoptedRunner,
@@ -7807,7 +7813,28 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
 
 
+  /**
+   * Deliver every committed event that is ready. The control plane wakes this
+   * when a reader can see a change, so an event never waits for a timer and an
+   * idle session runs none. Only what this transport holds back itself, behind
+   * a pending turn start, a recovery binding or a trace write, is retried on a
+   * timer, and only for as long as it is held.
+   */
   #pumpEvents(): void {
+    const remaining = this.#deliverCommittedEvents();
+    if (remaining === "next_task") this.#wakePump();
+    this.#retryPumpWhile(
+      remaining === "held" ||
+        this.#pendingTraceRehydrations.length > 0 ||
+        this.#pendingDriverTraceInterpretations.length > 0,
+    );
+  }
+
+  /**
+   * Returns what a later pass still has to deliver: nothing, events held
+   * behind a gate, or events that only had to wait for the next task.
+   */
+  #deliverCommittedEvents(): "none" | "held" | "next_task" {
     const core = this.#core;
     // The controller may activate its new epoch before attachRun observes the
     // confirmed handoff. Never consume either epoch with the other's cursor.
@@ -7816,7 +7843,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       !this.#eventIdentity ||
       !recoveryIdentityMatches(core.store.state.identity, this.#eventIdentity)
     )
-      return;
+      return "none";
     this.#flushPendingTraceRehydrations();
     const events = core.store.state.committedEvents;
     for (;;) {
@@ -7830,7 +7857,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         events.find((candidate) => candidate.sourceSeq > this.#eventSourceSeq);
       if (event === undefined) {
         this.#eventSourceSeq = Math.max(this.#eventSourceSeq, core.recoveredSourceSeq);
-        return;
+        return this.#deferredTurnStartEvents.length > 0 ? "held" : "none";
       }
       const fromDeferredQueue = deferredEvent !== undefined;
       if (!fromDeferredQueue && event.sourceSeq > this.#eventSourceSeq + 1) {
@@ -7906,7 +7933,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.#eventSourceSeq = event.sourceSeq;
           this.#deferredTurnStartEvents.push(structuredClone(event));
         }
-        return;
+        return "held";
       }
       // The control plane retains a sliding committed-event window. Track its
       // durable protocol cursor rather than an array index: once that array is
@@ -8207,15 +8234,16 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // The strict Codex driver must bind the provider turn from the response
       // before it observes terminal notifications. A fast provider can commit
       // start and terminal events in one durable batch, so stop after exposing
-      // turn/started while the request is pending. The regular pump drains the
-      // remaining events after the promise resolves.
+      // turn/started while the request is pending. The next task drains the
+      // remaining events; a terminal among them stays held until the response
+      // is released.
       if (
         this.#turnStartResponsePending &&
         notifications.some(
           (notification) => notification.method === "turn/started",
         )
       ) {
-        return;
+        return "next_task";
       }
     }
   }
@@ -8391,6 +8419,47 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           `provider_transport_failed: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
+    }
+  }
+
+  #followCommittedEvents(core: DurablePrpControlPlane): void {
+    this.#stopFollowingCore?.();
+    this.#stopFollowingCore = core.onReadableStateChange(() => {
+      if (this.#core === core) this.#wakePump();
+    });
+  }
+
+  #startPump(): void {
+    this.#pumpActive = true;
+    this.#wakePump();
+  }
+
+  #stopPump(): void {
+    this.#pumpActive = false;
+    if (this.#pumpWake !== null) clearImmediate(this.#pumpWake);
+    this.#pumpWake = null;
+    this.#retryPumpWhile(false);
+  }
+
+  /**
+   * Deliver in the next task. The control plane can report a change partway
+   * through its own commit, so the pump never runs inside that call; several
+   * changes in one task share a single pass.
+   */
+  #wakePump(): void {
+    if (!this.#pumpActive || this.#pumpWake !== null) return;
+    this.#pumpWake = setImmediate(() => {
+      this.#pumpWake = null;
+      if (this.#pumpActive) this.#pumpEventsSafely();
+    });
+  }
+
+  #retryPumpWhile(held: boolean): void {
+    if (held && this.#pumpActive) {
+      this.#pumpRetry ??= setInterval(() => this.#pumpEventsSafely(), PUMP_HELD_RETRY_MS);
+    } else if (this.#pumpRetry !== null) {
+      clearInterval(this.#pumpRetry);
+      this.#pumpRetry = null;
     }
   }
 
@@ -8778,8 +8847,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (this.#failure !== null || this.#closed) return;
     this.#failure = error;
     this.#rejectFailureSignal(error);
-    if (this.#pump !== null) clearInterval(this.#pump);
-    this.#pump = null;
+    this.#stopPump();
     try {
       this.#diagnostic(error.message);
     } finally {
