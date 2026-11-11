@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createAcpxPromptReceiptCollector, parsePiPromptReceipt } from "./prompt-receipts.js";
-import { createGrokSessionRulesGuard } from "./grok-session-rules.js";
+import { createGrokSessionOpenGuard } from "./grok-session-rules.js";
 
 const prompt = (id: number, sessionId = "s") => ({ jsonrpc: "2.0", id, method: "session/prompt", params: { sessionId, prompt: [] } });
 const cursorReceipt = { schema: "paperclip.cursor.native-usage.v1", promptId: "12345678-1234-1234-1234-123456789abc" };
@@ -60,15 +60,20 @@ describe("prompt response receipts", () => {
   });
 });
 
-describe("Grok session rules", () => {
-  it("replaces session/new metadata with the task rules and leaves other messages alone", () => {
-    const guard = createGrokSessionRulesGuard("Follow the task.");
+describe("Grok session open", () => {
+  it("binds the model on every open and the rules on session/new, without needing an effort", () => {
+    const guard = createGrokSessionOpenGuard({ rules: "Follow the task.", model: "grok-4.7" });
     const create = { method: "session/new", params: { cwd: "/w", _meta: { claudeCode: { options: {} }, systemPrompt: { append: "x" } } } };
     guard("outbound", create);
-    expect(create.params).toEqual({ cwd: "/w", _meta: { rules: "Follow the task." } });
-    const load = { method: "session/load", params: { sessionId: "s", _meta: { systemPrompt: "x" } } };
-    guard("outbound", load);
-    expect(load.params._meta).toEqual({ systemPrompt: "x" });
+    expect(create.params).toEqual({ cwd: "/w", _meta: { rules: "Follow the task.", modelId: "grok-4.7" } });
+    for (const method of ["session/load", "session/resume"]) {
+      const reopen = { method, params: { sessionId: "s", _meta: { kept: true } } };
+      guard("outbound", reopen);
+      expect(reopen.params._meta).toEqual({ kept: true, modelId: "grok-4.7" });
+    }
+    const prompt = { method: "session/prompt", params: { sessionId: "s" } };
+    guard("outbound", prompt);
+    expect(prompt.params).toEqual({ sessionId: "s" });
     const inbound = { method: "session/new", params: {} };
     guard("inbound", inbound);
     expect(inbound.params).toEqual({});

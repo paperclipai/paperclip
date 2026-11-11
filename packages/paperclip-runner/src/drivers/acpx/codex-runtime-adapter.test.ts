@@ -437,7 +437,8 @@ describe("Codex ACPX runtime adapter", () => {
         const guard = created.protocolGuardFactory!();
         const request = { method: "session/new", params: { cwd: "/w", _meta: { systemPrompt: "x" } } };
         guard("outbound", request);
-        expect(request.params._meta).toEqual({ rules: options.systemInstructions ?? "" });
+        // Grok binds its model at open even when no effort is selected.
+        expect(request.params._meta).toEqual({ rules: options.systemInstructions ?? "", modelId: options.profile.reportedModelId });
       } else expect(created.protocolGuardFactory).toBeUndefined();
       if (agent === "copilot") {
         expect(() => port.startTurn({ text: "\n/yolo on", requestId: "bad" })).toThrow(/admitted permission policy/);
@@ -776,6 +777,36 @@ describe("Codex ACPX runtime adapter", () => {
     expect(restoredPort.goalCapability!()).toEqual(goal);
     expect(restoredPort.steeringCapability!()).toEqual({ steering: true, queuedFollowUp: false });
     await restoredPort.close({ reason: "test finished" });
+  });
+
+  it("restores goal support that ACPX 0.13.1 saved in its own record field", async () => {
+    const goal = { version: 1, controlMethod: "_session/goal", actions: ["set", "clear"] };
+    // The record ACPX 0.13.1 wrote; ACPX 0.22 drops `agent_goal_capability` when it parses it.
+    const saved = JSON.parse(await readFile(new URL("../../../test/fixtures/acpx-0.13.1-session-record.json", import.meta.url), "utf8"));
+    const stateDirectory = await mkdtemp(join(tmpdir(), "acpx-legacy-goal-"));
+    try {
+      await mkdir(join(stateDirectory, "sessions"));
+      await writeFile(join(stateDirectory, "sessions", "carried-key.json"), JSON.stringify(saved));
+      const parsed = { acpxRecordId: "carried-key", acpSessionId: "carried-session", cwd: "/workspace",
+        agentCapabilities: { loadSession: true } } as unknown as AcpSessionRecord;
+      const saves: AcpSessionRecord[] = [];
+      let created!: AcpRuntimeOptions;
+      const options = openOptions(fakeCommand());
+      options.stateDirectory = stateDirectory;
+      const port = await openCodexAcpxRuntime(options, {
+        createRegistry: () => registry(),
+        createStore: () => ({ load: vi.fn(async () => structuredClone(parsed)), save: vi.fn(async (record: AcpSessionRecord) => { saves.push(structuredClone(record)); }) }),
+        createRuntime: (value) => { created = value; return fakeRuntime(); },
+      });
+      await created.sessionStore!.load("carried-key");
+      expect(port.goalCapability!()).toEqual(goal);
+      // The next save keeps it under the current key, so the old field is read once.
+      await created.sessionStore!.save(parsed);
+      expect(saves.at(-1)?.agentCapabilities).toEqual({ loadSession: true, _meta: { "paperclip.goalCapability": goal } });
+      await port.close({ reason: "test finished" });
+    } finally {
+      await rm(stateDirectory, { recursive: true, force: true });
+    }
   });
 
   it("does not grant steering to Copilot or Cursor when an untrusted initialize result claims Pi support", async () => {

@@ -4,13 +4,15 @@ import { kimiReadOnlyPermissionAllowed } from "./kimi-config.js";
 import { createGrokPromptUsageCollector } from "./grok-usage.js";
 import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
 import { resolveGrokEffort, createGrokEffortAdmission } from "./grok-effort.js";
-import { createGrokSessionRulesGuard } from "./grok-session-rules.js";
+import { createGrokSessionOpenGuard } from "./grok-session-rules.js";
 import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
 import { acpxProviderFailure, acpxTypedSessionFailureClientCapabilities, acpxTypedTerminalSessionFailure, type AcpxTerminalSessionFailure } from "./provider-failure.js";
 import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
 import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
 import { usesPreconfiguredHome } from "../preconfigured-home.js";
 import type { ChildProcess } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import {
   createAcpRuntime,
@@ -311,7 +313,12 @@ export async function openQualifiedAcpxRuntime(
         rememberHandshakeHandle(record);
         const capabilities = objectRecord(record.agentCapabilities);
         const stored = objectRecord(capabilities._meta)[GOAL_CAPABILITY_META_KEY];
-        applyAgentInitialize({ agentCapabilities: capabilities, ...(stored === undefined ? {} : { _meta: { goal: stored } }) });
+        // A session saved by ACPX 0.13.1 kept goal support in its own field.
+        const legacy = stored === undefined ? await legacyGoalCapability(options.stateDirectory, record.acpxRecordId) : null;
+        // Persist it under the current key on the next save.
+        if (legacy && initializedGoalCapability === undefined) initializedGoalCapability = legacy;
+        const goal = stored ?? legacy ?? undefined;
+        applyAgentInitialize({ agentCapabilities: capabilities, ...(goal === undefined ? {} : { _meta: { goal } }) });
       }
       return record;
     },
@@ -444,9 +451,9 @@ export async function openQualifiedAcpxRuntime(
     } } : {}),
     ...(piThinking ? { protocolGuardFactory: () => piThinking.createGuard() } : {}),
     ...(options.profile.agent === "grok" ? { protocolGuardFactory: () => {
-      const rules = createGrokSessionRulesGuard(options.systemInstructions ?? "");
+      const open = createGrokSessionOpenGuard({ rules: options.systemInstructions ?? "", model: options.profile.reportedModelId });
       const effort = effortAdmission?.createGuard();
-      return (direction: "inbound" | "outbound", message: unknown) => { rules(direction, message); effort?.(direction, message); };
+      return (direction: "inbound" | "outbound", message: unknown) => { open(direction, message); effort?.(direction, message); };
     } } : effortAdmission ? { protocolGuardFactory: () => effortAdmission.createGuard() } : {}),
     ...(antigravityAdmission ? { protocolGuardFactory: () => antigravityAdmission.createGuard() } : {}),
     sessionStore,
@@ -2492,4 +2499,22 @@ function withPersistedGoalCapability(
       _meta: capability === null ? meta : { ...meta, [GOAL_CAPABILITY_META_KEY]: structuredClone(capability) },
     },
   };
+}
+
+/**
+ * ACPX 0.13.1 with Paperclip's patch saved an agent's goal support as the
+ * record field `agent_goal_capability`. ACPX 0.22 drops unknown fields when it
+ * parses a record, so read that field from the saved file itself.
+ */
+async function legacyGoalCapability(stateDirectory: string, recordId: string): Promise<AcpxRuntimeGoalCapability | null> {
+  try {
+    const raw = JSON.parse(await readFile(join(stateDirectory, "sessions", `${encodeURIComponent(recordId)}.json`), "utf8"));
+    const legacy = objectRecord(objectRecord(raw).agent_goal_capability);
+    if (Object.keys(legacy).length === 0) return null;
+    return goalCapabilityFromAcpMessage({ result: { _meta: { goal: {
+      version: legacy.version, controlMethod: legacy.control_method, actions: legacy.actions,
+    } } } });
+  } catch {
+    return null;
+  }
 }
