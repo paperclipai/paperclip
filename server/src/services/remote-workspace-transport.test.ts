@@ -1071,8 +1071,11 @@ fs.unlinkSync(${JSON.stringify(kill)});process.kill(process.pid,'SIGKILL');}retu
       .then(() => { throw new Error("expected the capture to fail"); }, (error: Error) => error);
     const fallback = `remote_workspace_readonly_capture_failed: stage=transfer reason=operation_failed transport=${label}`;
     // Finalization retries a dropped connection; a full disk goes straight to saved-work recovery.
-    if (transient) expect(failure.message).toBe(fallback);
-    else expect(failure).toMatchObject({ message: REMOTE_WORKSPACE_SANDBOX_DISK_FULL, cause: { message: fallback } });
+    if (transient) {
+      expect(failure.message).toBe(fallback);
+      // The save records where the fallback stopped.
+      expect(remoteWorkspaceFailureCause(failure)).toBe(fallback);
+    } else expect(failure).toMatchObject({ message: REMOTE_WORKSPACE_SANDBOX_DISK_FULL, cause: { message: fallback } });
     expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained work\n");
   });
 

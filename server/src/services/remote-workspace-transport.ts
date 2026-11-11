@@ -89,11 +89,16 @@ export class RemoteWorkspaceOperationError extends Error {
  * The server-built diagnostic for a remote workspace failure, or null when the
  * error text is not one of these redacted forms and must stay off the record.
  */
+const READONLY_CAPTURE_FAILURE_CAUSE =
+  /^remote_workspace_readonly_capture_failed: stage=(?:inspect|transfer|verify|archive) reason=[a-z_]{1,32} transport=[a-z_]{1,48}(?: code=[A-Z][A-Z0-9_]{1,31})?$/;
+
 export function remoteWorkspaceFailureCause(error: unknown): string | null {
   if (error instanceof RemoteWorkspaceOperationError || error instanceof RemoteWorkspaceOperationTimeoutError
     || error instanceof RemoteWorkspaceRestoreError) return error.message;
   if (!(error instanceof Error)) return null;
   if (remoteWorkspaceCaptureFailureMessage({ message: error.message }) === error.message) return error.message;
+  // A read-only capture failure is server-built from closed fields.
+  if (READONLY_CAPTURE_FAILURE_CAUSE.test(error.message)) return error.message;
   const operation = providerRefusals.get(error);
   return operation ? remoteWorkspaceProviderRefusalCause(operation, error) : null;
 }
