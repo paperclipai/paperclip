@@ -190,8 +190,7 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     if (!retained) {
       const subject = (record.endpoint.setup as InternalSetupState).photonExternalSubject;
       if (!subject) throw new Error("Photon original subject is unavailable");
-      const previous = await store.read({ companyId: record.endpoint.companyId, endpointId: record.endpoint.id, connectionId: record.endpoint.connectionId,
-        runtimeGeneration: Number((record.endpoint.setup as InternalSetupState).runtimeGeneration ?? 0), credentialReferences: credentialFingerprint(record.credentialSecretRefs), subject });
+      const previous = await store.read({ companyId: record.endpoint.companyId, endpointId: record.endpoint.id });
       if (!previous || previous.phase !== "retiring" || !broker) throw new Error("Photon exact retired delivery owner is unavailable");
       const decoded = parsePhotonExternalDelivery({ ...event, payload: packet }, previous);
       await store.noEffect(previous, decoded.packet.sequence);
@@ -224,8 +223,7 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     if (!record || !broker) return;
     const subject = (record.endpoint.setup as InternalSetupState).photonExternalSubject;
     if (!subject) return;
-    const retained = await store.read({ companyId: record.endpoint.companyId, endpointId: id, connectionId: record.endpoint.connectionId,
-      runtimeGeneration: Number((record.endpoint.setup as InternalSetupState).runtimeGeneration ?? 0), credentialReferences: credentialFingerprint(record.credentialSecretRefs), subject });
+    const retained = await store.read({ companyId: record.endpoint.companyId, endpointId: id });
     if (retained && retained.phase !== "retired") await createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) }).retire(retained);
   }
   async function retained(scope?: { kind: "endpoint" | "connection" | "company"; id: string }) {
@@ -262,8 +260,7 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     const record = await options.endpointRecord(id);
     const subject = record && (record.endpoint.setup as InternalSetupState).photonExternalSubject;
     if (!record || !subject || !context.endpointRuntime) return { kind: "obsolete" };
-    const state = await store.read({ companyId: record.endpoint.companyId, endpointId: id, connectionId: record.endpoint.connectionId,
-      runtimeGeneration: context.generation, credentialReferences: context.credentialFingerprint, subject });
+    const state = await store.read({ companyId: record.endpoint.companyId, endpointId: id });
     if (!state?.localResourceId || !resources.owns(state.localResourceId, context.endpointRuntime)
       || !["joining", "external", "retiring"].includes(state.phase) || state.localClosureConfirmed) return { kind: "obsolete" };
     await store.retained(state, value => value.phase === "external"
@@ -280,8 +277,7 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     if (!subject || !broker || !management.responsibleUserId || !management.decision.allowed || management.decision.action !== "connections:configure"
       || management.resource.companyId !== record.endpoint.companyId || management.resource.connectionId && management.resource.connectionId !== record.endpoint.connectionId)
       throw forbidden("Current company connection authority is required");
-    const state = await store.read({ companyId: record.endpoint.companyId, endpointId, connectionId: record.endpoint.connectionId,
-      runtimeGeneration: Number((record.endpoint.setup as InternalSetupState).runtimeGeneration ?? 0), credentialReferences: credentialFingerprint(record.credentialSecretRefs), subject });
+    const state = await store.read({ companyId: record.endpoint.companyId, endpointId });
     const connector = broker.instanceIdentity();
     if (!state || state.handoffId !== actionId || state.binding.instanceId !== connector.instanceId || state.binding.environment !== connector.environment)
       throw conflict("Photon retained retry identity changed");
