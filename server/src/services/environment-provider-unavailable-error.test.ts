@@ -152,12 +152,26 @@ describe("readTransientLeaseAcquisitionFailure", () => {
     expect(readTransientLeaseAcquisitionFailure(timeout, run)).toEqual({ acquisitionTimedOut: true });
   });
 
+  const pg = (code: string) => Object.assign(new Error("database error"), { name: "PostgresError", code });
   it.each([
-    ["a PostgresError", Object.assign(new Error("terminating connection"), { name: "PostgresError", code: "57P01" })],
+    ["a terminated connection", pg("57P01")],
+    ["a connection failure", pg("08006")],
+    ["too many connections", pg("53300")],
+    ["a lock timeout", pg("55P03")],
     ["a closed connection", Object.assign(new Error("closed"), { code: "CONNECTION_CLOSED" })],
-    ["a Drizzle query wrapper", new Error("Failed query: select 1\nparams: ")],
+    ["a Drizzle wrapper around a statement timeout", new Error("Failed query: select 1\nparams: ", { cause: pg("57014") })],
   ])("retries %s while recording the lease", (_label, cause) => {
     expect(readTransientLeaseAcquisitionFailure(new Error("lease", { cause }), run)).toEqual({ reason: "database_error" });
+  });
+
+  it.each([
+    ["a unique violation", pg("23505")],
+    ["an undefined column", pg("42703")],
+    ["a Drizzle wrapper around a syntax error", new Error("Failed query: select\nparams: ", { cause: pg("42601") })],
+    ["a bare Drizzle wrapper", new Error("Failed query: select 1\nparams: ")],
+    ["an errno that looks like a SQLSTATE", Object.assign(new Error("x"), { code: "EPERM" })],
+  ])("does not retry %s", (_label, cause) => {
+    expect(readTransientLeaseAcquisitionFailure(new Error("lease", { cause }), run)).toBeNull();
   });
 
   it("does not retry a definite non-transient status, even with other evidence", () => {

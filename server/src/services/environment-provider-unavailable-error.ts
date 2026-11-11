@@ -71,15 +71,24 @@ function definiteNonTransientStatus(error: unknown): boolean {
   return false;
 }
 
-// postgres.js connection-level codes; SQLSTATEs arrive on a PostgresError.
+// postgres.js connection-level codes, and SQLSTATEs a repeated statement can
+// pass: connection (08), insufficient resources (53), operator intervention
+// (57P01-57P03, 57014 query cancelled or timed out), lock not available (55P03),
+// serialization failure and deadlock (40001, 40P01). A deterministic SQL error
+// (syntax, schema, constraint) is not retried.
 const DATABASE_CONNECTION_CODES = new Set(["CONNECTION_CLOSED", "CONNECTION_ENDED", "CONNECTION_DESTROYED", "CONNECT_TIMEOUT"]);
+const TRANSIENT_SQLSTATES = new Set(["57P01", "57P02", "57P03", "57014", "55P03", "40001", "40P01"]);
 
-function databaseQueryFailure(error: unknown): boolean {
+function transientDatabaseFailure(error: unknown): boolean {
   for (let cause = error, depth = 0; cause && depth < 5; cause = own(cause, "cause"), depth++) {
-    const name = own(cause, "name"), code = own(cause, "code"), message = own(cause, "message");
-    if (name === "PostgresError" || name === "DrizzleQueryError") return true;
-    if (typeof code === "string" && DATABASE_CONNECTION_CODES.has(code)) return true;
-    if (typeof message === "string" && /^Failed query:/.test(message)) return true;
+    const code = own(cause, "code");
+    if (typeof code !== "string") continue;
+    if (DATABASE_CONNECTION_CODES.has(code)) return true;
+    if (/^[0-9A-Z]{5}$/.test(code) && (code.startsWith("08") || code.startsWith("53") || TRANSIENT_SQLSTATES.has(code))) {
+      // A five-character code is a SQLSTATE only on a database driver error.
+      const name = own(cause, "name");
+      if (name === "PostgresError" || name === "DatabaseError" || own(cause, "severity") !== undefined) return true;
+    }
   }
   return false;
 }
@@ -91,8 +100,7 @@ function databaseQueryFailure(error: unknown): boolean {
  * failure is retried unless it carries a definite non-transient status. Only
  * structured evidence is read: the provider's status or errno, the validated
  * acquisition diagnostic the runtime recorded for this run, the plugin RPC
- * deadline, or a database driver error. Message text is never parsed except
- * Drizzle's fixed "Failed query:" wrapper prefix.
+ * deadline, or a transient database driver code. Message text is never parsed.
  */
 export function readTransientLeaseAcquisitionFailure(
   error: unknown,
@@ -108,7 +116,7 @@ export function readTransientLeaseAcquisitionFailure(
     }
     if (cause instanceof JsonRpcCallError && cause.code === PLUGIN_RPC_ERROR_CODES.TIMEOUT) return { acquisitionTimedOut: true };
   }
-  return databaseQueryFailure(error) ? { reason: "database_error" } : null;
+  return transientDatabaseFailure(error) ? { reason: "database_error" } : null;
 }
 
 const REASON_LABELS: Record<TransientLeaseFailureReason, string> = {
