@@ -8358,12 +8358,12 @@ export function nativeSessionRecoveryProjection(input: {
  * The Runner closed this run's provider session after a turn start whose prompt
  * may have reached the provider. Every later same-run `turn.start` is refused
  * the same way, and resending could duplicate the prompt, so the run stops and
- * the board offers Retry (a new run reattaches the session). A start the
+ * the board offers Retry (a new run with a fresh provider session). A start the
  * Runner proved never dispatched is not classified and still retries.
  */
 export const NATIVE_PROVIDER_SESSION_CLOSED = "native_provider_session_closed";
 export const NATIVE_PROVIDER_SESSION_CLOSED_ACTION =
-  "The provider session closed after a turn start that may have reached the provider, and this run cannot reopen it. Retry starts a new run that continues the saved conversation.";
+  "The provider session closed after a turn start that may have reached the provider, and this run cannot reopen it. Retry starts a new run with a fresh provider conversation and the saved task context.";
 const RUNNER_PROVIDER_SESSION_CLOSED = "provider_session_closed";
 
 /** Reads the Runner's closed class from an authenticated turn.start failure. */

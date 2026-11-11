@@ -21,7 +21,8 @@ import { taskInterruptionPresentation } from "../task-interruption-presentation.
 // Chaos w-20261111T011704-s9107/t05 (claude, TM2): a cut-off ACPX turn start
 // left this run's session closed with the prompt possibly sent. Every same-run
 // resume got "ACPX session is not open"; the board offered Retry only after
-// three attempts (about 95 s). The Runner now classifies that refusal.
+// three attempts (about 95 s). The Runner now classifies that refusal, and
+// Retry starts a new run with a fresh provider session.
 describe("native turn start refused on a closed provider session", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;

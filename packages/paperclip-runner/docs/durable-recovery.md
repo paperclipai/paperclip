@@ -147,8 +147,8 @@ which proves that the sidecar and the provider are gone.
   and every later `turn.start` of the run, fail with the closed class
   `provider_session_closed` in the command result. The controller records
   `native_provider_session_closed`, stops same-run retries, and the board offers
-  Retry at once. Retry starts a new run, whose attachment reopens the saved
-  conversation. An older Runner sends the same text without the class; the
+  Retry at once. Retry starts a new run with a fresh provider conversation and
+  the saved task context. An older Runner sends the same text without the class; the
   controller then keeps its bounded same-run retries, because the same text
   also covers a session that can reopen after a restart.
 
