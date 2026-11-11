@@ -244,6 +244,18 @@ export async function executionProjectionsForRuns(
     }
   }
   const coordinatorByRun = new Map(coordinators.map((row) => [row.runId, row]));
+  const responseWaitRuns = runs.filter(run => run.status === "succeeded"
+    && run.resultJson?.finalizationReasonCode === NATIVE_RESPONSE_WAKE_WAITING_REASON && issueIdOf(run));
+  const responseWaitIssues = responseWaitRuns.length ? await read(async () => db
+    .select({ id: issues.id, status: issues.status, lastStatusDecisionId: issues.lastStatusDecisionId })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, [...new Set(responseWaitRuns.map(run => issueIdOf(run)!))])))) : [];
+  const responseWaitIssueById = new Map(responseWaitIssues.map(row => [row.id, row]));
+  const currentResponseWait = (run: Run) => {
+    const issue = responseWaitIssueById.get(issueIdOf(run) ?? "");
+    const decisionId = coordinatorByRun.get(run.id)?.decisionId;
+    return Boolean(issue && decisionId && issue.status === "in_progress" && issue.lastStatusDecisionId === decisionId);
+  };
   for (const run of runs) {
     const issueId = run.nativeIssueId ?? text(run.contextSnapshot?.issueId);
     const matching = recovery.filter(
@@ -265,6 +277,7 @@ export async function executionProjectionsForRuns(
         waitingByRun.get(run.id),
         settlingPredecessorKeys.has(run.id),
         setupByAgent.get(run.agentId),
+        currentResponseWait(run),
       ),
     );
   }
@@ -291,6 +304,7 @@ export function projectExecution(
   waitingForProvider?: WaitingExternalProvider,
   waitingForPredecessor = false,
   setupAgent?: { lifecycleState: string; lifecycleHolds: readonly string[]; retryRequired?: boolean },
+  responseWaitCurrent = false,
 ): ExecutionProjection {
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
@@ -470,9 +484,8 @@ export function projectExecution(
           ? "Waiting for access"
           : "Waiting for answer",
       );
-    const finalization = run.resultJson ?? {};
-    if (finalization.finalizationPhase === "committed" &&
-        finalization.finalizationReasonCode === NATIVE_RESPONSE_WAKE_WAITING_REASON) {
+    if (responseWaitCurrent && run.resultJson?.finalizationPhase === "committed" &&
+        run.resultJson.finalizationReasonCode === NATIVE_RESPONSE_WAKE_WAITING_REASON) {
       projection.nextAction = "The agent finished its turn and is waiting for a reply. Comment on the task or change its status to continue.";
       return set("waiting_for_answer", "Waiting for a reply");
     }

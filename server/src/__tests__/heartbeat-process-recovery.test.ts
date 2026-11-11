@@ -27,7 +27,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { recordLegacyWorkspaceRestoreFailure, terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { issueService } from "../services/issues.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
-import { projectExecution } from "../services/execution-projection.js";
+import { executionProjectionForRun } from "../services/execution-projection.js";
 import { JsonRpcCallError } from "@paperclipai/plugin-sdk";
 import { leaseFaultError } from "../services/environment-lease-fault-injection.js";
 import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
@@ -15152,9 +15152,53 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(await db.select().from(issues).where(eq(issues.id, fixture.issueId))).toEqual([
       expect.objectContaining({ status: "in_progress", assigneeAgentId: fixture.agentId }),
     ]);
-    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
-    expect(projectExecution(run!, undefined, [], undefined)).toMatchObject({ phase: "waiting_for_answer", label: "Waiting for a reply" });
+    expect(await executionProjectionForRun(db, fixture.companyId, fixture.runId))
+      .toMatchObject({ phase: "waiting_for_answer", label: "Waiting for a reply" });
     expect(mockAdapterExecute).not.toHaveBeenCalled();
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, fixture.issueId));
+    expect(await executionProjectionForRun(db, fixture.companyId, fixture.runId))
+      .toMatchObject({ phase: "completed", label: "Completed" });
+  });
+
+  it("delays a no-progress native continuation until the rewake cooldown instead of dropping it", async () => {
+    const fixture = await seedNativePassiveBoardResponse("same_agent", { assignmentWake: true });
+    const finishedAt = new Date(Date.now() - 30_000);
+    const priorRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: priorRunId, companyId: fixture.companyId, agentId: fixture.agentId,
+      invocationSource: "assignment", status: "succeeded", startedAt: new Date(finishedAt.getTime() - 5_000), finishedAt,
+      contextSnapshot: { issueId: fixture.issueId } });
+    await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const [intent] = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, fixture.companyId), eq(agentWakeupRequests.requestedByActorId, "native-status-committer")));
+    expect(intent?.payload).toMatchObject({ continuationKind: "same_agent" });
+    const heartbeat = heartbeatService(db);
+    const deadlines: number[] = [];
+    const dispatch = () => heartbeat.dispatchPendingNativeStatusWakeups({
+      companyId: fixture.companyId, requestId: intent!.id, onDeferredDeadline: (at) => deadlines.push(at),
+    });
+    const throttled = () => db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, fixture.companyId), eq(agentWakeupRequests.reason, "issue_rewake_throttled")));
+    const runCount = async () => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, fixture.companyId))).length;
+
+    await dispatch();
+    await dispatch();
+    const [receipt] = await throttled();
+    const nextAllowedAt = Date.parse(String((receipt?.payload as { heartbeatSkip?: { nextAllowedAt?: string } } | null)?.heartbeatSkip?.nextAllowedAt));
+    expect(deadlines).toEqual([nextAllowedAt, nextAllowedAt]);
+    expect(await throttled()).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, intent!.id)))
+      .toEqual([expect.objectContaining({ status: "queued", runId: null })]);
+    expect(await runCount()).toBe(2);
+
+    const past = new Date(Date.now() - 30 * 60_000);
+    await db.update(heartbeatRuns).set({ finishedAt: past }).where(eq(heartbeatRuns.companyId, fixture.companyId));
+    await db.update(agentWakeupRequests).set({
+      payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{heartbeatSkip,nextAllowedAt}', to_jsonb(${past.toISOString()}::text))`,
+    }).where(eq(agentWakeupRequests.id, receipt!.id));
+    await dispatch();
+    expect(await runCount()).toBe(3);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, intent!.id)))
+      .toEqual([expect.objectContaining({ status: "coalesced", runId: expect.any(String) })]);
   });
 
   it("rejects an unfinished native response wait while the finish report is still correctable", async () => {

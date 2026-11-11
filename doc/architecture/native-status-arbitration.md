@@ -184,8 +184,12 @@ its normal path.
 Declared continuations that do enqueue a wake (`issue_status_changed` with a
 `continuationKind`) are throttle candidates in the issue rewake throttle. After
 two consecutive successful runs with no issue-visible progress, the wake waits
-for the escalating cooldown. The native status committer's own `issue.updated`
-record does not count as progress or new input.
+for the escalating cooldown. The native status dispatcher keeps the intent
+queued and dispatches it again at the cooldown deadline; it is never dropped.
+The native status committer's own `issue.updated` record does not count as
+progress or new input. The "Waiting for a reply" execution label shows only
+while the parked decision is still the issue's latest decision and the issue
+is `in_progress`.
 
 ## Transactional decision commit
 
