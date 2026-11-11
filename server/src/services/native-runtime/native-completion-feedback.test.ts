@@ -410,6 +410,29 @@ describe("native final-response feedback", () => {
     await db.update(issues).set({ status: "in_progress", executionRunId: newerRunId }).where(eq(issues.id, value.issueId));
     await expect(nativeCompletionFeedback(db, value.runId, report)).resolves.toContain("newer run owns");
   });
+  it("asks once to re-check Paperclip instead of resting blocked on its own stall", async () => {
+    // Chaos run 2b600576: a SIGSTOPped server left write_document/read_document
+    // unanswered; the agent reported the Paperclip document service as an
+    // external outage and the task rested blocked with no Retry.
+    const value = await fixture();
+    const report: PrpStructuredRunResult = { ...done, reportedWorkDisposition: "blocked",
+      completionClaim: { ...done.completionClaim, objectiveSatisfied: false },
+      blocker: { reasonCode: "external_service_unavailable", owner: { kind: "system", name: "Paperclip document service" },
+        scope: "task_wide", unblockAction: "Restore document API responsiveness" } };
+    await expect(nativeCompletionFeedback(db, value.runId, report)).rejects.toThrow(/Paperclip answered this report[\s\S]*same idempotencyKey/);
+    // Once per run: a Paperclip failure that persists after the re-check rests blocked.
+    await expect(nativeCompletionFeedback(db, value.runId, report)).resolves.toContain("Blocker report accepted");
+    // A genuinely external service, a non-system owner, or a finished run is not re-checked.
+    const other = await fixture();
+    await expect(nativeCompletionFeedback(db, other.runId, { ...report, blocker: { ...report.blocker!, owner: { kind: "system", name: "GitHub API" } } }))
+      .resolves.toContain("Blocker report accepted");
+    await expect(nativeCompletionFeedback(db, other.runId, { ...report, blocker: { ...report.blocker!, owner: { kind: "user", name: "Paperclip admin" } } }))
+      .resolves.toContain("Blocker report accepted");
+    await expect(nativeCompletionFeedback(db, other.runId, { ...report, blocker: { ...report.blocker!, reasonCode: "missing_access" } }))
+      .resolves.toContain("Blocker report accepted");
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, other.runId));
+    await expect(nativeCompletionFeedback(db, other.runId, report)).resolves.toContain("Blocker report accepted");
+  });
   it("asks a blocked provider to explain the cause and action instead of describing completed work", async () => {
     const value = await fixture();
     const feedback = await nativeCompletionFeedback(db, value.runId, { ...done, reportedWorkDisposition: "blocked",
