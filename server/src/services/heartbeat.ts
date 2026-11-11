@@ -43,6 +43,7 @@ import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
+import { AgentDirectoryPreparationDeferral, deferRunForBusyAgentDirectory, prepareWithAgentDirectoryDeferral } from "./heartbeat/agent-directory-busy.js";
 import { preparePredecessorRetirementFallback } from "./heartbeat/predecessor-retirement-fallback.js";
 import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, recordHeartbeatAdapterRuntimeServices } from "./heartbeat/runtime-services.js";
 import { bindHeartbeatRunnerHomeMode, prepareHeartbeatExecutionConfiguration } from "./heartbeat/execution-configuration.js";
@@ -1041,6 +1042,7 @@ export function heartbeatService(
     findExecutionWorkspaceHolder,
     finalizeAiConnectionBusyDeferral,
     finalizeWorkspaceBusyDeferral,
+    finalizeAgentDirectoryBusyDeferral,
     promoteDueScheduledRetries,
     nextScheduledRetryAt,
     retryScheduledRetryNow,
@@ -3533,7 +3535,7 @@ export function heartbeatService(
         }, {
           measure: timePreparation,
           prepareInstructions: async nativeLifecyclePolicy => {
-            runtimeConfig = await preparedInstructions.prepare({ runtimeConfig, nativeRuntimeResolution, hasInstructionFilesystem, nativeLifecyclePolicy });
+            runtimeConfig = await prepareWithAgentDirectoryDeferral(() => preparedInstructions.prepare({ runtimeConfig, nativeRuntimeResolution, hasInstructionFilesystem, nativeLifecyclePolicy }));
             return { runtimeConfig, instructionCopy: preparedInstructions.instructionCopy };
           },
         });
@@ -3713,6 +3715,18 @@ export function heartbeatService(
         }));
       } catch (err) {
         await persistUsageCaptureFailure?.();
+        const agentDirectoryDeferral = await deferRunForBusyAgentDirectory(db, {
+          run, error: err, leaseOwner: runOptions.nativeLeaseOwner, restartRecovery: runOptions.nativeRestartRecovery,
+          schedule: (runId, retryAt, mode) => scheduleNativeSessionResumeDispatch(runId, retryAt, mode),
+          record: retryAt => appendRunEvent(run, { eventType: "lifecycle", stream: "system", level: "info",
+            message: "Another run of this agent is still using its files; this run continues when it finishes",
+            payload: { retryReasonCode: "agent_directory_operation_busy", nextAttemptAt: retryAt.toISOString() } }),
+        });
+        if (agentDirectoryDeferral === "deferred") {
+          nativeSessionResumeScheduled = true;
+          return;
+        }
+        if (agentDirectoryDeferral === "pre_admission") throw err;
         if (err instanceof NativeStartupCleanupPendingError) {
           await requestStartupCleanup(err);
           return;
@@ -3917,6 +3931,12 @@ export function heartbeatService(
           eventMessage: "stale execution continuation cancelled before dispatch",
           suppressImmediateRecovery: true,
         });
+      } else if (outerErr instanceof AgentDirectoryPreparationDeferral && await finalizeAgentDirectoryBusyDeferral(run, outerErr)
+        .catch(deferralErr => {
+          logger.error({ err: deferralErr, runId }, "failed to finalize agent-directory deferral");
+          return false;
+        })) {
+        logger.info({ runId }, "run deferred while another run of the agent uses its files");
       } else if (isWorkspaceBusyDeferral(outerErr)) {
         // Expected contention on a shared project workspace, not a
         // failure: park the run as a bounded scheduled retry and leave the

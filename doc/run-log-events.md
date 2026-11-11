@@ -954,6 +954,28 @@ This pre-provider wait records `ai_connection_busy` on the cancelled run and doe
 not consume the provider-failure retry allowance. The event contains no credentials
 and creates no Telemetry or OpenTelemetry export.
 
+## Agent directory waits
+
+A run whose instruction preparation finds another run of the same agent using
+its files writes one informational `lifecycle` event to the local run log, with
+`stream: "system"`. It records no file contents, paths or credentials, and
+creates no Telemetry or OpenTelemetry export.
+
+- A resumed native run that stays on its own run writes the message "Another
+  run of this agent is still using its files; this run continues when it
+  finishes". Its payload has exactly two fields: `retryReasonCode`, always
+  `agent_directory_operation_busy`, and `nextAttemptAt`, the ISO time when the
+  same run is scheduled to try again.
+- A run that has not yet started native execution is cancelled with error code
+  `agent_directory_busy` and writes "Another run of this agent is still using
+  its files. This task will continue automatically." when an
+  `agent_directory_busy` retry was scheduled, or "Another run of this agent is
+  still using its files, and this task could not be rescheduled." when it was
+  not. Its payload contains only `retryScheduled`, a boolean.
+
+Neither wait consumes the provider-failure retry allowance. Each stops after 30
+deferrals, after which the run follows the normal failure path.
+
 ## Managed Agent File Save Receipts
 
 The server writes `instruction_save` after managed file collection or a warm
