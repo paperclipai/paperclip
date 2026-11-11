@@ -1,6 +1,7 @@
 import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import { CoordinatorChatReferencesProvider } from "./coordinator/CoordinatorChatReferences";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
+import { useBrowserTimeZoneSync } from "@/hooks/useBrowserTimeZoneSync";
 import { useDesignSandbox } from "@/context/DesignSandboxContext";
 import { DesignSandboxSidebar } from "./DesignSandboxSidebar";
 import { BoardDialogs } from "./BoardDialogs";
@@ -123,7 +124,8 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const location = useLocation();
   const navigationType = useNavigationType();
   const { enabled: classicStreamlinedUiEnabled } = useStreamlinedUiEnabled();
-  const { enabled: coordinatorWorkspaceEnabled } = useCoordinatorWorkspaceEnabled();
+  const { enabled: coordinatorWorkspaceEnabled, userId: workspacePreferenceUserId } = useCoordinatorWorkspaceEnabled();
+  useBrowserTimeZoneSync(selectedCompanyId, workspacePreferenceUserId);
   const streamlinedUiEnabled = classicStreamlinedUiEnabled || coordinatorWorkspaceEnabled;
   const shellRoute = classifyShellRoute(location.pathname, companyPrefix);
   const isCompanySettingsRoute = shellRoute.builtInContextualSurface === "settings";

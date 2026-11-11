@@ -1,4 +1,4 @@
-import { catalogTeamInstallSchema, catalogTeamPreviewSchema } from "@paperclipai/shared";
+import { catalogTeamInstallSchema, catalogTeamPreviewSchema, updateWorkspacePreferenceSchema } from "@paperclipai/shared";
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
 import { experimentalApiMetadata } from "./experimental-api-metadata.js";
@@ -7061,8 +7061,8 @@ registerCurrentRoute({
   method: "put",
   path: "/api/companies/{companyId}/workspace-preferences/me",
   tags: ["workspace-preferences"],
-  summary: "Update your personal workspace; active company membership provides audit context",
-  body: z.object({ coordinatorWorkspaceEnabled: z.boolean() }).strict(),
+  summary: "Update your personal workspace or time zone; active company membership provides audit context",
+  body: updateWorkspacePreferenceSchema,
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
