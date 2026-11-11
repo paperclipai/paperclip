@@ -157,7 +157,24 @@ describe("DashboardGrid", () => {
         { instanceId: "recent-tasks", widgetId: "recent-tasks", w: 3, h: 2 },
         { instanceId: "agent-errors", widgetId: "agent-errors", w: 2, h: 3 },
       ],
-    });
+    }, { signal: expect.any(AbortSignal) });
+  });
+
+  it("shows a failed save and sends the same layout again from the notice", async () => {
+    uiLayoutsApi.save.mockRejectedValueOnce(new Error("Layout is not valid"));
+    await render();
+    await act(async () => button("Customize", host).click());
+    await act(async () => button("Remove Agents Enabled", host).click());
+    await waitForSave();
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain("Your latest dashboard layout changes are not saved yet.");
+
+    await act(async () => button("Retry saving", host).click());
+    await settle();
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(2);
+    expect(uiLayoutsApi.save.mock.calls[1]![2]).toEqual(uiLayoutsApi.save.mock.calls[0]![2]);
+    expect(host.textContent).not.toContain("are not saved yet");
+    expect(widgetIds()).toEqual(["recent-tasks"]);
   });
 
   it("restores the default layout through the reset endpoint", async () => {
