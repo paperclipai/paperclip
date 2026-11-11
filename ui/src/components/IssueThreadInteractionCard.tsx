@@ -1414,12 +1414,12 @@ function AskUserQuestionsCard({
         <div className="space-y-4">
           {compact ? <DecisionPanel>{questions.map((question, index) => (
             <div key={question.id} className="flex flex-col gap-1.5">
-              <p className={cn("text-(length:--text-compact) leading-5", promptStated && "sr-only")}>
-                <span id={`${interaction.id}-${question.id}-prompt`} className="font-medium text-foreground">
+              <div className={cn("text-(length:--text-compact) leading-5", promptStated && "sr-only")}>
+                <div id={`${interaction.id}-${question.id}-prompt`} className="font-medium text-foreground">
                   {questions.length > 1 ? `${index + 1}. ` : ""}<PromptText>{question.prompt}</PromptText>
-                </span>
+                </div>
                 <span aria-hidden className="text-muted-foreground"> · {question.required ? "Required" : "Optional"}</span>
-              </p>
+              </div>
               {question.helpText ? <span className="text-xs leading-4.5 text-muted-foreground">{question.helpText}</span> : null}
               <span className="sr-only" id={`${interaction.id}-${question.id}-requirements`}>
                 {question.selectionMode === "single" ? "Choose one answer." : "Choose one or more answers."} {question.required ? "Required." : "Optional."}

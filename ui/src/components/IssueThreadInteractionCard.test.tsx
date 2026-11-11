@@ -284,6 +284,17 @@ describe("IssueThreadInteractionCard", () => {
     expect(otherOption?.closest('[role="radiogroup"]')).toBe(singleGroup);
   });
 
+  it("renders block Markdown in compact question labels without paragraph nesting", () => {
+    const question = { ...pendingAskUserQuestionsInteraction.payload.questions[0]!, prompt: "**Which option?**\n\n- First consideration\n- Second consideration" };
+    const interaction = { ...pendingAskUserQuestionsInteraction, payload: { ...pendingAskUserQuestionsInteraction.payload, questions: [question] } };
+    const host = renderCard({ presentationVariant: "coordinator-decision", interaction });
+    const group = host.querySelector('[role="radiogroup"]')!;
+    const label = host.querySelector(`#${group.getAttribute("aria-labelledby")}`)!;
+    expect(label.querySelector("strong")?.textContent).toBe("Which option?");
+    expect(label.querySelectorAll("li")).toHaveLength(2);
+    expect(label.querySelector("div")?.closest("p")).toBeNull();
+  });
+
   it.each(["default", "coordinator-decision"] as const)("treats Other as a radio choice that reveals its text field (%s)", async (presentationVariant) => {
     const question = { ...pendingAskUserQuestionsInteraction.payload.questions[0]!, required: true };
     const interaction = { ...pendingAskUserQuestionsInteraction, payload: { ...pendingAskUserQuestionsInteraction.payload, questions: [question] } };
