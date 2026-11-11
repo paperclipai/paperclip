@@ -19,6 +19,7 @@ describe("Claude model defaults", () => {
   });
 
   it("keeps model-specific Claude reasoning limits", () => {
+    expect(claudeLocalReasoningEffortsForModel("claude-fable-5-2")).toEqual(["low", "medium", "high", "xhigh", "max"]);
     expect(claudeLocalReasoningEffortsForModel("claude-fable-5-1")).toContain("xhigh");
     expect(claudeLocalReasoningEffortsForModel("claude-sonnet-5")).toContain("max");
     expect(claudeLocalReasoningEffortsForModel("claude-sonnet-4-6")).toEqual(["low", "medium", "high", "max"]);
