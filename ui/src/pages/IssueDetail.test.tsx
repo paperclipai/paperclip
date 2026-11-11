@@ -2923,7 +2923,7 @@ describe("IssueDetail", () => {
     expect(container.textContent).toContain("Issue detail smoke");
     expect(mockSetBreadcrumbs).toHaveBeenLastCalledWith([
       { label: "Tasks", href: "/issues" },
-      expect.objectContaining({ label: "Parent task visible in Properties", identifier: "PAP-0", href: "/issues/PAP-0" }),
+      expect.objectContaining({ label: "Parent task visible in Properties", href: "/issues/PAP-0" }),
       expect.objectContaining({ label: "Issue detail smoke" }),
     ]);
   });
@@ -2939,6 +2939,8 @@ describe("IssueDetail", () => {
     await act(async () => { renderIssueView(); });
     await flushReact();
     const parentCrumb = mockSetBreadcrumbs.mock.calls.at(-1)![0][1];
+    expect(parentCrumb.identifier).toBeUndefined();
+    expect(parentCrumb.label).toBe("Parent task");
     expect(parentCrumb.onClick).toBeTypeOf("function");
     parentCrumb.onClick();
     const expected = { label: source === "query" ? "Inbox" : "Mine", href: state.issueDetailBreadcrumb!.href };
@@ -2951,7 +2953,9 @@ describe("IssueDetail", () => {
     mockIssuesApi.get.mockResolvedValue(createIssue({ id: "parent-1", identifier: "PAP-0", title: "Parent task" }));
     await act(async () => { renderIssueView(); });
     await waitForAssertion(() => {
-      expect(mockSetBreadcrumbs.mock.calls.at(-1)![0][0]).toEqual(expected);
+      const breadcrumbs = mockSetBreadcrumbs.mock.calls.at(-1)![0];
+      expect(breadcrumbs[0]).toEqual(expected);
+      expect(breadcrumbs.at(-1)?.label).toBe(parentCrumb.label);
     });
   });
 
@@ -2964,19 +2968,20 @@ describe("IssueDetail", () => {
     await flushReact();
     expect(mockSetBreadcrumbs).toHaveBeenLastCalledWith([
       { label: "Tasks", href: "/issues" },
-      expect.objectContaining({ label: "Private task", identifier: "PAP-0", href: undefined }),
+      expect.objectContaining({ label: "Private task", href: undefined }),
       expect.objectContaining({ label: "Issue detail smoke" }),
     ]);
     const parentCrumb = mockSetBreadcrumbs.mock.calls.at(-1)![0][1];
+    expect(parentCrumb.identifier).toBeUndefined();
     expect(parentCrumb.onClick).toBeUndefined();
     await act(async () => { renderIssueView(parentCrumb.control); });
     const chip = container.querySelector('[data-testid="locked-issue-chip"]');
     expect(chip).not.toBeNull();
-    expect(chip?.textContent).toBe(isMobile ? "Private" : "PAP-0");
+    expect(chip?.textContent).toBe("Private");
     expect(container.querySelector('a, [role="link"]')).toBeNull();
   });
 
-  it("updates the private parent label when an open task changes viewport", async () => {
+  it("keeps the private parent title free of IDs when an open task changes viewport", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue({
       ancestors: [{ id: "private-parent", identifier: "PAP-0", locked: true }] as unknown as Issue["ancestors"],
     }));
@@ -3000,7 +3005,7 @@ describe("IssueDetail", () => {
     await act(async () => {
       renderIssueView(<BreadcrumbProvider><RenderBreadcrumbControl /></BreadcrumbProvider>);
     });
-    for (const [index, expected] of ["PAP-0", "Private", "PAP-0"].entries()) {
+    for (const [index, expected] of ["Private", "Private", "Private"].entries()) {
       await act(async () => { updateBreadcrumbs(captured[index]); });
       expect(container.querySelector('[data-testid="locked-issue-chip"]')?.textContent).toBe(expected);
       expect(container.querySelector('a, [role="link"]')).toBeNull();

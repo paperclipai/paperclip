@@ -847,8 +847,9 @@ Task breadcrumbs link the immediate parent before the current task. Each task
 title displays at most 48 Unicode code points, including an ellipsis; saved
 titles, hover text and accessible names retain the full title. The parent uses
 at most 40% of the breadcrumb row, and both titles truncate when space runs out.
-Mobile omits the collection link and parent identifier to preserve both titles
-and the current task identifier. Private parents show a noninteractive label.
+Parent breadcrumbs show only the task title, with no identifier, at every width.
+Mobile omits the collection link to preserve both titles and the current task
+identifier. Private parents show a noninteractive Private label without an identifier.
 
 The local task detail also offers a **Thread preview** selector. DES-1 opens a
 complete synthetic conversation matching the staging transcript layout; other

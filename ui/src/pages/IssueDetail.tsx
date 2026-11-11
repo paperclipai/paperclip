@@ -5994,15 +5994,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       sourceBreadcrumb,
       ...(breadcrumbParent ? [{
         label: isLockedIssueStub(breadcrumbParent) ? "Private task" : breadcrumbParent.title,
-        identifier: breadcrumbParent.identifier ?? undefined,
         href: isLockedIssueStub(breadcrumbParent)
           ? undefined
           : createIssueDetailPath(breadcrumbParent.identifier ?? breadcrumbParent.id),
         onClick: isLockedIssueStub(breadcrumbParent) ? undefined : rememberBreadcrumbParent,
         control: isLockedIssueStub(breadcrumbParent)
-          ? <LockedIssueChip identifier={isMobile ? null : breadcrumbParent.identifier} />
+          ? <LockedIssueChip identifier={null} />
           : undefined,
-        controlKey: isLockedIssueStub(breadcrumbParent) ? `private-parent:${isMobile}` : undefined,
+        controlKey: isLockedIssueStub(breadcrumbParent) ? "private-parent" : undefined,
       }] : []),
       {
         // The status glyph (leading) already conveys in-progress/live state;
@@ -6019,7 +6018,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     breadcrumbTitle,
     breadcrumbIdentifier,
     breadcrumbParent,
-    isMobile,
     rememberBreadcrumbParent,
     hasLiveRuns,
     setBreadcrumbs,
