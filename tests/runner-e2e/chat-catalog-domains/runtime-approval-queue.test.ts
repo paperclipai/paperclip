@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { gradeApprovalQueue, ordinaryApprovalEntries, pendingInputYield } from "./runtime-approval-queue.js";
+import { gradeApprovalQueue, leadRelayEntries, ordinaryApprovalEntries, pendingInputYield } from "./runtime-approval-queue.js";
 function valid() {
   const payload = { questionSet: { questions: [{ id: "name", prompt: "What is the product name?" }] } };
   return { scenarioId: "steering.approval-delivery", companyId: "company", leadId: "ceo", agents: [], links: [], humanQueries: [], reply: "", tasks: [{ id: "website" }], activity: [],
@@ -51,3 +51,18 @@ it.each([
   ["parked on another interaction", { ...parked, resultJson: { nativeResult: { ...parked.resultJson.nativeResult, continuation: { kind: "response_wake", idempotencyKey: "interaction-response:other" } } } }],
   ["no result", { id: "asked", status: "succeeded", resultJson: null }],
 ])("rejects a run that is not parked on the question (%s)", (_label, run) => expect(pendingInputYield(run, "question")).toBe(false));
+
+// Retained runner-opencode attempt (gha-43077703607): the CEO cannot answer a board-only question form, so it relayed the
+// person's answer as its own comment on the task. That comment queues beside the person's messages and the bound response.
+it("accepts the chat lead's own relayed comment beside the bound response", () => { const o = valid();
+  o.state.responseQueue.entries.push({ comment: { id: "relay", authorAgentId: "ceo", authorUserId: null } } as never); expect(gradeApprovalQueue(o).passed).toBe(true); });
+it("rejects a person's ordinary message left beside the bound response", () => { const o = valid();
+  o.state.responseQueue.entries.push({ comment: { id: "left", authorUserId: "human", authorAgentId: null } } as never); expect(gradeApprovalQueue(o).passed).toBe(false); });
+it("rejects a second bound response entry", () => { const o = valid();
+  o.state.responseQueue.entries.push({ source: { kind: "interaction", interactionId: "question" }, canEdit: false, canDiscard: false } as never); expect(gradeApprovalQueue(o).passed).toBe(false); });
+it("keeps only the person's own messages as editable ordinary entries", () => {
+  const queue = { entries: [{ comment: { id: "mine", authorUserId: "human", authorAgentId: null } }, { comment: { id: "relay", authorUserId: null, authorAgentId: "ceo" } },
+    { source: { kind: "interaction" }, comment: { id: "decision" } }] } as unknown as Parameters<typeof ordinaryApprovalEntries>[0];
+  expect(ordinaryApprovalEntries(queue, "human").map(row => row.comment.id)).toEqual(["mine"]);
+  expect(leadRelayEntries(queue, "ceo").map(row => row.comment.id)).toEqual(["relay"]);
+});

@@ -45,7 +45,7 @@ export function gradeActiveSteering(value: unknown) {
   "Only the person's own action can steer the message; the agent's attempt is refused.");
   const retained = after?.entries.some(row => row.comment.id === s.targetId && row.comment.body === direction) === true;
   c.add("delivery-distinct-from-queue-with-no-loss", s.steerObservedBranch === branch && (accepted
-    ? s.acknowledgedSameRun === true && after?.entries.length === 0 && s.steerAuditBound === true && s.idempotentRetryStatus === 200 && s.ordinaryConsumerCount === 0
+    ? s.acknowledgedSameRun === true && after?.entries.every(row => row.comment.authorAgentId === o.leadId) === true && s.steerAuditBound === true && s.idempotentRetryStatus === 200 && s.ordinaryConsumerCount === 0
     : branch === "unsupported-queued-normal-continuation"
       ? s.steerStatus === 409 && s.steerFailureCode === "steering_unsupported" && s.steeredActivityCount === 0 && retained && s.unsupportedStateRetained === true
         && s.ordinaryConsumerCount === 1 && s.continuationInputBound === true
@@ -53,7 +53,7 @@ export function gradeActiveSteering(value: unknown) {
         && s.failureRetainedMessage === true && retained && s.supportedContinuationVisible === true && s.ordinaryConsumerCount === 1 && s.continuationInputBound === true),
   "A durable same-run ACK is required for delivery; a runtime that cannot steer (or a provider rejection) instead keeps the exact message visibly queued, records no steering, and one normal continuation consumes it.");
   c.add("actual-blue-output-correct-native-owner", s.actualBlueArtifact === true && s.deliveryRevisionBound === true && s.workerTaskDone === true && s.queueEmptyAtEnd === true
-    && o.runs.length === (accepted ? 2 : 3) && o.runs.every(row => row.status === "succeeded") && o.tasks.length === 1,
+    && o.runs.length === (accepted && !Number(s.leadRelayCount) ? 2 : 3) && o.runs.every(row => row.status === "succeeded") && o.tasks.length === 1,
   "Actual delivered HTML renders blue, and the consuming native run saved its task delivery document, with no duplicate work or hidden run.");
   return c.result();
 }
@@ -82,7 +82,7 @@ export const runtimeActiveSteeringCases = [runtimeDefinition("steering.steer-act
   await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
   return { ...state, humanId: session.user.id, queueBefore: before, targetId, ...controls };
 }, gradeActiveSteering, {
-  authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.steer-active.v4",
+  authentication: "human-session", expectedRunCount: 3, minimumRunCount: 2, attemptTimeoutMs: 720_000, oracleVersion: "paperclip.chat-catalog.runtime.steer-active.v5",
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   sourceFiles: ["chat-catalog-domains/runtime-active-steering.ts", "chat-catalog-domains/runtime-rendered-artifact.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-interruption.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "registered-artifact.ts", "chat-scenarios/steering.yaml"],
   async act(ctx, state) {
@@ -93,7 +93,11 @@ export const runtimeActiveSteeringCases = [runtimeDefinition("steering.steer-act
     state.queryReply = (await observeRuntime(ctx, state)).reply;
     const source = ctx.input.page.url(), task = state.task as Entity, endpoint = `/api/issues/${task.id}/queued-comments`, targetId = String(state.targetId);
     const before = await ctx.input.api.get<IssueQueuedCommentQueue>(endpoint);
-    if (before.entries.length !== 1 || before.entries[0]?.comment.id !== targetId || before.targetRunId !== state.workerRunId) throw new Error("Canonical guidance lost or duplicated the saved human direction");
+    // The chat lead may relay the direction as its own task comment; that queues beside the person's message and is not theirs to steer.
+    const human = before.entries.filter(row => !row.comment.authorAgentId), relays = before.entries.filter(row => row.comment.authorAgentId === ctx.input.fixtures.agent.id);
+    if (human.length !== 1 || human[0]?.comment.id !== targetId || human.length + relays.length !== before.entries.length || before.targetRunId !== state.workerRunId)
+      throw new Error("Canonical guidance lost or duplicated the saved human direction");
+    state.leadRelayCount = relays.length;
     const mutation = { queueId: before.queueId, revision: before.revision, targetRunId: before.targetRunId };
     state.agentSteerStatus = await probeAgentPermission(ctx, `${endpoint}/${targetId}/steer`, "POST", mutation);
     await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier ?? task.id}`, { waitUntil: "domcontentloaded" });

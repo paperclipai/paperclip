@@ -5441,7 +5441,7 @@
       "chat-catalog-domains/runtime-support.ts",
       "chat-scenarios/steering.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.approval-delivery.v3",
+    "oracleVersion": "paperclip.chat-catalog.runtime.approval-delivery.v4",
     "coverageGaps": [],
     "expectedRunCount": 4,
     "turnTimeoutMs": 120000,
@@ -5614,7 +5614,7 @@
       "registered-artifact.ts",
       "chat-scenarios/steering.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.steer-active.v4",
+    "oracleVersion": "paperclip.chat-catalog.runtime.steer-active.v5",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "minimumRunCount": 2,

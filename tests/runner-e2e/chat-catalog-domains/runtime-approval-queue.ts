@@ -20,7 +20,13 @@ export function pendingInputYield(run: PendingInputRun | null | undefined, quest
   return run?.status === "succeeded" && result?.reportedWorkDisposition === "yielded" && result.continuation?.kind === "response_wake"
     && result.continuation.idempotencyKey === `interaction-response:${questionId}` && [...(result.evidence ?? []), ...(result.artifacts ?? [])].some(row => row.ref === ref);
 }
-export function ordinaryApprovalEntries(queue: Pick<IssueQueuedCommentQueue, "entries">) { return queue.entries.filter(row => !row.source); }
+export function ordinaryApprovalEntries(queue: Pick<IssueQueuedCommentQueue, "entries">, humanId?: string) {
+  return queue.entries.filter(row => !row.source && (humanId === undefined || (row.comment.authorUserId === humanId && !row.comment.authorAgentId)));
+}
+/** Entries the chat lead queued itself, such as a relayed copy of the person's answer. They are not the person's messages. */
+export function leadRelayEntries(queue: Pick<IssueQueuedCommentQueue, "entries">, leadId: string) {
+  return queue.entries.filter(row => !row.source && row.comment.authorAgentId === leadId);
+}
 export function gradeApprovalQueue(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
   c.add("real-question-response-and-ordinary-queue-evidence", !!o, "The actual native question, human response, separate queue mutations and once-only consuming native input are required."); if (!o) return c.result();
@@ -39,8 +45,10 @@ export function gradeApprovalQueue(value: unknown) {
     && s.actualOrdinaryEdit === true && (s.actualOrdinaryReorder === true || s.ordinaryReorderRestricted === true) && s.actualOrdinaryDiscard === true,
   "Exactly one actual path records Acorn on the bound question (the human's response control, or an attributed canonical response); editing, ordering and discarding ordinary messages cannot impersonate or cancel it.");
   const response = s.responseQueue as IssueQueuedCommentQueue;
-  c.add("response-own-delivery-semantics-and-once-only-admission", response?.entries.length === 1 && response.entries[0]?.source?.kind === "interaction"
-    && response.entries[0].source.interactionId === question.id && response.entries[0].canEdit === false && response.entries[0].canDiscard === false
+  const bound = response?.entries.filter(row => row.source) ?? [];
+  c.add("response-own-delivery-semantics-and-once-only-admission", !!response && bound.length === 1 && bound[0]?.source?.kind === "interaction"
+    && bound[0].source.interactionId === question.id && bound[0].canEdit === false && bound[0].canDiscard === false
+    && response.entries.length === 1 + leadRelayEntries(response, o.leadId).length
     && s.consumingRunCount === 1 && s.responseNativeInputBound === true && s.queueEmptyAfterDelivery === true
     && o.runs.length === 4 && o.runs.every(row => row.status === "succeeded") && o.tasks.length === 1 && s.actualAcornResult === true && s.initialWorkRetained === true,
   "After the original owner settles, exactly one eligible native continuation receives the bound answer and saves actual Acorn work without replaying or losing it.");
@@ -85,7 +93,7 @@ export const runtimeApprovalQueueCases = [runtimeDefinition("steering.approval-d
     humanId: session.user.id, ordinaryQueueOwned: true, ordinaryQueuedBeforeAnswer: true };
 }, gradeApprovalQueue, {
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
-  authentication: "human-session", expectedRunCount: 4, attemptTimeoutMs: 900_000, oracleVersion: "paperclip.chat-catalog.runtime.approval-delivery.v3",
+  authentication: "human-session", expectedRunCount: 4, attemptTimeoutMs: 900_000, oracleVersion: "paperclip.chat-catalog.runtime.approval-delivery.v4",
   sourceFiles: ["chat-catalog-domains/runtime-approval-queue.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/steering.yaml"],
   async act(ctx, state) {
     const canonicalPhase = await pollUntil({ label: "Canonical naming answer guidance while real worker remains active", deadlineAt: Date.now() + 150_000,
@@ -116,8 +124,13 @@ export const runtimeApprovalQueueCases = [runtimeDefinition("steering.approval-d
     let retained = true;
     async function verifyResponse() { const row = (await ctx.input.api.get<IssueThreadInteraction[]>(`/api/issues/${task.id}/interactions`)).find(row => row.id === question.id);
       retained &&= row?.status === "answered" && JSON.stringify(row.result) === JSON.stringify((state.questionAfter as IssueThreadInteraction).result); }
-    let queue = await ctx.input.api.get<IssueQueuedCommentQueue>(endpoint); const ordinary = ordinaryApprovalEntries(queue);
-    if (ordinary.length !== 2 || !queue.queueId) throw new Error("The bound answer replaced rather than remained separate from the ordinary waiting queue");
+    // The person's two messages are what they edit, reorder and discard. The chat lead may also queue its own relay of the
+    // answer on the task; that is the lead's comment, not the person's, so it is left alone and delivered normally.
+    const humanId = String(state.humanId), leadId = ctx.input.fixtures.agent.id;
+    let queue = await ctx.input.api.get<IssueQueuedCommentQueue>(endpoint); const ordinary = ordinaryApprovalEntries(queue, humanId);
+    const unexpected = queue.entries.filter(row => !row.source && !ordinary.includes(row) && !leadRelayEntries(queue, leadId).includes(row));
+    if (ordinary.length !== 2 || unexpected.length || !queue.queueId) throw new Error("The bound answer replaced rather than remained separate from the ordinary waiting queue");
+    state.leadRelayCount = leadRelayEntries(queue, leadId).length;
     const target = ordinary[0]!, edited = `${target.comment.body} Retain the original layout note.`;
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
     await ctx.input.page.getByTestId(`task-chat-queued-message-${target.comment.id}`).getByRole("button", { name: /^Queued message actions:/ }).click();
@@ -127,12 +140,12 @@ export const runtimeApprovalQueueCases = [runtimeDefinition("steering.approval-d
     queue = await pollUntil({ label: "Actual ordinary full-text edit persists independently of the accepted response", deadlineAt: Date.now() + 15_000,
       load: () => ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), accept: q => q.entries.some(row => row.comment.id === target.comment.id && row.comment.body === edited) });
     state.actualOrdinaryEdit = true; await verifyResponse();
-    const order = ordinaryApprovalEntries(queue).map(row => row.comment.id).reverse(), moved = ordinaryApprovalEntries(queue)[1]!, wholeOrderBefore = queue.entries.map(row => row.comment.id);
+    const order = ordinaryApprovalEntries(queue, humanId).map(row => row.comment.id).reverse(), moved = ordinaryApprovalEntries(queue, humanId)[1]!, wholeOrderBefore = queue.entries.map(row => row.comment.id);
     const mixed = queue.entries.some(row => row.source?.kind === "interaction");
     const handle = ctx.input.page.getByRole("button", { name: `Reorder queued message: ${moved.comment.body}`, exact: true });
     await handle.focus(); await handle.press("Space"); await handle.press("ArrowUp"); await handle.press("Space");
     queue = await pollUntil({ label: "Real keyboard queue reorder persists without replaying the decision", deadlineAt: Date.now() + 15_000,
-      load: () => ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), accept: q => mixed ? q.entries.map(row => row.comment.id).join() === wholeOrderBefore.join() : ordinaryApprovalEntries(q).map(row => row.comment.id).join() === order.join() });
+      load: () => ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), accept: q => mixed ? q.entries.map(row => row.comment.id).join() === wholeOrderBefore.join() : ordinaryApprovalEntries(q, humanId).map(row => row.comment.id).join() === order.join() });
     state.actualOrdinaryReorder = !mixed; state.ordinaryReorderRestricted = mixed && queue.entries.map(row => row.comment.id).join() === wholeOrderBefore.join(); await verifyResponse();
     for (const id of order) {
       await ctx.input.page.getByTestId(`task-chat-queued-discard-${id}`).click();
@@ -142,7 +155,8 @@ export const runtimeApprovalQueueCases = [runtimeDefinition("steering.approval-d
     }
     state.actualOrdinaryDiscard = true; state.responseRetainedAcrossOrdinaryMutations = retained;
     const response = await pollUntil({ label: "Typed immutable naming answer remains queued after ordinary comments are removed", deadlineAt: Date.now() + 20_000,
-      load: () => ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), accept: q => q.entries.length === 1 && q.entries[0]?.source?.interactionId === question.id }); state.responseQueue = response;
+      load: () => ctx.input.api.get<IssueQueuedCommentQueue>(endpoint), accept: q => q.entries.filter(row => row.source).length === 1 && q.entries.find(row => row.source)?.source?.interactionId === question.id
+        && ordinaryApprovalEntries(q, humanId).length === 0 && q.entries.length === 1 + leadRelayEntries(q, leadId).length }); state.responseQueue = response;
     const immutable = await ctx.input.page.request.patch(`${endpoint}/${question.id}`, { data: { queueId: response.queueId, revision: response.revision, body: "Replace the accepted name with an unauthorized comment edit" } });
     state.responseUneditable = [403, 409].includes(immutable.status()); await immutable.dispose(); await verifyResponse();
     await ctx.input.page.reload({ waitUntil: "domcontentloaded" }); await expect(ctx.input.page.getByTestId(`task-chat-queued-message-${question.id}`)).toBeVisible();
