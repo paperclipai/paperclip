@@ -327,6 +327,21 @@ describeEmbeddedPostgres("attention obligations in the feed (PAP-749 task 2d)", 
     expect(company.viewCounts.company).toBe(1);
   }, 120_000);
 
+  it("normalizes a personal hide of evidence to its obligation lead", async () => {
+    const f = await seed();
+    const before = await list(f.companyId, "mine");
+    const review = bySource(before.items, "review", f.reviewTask)!;
+    const approval = bySource(before.items, "approval", f.approvalId)!;
+    const hidden = await attentionService(db).hideForUser(f.companyId, { sourceKind: "review", sourceId: f.reviewTask, userId: SCOTT,
+      actor: { type: "board", userId: SCOTT }, mode: "archive", fingerprint: review.changeFingerprint });
+    expect(hidden.itemKey).toBe(approval.dismissalKey);
+    const mine = await list(f.companyId, "mine");
+    expect(bySource(mine.items, "approval", f.approvalId)).toBeNull();
+    expect(bySource(mine.items, "review", f.reviewTask)).toBeNull();
+    const archived = await list(f.companyId, "archived");
+    expect(archived.items.map(item => item.sourceKind).sort()).toEqual(["approval", "review"]);
+  }, 120_000);
+
   it("hides and restores the evidence with its lead", async () => {
     const f = await seed();
     const before = await list(f.companyId, "mine");

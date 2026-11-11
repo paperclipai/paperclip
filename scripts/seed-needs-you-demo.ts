@@ -101,7 +101,6 @@ import {
   decisions,
   decisionTargetIssues,
   issueApprovals,
-  issueRecoveryActions,
   agents,
   approvals as approvalsTable,
   projects,

@@ -5503,6 +5503,19 @@ export function issueThreadInteractionService(
       // request must not outlive a withdrawn card.
       const updated = await db.transaction(async (tx) => {
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor, [JSON.stringify(input)]);
+        const [lockedIssue] = await tx.select({
+          id: issues.id, companyId: issues.companyId, status: issues.status,
+          reviewPolicy: issues.reviewPolicy, createdByAgentId: issues.createdByAgentId, createdByUserId: issues.createdByUserId,
+        }).from(issues).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId))).for("update");
+        if (!lockedIssue) throw notFound("Issue not found");
+        if (!(mutationOptions.allowClosedIssueForHuman && humanActor)) assertIssueOpenForInteractionResolution(lockedIssue);
+        if (lockedIssue.status === "in_review" && isRequestConfirmationLikeKind(current.kind)
+          && await isIssueReviewVerdictInteraction(tx as unknown as Db, { issue: lockedIssue, interaction: current })) {
+          const verdictActor = actor.agentId ? { type: "agent" as const, id: actor.agentId }
+            : actor.userId ? { type: "user" as const, id: actor.userId } : null;
+          if (!verdictActor) throw forbidden("A review withdrawal requires an authenticated agent or user");
+          await assertIssueReviewVerdictActorAllowed(tx as unknown as Db, { issue: lockedIssue, actor: verdictActor });
+        }
         await notifyChatConfirmationResolution(tx, current);
         if (["ask_user_questions", "request_confirmation"].includes(current.kind)) await notifyChatRunMilestones(tx, current);
         else await notifyIssueReviewState(tx, current);

@@ -1698,6 +1698,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             status: approvals.status,
             requestedByAgentId: approvals.requestedByAgentId,
             requestedByUserId: approvals.requestedByUserId,
+            changeContent: sql<string>`md5(jsonb_build_object('type', ${approvals.type}, 'payload', ${approvals.payload})::text)`,
             payload: summaryOnly ? sql<Record<string, unknown>>`'{}'::jsonb` : approvals.payload,
             createdAt: approvals.createdAt,
             updatedAt: approvals.updatedAt,
@@ -1756,7 +1757,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           }), { issueId: linkedIssueId, requestedByUserId: approval.requestedByUserId }, {
             // `updatedAt` moves only when the request (re)enters pending, e.g. a
             // resubmission with a revised proposal; comments do not touch it.
-            content: { type: approval.type, payload: approval.payload },
+            content: approval.changeContent,
             since: approval.updatedAt,
             required: true,
           }, { key: `approval:${approval.id}`, anchor: true });
@@ -1772,6 +1773,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           status: issueThreadInteractions.status,
           title: issueThreadInteractions.title,
           summary: issueThreadInteractions.summary,
+          changeContent: sql<string>`md5(jsonb_build_object('kind', ${issueThreadInteractions.kind}, 'payload', ${issueThreadInteractions.payload})::text)`,
           payload: summaryOnly ? sql<Record<string, unknown>>`jsonb_build_object('target', ${issueThreadInteractions.payload}->'target', 'qualityReview', ${issueThreadInteractions.payload}->'qualityReview', 'toolAction', ${issueThreadInteractions.payload}->'toolAction', 'secretProposal', ${issueThreadInteractions.payload}->'secretProposal', 'connectionAuthorization', ${issueThreadInteractions.payload}->'connectionAuthorization')` : issueThreadInteractions.payload,
           addresseeAgentId: issueThreadInteractions.addresseeAgentId,
           addresseeUserId: issueThreadInteractions.addresseeUserId,
@@ -1819,9 +1821,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         : [];
       const companyAgentMap = new Map(companyAgentRows.map((agent) => [agent.id, agent]));
       const boardInteractionRows = interactionRows.filter((row) =>
-        (row.addresseeAgentId === null ||
-          !evaluateAgentInvokability(companyAgentMap.get(row.addresseeAgentId), companyAgentRows).invokable)
-        && (row.addresseeUserId === null || row.addresseeUserId === options.userId)
+        row.addresseeAgentId === null ||
+          !evaluateAgentInvokability(companyAgentMap.get(row.addresseeAgentId), companyAgentRows).invokable
       );
       const visibleInteractionRows = collapsePendingConfirmationsToNewest(boardInteractionRows, await loadNewestSettledConfirmationAt(
         db, companyId, boardInteractionRows.filter((row) => row.kind === "request_confirmation").map((row) => row.issueId),
@@ -1887,7 +1888,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             (agentId) => companyAgentMap.get(agentId)?.name ?? null,
           ),
         }), { issueId: interaction.issueId, addresseeUserId: interaction.addresseeUserId }, {
-          content: { kind: interaction.kind, payload: interaction.payload },
+          content: interaction.changeContent,
           since: interaction.createdAt,
           required: interaction.required,
         });
@@ -1900,6 +1901,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         originAgentId: decisions.originAgentId,
         ruleKey: decisions.ruleKey,
         title: decisions.title,
+        changeContent: sql<string>`md5(jsonb_build_object('title', ${decisions.title}, 'body', ${decisions.body}, 'options', ${decisions.options})::text)`,
         body: summaryOnly ? sql<string>`''` : decisions.body,
         options: decisions.options,
         status: decisions.status,
@@ -1950,7 +1952,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           ...issueContext(issue),
           detail: { kind: "generic", summaryExcerpt: decision.body.slice(0, DETAIL_EXCERPT_LENGTH), images: [] },
         }), { issueId: decision.originIssueId }, {
-          content: { title: decision.title, body: decision.body, options: decision.options },
+          content: decision.changeContent,
           since: decision.createdAt,
         });
       }
@@ -2604,6 +2606,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           companyConfig: audienceConfig,
           ctx,
         });
+        // Explicit recipients stay private to their addressee until required
+        // work escalates. Apply this after routing so the escalation owner or
+        // Company can collect the request while task read access still applies.
+        if (input.addresseeUserId && input.addresseeUserId !== options.userId
+          && item.audience.kind === "user" && item.audience.userId !== options.userId) continue;
         currentItems.push(item);
       }
       // Rule 11: one card for each obligation. Members share one placement, so
@@ -2847,6 +2854,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       if (row.addresseeUserId) {
         throw conflict("This card is already for another person", { addresseeUserId: row.addresseeUserId });
       }
+      const contexts = await resolveIssueAudienceContextMap(db, companyId, [row.issueId]);
+      const config = await loadCompanyAttentionConfig(db, companyId);
+      const audience = resolveAttentionAudience({ issueId: row.issueId, addresseeUserId: row.addresseeUserId }, contexts.get(row.issueId) ?? null, config);
+      if (audience.kind === "user") {
+        throw conflict("This card already has an owner", { addresseeUserId: audience.userId });
+      }
       if (row.addresseeAgentId) {
         // A request to an agent that can still run stays with that agent; only
         // a stuck agent's request reaches the pool (plan §1, special conditions).
@@ -2907,7 +2920,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         allowUnscopedAll: true,
         includeDismissed: true,
       });
-      const item = feed.items.find((entry) => entry.sourceKind === input.sourceKind && entry.subject.id === input.sourceId);
+      const requested = feed.items.find((entry) => entry.sourceKind === input.sourceKind && entry.subject.id === input.sourceId);
+      const item = requested?.obligationLeadId && requested.obligationLeadId !== requested.id
+        ? feed.items.find(entry => entry.id === requested.obligationLeadId) ?? requested
+        : requested;
       if (!item) {
         const state = await sourceCloseState(db, companyId, input.sourceKind, input.sourceId, input.actor);
         if (state && !state.open) throw attentionAlreadyClosedError({ sourceKind: input.sourceKind, sourceId: input.sourceId, ...state });
@@ -2917,7 +2933,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         throw unprocessable("This card cannot be hidden.", { code: "attention_close_mode_unsupported", closeModes: item.closeModes });
       }
       // The version the person saw; the card returns when its content differs.
-      const fingerprint = input.fingerprint ?? item.changeFingerprint;
+      const fingerprint = item.id === requested?.id ? input.fingerprint ?? item.changeFingerprint : item.changeFingerprint;
       const dismissals = inboxDismissalService(db);
       const dismissal = input.mode === "snooze"
         ? await dismissals.snooze(companyId, input.userId, item.dismissalKey, new Date(input.until!), new Date(), fingerprint)
@@ -3051,6 +3067,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           throw conflict("This request is for an agent that can still answer it");
         }
       }
+      const recipientRead = await issueReadSqlCondition(db, { type: "board", userId: input.toUserId });
+      const [readableTask] = await db.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.companyId, companyId), eq(issues.id, row.issueId), recipientRead,
+      )).limit(1);
+      if (!readableTask) throw unprocessable("This person cannot access the task.");
       // The new owner must be a person who may answer requests on this task.
       await assertInteractionAddresseeUserAvailable(db, { id: row.issueId, companyId }, {
         executionPolicy: row.executionPolicy,

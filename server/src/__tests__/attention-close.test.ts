@@ -198,6 +198,66 @@ describeEmbeddedPostgres("attention close, transfer and approval cancel (PAP-749
     expect(history.items[0]).toMatchObject({ label: "Withdrawn by user", reason: "Out of date", resolvedByUserId: SCOTT });
   });
 
+  it("keeps personally hidden content out of feed, summary, and task membership", async () => {
+    const { companyId, workerId } = await seedCompany("HID");
+    const issueId = await insertIssue(companyId, { createdByUserId: SCOTT });
+    const interactionId = await insertInteraction(companyId, issueId, workerId);
+    const decisionId = await insertDecision(companyId, workerId, issueId);
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({ id: approvalId, companyId, type: "request_board_approval", requestedByUserId: SCOTT, payload: { title: "Ship", details: "Important proposal" } });
+    const svc = attentionService(db);
+    const actor = board(companyId, SCOTT) as never;
+    const before = await svc.list(companyId, { userId: SCOTT, actor, all: true, allowUnscopedAll: true });
+    expect(new Set(before.items.map(item => item.subject.id))).toEqual(new Set([interactionId, decisionId, approvalId]));
+    for (const item of before.items) {
+      await svc.hideForUser(companyId, { sourceKind: item.sourceKind, sourceId: item.subject.id, userId: SCOTT, actor,
+        mode: item.sourceKind === "decision" ? "snooze" : "archive", until: new Date(Date.now() + 86_400_000).toISOString(), fingerprint: item.changeFingerprint });
+    }
+    expect((await svc.list(companyId, { userId: SCOTT, actor })).items).toEqual([]);
+    expect(await svc.summary(companyId, { userId: SCOTT, actor })).toMatchObject({ totalCount: 0, deskBadgeCount: 0, viewCounts: { mine: 0, archived: 3 } });
+    expect(await svc.taskIndex(companyId, { userId: SCOTT, actor })).toMatchObject({ totalCount: 0, taskIds: [] });
+  });
+
+  it.each(["instigator", "assignee", "conversation", "default"])("does not claim work already routed by %s", async (owner) => {
+    const { companyId, workerId } = await seedCompany("OWN");
+    const issueId = await insertIssue(companyId, owner === "instigator" ? { createdByUserId: DOTTA } : {});
+    if (owner === "assignee") await db.update(issues).set({ assigneeUserId: DOTTA }).where(eq(issues.id, issueId));
+    if (owner === "conversation") await db.update(issues).set({ conversationAgentId: workerId, conversationUserId: DOTTA, conversationState: "active", assigneeAgentId: workerId, createdByUserId: DOTTA }).where(eq(issues.id, issueId));
+    if (owner === "default") await db.update(companies).set({ defaultDecisionOwnerUserId: DOTTA }).where(eq(companies.id, companyId));
+    const sourceId = await insertInteraction(companyId, issueId, workerId);
+    await expect(attentionService(db).claim(companyId, { sourceKind: "issue_thread_interaction", sourceId, userId: RILEY, actor: board(companyId, RILEY) as never })).rejects.toMatchObject({ status: 409 });
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, sourceId)))[0]?.addresseeUserId).toBeNull();
+  });
+
+  it("rejects a transfer to a person who cannot read the task", async () => {
+    const { companyId, workerId } = await seedCompany("PRI");
+    const issueId = await insertIssue(companyId, { createdByUserId: SCOTT });
+    await db.update(issues).set({ visibility: "private" }).where(eq(issues.id, issueId));
+    const sourceId = await insertInteraction(companyId, issueId, workerId, { addresseeUserId: SCOTT });
+    const previous = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+    process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
+    try {
+      await request(app(board(companyId, SCOTT))).post(transferUrl(companyId, "issue_thread_interaction", sourceId)).send({ userId: DOTTA }).expect(422);
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, sourceId)))[0]?.addresseeUserId).toBe(SCOTT);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previous;
+    }
+  });
+
+  it("enforces the review requester rule when withdrawing through attention", async () => {
+    const { companyId, workerId } = await seedCompany("GOV");
+    const issueId = await insertIssue(companyId, { status: "in_review", createdByUserId: SCOTT });
+    await db.update(issues).set({ reviewPolicy: "not_creator" }).where(eq(issues.id, issueId));
+    const sourceId = await insertInteraction(companyId, issueId, workerId);
+    await db.update(issueThreadInteractions).set({ createdByAgentId: null, createdByUserId: SCOTT }).where(eq(issueThreadInteractions.id, sourceId));
+    const url = closeUrl(companyId, "issue_thread_interaction", sourceId);
+    const denied = await request(app(board(companyId, SCOTT))).post(url).send({ mode: "withdraw" }).expect(403);
+    expect(denied.body.details.code).toBe("review_policy_denied");
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, sourceId)))[0]?.status).toBe("pending");
+    await request(app(board(companyId, DOTTA))).post(url).send({ mode: "withdraw" }).expect(200);
+  });
+
   it("lets a person withdraw a stale card on a closed task", async () => {
     const { companyId, workerId } = await seedCompany("CLD");
     const doneTask = await insertIssue(companyId, { status: "done", createdByUserId: SCOTT });

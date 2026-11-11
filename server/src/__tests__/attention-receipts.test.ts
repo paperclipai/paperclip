@@ -13,6 +13,7 @@ import {
   companyMemberships,
   createDb,
   inboxDismissals,
+  issueApprovals,
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
@@ -26,6 +27,7 @@ import { attentionRoutes } from "../routes/attention.js";
 import { approvalRoutes } from "../routes/approvals.js";
 import {
   attentionHandledDetails,
+  attentionReceiptService,
   readAttentionHandledDetails,
   type AttentionHandledFor,
 } from "../services/attention-receipts.js";
@@ -143,6 +145,31 @@ describeEmbeddedPostgres("receipts for the other person (PAP-749 task 2f)", () =
     });
     return id;
   }
+
+  it.each(["linked", "payload"])("checks every approval task before returning history or receipts (%s)", async (reference) => {
+    const { companyId, workerId } = await seedCompany("SEC");
+    const publicId = await insertIssue(companyId, SCOTT);
+    const privateId = await insertIssue(companyId, SCOTT);
+    await db.update(issues).set({ visibility: "private" }).where(eq(issues.id, privateId));
+    const sourceId = randomUUID();
+    await db.insert(approvals).values({ id: sourceId, companyId, type: "request_board_approval", status: "cancelled", requestedByAgentId: workerId,
+      requestedByUserId: DOTTA, decidedByUserId: SCOTT, decidedAt: new Date(), payload: { title: "Private result", ...(reference === "payload" ? { sourceIssueId: privateId } : {}) } });
+    await db.insert(issueApprovals).values([{ companyId, issueId: publicId, approvalId: sourceId }, ...(reference === "linked" ? [{ companyId, issueId: privateId, approvalId: sourceId }] : [])]);
+    await db.insert(activityLog).values({ companyId, actorType: "user", actorId: SCOTT, action: "approval.cancelled", entityType: "approval", entityId: sourceId,
+      details: attentionHandledDetails({ userId: DOTTA, actorUserId: SCOTT, sourceKind: "approval", sourceId, issueId: publicId, title: "Private result" }, "withdrawn", { reason: "Private reason" }) });
+    const previous = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+    process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
+    try {
+      const actor = board(companyId, DOTTA) as never;
+      const receipts = await attentionReceiptService(db).list(companyId, { userId: DOTTA, actor });
+      expect(receipts).toEqual([]);
+      const history = await decisionHistoryService(db).list(companyId, { userId: DOTTA, actor, scope: "all" });
+      expect(history.items).toEqual([]);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previous;
+    }
+  });
 
   async function insertInteraction(companyId: string, issueId: string, workerId: string, addresseeUserId: string | null = null) {
     const id = randomUUID();
