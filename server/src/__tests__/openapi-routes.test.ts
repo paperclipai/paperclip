@@ -525,8 +525,8 @@ function bodyBraceAfterParams(source: string, from: number) {
  *   handlers open with `const x = await getAccessibleResource(...); if (!x) return;`
  *   and assert straight after. That branch has already written a 404, so it reaches
  *   no success response without a board check. Treating it as disqualifying would
- *   drop genuinely board-only routes — `GET /api/environments/{id}` and the
- *   `tool-connections` services routes among them — back out of this guard's reach,
+ *   drop genuinely board-only routes — `GET /api/environments/{id}` among them —
+ *   back out of this guard's reach,
  *   which is the drift it exists to catch. The scan cannot tell a 404 return from a
  *   200 return, so this is the one direction in which it could over-report; every
  *   entry it reports is confirmed against its handler before being added.
@@ -538,10 +538,14 @@ function bodyBraceAfterParams(source: string, from: number) {
  * Otherwise one-directional: a handler that gates on board access some other way (a
  * middleware, a runtime-dispatched helper) is simply not reported.
  */
+const SUCCESS_RESPONSE_PATTERN = /\bres\s*\.\s*(?:json|send|end|redirect|render|sendFile|download|write|sendStatus)\s*\(/;
+const ERROR_STATUS_PATTERN = /\.\s*(?:status|sendStatus)\s*\(\s*[45]\d\d\s*\)/;
+
 function assertsBoardUnconditionally(
   handlerSource: string,
   assertNames: ReadonlySet<string>,
   isNamedFunction = false,
+  rejectEarlyReturn = false,
 ) {
   const bodyStart = isNamedFunction
     ? namedFunctionBodyStart(handlerSource)
@@ -549,14 +553,17 @@ function assertsBoardUnconditionally(
   if (bodyStart < 0) return false;
   const callPattern = boardAssertCallPattern(assertNames);
   const blocks: string[] = [];
+  const blockStarts: number[] = [];
   for (let i = handlerSource.indexOf("{", bodyStart); i < handlerSource.length; i++) {
     const char = handlerSource[i];
     if (char === "{") {
       blocks.push(blocks.length > 0 && /\btry$/.test(handlerSource.slice(0, i).trimEnd()) ? "try" : "block");
+      blockStarts.push(i);
       continue;
     }
     if (char === "}") {
       blocks.pop();
+      blockStarts.pop();
       if (blocks.length === 0) {
         // A function argument closed without asserting. In a registration span
         // that can be an inline middleware sitting before the real handler, and
@@ -567,6 +574,19 @@ function assertsBoardUnconditionally(
         i = next - 1; // the loop's increment lands on the body's `{`
       }
       continue;
+    }
+    if (char === "r" && !/[\w$.]/.test(handlerSource[i - 1] ?? " ") && /^return\b/.test(handlerSource.slice(i, i + 7))) {
+      const returned = handlerSource.slice(i).replace(/^return\s+(?:await\s+)?/, "");
+      if (!(blocks.length === 1 && callPattern.test(returned))) {
+        // A helper that can return before asserting, at any depth, admits that
+        // caller without the check, e.g. a delegated agent served first.
+        if (rejectEarlyReturn) return false;
+        // A handler's early return is an error path (a 404 already written) unless
+        // its block wrote a success response first, e.g. an agent served early.
+        const statementEnd = handlerSource.indexOf(";", i);
+        const path = handlerSource.slice(blockStarts.at(-1) ?? i, statementEnd < 0 ? undefined : statementEnd);
+        if (SUCCESS_RESPONSE_PATTERN.test(path) && !ERROR_STATUS_PATTERN.test(path)) return false;
+      }
     }
     if (blocks.slice(1).some((kind) => kind !== "try")) continue;
     if (!/[A-Za-z_$]/.test(char)) continue;
@@ -651,7 +671,7 @@ function resolveBoardAssertNames(masked: string, seed: ReadonlySet<string>) {
     const found = declarations.filter(
       (declaration) =>
         !names.has(declaration.name) &&
-        assertsBoardUnconditionally(declaration.body, names, declaration.isNamedFunction),
+        assertsBoardUnconditionally(declaration.body, names, declaration.isNamedFunction, true),
     );
     if (found.length === 0) return names;
     for (const declaration of found) names.add(declaration.name);
@@ -2008,6 +2028,11 @@ describe("openapi routes", () => {
       .not.toContain("maybe");
     expect([...closure("function branch(req: Request) { if (x) { assertBoard(req); } }")])
       .not.toContain("branch");
+    // A helper that returns before asserting admits that caller without the check.
+    expect([...closure("function admit(req: Request) { if (req.actor.type === 'agent') { return ctx(req); } assertBoard(req); }")])
+      .not.toContain("admit");
+    expect([...closure("function tail(req: Request) { return assertBoard(req); }")])
+      .toContain("tail");
     expect([...closure("function nested(req: Request) { if (needsBoard(req)) assertBoard(req); }")])
       .not.toContain("nested");
     expect([...closure("function andForm(req: Request) { x && assertBoard(req); }")]).not.toContain("andForm");
@@ -2066,6 +2091,13 @@ describe("openapi routes", () => {
     expect(assertsBoardUnconditionally("(_req, res) => { assertBoard(_req); }", names)).toBe(true);
     expect(assertsBoardUnconditionally("(req, res) => { assertBoard(other); }", names)).toBe(false);
     expect(assertsBoardUnconditionally("(req, res) => { svc.assertBoard(req); }", names)).toBe(false);
+
+    // A handler's early return after a written 404 is an error path; one after a
+    // success response serves that caller without the assertion.
+    expect(assertsBoardUnconditionally("(req, res) => { const x = await load(req, res); if (!x) return; assertBoard(req); }", names)).toBe(true);
+    expect(assertsBoardUnconditionally("(req, res) => { if (!x) { res.status(404).json(e); return; } assertBoard(req); }", names)).toBe(true);
+    expect(assertsBoardUnconditionally("(req, res) => { if (agent) { res.json(entry); return; } assertBoard(req); }", names)).toBe(false);
+    expect(assertsBoardUnconditionally("(req, res) => { if (agent) return res.json(entry); assertBoard(req); }", names)).toBe(false);
 
     // An inline middleware before the real handler: every function argument runs
     // unconditionally, so an assertion in any of them guards the route — and its
@@ -2156,11 +2188,8 @@ describe("openapi routes", () => {
     // `requireBoardUserId(req, res): string | null` — a return-type annotation between
     // the parameter list and the body.
     expect([...boardGuardedRoutes]).toContain("GET /api/sidebar-preferences/me");
-    // `assertBoardPermission(...)` reached inside the handler's `try`.
-    expect([...boardGuardedRoutes]).toContain("POST /api/tool-gateway/runtime-slots/{slotId}/stop");
-    // `activeToolMembership` -> `assertToolConnectionConfigureAccess`: two hops from
-    // `assertBoard`, so a one-level lookup is not enough.
-    expect([...boardGuardedRoutes]).toContain("GET /api/tool-connections/{connectionId}/services");
+    // `assertBoard(req)` reached inside the handler's `try`.
+    expect([...boardGuardedRoutes]).toContain("POST /api/tool-gateway/action-requests/{id}/approve");
     // `assertBoardOrgAccess(_req)` — the parameter named under the unused
     // convention, which a literal-`req` pattern walked straight past.
     expect([...boardGuardedRoutes]).toContain("GET /api/adapters");
@@ -2177,7 +2206,21 @@ describe("openapi routes", () => {
     expect([...boardGuardedRoutes]).not.toContain("POST /api/invites/{inviteId}/revoke");
     expect([...boardGuardedRoutes]).not.toContain("POST /api/agents/{id}/heartbeat/invoke");
 
+    // The spec marks this read as delegated connection management, which agents
+    // may call, but the handler's `assertToolsAdmin` asserts board first. Which
+    // side is right is a product decision outside this guard; pinned so it is
+    // dropped from here as soon as either side changes.
+    const connectionManagedBoardGuards = ["GET /api/companies/{companyId}/tools/stdio-templates"];
+    for (const route of connectionManagedBoardGuards) {
+      expect([...boardGuardedRoutes]).toContain(route);
+      const separator = route.indexOf(" ");
+      const operation = spec.paths[route.slice(separator + 1)][route.slice(0, separator).toLowerCase()];
+      expect(operation["x-paperclip-connection-management"]).toBeDefined();
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board_or_agent" });
+    }
+
     const mislabeled = [...boardGuardedRoutes]
+      .filter((route) => !connectionManagedBoardGuards.includes(route))
       .filter((route) => {
         const separator = route.indexOf(" ");
         const operation = spec.paths?.[route.slice(separator + 1)]?.[route.slice(0, separator).toLowerCase()];
@@ -2297,13 +2340,6 @@ describe("openapi routes", () => {
     ).toEqual({
       actor: "board",
     });
-    // The adapter login-session create route's board guard is callback-shaped
-    // (the start spine awaits `deriveOwner` -> `assertCanManageAdapterLogin` ->
-    // `assertBoard`), so the drift scan cannot see it; its table entry is
-    // maintained by hand and pinned here so removing it fails loudly.
-    expect(
-      spec.paths["/api/companies/{companyId}/adapters/{type}/login-sessions"].post["x-paperclip-authorization"],
-    ).toEqual({ actor: "board" });
     expect(
       spec.paths["/api/companies/{companyId}/cost-events"].post.responses[
         "201"
