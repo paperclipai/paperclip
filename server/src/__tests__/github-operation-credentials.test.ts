@@ -77,7 +77,13 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     it.each(["config", "transportConfig"] as const)("reads only current GitHub identity connections via %s", async location => {
       const input = await seed(), selected = await grant(input, "A");
       const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, selected.connectionId));
-      await db.update(toolConnections).set({ config: {}, transportConfig: {}, [location]: { sourceTemplateKey: "github" } })
+      await db.update(toolConnections).set({
+        config: {
+          oauth: { connectorProfile: "github.code" },
+          ...(location === "config" ? { sourceTemplateKey: "github" } : {}),
+        },
+        transportConfig: location === "transportConfig" ? { sourceTemplateKey: "github" } : {},
+      })
         .where(eq(toolConnections.id, selected.connectionId));
       const payload = "unrelated-connection-config🙂".repeat(10_000);
       const irrelevant = [null, true, 42, ["github"], { name: "github" }, "GitHub", " github ", "other"].map(sourceTemplateKey => {
@@ -338,7 +344,10 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       });
       const connections = [first, second].map((row) => ({
         id: row.connectionId,
-        config: { sourceTemplateKey: "github" },
+        config: {
+          sourceTemplateKey: "github",
+          oauth: { connectorProfile: "github.code" },
+        },
       }));
       expect(
         await filterResolvedGitHubConnectionsForRun({
@@ -487,7 +496,10 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         ).toMatchObject({ status: "available", login: "A" });
         const connections = [first, second].map((row) => ({
           id: row.connectionId,
-          config: { sourceTemplateKey: "github" },
+          config: {
+            sourceTemplateKey: "github",
+            oauth: { connectorProfile: "github.code" },
+          },
         }));
         expect(
           await filterResolvedGitHubConnectionsForRun({
