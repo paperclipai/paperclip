@@ -16,24 +16,26 @@ function fixture() {
   const catalogRoot = path.join(root, "packages", "plugins");
   const provider = path.join(catalogRoot, "sandbox-providers", "daytona");
   const sdk = path.join(catalogRoot, "sdk");
+  const runnerSdk = path.join(root, "packages", "runner-sdk");
   const shared = path.join(root, "packages", "shared");
   const dependency = path.join(root, "node_modules", ".pnpm", "dependency@1", "node_modules", "dependency");
   const transitive = path.join(root, "node_modules", ".pnpm", "transitive@1", "node_modules", "transitive");
-  for (const directory of [provider, sdk, shared, dependency, transitive]) file(path.join(directory, "index.js"));
+  for (const directory of [provider, sdk, runnerSdk, shared, dependency, transitive]) file(path.join(directory, "index.js"));
   link(sdk, path.join(provider, "node_modules", "@paperclipai", "plugin-sdk"));
   link(shared, path.join(sdk, "node_modules", "@paperclipai", "shared"));
+  link(runnerSdk, path.join(shared, "node_modules", "@paperclipai", "runner-sdk"));
   link(dependency, path.join(shared, "node_modules", "dependency"));
   link(transitive, path.join(path.dirname(dependency), "transitive"));
-  return { root, catalogRoot, provider, sdk, shared, dependency, transitive };
+  return { root, catalogRoot, provider, sdk, runnerSdk, shared, dependency, transitive };
 }
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
 
 describe("bounded current-image package dependency inventory", () => {
-  it("hashes external SDK, shared, and pnpm sibling dependency bytes", () => {
+  it("hashes plugin SDK, Runner SDK, shared, and pnpm sibling dependency bytes", () => {
     const image = fixture();
     const digest = () => cloudBundledPackageDigest(image.provider, { catalogRoot: image.catalogRoot });
     let previous = digest();
-    for (const directory of [image.sdk, image.shared, image.dependency, image.transitive]) {
+    for (const directory of [image.sdk, image.runnerSdk, image.shared, image.dependency, image.transitive]) {
       file(path.join(directory, "index.js"), "export const value = 2;");
       const next = digest(); expect(next).not.toBe(previous); previous = next;
     }
@@ -50,6 +52,14 @@ describe("bounded current-image package dependency inventory", () => {
     expect(() => cloudBundledPackageDigest(image.provider)).toThrow("escapes its package");
     const outside = fixture();
     link(path.join(outside.sdk, "index.js"), path.join(image.shared, "legacy-home.js"));
+    expect(() => cloudBundledPackageDigest(image.provider, { catalogRoot: image.catalogRoot })).toThrow("authorized image roots");
+  });
+
+  it("rejects Runner SDK links into unrelated image packages", () => {
+    const image = fixture();
+    const unrelated = path.join(image.root, "packages", "unrelated");
+    file(path.join(unrelated, "index.js"));
+    link(unrelated, path.join(image.runnerSdk, "node_modules", "unrelated"));
     expect(() => cloudBundledPackageDigest(image.provider, { catalogRoot: image.catalogRoot })).toThrow("authorized image roots");
   });
 
