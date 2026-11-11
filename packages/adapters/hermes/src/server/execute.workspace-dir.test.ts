@@ -1,13 +1,5 @@
-/**
- * The hermes-local adapter passes `--in <workspace cwd>` to `hermes chat`,
- * because the shared Hermes gateway ignores the cwd of the child process.
- */
-
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-// Mock the adapter-utils server-utils module that execute.ts imports from.
-// We intercept runChildProcess so we can inspect its opts without spawning
-// a real child process.
 vi.mock("@paperclipai/adapter-utils/server-utils", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@paperclipai/adapter-utils/server-utils")>();
   return {
@@ -22,7 +14,6 @@ vi.mock("@paperclipai/adapter-utils/server-utils", async (importOriginal) => {
   };
 });
 
-// Mock fs and path resolution to avoid real file reads in execute()
 vi.mock("node:fs/promises", () => ({
   readFile: vi.fn(async () => ""),
   writeFile: vi.fn(async () => undefined),
