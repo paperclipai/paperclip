@@ -18,19 +18,8 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { NativeExecutionContext } from "./native-runtime/native-execution-context.js";
 import { assertPluginTaskSourceAttachment, assertPluginTaskSourceRecovery } from "./native-runtime/plugin-task-source-recovery.js";
 import { pluginAgentRuntimeIdentity } from "./plugin-agent-runtime-state.js";
-
-export function isSettledReadyRunnerState(state: Record<string, unknown>): boolean {
-  const commands = state.processedCommands;
-  return state.schema === "paperclip.runner.durable.state.v1" && state.lifecycle === "ready" &&
-    Array.isArray(state.outbox) && state.outbox.length === 0 && Number.isSafeInteger(state.nextSourceSeq) &&
-    Number(state.nextSourceSeq) > 0 && state.ackedSourceSeq === Number(state.nextSourceSeq) - 1 &&
-    state.pendingTerminalDelivery == null && state.pendingProviderCleanup == null && state.warmTransition == null &&
-    commands !== null && typeof commands === "object" && !Array.isArray(commands) &&
-    Object.values(commands).every(command => {
-      const status = command !== null && typeof command === "object" ? (command as { status?: unknown }).status : undefined;
-      return typeof status === "string" && status !== "" && status !== "pending" && status !== "indeterminate";
-    });
-}
+import { isSettledReadyRunnerState } from "./native-runtime/settled-runner-state.js";
+export { isSettledReadyRunnerState } from "./native-runtime/settled-runner-state.js";
 
 export async function pluginEnvironmentSupportsTasks(db: Db, workers: PluginWorkerManager, lease: { companyId: string; metadata: Record<string, unknown> | null }) {
   const metadata = lease.metadata ?? {};

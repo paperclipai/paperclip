@@ -988,7 +988,9 @@ describe("remote controller restart adoption", () => {
     expect(JSON.stringify(diagnostic)).not.toContain("private");
   });
   const settledSuspension = { lifecycle: "suspended", outbox: [], pendingTerminalDelivery: null, pendingProviderCleanup: null };
-  const exitedRunner = (state: Record<string, unknown>, afterExit = state) => {
+  const idleProvider = { pendingEvents: [], queuedEvents: [], activeProviderTurnId: null, ambiguousTurnStartPending: false };
+  const exitedRunner = (state: Record<string, unknown>, afterExit = state,
+    providerState: Record<string, unknown> | null = idleProvider) => {
     const { target, execute } = fixture(state);
     const original = execute.getMockImplementation()!;
     let exited = false;
@@ -996,6 +998,10 @@ describe("remote controller restart adoption", () => {
       if (request.args[2] === "paperclip-runner-recovery-check") {
         exited = true;
         return { stdout: "", stderr: "", exitCode: 45, timedOut: false };
+      }
+      if (exited && request.args[1].includes("provider-state.json")) {
+        return providerState === null ? { stdout: "", stderr: "", exitCode: 1, timedOut: false }
+          : { stdout: Buffer.from(JSON.stringify(providerState)).toString("base64"), stderr: "", exitCode: 0, timedOut: false };
       }
       if (exited && request.args[1].includes("base64")) {
         return { stdout: Buffer.from(JSON.stringify({ ...identity, ...afterExit })).toString("base64"),
@@ -1008,6 +1014,55 @@ describe("remote controller restart adoption", () => {
   it.each([2, 3])("resumes scheduled attempt %i whose runner exited after its previous attempt suspended it", async providerAttempt => {
     await expect(verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(settledSuspension) as never, identity,
       runId: "run", normalizedSessionId: "session", providerAttempt })).resolves.toBeUndefined();
+  });
+  // An abrupt death between turns never writes `suspended`: the journal stays
+  // `ready` at the idle cut, with every event acknowledged and every command settled.
+  const settledReadyCut = { schema: "paperclip.runner.durable.state.v1", lifecycle: "ready", outbox: [],
+    ackedSourceSeq: 11, nextSourceSeq: 12, processedCommands: { done: { status: "completed" } },
+    pendingTerminalDelivery: null, pendingProviderCleanup: null, warmTransition: null };
+  const providerStateFilename = "codex-provider-state.json";
+  it.each([1, 2, 3])("resumes attempt %i whose runner died abruptly at a settled ready cut", async providerAttempt => {
+    await expect(verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(settledReadyCut) as never, identity,
+      runId: "run", normalizedSessionId: "session", providerAttempt, providerStateFilename })).resolves.toBeUndefined();
+  });
+  // The journal stays `ready` while a turn runs: a completed turn.start and an
+  // acknowledged outbox do not prove the provider stopped between turns.
+  it.each([
+    ["an active Codex turn", { ...idleProvider, activeProviderTurnId: "turn-1" }],
+    ["an active ACPX turn", { pendingEvents: [], activeTurnId: "turn-1" }],
+    ["an ambiguous turn start", { ...idleProvider, ambiguousTurnStartPending: true }],
+    ["an unconfirmed provider exit", { pendingEvents: [], activeTurnId: null, providerExitUnconfirmed: true }],
+    ["undelivered provider events", { ...idleProvider, pendingEvents: [{ seq: 1 }] }],
+    ["queued provider events", { ...idleProvider, queuedEvents: [{ seq: 1 }] }],
+    ["a pending managed tool call", { pendingEvents: [], activeTurnId: null, pendingToolCalls: { call: {} } }],
+    ["an unknown checkpoint shape", { activeProviderTurnId: null }],
+    ["an unreadable checkpoint", null],
+  ] as const)("keeps a settled ready journal fail-closed when the provider checkpoint shows %s", async (_case, providerState) => {
+    const error = await verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(settledReadyCut, settledReadyCut,
+      providerState) as never, identity, runId: "run", normalizedSessionId: "session", providerAttempt: 1, providerStateFilename })
+      .catch(caught => caught);
+    expect(readRemoteRunnerRecoveryError(error)).toEqual({ stage: "process_verification", reason: "process_not_running",
+      runnerLifecycle: "ready", runnerSettled: true });
+  });
+  it("keeps a settled ready journal fail-closed when the caller cannot name its provider checkpoint", async () => {
+    const error = await verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(settledReadyCut) as never, identity,
+      runId: "run", normalizedSessionId: "session", providerAttempt: 1 }).catch(caught => caught);
+    expect(readRemoteRunnerRecoveryError(error)).toMatchObject({ stage: "process_verification", reason: "process_not_running" });
+  });
+  it.each([
+    ["an unacknowledged event", { ackedSourceSeq: 10 }],
+    ["a pending command", { processedCommands: { turn: { status: "pending" } } }],
+    ["an indeterminate command", { processedCommands: { turn: { status: "indeterminate" } } }],
+    ["no command journal", { processedCommands: undefined }],
+    ["an unknown journal schema", { schema: "unknown" }],
+    ["a different runner", { runnerInstanceId: "different" }],
+  ] as const)("keeps a ready journal fail-closed when the state read after the exit shows %s", async (_case, change) => {
+    const error = await verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(settledReadyCut,
+      { ...settledReadyCut, ...change }) as never, identity, runId: "run", normalizedSessionId: "session", providerAttempt: 1,
+      providerStateFilename })
+      .catch(caught => caught);
+    expect(readRemoteRunnerRecoveryError(error)).toEqual({ stage: "process_verification", reason: "process_not_running",
+      runnerLifecycle: "ready", runnerSettled: true });
   });
   it.each([
     ["an unsettled suspension", { ...settledSuspension, outbox: [{ id: 1 }] }, 2],
@@ -1071,9 +1126,12 @@ describe("remote controller restart adoption", () => {
     } finally { vi.useRealTimers(); }
   });
   it.each([
-    ["launches from", settledSuspension],
-    ["stays fail-closed for", { ...settledSuspension, lifecycle: "turn_active" }],
-  ] as const)("%s an exited runner when a scheduled retry builds its backend", async (outcome, runnerState) => {
+    ["launches from", settledSuspension, idleProvider],
+    ["launches from", settledReadyCut, idleProvider],
+    ["stays fail-closed for", { ...settledSuspension, lifecycle: "turn_active" }, idleProvider],
+    ["stays fail-closed for", settledReadyCut, { ...idleProvider, activeProviderTurnId: "turn-1" }],
+  ] as const)("%s an exited runner (%j, provider %j) when a scheduled retry builds its backend", async (outcome, runnerState,
+    providerState) => {
     const stateBase = await mkdtemp(join(tmpdir(), "paperclip-remote-settled-exit-"));
     const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
     process.env.PAPERCLIP_RUNNER_STATE_DIR = stateBase;
@@ -1093,10 +1151,11 @@ describe("remote controller restart adoption", () => {
       await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(durableControlPlaneState(identity)));
       state.createTransport.mockClear();
       const retry = createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: "runner",
-        runnerExecutionTarget: exitedRunner(runnerState) as never, restartRecovery: { ...claim, providerAttempt: 2 } });
+        runnerExecutionTarget: exitedRunner(runnerState, runnerState, providerState) as never,
+        restartRecovery: { ...claim, providerAttempt: 2 } });
       if (outcome === "stays fail-closed for") {
         expect(readRemoteRunnerRecoveryError(await retry.catch(caught => caught)))
-          .toMatchObject({ stage: "process_verification", reason: "process_not_running", runnerLifecycle: "turn_active" });
+          .toMatchObject({ stage: "process_verification", reason: "process_not_running", runnerLifecycle: runnerState.lifecycle });
         expect(state.createTransport).not.toHaveBeenCalled();
         return;
       }
