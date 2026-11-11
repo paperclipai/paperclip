@@ -30,6 +30,7 @@ export type RunSnapshot = {
    */
   operatorStopped?: boolean;
   retryableBeforeProviderWork?: boolean;
+  executionRetryAccounting?: Record<string, unknown> | null;
 };
 
 export type IssueSnapshot = {

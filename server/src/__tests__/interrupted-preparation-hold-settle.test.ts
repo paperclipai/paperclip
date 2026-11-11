@@ -290,10 +290,57 @@ suite("held interrupted preparations on the shared ownership path", () => {
       ne(heartbeatRuns.id, f.runId)))).not.toHaveLength(0);
   }, 60_000);
 
-  it("keeps a lost-lease preparation held when provider work may have started", async () => {
+  it("bounds repeated lost leases before provider work across release and recovery, then lets Retry continue", async () => {
+    const heartbeat = heartbeatService(db);
+    const controller = await deadController();
+    const issueId = randomUUID(), firstRunId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Lease loop", status: "in_progress",
+      assigneeAgentId: agentId, statusVersion: 2 });
+    const lostLease = (runId: string, context: Record<string, unknown>, retry: Partial<typeof heartbeatRuns.$inferInsert> = {}) => {
+      const finishedAt = new Date(Date.now() - 30 * 60_000);
+      return { ...controllerLeaseLostRun(finishedAt), id: runId, companyId, agentId, invocationSource: "automation",
+        responsibleUserId: "local-board", issueId, runtimeMode: "legacy", executionStage: "preparing",
+        startedAt: new Date(finishedAt.getTime() - 2_000), finishedAt, nextEventSeq: 1,
+        controllerBootId: controller.bootId, controllerProcess: controller.process,
+        runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+        contextSnapshot: { issueId, ...context }, ...retry } as typeof heartbeatRuns.$inferInsert;
+    };
+    await db.insert(heartbeatRuns).values(lostLease(firstRunId,
+      { retryReason: "issue_continuation_needed", source: "issue.continuation_recovery" }));
+    let latest = firstRunId;
+    let successors = 0;
+    for (let round = 0; round < 40; round += 1) {
+      await heartbeat.reconcileStrandedAssignedIssues({ companyId, issueId });
+      const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
+      if (task!.status === "blocked") break;
+      const [next] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, latest));
+      expect(next).toBeDefined();
+      expect(next!.contextSnapshot).toMatchObject({ retryReason: "interrupted_preparation",
+        executionRetryAccounting: { interruptedPreparations: successors + 1 } });
+      successors += 1;
+      const finished = lostLease(next!.id, next!.contextSnapshot ?? {}, {
+        scheduledRetryAttempt: next!.scheduledRetryAttempt, scheduledRetryReason: next!.scheduledRetryReason,
+        retryOfRunId: latest, wakeupRequestId: next!.wakeupRequestId });
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: finished.errorCode, error: finished.error,
+        resultJson: finished.resultJson, startedAt: finished.startedAt, finishedAt: finished.finishedAt,
+        executionStage: "preparing", controllerBootId: finished.controllerBootId, controllerProcess: finished.controllerProcess,
+        runnerProfileJson: finished.runnerProfileJson }).where(eq(heartbeatRuns.id, next!.id));
+      latest = next!.id;
+    }
+    expect(successors).toBe(2);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "blocked" });
+    const receipt = await requestTaskRetry({ db, companyId, issueId, actorId: "local-board",
+      actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: latest });
+    expect(receipt).toMatchObject({ accepted: true });
+  }, 120_000);
+
+  it.each([
+    ["provider work started", { kind: "bootstrap", providerWorkStarted: true }],
+    ["it has no no-provider-work certificate", undefined],
+  ] as const)("keeps a lost-lease preparation held when %s", async (_label, executionRecovery) => {
     const f = await interruptedPreparation({ run: controllerLeaseLostRun() });
     const run = await runRow(f.runId);
-    await db.update(heartbeatRuns).set({ resultJson: { ...run.resultJson, executionRecovery: undefined } })
+    await db.update(heartbeatRuns).set({ resultJson: { ...run.resultJson, executionRecovery } })
       .where(eq(heartbeatRuns.id, f.runId));
     const before = await hold(f.holdId);
     expect((await pass())?.settled ?? 0).toBe(0);

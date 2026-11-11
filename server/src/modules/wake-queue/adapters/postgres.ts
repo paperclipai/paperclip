@@ -45,6 +45,7 @@ import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokab
 import { issueTreeControlService, isVerifiedIssueTreeControlInteractionWake } from "../../../services/issue-tree-control.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "../../../services/recovery/pause-hold-guard.js";
 import { classifyContinuationFailure } from "../../../services/recovery/service.js";
+import { executionRetryAccounting } from "../../../services/execution-recovery-attempt.js";
 import { issueService } from "../../../services/issues.js";
 import { issueRecoveryActionService } from "../../../services/issue-recovery-actions.js";
 import { readContinuationAttempt } from "../../../services/recovery/run-liveness-continuations.js";
@@ -116,7 +117,14 @@ function toRunSnapshot(row: ReleaseRun): RunSnapshot {
     configurationIncompletePayload: Object.keys(configurationIncompletePayload).length > 0 ? configurationIncompletePayload : null,
     operatorStopped: isOperatorStoppedRunRow(row),
     retryableBeforeProviderWork: isRetryableBeforeProviderWorkRunRow(row),
+    executionRetryAccounting: carriedRetryAccounting(row),
   };
+}
+
+function carriedRetryAccounting(row: ReleaseRun): Record<string, unknown> | null {
+  const accounting = executionRetryAccounting(row);
+  return accounting.failureRetries > 0 || accounting.maxTurnContinuations > 0 || (accounting.interruptedPreparations ?? 0) > 0
+    || (accounting.storageWaits ?? 0) > 0 || (accounting.agentDirectoryWaits ?? 0) > 0 ? { ...accounting } : null;
 }
 
 export function isRetryableBeforeProviderWorkRunRow(row: ReleaseRun): boolean {
