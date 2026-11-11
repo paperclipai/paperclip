@@ -644,11 +644,13 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
     )).orderBy(asc(issueRecoveryActions.id)).limit(5);
 }
 
+export type PassiveSweep = { cursor?: string; complete?: boolean; restart?: boolean };
+
 /** Bounded discovery shares the periodic recovery lifecycle. A repaired source
  * still owes cleanup even without saved input or after task reconciliation. */
 export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRuntimeService,
   onRecovered: (run: typeof heartbeatRuns.$inferSelect) => Promise<void>, obligationsOnly = false,
-  onFinished?: (continueSweep: boolean) => void, passiveSweep?: { cursor?: string }) {
+  onFinished?: (continueSweep: boolean) => void, passiveSweep?: PassiveSweep) {
   await adoptHistoricalWorkspaceRecoveries(db);
   let pending = workInFlight.get(db);
   if (!pending) { pending = new Set(); workInFlight.set(db, pending); }
@@ -659,7 +661,14 @@ export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRu
   let rows = await retainedWorkspaceCandidates(db, unfinishedCursors.get(db), true, false, inFlightRunIds);
   if (!rows.length) rows = await retainedWorkspaceCandidates(db, undefined, true, false, inFlightRunIds);
   const unfinished = rows.length > 0;
-  if (!rows.length) rows = await retainedWorkspaceCandidates(db, passiveSweep ? passiveSweep.cursor : cursors.get(db), false, obligationsOnly, inFlightRunIds);
+  if (!rows.length) {
+    rows = await retainedWorkspaceCandidates(db, passiveSweep ? passiveSweep.cursor : cursors.get(db), false, obligationsOnly, inFlightRunIds);
+    if (passiveSweep && !rows.length && passiveSweep.restart) {
+      Object.assign(passiveSweep, { cursor: undefined, restart: false });
+      rows = await retainedWorkspaceCandidates(db, undefined, false, obligationsOnly, inFlightRunIds);
+    }
+    if (passiveSweep) passiveSweep.complete = !rows.length;
+  }
   if (!rows.length && !passiveSweep) rows = await retainedWorkspaceCandidates(db, undefined, false, obligationsOnly, inFlightRunIds);
   const work: Promise<void>[] = [];
   let hasUnvisited = false;
