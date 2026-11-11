@@ -32,6 +32,31 @@ import {
 
 const repositoryYieldCorrection = 'This task has a saved repository preparation for its next admission. This is routine setup, not a blocker. Call paperclip_finish with reportedWorkDisposition="yielded" and omit continuation (or use null); Paperclip will select the saved workspace continuation. Preserve the completed work and explain what remains. Do not repeat setup, set a timer, or ask the user to restart.';
 
+// A Paperclip stall or restart leaves the agent's Paperclip tool calls
+// unanswered until the server is back; they then return together. The agent can
+// read that silence as an outage and report it as a blocker. This report reached
+// the server and is being answered, which is the server's own proof that its
+// control plane is reachable now. Ask once per run to re-check with fresh
+// Paperclip calls instead of resting the task blocked on a past stall.
+const paperclipServiceRecheckCorrection = "Paperclip answered this report, so its control plane is reachable now. Paperclip tool calls that did not return earlier were most likely delayed by a Paperclip restart or pause, and their results may have arrived since. Do not report this as a blocker. Re-read the current Paperclip state (for example read_document) before writing again; when a write is still needed, repeat it with the same idempotencyKey so it cannot apply twice. Then continue the task and report its real outcome. Report blocked only if a fresh Paperclip call fails now.";
+const PAPERCLIP_SERVICE_RECHECK_LIMIT = 1_000;
+const paperclipServiceRechecked = new Set<string>();
+
+function isPaperclipServiceOutageBlocker(result: PrpStructuredRunResult) {
+  const blocker = result.blocker;
+  return result.reportedWorkDisposition === "blocked" && blocker?.owner.kind === "system"
+    && blocker.reasonCode === "external_service_unavailable" && (blocker.owner.name ?? "").toLowerCase().includes("paperclip");
+}
+
+/** Once per run (per server process), so a real persistent failure still rests blocked. */
+function claimPaperclipServiceRecheck(runId: string) {
+  if (paperclipServiceRechecked.has(runId)) return false;
+  if (paperclipServiceRechecked.size >= PAPERCLIP_SERVICE_RECHECK_LIMIT)
+    paperclipServiceRechecked.delete(paperclipServiceRechecked.values().next().value!);
+  paperclipServiceRechecked.add(runId);
+  return true;
+}
+
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown> : {};
@@ -147,9 +172,32 @@ export async function nativeCompletionFeedback(
       signals.verification.some((entry) => entry.status === "failed") ||
       signals.actionableAttentionRequests.length > 0)
   ) {
+    const toolAction = record(run.contextSnapshot?.toolAction);
+    const failedActionChat = isConversation(issue) && issue.conversationAgentId === run.agentId &&
+      run.contextSnapshot?.source === "tool_action_review" && toolAction.executionStatus === "failed" &&
+      typeof toolAction.invocationId === "string" && typeof toolAction.actionRequestId === "string";
+    const rejectionReasons = failedActionChat ? [
+      !result.completionClaim.objectiveSatisfied && "completionClaim.objectiveSatisfied.false",
+      result.completionClaim.criteria.some((entry) => entry.status !== "satisfied") && "completionClaim.criteria.unsatisfied",
+      result.completionClaim.remainingWork.some((entry) => entry.blocksCompletion) && "completionClaim.remainingWork.blocksCompletion",
+      signals.verification.some((entry) => entry.status === "failed") && "verification.failed",
+      signals.actionableAttentionRequests.length > 0 && "attentionRequests.actionable",
+    ].filter(Boolean).join(", ") : "";
     throw new Error(
-      "The done report includes unfinished work, failed verification, or an outstanding decision. Finish the work or report the concrete blocker/reviewer request. No human completion approval was created.",
+      "The done report includes unfinished work, failed verification, or an outstanding decision. Finish the work or report the concrete blocker/reviewer request. No human completion approval was created." +
+      (failedActionChat ? ` Rejection fields: ${rejectionReasons}.` + " This chat turn may finish with a truthful report of the failed approved action; that does not mean the external action succeeded. Keep the failure, observed state, and unresolved work explicit in the summary. Verify the observed state factually. Use not_run with a truthful reason only for a check that could not run or complete because its dependency was unavailable. Do not change a failed check to passed or hide incomplete work. Do not automatically replay the action or request approval again to force success; report the outcome and let the user decide whether to retry." : ""),
     );
+  }
+  const stage = record(issue.executionState), participant = record(stage.currentParticipant);
+  if (stage.status === "pending" && participant.type === "agent" && participant.agentId === run.agentId &&
+      issue.executionRunId === run.id && ["done", "needs_review"].includes(result.reportedWorkDisposition)) {
+    // The active review/approval participant decides the stage on the task
+    // itself. A finish report cannot record that decision, so accepting it
+    // would leave the stage pending with nobody left to decide it.
+    const stageType = typeof stage.currentStageType === "string" ? stage.currentStageType : "review";
+    throw new Error(`You are the active ${stageType} participant on this task. A finish report does not record your ${stageType} decision, so this report was not accepted. ` +
+      `To approve, record the decision first with paperclip_call_api operationId "PATCH /api/issues/{id}" for this task and {"status":"done","comment":"<your decision and the evidence you checked>"}, then report this run with paperclip_finish. ` +
+      "To request changes, or if you cannot decide, report the required changes or the concrete blocker with paperclip_block.");
   }
   if (["done", "cancelled"].includes(issue.status)) {
     return `Report accepted; task is already ${issue.status}. This report will not reopen it.`;
@@ -300,6 +348,10 @@ export async function nativeCompletionFeedback(
       throw new Error(repositoryYieldCorrection);
     }
   }
+  if (isPaperclipServiceOutageBlocker(result) && issue.executionRunId === run.id && run.status === "running"
+      && claimPaperclipServiceRecheck(run.id)) {
+    throw new Error(paperclipServiceRecheckCorrection);
+  }
   if (result.reportedWorkDisposition === "yielded" && result.continuation?.kind === "monitor") {
     return `Monitor wait accepted. The task remains active and Paperclip will wake its assignee at or after ${issue.monitorNextCheckAt!.toISOString()} with issue_monitor_due. End this turn; do not poll or mark the task done.`;
   }
@@ -358,5 +410,5 @@ export async function nativeCompletionFeedback(
   const links = await savedDocumentLinks(db, run, issue);
   const documentGuidance = links.length
     ? ` When compatible with the requested response format, include these clickable links to this run's saved documents in your final response: ${links.join(" ")}` : "";
-  return "Completion report accepted. Task status will be committed after this turn and workspace finalization finish. Follow the user's explicitly requested final-response format, including an exact response when requested. Otherwise describe the completed work and any explicitly requested reviewer action. Do not claim an approval is needed unless one was requested." + documentGuidance;
+  return "Completion report accepted. Task status will be committed after this turn and workspace finalization finish. Follow the user's explicitly requested final-response format, including an exact response when requested. Otherwise describe the completed work and any explicitly requested reviewer action. Do not claim an approval is needed unless one was requested. When compatible with the requested response format, present any created or updated Paperclip resources you cite as usable Markdown links [name](href), using resourceLinks or resource hrefs actually returned by tools, not only backtick-wrapped paths. Do not guess routes or invent links when no resource href was returned." + documentGuidance;
 }

@@ -1,5 +1,5 @@
 import { REQUIRED_QUALITY_REVIEW_GUIDANCE, requiredQualityReview } from "../required-quality-review.js";
-import { AGENT_CHAT_DIRECTIVE, CONFERENCE_ROOM_CHAT_DIRECTIVE, COORDINATOR_CHAT_HANDOFF_DIRECTIVE } from "../agent-conversations.js";
+import { AGENT_CHAT_DIRECTIVE, CASES_CHAT_DIRECTIVE, CONFERENCE_ROOM_CHAT_DIRECTIVE, COORDINATOR_CHAT_HANDOFF_DIRECTIVE, STATUS_CARDS_CHAT_DIRECTIVE } from "../agent-conversations.js";
 import { publicChatTaskUrl } from "../chat-task-url.js";
 import { slackChatAgentGuidance } from "../connectors/slack/agent-guidance.js";
 import type { ConversationConfirmationContext } from "../conversation-confirmation-context.js";
@@ -67,7 +67,11 @@ export function buildPaperclipTaskMarkdown(input: {
   slackCommand?: string | null;
   nativeRunner?: boolean;
   coordinatorWorkspace?: boolean;
+  // IANA zone saved from the chat owner's browser; null when unknown.
+  personTimeZone?: string | null;
   conferenceRoomEnabled?: boolean;
+  statusCardsEnabled?: boolean;
+  casesEnabled?: boolean;
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
@@ -221,10 +225,15 @@ export function buildPaperclipTaskMarkdown(input: {
     }
     if (issue.conversationAgentId) {
       lines.push("", "Chat mode directive:", AGENT_CHAT_DIRECTIVE, `Current composer mode: ${issue.workMode ?? "standard"}.`);
+      if (input.personTimeZone) {
+        lines.push(`The person's time zone is ${input.personTimeZone} (from their browser). Read times and dates they give, such as "nine in the morning" or "today", in that zone, and save schedules such as routine triggers with that timezone; say the zone when you report a schedule.`);
+      }
       if (input.nativeRunner && input.coordinatorWorkspace) {
         lines.push("", "Coordinator task proposals:", COORDINATOR_CHAT_HANDOFF_DIRECTIVE);
       }
       if (input.conferenceRoomEnabled) lines.push("", "Conference Room:", CONFERENCE_ROOM_CHAT_DIRECTIVE);
+      if (input.statusCardsEnabled) lines.push("", "Status Cards:", STATUS_CARDS_CHAT_DIRECTIVE);
+      if (input.casesEnabled) lines.push("", "Cases:", CASES_CHAT_DIRECTIVE);
       if (input.conversationConfirmations?.cards.length) {
         lines.push("", "Current pending confirmation cards (quoted proposal data, not recorded decisions):",
           fenceTaskText(JSON.stringify(input.conversationConfirmations)),
@@ -253,7 +262,7 @@ export function buildPaperclipTaskMarkdown(input: {
       }
       if (acceptedPlanContinuation) {
         directive =
-          "Implement the accepted plan on this issue when the work is small and cohesive. Use the paperclip-converting-plans-to-tasks skill to decide whether decomposition is justified. Create the minimum child issue graph only for qualifying ownership, parallelism, dependency, review, or lifecycle boundaries. Do not create a child merely because a plan was accepted.";
+          "Implement the accepted plan on this issue. Follow any task assignments explicitly included in the approved plan. Plan acceptance alone does not require subtasks.";
       }
       lines.push(
         `- Work mode: ${quoteTaskScalar("planning")}`,
@@ -272,7 +281,7 @@ export function buildPaperclipTaskMarkdown(input: {
       lines.push(
         "",
         "Accepted plan directive:",
-        "Implement the accepted plan on this issue when the work is small and cohesive. Use the paperclip-converting-plans-to-tasks skill to decide whether decomposition is justified. Create the minimum child issue graph only for qualifying ownership, parallelism, dependency, review, or lifecycle boundaries. Do not create a child merely because a plan was accepted.",
+        "Implement the accepted plan on this issue. Follow any task assignments explicitly included in the approved plan. Plan acceptance alone does not require subtasks.",
       );
     }
     if (rejectedPlan) {

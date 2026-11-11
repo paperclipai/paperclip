@@ -258,7 +258,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   if (operation.kind === "submit" || operation.kind === "copilot_metadata") {
     // No ticket, headers, environment values, or launch paths belong in metadata.
     const marked = await db.update(environmentLeases).set({
-      metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskLease: true, runnerTaskDispatched: true, runnerTaskExecutionStopped: false, runnerTaskSessionRetained: false, ...(operation.kind === "submit" ? { runnerTaskIdentity: operation.runner, runnerTaskResumeFrom: operation.resumeFrom ?? null } : {}) })}::jsonb`,
+      metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'runnerTaskAdmissionRejection') || ${JSON.stringify({ runnerTaskLease: true, runnerTaskDispatched: true, runnerTaskExecutionStopped: false, runnerTaskSessionRetained: false, ...(operation.kind === "submit" ? { runnerTaskIdentity: operation.runner, runnerTaskResumeFrom: operation.resumeFrom ?? null } : {}) })}::jsonb`,
     }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
       eq(environmentLeases.status, "active"), sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`,
       requiredProjectAuthProof ? sql`${environmentLeases.metadata}->'runnerTaskProjectAuthValidation' = ${JSON.stringify(requiredProjectAuthProof)}::jsonb` : undefined,
@@ -280,7 +280,9 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     if (marked.length !== 1) throw new Error("Plugin warm task attachment lost authority");
   }
   try {
-    const stoppedWithoutSession = !!run && metadata.runnerTaskExecutionStopped === true && metadata.runnerTaskSessionRetained !== true;
+    const admissionRejection = metadata.runnerTaskAdmissionRejection as { taskId?: unknown } | undefined;
+    const stoppedWithoutSession = !!run && metadata.runnerTaskExecutionStopped === true &&
+      metadata.runnerTaskSessionRetained !== true && admissionRejection?.taskId !== taskId;
     if (operation.kind === "describe" && (metadata.runnerTaskReused === true || stoppedWithoutSession)) {
       const state = parseEnvironmentTaskResult({kind:"status"}, taskId, await callWorker("environmentTask", {
         driverKey: metadata.driverKey, companyId: input.companyId, environmentId: environment?.id ?? null,
@@ -408,6 +410,20 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     const result = await callWorker("environmentTask", params, timeout);
     if (executionContext) context!.assertOpen();
     const parsed = parseEnvironmentTaskResult(operation, taskId, result);
+    if (operation.kind === "submit" && parsed.kind === "admission_rejected") {
+      const recorded = await db.update(environmentLeases).set({
+        metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'runnerTaskIdentity') || ${JSON.stringify({
+          runnerTaskAdmissionRejection: { taskId, reason: parsed.reason },
+          runnerTaskDispatched: false, runnerTaskExecutionStopped: true, runnerTaskSessionRetained: false,
+        })}::jsonb`,
+      }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
+        eq(environmentLeases.providerLeaseId, taskId),
+        sql`${environmentLeases.metadata}->>'runnerTaskDispatched' = 'true'`,
+        sql`${environmentLeases.metadata}->'runnerTaskIdentity' = ${JSON.stringify(operation.runner)}::jsonb`,
+      )).returning({ id: environmentLeases.id });
+      if (recorded.length !== 1) throw new Error("Plugin Runner admission receipt is stale");
+      return parsed;
+    }
     if (stoppedSourceCheckpoint && parsed.kind === "state" && isSettledReadyRunnerState(parsed.state)) {
       parsed.state = { ...parsed.state, lifecycle: "suspended" };
     }
@@ -493,29 +509,42 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
 }
 
 /** Failure leaves the dispatch marker and provider handle available to cleanup retries. */
-export async function settleDispatchedEnvironmentTask(db: Db, workers: PluginWorkerManager, lease: { id: string; companyId: string }) {
+export async function settleDispatchedEnvironmentTask(db: Db, workers: PluginWorkerManager, lease: { id: string; companyId: string },
+  options: { executionStopObserved?: boolean } = {}): Promise<false | "stopped" | "completed"> {
   const [current] = await db.update(environmentLeases).set({
     metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || '{"runnerTaskRetiring":true}'::jsonb`,
   }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId)))
-    .returning({ metadata: environmentLeases.metadata, heartbeatRunId: environmentLeases.heartbeatRunId });
+    .returning({ metadata: environmentLeases.metadata, heartbeatRunId: environmentLeases.heartbeatRunId, taskId: environmentLeases.providerLeaseId });
   const startup = current?.metadata?.runnerTaskStartup;
   const startupCleanup = current?.metadata?.runnerTaskStartupCleanup as { requiresPreparationStop?: boolean } | undefined;
   if (current?.metadata?.runnerTaskDispatched !== true && !startup && !startupCleanup) {
-    if (current?.metadata) await settlePluginTaskCredentialHandoff(db, { companyId: lease.companyId, leaseId: lease.id }, current.metadata,
-      async () => { throw new Error("Undispatched task must not request credentials"); });
-    return current?.metadata?.runnerTaskExecutionStopped === true;
+    if (current?.metadata) await settlePluginTaskCredentialHandoff(db, {
+      companyId: lease.companyId, leaseId: lease.id, expectedTaskId: current.taskId ?? undefined,
+    }, current.metadata, async accountIdentity => {
+      const snapshot = await executeEnvironmentTask(db, workers, { companyId: lease.companyId, leaseId: lease.id,
+        expectedTaskId: current.taskId ?? undefined, operation: { kind: "credentials", accountIdentity } });
+      if (snapshot.kind !== "credentials") throw new Error("Plugin Runner credential snapshot unavailable");
+      return snapshot.credential;
+    });
+    return current?.metadata?.runnerTaskExecutionStopped === true ? "stopped" : false;
   }
   const scope = { companyId: lease.companyId, leaseId: lease.id };
   try {
     const contextId = (startupCleanup as { contextId?: unknown } | undefined)?.contextId ?? (startup as { contextId?: unknown } | undefined)?.contextId;
     const draining = typeof contextId === "string" ? workers.drainStartup?.(contextId) : undefined;
     void draining?.catch(() => undefined);
-    await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "stop" } });
-    const state = await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "status" } });
-    if (state.kind !== "status" || state.executionStopped !== true || ((startup || startupCleanup?.requiresPreparationStop) && state.preparationStopped !== true)) throw new Error("Plugin Runner termination is unconfirmed");
+    const confirmed = (state?: Awaited<ReturnType<typeof executeEnvironmentTask>>) => state?.kind === "status" && state.executionStopped === true &&
+      (!(startup || startupCleanup?.requiresPreparationStop) || state.preparationStopped === true);
+    let state = options.executionStopObserved === true
+      ? await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "status" } }) : undefined;
+    if (!confirmed(state)) {
+      await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "stop" } });
+      state = await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "status" } });
+    }
+    if (!confirmed(state)) throw new Error("Plugin Runner termination is unconfirmed");
     await draining;
     await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "complete" } });
-    return true;
+    return "completed";
   } catch {
     await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed",
       failureReason: "plugin_runner_task_cleanup_unconfirmed", releasedAt: new Date(), updatedAt: new Date(),

@@ -792,6 +792,84 @@ fn forced_cancellation_retirement_preserves_terminal_polling_but_rejects_live_re
     }
 }
 
+#[test]
+fn lost_cancellation_reply_keeps_the_turn_terminal_and_the_transport() {
+    // Restart-chaos PV2 interrupt_ack: the provider stops its prompt, but the
+    // sidecar's reply to turn.cancel is lost or late. The terminal must still
+    // settle the turn, and a late reply must not break the next request.
+    for mode in ["lost", "late"] {
+        let mut config = config("turns");
+        config
+            .transport
+            .args
+            .extend(["--cancel-reply".to_owned(), mode.to_owned()]);
+        let mut session = AcpxProviderSession::start(&config).unwrap();
+        session
+            .start_turn("turn-1", "Please help", &std::env::temp_dir())
+            .unwrap();
+        let started = Instant::now();
+        session
+            .interrupt_turn("turn-1", "Paperclip interruption")
+            .unwrap_or_else(|error| panic!("{mode}: {error}"));
+        assert!(started.elapsed() < Duration::from_secs(3), "{mode}");
+        assert!(session.runtime_retired(), "{mode}");
+        // A repeated Stop while the first cancel is unanswered must not block.
+        let repeated = Instant::now();
+        session
+            .interrupt_turn("turn-1", "Paperclip interruption again")
+            .unwrap_or_else(|error| panic!("{mode} repeat: {error}"));
+        assert!(repeated.elapsed() < Duration::from_millis(200), "{mode}");
+        let mut terminal = None;
+        while terminal.is_none() {
+            let events = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+            terminal = events.into_iter().find(|event| {
+                matches!(event, AcpxProviderStateEvent::TurnTerminal { turn_id, .. } if turn_id == "turn-1")
+            });
+        }
+        assert!(session.state().active_turn_id().is_none(), "{mode}");
+        assert!(session
+            .start_turn("turn-2", "Must not reuse", &std::env::temp_dir())
+            .unwrap_err()
+            .to_string()
+            .contains("runtime was retired"));
+        session
+            .shutdown("test complete")
+            .unwrap_or_else(|error| panic!("{mode}: {error}"));
+    }
+}
+
+#[test]
+fn a_tool_result_for_a_call_retired_by_our_cancellation_does_not_fail_the_transport() {
+    // Restart-chaos S1 PV2: Stop lands while a semantic tool runs. The cancel
+    // retires the call in the sidecar before its result arrives, and the turn
+    // terminal is still buffered. The result must be kept, not fail the session.
+    let mut config = config("turns-tool");
+    config
+        .transport
+        .args
+        .extend(["--cancel-reply".to_owned(), "lost".to_owned()]);
+    let mut session = AcpxProviderSession::start(&config).unwrap();
+    session
+        .start_turn("turn-1", "Please help", &std::env::temp_dir())
+        .unwrap();
+    let tool = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(
+        matches!(&tool[0], AcpxProviderStateEvent::ToolCall { call_id, .. } if call_id == "call-1")
+    );
+    session
+        .interrupt_turn("turn-1", "Cancelled by a board operator")
+        .unwrap();
+    session
+        .deliver_tool_result(&late_result("call-1"))
+        .expect("a call retired by our own cancellation keeps its result");
+    assert!(session.state().pending_tool("call-1").is_none());
+    let terminal = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(
+        matches!(&terminal[0], AcpxProviderStateEvent::TurnTerminal { turn_id, .. } if turn_id == "turn-1")
+    );
+    session.shutdown("test complete").unwrap();
+}
+
 fn reusable_config(directory: &std::path::Path) -> AcpxProviderSessionConfig {
     let mut config = config("source-reconcile");
     config.transport.args = vec![
@@ -933,4 +1011,84 @@ fn prepared_generation_never_admits_the_reaped_generation_late_callback() {
     );
     session.shutdown("test complete").unwrap();
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn a_turn_end_restart_reaps_the_late_callback_and_releases_receipts_at_the_next_turn() {
+    let mut session = AcpxProviderSession::start(&config("turns-late-tool-after-suspend")).unwrap();
+    session
+        .start_turn("turn-1", "Please continue", &std::env::temp_dir())
+        .unwrap();
+    session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(!session.can_restart_after_turn());
+    session
+        .deliver_tool_result(&late_result("call-reused"))
+        .unwrap();
+    let first_pid = session.process_id();
+    session.restart_after_turn(None).unwrap();
+    let fresh_pid = session.process_id();
+    assert_ne!(fresh_pid, first_pid);
+    assert_eq!(session.restarted_after_turn_from(), Some(first_pid));
+    assert!(!session.generation_has_run_turn() && !session.can_restart_after_turn());
+    assert!(session
+        .poll_event(Duration::from_millis(200))
+        .unwrap()
+        .is_none());
+
+    session
+        .start_turn("turn-2", "Use the fresh provider", &std::env::temp_dir())
+        .unwrap();
+    assert_eq!(session.process_id(), fresh_pid);
+    assert_eq!(session.restarted_after_turn_from(), None);
+    let fresh = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(matches!(
+        &fresh[0],
+        AcpxProviderStateEvent::ToolCall { call_id, operation_id, input }
+            if call_id == "call-reused"
+                && operation_id == "issues.read"
+                && input["id"] == "issue-1"
+    ));
+    let terminal = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(matches!(
+        terminal.last().unwrap(),
+        AcpxProviderStateEvent::TurnTerminal { turn_id, .. } if turn_id == "turn-2"
+    ));
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
+fn an_interrupted_or_retired_turn_restarts_at_the_next_turn_start() {
+    let mut session = AcpxProviderSession::start(&config("turns")).unwrap();
+    session
+        .start_turn("turn-1", "Please help", &std::env::temp_dir())
+        .unwrap();
+    session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(!session.can_restart_after_turn());
+    session
+        .interrupt_turn("turn-1", "Paperclip interruption")
+        .unwrap();
+    session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    let interrupted_pid = session.process_id();
+    assert!(!session.can_restart_after_turn());
+    assert!(session.restart_after_turn(None).is_err());
+    assert_eq!(session.process_id(), interrupted_pid);
+    session
+        .start_turn("turn-2", "Start again", &std::env::temp_dir())
+        .unwrap();
+    assert_ne!(session.process_id(), interrupted_pid);
+    session.shutdown("test complete").unwrap();
+
+    let mut retired = AcpxProviderSession::start(&config("turns-retired")).unwrap();
+    retired
+        .start_turn("turn-1", "Please help", &std::env::temp_dir())
+        .unwrap();
+    retired
+        .interrupt_turn("turn-1", "Paperclip cancellation")
+        .unwrap();
+    retired.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(retired.state().active_turn_id().is_none());
+    assert!(retired.runtime_retired());
+    assert!(!retired.can_restart_after_turn());
+    retired.shutdown("test complete").unwrap();
 }

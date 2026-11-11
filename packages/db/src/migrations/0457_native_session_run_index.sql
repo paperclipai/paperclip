@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_company_native_session_idx" ON "heartbeat_runs" USING btree ("company_id","native_session_id") WHERE "heartbeat_runs"."native_session_id" is not null;

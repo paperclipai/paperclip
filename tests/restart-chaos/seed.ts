@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { RunnerApi } from "../runner-e2e/api.js";
-import { runnerEnvironments, runnerProfiles } from "../runner-e2e/catalog.js";
+import { daytonaWarmEnvironment, runnerEnvironments, runnerProfiles } from "../runner-e2e/catalog.js";
 import { installFixtureDaytonaProvider, waitForFixtureDaytonaProvider } from "../runner-e2e/live-fixtures.js";
 import type { MatrixExecution, SecretReference, SecretReferenceMap } from "../runner-e2e/types.js";
 import type { ChaosApi } from "./api.js";
@@ -21,25 +21,43 @@ export interface ChaosLab {
   agents: Record<AdapterId, { id: string; name: string; body?: Record<string, unknown> }>;
 }
 
+export const DAYTONA_AGENT_READY_TIMEOUT_MS = 10 * 60_000;
+const TERMINAL_LIFECYCLE_STATES = new Set(["rejected", "terminating", "cleaning_up", "terminated"]);
+
 /** Create the `chaos-sandbox` git repository: python CLI, one failing test, bench.sh. */
 export async function waitForAgentsReady(api: ChaosApi, agents: Partial<Record<string, { id: string; createdAt?: number }>>, timeline: Timeline,
   timeoutMs = 4 * 60_000, pollMs = 1_000, cancelled: () => boolean = () => false): Promise<void> {
   const started = Date.now();
   const pending = new Map(Object.entries(agents).flatMap(([adapter, agent]) => agent ? [[adapter, agent] as const] : []));
+  const lastProblem = new Map<string, string>();
   while (pending.size) {
     if (cancelled()) throw new Error("Harness interrupted while waiting for agents to finish verification");
     for (const [adapter, { id: agentId, createdAt }] of [...pending]) {
-      const agent = await api.get<Record<string, unknown>>(`/api/agents/${agentId}`).catch(() => null);
+      let agent: Record<string, unknown>;
+      try {
+        agent = await api.get<Record<string, unknown>>(`/api/agents/${agentId}`);
+      } catch (error) {
+        lastProblem.set(adapter, `last read error: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300));
+        continue;
+      }
+      const lifecycleError = agent?.lifecycleError ? String(agent.lifecycleError).slice(0, 300) : null;
       if (agent?.lifecycleState === "ready") {
         timeline.add("seed_agent_ready", { adapter, agentId, readyAfterMs: Date.now() - (createdAt ?? started) });
         pending.delete(adapter);
-      } else if (agent?.lifecycleError) {
-        throw new Error(`Agent ${adapter} (${agentId}) failed lifecycle verification: ${String(agent.lifecycleError).slice(0, 300)}`);
+      } else if (lifecycleError) {
+        if (TERMINAL_LIFECYCLE_STATES.has(String(agent.lifecycleState))) {
+          throw new Error(`Agent ${adapter} (${agentId}) failed lifecycle verification: ${lifecycleError}`);
+        }
+        if (lastProblem.get(adapter) !== `last lifecycle error: ${lifecycleError}`) {
+          timeline.add("seed_agent_lifecycle_error", { adapter, agentId, error: lifecycleError });
+        }
+        lastProblem.set(adapter, `last lifecycle error: ${lifecycleError}`);
       }
     }
     if (!pending.size) return;
     if (Date.now() - started > timeoutMs) {
-      throw new Error(`Agents never reached lifecycleState ready within ${Math.round(timeoutMs / 1000)} s: ${[...pending.keys()].join(", ")}`);
+      const names = [...pending.keys()].map(adapter => lastProblem.has(adapter) ? `${adapter} (${lastProblem.get(adapter)})` : adapter);
+      throw new Error(`Agents never reached lifecycleState ready within ${Math.round(timeoutMs / 1000)} s: ${names.join(", ")}`);
     }
     await new Promise(resolve => setTimeout(resolve, pollMs));
   }
@@ -56,6 +74,7 @@ export function cloneWorkspaceRepository(source: string, directory: string, comm
       throw new Error(`--workspace-repo ${source} no longer has commit ${commit} that this wave used`, { cause: error });
     }
   }
+  git("remote", "remove", "origin");
   return directory;
 }
 
@@ -96,16 +115,25 @@ export function chaosDaytonaShape(cpu: number) {
   return { cpu, memory: 4, disk: 10 };
 }
 
+/** A user's default environment config: the lifecycle and lease reuse are left to the agent. */
+export function inheritingEnvironmentConfig(config: Record<string, unknown>): Record<string, unknown> {
+  const { runnerLifecycleMode: _lifecycle, reuseLease: _reuse, ...rest } = config;
+  return rest;
+}
+
 async function createDaytonaEnvironment(input: { api: ChaosApi; companyId: string; image: string; cpu: number; reuseLease: boolean; waveId: string;
-  secretRefs: SecretReferenceMap; timeline: Timeline }): Promise<string> {
-  const fixture = runnerEnvironments.find(candidate => candidate.id === "daytona");
+  secretRefs: SecretReferenceMap; timeline: Timeline; warm?: boolean; inherit?: boolean }): Promise<string> {
+  // The warm fixture keeps a reusable sandbox and a warm runner between turns.
+  const fixture = input.warm ? daytonaWarmEnvironment : runnerEnvironments.find(candidate => candidate.id === "daytona");
   if (!fixture) throw new Error("runner-e2e catalog has no daytona environment fixture");
   const view = runnerApiView(input.api);
   await waitForFixtureDaytonaProvider(view, { companyId: input.companyId, deadlineAt: Date.now() + 120_000 });
   const payload = fixture.buildEnvironment({ secretRefs: input.secretRefs, daytonaImage: input.image, executionId: input.waveId });
   const shape = chaosDaytonaShape(input.cpu);
+  // A user's default environment: the agent decides the lifecycle, and nothing pins lease reuse.
+  const baseConfig = input.inherit ? inheritingEnvironmentConfig(payload.config as Record<string, unknown>) : payload.config as Record<string, unknown>;
   const environment = await input.api.post<{ id: string; driver: string }>(`/api/companies/${input.companyId}/environments`,
-    { ...payload, config: { ...(payload.config as Record<string, unknown>), ...shape, ...(input.reuseLease ? { reuseLease: true } : {}) } });
+    { ...payload, config: { ...baseConfig, ...shape, ...(input.reuseLease ? { reuseLease: true } : {}) } });
   input.timeline.add("seed_environment", { environmentId: environment.id, driver: environment.driver, image: input.image, ...shape,
     reuseLease: input.reuseLease });
   return environment.id;
@@ -158,10 +186,17 @@ export async function seedChaosLab(input: {
   agentReadyTimeoutMs?: number;
   workspaceRepo?: string;
   workspaceCommit?: string;
+  workspaceGitUrl?: string;
   waveId: string;
   timeline: Timeline;
   /** Merged into each agent's adapterConfig (for example a runner lifecycle mode). */
   adapterConfigOverrides?: Record<string, unknown>;
+  /** Use the reusable warm Daytona environment fixture (reuseLease, warm runner). */
+  daytonaWarm?: boolean;
+  /** Use a Daytona environment that inherits the lifecycle and leaves lease reuse unset, as a user's default does. */
+  daytonaInherit?: boolean;
+  /** A real repository to use as the project's primary workspace instead of the tiny fixture. */
+  repositoryPath?: string;
   /** Called as soon as the wave owns external resources that need cleanup. */
   onEnvironment?: (lab: Pick<ChaosLab, "companyId" | "environmentId" | "environmentKind">) => void;
 }): Promise<ChaosLab> {
@@ -205,7 +240,7 @@ export async function seedChaosLab(input: {
   let environmentId: string;
   if (input.env === "daytona") {
     environmentId = await createDaytonaEnvironment({ api, companyId: company.id, image: input.daytonaImage!, cpu: input.daytonaCpu ?? 4,
-      reuseLease: input.daytonaReuseLease === true, waveId: input.waveId, secretRefs, timeline });
+      reuseLease: input.daytonaReuseLease === true, waveId: input.waveId, secretRefs, timeline, warm: input.daytonaWarm, inherit: input.daytonaInherit });
     input.onEnvironment?.({ companyId: company.id, environmentId, environmentKind: "daytona" });
     if (input.adapters.includes("codex")) await qualifyNativeCodex({ api, companyId: company.id, environmentId, timeline });
   } else {
@@ -241,7 +276,8 @@ export async function seedChaosLab(input: {
   }
   if (input.waitForReadyAgents) {
     await waitForAgentsReady(api, Object.fromEntries(Object.entries(agents).map(([adapter, agent]) =>
-      [adapter, { id: agent.id, createdAt: agentCreatedAt.get(adapter) }])), timeline, input.agentReadyTimeoutMs, 1_000, input.cancelled);
+      [adapter, { id: agent.id, createdAt: agentCreatedAt.get(adapter) }])), timeline,
+      input.agentReadyTimeoutMs ?? (input.env === "daytona" ? DAYTONA_AGENT_READY_TIMEOUT_MS : undefined), 1_000, input.cancelled);
   }
 
   // The project's git_worktree policy only takes effect when the instance has
@@ -264,7 +300,9 @@ export async function seedChaosLab(input: {
       environmentId,
       workspaceStrategy: { type: "git_worktree" },
     },
-    workspace: { name: "Primary", sourceType: "local_path", cwd: fixtureRepositoryPath, isPrimary: true },
+    workspace: input.workspaceGitUrl
+      ? { name: "Primary", sourceType: "git_repo", repoUrl: input.workspaceGitUrl, repoRef: input.workspaceCommit, isPrimary: true }
+      : { name: "Primary", sourceType: "local_path", cwd: fixtureRepositoryPath, isPrimary: true },
   });
   timeline.add("seed_project", { projectId: project.id, fixtureRepositoryPath });
   return { companyId: company.id, environmentId, environmentKind: input.env, projectId: project.id, fixtureRepositoryPath, agents };

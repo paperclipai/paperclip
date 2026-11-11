@@ -10,6 +10,8 @@ const classicWorkspace = vi.hoisted(() => ({ enabled: true }));
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
   useCoordinatorWorkspaceEnabled: () => ({ enabled: !classicWorkspace.enabled, loaded: true, userId: "viewer" }),
 }));
+const browserTimeZoneSync = vi.hoisted(() => vi.fn());
+vi.mock("@/hooks/useBrowserTimeZoneSync", () => ({ useBrowserTimeZoneSync: browserTimeZoneSync }));
 
 const mockDesignSandbox = vi.hoisted(() => ({ enabled: false }));
 vi.mock("@/context/DesignSandboxContext", () => ({ useDesignSandbox: () => mockDesignSandbox.enabled }));
@@ -162,6 +164,10 @@ vi.mock("./ToastViewport", () => ({
 
 vi.mock("./AnnouncementWell", () => ({
   AnnouncementWell: () => <div data-announcement-well />,
+}));
+
+vi.mock("./GitHubStarPrompt", () => ({
+  GitHubStarPrompt: () => null,
 }));
 
 vi.mock("./MobileBottomNav", () => ({

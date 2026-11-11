@@ -111,16 +111,27 @@ Keep the runner turn's avatar, name, status header and current-activity slot
 in place from message submission through queued admission and native startup.
 Saving the human comment does not end startup feedback. Keep the identity mounted
 until its run appears or a newer execution outcome ends admission.
+An older intent resolving cannot acknowledge a follow-up. When Send reopens a
+completed task, retain startup feedback while the previous task status catches up.
 Use the sent message's selected recipient through reassignment. Choosing the
 recipient for a later draft must not change the response already starting.
 Runtime discovery must not replace the turn with a generic spinner or a
 "run started" receipt. Queued and running headers use the same spacing.
 
-A queued turn shows `Queued`, or `Waiting for maintenance` while the server holds
-admission. Reserve `Working` and `Thinking` for execution. A saved message that
-starts this queued turn stays in history, including when it reopens an older
+A queued turn shows the same `Working` header and shimmering `Thinking` activity
+as a running turn, starting at message submission. Keep specific server holds,
+such as `Waiting for maintenance` or agent setup, visible during admission.
+This is presentation only; queue and execution authority stay unchanged. A saved
+message that starts this queued turn stays in history, including when it reopens an older
 task. This placement is not a consumption receipt. Later follow-ups remain in
 the composer queue with their existing edit, order and discard controls.
+
+Queued messages render Markdown and show compact local attachment thumbnails.
+Keep paragraph boundaries and wrap thumbnails and controls within narrow rows.
+Omit inline images from the compact text preview. On
+submit, move the text and attachment previews out of the composer together.
+Retain upload receipts while saving so a rejected or uncertain send restores
+the draft without discarding files added for the next message.
 
 Stream the provider's final reply as the conversational answer. Completion-tool
 reports remain inspectable run data while work continues. Use their summary as
@@ -832,6 +843,14 @@ status picker with its monospaced task ID, project and people. The title remains
 editable and the existing task-actions menu stays at the upper right. Typography
 and spacing use the shared tokens; toggling off restores the ordinary header.
 
+Task breadcrumbs link the immediate parent before the current task. Each task
+title displays at most 48 Unicode code points, including an ellipsis; saved
+titles, hover text and accessible names retain the full title. The parent uses
+at most 40% of the breadcrumb row, and both titles truncate when space runs out.
+Parent breadcrumbs show only the task title, with no identifier, at every width.
+Mobile omits the collection link to preserve both titles and the current task
+identifier. Private parents show a noninteractive Private label without an identifier.
+
 The local task detail also offers a **Thread preview** selector. DES-1 opens a
 complete synthetic conversation matching the staging transcript layout; other
 tasks start with their saved thread. Synthetic runner events pass through
@@ -879,7 +898,7 @@ paused. Agent execution is outside this visual sandbox.
 - Token layer is the single source (`ui/src/index.css`, per above) consumed via CSS variables / Tailwind theme — never values copied into components.
 - Lint/grep gates pass: zero hardcoded hex values, zero arbitrary spacing values, zero raw font-size declarations in `ui/src/components/**` and `ui/src/pages/**` outside the token layer and a documented allowlist (third-party overrides, intentional opt-outs commented inline).
 - `pnpm build`, `pnpm typecheck`, and `pnpm build-storybook` pass.
-- AGENTS.md links here and states the token-only rule.
+- AGENTS.md links here for the token-only rule.
 
 Aspirational (NOT gating this run): no duplicate components; every component has exactly one story covering its variants; all UI copy says "task".
 
@@ -1028,7 +1047,13 @@ or certify backend behavior or keyboard accessibility.
 
 Agents and Connectors compose the same `ToolbarSearch`. Connectors also use canonical Standard filled tabs. `AgentsToolbar` is shared by the roster page and
 toolbar references; `ConnectorsToolbar` is shared by Browse and toolbar references. Keep search
-first, source selection next where present, and view/actions last. The agent roster uses a harness filter icon without a status selector.
+first, source selection next where present, and view/actions last. The agent roster filter icon opens model, status, harness and connection selectors.
+Each selector includes an All option. Selected filters intersect with name, role
+and title search. Clear filters resets metadata selectors and keeps the search.
+Filter choices use the same metadata as the roster cells, including harness defaults,
+local credentials, connection pools, and agents that still need setup. Filters stay
+active across list and org-chart views, retain matching nodes' ancestors, and preserve
+bulk selection. The count reports matching agents, without ancestor context.
 Connector source choices use radio semantics and preserve Browse's existing
 automatic search expansion; they do not switch separate content panels.
 Legacy agent status and built-in URLs redirect to the full roster at `/agents/all`.

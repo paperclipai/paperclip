@@ -167,6 +167,8 @@ export class HarnessDriverBackend implements NativeSessionBackend {
         recovered: false,
         reason: recovered.reason,
         ...(recovered.failureClass ? { failureClass: recovered.failureClass } : {}),
+        ...(recovered.resumeStateUnavailable ? { resumeStateUnavailable: true as const } : {}),
+        ...(recovered.runnerExitConfirmed ? { runnerExitConfirmed: true as const } : {}),
       };
     }
     try {
@@ -480,6 +482,14 @@ class HarnessNativeSession implements NativeSession {
     };
   }
 
+  beginRunAttachment(input: { identity: OpenNativeSessionInput["identity"] }): boolean {
+    const currentIdentity = this.#input.identity;
+    if (this.#protocolIntegrityFailure !== null || this.#session.beginRunAttachment === undefined
+      || input.identity.sessionId !== currentIdentity.sessionId || input.identity.companyId !== currentIdentity.companyId
+      || input.identity.issueId !== currentIdentity.issueId || input.identity.agentId !== currentIdentity.agentId) return false;
+    return this.#session.beginRunAttachment({ runId: input.identity.runId });
+  }
+
   async attachRun(input: {
     identity: OpenNativeSessionInput["identity"];
     currentRunGrant?: NativeRunRuntimeGrant;
@@ -768,6 +778,12 @@ class HarnessNativeSession implements NativeSession {
     this.#explicitlyCancelled = true;
   }
 
+  settleCancelledTurn(input: { turnId: string; reason: string }) {
+    this.#assertProtocolIntegrity();
+    if (!this.#explicitlyCancelled) throw new Error("native_turn_cancellation_required");
+    return this.#withProtocolIntegrity(() => this.#session.settleCancelledTurn?.(input) ?? null);
+  }
+
   cancel(input: { reason: string; signal: AbortSignal }) {
     if (input.signal.aborted) {
       throw (
@@ -902,7 +918,7 @@ class HarnessNativeSession implements NativeSession {
   }
 
   close(input: { reason: string }) {
-    return this.#session.close(input);
+    return this.#session.close({ ...input, retainUnsettledRemoteRunner: !this.#explicitlyCancelled });
   }
 }
 

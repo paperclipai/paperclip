@@ -51,6 +51,7 @@ import type {
   IssueThreadInteractionResolverPolicyProvenance,
   IssueReviewPolicy,
 } from "@paperclipai/shared";
+import { withoutSqlStatementText } from "@paperclipai/shared";
 import { badRequest } from "../errors.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
 import { budgetService } from "./budgets.js";
@@ -1731,7 +1732,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
               agentName: run.agentName,
               issueId,
               errorCode: run.errorCode,
-              error: run.error,
+              error: run.error ? withoutSqlStatementText(run.error) : run.error,
               retryExhaustedReason: run.exhaustionMessage,
             },
           },
@@ -1754,7 +1755,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           detail: {
             kind: "failed_run",
             agentName: run.agentName,
-            failureReasonExcerpt: excerpt(run.error ?? run.exhaustionMessage ?? run.errorCode),
+            // Rows saved before SQL text was kept out of run errors still carry it.
+            failureReasonExcerpt: excerpt((run.error ? withoutSqlStatementText(run.error) : null) ?? run.exhaustionMessage ?? run.errorCode),
             images: issueImages(failedImageMap, issueId),
           },
         }));

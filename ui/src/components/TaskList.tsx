@@ -18,6 +18,8 @@ import { AgentAvatar, type AvatarAgent } from "./AgentAvatar";
 import { deriveInitials } from "./Identity";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { useTaskListColumnPreferences } from "../hooks/useTaskListColumnPreferences";
+import { usePreloadTaskChats } from "../hooks/usePreloadTaskChats";
+import { CHAT_BOOTSTRAP_PRELOAD_LIMIT } from "../lib/issue-chat-bootstrap";
 import type { TaskCollectionPreferenceLocation } from "../lib/task-collection-preferences";
 
 export type TaskListItem = {
@@ -45,8 +47,29 @@ export function includeTaskListAncestors(items: readonly TaskListItem[], matches
   return items.filter(item => included.has(item.issue.id));
 }
 
+/**
+ * The route refs of the first `limit` rendered rows. Rows that are not
+ * rendered are skipped; no row after the last one returned is read.
+ */
+export function topRenderedTaskRefs(rows: Iterable<Pick<Issue, "id" | "identifier">>, rendered: ReadonlySet<string>, limit: number) {
+  const refs: string[] = [];
+  if (limit <= 0) return refs;
+  for (const issue of rows) {
+    if (!rendered.has(issue.id)) continue;
+    refs.push(issue.identifier ?? issue.id);
+    if (refs.length >= limit) break;
+  }
+  return refs;
+}
+
+/** Preloads the chats of a list's top rows. A component, so lists without it need no query client. */
+function TaskChatPreload({ companyId, refs }: { companyId: string; refs: readonly string[] }) {
+  usePreloadTaskChats(companyId, refs, true);
+  return null;
+}
+
 /** Opt-in collection built from the reviewed row, hierarchy and column primitives. */
-export function TaskList({ items, allItems = items, initialColumns = defaultTaskListColumns, density = "comfortable", collapsedIds, onCollapsedIdsChange, groupBy = "none", emptyState, issueLinkState, collectionKey, preferenceLocation, sort: controlledSort, onSortChange }: {
+export function TaskList({ items, allItems = items, initialColumns = defaultTaskListColumns, density = "comfortable", collapsedIds, onCollapsedIdsChange, groupBy = "none", emptyState, issueLinkState, collectionKey, preferenceLocation, sort: controlledSort, onSortChange, preloadCompanyId }: {
   items: readonly TaskListItem[];
   allItems?: readonly TaskListItem[];
   initialColumns?: readonly TaskListColumnId[];
@@ -61,6 +84,8 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
   preferenceLocation?: TaskCollectionPreferenceLocation;
   sort?: TaskListOrder;
   onSortChange?: (sort: TaskListSort | undefined) => void;
+  /** Preload the chat of the top rows for this company. Only a page's main task list sets this. */
+  preloadCompanyId?: string | null;
 }) {
   const localKey = useId();
   const { columns, order: columnOrder, setColumns, setOrder: setColumnOrder } = useTaskListColumnPreferences(preferenceLocation, initialColumns);
@@ -142,6 +167,16 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
     const label = groupBy === "status" ? issueFilterLabel(root.status) : groupBy === "project" ? root.project?.name ?? "No project" : "";
     groups.set(label, [...(groups.get(label) ?? []), root]);
   }
+  // The top rendered rows, in display order. The walk is lazy: it stops after
+  // the preload limit, whatever the size of the list.
+  function* displayedRows(): Generator<Issue> {
+    function* branch(issue: Issue): Generator<Issue> {
+      yield issue;
+      if (!collapsed.has(issue.id)) for (const child of childMap.get(issue.id) ?? []) yield* branch(child);
+    }
+    for (const groupRoots of groups.values()) for (const root of groupRoots) yield* branch(root);
+  }
+  const preloadRefs = preloadCompanyId ? topRenderedTaskRefs(displayedRows(), renderedIds, CHAT_BOOTSTRAP_PRELOAD_LIMIT) : [];
   return (
     <TaskListViewport visibleColumns={columns} columnOrder={columnOrder} controls={<TaskListColumnSettings visibleColumns={columns} onVisibleColumnsChange={updateColumns} onColumnOrderChange={setColumnOrder} onResetDefaults={() => setSort(undefined)} />}>
       <TaskListColumnHeader sort={sort && isTaskListColumnSort(sort) ? sort : undefined} onSortChange={setSort} onColumnOrderChange={setColumnOrder} />
@@ -160,6 +195,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
         <span>Rendering {Math.min(limit, rowIds.length)} of {rowIds.length} tasks</span>
         <Button variant="outline" size="sm" onClick={loadMore}>Show more tasks</Button>
       </div> : null}
+      {preloadCompanyId && preloadRefs.length ? <TaskChatPreload companyId={preloadCompanyId} refs={preloadRefs} /> : null}
     </TaskListViewport>
   );
 }

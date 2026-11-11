@@ -1,13 +1,186 @@
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import type { Db } from "@paperclipai/db";
-import { heartbeatRuns, livenessDb, nativeRunFinalizations } from "@paperclipai/db";
-import { and, eq, gt, isNull, sql } from "drizzle-orm";
+import { environmentLeases, heartbeatRuns, livenessDb, nativeRunFinalizations } from "@paperclipai/db";
+import { and, eq, gt, isNotNull, isNull, notExists, or, sql, type SQL } from "drizzle-orm";
 import { currentNativeControllerIdentity, type NativeControllerIdentity } from "./native-restart-recovery.js";
+import { OPERATOR_ATTESTED_CONTROLLER_HOST } from "./native-controller-host-recovery.js";
+import { NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE } from "./native-runner-ownership.js";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
 
 export const NATIVE_SESSION_EXECUTION_LEASE_TTL_MS = 20 * 60_000;
 const NATIVE_SESSION_EXECUTION_LEASE_RENEW_INTERVAL_MS = 5 * 60_000;
 const RENEWAL_STATEMENT_TIMEOUT_MS = 10_000;
+
+/**
+ * Takeover of a native execution lease is explicit, not inferred from expiry.
+ *
+ * A lease can lapse with its owner alive: a host sleep jumps the wall clock
+ * (and the database clock) past `lease_expires_at` while this process's
+ * monotonic timers barely move. Expiry then means only "nobody renewed", not
+ * "the owner is gone". The same owner may take its own lapsed lease back when
+ * no other actor has recorded anything on the row or run since.
+ *
+ * Every actor that acts on a lapsed executor lease while the run is still
+ * running first writes one of the fields checked here, under the coordinator
+ * row lock: restart recovery and takeover (`recovery_state`, `lease_owner`,
+ * `controller_*`), the finalizer and cleanup (`lease_owner`), failure
+ * settlement (`phase`, `failure_code`, `next_attempt_at`, run status), the
+ * board's controller-stopped confirmation (`controller_host_hash`), another
+ * server's orphan sweep (the run's ownership-unverified error code) and startup
+ * cleanup (the run's `nativeStartupCleanup` marker). Exactly one side wins:
+ * either that write commits first and the owner stays fenced out, or the
+ * owner's lease is live again and those actors defer to it as before.
+ *
+ * Pre-result only: phase `observed` without an accepted result. After a result
+ * is accepted, workspace finalization may act on a lapsed lease without such a
+ * write, so a lapsed post-result lease is only ever relinquished, never renewed.
+ * Local runs only: a remote runner is fenced by its own controller lease.
+ *
+ * Callers lock with `lockNativeExecutionLeaseForReacquire` first, so the run
+ * row this reads is the latest committed version and stays so until commit.
+ */
+const OWN_RESTART_CLAIM_STATES: ReadonlyArray<readonly [disposition: string, recoveryState: string]> = [
+  ["resume_dead_runner", "resuming_session"],
+  ["reattach_existing_runner", "awaiting_runner_reattach"],
+  ["bootstrap_incomplete", "bootstrap_incomplete"],
+];
+
+function nativeOwnRestartClaimUnchanged(): SQL {
+  const last = sql`(${nativeRunFinalizations.recoveryHistory} -> -1)`;
+  const pairs = sql.join(OWN_RESTART_CLAIM_STATES.map(([disposition, state]) =>
+    sql`(${last} ->> 'disposition' = ${disposition} and ${nativeRunFinalizations.recoveryState} = ${state})`), sql` or `);
+  return sql`(jsonb_typeof(${nativeRunFinalizations.recoveryHistory}) = 'array'
+    and (${pairs})
+    and ${last} ->> 'controllerGeneration' = ${nativeRunFinalizations.controllerGeneration}::text
+    and ${last} ->> 'controllerBootId' = ${nativeRunFinalizations.controllerBootId}
+    and ${nativeRunFinalizations.recoveryRequestId} is not distinct from (${last} ->> 'recoveryRequestId'))`;
+}
+
+function nativeExecutionLeaseUntouchedCondition(stage: "observed" | "accepted"): SQL {
+  const coordinatorStage = stage === "observed"
+    ? sql`${nativeRunFinalizations.phase} = 'observed' and ${nativeRunFinalizations.resultId} is null`
+    : sql`${nativeRunFinalizations.phase} = 'workspace_finalizing' and ${nativeRunFinalizations.resultId} is not null`;
+  return sql`(${coordinatorStage}
+    and (
+      (${nativeRunFinalizations.recoveryState} is null and ${nativeRunFinalizations.recoveryRequestId} is null)
+      or ${nativeOwnRestartClaimUnchanged()}
+    )
+    and ${nativeRunFinalizations.failureCode} is null
+    and ${nativeRunFinalizations.nextAttemptAt} is null
+    and ${nativeRunFinalizations.controllerHostHash} is distinct from ${OPERATOR_ATTESTED_CONTROLLER_HOST}
+    and exists (select 1 from ${heartbeatRuns}
+      where ${heartbeatRuns.id} = ${nativeRunFinalizations.runId}
+        and ${heartbeatRuns.companyId} = ${nativeRunFinalizations.companyId}
+        and ${heartbeatRuns.status} = 'running'
+        and ${heartbeatRuns.errorCode} is distinct from ${NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE}
+        and (${heartbeatRuns.resultJson} is null or ${heartbeatRuns.resultJson} -> 'nativeStartupCleanup' is null)))`;
+}
+
+/**
+ * The executor's own lease is held: live, or (local runs only) lapsed and
+ * untouched since, so the same owner takes it back in this statement. The
+ * caller's WHERE must also match lease owner, attempt and controller identity;
+ * `controllerGeneration` is required to take back a lapsed lease.
+ */
+export function nativeExecutionLeaseHeldCondition(input: {
+  remote: boolean; controllerGeneration?: number; relinquishAccepted?: boolean;
+}): SQL {
+  const live = gt(nativeRunFinalizations.leaseExpiresAt, sql`clock_timestamp()`);
+  if (input.remote || input.controllerGeneration === undefined) return live;
+  const untouched = input.relinquishAccepted
+    ? or(nativeExecutionLeaseUntouchedCondition("observed"), nativeExecutionLeaseUntouchedCondition("accepted"))!
+    : nativeExecutionLeaseUntouchedCondition("observed");
+  return or(live, and(eq(nativeRunFinalizations.controllerGeneration, input.controllerGeneration), untouched))!;
+}
+
+/**
+ * Lock order for `nativeExecutionLeaseHeldCondition`: the coordinator row, then,
+ * only when its lease has lapsed, the run row (shared). The share lock waits for
+ * any in-flight run write and holds the run until commit, so the next statement
+ * reads the run's latest committed state. A live lease takes no extra lock.
+ * Returns whether the lease was still live.
+ */
+export async function lockNativeExecutionLeaseForReacquire(tx: Pick<Db, "execute">, input: {
+  runId: string; companyId: string; issueId: string;
+  /**
+   * Lock only a row the caller's UPDATE could match: this owner's, and with
+   * `preResultOnly` one without an accepted result. A row it cannot match
+   * stays unlocked, as the UPDATE alone would leave it.
+   */
+  leaseOwner?: string; preResultOnly?: boolean;
+}): Promise<boolean> {
+  const rows = await tx.execute<{ live: boolean }>(sql`select coalesce(${nativeRunFinalizations.leaseExpiresAt} > clock_timestamp(), false) as live
+    from ${nativeRunFinalizations}
+    where ${nativeRunFinalizations.runId} = ${input.runId}
+      and ${nativeRunFinalizations.companyId} = ${input.companyId}
+      and ${nativeRunFinalizations.issueId} = ${input.issueId}
+      ${input.leaseOwner === undefined ? sql`` : sql`and ${nativeRunFinalizations.leaseOwner} = ${input.leaseOwner}`}
+      ${input.preResultOnly ? sql`and ${nativeRunFinalizations.resultId} is null` : sql``}
+    for update`);
+  const row = (rows as unknown as Array<{ live: boolean }> | undefined)?.[0];
+  if (!row) return false;
+  if (row.live) return true;
+  await tx.execute(sql`select 1 from ${heartbeatRuns}
+    where ${heartbeatRuns.id} = ${input.runId} and ${heartbeatRuns.companyId} = ${input.companyId}
+    for share`);
+  return false;
+}
+
+type OwnNativeRecoveryClaimInput = {
+  companyId: string; runId: string; leaseOwner: string; controller?: NativeControllerIdentity;
+};
+
+async function ownNativeRecoveryClaimCondition(tx: Db, input: OwnNativeRecoveryClaimInput) {
+  const [row] = await tx.select({ controllerGeneration: nativeRunFinalizations.controllerGeneration })
+    .from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, input.companyId),
+      eq(nativeRunFinalizations.runId, input.runId), eq(nativeRunFinalizations.leaseOwner, input.leaseOwner)));
+  if (!row) return null;
+  const controller = input.controller ?? await currentNativeControllerIdentity();
+  return and(
+    eq(nativeRunFinalizations.companyId, input.companyId),
+    eq(nativeRunFinalizations.runId, input.runId),
+    eq(nativeRunFinalizations.leaseOwner, input.leaseOwner),
+    eq(nativeRunFinalizations.controllerBootId, controller.bootId),
+    eq(nativeRunFinalizations.controllerPid, controller.pid),
+    eq(nativeRunFinalizations.controllerProcessStartedAt, controller.processStartedAt),
+    isNotNull(nativeRunFinalizations.recoveryState),
+    nativeExecutionLeaseHeldCondition({ remote: false, controllerGeneration: row.controllerGeneration }),
+    notExists(tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.heartbeatRunId, input.runId),
+      sql`${environmentLeases.provider} <> 'local'`))),
+  )!;
+}
+
+export async function readOwnNativeRecoveryClaimLease(
+  tx: Db, input: OwnNativeRecoveryClaimInput,
+): Promise<"live" | "lapsed_own_claim" | "lost"> {
+  const [row] = await tx.select({
+    live: sql<boolean>`coalesce(${nativeRunFinalizations.leaseExpiresAt} > clock_timestamp(), false)`,
+  }).from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, input.companyId),
+    eq(nativeRunFinalizations.runId, input.runId), eq(nativeRunFinalizations.leaseOwner, input.leaseOwner)));
+  if (!row) return "lost";
+  if (row.live) return "live";
+  const condition = await ownNativeRecoveryClaimCondition(tx, input);
+  if (!condition) return "lost";
+  const [held] = await tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(condition);
+  return held ? "lapsed_own_claim" : "lost";
+}
+
+export async function extendOwnNativeRecoveryClaimInTransaction(tx: Db, input: OwnNativeRecoveryClaimInput): Promise<boolean> {
+  const state = await readOwnNativeRecoveryClaimLease(tx, input);
+  if (state === "live") return true;
+  if (state === "lost") return false;
+  const condition = await ownNativeRecoveryClaimCondition(tx, input);
+  if (!condition) return false;
+  const [held] = await tx.update(nativeRunFinalizations)
+    .set({
+      leaseExpiresAt: sql`clock_timestamp() + (${NATIVE_SESSION_EXECUTION_LEASE_TTL_MS} * interval '1 millisecond')`,
+      updatedAt: sql`clock_timestamp()`,
+    })
+    .where(condition)
+    .returning({ runId: nativeRunFinalizations.runId });
+  return Boolean(held);
+}
 
 /** Preparation can perform provider I/O only under its current recovery claim. */
 export async function assertNativeSessionPreparationAuthority(input: {
@@ -48,6 +221,40 @@ export async function nativeRecoveryClaimRelinquished(input: {
 }
 
 /**
+ * The run's controller is this process and its execution lease has lapsed
+ * (or was released): the executor that held it detached because of that loss,
+ * not because a shutdown or hot restart handed the run on.
+ */
+export async function ownNativeExecutionLeaseLapsed(db: Db, input: { companyId: string; id: string }): Promise<boolean> {
+  const controller = await currentNativeControllerIdentity();
+  const [row] = await db.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+    .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
+    .where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, input.id),
+      eq(heartbeatRuns.status, "running"), isNull(nativeRunFinalizations.resultId),
+      eq(nativeRunFinalizations.controllerBootId, controller.bootId), eq(nativeRunFinalizations.controllerPid, controller.pid),
+      or(isNull(nativeRunFinalizations.leaseExpiresAt), sql`${nativeRunFinalizations.leaseExpiresAt} <= clock_timestamp()`)))
+    .limit(1);
+  return Boolean(row);
+}
+
+export async function releaseLapsedNativeRestartClaim(input: {
+  db: Db; companyId: string; runId: string; leaseOwner: string; controllerGeneration: number; providerAttempt: number;
+}): Promise<boolean> {
+  const released = await input.db.update(nativeRunFinalizations)
+    .set({ leaseOwner: null, leaseExpiresAt: null, updatedAt: new Date() })
+    .where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, input.runId),
+      eq(nativeRunFinalizations.phase, "observed"), isNull(nativeRunFinalizations.resultId),
+      eq(nativeRunFinalizations.leaseOwner, input.leaseOwner),
+      eq(nativeRunFinalizations.controllerGeneration, input.controllerGeneration),
+      eq(nativeRunFinalizations.attempt, input.providerAttempt),
+      sql`${nativeRunFinalizations.leaseExpiresAt} <= clock_timestamp()`,
+      sql`exists (select 1 from ${heartbeatRuns} where ${heartbeatRuns.id} = ${nativeRunFinalizations.runId}
+        and ${heartbeatRuns.companyId} = ${input.companyId} and ${heartbeatRuns.status} = 'running')`))
+    .returning({ runId: nativeRunFinalizations.runId });
+  return released.length > 0;
+}
+
+/**
  * Preparation failed after a fresh claim and before any provider turn. Release
  * only this exact claim, so ordinary failure settlement can retain the source
  * as it does for failures before the claim. Any other owner or a result keeps it.
@@ -74,6 +281,8 @@ export async function renewNativeSessionExecutionLease(input: {
   attempt: number;
   controller?: NativeControllerIdentity;
   leaseTtlMs?: number;
+  /** Local runs only: lets this exact owner take back a lease that lapsed untouched (host sleep). */
+  reacquire?: { controllerGeneration: number };
 }, { statementTimeoutMs = RENEWAL_STATEMENT_TIMEOUT_MS } = {}): Promise<void> {
   await renewNativeSessionExecutionLeaseDeadline(input, { statementTimeoutMs });
 }
@@ -102,10 +311,7 @@ async function renewNativeSessionExecutionLeaseDeadline(
     await tx.execute(sql`select set_config('statement_timeout', ${`${statementTimeoutMs}ms`}, true)`);
     // Check expiry after acquiring the row lock. An UPDATE alone can evaluate
     // its predicate before waiting and revive an owner that expired in the wait.
-    await tx.execute(sql`select 1 from ${nativeRunFinalizations}
-      where ${nativeRunFinalizations.runId} = ${input.runId}
-        and ${nativeRunFinalizations.companyId} = ${input.companyId}
-        and ${nativeRunFinalizations.issueId} = ${input.issueId} for update`);
+    await lockNativeExecutionLeaseForReacquire(tx, input);
     // The database extends from UPDATE time. Exclude connection/lock waits,
     // but conservatively include UPDATE/commit response time without assuming
     // that this server's wall clock agrees with the database's clock.
@@ -129,7 +335,8 @@ async function renewNativeSessionExecutionLeaseDeadline(
             nativeRunFinalizations.controllerProcessStartedAt,
             controller.processStartedAt,
           ),
-          gt(nativeRunFinalizations.leaseExpiresAt, sql`clock_timestamp()`),
+          nativeExecutionLeaseHeldCondition({ remote: !input.reacquire,
+            controllerGeneration: input.reacquire?.controllerGeneration }),
         ),
       )
       .returning({ runId: nativeRunFinalizations.runId });
@@ -142,6 +349,8 @@ type RenewalInput = {
   db: Db; runId: string; companyId: string; issueId: string;
   leaseOwner: string; attempt: number; controller: NativeControllerIdentity;
   remote?: boolean;
+  /** The claimed generation. Local runs then take back a lease that lapsed untouched (host sleep). */
+  controllerGeneration?: number;
   confirmedDeadline?: number;
   onLost: () => Promise<unknown>;
 };
@@ -153,8 +362,19 @@ const renewals = new WeakMap<Db, Map<string, {
   input: RenewalInput; references: number; timer: ReturnType<typeof setInterval>;
   pending: Promise<void>; busy: boolean; lost: Error | null;
   deadline: ReturnType<typeof setTimeout>; loss: Promise<unknown>;
-  confirmedDeadline: number;
+  confirmedDeadline: number; adopt(confirmedDeadline: number): void;
 }>>();
+
+async function attemptAdvancedUnderOwner(binding: RenewalInput): Promise<boolean> {
+  const [row] = await livenessDb(binding.db).transaction(async tx => {
+    await tx.execute(sql`select set_config('statement_timeout', ${`${RENEWAL_STATEMENT_TIMEOUT_MS}ms`}, true)`);
+    return tx.select({ attempt: nativeRunFinalizations.attempt, leaseOwner: nativeRunFinalizations.leaseOwner })
+      .from(nativeRunFinalizations)
+      .where(and(eq(nativeRunFinalizations.runId, binding.runId), eq(nativeRunFinalizations.companyId, binding.companyId)))
+      .limit(1);
+  });
+  return row?.leaseOwner === binding.leaseOwner && row.attempt > binding.attempt;
+}
 
 export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): NativeExecutionLeaseRenewal {
   let owners = renewals.get(input.db);
@@ -162,11 +382,17 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
   let state = owners.get(input.leaseOwner);
   if (state) {
     if (state.input.runId !== input.runId || state.input.companyId !== input.companyId
-      || state.input.issueId !== input.issueId || state.input.attempt !== input.attempt
+      || state.input.issueId !== input.issueId || state.input.attempt > input.attempt
       || state.input.controller.bootId !== input.controller.bootId || state.input.remote !== input.remote) {
       throw new Error("native_session_renewal_binding_changed");
     }
     if (state.lost) throw state.lost;
+    if (input.attempt > state.input.attempt) {
+      state.input = { ...state.input, attempt: input.attempt, onLost: input.onLost, controller: input.controller,
+        controllerGeneration: input.controllerGeneration ?? state.input.controllerGeneration };
+      state.adopt(input.confirmedDeadline
+        ?? performance.now() + (input.remote ? REMOTE_CONTROLLER_LEASE_MS : NATIVE_SESSION_EXECUTION_LEASE_TTL_MS));
+    }
     state.references += 1;
   } else {
     const ttlMs = input.remote ? REMOTE_CONTROLLER_LEASE_MS : NATIVE_SESSION_EXECUTION_LEASE_TTL_MS;
@@ -175,7 +401,7 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
       state!.lost = error instanceof Error ? error : new Error("native_session_lease_lost");
       clearInterval(state!.timer);
       clearTimeout(state!.deadline);
-      state!.loss = Promise.resolve().then(input.onLost).catch(() => undefined);
+      state!.loss = Promise.resolve().then(state!.input.onLost).catch(() => undefined);
     };
     const deadline = (delay: number) => {
       const timer = setTimeout(() => lose(new Error("native_session_lease_renewal_deadline")), Math.max(0, delay));
@@ -185,29 +411,42 @@ export function startNativeSessionExecutionLeaseRenewal(input: RenewalInput): Na
     const renew = () => {
       if (state!.lost || state!.busy) return;
       state!.busy = true;
-      state!.pending = renewNativeSessionExecutionLeaseDeadline({ ...input, leaseTtlMs: ttlMs })
+      const binding = state!.input;
+      state!.pending = renewNativeSessionExecutionLeaseDeadline({ ...binding, leaseTtlMs: ttlMs,
+        reacquire: !binding.remote && binding.controllerGeneration !== undefined
+          ? { controllerGeneration: binding.controllerGeneration } : undefined })
         .then(confirmedDeadline => {
           // A late database response cannot restore local authority after loss
           // or recreate a timer after the final caller has stopped.
-          if (state!.lost || state!.references === 0) return;
-          clearTimeout(state!.deadline);
-          state!.confirmedDeadline = confirmedDeadline;
-          state!.deadline = deadline(confirmedDeadline - performance.now());
+          if (state!.references === 0) return;
+          state!.adopt(confirmedDeadline);
         })
-        .catch((error: unknown) => {
+        .catch(async (error: unknown) => {
+          if (state!.input !== binding) return;
           // A cancelled statement can retry at the next tick, but does not
           // extend the ownership deadline. Never queue overlapping attempts.
           for (let cause = error, depth = 0; cause && depth < 4; cause = (cause as { cause?: unknown }).cause, depth++) {
-            if ((cause as { code?: unknown }).code === "57014") return;
+            // 40P01: taking back a lapsed lease locks the run after the
+            // coordinator; a writer holding them in the other order can deadlock.
+            const code = (cause as { code?: unknown }).code;
+            if (code === "57014" || code === "40P01") return;
           }
+          const advanced = await attemptAdvancedUnderOwner(binding).catch(() => null);
+          if (advanced !== false || state!.input !== binding) return;
           lose(error);
         }).finally(() => { state!.busy = false; });
     };
     const timer = setInterval(renew, input.remote ? REMOTE_CONTROLLER_LEASE_MS / 3 : NATIVE_SESSION_EXECUTION_LEASE_RENEW_INTERVAL_MS);
     timer.unref?.();
     const confirmedDeadline = input.confirmedDeadline ?? performance.now() + ttlMs;
+    const adopt = (confirmed: number) => {
+      if (state!.lost || confirmed <= state!.confirmedDeadline) return;
+      clearTimeout(state!.deadline);
+      state!.confirmedDeadline = confirmed;
+      state!.deadline = deadline(confirmed - performance.now());
+    };
     state = { input, references: 1, timer, pending: Promise.resolve(), busy: false, lost: null,
-      deadline: deadline(confirmedDeadline - performance.now()), confirmedDeadline, loss: Promise.resolve() };
+      deadline: deadline(confirmedDeadline - performance.now()), confirmedDeadline, loss: Promise.resolve(), adopt };
     owners.set(input.leaseOwner, state);
   }
   const owned = state;

@@ -79,6 +79,18 @@ fn invalid_tool_call_result(
     }
 }
 
+fn serialize_provider_state(state: &CodexProviderState) -> Result<Vec<u8>, DurableRunnerError> {
+    let bytes = serde_json::to_vec_pretty(state).map_err(|error| {
+        DurableRunnerError::invalid(format!("failed to serialize Codex provider state: {error}"))
+    })?;
+    if bytes.len() as u64 > MAX_PROVIDER_STATE_BYTES {
+        return Err(DurableRunnerError::invalid(
+            "Codex provider state exceeds the 16 MiB limit",
+        ));
+    }
+    Ok(bytes)
+}
+
 fn receipt_limit_deadline_after(timeout_ms: u64) -> Result<u64, DurableRunnerError> {
     current_unix_ms()?.checked_add(timeout_ms).ok_or_else(|| {
         DurableRunnerError::invalid("Codex receipt-limit interruption deadline overflowed")
@@ -151,6 +163,13 @@ struct ProviderStartupAttempt {
     /// that predates it rejects it as unknown, which also fails closed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     before_spawn: bool,
+    /// Initialization failed because the provider never replied within the
+    /// request deadline (a stalled or frozen host), not because it rejected
+    /// the request or exited. Omitted when false, so state saved without a
+    /// timed-out fence stays readable by runners that predate the field; a
+    /// runner that predates it rejects a fact that carries it (fails closed).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    no_reply: bool,
 }
 
 impl ProviderStartupAttempt {
@@ -201,6 +220,18 @@ impl ProviderStartupAttempt {
                 None => false,
             },
         };
+        // Only a provider that was running and silent through its request
+        // deadline, during initialization, can have given no reply.
+        let no_reply_valid = !self.no_reply
+            || (self.phase == ProviderStartupPhase::InitializationFailed
+                && matches!(
+                    self.failed_stage,
+                    Some(
+                        ProviderStartupStage::Initialize
+                            | ProviderStartupStage::ThreadOpen
+                            | ProviderStartupStage::ThreadRead
+                    )
+                ));
         // Only an intent, or a launch whose checks failed before the spawn,
         // can still be before the spawn.
         let before_spawn_valid = !self.before_spawn
@@ -209,6 +240,7 @@ impl ProviderStartupAttempt {
                 && self.failed_stage == Some(ProviderStartupStage::Spawn));
         if self.schema != "paperclip.provider_startup.v1"
             || !before_spawn_valid
+            || !no_reply_valid
             || uuid::Uuid::parse_str(&self.launch_id).is_err()
             || self.attempted_process_generation == 0
             || self.authenticated_thread_id.is_some()
@@ -1973,6 +2005,13 @@ impl CodexProviderState {
     }
 }
 
+struct NormalizationTrace {
+    frame_id: u64,
+    rule_id: String,
+    mapped: bool,
+    emitted_event_ids: Vec<String>,
+}
+
 pub struct CodexCommandExecutor {
     state_dir: PathBuf,
     state: Option<CodexProviderState>,
@@ -1985,6 +2024,10 @@ pub struct CodexCommandExecutor {
     startup_command: Option<ProviderStartupCommand>,
     startup_evidence_error: Option<DurableRunnerError>,
     recovery_pending_effects: Option<usize>,
+    unsaved_frame_state: std::cell::Cell<bool>,
+    unsaved_trace_interpretations: Vec<NormalizationTrace>,
+    #[cfg(test)]
+    persist_count: std::cell::Cell<usize>,
 }
 
 impl CodexCommandExecutor {
@@ -2001,6 +2044,10 @@ impl CodexCommandExecutor {
             startup_command: None,
             startup_evidence_error: None,
             recovery_pending_effects: None,
+            unsaved_frame_state: std::cell::Cell::new(false),
+            unsaved_trace_interpretations: Vec::new(),
+            #[cfg(test)]
+            persist_count: std::cell::Cell::new(0),
         }
     }
 
@@ -2206,6 +2253,7 @@ impl CodexCommandExecutor {
             signal: None,
             process_tree_retired: false,
             before_spawn: true,
+            no_reply: false,
         });
         self.save_startup_fact()
     }
@@ -2238,9 +2286,14 @@ impl CodexCommandExecutor {
                 attempt.process_id = Some(process_id);
                 attempt.process_group_id = Some(process_group_id);
             }
-            ProviderStartupObservation::Failed { stage, child_exit } => {
+            ProviderStartupObservation::Failed {
+                stage,
+                child_exit,
+                no_reply,
+            } => {
                 attempt.phase = ProviderStartupPhase::InitializationFailed;
                 attempt.failed_stage = Some(stage);
+                attempt.no_reply = no_reply;
                 attempt.direct_child_exit_observed = child_exit.is_some();
                 attempt.exit_code = child_exit.as_ref().and_then(|fact| fact.exit_code);
                 attempt.signal = child_exit.as_ref().and_then(|fact| fact.signal);
@@ -2328,6 +2381,7 @@ impl CodexCommandExecutor {
         let _ = self.observe_startup(ProviderStartupObservation::Failed {
             stage: ProviderStartupStage::Admission,
             child_exit,
+            no_reply: false,
         });
     }
 
@@ -2369,13 +2423,16 @@ impl CodexCommandExecutor {
     /// - an intent still marked before the spawn (the runner died while
     ///   checking the launch, so no process was ever started); or
     /// - a `spawned` launch whose recorded process and process group have
-    ///   both exited.
+    ///   both exited; or
+    /// - an initialization that failed only because the provider gave no
+    ///   reply within the request deadline (`noReply`), whose recorded process
+    ///   and process group have both exited.
     ///
     /// Restore then relaunches the provider through the normal resume path.
     /// Every other fence stays closed: an intent that reached the spawn or
     /// predates the before-spawn mark, a provider whose process or group may
-    /// still run, a startup that failed initialization or spawn (a real
-    /// provider failure that needs reconciliation), and a session that
+    /// still run, a startup that failed spawn or was rejected by the provider
+    /// (a real provider failure that needs reconciliation), and a session that
     /// recovery deliberately closed.
     fn retire_orphaned_startup_attempt(
         &mut self,
@@ -2391,10 +2448,15 @@ impl CodexCommandExecutor {
         let Some(attempt) = state.startup_attempt.clone() else {
             return Ok(());
         };
+        // A prepared state that already holds a provider thread is the
+        // settled checkpoint that run.attach restores (see attach_run): the
+        // launch that a kill cut off was restoring that saved thread.
         let restorable = matches!(
             state.lifecycle.as_str(),
             "session_open" | "turn_active" | "provider_exited"
-        );
+        ) || (state.lifecycle == "prepared"
+            && state.thread_id.is_some()
+            && state.provider_process_generation > 0);
         let orphaned = match attempt.phase {
             // The runner died while checking the launch, before any spawn.
             ProviderStartupPhase::Intent => attempt.before_spawn,
@@ -2402,6 +2464,17 @@ impl CodexCommandExecutor {
                 (Some(pid), Some(group)) => process_gone(pid) && group_gone(group),
                 _ => false,
             },
+            // A provider that never replied within the deadline (a stalled or
+            // frozen host) is not a provider failure; once it is provably gone
+            // it is relaunched like a cut-off launch. A provider that rejected
+            // its startup or exited, and every fact saved before `noReply`
+            // existed, stays fenced.
+            ProviderStartupPhase::InitializationFailed if attempt.no_reply => {
+                match (attempt.process_id, attempt.process_group_id) {
+                    (Some(pid), Some(group)) => process_gone(pid) && group_gone(group),
+                    _ => false,
+                }
+            }
             ProviderStartupPhase::InitializationFailed => false,
         };
         if !restorable || !orphaned {
@@ -2736,6 +2809,23 @@ impl CodexCommandExecutor {
                 self.save_state()?;
                 return Ok(());
             }
+            // A process loss can hide whether an in-flight turn/start reached
+            // Codex. When the resumed thread has no active turn and its history
+            // ends at a turn Paperclip already settled, Codex never created the
+            // turn: the start is settled as not started, and the controller
+            // may start it once. Any other evidence keeps it ambiguous.
+            let ambiguous_start_never_created = ambiguous_turn_start_pending
+                && recovered_active_turn_id.is_none()
+                && previous_active_turn_id.is_none()
+                && provider
+                    .ambiguous_turn_start_never_created_a_turn(&settled_provider_turn_ids)
+                    .map_err(|error| {
+                        DurableRunnerError::invalid(format!(
+                            "ambiguous {provider_name} turn start history probe failed: {error}"
+                        ))
+                    })?;
+            let ambiguous_turn_start_pending =
+                ambiguous_turn_start_pending && !ambiguous_start_never_created;
             if ambiguous_turn_start_pending {
                 let recovered_turn_id = recovered_active_turn_id.as_deref().ok_or_else(|| {
                 DurableRunnerError::invalid(
@@ -2812,6 +2902,19 @@ impl CodexCommandExecutor {
                 state.provider_session_id = resumed_provider_session_id.clone();
                 state.settled_provider_turn_ids = settled_provider_turn_ids;
                 state.settled_provider_turn_filter = settled_provider_turn_filter;
+                if ambiguous_start_never_created {
+                    state.ambiguous_turn_start_pending = false;
+                    state.push_event(NormalizedProviderEvent {
+                        event_type: "harness.diagnostic".to_owned(),
+                        priority: EventPriority::P0,
+                        payload: json!({
+                            "provider": provider_label,
+                            "code": "ambiguous_turn_start_not_created",
+                            "message": format!("{provider_name} recovery proved from the resumed thread's history that the turn start a process loss interrupted never created a turn"),
+                            "paperclipAccepted": false,
+                        }),
+                    })?;
+                }
                 state.push_terminal_event(NormalizedProviderEvent {
                     event_type: "session.resumed".to_owned(),
                     priority: EventPriority::P0,
@@ -2960,11 +3063,69 @@ impl CodexCommandExecutor {
             .state
             .as_ref()
             .ok_or_else(|| DurableRunnerError::invalid("Codex provider state is unavailable"))?;
-        self.persist_state(state)
+        self.persist_state(state)?;
+        self.unsaved_frame_state.set(false);
+        Ok(())
+    }
+
+    fn save_unsaved_frame_state(&self) -> Result<(), DurableRunnerError> {
+        if !self.unsaved_frame_state.get() {
+            return Ok(());
+        }
+        let state = self
+            .state
+            .as_ref()
+            .ok_or_else(|| DurableRunnerError::invalid("Codex provider state is unavailable"))?;
+        let bytes = serialize_provider_state(state)?;
+        if fs::read(self.state_path()).is_ok_and(|saved| saved == bytes) {
+            self.unsaved_frame_state.set(false);
+            return Ok(());
+        }
+        state.validate()?;
+        self.write_state_bytes(&bytes)?;
+        self.unsaved_frame_state.set(false);
+        Ok(())
+    }
+
+    fn record_saved_trace_interpretations(&mut self) {
+        let traces = std::mem::take(&mut self.unsaved_trace_interpretations);
+        let Some(provider) = self.provider.as_mut() else {
+            return;
+        };
+        for trace in traces {
+            provider.record_provider_trace_interpretation(
+                trace.frame_id,
+                &trace.rule_id,
+                if trace.mapped { "mapped" } else { "ignored" },
+                trace.emitted_event_ids,
+                if trace.mapped {
+                    "Provider notification normalized into durable PRP events"
+                } else {
+                    "Provider notification did not produce a durable PRP event"
+                },
+            );
+        }
+    }
+
+    fn save_before_provider_writes(
+        &mut self,
+        still_polling: bool,
+    ) -> Result<(), DurableRunnerError> {
+        self.save_unsaved_frame_state()?;
+        self.record_saved_trace_interpretations();
+        if let Some(provider) = self.provider.as_mut() {
+            provider.release_courtesy_responses(still_polling);
+        }
+        Ok(())
     }
 
     fn persist_state(&self, state: &CodexProviderState) -> Result<(), DurableRunnerError> {
         state.validate()?;
+        let bytes = serialize_provider_state(state)?;
+        self.write_state_bytes(&bytes)
+    }
+
+    fn write_state_bytes(&self, bytes: &[u8]) -> Result<(), DurableRunnerError> {
         fs::create_dir_all(&self.state_dir).map_err(|error| {
             DurableRunnerError::invalid(format!(
                 "failed to create provider state directory: {error}"
@@ -2980,19 +3141,9 @@ impl CodexCommandExecutor {
         )?;
         verify_private_directory(&self.state_dir)?;
         let path = self.state_path();
-        let bytes = serde_json::to_vec_pretty(state).map_err(|error| {
-            DurableRunnerError::invalid(format!(
-                "failed to serialize Codex provider state: {error}"
-            ))
-        })?;
-        if bytes.len() as u64 > MAX_PROVIDER_STATE_BYTES {
-            return Err(DurableRunnerError::invalid(
-                "Codex provider state exceeds the 16 MiB limit",
-            ));
-        }
         let (temporary, mut file) = create_private_temporary_file(&path)?;
         let result = (|| -> std::io::Result<()> {
-            file.write_all(&bytes)?;
+            file.write_all(bytes)?;
             file.sync_all()?;
             drop(file);
             fs::rename(&temporary, &path)?;
@@ -3010,6 +3161,8 @@ impl CodexCommandExecutor {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|error| {
             DurableRunnerError::invalid(format!("failed to protect provider state: {error}"))
         })?;
+        #[cfg(test)]
+        self.persist_count.set(self.persist_count.get() + 1);
         Ok(())
     }
 
@@ -4515,6 +4668,7 @@ impl CodexCommandExecutor {
         call_id: String,
         operation_id: String,
     ) -> Result<(), DurableRunnerError> {
+        self.save_before_provider_writes(true)?;
         let deadline_unix_ms =
             receipt_limit_deadline_after(RECEIPT_LIMIT_INTERRUPT_TERMINAL_DEADLINE_MS)?;
         let state = self
@@ -4562,7 +4716,12 @@ impl CodexCommandExecutor {
                 .expect("Codex state remains available before receipt-limit interruption")
                 .record_receipt_limit_interrupt_attempt()?;
             self.save_state()?;
-            match self.interrupt_turn("semantic_tool_turn_receipt_limit") {
+            self.save_before_provider_writes(false)?;
+            let interrupted = self.interrupt_turn("semantic_tool_turn_receipt_limit");
+            if let Some(provider) = self.provider.as_mut() {
+                provider.hold_courtesy_responses();
+            }
+            match interrupted {
                 Ok(_) => {
                     let accepted_deadline_unix_ms =
                         receipt_limit_deadline_after(RECEIPT_LIMIT_ACCEPTED_TERMINAL_DEADLINE_MS)?;
@@ -4782,6 +4941,7 @@ impl CodexCommandExecutor {
             .admit_tool_call(&call_id, &operation_id, &input);
         match admission {
             Ok(ToolCallAdmission::CompletedReplay(result)) => {
+                self.save_before_provider_writes(true)?;
                 self.provider
                     .as_mut()
                     .expect("provider remains present while handling its tool call")
@@ -5113,6 +5273,25 @@ impl CodexCommandExecutor {
         if self.provider.is_none() {
             return self.settle_receipt_limit_interrupt_if_deadline_elapsed();
         }
+        if let Some(provider) = self.provider.as_mut() {
+            provider.hold_courtesy_responses();
+        }
+        let polled = self.poll_provider_frames(allow_control, receipt_limit_terminal_poll);
+        let saved = self.save_before_provider_writes(false);
+        polled?;
+        saved?;
+        // Check the durable deadline only after a complete provider poll. A
+        // terminal that arrived after interruption acceptance but before this
+        // observation remains authoritative even when several fast controller
+        // polls have already exhausted the interruption-attempt budget.
+        self.settle_receipt_limit_interrupt_if_deadline_elapsed()
+    }
+
+    fn poll_provider_frames(
+        &mut self,
+        allow_control: bool,
+        receipt_limit_terminal_poll: bool,
+    ) -> Result<(), DurableRunnerError> {
         for _ in 0..MAX_EVENTS_PER_POLL {
             let provider = self
                 .provider
@@ -5175,6 +5354,7 @@ impl CodexCommandExecutor {
                     ))?;
                     // Commit the authoritative failure before best-effort provider cleanup.
                     self.save_state()?;
+                    self.record_saved_trace_interpretations();
                     if let Some(mut provider) = self.provider.take() {
                         if let Some(frame_id) = trace_frame_id {
                             provider.record_provider_trace_interpretation(
@@ -5225,7 +5405,7 @@ impl CodexCommandExecutor {
                             "method": method.chars().take(128).collect::<String>(), "receivedThreadId": child, "expectedThreadId": root_thread,
                             "receivedTurnId": child_turn, "expectedTurnId": root_turn }),
                     }])?;
-                    self.save_state()?;
+                    self.unsaved_frame_state.set(true);
                     if let (Some(frame_id), Some(provider)) =
                         (trace_frame_id, self.provider.as_mut())
                     {
@@ -5245,6 +5425,9 @@ impl CodexCommandExecutor {
                     };
                     let normalized_terminal_type =
                         normalized_codex_terminal_event_type(&method, &params);
+                    if normalized_terminal_type.is_some() {
+                        self.save_before_provider_writes(true)?;
+                    }
                     let cursor_cloud_delivery = if self
                         .state
                         .as_ref()
@@ -5486,12 +5669,16 @@ impl CodexCommandExecutor {
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
-                    self.save_state()?;
-                    if self
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| state.lifecycle == "reconciliation_required")
+                    let reconciliation_required = state.lifecycle == "reconciliation_required";
+                    if terminal_event_type.is_some()
+                        || cursor_cloud_delivery.is_some()
+                        || reconciliation_required
                     {
+                        self.save_state()?;
+                    } else {
+                        self.unsaved_frame_state.set(true);
+                    }
+                    if reconciliation_required {
                         break;
                     }
                     if let (Some(delivery), Some(provider)) =
@@ -5499,24 +5686,16 @@ impl CodexCommandExecutor {
                     {
                         let _ = provider.acknowledge_cursor_cloud_terminal(delivery);
                     }
-                    if let (Some(frame_id), Some(provider)) =
-                        (trace_frame_id, self.provider.as_mut())
-                    {
-                        provider.record_provider_trace_interpretation(
+                    if let Some(frame_id) = trace_frame_id {
+                        self.unsaved_trace_interpretations.push(NormalizationTrace {
                             frame_id,
-                            &format!("codex.normalize.{}", method.replace('/', ".")),
-                            if normalized_event_count > 0 {
-                                "mapped"
-                            } else {
-                                "ignored"
-                            },
-                            trace_emitted_event_ids,
-                            if normalized_event_count > 0 {
-                                "Provider notification normalized into durable PRP events"
-                            } else {
-                                "Provider notification did not produce a durable PRP event"
-                            },
-                        );
+                            rule_id: format!("codex.normalize.{}", method.replace('/', ".")),
+                            mapped: normalized_event_count > 0,
+                            emitted_event_ids: trace_emitted_event_ids,
+                        });
+                    }
+                    if !self.unsaved_frame_state.get() {
+                        self.record_saved_trace_interpretations();
                     }
                 }
                 CodexProviderEvent::McpPermissionRequest { request_id, params } => {
@@ -5582,6 +5761,8 @@ impl CodexCommandExecutor {
                     process_generation,
                     completed_turn_process_generation,
                 } => {
+                    self.save_unsaved_frame_state()?;
+                    self.record_saved_trace_interpretations();
                     self.provider = None;
                     if !success {
                         let state = self
@@ -5624,16 +5805,13 @@ impl CodexCommandExecutor {
                 }
             }
         }
-        // Check the durable deadline only after a complete provider poll. A
-        // terminal that arrived after interruption acceptance but before this
-        // observation remains authoritative even when several fast controller
-        // polls have already exhausted the interruption-attempt budget.
-        self.settle_receipt_limit_interrupt_if_deadline_elapsed()
+        Ok(())
     }
 }
 
 impl CommandExecutor for CodexCommandExecutor {
     fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+        self.save_before_provider_writes(false)?;
         let Some(state) = self.state.as_ref() else {
             return Ok(false);
         };
@@ -5701,6 +5879,7 @@ impl CommandExecutor for CodexCommandExecutor {
             command_type: command.command_type.clone(),
         });
         let outcome = (|| {
+            self.save_before_provider_writes(false)?;
             self.restore()?;
             if self
                 .state
@@ -5805,6 +5984,7 @@ impl CommandExecutor for CodexCommandExecutor {
         if let Some(error) = &self.startup_evidence_error {
             return Err(error.clone());
         }
+        self.save_before_provider_writes(false)?;
         Ok(self
             .state
             .as_ref()
@@ -5852,6 +6032,13 @@ impl CommandExecutor for CodexCommandExecutor {
             self.settle_receipt_limit_after_shutdown(false)?;
         }
         Ok(drained.next_drain_deadline)
+    }
+
+    fn provider_poll_is_live(&self) -> bool {
+        self.provider.is_some()
+            && self.state.as_ref().is_some_and(|state| {
+                state.startup_attempt.is_none() && state.lifecycle != "reconciliation_required"
+            })
     }
 
     fn maintain_backpressured_provider(&mut self) -> Result<(), DurableRunnerError> {
@@ -6042,8 +6229,13 @@ mod tests {
             signal: None,
             process_tree_retired: false,
             before_spawn: false,
+            no_reply: false,
         };
         attempt.validate().unwrap();
+        // `noReply` belongs only to an initialization that failed silently.
+        attempt.no_reply = true;
+        assert!(attempt.validate().is_err());
+        attempt.no_reply = false;
         attempt.before_spawn = true;
         attempt.validate().unwrap();
         attempt.before_spawn = false;
@@ -6194,6 +6386,7 @@ mod tests {
             state.config.driver = "codex_app_server".to_owned();
             state.config.command = PathBuf::from("codex");
             state.lifecycle = lifecycle.to_owned();
+            state.provider_process_generation = 1;
             if lifecycle != "turn_active" {
                 state.active_provider_turn_id = None;
             }
@@ -6241,7 +6434,7 @@ mod tests {
 
         #[test]
         fn restart_retires_a_spawned_startup_whose_provider_process_exited() {
-            for lifecycle in ["turn_active", "session_open", "provider_exited"] {
+            for lifecycle in ["turn_active", "session_open", "provider_exited", "prepared"] {
                 let pid = exited_process_group();
                 let directory =
                     orphaned_startup_fixture("orphaned-startup-exited", lifecycle, spawned(pid));
@@ -6263,6 +6456,21 @@ mod tests {
         }
 
         #[test]
+        fn restart_keeps_the_fence_for_a_prepared_state_without_a_saved_thread() {
+            // Only a prepared state over a saved thread is a settled checkpoint.
+            let pid = exited_process_group();
+            let directory =
+                orphaned_startup_fixture("orphaned-startup-unopened", "prepared", |executor| {
+                    executor.state.as_mut().unwrap().thread_id = None;
+                    spawned(pid)(executor);
+                });
+            assert!(reload_and_retire(&directory)
+                .assert_startup_admitted()
+                .is_err());
+            fs::remove_dir_all(directory).unwrap();
+        }
+
+        #[test]
         fn restart_keeps_the_fence_for_a_startup_that_failed() {
             for (stage, child) in [
                 (ProviderStartupStage::Spawn, None),
@@ -6280,6 +6488,7 @@ mod tests {
                             .observe_startup(ProviderStartupObservation::Failed {
                                 stage,
                                 child_exit: None,
+                                no_reply: false,
                             })
                             .unwrap();
                     });
@@ -6287,6 +6496,83 @@ mod tests {
                 assert!(restarted.assert_startup_admitted().is_err());
                 fs::remove_dir_all(directory).unwrap();
             }
+        }
+
+        fn failed_without_reply(
+            pid: u32,
+            stage: ProviderStartupStage,
+            no_reply: bool,
+        ) -> impl FnOnce(&mut CodexCommandExecutor) {
+            move |executor| {
+                spawned(pid)(executor);
+                executor
+                    .observe_startup(ProviderStartupObservation::Failed {
+                        stage,
+                        child_exit: None,
+                        no_reply,
+                    })
+                    .unwrap();
+            }
+        }
+
+        #[test]
+        fn restart_retires_an_initialization_that_got_no_reply_once_its_provider_exited() {
+            for stage in [
+                ProviderStartupStage::Initialize,
+                ProviderStartupStage::ThreadOpen,
+                ProviderStartupStage::ThreadRead,
+            ] {
+                let pid = exited_process_group();
+                let directory = orphaned_startup_fixture(
+                    "no-reply-startup-exited",
+                    "turn_active",
+                    failed_without_reply(pid, stage, true),
+                );
+                let mut restarted = reload_and_retire(&directory);
+                assert!(restarted.assert_startup_admitted().is_ok());
+                assert!(restarted.retained_events().unwrap().iter().any(|event| {
+                    event.payload["code"] == "provider_startup_retired"
+                        && event.payload["startup"]["noReply"] == true
+                }));
+                fs::remove_dir_all(directory).unwrap();
+            }
+        }
+
+        #[test]
+        fn restart_keeps_a_no_reply_fence_while_its_provider_may_run() {
+            let mut live = process_group_leader();
+            let directory = orphaned_startup_fixture(
+                "no-reply-startup-live",
+                "turn_active",
+                failed_without_reply(live.id(), ProviderStartupStage::ThreadOpen, true),
+            );
+            assert!(reload_and_retire(&directory)
+                .assert_startup_admitted()
+                .is_err());
+            let _ = live.kill();
+            let _ = live.wait();
+            fs::remove_dir_all(directory).unwrap();
+        }
+
+        #[test]
+        fn restart_keeps_a_rejected_or_previously_saved_initialization_fence() {
+            // A provider that answered with a rejection (no `noReply`), and a
+            // fact saved by a runner that predates the field, stay fenced.
+            let pid = exited_process_group();
+            let directory = orphaned_startup_fixture(
+                "rejected-startup",
+                "turn_active",
+                failed_without_reply(pid, ProviderStartupStage::ThreadOpen, false),
+            );
+            let saved: Value = serde_json::from_slice(
+                &fs::read(directory.join(CODEX_PROVIDER_STATE_FILE)).unwrap(),
+            )
+            .unwrap();
+            assert!(saved["startupAttempt"].get("noReply").is_none());
+            assert!(reload_and_retire(&directory)
+                .assert_startup_admitted()
+                .is_err());
+            fs::remove_dir_all(directory).unwrap();
         }
 
         #[test]
@@ -6393,7 +6679,10 @@ mod tests {
             use std::io::{BufRead, BufReader};
             use std::os::unix::process::CommandExt;
             // The leader starts a child in its own process group, reports the
-            // child pid, and is then killed and reaped. The child keeps the group.
+            // child pid, and is then killed and reaped. The child keeps the group
+            // as an orphan, which is held apart from a reap that must verify.
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let orphans = crate::process_lineage::host_orphans::may_orphan();
             let mut leader = std::process::Command::new("sh")
                 .args(["-c", "sleep 30 & echo $!; wait"])
                 .process_group(0)
@@ -6420,6 +6709,13 @@ mod tests {
             let _ = std::process::Command::new("kill")
                 .args(["-KILL", &child.to_string()])
                 .status();
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                crate::process_lineage::host_orphans::wait_until_group_gone(
+                    i32::try_from(group).unwrap(),
+                );
+                drop(orphans);
+            }
             fs::remove_dir_all(directory).unwrap();
         }
     }
@@ -6461,6 +6757,33 @@ mod tests {
         assert_ne!(
             CodexCommandExecutor::stable_launch_args(&before),
             CodexCommandExecutor::stable_launch_args(&unsafe_args)
+        );
+    }
+
+    #[test]
+    fn external_sandbox_planning_profile_rules_carry_saved_launches_forward() {
+        let launch = |filesystem: &str, network: &str| -> Vec<String> {
+            vec![
+                "-c".to_owned(),
+                "default_permissions=\"paperclip-runner-external-sandbox\"".to_owned(),
+                "-c".to_owned(),
+                format!("permissions.paperclip-runner-workspace-read-only.filesystem={filesystem}"),
+                "-c".to_owned(),
+                format!(
+                    "permissions.paperclip-runner-workspace-read-only.network.enabled={network}"
+                ),
+                "--dangerously-bypass-approvals-and-sandbox".to_owned(),
+                "app-server".to_owned(),
+            ]
+        };
+        let saved = launch(
+            "{\":root\"=\"none\",\":minimal\"=\"read\",\":tmpdir\"=\"none\",\"/home/daytona/.codex\"=\"none\",\":workspace_roots\"={\".\"=\"read\"}}",
+            "false",
+        );
+        let current = launch("{\":root\"=\"read\"}", "true");
+        assert_eq!(
+            CodexCommandExecutor::stable_launch_args(&saved),
+            CodexCommandExecutor::stable_launch_args(&current)
         );
     }
     use super::*;
@@ -8787,11 +9110,24 @@ done
         recovered.validate().unwrap();
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    type ReceiptLimitOrphans = crate::process_lineage::host_orphans::MayOrphan;
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+    type ReceiptLimitOrphans = ();
+
+    /// The provider's `sleep` can be orphaned for a moment when its group is
+    /// killed, so the fixture holds it apart from a reap that must verify.
+    /// Bind the guard first, so it is released after the executor stops the
+    /// provider.
     #[cfg(unix)]
     fn disconnected_receipt_limit_fixture(
         mode: &str,
         deadline: u64,
-    ) -> (CodexCommandExecutor, PathBuf, u64) {
+    ) -> (ReceiptLimitOrphans, CodexCommandExecutor, PathBuf, u64) {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let orphans = crate::process_lineage::host_orphans::may_orphan();
+        #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+        let orphans = ();
         let directory = std::env::temp_dir().join(format!(
             "paperclip-offline-receipt-limit-{}",
             uuid::Uuid::new_v4()
@@ -8878,13 +9214,13 @@ done
         executor.state = Some(state);
         executor.provider = Some(provider);
         executor.save_state().unwrap();
-        (executor, directory, deadline)
+        (orphans, executor, directory, deadline)
     }
 
     #[cfg(unix)]
     #[test]
     fn disconnected_receipt_limit_preserves_a_future_deadline_without_rpc_or_facade_claims() {
-        let (mut executor, directory, deadline) =
+        let (_orphans, mut executor, directory, deadline) =
             disconnected_receipt_limit_fixture("silent", current_unix_ms().unwrap() + 60_000);
         for _ in 0..2 {
             assert!(
@@ -8950,7 +9286,7 @@ done
     #[test]
     fn disconnected_receipt_limit_stops_a_hanging_provider_at_its_original_deadline() {
         for accepted in [false, true] {
-            let (mut executor, directory, deadline) =
+            let (_orphans, mut executor, directory, deadline) =
                 disconnected_receipt_limit_fixture("silent", 1);
             executor
                 .state
@@ -8999,7 +9335,8 @@ done
     #[test]
     fn disconnected_receipt_limit_preserves_terminal_and_its_fifo_prefix_for_reconnect() {
         for mode in ["terminal", "prefix_terminal", "prefix_only"] {
-            let (mut executor, directory, deadline) = disconnected_receipt_limit_fixture(mode, 1);
+            let (_orphans, mut executor, directory, deadline) =
+                disconnected_receipt_limit_fixture(mode, 1);
             let retained = executor.state.as_ref().unwrap().pending_events.clone();
             assert!(executor.maintain_disconnected_provider().unwrap().is_none());
             assert!(executor
@@ -9058,7 +9395,7 @@ done
     #[cfg(unix)]
     #[test]
     fn fenced_receipt_limit_replays_child_and_unavailable_requests_before_root_terminal() {
-        let (mut executor, directory, _) =
+        let (_orphans, mut executor, directory, _) =
             disconnected_receipt_limit_fixture("requests_terminal", 1);
         executor.restore_checked = true;
         let mut observed = Vec::new();
@@ -9116,7 +9453,7 @@ done
 
     #[cfg(unix)]
     fn assert_disconnected_receipt_limit_drains_batches(mode: &str, has_terminal: bool) {
-        let (mut executor, directory, _) = disconnected_receipt_limit_fixture(mode, 1);
+        let (_orphans, mut executor, directory, _) = disconnected_receipt_limit_fixture(mode, 1);
         executor.maintain_disconnected_provider().unwrap();
         assert!(executor
             .provider
@@ -9311,6 +9648,10 @@ done
 #[cfg(test)]
 #[path = "tests/provider_api_validation.rs"]
 mod api_validation_tests;
+
+#[cfg(test)]
+#[path = "tests/provider_frame_save_batching.rs"]
+mod frame_save_batching_tests;
 
 #[cfg(test)]
 #[path = "tests/provider_assigned_tool_validation.rs"]

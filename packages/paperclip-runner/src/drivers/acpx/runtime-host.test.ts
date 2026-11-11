@@ -20,7 +20,7 @@ import {
   type NativeRuntimeContextSnapshot,
 } from "../../contracts/runtime-context.js";
 import { releaseMaterializedNativeRuntimeSkills } from "../runtime-context-materializer.js";
-import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
+import { openCodexAcpxRuntime } from "./acpx-runtime-adapter.js";
 import { acpxSidecarErrorCode } from "../../cli/acpx-sidecar-input.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
 import type {
@@ -1413,6 +1413,32 @@ describe("ACPX runtime host", () => {
     expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 
+  it.each(["subscription", "api_key"])("retains only the final subscription snapshot after Codex exits: %s", async mode => {
+    const fixture = await hostFixture();
+    let home = "";
+    const runtime = runtimePort({ onClose: async () => {
+      // A refresh during provider shutdown must survive the lease's auth scrub.
+      await writeFile(join(home, "auth.json"), '{"tokens":{"access_token":"final-refresh"}}', { mode: 0o600 });
+    } });
+    const host = await AcpxRuntimeHost.open({
+      ...fixture.options, agent: "codex", model: "gpt-5.6-sol", permissionMode: "approve-all",
+      environment: mode === "subscription"
+        ? { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: '{"tokens":{"access_token":"initial"}}' }
+        : { OPENAI_API_KEY: "synthetic-key" },
+    }, fixture.dependencies({ openRuntime: async options => {
+      home = options.launchEnvironment.CODEX_HOME!;
+      return runtime;
+    } }));
+    await host.close({ reason: "final snapshot verified" });
+    await expect(readFile(join(home, "auth.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    if (mode === "subscription") {
+      expect(await readFile(join(home, "auth-refresh.json"), "utf8")).toContain("final-refresh");
+      expect((await stat(join(home, "auth-refresh.json"))).mode & 0o777).toBe(0o600);
+    } else {
+      await expect(readFile(join(home, "auth-refresh.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
   it("cleans credentials and command leases when provider open fails", async () => {
     const fixture = await hostFixture();
     let authPath = "";
@@ -1437,6 +1463,7 @@ describe("ACPX runtime host", () => {
       ),
     ).rejects.toThrow("provider failed");
     await expect(readFile(authPath)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readFile(join(authPath, "..", "auth-refresh.json"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(fixture.commandClose).toHaveBeenCalledOnce();
   });
 

@@ -48,6 +48,7 @@ import {
   waitForProcess,
   type RunnerProcessLaunchSpec,
 } from "./durable-prp-control-plane.js";
+import { dispatchToolCallback, recoverToolCallback, TOOL_CALLBACK_INTERRUPTED_CODE } from "./orphaned-tool-callback.js";
 import type { DurableRecoveryIdentity } from "./prp-transport-types.js";
 
 type WritableCoreStore = DurablePrpControlPlaneStore & {
@@ -1340,6 +1341,212 @@ it.each(["success", "integrity_failure"] as const)("ignores a replaced connectio
     replacement.socket.destroy();
   } finally {
     release();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("fails closed with the schema issue when the runner keeps redelivering an invalid event (restart chaos t01)", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-event-schema-stall-"));
+  const commits = vi.fn(async () => undefined);
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commits, onProtocolIntegrityError });
+  const envelope = semanticInputEvent(1);
+  const event = envelope.payload as Record<string, unknown>;
+  event.sourceEventId = "invalid-write-target-1";
+  event.eventType = "auth.credentials.updated";
+  event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+    bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+  delete event.schemaVersion;
+  event.priority = 7;
+  const now = vi.spyOn(Date, "now");
+  let clock = 1_000_000;
+  now.mockImplementation(() => clock);
+  try {
+    await core.start();
+    let lease: string | null = null;
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      const client: AuthenticatedClient = (await authenticate(core, lease ?? core.issueBootstrapTicket()))!;
+      lease = client.leaseToken ?? lease;
+      sendSecure(client, envelope);
+      await vi.waitFor(() => expect(client.socket.destroyed || client.socket.readyState === "closed"
+        || onProtocolIntegrityError.mock.calls.length > 0).toBe(true));
+      clock += 3_000;
+      client.socket.destroy();
+    }
+    expect(commits).not.toHaveBeenCalled();
+    expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
+    const failure = onProtocolIntegrityError.mock.calls[0]![0] as { reason: string; detail: string };
+    expect(failure.reason).toBe("runner_event_commit_stalled");
+    expect(failure.detail).toMatch(/^event_schema_invalid:\/\S* at source seq 1$/);
+  } finally {
+    now.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("fails closed at once when the journal cannot record a runner event", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-event-journal-failure-"));
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: vi.fn(async () => undefined), onProtocolIntegrityError });
+  const envelope = semanticInputEvent(1);
+  const event = envelope.payload as Record<string, unknown>;
+  event.sourceEventId = "journal-failure-1";
+  event.eventType = "auth.credentials.updated";
+  event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+    bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+  try {
+    await core.start();
+    const client: AuthenticatedClient = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const journal = core.store as unknown as { commit: (...args: unknown[]) => void; commitEvent: (...args: unknown[]) => Promise<boolean> };
+    const diskFull = Object.assign(new Error("no space on /private/disk"), { code: "ENOSPC" });
+    vi.spyOn(journal, "commit").mockImplementation(() => { throw diskFull; });
+    vi.spyOn(journal, "commitEvent").mockRejectedValue(diskFull);
+    sendSecure(client, envelope);
+    await vi.waitFor(() => expect(onProtocolIntegrityError).toHaveBeenCalledOnce());
+    const failure = onProtocolIntegrityError.mock.calls[0]![0] as Error & { reason: string; detail: string };
+    expect(failure).toMatchObject({ reason: "runner_event_commit_stalled", detail: "journal_write_failed:ENOSPC at source seq 1" });
+    expect(failure.message).not.toContain("/private/disk");
+    client.socket.destroy();
+  } finally {
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("fails closed when checkpoint storage keeps failing before a reconnect authenticates", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-checkpoint-stall-"));
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: vi.fn(async () => undefined), onProtocolIntegrityError });
+  let checkpointUp = true;
+  core.setCheckpointPersistence(async () => {
+    if (!checkpointUp) throw Object.assign(new Error("connect to private-db-host refused"), { code: "ECONNREFUSED" });
+  });
+  const now = vi.spyOn(Date, "now");
+  let clock = 1_000_000;
+  now.mockImplementation(() => clock);
+  try {
+    await core.start();
+    const tickets = Array.from({ length: 20 }, () => core.issueBootstrapTicket(60_000));
+    await core.flushCheckpoint();
+    checkpointUp = false;
+    for (const ticket of tickets) {
+      const client = await authenticate(core, ticket);
+      client?.socket.destroy();
+      clock += 3_000;
+      if (onProtocolIntegrityError.mock.calls.length > 0) break;
+    }
+    expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
+    const failure = onProtocolIntegrityError.mock.calls[0]![0] as Error & { reason: string; detail: string };
+    expect(failure.reason).toBe("runner_event_commit_stalled");
+    expect(failure.detail).toMatch(/^checkpoint_flush_failed:ECONNREFUSED at source seq 1$/);
+    expect(failure.message).not.toContain("private-db-host");
+  } finally {
+    now.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  { label: "an out-of-order event", seq: 5, failCommit: false, stepMs: 3_000, failsClosed: true,
+    detail: "event_sequence_mismatch at source seq 5" },
+  { label: "20 failures inside 45 s", seq: 1, failCommit: true, stepMs: 1_000, failsClosed: false, detail: null },
+])("bounds commit-stall reconnects for $label", async ({ seq, failCommit, stepMs, failsClosed, detail }) => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-event-stall-bound-"));
+  const commits = vi.fn(async () => {
+    if (failCommit) throw Object.assign(new Error("transient"), { code: "ECONNRESET" });
+  });
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commits, onProtocolIntegrityError });
+  const envelope = semanticInputEvent(seq);
+  const event = envelope.payload as Record<string, unknown>;
+  event.sourceEventId = `stall-bound-${seq}`;
+  event.eventType = "auth.credentials.updated";
+  event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+    bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+  const now = vi.spyOn(Date, "now");
+  let clock = 1_000_000;
+  now.mockImplementation(() => clock);
+  try {
+    await core.start();
+    let lease: string | null = null;
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      const client: AuthenticatedClient = (await authenticate(core, lease ?? core.issueBootstrapTicket()))!;
+      lease = client.leaseToken ?? lease;
+      sendSecure(client, envelope);
+      if (failCommit) await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(attempt));
+      await new Promise<void>(resolveTurn => setTimeout(resolveTurn, 20));
+      clock += stepMs;
+      client.socket.destroy();
+    }
+    if (failsClosed) {
+      expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
+      expect(onProtocolIntegrityError.mock.calls[0]![0]).toMatchObject({ reason: "runner_event_commit_stalled", detail });
+    } else {
+      expect(onProtocolIntegrityError).not.toHaveBeenCalled();
+    }
+  } finally {
+    now.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  { label: "a direct error code", failure: Object.assign(new Error("private-host-fixture"), { code: "ECONNRESET" }), code: "ECONNRESET" },
+  { label: "a wrapped database error", failure: new Error("private SQL and parameters", { cause: Object.assign(new Error("private-host-fixture"), { code: "40001" }) }), code: "40001" },
+  { label: "a wrapped transport error", failure: new Error("private query", { cause: new Error("private SQL", { cause: Object.assign(new Error("private-host-fixture"), { code: "ECONNRESET" }) }) }), code: "ECONNRESET" },
+  { label: "a cyclic cause", failure: (() => { const error = new Error("private query"); error.cause = error; return error; })(), code: "Error" },
+  { label: "an unsafe nested code", failure: new Error("private query", { cause: Object.assign(new Error("private-host-fixture"), { code: "private SQL with spaces" }) }), code: "Error" },
+  { label: "an outer code before a nested code", failure: Object.assign(new Error("private query", { cause: Object.assign(new Error("private-host-fixture"), { code: "40001" }) }), { code: "OUTER_FAILURE" }), code: "OUTER_FAILURE" },
+  { label: "a cause beyond the depth limit", failure: new Error("private query", { cause: new Error("private query", { cause: new Error("private query", { cause: new Error("private query", { cause: Object.assign(new Error("private-host-fixture"), { code: "40001" }) }) }) }) }), code: "Error" },
+])("fails closed with $label when runner events keep failing to commit without progress", async ({ failure: callbackFailure, code }) => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-event-delivery-stall-"));
+  const commits = vi.fn(async () => {
+    throw callbackFailure;
+  });
+  const onProtocolIntegrityError = vi.fn();
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+    expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commits, onProtocolIntegrityError });
+  const envelope = semanticInputEvent(1);
+  const event = envelope.payload as Record<string, unknown>;
+  event.sourceEventId = "stalled-delivery-1";
+  event.eventType = "auth.credentials.updated";
+  event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+    bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+  const now = vi.spyOn(Date, "now");
+  let clock = 1_000_000;
+  now.mockImplementation(() => clock);
+  try {
+    await core.start();
+    let lease: string | null = null;
+    for (let attempt = 1; attempt <= 20; attempt += 1) {
+      const client: AuthenticatedClient = (await authenticate(core, lease ?? core.issueBootstrapTicket()))!;
+      lease = client.leaseToken ?? lease;
+      sendSecure(client, envelope);
+      await vi.waitFor(() => expect(commits).toHaveBeenCalledTimes(attempt));
+      await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+      if (attempt < 20) expect(onProtocolIntegrityError).not.toHaveBeenCalled();
+      clock += 3_000;
+      client.socket.destroy();
+    }
+    expect(onProtocolIntegrityError).toHaveBeenCalledOnce();
+    const failure = onProtocolIntegrityError.mock.calls[0]![0] as Error;
+    expect(failure).toMatchObject({ reason: "runner_event_commit_stalled", detail: `${code} at source seq 1` });
+    expect(core.store.state.ackedSourceSeq).toBe(0);
+    expect(core.store.state.committedEvents).toHaveLength(0);
+    expect(failure.message).toContain("runner_event_commit_stalled");
+    expect(failure.message).not.toContain("private-host-fixture");
+    expect(failure.message).not.toContain("private query");
+    expect(failure.message).not.toContain("private SQL");
+  } finally {
+    now.mockRestore();
     await core.stop();
     rmSync(root, { recursive: true, force: true });
   }
@@ -5170,6 +5377,54 @@ describe("DurablePrpControlPlane", () => {
     }
   });
 
+  it("acknowledges an indeterminate suspension in the Runner's journal status and keeps its fence", async () => {
+    // A runnerd killed inside runner.suspend journals it as indeterminate. The
+    // next runnerd replays it from the welcome as `failed` with
+    // execution_indeterminate and then exits as suspended. Shipped Runners
+    // compare the acknowledgement with their journal status and exited with
+    // "terminal command result acknowledgement changed its durable identity".
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-indeterminate-suspend-"));
+    const controlPlane = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+    });
+    try {
+      await controlPlane.start();
+      const stale = controlPlane.queueCommand("runner.suspend", {}, "command-suspend-stale");
+      const next = controlPlane.queueCommand("session.snapshot", {}, "command-snapshot-next");
+      const client = await authenticate(controlPlane, controlPlane.issueBootstrapTicket());
+      sendSecure(client!, {
+        protocol: "paperclip.runner", version: 1, kind: "command_result",
+        payload: {
+          commandId: stale.commandId, commandType: stale.type, controllerSeq: stale.controllerSeq,
+          status: "failed",
+          result: {
+            code: "execution_indeterminate",
+            message: "runner recovered after journaling this command; it will not execute twice",
+          },
+        },
+      });
+      await expect(receiveSecure(client!)).resolves.toMatchObject({
+        kind: "command_result_ack",
+        payload: {
+          commandId: "command-suspend-stale",
+          commandType: "runner.suspend",
+          controllerSeq: stale.controllerSeq,
+          status: "indeterminate",
+        },
+      });
+      expect(controlPlane.getCommand(stale.commandId)?.status).toBe("failed");
+      // The Runner is leaving as suspended; nothing may follow on this connection.
+      expect(controlPlane.store.state.commandDeliveryCounts[next.commandId]).toBeUndefined();
+      client?.socket.destroy();
+    } finally {
+      await controlPlane.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("acknowledges terminal command results after persisting them", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-terminal-ack-"));
     const controlPlane = new DurablePrpControlPlane({
@@ -5300,4 +5555,207 @@ it("retires late semantic receipts without overwriting a successor journal or re
     await successor?.stop(); await successor?.drainPendingConnectionProcessing();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+describe("host-tool callback orphaned by a server restart", () => {
+  // Incident shape: a callback started at 14:29:25, the server restarted at
+  // 14:29:28 before it returned, the replacement controller adopted the runner
+  // and the provider turn completed at 14:38:26. Close then needs every
+  // admitted callback's durable result (`semanticToolResultsSettled`).
+  const startedAt = "2026-11-10T14:29:25.000Z";
+  const turnCompletedAt = "2026-11-10T14:38:26.000Z";
+  type RecoveryCall = Parameters<NonNullable<ConstructorParameters<typeof DurablePrpControlPlane>[0]["recoverSemanticToolInput"]>>[0];
+
+  function callbackInput(operationId: string, callId: string): Record<string, unknown> {
+    const event = semanticInputEvent(1, { name: "submit_report", arguments: { draft: true } });
+    const payload = event.payload as Record<string, unknown>;
+    payload.emittedAt = startedAt;
+    const tool = (payload.payload as Record<string, unknown>).semantic_tool as Record<string, unknown>;
+    tool.operationId = operationId;
+    tool.callId = callId;
+    return event;
+  }
+
+  function turnCompleted(sourceSeq: number): Record<string, unknown> {
+    const event = semanticInputEvent(sourceSeq);
+    const payload = event.payload as Record<string, unknown>;
+    payload.sourceEventId = `turn-completed-${sourceSeq}`;
+    payload.eventType = "turn.completed";
+    payload.emittedAt = turnCompletedAt;
+    payload.payload = { status: "completed" };
+    return event;
+  }
+
+  // The server's recovery (SessionAuthorityEpoch.recover): replay a durable
+  // receipt, else settle a callback whose owner is gone. These tools keep no
+  // receipt, so the authority returns null, as PaperclipRunnerToolAuthority does.
+  const serverRecovery = (authorityRecover: () => Promise<{ result: unknown } | null> = async () => null) =>
+    vi.fn((call: RecoveryCall) => recoverToolCallback({ runId: call.correlation.runId, admission: call.admission,
+      call: { tool: call.operationId, callId: call.callId, arguments: call.input }, recover: authorityRecover }));
+
+  async function restartWithPendingCallback(operationId: string, callId: string, dispatch: () => Promise<{ result: unknown }>) {
+    const root = mkdtempSync(resolve(tmpdir(), "runner-orphaned-callback-"));
+    const options = { stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest };
+    const original = new DurablePrpControlPlane({ ...options, onSemanticToolInput: dispatch });
+    await original.start();
+    const client = (await authenticate(original, original.issueBootstrapTicket()))!;
+    sendSecure(client, callbackInput(operationId, callId));
+    expect((await receiveSecure(client))!.kind).toBe("ack");
+    // The server restarts 3s later: the controller detaches and retires its
+    // callback journal writer before the callback returns.
+    await original.stop();
+    await original.drainPendingConnectionProcessing();
+    original.retireSemanticToolCallbacks();
+    client.socket.destroy();
+    return { root, options, leaseToken: client.leaseToken! };
+  }
+
+  // The adopted runner resumes after the callback input the old controller ACKed.
+  const resumeRunner = (core: DurablePrpControlPlane, leaseToken: string) =>
+    authenticate(core, leaseToken, identity, expectedRunnerDigest, undefined, false, 1, 1);
+
+  async function settle(core: DurablePrpControlPlane, runner: AuthenticatedClient) {
+    const command = (await receiveSecure(runner))!;
+    expect(command).toMatchObject({ kind: "command", payload: { type: "semantic_tool.result" } });
+    const payload = command.payload as Record<string, unknown>;
+    // runnerd accepts a late result after its turn closed (`settled_after_turn`).
+    sendSecure(runner, { protocol: "paperclip.runner", version: 1, kind: "command_result", payload: {
+      commandId: payload.commandId, commandType: payload.type, controllerSeq: payload.controllerSeq,
+      status: "completed", result: { status: "settled_after_turn", callId: (payload.payload as Record<string, unknown>).callId },
+    } });
+    await vi.waitFor(() => expect(core.commandOutcome(String(payload.commandId))?.status).toBe("completed"));
+    await core.flushCheckpoint();
+    return payload.payload as Record<string, unknown>;
+  }
+
+  it.each([
+    // An assigned app tool call, adopted after the restart.
+    { operationId: "paperclip_call_assigned_tool", callId: "exec-d7e28482-f90d-48e6-abdd-c8a0a94dbfb0" },
+    // A connection search, adopted after a later restart.
+    { operationId: "connections_search", callId: "exec-0c3b0462-a1e1-488a-a4ee-e4748f30ce29" },
+  ])("settles $operationId as interrupted after the turn completed, so close drains", async ({ operationId, callId }) => {
+    // The earlier server process owned this dispatch; it never returns here.
+    const { root, options, leaseToken } = await restartWithPendingCallback(operationId, callId,
+      () => new Promise<{ result: unknown }>(() => undefined));
+    const authorityRecover = vi.fn(async () => null);
+    const recover = serverRecovery(authorityRecover);
+    const redispatch = vi.fn(async () => ({ result: "must not execute again" }));
+    const replacement = new DurablePrpControlPlane({ ...options, onSemanticToolInput: redispatch, recoverSemanticToolInput: recover });
+    try {
+      await replacement.start();
+      const runner = (await resumeRunner(replacement, leaseToken))!;
+      sendSecure(runner, turnCompleted(2));
+      expect((await receiveSecure(runner))!.kind).toBe("ack");
+      expect(replacement.semanticToolResultsSettled()).toBe(false);
+      await replacement.recoverPendingSemanticInputs();
+      expect(recover).toHaveBeenCalledWith(expect.objectContaining({ callId, operationId, admission: "earlier_controller" }));
+      expect(authorityRecover).toHaveBeenCalledOnce();
+      const delivered = await settle(replacement, runner);
+      expect(delivered).toMatchObject({ callId, operationId, isError: true,
+        result: { error: { code: TOOL_CALLBACK_INTERRUPTED_CODE, outcome: "unknown", retryable: false } } });
+      expect(delivered).not.toHaveProperty("admission");
+      expect(redispatch).not.toHaveBeenCalled();
+      // Close requires exactly this to prove the provider drained.
+      expect(replacement.semanticToolResultsSettled()).toBe(true);
+      runner.socket.destroy();
+    } finally {
+      await replacement.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("replays a durable receipt instead of settling the callback as interrupted", async () => {
+    const callId = "exec-receipted";
+    const { root, options, leaseToken } = await restartWithPendingCallback("call_api", callId,
+      () => new Promise<{ result: unknown }>(() => undefined));
+    const recover = serverRecovery(async () => ({ result: { saved: "receipt" } }));
+    const replacement = new DurablePrpControlPlane({ ...options, recoverSemanticToolInput: recover });
+    try {
+      await replacement.start();
+      const runner = (await resumeRunner(replacement, leaseToken))!;
+      await replacement.recoverPendingSemanticInputs();
+      expect(await settle(replacement, runner)).toMatchObject({ callId, isError: false, result: { saved: "receipt" } });
+      expect(replacement.semanticToolResultsSettled()).toBe(true);
+      runner.socket.destroy();
+    } finally {
+      await replacement.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { admission: "earlier_controller" as const, settles: true },
+    { admission: "this_controller" as const, settles: false },
+  ])("treats an authority's unknown outcome by owner ($admission)", async ({ admission, settles }) => {
+    // The receipt owner proves the effect may have happened, with no result.
+    const unknown = Object.assign(new Error("paperclip_runner_instruction_outcome_unknown"), { code: "semantic_tool_outcome_unknown" });
+    const call = { runId: identity.runId, admission, call: { tool: "update_agent_instructions", callId: `exec-unknown-${admission}`, arguments: {} },
+      recover: async () => { throw unknown; } };
+    if (settles) {
+      await expect(recoverToolCallback(call)).resolves.toMatchObject({ isError: true,
+        result: { error: { code: TOOL_CALLBACK_INTERRUPTED_CODE, outcome: "unknown" } } });
+    } else {
+      // A callback this controller owns keeps the earlier fail-closed rejection.
+      await expect(recoverToolCallback(call)).rejects.toBe(unknown);
+    }
+    // Any other rejection is never turned into a settlement.
+    await expect(recoverToolCallback({ ...call, recover: async () => { throw new Error("authority unavailable"); } }))
+      .rejects.toThrow("authority unavailable");
+  });
+
+  it("keeps a callback pending while this process still runs it", async () => {
+    const callId = "exec-still-running";
+    // This process still owns the dispatch (for example a session recreated in
+    // the same server). Its owner is alive, so it is never settled as abandoned.
+    let finish!: (value: { result: unknown }) => void;
+    const running = dispatchToolCallback(identity.runId, callId,
+      () => new Promise<{ result: unknown }>(resolveCall => { finish = resolveCall; }));
+    const { root, options, leaseToken } = await restartWithPendingCallback("paperclip_call_assigned_tool", callId, () => running);
+    const recover = serverRecovery();
+    const replacement = new DurablePrpControlPlane({ ...options, recoverSemanticToolInput: recover });
+    try {
+      await replacement.start();
+      const runner = (await resumeRunner(replacement, leaseToken))!;
+      await replacement.recoverPendingSemanticInputs();
+      expect(recover).toHaveBeenCalledWith(expect.objectContaining({ callId, admission: "earlier_controller" }));
+      expect(replacement.store.state.commands).toEqual([]);
+      expect(replacement.semanticToolResultsSettled()).toBe(false);
+      // Once that owner finishes, its retired journal cannot record the
+      // result, so the next recovery pass settles the callback.
+      finish({ result: "late" });
+      await running;
+      await replacement.recoverPendingSemanticInputs();
+      expect(await settle(replacement, runner)).toMatchObject({ callId,
+        result: { error: { code: TOOL_CALLBACK_INTERRUPTED_CODE } } });
+      expect(replacement.semanticToolResultsSettled()).toBe(true);
+      runner.socket.destroy();
+    } finally {
+      await replacement.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a callback this controller dispatched pending when its dispatcher rejected", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "runner-own-callback-"));
+    const recover = serverRecovery();
+    const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest,
+      // A rejected dispatcher does not prove that its effect rolled back.
+      onSemanticToolInput: () => dispatchToolCallback(identity.runId, "call-1", async () => { throw new Error("uncertain"); }),
+      recoverSemanticToolInput: recover });
+    try {
+      await core.start();
+      const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      sendSecure(client, semanticInputEvent());
+      expect((await receiveSecure(client))!.kind).toBe("ack");
+      await vi.waitFor(() => expect(core.semanticToolSettlementDiagnostics()).toMatchObject({ failures: [expect.anything()] }));
+      await core.recoverPendingSemanticInputs();
+      expect(recover).toHaveBeenCalledWith(expect.objectContaining({ callId: "call-1", admission: "this_controller" }));
+      expect(core.store.state.commands).toEqual([]);
+      expect(core.semanticToolResultsSettled()).toBe(false);
+      client.socket.destroy();
+    } finally {
+      await core.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
