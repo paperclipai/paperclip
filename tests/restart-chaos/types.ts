@@ -256,10 +256,12 @@ export interface RetryAttempt {
   via?: "ui" | "api";
   bannerText?: string | null;
   diagnostics?: { screenshot: string | null; dom: string | null } | null;
+  dismissedDialogs?: string[];
 }
 
 export const UI_RETRY_BUTTON_MISSING = "ui_retry_button_missing";
 export const UI_RETRY_NO_REQUEST = "ui_retry_no_request";
+export const UI_RETRY_BLOCKED_BY_MODAL = "ui_retry_blocked_by_modal";
 
 export interface FaultReceipt {
   faultId: string;

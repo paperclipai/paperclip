@@ -511,7 +511,10 @@ windows are written to `storage-faults.json` and removed from the speed grade li
 Every Retry the grader needs is clicked in the real board UI: the harness opens the issue in a headless
 Chromium, waits for the visible Retry button and clicks it. A task whose Retry button is missing fails
 R3 as `ui_retry_button_missing (user saw: …)`; a click that sends no retry request fails as
-`ui_retry_no_request`. Crash-point waves serve no UI and click Retry through the API.
+`ui_retry_no_request`. Before it looks for Retry, the harness closes any open modal that covers the page
+("Not now", else Escape) and records it in the attempt's `dismissedDialogs`. A visible Retry that stays
+unreachable behind a modal that will not close fails as `ui_retry_blocked_by_modal`. Crash-point waves
+serve no UI and click Retry through the API.
 
 ## Daytona (`--env daytona`)
 
