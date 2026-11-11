@@ -37,6 +37,13 @@ async function makeStaleCopy(root: string): Promise<{ source: string; target: st
   return { source, target };
 }
 
+async function abandonRepairCopy(source: string, target: string): Promise<string> {
+  const copy = `${target}.paperclip-stale-123-456`;
+  await materializePaperclipSkillCopy(source, copy);
+  await fs.writeFile(path.join(copy, ".paperclip-stale-owner"), path.basename(target), "utf8");
+  return copy;
+}
+
 describe("ensurePaperclipSkillSymlink vs a stale materialized copy", () => {
   it("replaces a stale managed copy with a symlink to the live source", async () => {
     const root = await makeRoot();
@@ -65,6 +72,7 @@ describe("ensurePaperclipSkillSymlink vs a stale materialized copy", () => {
     expect((await fs.lstat(target)).isDirectory()).toBe(true);
     expect(await fs.readFile(path.join(target, "SKILL.md"), "utf8")).toBe("STUB\n");
     expect(await fs.readdir(path.dirname(target))).toEqual([path.basename(target)]);
+    expect(await fs.readdir(target)).not.toContain(".paperclip-stale-owner");
   });
 
   it("keeps a link that a concurrent sync created first", async () => {
@@ -88,7 +96,7 @@ describe("ensurePaperclipSkillSymlink vs a stale materialized copy", () => {
     const source = await makeSource(root, "REAL CONTENT\n");
     const target = path.join(root, "home", "sample-skill--0a8c11691b");
     await fs.mkdir(path.dirname(target), { recursive: true });
-    await materializePaperclipSkillCopy(source, `${target}.paperclip-stale-123-456`);
+    await abandonRepairCopy(source, target);
     const unrelated = path.join(root, "home", "sample-skill--0a8c11691b.paperclip-stale-notes");
     await fs.mkdir(unrelated);
 
@@ -98,12 +106,30 @@ describe("ensurePaperclipSkillSymlink vs a stale materialized copy", () => {
     );
   });
 
+  it("never removes another installed skill whose name starts with the target's", async () => {
+    const root = await makeRoot();
+    const source = await makeSource(root, "REAL CONTENT\n");
+    const target = path.join(root, "home", "sample");
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    const namedLikeNotes = path.join(root, "home", "sample.paperclip-stale-notes");
+    const namedLikeCopy = path.join(root, "home", "sample.paperclip-stale-7-8");
+    await materializePaperclipSkillCopy(source, namedLikeNotes);
+    await materializePaperclipSkillCopy(source, namedLikeCopy);
+
+    expect(await ensurePaperclipSkillSymlink(source, target)).toBe("created");
+    expect(await ensurePaperclipSkillSymlink(source, target)).toBe("skipped");
+    expect((await fs.readdir(path.dirname(target))).sort()).toEqual(
+      ["sample", "sample.paperclip-stale-7-8", "sample.paperclip-stale-notes"],
+    );
+    expect(await fs.readFile(path.join(namedLikeNotes, "SKILL.md"), "utf8")).toBe("REAL CONTENT\n");
+  });
+
   it("puts an abandoned copy back when the replacement link fails", async () => {
     const root = await makeRoot();
     const source = await makeSource(root, "REAL CONTENT\n");
     const target = path.join(root, "home", "sample-skill--0a8c11691b");
     await fs.mkdir(path.dirname(target), { recursive: true });
-    await materializePaperclipSkillCopy(source, `${target}.paperclip-stale-123-456`);
+    await abandonRepairCopy(source, target);
     const eperm = Object.assign(new Error("EPERM: operation not permitted, symlink"), {
       code: "EPERM",
     });
@@ -115,6 +141,7 @@ describe("ensurePaperclipSkillSymlink vs a stale materialized copy", () => {
     ).rejects.toBe(eperm);
     expect((await fs.lstat(target)).isDirectory()).toBe(true);
     expect(await fs.readdir(path.dirname(target))).toEqual([path.basename(target)]);
+    expect(await fs.readdir(target)).not.toContain(".paperclip-stale-owner");
   });
 
   it("leaves a fresh managed copy alone", async () => {
