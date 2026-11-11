@@ -32,7 +32,7 @@ import {
   WORKSPACE,
 } from "../drivers/codex/codex-app-server-driver.test-support.js";
 import { createNativeSessionBackend } from "../index.js";
-import { PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE } from "../contracts/harness-driver.js";
+import { NativeRunnerResumeStateUnavailableError, PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE } from "../contracts/harness-driver.js";
 import { createCodexNativeSessionBackend, createRunnerdNativeSessionBackend } from "./codex-native-backend.js";
 import { createOpenCodeNativeSessionBackend } from "./opencode-native-backend.js";
 
@@ -451,6 +451,55 @@ describe("native backend factory", () => {
       terminalTurns: [{ turnId: "turn-1", fingerprint: "{\"status\":\"completed\"}" }] } as never, { signal: new AbortController().signal }))
       .resolves.toMatchObject({ recovered: false, failureClass: PROVIDER_STATE_INCOMPATIBLE });
     expect(factory).not.toHaveBeenCalled();
+  });
+
+  // Staging class P ("PRP provider resume state is unavailable"): the previous
+  // run's result was accepted but its harness backup failed to save, and its
+  // per-turn sandbox was destroyed. The follow-up's new sandbox holds no Runner
+  // control-plane state for the saved session, so every resume reads the same
+  // empty state. That failure was untyped, so a governed-wait or same-session
+  // checkpoint ended in a generic interruption, and each new message resumed
+  // the same session and failed again.
+  describe("a Runner that has no saved state for the session", () => {
+    function statelessRecovery(input: NativeExecutionInputV1) {
+      const transport = new FakeCodexTransport();
+      transport.rejectMethods.set("initialize", new NativeRunnerResumeStateUnavailableError());
+      const backend = createNativeSessionBackend(input, {
+        codexTransportFactory: () => transport,
+        environment: { ...process.env, PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+      });
+      const snapshot = {
+        schema: "paperclip.native-session.v1", backendKind: "codex_app_server", driverKind: "codex_app_server",
+        sessionId: transport.threadId, providerSessionId: transport.providerSessionId, workingDirectory: WORKSPACE,
+        identity: { runId: "run", sessionId: "session", companyId: "company", issueId: "issue", agentId: "agent" },
+        activeTurnId: null, terminalTurns: [], pendingRuntimeRequests: [], lastCursor: null,
+      };
+      return { backend, snapshot };
+    }
+
+    it.each([
+      ["Codex", execution()],
+      ["OpenCode", opencodeExecution()],
+      ["ACPX Claude", acpxExecution("claude")],
+    ])("reports a %s session with nothing in flight as provider state incompatible", async (_label, input) => {
+      const { backend, snapshot } = statelessRecovery(input);
+      await expect(backend.recoverSession!(snapshot as never, { signal: new AbortController().signal }))
+        .resolves.toEqual({
+          recovered: false,
+          reason: expect.stringContaining("PRP provider resume state is unavailable"),
+          failureClass: PROVIDER_STATE_INCOMPATIBLE,
+        });
+    });
+
+    it.each([
+      ["an active turn", { activeTurnId: "turn-in-flight" }],
+      ["a pending runtime request", { pendingRuntimeRequests: [{ requestId: "request-1" }] }],
+    ])("leaves a session that holds %s unclassified", async (_label, inFlight) => {
+      const { backend, snapshot } = statelessRecovery(acpxExecution("claude"));
+      const recovered = await backend.recoverSession!({ ...snapshot, ...inFlight } as never, { signal: new AbortController().signal });
+      expect(recovered).toMatchObject({ recovered: false, reason: expect.stringContaining("PRP provider resume state is unavailable") });
+      expect(recovered).not.toHaveProperty("failureClass");
+    });
   });
 
   it("names the agent generically when a remote Claude session opens outside its workspace", async () => {
