@@ -214,15 +214,33 @@ describe("runtime skill revision cache", () => {
   });
 
   it("keeps a lock held when the holder proof stalls or fails", async () => {
-    const holder = { bootId: randomUUID(), pid: 3, hostHash: "f".repeat(32), processStartedAt: null };
+    // A distinct holder per case: a still-pending proof is joined by later waits on the same holder.
+    const holder = () => ({ bootId: randomUUID(), pid: 3, hostHash: "f".repeat(32), processStartedAt: null });
     const startedAt = Date.now();
-    expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder),
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder()),
       { timeoutMs: 50, prove: () => new Promise(() => {}) })).toBe(false);
     expect(Date.now() - startedAt).toBeLessThan(2_000);
-    expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder),
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder()),
       { prove: async () => { throw new Error("database unavailable"); } })).toBe(false);
-    expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder),
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder()),
       { prove: async () => ({ verdict: "gone", reason: "controller_stopped" }) })).toBe(true);
+  });
+
+  it("joins a stalled holder proof instead of starting another read on every timeout", async () => {
+    const holder = { bootId: randomUUID(), pid: 3, hostHash: "f".repeat(32), processStartedAt: null };
+    let settle!: (proof: { verdict: "gone"; reason: "controller_stopped" }) => void;
+    const prove = vi.fn(() => new Promise<{ verdict: "gone"; reason: "controller_stopped" }>(resolve => { settle = resolve; }));
+    for (let attempt = 0; attempt < 5; attempt++) {
+      expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder), { timeoutMs: 10, prove })).toBe(false);
+    }
+    expect(prove).toHaveBeenCalledTimes(1);
+    settle({ verdict: "gone", reason: "controller_stopped" });
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder), { timeoutMs: 1_000, prove })).toBe(true);
+    // A settled proof is not reused: the next wait asks again.
+    await new Promise(resolve => setImmediate(resolve));
+    const fresh = vi.fn(async () => ({ verdict: "alive" as const, reason: "controller_lease_held" as const }));
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder), { prove: fresh })).toBe(false);
+    expect(fresh).toHaveBeenCalledTimes(1);
   });
 
   it("fingerprints installed content and ownership, excluding cosmetic metadata", async () => {

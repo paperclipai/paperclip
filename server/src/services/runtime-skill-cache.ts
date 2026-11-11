@@ -140,16 +140,28 @@ export async function runtimeSkillCacheLockHolderExited(lockContent: Buffer, opt
     ...(controller.deployment ? { worker: controller.deployment.worker, exclusiveVolume: controller.deployment.exclusiveVolume,
       volumeId: controller.deployment.volumeId } : {}),
   };
+  // A proof that outlives its timeout keeps running (its database read cannot
+  // be cancelled), so later waits on the same holder join it instead of adding
+  // another read to the shared pool.
+  const key = JSON.stringify(stamp);
+  let proved = pendingLockProofs.get(key);
+  if (!proved) {
+    proved = (options.prove ?? (value => proveOwnerGone(value)))(stamp)
+      .then(proof => proof.verdict === "gone", () => false)
+      .finally(() => { if (pendingLockProofs.get(key) === proved) pendingLockProofs.delete(key); });
+    pendingLockProofs.set(key, proved);
+  }
   let timer: NodeJS.Timeout | undefined;
   const timedOut = new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), options.timeoutMs ?? LOCK_PROOF_TIMEOUT_MS); });
   try {
-    const proved = (options.prove ?? (value => proveOwnerGone(value)))(stamp)
-      .then(proof => proof.verdict === "gone", () => false);
     return await Promise.race([proved, timedOut]);
   } finally {
     clearTimeout(timer);
   }
 }
+
+/** Lock-holder proofs still running, by holder stamp; at most one per holder. */
+const pendingLockProofs = new Map<string, Promise<boolean>>();
 
 const OWNER_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
