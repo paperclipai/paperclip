@@ -256,10 +256,14 @@ export interface RetryAttempt {
   via?: "ui" | "api";
   bannerText?: string | null;
   diagnostics?: { screenshot: string | null; dom: string | null } | null;
+  /** Dialogs the harness closed because they covered the page before it clicked Retry. */
+  dismissedDialogs?: string[];
 }
 
 export const UI_RETRY_BUTTON_MISSING = "ui_retry_button_missing";
 export const UI_RETRY_NO_REQUEST = "ui_retry_no_request";
+/** A visible Retry stayed unreachable behind an open modal that would not close. */
+export const UI_RETRY_BLOCKED_BY_MODAL = "ui_retry_blocked_by_modal";
 
 export interface FaultReceipt {
   faultId: string;
