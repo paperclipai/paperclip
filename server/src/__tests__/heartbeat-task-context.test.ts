@@ -270,6 +270,20 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
     }
   });
 
+  it("keeps the withheld-body notice instead of a read instruction for a quarantined plan on resumed turns", async () => {
+    const f = await seed();
+    await documentService(db).upsertIssueDocument({
+      issueId: f.issueId, key: "plan", format: "markdown",
+      body: "QUARANTINED plan canary", sourceTrust: buildLowTrustSourceTrust({ issueId: f.issueId }),
+    });
+    const { context } = await execute(f, {});
+    for (const key of ["paperclipTaskMarkdown", "paperclipTaskMarkdownAssignment", "paperclipTaskMarkdownCompact", "paperclipTaskMarkdownAssignmentCompact"]) {
+      expect(context[key]).toContain(LOW_TRUST_QUARANTINED_BODY);
+      expect(context[key]).not.toContain("QUARANTINED plan canary");
+      expect(context[key]).not.toContain("If this exact revision is not already in the resumed session");
+    }
+  });
+
   it("quarantines low-trust summaries and comments before preparing higher-trust prompts", async () => {
     const f = await seed();
     const sourceTrust = buildLowTrustSourceTrust({ issueId: f.issueId });

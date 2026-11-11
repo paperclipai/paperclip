@@ -10,7 +10,7 @@ import { buildExecutionContinuation } from "../execution-continuation.js";
 import { getIssueContinuationSummaryDocument } from "../issue-continuation-summary.js";
 import type { issueService } from "../issues.js";
 import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
-import { redactQuarantinedBodyForHigherTrust, sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";
+import { isLowTrustQuarantined, redactQuarantinedBodyForHigherTrust, sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";
 import { getTaskPlanContext } from "../task-plan-context.js";
 import { caseExecutionMarkdown, getCaseExecutionContext } from "../case-context.js";
 import type { TrustPresetResolution } from "../trust-preset-resolver.js";
@@ -338,17 +338,21 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     taskPlan,
     includeWakeComments: false,
   }) + chatCompletionInstruction(context);
+  // The plan document route serves a quarantined plan's raw body. A
+  // higher-trust resumed turn keeps the withheld-body notice instead of an
+  // instruction to read that document.
+  const compactPlanBody = !exposeLowTrustRaw && isLowTrustQuarantined(taskPlan?.sourceTrust);
   const taskMarkdownCompact = assignmentPrefix + buildPaperclipTaskMarkdown({
     ...taskMarkdownInput,
     taskPlan,
     includeDescription: false,
-    includePlanBody: false,
+    includePlanBody: compactPlanBody,
   }) + chatCompletionInstruction(context);
   const taskMarkdownAssignmentCompact = assignmentPrefix + buildPaperclipTaskMarkdown({
     ...taskMarkdownInput,
     taskPlan,
     includeDescription: false,
-    includePlanBody: false,
+    includePlanBody: compactPlanBody,
     includeWakeComments: false,
   }) + chatCompletionInstruction(context);
   if (issueRef) {
