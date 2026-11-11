@@ -575,6 +575,33 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(await db.select().from(heartbeatRuns)).toHaveLength(3);
   });
 
+  // A composer snapshot taken before the card was recognised as a tool action
+  // must not steer or interrupt the active turn just to deliver its result.
+  it.each([
+    { action: "steer", native: true },
+    { action: "interrupt", native: false },
+  ] as const)("refuses to $action with a tool action's outcome from a stale snapshot", async ({ action, native }) => {
+    const seeded = await seedResponseQueue(native);
+    const client = app(seeded.companyId);
+    const stale = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(stale.body.entries).toHaveLength(1);
+    await db.update(issueThreadInteractions).set({ title: "Approve tool action", payload: { version: 1, prompt: "Create the page?",
+      toolAction: { toolName: "notebook_create_page", actionRequestId: randomUUID() } } as never })
+      .where(eq(issueThreadInteractions.id, seeded.interactionId));
+    const steerCalls = steerNativeSessionMock.mock.calls.length;
+    const body = { queueId: seeded.wakeId, targetRunId: seeded.runId, revision: stale.body.revision };
+    const endpoint = action === "steer"
+      ? `/api/issues/${seeded.issueId}/queued-comments/${seeded.interactionId}/steer`
+      : `/api/issues/${seeded.issueId}/queued-comments/interrupt`;
+    const result = await request(client).post(endpoint).send(body).expect(409);
+    expect(result.body.details.code).toBe("queued_comment_not_pending");
+    expect(steerNativeSessionMock.mock.calls).toHaveLength(steerCalls);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0].status).toBe("running");
+    // The result is still owed to the agent after the current turn.
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)))[0].status)
+      .toBe("deferred_issue_execution");
+  });
+
   it("steers a saved approval only on click and acknowledges retries once", async () => {
     const seeded = await seedResponseQueue(true);
     await seedDispatchIdentity(seeded);
@@ -788,6 +815,37 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     const queue = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
     expect(queue.body.entries.map((entry: { source?: { summary?: string } }) => entry.source?.summary))
       .toEqual(["Answered: Questions"]);
+    expect(await hasQueuedInteractionResponse(db, seeded.companyId, seeded.issueId, seeded.agentId)).toBe(true);
+  });
+
+  // Approve = run: the tool already ran (or was declined) when its outcome wake
+  // is deferred behind a later turn. That wake hands the recorded result to the
+  // agent; it is not a message the person still has to send, so the composer
+  // queue must not show it as "Accepted: Approve tool action".
+  // The outcome delivery carries the tool action; a recovered continuation
+  // carries only the interaction id, so the saved card must decide.
+  it.each((["delivery", "recovery"] as const).flatMap(wakeShape => ([
+    { status: "accepted", outcome: "executed", wakeShape },
+    { status: "rejected", outcome: "rejected", wakeShape },
+  ] as const)))("does not queue a $status tool action's outcome ($wakeShape wake) as a message", async ({ status, outcome, wakeShape }) => {
+    const toolActionCase = {
+      kind: "request_confirmation", status, title: "Approve tool action", label: `${status}`,
+      payload: { version: 1, prompt: "Create the page?", toolAction: { toolName: "notebook_create_page", actionRequestId: randomUUID() } },
+      result: { version: 1, outcome: status, toolAction: { executionStatus: outcome, resultSummary: "Page created" } },
+    } as unknown as (typeof deliveredReceiptCases)[number];
+    const seeded = await seedDeliveredReceipt(toolActionCase, null);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.staleWakeId));
+    if (wakeShape === "delivery") {
+      const toolAction = { toolName: "notebook_create_page", actionRequestId: randomUUID(), executionStatus: outcome };
+      await db.update(agentWakeupRequests).set({ requestedByActorType: "user", requestedByActorId: "queue-owner",
+        payload: { ...wake.payload, interactionKind: "request_confirmation", toolAction, toolActions: [toolAction],
+          toolActionRequestIds: [toolAction.actionRequestId] } }).where(eq(agentWakeupRequests.id, seeded.staleWakeId));
+    }
+    const queue = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(queue.body.entries).toEqual([]);
+    // Hiding the row must not drop the outcome: the agent still receives it.
+    const [after] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.staleWakeId));
+    expect(after.status).toBe("deferred_issue_execution");
     expect(await hasQueuedInteractionResponse(db, seeded.companyId, seeded.issueId, seeded.agentId)).toBe(true);
   });
 
