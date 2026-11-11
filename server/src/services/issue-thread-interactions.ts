@@ -831,6 +831,42 @@ function isTerminalIssueStatus(status: string) {
   return status === "done" || status === "cancelled";
 }
 
+/**
+ * Throws 422 unless `userId` is a person who may answer requests on this task.
+ * Interaction create (an explicit addressee) and attention transfer ("Route to
+ * @x") both use it, so a card never goes to someone who cannot answer it.
+ */
+export async function assertInteractionAddresseeUserAvailable(
+  db: Db,
+  issue: { id: string; companyId: string },
+  issueRow: Record<string, unknown> | undefined,
+  userId: string,
+) {
+  const [user] = await db.select({ id: authUsers.id }).from(authUsers)
+    .where(eq(authUsers.id, userId));
+  const cloudManaged = isCloudManagedInstance();
+  // No-login installs have an implicit board, which need not have an
+  // auth row. Never infer this authority in authenticated/Cloud mode.
+  const localImplicit = userId === "local-board"
+    && !cloudManaged && resolveDeploymentMode() === "local_trusted";
+  // Use the normal board mutation policy, including viewer restrictions,
+  // local/instance-admin eligibility and Cloud's no-stale-admin rule.
+  const decision = user || localImplicit ? await authorizationService(db).decide({
+    actor: {
+      type: "board",
+      userId,
+      source: localImplicit ? "local_implicit" : cloudManaged ? "cloud_tenant" : "session",
+    },
+    action: "issue:mutate",
+    resource: { type: "issue", companyId: issue.companyId, issueId: issue.id, ...issueRow },
+  }) : null;
+  if (!decision?.allowed) {
+    throw unprocessable("addresseeUserId must identify a user authorized to respond in this company", {
+      code: "interaction_addressee_user_unavailable",
+    });
+  }
+}
+
 function interactionNotFoundError() {
   return notFound("Interaction not found", { code: "interaction_not_found" });
 }
@@ -3989,29 +4025,7 @@ export function issueThreadInteractionService(
             throw conflict("Cannot create an interaction on a closed issue");
           }
           if (data.addresseeUserId) {
-            const [user] = await tx.select({ id: authUsers.id }).from(authUsers)
-              .where(eq(authUsers.id, data.addresseeUserId));
-            const cloudManaged = isCloudManagedInstance();
-            // No-login installs have an implicit board, which need not have an
-            // auth row. Never infer this authority in authenticated/Cloud mode.
-            const localImplicit = data.addresseeUserId === "local-board"
-              && !cloudManaged && resolveDeploymentMode() === "local_trusted";
-            // Use the normal board mutation policy, including viewer restrictions,
-            // local/instance-admin eligibility and Cloud's no-stale-admin rule.
-            const decision = user || localImplicit ? await authorizationService(tx).decide({
-              actor: {
-                type: "board",
-                userId: data.addresseeUserId,
-                source: localImplicit ? "local_implicit" : cloudManaged ? "cloud_tenant" : "session",
-              },
-              action: "issue:mutate",
-              resource: { type: "issue", companyId: issue.companyId, issueId: issue.id, ...issueRow },
-            }) : null;
-            if (!decision?.allowed) {
-              throw unprocessable("addresseeUserId must identify a user authorized to respond in this company", {
-                code: "interaction_addressee_user_unavailable",
-              });
-            }
+            await assertInteractionAddresseeUserAvailable(tx as unknown as Db, issue, issueRow, data.addresseeUserId);
           }
           if (
             data.kind === "ask_user_questions" &&
@@ -5446,13 +5460,22 @@ export function issueThreadInteractionService(
     },
 
     withdrawInteraction: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       interactionId: string,
       input: WithdrawIssueThreadInteraction,
       actor: InteractionActor,
-      mutationOptions: InteractionResolutionMutationOptions = {},
+      mutationOptions: InteractionResolutionMutationOptions & {
+        /**
+         * Let a person withdraw a card that outlived its closed task (PAP-749
+         * plan §2, Rule 10). This is cleanup only: a closed task is never woken.
+         */
+        allowClosedIssueForHuman?: boolean;
+      } = {},
     ) => {
-      assertIssueOpenForInteractionResolution(issue);
+      const humanActor = Boolean(actor.userId) && !actor.agentId && !actor.runId && !actor.systemId;
+      if (!(mutationOptions.allowClosedIssueForHuman && humanActor)) {
+        assertIssueOpenForInteractionResolution(issue);
+      }
       const data = withdrawIssueThreadInteractionSchema.parse(input);
       const current = await db
         .select()

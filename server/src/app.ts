@@ -854,7 +854,10 @@ export async function createApp(
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
-  api.use(attentionRoutes(db));
+  api.use(attentionRoutes(db, {
+    pluginWorkerManager: workerManager,
+    decisionServiceOptions: opts.decisionServiceOptions,
+  }));
   api.use(decisionTrainingRoutes(db));
   api.use(decisionRoutes(db, opts.decisionServiceOptions));
   api.use(decisionQueueRoutes(db));
