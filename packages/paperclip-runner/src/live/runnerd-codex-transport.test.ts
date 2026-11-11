@@ -4,7 +4,7 @@ import {
   runnerLaunchRequirementsDigest,
   type RunnerProviderLaunchRequirements,
 } from "./runner-provider-launch.js";
-import { coldAdmissionTimeoutMs, RUNNER_STALL_THRESHOLD_MS, RunnerStallLedger, waitForRunnerCommand } from "./runnerd-codex-transport.js";
+import { coldAdmissionTimeoutMs, RUNNER_MAX_STOPPED_CREDIT_MS, RUNNER_POST_STOP_GRACE_MS, RunnerStallLedger, waitForRunnerCommand } from "./runnerd-codex-transport.js";
 import { configuredEnvironmentProjection } from "../configured-environment.js";
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -6753,10 +6753,26 @@ describe("admission waits do not count time this process was stopped", () => {
       const rejection = expect(drain).rejects.toThrow("runner_local_connect_failed: PRP command runner.drain timed out");
       await vi.advanceTimersByTimeAsync(1_000);
       vi.setSystemTime(Date.now() + 44_000);
-      // Running time reaches the deadline: 1 s before, the uncredited 5 s of the
-      // gap, then the rest of the 30 s budget.
-      await vi.advanceTimersByTimeAsync(30_000);
+      // Running time reaches the deadline: 1 s before, then the rest of the
+      // 30 s budget plus the 5 s post-stop grace.
+      await vi.advanceTimersByTimeAsync(40_000);
       await rejection;
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it("leaves the Runner time to answer after a freeze in a wait's last half second", async () => {
+    vi.useFakeTimers();
+    const clock = new RunnerStallLedger();
+    const stop = clock.watch();
+    try {
+      let status = "pending";
+      const drain = pending(clock, clock.now() + 30_000, () => status);
+      await vi.advanceTimersByTimeAsync(29_500);
+      vi.setSystemTime(Date.now() + 60_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      status = "completed";
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(drain).resolves.toBeUndefined();
     } finally { stop(); vi.useRealTimers(); }
   });
 
@@ -6793,11 +6809,15 @@ describe("admission waits do not count time this process was stopped", () => {
     expect(wall).toBeGreaterThanOrEqual(30_000);
     expect(wall).toBeLessThan(35_000);
     expect(clock.creditedMs).toBe(0);
-    // A 6 s gap is credited only beyond the stall threshold, and only once.
+    // A 6 s gap is a stop: credited in full plus the post-stop grace, and only once.
     wall += 6_000;
     clock.now();
     clock.now();
-    expect(clock.creditedMs).toBe(6_000 - RUNNER_STALL_THRESHOLD_MS);
+    expect(clock.creditedMs).toBe(6_000 + RUNNER_POST_STOP_GRACE_MS);
+    // Total credit is capped, so a process that never runs normally still times out.
+    wall += 2 * RUNNER_MAX_STOPPED_CREDIT_MS;
+    clock.now();
+    expect(clock.creditedMs).toBe(RUNNER_MAX_STOPPED_CREDIT_MS);
     // A wall-clock grace taken now moves onto the clock without the earlier
     // credit, so it keeps exactly its own running-time budget.
     const wallGrace = wall + 5_000;
