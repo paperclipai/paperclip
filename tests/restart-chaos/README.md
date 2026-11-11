@@ -354,6 +354,12 @@ minutes. In staging class R, recovery then found the remote Runner gone
   outage. The server stops with SIGTERM and stays down for the hold. Then the
   next deploy generation starts. Without the option, a K15 restarts at once.
   The range is drawn only for K15 cells, so other seeds keep their plans.
+- **H2** (opt-in workload, staging class H) has the agent save `brief`, then hand
+  the task to the person who created it with status `in_review` as its last
+  step. The task must rest `in_review` with that person, no run of the task may
+  end `issue_reassigned`, and the task must have no execution blocker or active
+  recovery action. Run it with a native adapter, for example
+  `--adapters claude --workloads H2`.
 - **T1** (opt-in workload) has the agent run one shell command in the
   foreground for about 100 s (50 ticks of 2 s). The command prints the loop's
   own clock window. The agent then saves `brief`, whose first line is
@@ -1433,7 +1439,7 @@ re-arms the task's own triggered faults instead of using their offsets.
 | `grader.ts` | Pure R1–R6 grading over the samples, plus the universal checks. |
 | `universal.ts`, `universal-audit.ts` | U1–U4 on every task, and their audit over saved waves. |
 | `contention.ts` | L1 workload, its accounting oracle and the `--db-pressure` writers. |
-| `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, M1 delegation, G1 approval across a restart, H1 budget hard stop across a restart, F1 absolute symlink kept in the workspace, T1 long shell tool, with their T-oracles. |
+| `workloads.ts` | A1 brief document, B1 python CLI with tests, B5 long bench, C1 comment while running, M1 delegation, G1 approval across a restart, H1 budget hard stop across a restart, F1 absolute symlink kept in the workspace, T1 long shell tool, H2 hand-off to a person, with their T-oracles. |
 | `journeys.ts`, `journey-driver.ts`, `journey-oauth-app.ts`, `journey-matrix.ts` | Q2 and Q3 definitions and oracles, the board's side of each, Q3's loopback OAuth/MCP app, and the `--matrix` planner. |
 | `evidence.ts`, `ledger.ts` | Evidence bundle for each failure and the JSONL ledger plus `SUMMARY.md`. |
 | `daytona-image.ts` | Docker-free extraction of the image's runnerd and provider pack, cached per digest, and the controller/image content-ID check. |
