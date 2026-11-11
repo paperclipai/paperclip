@@ -29,9 +29,7 @@ export function readTaskState(events: readonly Record<string, unknown>[], task: 
 }
 async function chooseStatus(page: Page, status: "Todo" | "Done") {
   await page.getByRole("button", { name: /^Change status \(current:/ }).first().click();
-  // Each option's accessible name also carries its status icon's label, so match the visible option text.
-  // (gha-42937394973: the exact-name locator never resolved while the menu showed "Todo".)
-  await page.getByRole("button").filter({ visible: true, hasText: new RegExp(`^\\s*${status}\\s*$`) }).first().click();
+  await page.getByRole("button", { name: new RegExp(`^${status}(?:\\s*${status})?$`) }).filter({ visible: true }).first().click();
 }
 type RunLike = { id: string; agentId?: string | null; status: string; contextSnapshot?: Record<string, unknown> | null };
 export function isBlockedInteractionRun(run: RunLike, task: { id: string }, design: { id: string }, workerId: string) {
