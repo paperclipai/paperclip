@@ -65,7 +65,7 @@ it("admits the retained owner-routed path: one Morgan continuation woken by the 
   const roles = independentReviewRoles(retainedRoles());
   expect(roles.valid).toBe(true); expect(roles.canonical.map(run => run.id)).toEqual(["canonical"]);
   expect(roles.continuation.map(run => run.id)).toEqual(["continuation"]); expect(roles.review.map(run => run.id)).toEqual(["review"]);
-  const o = valid(); o.state.ownerContinuationRunId = "continuation";
+  const o = valid(); (o.state as Record<string, unknown>).ownerContinuationRunId = "continuation";
   o.runs.splice(3, 0, { id: "continuation", agentId: "morgan", status: "succeeded", nativeIssueId: "website" } as typeof o.runs[number]);
   expect(gradeIndependentReview(o).passed).toBe(true);
 });

@@ -54,6 +54,11 @@ describe("owner-routed routine change", () => {
     expect(gradeIntegratorRoutines({ ...delegated(), links: [] }).passed).toBe(false);
     const unbound = delegated(); unbound.runs[1]!.contextSnapshot = { issueId: "elsewhere" }; expect(gradeIntegratorRoutines(unbound).passed).toBe(false);
     const twice = delegated(); twice.runs.push({ id: "again", agentId: "morgan", status: "succeeded", contextSnapshot: { issueId: "delegated" } }); expect(gradeIntegratorRoutines(twice).passed).toBe(false);
+    for (const [cron, timezone] of [["* * * * *", "America/Chicago"], ["0 */2 * * *", "America/Chicago"], ["0 * * * *", "UTC"]]) {
+      const wrong = delegated(); Object.assign(wrong.routines[0]!.triggers[0]!, { cronExpression: cron, timezone });
+      wrong.activity.push({ id: "w", action: "routine.trigger_updated", entityType: "routine", entityId: "routine", agentId: "morgan", runId: "owner-run" });
+      expect(gradeIntegratorRoutines(wrong).passed).toBe(false);
+    }
     const outside = delegated(); outside.routines[0]!.triggers[0]!.cronExpression = "0 * * * *";
     outside.activity.push({ id: "w", action: "routine.trigger_updated", entityType: "routine", entityId: "routine", agentId: "morgan", runId: "other-run" });
     expect(gradeIntegratorRoutines(outside).passed).toBe(false);

@@ -62,9 +62,14 @@ export function gradeIntegratorRoutines(value: unknown) {
     // Agent routine writes: only the owner's own run on the delegated task may make them.
     const agentWrites = o.activity.filter(event => routineWrite(event, before?.id) && !!event.agentId);
     const ownerWrites = agentWrites.filter(event => event.agentId === worker.id && !!route.ownerRun && (event as Activity).runId === route.ownerRun.id);
+    // When the owner does change it, the saved result must be the requested one: one enabled hourly schedule
+    // in the original timezone (minute fixed, every hour).
+    const schedules = current?.triggers.filter(row => row.kind === "schedule") ?? [];
+    const hourly = schedules.length === 1 && schedules[0]!.enabled === true && /^[0-5]?\d\s+\*\s+\*\s+\*\s+\*$/.test(schedules[0]!.cronExpression?.trim() ?? "")
+      && schedules[0]!.timezone === before?.triggers.find(row => row.kind === "schedule")?.timezone;
     c.add("same-owned-definition-and-triggers", !!current && current.assigneeAgentId === worker?.id && o.routines.length === 1
-      && agentWrites.length === ownerWrites.length && (unchanged || ownerWrites.length > 0),
-      "Morgan remains the owner and no hidden duplicate exists. The definition and schedule are unchanged, or every change is Morgan's own write from the run on the task the CEO routed to Morgan.");
+      && agentWrites.length === ownerWrites.length && (unchanged || ownerWrites.length > 0 && hourly),
+      "Morgan remains the owner and no hidden duplicate exists. The definition and schedule are unchanged, or Morgan's own write from the run on the routed task saved one enabled hourly schedule in the original timezone.");
     c.add("ownership-boundary-explained", route.valid && (route.delegated.length === 1 ? hasLink(o, "issues", route.delegated[0]!)
       : o.links.some(href => linksTo(o, href, "routines", [before?.id]) || linksTo(o, href, "agents", [worker?.id, worker?.urlKey]))),
       "The change is routed structurally: one task assigned to owner Morgan, created by the CEO and linked in the reply, with at most one Morgan run bound to it; or a reply link to the routine or Morgan's page where an authorized person acts. The reply's wording is left to a human reader.");
@@ -85,6 +90,6 @@ export const integratorRoutinesCases: readonly ChatCatalogCase[] = [
     const created = await ctx.input.api.post<RoutineDetail>(`${root(ctx)}/routines`, { title: "Morgan's launch summary", description: "Summarize Launch without changing project tasks.", projectId: p.id, assigneeAgentId: worker.id });
     await ctx.input.api.post(`/api/routines/${created.id}/triggers`, { kind: "schedule", enabled: true, cronExpression: "0 9 * * 1-5", timezone: "America/Chicago" });
     return { project: p, worker, routine: await ctx.input.api.get<RoutineDetail>(`/api/routines/${created.id}`), originalRevisions: await ctx.input.api.get<RoutineRevision[]>(`/api/routines/${created.id}/revisions`) };
-  }, { oracleVersion: "paperclip.chat-catalog.integrator.manage-other-owner.v2", expectedRunCount: 2, minimumRunCount: 1, attemptTimeoutMs: 480_000,
+  }, { oracleVersion: "paperclip.chat-catalog.integrator.manage-other-owner.v3", expectedRunCount: 2, minimumRunCount: 1, attemptTimeoutMs: 480_000,
     sourceFiles: ["chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-routines.ts", "chat-catalog-domains/run-roles.ts", "chat-scenarios/routines.yaml"] }),
 ];
