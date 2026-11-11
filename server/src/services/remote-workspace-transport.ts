@@ -751,6 +751,12 @@ export async function restoreRemoteWorkspaceDirectory(input: {
     await fs.writeFile(receiptFile,JSON.stringify(receipt),{mode:0o600});
     await fs.rename(path.join(staged,'.paperclip-runtime','workspace-restored.json'),path.join(runtime,'workspace-restored.json'));
     await finishInPlace(receipt);};
+   // The reclaim phase runs before the helper install, so it creates the
+   // operation's staging folder itself without following a symlink.
+   if(reclaimOnly){stage='create_parent';let current='/';
+    for(const part of path.dirname(archive).split('/').filter(Boolean)){current=path.join(current,part);
+     await fs.mkdir(current,{mode:0o700}).catch(e=>{if(e.code!=='EEXIST')throw e});
+     const s=await fs.lstat(current);if(!s.isDirectory()||s.isSymbolicLink())throw Error('unsafe_root');}}
    stage='restore_lock';await directory(path.dirname(root));
    const lockRoot=path.join(path.dirname(root),'.paperclip-runtime','workspace-restore-locks');
    await directory(path.dirname(lockRoot));
@@ -804,8 +810,7 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    stage='reclaim';const stagingRoot=path.dirname(archive),snapshotsRoot=path.dirname(stagingRoot);
    const discard=async p=>{await open(p);await fs.rm(p,{recursive:true,force:true});};
    for(const name of await fs.readdir(stagingRoot))
-    if(/^workspace\.pcws\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.consuming$/.test(name)
-     ||reclaimOnly&&name==='workspace.pcws')await fs.rm(path.join(stagingRoot,name),{force:true});
+    if(/\.pcws\.[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.consuming$/.test(name))await fs.rm(path.join(stagingRoot,name),{force:true});
    const stagingPrefix=path.basename(root)+'.restoring-';
    for(const name of await fs.readdir(path.dirname(root))){
     if(!name.startsWith(stagingPrefix)||!/^[A-Za-z0-9]{6}$/.test(name.slice(stagingPrefix.length)))continue;
@@ -857,6 +862,10 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    const consuming=archive+'.'+crypto.randomUUID()+'.consuming';
    try{
     await fs.rename(archive,consuming);
+    // Another upload of this operation is from an attempt that died, or one that
+    // will find this restore's receipt; neither needs its archive.
+    for(const name of await fs.readdir(stagingRoot))if(/^workspace(?:-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})?\.pcws$/.test(name))
+     await fs.rm(path.join(stagingRoot,name),{force:true});
     await require('node:util').promisify(cp.execFile)(process.execPath,[helper,'restore',consuming,staged,digest,'consume'],{maxBuffer:1048576});
     stage='write_receipt';const runtime=path.join(staged,'.paperclip-runtime');await fs.mkdir(runtime,{mode:0o700});
     for(const file of retained)await fs.writeFile(path.join(runtime,file.name),file.content,{flag:'wx',mode:0o600});
@@ -872,17 +881,22 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    }finally{await fs.rm(consuming,{force:true});await open(staging).catch(()=>{});await fs.rm(staging,{recursive:true,force:true});}
    }finally{lock.close();}
   })().catch(error=>{process.stderr.write(setupFailure('remote_workspace_restore_failed',stage,diskFull(error)?Error('sandbox_disk_full'):error));process.exitCode=1});`;
+  // Each attempt uploads to its own name, so a delayed command of an earlier
+  // attempt with the same identity never removes or consumes this upload.
+  const directory = path.posix.join(parent, ".paperclip-runtime", "workspace-snapshots", operationId);
+  const archive = path.posix.join(directory, `workspace-${randomUUID()}.pcws`);
+  const args = (phase: "reclaim" | "extract") => ["-e", restore, path.posix.join(directory, "archive.cjs"), archive, input.remoteCwd,
+    input.manifestDigest, input.restorationIdentity, String(input.allowEmptyRoot === true), JSON.stringify(input.allocationFiles ?? []),
+    String(input.replaceRetiredRoot === true), input.restorationEpoch === undefined ? "" : String(input.restorationEpoch), phase];
+  // Free what this root's earlier attempts left before anything new needs space.
+  await command(input.target, "restore", args("reclaim"));
   const staged = await installArchiveHelper(input.target, parent, operationId).catch((error: unknown) => {
     throw error instanceof Error && error.message === REMOTE_WORKSPACE_SANDBOX_DISK_FULL ? restoreDiskFull("archive_helper", "helper") : error;
   });
-  const args = (phase: "reclaim" | "extract") => ["-e", restore, staged.helper, staged.archive, input.remoteCwd,
-    input.manifestDigest, input.restorationIdentity, String(input.allowEmptyRoot === true), JSON.stringify(input.allocationFiles ?? []),
-    String(input.replaceRetiredRoot === true), input.restorationEpoch === undefined ? "" : String(input.restorationEpoch), phase];
-  // Free what this root's earlier attempts left before the upload needs the space.
-  await command(input.target, "restore", args("reclaim"));
-  await measureRunPhase("workspace.snapshot.sandbox_upload", () => stat(input.archivePath).then(archive => transferArchive(input.target, "syncIn", [{ operationId,
-    files: [{ kind: "file", sourcePath: input.archivePath, targetPath: staged.archive }],
-  }], archive.size))).catch((error: unknown) => {
+  if (staged.directory !== directory) throw new Error("remote_workspace_operation_identity_invalid");
+  await measureRunPhase("workspace.snapshot.sandbox_upload", () => stat(input.archivePath).then(source => transferArchive(input.target, "syncIn", [{ operationId,
+    files: [{ kind: "file", sourcePath: input.archivePath, targetPath: archive }],
+  }], source.size))).catch((error: unknown) => {
     if (sandboxDiskFull(error)) throw restoreDiskFull("upload", "upload");
     noteProviderRefusal("upload", error); throw error;
   });

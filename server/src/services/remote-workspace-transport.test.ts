@@ -742,11 +742,16 @@ fs.promises.open=async(...args)=>{const handle=await open.apply(fs.promises,args
   if(helper&&killAfter&&++writes>=killAfter){process.kill(process.ppid,'SIGKILL');process.kill(process.pid,'SIGKILL');}
   return result;};
  return handle;};
+const writeFile=fs.promises.writeFile;
+fs.promises.writeFile=async(file,data,...rest)=>{
+ if(String(file).startsWith(disk+path.sep)&&used()+Buffer.byteLength(data)>capacity)
+  throw Object.assign(Error('ENOSPC: no space left on device, write'),{code:'ENOSPC',errno:-28,syscall:'write'});
+ return writeFile.call(fs.promises,file,data,...rest);};
 require('node:module').syncBuiltinESMExports();`);
       const { remote, execute } = target();
       const actual = execute.getMockImplementation()!;
-      execute.mockImplementation(command => actual(command.args?.[1]?.includes("remote_workspace_restore_failed")
-        ? { ...command, env: { ...command.env, NODE_OPTIONS: `--require ${preload}` } } : command));
+      // Every sandbox command, including the helper install, writes to this disk.
+      execute.mockImplementation(command => actual({ ...command, env: { ...command.env, NODE_OPTIONS: `--require ${preload}` } }));
       const used = async () => {
         let total = 0;
         const walk = async (directory: string): Promise<void> => {
@@ -809,6 +814,9 @@ require('node:module').syncBuiltinESMExports();`);
 
     it("names a disk that cannot take the archive helper so it is not retried automatically", async () => {
       const { remote, execute } = target();
+      // The reclaim phase runs first; then the helper install finds the disk full.
+      execute.mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "", timedOut: false, signal: null,
+        pid: process.pid, startedAt: new Date().toISOString() });
       execute.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: REMOTE_WORKSPACE_SANDBOX_DISK_FULL, timedOut: false, signal: null,
         pid: process.pid, startedAt: new Date().toISOString() });
       const archivePath = path.join(scratch, "restore.pcws"); await fs.writeFile(archivePath, "synthetic archive");
@@ -870,6 +878,47 @@ require('node:module').syncBuiltinESMExports();`);
         await expectRestored(root, files);
         expect(await fs.lstat(partial).catch(() => null)).toBeNull();
         expect(await fs.readFile(path.join(unbound, "workspace.pcws"), "utf8")).toBe("earlier release archive");
+      } finally { await captured.cleanup(); }
+    });
+
+    it("reclaims a full disk before the helper install needs space", async () => {
+      const { files, captured, archiveSize } = await savedWorkspace();
+      try {
+        const capacity = archiveSize + 1.5 * MiB;
+        const { remote, root, disk, used } = await boundedDisk(capacity);
+        // A dead attempt of this root left a partial tree that fills the disk.
+        const partial = path.join(disk, "workspace-root.restoring-Zz98Yy");
+        await fs.mkdir(path.join(partial, "tree"), { recursive: true });
+        await fs.writeFile(path.join(partial, "tree", "filler.bin"), Buffer.alloc(Math.floor(capacity - 1024)));
+        expect(capacity - await used()).toBeLessThan(2048);
+        await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: root, archivePath: captured.archivePath,
+          manifestDigest: captured.manifestDigest, restorationIdentity: "a1".repeat(32), restorationEpoch: 1 });
+        await expectRestored(root, files);
+        expect(await fs.lstat(partial).catch(() => null)).toBeNull();
+      } finally { await captured.cleanup(); }
+    });
+
+    it("keeps a later attempt's upload when an earlier attempt's reclaim with the same identity runs late", async () => {
+      const { files, captured, archiveSize } = await savedWorkspace();
+      try {
+        const { remote, execute, root } = await boundedDisk(archiveSize + 1.5 * MiB);
+        const bounded = execute.getMockImplementation()!;
+        let delayed = false;
+        execute.mockImplementation(async command => {
+          if (!delayed && command.args?.at(-1) === "extract") {
+            delayed = true;
+            // The earlier attempt's reclaim reached the sandbox only now. It names its own upload.
+            expect(command.args[3]).toMatch(/workspace-[a-f0-9-]{36}\.pcws$/);
+            const late = command.args.map((arg, index) => index === 3
+              ? path.join(path.dirname(arg), `workspace-${randomUUID()}.pcws`) : index === command.args!.length - 1 ? "reclaim" : arg);
+            expect((await bounded({ ...command, args: late })).exitCode).toBe(0);
+          }
+          return bounded(command);
+        });
+        await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: root, archivePath: captured.archivePath,
+          manifestDigest: captured.manifestDigest, restorationIdentity: "b2".repeat(32), restorationEpoch: 1 });
+        expect(delayed).toBe(true);
+        await expectRestored(root, files);
       } finally { await captured.cleanup(); }
     });
 
@@ -961,8 +1010,9 @@ return result};`);
   it.each(["prepare", "repository", "restore"] as const)("drops %s output that is outside the closed cause grammar", async operation => {
     const { remote, execute } = target();
     const forged = `remote_workspace_${operation}_failed: stage=extract reason=/home/secret`;
-    if (operation === "restore") execute.mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "", timedOut: false,
-      signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+    // A restore runs its reclaim phase and installs its helper before extracting.
+    if (operation === "restore") for (let call = 0; call < 2; call++) execute.mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "",
+      timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
     execute.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: forged, timedOut: false,
       signal: null, pid: process.pid, startedAt: new Date().toISOString() });
     const request = operation === "prepare"
@@ -1573,7 +1623,8 @@ return result};`);
     const { remote, execute } = target();
     const failed = { exitCode: 1, stdout: "remote_workspace_archive_fs_enoent", stderr: "", timedOut: false,
       signal: null, pid: process.pid, startedAt: new Date().toISOString() };
-    if (operation === "restore") execute.mockResolvedValueOnce({ ...failed, exitCode: 0, stdout: "" });
+    // A restore runs its reclaim phase and installs its helper before extracting.
+    if (operation === "restore") execute.mockResolvedValueOnce({ ...failed, exitCode: 0, stdout: "" }).mockResolvedValueOnce({ ...failed, exitCode: 0, stdout: "" });
     execute.mockResolvedValueOnce(failed);
     const request = operation === "prepare"
       ? prepareRemoteWorkspaceDirectory({ target: remote, remoteCwd: workspace, source: { kind: "empty" },
@@ -1588,7 +1639,7 @@ return result};`);
               manifestDigest: "a".repeat(64), restorationIdentity: "b".repeat(64) });
           })();
     await expect(request).rejects.toThrow(/^remote_workspace_operation_failed: operation=[a-z_]+ exit=1$/);
-    expect(execute).toHaveBeenCalledTimes(operation === "restore" ? 2 : 1);
+    expect(execute).toHaveBeenCalledTimes(operation === "restore" ? 3 : 1);
   });
 
   it("keeps the existing disk diagnostic ahead of a new capture diagnostic", async () => {
