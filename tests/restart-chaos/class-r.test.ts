@@ -128,16 +128,28 @@ describe("CR3 stall", () => {
 });
 
 describe("CR2 sandbox search", () => {
-  it("stops at its deadline and never starts a command after it", async () => {
-    let commands = 0;
-    const client = {
-      async *list() { yield { id: "a", state: "started", labels: { "paperclip-company-id": COMPANY, "paperclip-environment-id": ENVIRONMENT } }; },
-      get: async () => new Promise<never>(() => {}),
-    };
+  const list = async function* () {
+    yield { id: "a", state: "started", labels: { "paperclip-company-id": COMPANY, "paperclip-environment-id": ENVIRONMENT } };
+  };
+  it("returns at its deadline when a Daytona lookup never answers", async () => {
+    const started = Date.now();
     const result = await executeInWaveSandboxes({ apiKey: "", companyId: COMPANY, environmentId: ENVIRONMENT, command: "true", secrets: [],
-      done: () => { commands += 1; return true; }, client: client as never, deadlineMs: 50 });
+      done: () => true, client: { list, get: async () => new Promise<never>(() => {}) } as never, deadlineMs: 1_500 });
+    const elapsed = Date.now() - started;
+    expect(result.error).toMatch(/deadline 1500 ms/);
+    expect(elapsed).toBeGreaterThanOrEqual(1_400);
+    expect(elapsed).toBeLessThan(5_000);
+  });
+  it("never starts a command once the deadline has passed, even when the lookup answers late", async () => {
+    let commands = 0;
+    const sandbox = { process: { executeCommand: async () => { commands += 1; return { exitCode: 0, result: "" }; } } };
+    const get = () => new Promise(resolve => setTimeout(() => resolve(sandbox), 1_800));
+    const result = await executeInWaveSandboxes({ apiKey: "", companyId: COMPANY, environmentId: ENVIRONMENT, command: "true", secrets: [],
+      done: () => true, client: { list, get } as never, deadlineMs: 1_500 });
     expect(result.error).toMatch(/deadline/);
+    await new Promise(resolve => setTimeout(resolve, 600));
     expect(commands).toBe(0);
+    expect(result.attempts).toEqual([]);
   });
 });
 
