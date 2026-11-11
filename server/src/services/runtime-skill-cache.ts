@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import type { CompanySkill } from "@paperclipai/shared";
 import { currentControllerProcessStamp, readControllerProcess } from "./controller-process-identity.js";
-import { proveOwnerGone } from "./owner-proof.js";
+import { proveOwnerGone, type LocalOwnerStamp, type OwnerProof } from "./owner-proof.js";
+
+/** Bounds one lock-holder proof, which can read the database across process spaces. */
+const LOCK_PROOF_TIMEOUT_MS = 5_000;
 
 const FORMAT = 1;
 const inFlight = new Map<string, Promise<string>>();
@@ -122,18 +125,30 @@ async function matches(spec: CacheSpec, entry = spec.entry): Promise<boolean> {
  * volume, or when its server boot stopped or was fenced. A lock written before
  * holders recorded their process identity stays held.
  */
-export async function runtimeSkillCacheLockHolderExited(lockContent: Buffer): Promise<boolean> {
+export async function runtimeSkillCacheLockHolderExited(lockContent: Buffer, options: {
+  /** The proof is abandoned (the lock stays held) after this long, so a stalled read never outlives the lock wait. */
+  timeoutMs?: number;
+  prove?: (stamp: LocalOwnerStamp) => Promise<OwnerProof>;
+} = {}): Promise<boolean> {
   let holder: unknown;
   try { holder = JSON.parse(lockContent.toString("utf8")); } catch { return false; }
   const controller = readControllerProcess((holder as { controller?: unknown } | null)?.controller);
   if (!controller) return false;
-  const proof = await proveOwnerGone({
+  const stamp: LocalOwnerStamp = {
     kind: "local", scope: "runtime_skill_cache_lock", generation: null, host: null, processSpace: controller.hostHash,
     bootId: controller.bootId, pid: controller.pid, processStartedAt: controller.processStartedAt, processGroupId: null,
     ...(controller.deployment ? { worker: controller.deployment.worker, exclusiveVolume: controller.deployment.exclusiveVolume,
       volumeId: controller.deployment.volumeId } : {}),
-  });
-  return proof.verdict === "gone";
+  };
+  let timer: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), options.timeoutMs ?? LOCK_PROOF_TIMEOUT_MS); });
+  try {
+    const proved = (options.prove ?? (value => proveOwnerGone(value)))(stamp)
+      .then(proof => proof.verdict === "gone", () => false);
+    return await Promise.race([proved, timedOut]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const OWNER_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -231,7 +246,8 @@ async function publishLocked<T>(root: string, fingerprint: string, action: () =>
         const due = judged === null || judged.inode !== held.inode || Date.now() - judged.at >= 1_000;
         if (holderToken && due) {
           judged = { inode: held.inode, at: Date.now() };
-          if (await runtimeSkillCacheLockHolderExited(held.content)) {
+          if (await runtimeSkillCacheLockHolderExited(held.content,
+            { timeoutMs: Math.max(1, Math.min(LOCK_PROOF_TIMEOUT_MS, deadline - Date.now())) })) {
             await releaseExitedRuntimeSkillCacheLock(root, lock, { inode: held.inode, token: holderToken });
             continue;
           }

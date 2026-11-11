@@ -213,6 +213,18 @@ describe("runtime skill revision cache", () => {
     }
   });
 
+  it("keeps a lock held when the holder proof stalls or fails", async () => {
+    const holder = { bootId: randomUUID(), pid: 3, hostHash: "f".repeat(32), processStartedAt: null };
+    const startedAt = Date.now();
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder),
+      { timeoutMs: 50, prove: () => new Promise(() => {}) })).toBe(false);
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder),
+      { prove: async () => { throw new Error("database unavailable"); } })).toBe(false);
+    expect(await runtimeSkillCacheLockHolderExited(lockStamp(holder),
+      { prove: async () => ({ verdict: "gone", reason: "controller_stopped" }) })).toBe(true);
+  });
+
   it("fingerprints installed content and ownership, excluding cosmetic metadata", async () => {
     const spec = runtimeSkillCacheSpec(root, skill)!;
     expect(runtimeSkillCacheSpec(root, { ...skill, name: "Renamed", updatedAt: new Date(), metadata: { ...skill.metadata, starred: true, ref: "new-branch" } })!.fingerprint).toBe(spec.fingerprint);
