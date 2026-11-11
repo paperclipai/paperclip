@@ -30,28 +30,50 @@ function adoptionAuthority(row: Copy) {
 }
 
 export class AgentDirectoryReuseInvalidatedError extends Error {}
-export const agentDirectoryOperationLockTiming = { waitMs: 300_000, ownerSilenceMs: 60_000 };
-export async function acquireAgentDirectoryOperationLock(tx: Pick<Db, "execute">, companyId: string, agentId: string): Promise<number> {
-  const { waitMs, ownerSilenceMs } = agentDirectoryOperationLockTiming;
-  const [bound] = await tx.execute(sql`with current_timeout as (
+export const agentDirectoryOperationLockTiming = { waitMs: 300_000, ownerSilenceMs: 60_000, retryMinMs: 250, retryMaxMs: 5_000, maxConcurrentAttempts: 4 };
+const lockAttemptQueue: Array<() => void> = [];
+let lockAttemptsInFlight = 0;
+async function takeLockAttemptSlot(): Promise<() => void> {
+  if (lockAttemptsInFlight >= agentDirectoryOperationLockTiming.maxConcurrentAttempts) await new Promise<void>(resolve => lockAttemptQueue.push(resolve));
+  lockAttemptsInFlight++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    lockAttemptsInFlight--;
+    lockAttemptQueue.shift()?.();
+  };
+}
+export async function tryAcquireAgentDirectoryOperationLock(tx: Pick<Db, "execute">, companyId: string, agentId: string): Promise<number | null> {
+  const { ownerSilenceMs } = agentDirectoryOperationLockTiming;
+  const [lock] = await tx.execute(sql`with current_timeout as (
       select case when setting::bigint > 0 and setting::bigint < ${ownerSilenceMs} then setting::bigint else ${ownerSilenceMs}::bigint end as ms
-      from pg_settings where name = 'idle_in_transaction_session_timeout'),
-    current_statement_timeout as (select setting as original,
-      case when setting::bigint > 0 and setting::bigint <= ${waitMs} then (${waitMs}::bigint + 1000)::text else setting end as during_wait
-      from pg_settings where name = 'statement_timeout')
-    select ms as idle_timeout_ms, original as statement_timeout_ms, set_config('idle_in_transaction_session_timeout', ms::text, true) as idle_timeout,
-      set_config('statement_timeout', during_wait, true) as statement_timeout,
-      set_config('lock_timeout', ${String(waitMs)}, true) as lock_timeout from current_timeout, current_statement_timeout`);
-  try {
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`agent-directory:${companyId}:${agentId}`}, 0))`);
-  } catch (error) {
-    const failure = error as { code?: string; cause?: { code?: string } };
-    const code = failure.cause?.code ?? failure.code;
-    if (code === "55P03" || code === "57014") throw conflict("Agent directory operation is already active");
-    throw error;
+      from pg_settings where name = 'idle_in_transaction_session_timeout')
+    select ms as idle_timeout_ms, set_config('idle_in_transaction_session_timeout', ms::text, true) as idle_timeout,
+      pg_try_advisory_xact_lock(hashtextextended(${`agent-directory:${companyId}:${agentId}`}, 0)) as acquired from current_timeout`);
+  return lock?.acquired === true ? Number(lock.idle_timeout_ms ?? ownerSilenceMs) : null;
+}
+export async function withAgentDirectoryOperationLock<T>(db: Db, companyId: string, agentId: string, work: (tx: Db, idleTimeoutMs: number) => Promise<T>): Promise<T> {
+  const { waitMs, retryMinMs, retryMaxMs } = agentDirectoryOperationLockTiming;
+  const deadline = Date.now() + waitMs;
+  let delay = retryMinMs;
+  for (;;) {
+    const releaseSlot = await takeLockAttemptSlot();
+    let attempt: { value: T } | null;
+    try {
+      attempt = await withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {
+        const idleTimeoutMs = await tryAcquireAgentDirectoryOperationLock(tx, companyId, agentId);
+        releaseSlot();
+        if (idleTimeoutMs === null) return null;
+        return { value: await work(tx as unknown as Db, idleTimeoutMs) };
+      }));
+    } finally { releaseSlot(); }
+    if (attempt) return attempt.value;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw conflict("Agent directory operation is already active");
+    await setTimeout(Math.min(remaining, delay / 2 + Math.random() * delay / 2), undefined, { ref: false });
+    delay = Math.min(retryMaxMs, delay * 2);
   }
-  await tx.execute(sql`select set_config('lock_timeout', '0', true), set_config('statement_timeout', ${String(bound?.statement_timeout_ms ?? "0")}, true)`);
-  return Number(bound?.idle_timeout_ms ?? ownerSilenceMs);
 }
 export function agentDirectoryLockOwnerCheck(lock: Pick<Db, "execute">, signal: AbortSignal): () => Promise<void> {
   return async () => {
@@ -756,14 +778,12 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     if (!disposableRemoteCopy(row)) return run();
     // Different controllers have different cache roots. Serialize their active
     // collection/cleanup operations in Postgres, without holding row locks over I/O.
-    return withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {
-      const idleTimeoutMs = await acquireAgentDirectoryOperationLock(tx as unknown as Db, row.companyId, row.agentId);
-      return withAgentDirectoryLockKeepalive(tx as unknown as Db, idleTimeoutMs, signal => lockOwnership.run({ signal, verify: agentDirectoryLockOwnerCheck(tx as unknown as Db, signal) }, async () => {
+    return withAgentDirectoryOperationLock(db, row.companyId, row.agentId, (tx, idleTimeoutMs) =>
+      withAgentDirectoryLockKeepalive(tx, idleTimeoutMs, signal => lockOwnership.run({ signal, verify: agentDirectoryLockOwnerCheck(tx, signal) }, async () => {
         const result = await run();
         signal.throwIfAborted();
         return result;
-      }));
-    }));
+      })));
   }
   return { prepare: (input: Parameters<typeof prepareCopy>[0]) => prepareCopy(input), hasChanges, adopt, canReuse, recoverUnavailable,
     recoverStoppedRemote: (row: Copy) => serial(row, current => current.receipt?.retainedByRunId ? Promise.resolve(current) : recoverStoppedRemote(current), "agent_directory_collect"),

@@ -25,7 +25,7 @@ import { buildNativeRuntimeContext } from "../services/native-runtime/runtime-co
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { createReusableLeaseHandoff } from "../services/environment-lease-handoff.js";
-import { AgentDirectoryReuseInvalidatedError, acquireAgentDirectoryOperationLock, agentDirectoryLockOwnerCheck, agentDirectoryOperationLockTiming, agentDirectoryWorkingCopyService, withAgentDirectoryLockKeepalive } from "../services/agent-directory-working-copies.js";
+import { AgentDirectoryReuseInvalidatedError, agentDirectoryLockOwnerCheck, agentDirectoryOperationLockTiming, agentDirectoryWorkingCopyService, tryAcquireAgentDirectoryOperationLock, withAgentDirectoryLockKeepalive, withAgentDirectoryOperationLock } from "../services/agent-directory-working-copies.js";
 import { parseDirectorySnapshot, withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { heartbeatRunEvents } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
@@ -1054,16 +1054,15 @@ describe("persistent agent directories", () => {
     const silent = createDb(external ?? database.connectionString), live = createDb(external ?? database.connectionString);
     try {
       const abandoned = silent.transaction(async tx => {
-        await acquireAgentDirectoryOperationLock(tx as unknown as typeof db, companyId, agentId);
+        expect(await tryAcquireAgentDirectoryOperationLock(tx, companyId, agentId)).toBe(1_000);
         await new Promise(resolve => setTimeout(resolve, 3_000));
       }).then(() => "completed", () => "terminated");
       await new Promise(resolve => setTimeout(resolve, 200));
       const started = Date.now();
-      const survivor = await live.transaction(async tx => {
-        const idleTimeoutMs = await acquireAgentDirectoryOperationLock(tx as unknown as typeof db, companyId, agentId);
+      const survivor = await withAgentDirectoryOperationLock(live, companyId, agentId, async (tx, idleTimeoutMs) => {
         expect(idleTimeoutMs).toBe(1_000);
         expect(Date.now() - started).toBeLessThan(2_900);
-        await withAgentDirectoryLockKeepalive(tx as unknown as typeof db, idleTimeoutMs, () => new Promise(resolve => setTimeout(resolve, 2_500)));
+        await withAgentDirectoryLockKeepalive(tx, idleTimeoutMs, () => new Promise(resolve => setTimeout(resolve, 2_500)));
         return "completed";
       });
       expect(await abandoned).toBe("terminated");
@@ -1074,10 +1073,10 @@ describe("persistent agent directories", () => {
     }
   });
 
-  it("waits for the full lock wait when statement_timeout is shorter", async () => {
+  it("bounds the database connections used by waiters for a busy agent directory lock", async () => {
     const timing = { ...agentDirectoryOperationLockTiming };
-    Object.assign(agentDirectoryOperationLockTiming, { waitMs: 800 });
-    const holder = createDb(external ?? database.connectionString), waiter = createDb(external ?? database.connectionString);
+    Object.assign(agentDirectoryOperationLockTiming, { waitMs: 1_500, retryMinMs: 20, retryMaxMs: 40, maxConcurrentAttempts: 2 });
+    const holder = createDb(external ?? database.connectionString), waiters = createDb(external ?? database.connectionString);
     let release!: () => void;
     const released = new Promise<void>(resolve => { release = resolve; });
     let acquired!: () => void;
@@ -1089,34 +1088,33 @@ describe("persistent agent directories", () => {
     });
     try {
       await ready;
-      const started = Date.now();
-      await expect(waiter.transaction(async tx => {
-        await tx.execute(sql`set local statement_timeout = '200ms'`);
-        await acquireAgentDirectoryOperationLock(tx as unknown as typeof db, companyId, agentId);
-      })).rejects.toThrow("Agent directory operation is already active");
-      expect(Date.now() - started).toBeGreaterThanOrEqual(700);
-      const restored = await waiter.transaction(async tx => {
-        await tx.execute(sql`set local statement_timeout = '200ms'`);
-        release();
-        await held;
-        await acquireAgentDirectoryOperationLock(tx as unknown as typeof db, companyId, agentId);
-        const [row] = await tx.execute(sql`select current_setting('statement_timeout') as value`);
-        return row?.value;
-      });
-      expect(restored).toBe("200ms");
+      const work = vi.fn(async () => "done");
+      const pending = Array.from({ length: 12 }, () => withAgentDirectoryOperationLock(waiters, companyId, agentId, work).then(() => "acquired", (error: Error) => error.message));
+      let peak = 0;
+      const sampleUntil = Date.now() + 1_000;
+      while (Date.now() < sampleUntil) {
+        const [row] = await db.execute(sql`select count(*)::int as count from pg_stat_activity
+          where datname = current_database() and pid <> pg_backend_pid() and backend_type = 'client backend' and state <> 'idle'
+            and query ilike '%advisory%lock%' and query not ilike '%pg_stat_activity%'`);
+        peak = Math.max(peak, Number((row as { count: number }).count) - 1);
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      expect(peak).toBeLessThanOrEqual(2);
+      const results = await Promise.all(pending);
+      expect(results.every(result => result === "Agent directory operation is already active")).toBe(true);
+      expect(work).not.toHaveBeenCalled();
+      Object.assign(agentDirectoryOperationLockTiming, { waitMs: 5_000 });
+      const later = withAgentDirectoryOperationLock(waiters, companyId, agentId, async () => "acquired");
+      await new Promise(resolve => setTimeout(resolve, 100));
+      release();
+      await held;
+      expect(await later).toBe("acquired");
     } finally {
       release();
       await held.catch(() => undefined);
       Object.assign(agentDirectoryOperationLockTiming, timing);
-      await Promise.all([holder.$client.end({ timeout: 1 }), waiter.$client.end({ timeout: 1 })]);
+      await Promise.all([holder.$client.end({ timeout: 1 }), waiters.$client.end({ timeout: 1 })]);
     }
-  });
-
-  it("maps a cancelled lock wait to the operation conflict", async () => {
-    const execute = vi.fn().mockResolvedValueOnce([{ idle_timeout_ms: 60_000, statement_timeout_ms: "0" }])
-      .mockRejectedValueOnce(Object.assign(new Error("query wrapper"), { cause: { code: "57014" } }));
-    await expect(acquireAgentDirectoryOperationLock({ execute } as unknown as typeof db, companyId, agentId))
-      .rejects.toThrow("Agent directory operation is already active");
   });
 
   it("retries a failed lock keepalive ping and keeps the operation", async () => {
@@ -1169,7 +1167,7 @@ describe("persistent agent directories", () => {
     let acquired!: () => void;
     const ready = new Promise<void>(resolve => { acquired = resolve; });
     const held = stale.transaction(async tx => {
-      await acquireAgentDirectoryOperationLock(tx as unknown as typeof db, companyId, agentId);
+      expect(await tryAcquireAgentDirectoryOperationLock(tx, companyId, agentId)).not.toBeNull();
       check = agentDirectoryLockOwnerCheck(tx as unknown as typeof db, new AbortController().signal);
       acquired();
       await done;
@@ -1244,28 +1242,41 @@ describe("persistent agent directories", () => {
     const ephemeralBefore = process.env.PAPERCLIP_EPHEMERAL_SERVER;
     process.env.PAPERCLIP_EPHEMERAL_SERVER = "true";
     let takenOver = false;
+    let newOwner: Awaited<ReturnType<typeof holdAgentDirectoryLock>> | undefined;
+    const scripts: string[] = [];
     const execute = vi.fn(async (input: { command: string; args: string[] }) => {
       if (!takenOver) {
         takenOver = true;
         const [{ pid }] = await db.execute(sql`select pid from pg_locks where locktype = 'advisory' and granted
           and objid = (hashtextextended(${`agent-directory:${companyId}:${agentId}`}, 0) & 4294967295)::bigint::oid limit 1`) as unknown as [{ pid: number }];
+        const queued = holdAgentDirectoryLock(false);
+        await new Promise(resolve => setTimeout(resolve, 100));
         await db.execute(sql`select pg_terminate_backend(${pid})`);
-        const owner = await holdAgentDirectoryLock(false);
+        newOwner = await queued;
         await fs.writeFile(path.join(executionRoot, "resumed.txt"), "new owner");
-        await owner.release();
       }
+      scripts.push(input.args[1]!);
       await execFile(input.command, input.args);
       return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
     });
     const service = agentInstructionWorkingCopyService(db, { environmentRuntime: { execute } as unknown as EnvironmentRuntimeService });
     try {
       await service.release(companyId, copy.runId).catch(() => undefined);
+      for (let settled = -1; settled !== execute.mock.results.length;) {
+        settled = execute.mock.results.length;
+        await Promise.allSettled(execute.mock.results.map(result => result.value));
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
       expect(takenOver).toBe(true);
+      expect(scripts.map(script => script.split(" ")[0])).toEqual(["for", "for"]);
       expect(await fs.readFile(path.join(executionRoot, "resumed.txt"), "utf8")).toBe("new owner");
       expect((await fs.readdir(path.dirname(executionRoot))).filter(name => name.includes(".deleting-"))).toEqual([]);
     } finally {
+      await newOwner?.release();
       if (ephemeralBefore === undefined) delete process.env.PAPERCLIP_EPHEMERAL_SERVER;
       else process.env.PAPERCLIP_EPHEMERAL_SERVER = ephemeralBefore;
+      await db.update(environmentLeases).set({ status: "released", releasedAt: new Date() }).where(eq(environmentLeases.id, leaseId));
+      await db.delete(agentInstructionWorkingCopies).where(eq(agentInstructionWorkingCopies.runId, copy.runId));
       await fs.rm(remoteCwd, { recursive: true, force: true });
     }
   });
