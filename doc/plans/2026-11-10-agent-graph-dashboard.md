@@ -121,7 +121,8 @@ No existing route changed. The graph uses `PATCH /agents/:id` for reporting line
 - Edges: reporting lines. An edge animates while the report has a live run. Dragging from a manager's handle to an agent, or dragging the manager end of an edge to another agent, proposes a reporting-line change.
 - Side panel: status, adapter, manager, report count, budget, the five most recent runs, links, "Duplicate as draft", "Hide from graph".
 - Editing: drag, Shift-drag box selection, Ctrl or Cmd click, group move, snap to a 16 px grid, Tidy up, direction toggle, "Keep manual positions", undo and redo (100 steps), a shortcut list in the toolbar.
-- Persistence: saves are debounced by 1.5 s, skipped when nothing changed, and flushed on page hide.
+- Persistence: saves are debounced by 1.5 s and skipped when nothing changed. Only one write is in flight at a time. On page hide the newest layout is sent with `keepalive`, and the save that is still running is cancelled first, so the older request does not race the newer one. A save that fails stays pending: it is retried up to three times when the error is transient, the notice shows the error, and the user can retry from the notice.
+- Search and filters: the graph shows the same filtered tree as the classic org chart, so the managers above a matching agent stay visible with their reporting lines.
 - Performance: `syncNodes` and `syncEdges` return the previous node and edge objects when their inputs did not change. React Flow then skips those nodes. Viewport virtualization is on.
 - Accessibility: nodes are focusable and labelled, arrow keys move a focused node, every pointer action has a button or key path except box selection and connecting by drag (reporting lines can be changed on the agent page).
 - Dark mode: the canvas reads the app tokens through React Flow's CSS variables.
