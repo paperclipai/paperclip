@@ -374,11 +374,11 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(batch.deferredRootIds.size).toBeGreaterThan(0);
     expect(batch.nodeCount).toBeLessThanOrEqual(BLOCKER_ATTENTION_MAX_NODES);
     for (const rootId of batch.deferredRootIds) expect(batch.attention.get(rootId)).toMatchObject({
-      state: "needs_attention", reason: "attention_required", terminalBlockerIssueId: rootId,
+      state: "needs_attention", reason: "attention_required", terminalBlockerIssueId: null,
     });
     const listed = await issueService(db).list(companyId, { status: "blocked", includeBlockedBy: true });
     expect(listed).toHaveLength(roots.length);
-    for (const root of listed) expect((root as typeof root & { blockerAttention?: unknown }).blockerAttention).toMatchObject({ state: "needs_attention", terminalBlockerIssueId: root.id });
+    for (const root of listed) expect((root as typeof root & { blockerAttention?: unknown }).blockerAttention).toMatchObject({ state: "needs_attention", terminalBlockerIssueId: null });
     const feed = await attentionService(db).list(companyId, { all: true, allowUnscopedAll: true });
     const visible = new Set(feed.items.filter(item => item.sourceKind === "blocker_attention").map(item => item.subject.id));
     expect(visible).toEqual(new Set(roots.map(root => root.id)));
@@ -411,8 +411,8 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     });
     expect(result.attention.size).toBe(72);
     expect(result.deferredRootIds.has(completed.id)).toBe(false);
-    expect(result.attention.get(completed.id)?.terminalBlockerIssueId).toBe(completed.id);
-    expect([...result.attention.values()].every(item => item.state === "needs_attention" && item.terminalBlockerIssueId)).toBe(true);
+    expect(result.attention.get(completed.id)?.terminalBlockerIssueId).toBeNull();
+    expect([...result.attention.entries()].every(([rootId, item]) => item.state === "needs_attention" && item.terminalBlockerIssueId !== rootId)).toBe(true);
     expect(Math.max(...parameterCounts)).toBeLessThanOrEqual(1100);
     expect(parameterCounts.length).toBeLessThanOrEqual(100);
     expect(result.nodeCount).toBeLessThanOrEqual(BLOCKER_ATTENTION_MAX_NODES);
