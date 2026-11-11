@@ -1366,6 +1366,77 @@ describe("remote runner launch fingerprint compatibility", () => {
 });
 
 describe("remote runner process supervision", () => {
+  it.each(["exact", "foreign", "unknown"] as const)(
+    "keeps connected-runner grace only for unproven stopped resource evidence (%s)",
+    async (binding) => {
+      vi.useFakeTimers();
+      const resource = { leaseId: "lease", environmentId: "environment", providerLeaseId: "resource" };
+      const failure = binding === "unknown"
+        ? new Error("controlled transport outcome unknown")
+        : new EnvironmentResourceStoppedError(
+          { ...resource, leaseId: binding === "exact" ? "lease" : "foreign" },
+          "stopped",
+          new Error("controlled transport failure"),
+        );
+      let nonce = "";
+      const ok = { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: "2026-09-06T00:00:00.000Z" };
+      const execute = vi.fn<CommandManagedRuntimeRunner["execute"]>(async (request) => {
+        const label = request.args?.[2];
+        if (label === "paperclip-runner-launch") {
+          nonce = request.args?.[4] ?? "";
+          return ok;
+        }
+        if (label === "paperclip-runner-process-identity") {
+          return { ...ok, stdout: `${nonce}\n4321\n2026-09-06T00:00:00.000Z\nrunner-remote\n` };
+        }
+        if (label === "paperclip-runner-monitor") throw failure;
+        throw new Error("unexpected controlled command");
+      });
+      const isRunnerConnected = vi.fn(() => true);
+      const handle = createRemoteRunnerProcessLauncher({
+        target: {
+          kind: "remote", transport: "sandbox", environmentId: resource.environmentId,
+          leaseId: resource.leaseId, remoteCwd: "/workspace",
+          sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: resource.providerLeaseId },
+        },
+        runner: { execute }, remoteBinary: "/runtime/runnerd", processIdentityPath: "/runtime/identity",
+        stateDirectory: "/runtime", diagnosticsDirectory: "/runtime/diagnostics", runnerInstanceId: "runner-remote",
+      })({ command: "/controller/runnerd", args: [], cwd: "/controller", environment: {}, isRunnerConnected });
+      let finished = false;
+      const settled = handle.completion.then(
+        (result) => { finished = true; return { result }; },
+        (error) => { finished = true; return { error }; },
+      );
+      try {
+        // Beyond the ordinary probe budget, inside the existing connected-runner grace.
+        await vi.advanceTimersByTimeAsync(35_000);
+        if (binding === "exact") {
+          expect(finished).toBe(true);
+          expect(await settled).toEqual({ result: { code: null, signal: null, stdout: "", stderr: "runner_remote_resource_stopped" } });
+          expect(handle.isExitConfirmed?.()).toBe(true);
+          expect(execute.mock.calls.filter(([request]) => request.args?.[2] === "paperclip-runner-monitor")).toHaveLength(1);
+        } else {
+          expect(isRunnerConnected).toHaveBeenCalled();
+          expect(finished).toBe(false);
+          expect(handle.isExitConfirmed?.()).toBe(false);
+          await vi.advanceTimersByTimeAsync(REMOTE_RUNNER_RECONNECT_GRACE_MS + 60_000);
+          expect(await settled).toEqual({ error: failure });
+          expect(handle.isExitConfirmed?.()).toBe(false);
+          expect(execute.mock.calls.filter(([request]) => request.args?.[2] === "paperclip-runner-monitor").length).toBeGreaterThan(1);
+        }
+        expect(handle.child.exitCode).toBeNull();
+        expect(execute.mock.calls.filter(([request]) => request.args?.[2] === "paperclip-runner-launch")).toHaveLength(1);
+        expect(execute.mock.calls.every(([request]) => [
+          "paperclip-runner-launch", "paperclip-runner-process-identity", "paperclip-runner-monitor",
+        ].includes(request.args?.[2] ?? ""))).toBe(true);
+      } finally {
+        await vi.runAllTimersAsync();
+        await settled;
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it.each(["exact", "foreign"] as const)("joins only exact positively stopped remote resource evidence (%s)", async binding => {
     vi.useFakeTimers();
     try {
