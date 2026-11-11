@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { UiLayoutPreference, UiLayoutSurface } from "@paperclipai/shared";
+import { authApi } from "../api/auth";
 import { describeError } from "../api/errors";
 import { uiLayoutsApi } from "../api/uiLayouts";
 import { queryKeys } from "../lib/queryKeys";
@@ -14,9 +15,15 @@ export type UiLayoutSaveState = "idle" | "pending" | "saving" | "saved" | "error
 
 export type UiLayoutBlock = "load-error" | "unreadable" | null;
 
-type PendingLayout<TLayout> = { companyId: string; layout: TLayout };
+type PendingLayout<TLayout> = { companyId: string; userId: string; layout: TLayout };
 type SaveAttempt<TLayout> = PendingLayout<TLayout> & { resetEpoch: number };
 type SaveInput<TLayout> = SaveAttempt<TLayout> & { controller: AbortController };
+
+type SessionIdentity = { user?: { id?: string } | null; session?: { userId?: string } | null } | null | undefined;
+
+function sessionUserId(session: SessionIdentity): string {
+  return session?.user?.id ?? session?.session?.userId ?? "local-board";
+}
 
 type UseUiLayoutParams<TLayout> = {
   companyId: string | null | undefined;
@@ -27,7 +34,20 @@ type UseUiLayoutParams<TLayout> = {
 
 export function useUiLayout<TLayout>({ companyId, surface, resolve, enabled = true }: UseUiLayoutParams<TLayout>) {
   const queryClient = useQueryClient();
-  const queryKey = useMemo(() => queryKeys.uiLayouts.mine(companyId ?? "__none__", surface), [companyId, surface]);
+  const session = useQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession() });
+  const userId = sessionUserId(session.data);
+  const isCurrentUser = useCallback(
+    (owner: string) => sessionUserId(queryClient.getQueryData<SessionIdentity>(queryKeys.auth.session)) === owner,
+    [queryClient],
+  );
+  const sessionReady = session.data !== undefined;
+  const userIdRef = useRef(userId);
+  userIdRef.current = userId;
+  const ownerRef = useRef(userId);
+  const queryKey = useMemo(
+    () => queryKeys.uiLayouts.mine(companyId ?? "__none__", surface, userId),
+    [companyId, surface, userId],
+  );
   const [saveState, setSaveState] = useState<UiLayoutSaveState>("idle");
   const [saveError, setSaveError] = useState<unknown>(null);
   const pendingRef = useRef<PendingLayout<TLayout> | null>(null);
@@ -47,7 +67,7 @@ export function useUiLayout<TLayout>({ companyId, surface, resolve, enabled = tr
   const query = useQuery({
     queryKey,
     queryFn: () => uiLayoutsApi.get(companyId!, surface),
-    enabled: Boolean(companyId) && enabled,
+    enabled: Boolean(companyId) && enabled && sessionReady,
     staleTime: Number.POSITIVE_INFINITY,
     refetchOnWindowFocus: false,
   });
@@ -58,7 +78,8 @@ export function useUiLayout<TLayout>({ companyId, surface, resolve, enabled = tr
   );
   const [overwriteAllowedFor, setOverwriteAllowedFor] = useState<unknown>(null);
   const hasUnreadableLayout = query.data !== undefined && query.data.layout != null && stored === null;
-  const blocked: UiLayoutBlock = query.data === undefined && query.error
+  const loadFailure = query.data === undefined ? query.error ?? (sessionReady ? null : session.error) : null;
+  const blocked: UiLayoutBlock = loadFailure
     ? "load-error"
     : hasUnreadableLayout && overwriteAllowedFor !== query.data?.layout
       ? "unreadable"
@@ -67,14 +88,25 @@ export function useUiLayout<TLayout>({ companyId, surface, resolve, enabled = tr
   const writableRef = useRef(writable);
   writableRef.current = writable;
   const unreadableLayout = hasUnreadableLayout ? query.data?.layout : null;
-  const allowOverwrite = useCallback(() => setOverwriteAllowedFor(unreadableLayout), [unreadableLayout]);
+  const replacementRef = useRef(false);
+  const allowOverwrite = useCallback(
+    (replacement?: TLayout) => {
+      setOverwriteAllowedFor(unreadableLayout);
+      if (replacement === undefined || !companyId) return;
+      pendingRef.current = { companyId, userId, layout: replacement };
+      replacementRef.current = true;
+      setSaveState("pending");
+    },
+    [unreadableLayout, companyId, userId],
+  );
   const { refetch } = query;
-  const retryLoad = useCallback(() => void refetch(), [refetch]);
+  const { refetch: refetchSession } = session;
+  const retryLoad = useCallback(() => void (sessionReady ? refetch() : refetchSession()), [sessionReady, refetch, refetchSession]);
 
   const handleSaved = useCallback(
     (preference: UiLayoutPreference, attempt: SaveAttempt<TLayout>) => {
       if (attempt.resetEpoch !== resetEpochRef.current) return;
-      queryClient.setQueryData(queryKeys.uiLayouts.mine(attempt.companyId, surface), preference);
+      queryClient.setQueryData(queryKeys.uiLayouts.mine(attempt.companyId, surface, attempt.userId), preference);
       retryAttemptRef.current = 0;
       setSaveError(null);
       setSaveState(pendingRef.current ? "pending" : "saved");
@@ -85,7 +117,7 @@ export function useUiLayout<TLayout>({ companyId, surface, resolve, enabled = tr
   const handleSaveFailed = useCallback((error: unknown, attempt: SaveAttempt<TLayout>) => {
     lastSavedRef.current = null;
     if (attempt.resetEpoch !== resetEpochRef.current) return;
-    if (!pendingRef.current) pendingRef.current = { companyId: attempt.companyId, layout: attempt.layout };
+    if (!pendingRef.current) pendingRef.current = { companyId: attempt.companyId, userId: attempt.userId, layout: attempt.layout };
     setSaveError(error);
     setSaveState("error");
     if (timerRef.current !== null || !describeError(error).retryable) return;
@@ -136,7 +168,7 @@ export function useUiLayout<TLayout>({ companyId, surface, resolve, enabled = tr
     if (!pending) return;
     if (inFlightRef.current) return;
     pendingRef.current = null;
-    if (!writableRef.current) return;
+    if (!writableRef.current || !isCurrentUser(pending.userId)) return;
     const serialized = JSON.stringify(pending.layout);
     if (serialized === lastSavedRef.current) {
       setSaveState("saved");
@@ -147,7 +179,7 @@ export function useUiLayout<TLayout>({ companyId, surface, resolve, enabled = tr
     const input = { ...pending, resetEpoch: resetEpochRef.current, controller: new AbortController() };
     inFlightSaveRef.current = input;
     mutateRef.current(input);
-  }, []);
+  }, [isCurrentUser]);
   flushRef.current = flush;
 
   const retrySave = useCallback(() => {
@@ -165,7 +197,7 @@ export function useUiLayout<TLayout>({ companyId, surface, resolve, enabled = tr
     const pending = pendingRef.current ?? superseded;
     if (!pending) return;
     pendingRef.current = null;
-    if (!writableRef.current) return;
+    if (!writableRef.current || !isCurrentUser(pending.userId)) return;
     const serialized = JSON.stringify(pending.layout);
     if (!superseded && serialized === lastSavedRef.current) return;
     superseded?.controller.abort();
@@ -173,7 +205,7 @@ export function useUiLayout<TLayout>({ companyId, surface, resolve, enabled = tr
     lastSavedRef.current = serialized;
     inFlightRef.current = true;
     setSaveState("saving");
-    const attempt = { companyId: pending.companyId, layout: pending.layout, resetEpoch: resetEpochRef.current };
+    const attempt = { companyId: pending.companyId, userId: pending.userId, layout: pending.layout, resetEpoch: resetEpochRef.current };
     const keepalive = new Blob([serialized]).size <= UI_LAYOUT_KEEPALIVE_MAX_BYTES;
     const settle = (failed: boolean) => {
       inFlightRef.current = false;
@@ -192,33 +224,33 @@ export function useUiLayout<TLayout>({ companyId, surface, resolve, enabled = tr
         settle(true);
       },
     );
-  }, [handleSaveFailed, handleSaved, surface]);
+  }, [handleSaveFailed, handleSaved, isCurrentUser, surface]);
 
   const save = useCallback(
     (layout: TLayout) => {
       if (!companyId || !writableRef.current) return;
-      pendingRef.current = { companyId, layout };
+      pendingRef.current = { companyId, userId, layout };
       retryAttemptRef.current = 0;
       setSaveState("pending");
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
       timerRef.current = window.setTimeout(flush, UI_LAYOUT_SAVE_DEBOUNCE_MS);
     },
-    [companyId, flush],
+    [companyId, userId, flush],
   );
 
   const stage = useCallback(
     (layout: TLayout) => {
       if (!companyId || !writableRef.current) return;
-      pendingRef.current = { companyId, layout };
+      pendingRef.current = { companyId, userId, layout };
     },
-    [companyId],
+    [companyId, userId],
   );
 
   const resetMutation = useAccountBoundMutation({
     mutationFn: (targetCompanyId: string) => uiLayoutsApi.reset(targetCompanyId, surface),
     onSuccess: (preference: UiLayoutPreference, targetCompanyId) => {
       lastSavedRef.current = null;
-      queryClient.setQueryData(queryKeys.uiLayouts.mine(targetCompanyId, surface), preference);
+      queryClient.setQueryData(queryKeys.uiLayouts.mine(targetCompanyId, surface, userIdRef.current), preference);
       setSaveError(null);
       setSaveState("idle");
     },
@@ -263,6 +295,33 @@ export function useUiLayout<TLayout>({ companyId, surface, resolve, enabled = tr
   }, [companyId]);
 
   useEffect(() => {
+    if (!writable || !replacementRef.current) return;
+    replacementRef.current = false;
+    flush();
+  }, [writable, flush]);
+
+  useEffect(() => {
+    if (ownerRef.current === userId) return;
+    ownerRef.current = userId;
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    inFlightSaveRef.current?.controller.abort();
+    inFlightSaveRef.current = null;
+    inFlightRef.current = resetInFlightRef.current;
+    pendingRef.current = null;
+    replacementRef.current = false;
+    queuedResetRef.current = null;
+    lastSavedRef.current = null;
+    retryAttemptRef.current = 0;
+    resetEpochRef.current += 1;
+    setOverwriteAllowedFor(null);
+    setSaveError(null);
+    setSaveState("idle");
+  }, [userId]);
+
+  useEffect(() => {
     window.addEventListener("pagehide", flushOnPageHide);
     return () => {
       window.removeEventListener("pagehide", flushOnPageHide);
@@ -274,7 +333,8 @@ export function useUiLayout<TLayout>({ companyId, surface, resolve, enabled = tr
     stored,
     isLoaded: !companyId || !enabled || query.data !== undefined || blocked === "load-error",
     blocked,
-    loadError: blocked === "load-error" ? query.error : null,
+    loadError: blocked === "load-error" ? loadFailure : null,
+    owner: userId,
     allowOverwrite,
     retryLoad,
     save,

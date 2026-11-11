@@ -13,55 +13,51 @@ function MetricWidget({ companyId, kind }: { companyId: string; kind: MetricKind
   if (kind === "agents") {
     return (
       <MetricCard
+        density="compact"
         icon={Bot}
         value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
         label="Agents Enabled"
         to="/agents"
-        description={<span>{data.agents.running} running, {data.agents.paused} paused, {data.agents.error} errors</span>}
+        description={`${data.agents.running} running, ${data.agents.paused} paused, ${data.agents.error} errors`}
       />
     );
   }
   if (kind === "tasks") {
     return (
       <MetricCard
+        density="compact"
         icon={CircleDot}
         value={data.tasks.inProgress}
         label="Tasks In Progress"
         to="/issues"
-        description={<span>{data.tasks.open} open, {data.tasks.blocked} blocked</span>}
+        description={`${data.tasks.open} open, ${data.tasks.blocked} blocked`}
       />
     );
   }
   if (kind === "spend") {
     return (
       <MetricCard
+        density="compact"
         icon={DollarSign}
         value={formatCents(data.costs.monthSpendCents)}
         label="Month Spend"
         to="/costs"
-        description={
-          <span>
-            {data.costs.monthBudgetCents > 0
-              ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-              : "Unlimited budget"}
-          </span>
-        }
+        description={data.costs.monthBudgetCents > 0
+          ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
+          : "Unlimited budget"}
       />
     );
   }
   return (
     <MetricCard
+        density="compact"
       icon={ShieldCheck}
       value={data.pendingApprovals + data.budgets.pendingApprovals}
       label="Pending Approvals"
       to="/approvals"
-      description={
-        <span>
-          {data.budgets.pendingApprovals > 0
-            ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
-            : "Awaiting board review"}
-        </span>
-      }
+      description={data.budgets.pendingApprovals > 0
+        ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
+        : "Awaiting board review"}
     />
   );
 }

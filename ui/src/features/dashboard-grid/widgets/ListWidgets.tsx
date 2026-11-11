@@ -9,6 +9,7 @@ import { ActiveAgentsPanel } from "@/components/ActiveAgentsPanel";
 import { ActivityList } from "@/components/ActivityList";
 import { TaskSummaryList } from "@/components/TaskSummaryList";
 import { widgetSetting } from "../lib/dashboard-layout";
+import { selectRecentTasks } from "../lib/recent-tasks";
 import { useCompanyAgents, useCompanyIssues, useRecentActivity } from "./data";
 import { RECENT_TASKS_LIMIT_SETTING } from "./settings";
 import { WidgetFrame, WidgetMessage, WidgetQueryState, type DashboardWidgetProps } from "./WidgetParts";
@@ -72,13 +73,7 @@ export function RecentActivityWidget({ companyId }: DashboardWidgetProps) {
 export function RecentTasksWidget({ companyId, placement }: DashboardWidgetProps) {
   const issues = useCompanyIssues(companyId);
   const limit = widgetSetting(placement, RECENT_TASKS_LIMIT_SETTING);
-  const recent = useMemo(
-    () =>
-      [...(issues.data ?? [])]
-        .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-        .slice(0, limit),
-    [issues.data, limit],
-  );
+  const recent = useMemo(() => selectRecentTasks(issues.data ?? [], limit), [issues.data, limit]);
 
   return (
     <WidgetFrame title="Recent Tasks" action={{ label: "View all", to: "/issues" }}>

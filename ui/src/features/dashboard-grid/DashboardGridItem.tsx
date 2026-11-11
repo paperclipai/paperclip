@@ -115,8 +115,9 @@ export function DashboardGridItem({
       data-widget-id={placement.widgetId}
       data-contextual={contextual ? "true" : undefined}
       data-highlighted={highlighted ? "true" : undefined}
+      data-editing={editing ? "true" : undefined}
       className={cn(
-        "relative flex min-w-0 flex-col rounded-lg",
+        "group/widget relative flex min-w-0 flex-col rounded-lg",
         sortable.isDragging && "z-10 opacity-80",
         highlighted && "ring-2 ring-primary/60 ring-offset-2 ring-offset-background",
         editing && "border border-dashed border-muted-foreground",
