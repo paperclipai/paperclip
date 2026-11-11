@@ -375,7 +375,7 @@ function PrimeDeskFixtures({
         [...queryKeys.attention(companyId), STORYBOOK_USER_ID, "mine", "with-dismissed", null, null],
         feed(items),
       );
-      queryClient.setQueryData(coordinatorAttentionQueryKey(companyId, STORYBOOK_USER_ID, "mine"), feed(items));
+      queryClient.setQueryData(coordinatorAttentionQueryKey(companyId), feed(items));
     }
     if (queueItems) {
       // The queue feed key carries the resolved activity bounds (null/null for
