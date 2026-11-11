@@ -3997,23 +3997,30 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   async #downloadAttachment(turnId: string, grant: (turnId: string) => RunnerAttachmentDownloadGrant) {
-    if (!turnId || this.#durableTurnId !== turnId || !this.#core) return null;
+    const core = this.#core;
+    if (!turnId || this.#durableTurnId !== turnId || !core || (core.activeRunnerProtocolVersion() ?? 0) < 3) return null;
     this.#attachmentDownloadSupport ??= this.#commandResult("session.snapshot", {}, this.#waitNow() + 5_000, true)
       .then(result => result.attachmentDownloadVersion === 1);
     if (!await this.#attachmentDownloadSupport || this.#durableTurnId !== turnId) return null;
     const deadline = this.#waitNow() + 18_000;
-    let result = await this.#commandResult("runner.attachment.download", {
+    const started = await this.#commandResult("runner.attachment.download", {
       ...grant(turnId), turnId,
     }, deadline, true);
-    const downloadId = result.downloadId;
-    if (result.status !== "pending" || typeof downloadId !== "string") {
+    const downloadId = started.downloadId;
+    if (started.status !== "pending" || typeof downloadId !== "string") {
       throw new Error("runner_attachment_download_invalid_receipt");
     }
-    let pollDelayMs = 25;
-    while (result.status === "pending" && this.#durableTurnId === turnId && this.#waitNow() < deadline) {
-      await new Promise(resolveWait => setTimeout(resolveWait, pollDelayMs));
-      pollDelayMs = 750;
-      result = await this.#commandResult("runner.attachment.download", { downloadId }, deadline, true);
+    let result: Record<string, unknown> = {};
+    while (!this.#closed && this.#core === core && this.#durableTurnId === turnId && this.#waitNow() < deadline) {
+      this.#throwIfFailed();
+      this.#assertRunWorkAdmission("runner.attachment.download");
+      const event = core.store.state.committedEvents.find(event => event.eventType === "runner.attachment.settled"
+        && record(record(event.envelope.payload).payload).downloadId === downloadId);
+      if (event) {
+        result = record(record(event.envelope.payload).payload);
+        break;
+      }
+      await new Promise(resolveWait => setTimeout(resolveWait, 50));
     }
     const path = result.path;
     if (result.status !== "ready" || this.#durableTurnId !== turnId
@@ -8076,6 +8083,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // full, new events replace its prefix without increasing its length.
       if (fromDeferredQueue) this.#deferredTurnStartEvents.shift();
       else this.#eventSourceSeq = event.sourceSeq;
+      if (event.eventType === "runner.attachment.settled") continue;
       if (event.eventType === "auth.credentials.updated" && this.options.onCredentialsUpdated) continue;
       if (event.eventType === "runtime.activity.recorded") {
         this.#queue.push({ method: "paperclip/runtimeActivityRecorded", params: {

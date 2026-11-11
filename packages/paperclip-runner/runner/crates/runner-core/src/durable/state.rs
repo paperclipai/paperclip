@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::attachment_download::DOWNLOAD_COMMAND;
+use crate::attachment_download::{DOWNLOAD_COMMAND, DOWNLOAD_RESULT_EVENT};
 use crate::provider_bridge::{semantic_value_digest, MAX_COMPLETION_SUMMARY_CHARS};
 
 use super::{DurableRunnerConfig, DurableRunnerError, PROTOCOL, PROTOCOL_VERSION};
@@ -631,7 +631,9 @@ impl DurableState {
 
         let source_seq = self.next_source_seq;
         let emitted_at = current_timestamp()?;
-        let schema_version = if event_type.starts_with("external_provider.") {
+        let schema_version = if event_type.starts_with("external_provider.")
+            || event_type == DOWNLOAD_RESULT_EVENT
+        {
             3
         } else if matches!(
             event_type.as_str(),

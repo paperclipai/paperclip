@@ -2470,6 +2470,10 @@ export class DurablePrpControlPlane {
     for (const connection of connections) connection.close();
   }
 
+  activeRunnerProtocolVersion(): number | null {
+    return this.#eventOwner?.lease?.protocolVersion ?? null;
+  }
+
   activeRunnerConnectionCount(): number {
     return [...this.#connections].filter(
       (connection) => connection.secureChannel !== null,

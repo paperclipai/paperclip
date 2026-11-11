@@ -4,9 +4,7 @@ use std::time::Instant;
 use serde_json::{json, Value};
 
 use crate::acpx_provider_backend::{AcpxCommandExecutor, ACPX_PROVIDER_STATE_FILE};
-use crate::attachment_download::{
-    AttachmentDownloadPoll, AttachmentDownloads, AttachmentGrant, DOWNLOAD_COMMAND,
-};
+use crate::attachment_download::{AttachmentDownloads, AttachmentGrant, DOWNLOAD_COMMAND};
 use crate::credential_observer::CredentialObserver;
 use crate::durable::{
     Command, CommandExecution, CommandExecutor, DurableRunnerConfig, DurableRunnerError,
@@ -145,6 +143,7 @@ pub struct NativeProviderCommandExecutor {
     recovery_checked: bool,
     credentials: CredentialObserver,
     attachments: AttachmentDownloads,
+    attachment_result: Option<PolledEvent>,
 }
 
 impl NativeProviderCommandExecutor {
@@ -153,6 +152,7 @@ impl NativeProviderCommandExecutor {
         let credentials = CredentialObserver::new(&state_dir, &config.normalized_session_id);
         Self {
             attachments: AttachmentDownloads::new(&state_dir),
+            attachment_result: None,
             state_dir,
             config: config.clone(),
             selected: None,
@@ -244,6 +244,12 @@ impl NativeProviderCommandExecutor {
         self.credentials.poll(false)?;
         if let Some(event) = self.credentials.pending() {
             return Ok(vec![event]);
+        }
+        if self.attachment_result.is_none() {
+            self.attachment_result = self.attachments.take_result_event();
+        }
+        if let Some(event) = &self.attachment_result {
+            return Ok(vec![event.clone()]);
         }
         let events = self
             .selected
@@ -408,6 +414,9 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         if let Some(event) = self.credentials.pending() {
             return Ok(vec![event]);
         }
+        if let Some(event) = &self.attachment_result {
+            return Ok(vec![event.clone()]);
+        }
         self.selected
             .as_mut()
             .map_or_else(|| Ok(Vec::new()), CommandExecutor::retained_events)
@@ -427,19 +436,10 @@ impl CommandExecutor for NativeProviderCommandExecutor {
                     "attachment downloads require a workspace provider",
                 ));
             }
-            let invalid = || DurableRunnerError::invalid("attachment download command is invalid");
-            if command.payload.get("downloadId").is_some() {
-                let poll: AttachmentDownloadPoll =
-                    serde_json::from_value(command.payload.clone()).map_err(|_| invalid())?;
-                let id = uuid::Uuid::parse_str(&poll.download_id).map_err(|_| invalid())?;
-                let result = match self.attachments.poll(id)? {
-                    Some(path) => json!({"status": "ready", "path": path}),
-                    None => json!({"status": "pending"}),
-                };
-                return Ok(CommandExecution::result(result));
-            }
             let grant: AttachmentGrant =
-                serde_json::from_value(command.payload.clone()).map_err(|_| invalid())?;
+                serde_json::from_value(command.payload.clone()).map_err(|_| {
+                    DurableRunnerError::invalid("attachment download command is invalid")
+                })?;
             let download_id = self.attachments.start(grant, &self.config.turn_id)?;
             return Ok(CommandExecution::result(
                 json!({"status": "pending", "downloadId": download_id.to_string()}),
@@ -549,6 +549,10 @@ impl CommandExecutor for NativeProviderCommandExecutor {
         self.select_recovery()?;
         if count > 0 && self.credentials.pending().is_some() {
             return self.credentials.acknowledge(count);
+        }
+        if count == 1 && self.attachment_result.is_some() {
+            self.attachment_result = None;
+            return Ok(());
         }
         if let Some(executor) = self.selected.as_mut() {
             executor.acknowledge_events(count)

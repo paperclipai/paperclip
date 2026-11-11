@@ -162,9 +162,10 @@ tenant download endpoint and issue a grant redeemable for only the admitted
 file during that turn. Keep grants in private controller state.
 
 Runner starts a bounded HTTPS GET with the grant in the Authorization header
-and returns `{ status: "pending", downloadId }`. The controller polls the same
-command with only `{ downloadId }`. Runner can process Stop while the GET runs.
-Once it verifies the complete file, the poll returns `{ status: "ready", path }`.
+and returns `{ status: "pending", downloadId }`. Runner can process Stop while
+the GET runs. Runner emits one `runner.attachment.settled` event with the same
+`downloadId` and a `ready` or `failed` status. A ready event includes the local
+`path` only after Runner verifies the complete file.
 The path is local to the Runner, uses a random filename, and is valid only
 during the bound turn. Runner clears its private download directory on turn
 settlement, authority rotation, and shutdown. The next use of that Runner

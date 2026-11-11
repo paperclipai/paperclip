@@ -10,15 +10,47 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 
 use reqwest::{blocking::Client, redirect::Policy, StatusCode, Url};
 use serde::Deserialize;
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::durable::DurableRunnerError;
+use crate::durable::{DurableRunnerError, EventPriority, PolledEvent};
 
 pub(crate) const DOWNLOAD_COMMAND: &str = "runner.attachment.download";
+pub(crate) const DOWNLOAD_RESULT_EVENT: &str = "runner.attachment.settled";
 const MAX_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_TURN_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_TURN_FILES: usize = 128;
+
+fn download_directory(state_dir: &Path) -> PathBuf {
+    state_dir.join("attachment-downloads")
+}
+
+pub(crate) fn codex_attachment_read_args(args: &[String], state_dir: &Path) -> Vec<String> {
+    let directory = download_directory(state_dir);
+    let Some(directory) = directory.to_str() else {
+        return Vec::new();
+    };
+    let mut extra = Vec::new();
+    for profile in [
+        "paperclip-runner-workspace-only",
+        "paperclip-runner-workspace-read-only",
+    ] {
+        let prefix = format!("permissions.{profile}.filesystem=");
+        let Some(value) = args.iter().rev().find_map(|arg| arg.strip_prefix(&prefix)) else {
+            continue;
+        };
+        let Ok(mut config) = format!("filesystem={value}").parse::<toml_edit::DocumentMut>() else {
+            continue;
+        };
+        let Some(filesystem) = config["filesystem"].as_inline_table_mut() else {
+            continue;
+        };
+        filesystem.insert(directory, "read".into());
+        extra.extend(["-c".to_owned(), format!("{prefix}{filesystem}")]);
+    }
+    extra
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -83,12 +115,6 @@ struct PendingDownload {
     result: Option<Receiver<Result<DownloadedAttachment, DurableRunnerError>>>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct AttachmentDownloadPoll {
-    pub(crate) download_id: String,
-}
-
 pub(crate) struct AttachmentDownloads {
     directory: PathBuf,
     ready: bool,
@@ -101,7 +127,7 @@ pub(crate) struct AttachmentDownloads {
 impl AttachmentDownloads {
     pub(crate) fn new(state_dir: &Path) -> Self {
         Self {
-            directory: state_dir.join("attachment-downloads"),
+            directory: download_directory(state_dir),
             ready: false,
             closed: false,
             bytes: 0,
@@ -111,8 +137,18 @@ impl AttachmentDownloads {
     }
 
     pub(crate) fn initialize(&mut self) -> Result<(), DurableRunnerError> {
-        self.clear()
-            .map_err(|_| DurableRunnerError::invalid("attachment download cleanup failed"))
+        self.prepare_directory()
+            .map_err(|_| DurableRunnerError::invalid("attachment download directory unavailable"))
+    }
+
+    fn prepare_directory(&mut self) -> io::Result<()> {
+        self.clear()?;
+        let mut builder = DirBuilder::new();
+        #[cfg(unix)]
+        builder.mode(0o700);
+        builder.create(&self.directory)?;
+        self.ready = true;
+        Ok(())
     }
 
     pub(crate) fn start(
@@ -164,39 +200,35 @@ impl AttachmentDownloads {
         Ok(id)
     }
 
-    pub(crate) fn poll(&mut self, id: Uuid) -> Result<Option<PathBuf>, DurableRunnerError> {
-        let Some(result) = self
-            .pending
-            .as_ref()
-            .filter(|pending| pending.id == id)
-            .and_then(|pending| pending.result.as_ref())
-        else {
-            return Err(DurableRunnerError::invalid(
-                "attachment download is no longer available",
-            ));
-        };
-        let received = match result.try_recv() {
+    pub(crate) fn take_result_event(&mut self) -> Option<PolledEvent> {
+        let pending = self.pending.as_ref()?;
+        let received = match pending.result.as_ref()?.try_recv() {
             Ok(result) => result,
-            Err(TryRecvError::Empty) => return Ok(None),
+            Err(TryRecvError::Empty) => return None,
             Err(TryRecvError::Disconnected) => {
                 Err(DurableRunnerError::invalid("attachment download failed"))
             }
         };
+        let id = pending.id.to_string();
         self.pending = None;
-        let downloaded = received?;
-        self.store(downloaded)
-            .map(Some)
-            .map_err(|_| DurableRunnerError::invalid("attachment download write failed"))
+        let payload = match received
+            .ok()
+            .and_then(|downloaded| self.store(downloaded).ok())
+        {
+            Some(path) => json!({"downloadId": id, "status": "ready", "path": path}),
+            None => json!({"downloadId": id, "status": "failed"}),
+        };
+        Some(PolledEvent {
+            executor_event_id: format!("runner-attachment-{id}"),
+            event_type: DOWNLOAD_RESULT_EVENT.to_owned(),
+            priority: EventPriority::P0,
+            payload,
+        })
     }
 
     fn store(&mut self, downloaded: DownloadedAttachment) -> io::Result<PathBuf> {
         if !self.ready {
-            self.clear()?;
-            let mut builder = DirBuilder::new();
-            #[cfg(unix)]
-            builder.mode(0o700);
-            builder.create(&self.directory)?;
-            self.ready = true;
+            self.prepare_directory()?;
         }
         let path = self
             .directory
@@ -376,7 +408,7 @@ mod tests {
         fs::create_dir(&downloads.directory).unwrap();
         fs::write(downloads.directory.join("old.png"), b"old turn").unwrap();
         downloads.initialize().unwrap();
-        assert!(!downloads.directory.exists());
+        assert_eq!(fs::read_dir(&downloads.directory).unwrap().count(), 0);
         for bytes in [b"im".as_slice(), b"images", b"wrong"] {
             assert!(read_verified(bytes, &input).is_err());
         }
@@ -398,12 +430,98 @@ mod tests {
         fs::remove_dir(root).unwrap();
     }
     #[test]
+    fn emits_one_durable_result_for_a_download() {
+        let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
+        fs::create_dir(&root).unwrap();
+        let mut downloads = AttachmentDownloads::new(&root);
+        let input = grant(b"image");
+        let id = downloads
+            .start_worker(move || Ok(read_verified(b"image".as_slice(), &input).unwrap()))
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let event = loop {
+            if let Some(event) = downloads.take_result_event() {
+                break event;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(event.event_type, DOWNLOAD_RESULT_EVENT);
+        assert_eq!(event.payload["downloadId"], id.to_string());
+        assert_eq!(event.payload["status"], "ready");
+        let path = PathBuf::from(event.payload["path"].as_str().unwrap());
+        assert_eq!(fs::read(&path).unwrap(), b"image");
+        assert!(downloads.take_result_event().is_none());
+        drop(downloads);
+        assert!(!path.exists());
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the source-pinned Codex sandbox command"]
+    fn restricted_provider_reads_a_download_without_access_to_runner_state() {
+        use std::process::Command;
+
+        let codex = std::env::var_os("PAPERCLIP_ATTACHMENT_CODEX_SANDBOX_COMMAND")
+            .expect("set the pinned Codex CLI path");
+        let root = fs::canonicalize(std::env::temp_dir())
+            .unwrap()
+            .join(Uuid::new_v4().to_string());
+        let state = root.join("runner-state");
+        let workspace = root.join("workspace");
+        let home = root.join("home");
+        for directory in [&state, &workspace, &home] {
+            fs::create_dir_all(directory).unwrap();
+        }
+        let unrelated = state.join("controller.json");
+        fs::write(&unrelated, b"unrelated private state").unwrap();
+        let mut downloads = AttachmentDownloads::new(&state);
+        downloads.initialize().unwrap();
+        let input = grant(b"fixture image");
+        let path = downloads
+            .store(read_verified(b"fixture image".as_slice(), &input).unwrap())
+            .unwrap();
+        let profile = "paperclip-runner-workspace-read-only";
+        let mut args = vec!["-c".to_owned(), format!("permissions.{profile}.filesystem={{\":root\"=\"none\",\":minimal\"=\"read\",\":tmpdir\"=\"none\",\"{}\"=\"read\"}}", workspace.display())];
+        args.extend(codex_attachment_read_args(&args, &state));
+        let output = Command::new(codex)
+            .args(args)
+            .args(["sandbox", "-P", profile, "-C"])
+            .arg(&workspace)
+            .args([
+                "--",
+                "/bin/sh",
+                "-ec",
+                r#"
+test "$(cat "$1")" = 'fixture image'
+if cat "$2" >/dev/null 2>&1; then exit 71; fi
+if (printf x >> "$1") 2>/dev/null; then exit 72; fi
+"#,
+                "attachment-reader",
+            ])
+            .arg(&path)
+            .arg(&unrelated)
+            .env("HOME", &home)
+            .env("CODEX_HOME", &home)
+            .output()
+            .unwrap();
+        drop(downloads);
+        fs::remove_dir_all(root).unwrap();
+        assert!(
+            output.status.success(),
+            "restricted reader failed: {} {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn cancelling_a_slow_attachment_does_not_wait_for_the_transfer() {
         let root = std::env::temp_dir().join(Uuid::new_v4().to_string());
         fs::create_dir(&root).unwrap();
         let mut downloads = AttachmentDownloads::new(&root);
         let (release, blocked) = std::sync::mpsc::channel();
-        let id = downloads
+        downloads
             .start_worker(move || {
                 blocked.recv().unwrap();
                 Ok(DownloadedAttachment {
@@ -412,9 +530,9 @@ mod tests {
                 })
             })
             .unwrap();
-        assert_eq!(downloads.poll(id).unwrap(), None);
+        assert_eq!(downloads.take_result_event(), None);
         downloads.close();
-        assert!(downloads.poll(id).is_err());
+        assert!(downloads.take_result_event().is_none());
         release.send(()).unwrap();
         let pending = downloads.pending.take().unwrap();
         pending.worker.join().unwrap();

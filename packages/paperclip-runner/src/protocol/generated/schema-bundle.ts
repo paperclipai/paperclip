@@ -6241,6 +6241,7 @@ export const eventV3Schema = {
         "external_provider.dispatch_requested",
         "external_provider.operation_settled",
         "external_provider.input_available",
+        "runner.attachment.settled",
         "auth.credentials.updated",
         "runtime.activity.recorded"
       ]
