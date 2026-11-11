@@ -59,6 +59,8 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 // controls its resolved value and its failure, so it stays independent of a
 // real Codex home on disk.
 const mockEvaluateCodexCredentialReadiness = vi.hoisted(() => vi.fn());
+const mockLocalCli = vi.hoisted(() => vi.fn());
+vi.mock("../services/local-cli-auth.js", () => ({ readLocalCliAuthSignal: mockLocalCli }));
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -126,14 +128,14 @@ function boardActor(userId: string, companyIds: string[] = [COMPANY_1, OTHER_COM
   };
 }
 
-async function createApp() {
+async function createApp(deploymentMode: "authenticated" | "local_trusted" = "authenticated") {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as unknown as { actor: unknown }).actor = currentActor;
     next();
   });
-  app.use("/api", agentRoutes({} as never));
+  app.use("/api", agentRoutes({} as never, { deploymentMode }));
   app.use(errorHandler);
   return app;
 }
@@ -146,6 +148,7 @@ describe("adapter auth-signal route", () => {
     vi.resetModules();
     vi.clearAllMocks();
     currentActor = boardActor(OWNER_A);
+    mockLocalCli.mockResolvedValue("present");
     mockAccessService.decide.mockResolvedValue({
       allowed: true,
       reason: "allow_explicit_grant",
@@ -180,10 +183,59 @@ describe("adapter auth-signal route", () => {
     ]);
     agentRoutes = routes.agentRoutes;
     errorHandler = middleware.errorHandler;
-  });
+  }, process.platform === "win32" ? 120_000 : 30_000);
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it.each(["claude_local", "codex_local"])("detects %s host login only for the local operator", async type => {
+    mockEnvironmentService.getById.mockResolvedValue({ id: ENVIRONMENT_1, companyId: COMPANY_1, driver: "local", envVars: {} });
+    const app = await createApp("local_trusted");
+    const res = await request(app).get(authSignalPath(COMPANY_1, type, ENVIRONMENT_1));
+    expect(res.status).toBe(200);
+    expect(res.body.localCli).toBe("present");
+    expect(mockLocalCli).toHaveBeenCalledExactlyOnceWith(type);
+  });
+
+  it.each(["claude_local", "codex_local"])("detects %s host login for an authenticated instance administrator", async type => {
+    currentActor = { ...boardActor(OWNER_A), source: "session", isInstanceAdmin: true };
+    mockEnvironmentService.getById.mockResolvedValue({ id: ENVIRONMENT_1, companyId: COMPANY_1, driver: "local", envVars: {} });
+    const res = await request(await createApp()).get(authSignalPath(COMPANY_1, type, ENVIRONMENT_1));
+    expect(res.status).toBe(200);
+    expect(res.body.localCli).toBe("present");
+    expect(mockLocalCli).toHaveBeenCalledExactlyOnceWith(type);
+  });
+
+  it("does not inspect a local CLI for an authenticated non-administrator", async () => {
+    currentActor = { ...boardActor(OWNER_A), source: "session", isInstanceAdmin: false };
+    mockEnvironmentService.getById.mockResolvedValue({ id: ENVIRONMENT_1, companyId: COMPANY_1, driver: "local", envVars: {} });
+    const res = await request(await createApp()).get(authSignalPath(COMPANY_1, "codex_local", ENVIRONMENT_1));
+    expect(res.status).toBe(200);
+    expect(res.body).not.toHaveProperty("localCli");
+    expect(mockLocalCli).not.toHaveBeenCalled();
+  });
+
+  it.each(["sandbox", "agent", "cloud"])("does not inspect administrator host credentials for a %s target", async scope => {
+    currentActor = { ...boardActor(OWNER_A), source: "session", isInstanceAdmin: true };
+    if (scope === "agent") currentActor = { type: "agent", agentId: "agent-1", companyId: COMPANY_1 };
+    if (scope !== "sandbox") {
+      mockEnvironmentService.getById.mockResolvedValue({ id: ENVIRONMENT_1, companyId: COMPANY_1, driver: "local", envVars: {} });
+    }
+    if (scope === "cloud") vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", "fixture");
+    try {
+      const res = await request(await createApp()).get(authSignalPath(COMPANY_1, "codex_local", ENVIRONMENT_1));
+      expect(res.body).not.toHaveProperty("localCli");
+      expect(mockLocalCli).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.each(["authenticated", "sandbox", "foreign"])("does not inspect the host CLI for %s requests", async scope => {
+    if (scope === "foreign") mockEnvironmentService.listBoundCompanyIds.mockResolvedValue([OTHER_COMPANY]);
+    const app = await createApp(scope === "authenticated" ? "authenticated" : "local_trusted");
+    const res = await request(app).get(authSignalPath(COMPANY_1, "claude_local", ENVIRONMENT_1));
+    expect(res.body).not.toHaveProperty("localCli");
+    expect(mockLocalCli).not.toHaveBeenCalled();
   });
 
   it("returns present for codex_local when the readiness predictor reports ready", async () => {

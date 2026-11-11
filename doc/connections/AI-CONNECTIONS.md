@@ -491,7 +491,11 @@ onboarding, and agent setup share `LocalProviderLoginInstructions` and
 browser sign-in card. Claude accepts the authorization code in that card; Codex
 displays its device code there. The user does not run a shell command. Each
 local runner requires Python 3 for its pseudo-terminal (included in the Docker
-image) and the corresponding provider CLI on the Paperclip host. Each
+image) and the corresponding provider CLI on the Paperclip host. On Windows,
+Python's `pty` module does not exist, so the runner opens a ConPTY through the
+`pywinpty` package (`python -m pip install pywinpty`); a missing Python or
+package ends the attempt with that prerequisite named instead of a silent
+failure. Each
 attempt retains a private credential home. The home is never seeded with the
 operator's existing login: copying a rotating refresh token would
 allow managed runs to invalidate credentials still used by legacy agents or the

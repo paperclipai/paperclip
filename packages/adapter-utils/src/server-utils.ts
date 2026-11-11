@@ -3788,6 +3788,60 @@ async function resolveSpawnTarget(
   return { command: executable, args };
 }
 
+// Quote one argument the way CreateProcess parses it (the rules
+// CommandLineToArgvW and Python's subprocess.list2cmdline implement), so a
+// console host receives the same argv the caller built.
+function quoteForCreateProcess(arg: string): string {
+  if (arg.length > 0 && !/[\s"]/.test(arg)) return arg;
+  let quoted = '"';
+  let backslashes = 0;
+  for (const char of arg) {
+    if (char === "\\") {
+      backslashes += 1;
+      continue;
+    }
+    if (char === '"') {
+      quoted += `${"\\".repeat(backslashes * 2 + 1)}"`;
+      backslashes = 0;
+      continue;
+    }
+    quoted += `${"\\".repeat(backslashes)}${char}`;
+    backslashes = 0;
+  }
+  return `${quoted}${"\\".repeat(backslashes * 2)}"`;
+}
+
+export interface WindowsConsoleCommand {
+  /** The executable CreateProcess starts: the resolved command, or cmd.exe for a `.cmd`/`.bat` wrapper. */
+  application: string;
+  /** The parameters after the application, already quoted for the console host. */
+  parameters: string;
+}
+
+/**
+ * Resolve a command on Windows into the application and parameter string a
+ * console host (for example a ConPTY) starts without a shell. A `.cmd`/`.bat`
+ * wrapper runs through cmd.exe with the same `/d /s /c` quoting as local child
+ * processes. Returns null when the command is not on PATH.
+ */
+export async function resolveWindowsConsoleCommand(
+  command: string,
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<WindowsConsoleCommand | null> {
+  const resolved = await resolveCommandPath(command, cwd, env);
+  if (!resolved) return null;
+  if (/\.(cmd|bat)$/i.test(resolved)) {
+    const commandLine = [quoteForCmd(resolved), ...args.map(quoteForCmd)].join(" ");
+    return {
+      application: resolveWindowsCmdShell(env),
+      parameters: `/d /s /c "${commandLine}"`,
+    };
+  }
+  return { application: resolved, parameters: args.map(quoteForCreateProcess).join(" ") };
+}
+
 export function ensurePathInEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   if (typeof env.PATH === "string" && env.PATH.length > 0) return env;
   if (typeof env.Path === "string" && env.Path.length > 0) return env;

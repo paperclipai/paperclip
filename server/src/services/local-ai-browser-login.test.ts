@@ -247,3 +247,123 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     expect(login.authorizationUrl).toBeUndefined();
   });
 });
+
+// Windows runs the provider CLI under a ConPTY through pywinpty. These tests
+// exercise the real bridge: a .cmd wrapper on a PATH entry with a space, the
+// isolated credential home, code delivery, cancellation, and the prerequisite
+// messages. They need Python 3 with pywinpty, like the feature itself.
+const windowsBridgeReady = process.platform === "win32"
+  && (() => { try { execFileSync("python", ["-c", "import winpty"], { stdio: "ignore", timeout: 20000 }); return true; } catch { return false; } })();
+
+async function fakeWindowsCli(name: string, pythonSource: string) {
+  root ??= await mkdtemp(path.join(os.tmpdir(), "paperclip-browser-login-"));
+  const bin = path.join(root, "bin with space");
+  await mkdir(bin, { recursive: true });
+  await writeFile(path.join(bin, `${name}.py`), pythonSource);
+  await writeFile(path.join(bin, `${name}.cmd`), `@echo off\r\npython "%~dp0${name}.py" %*\r\n`);
+  process.env.PATH = `${bin}${path.delimiter}${initialPath}`;
+  const home = path.join(root, "credential-home");
+  await mkdir(home, { recursive: true });
+  return realpath(home);
+}
+
+const CODEX_DEVICE_PROMPT = [
+  "import json, os, sys",
+  'json.dump({key: os.environ.get(key, "") for key in ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "OPENAI_API_KEY", "CODEX_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"]}, open(os.path.join(os.environ["CODEX_HOME"], "seen-env.json"), "w"))',
+  'sys.stdout.write("1. Open this link in your browser and sign in to your account\\nhttps://auth.openai.com/codex/device\\n2. Enter this one-time code (expires in 15 minutes)\\nABCD-EFGHJ\\n")',
+].join("\n");
+
+describe.skipIf(!windowsBridgeReady)("local browser subscription login on Windows", () => {
+  it("surfaces a Codex device link and code through a ConPTY and a .cmd wrapper, inside the isolated home", async () => {
+    const home = await fakeWindowsCli("codex", CODEX_DEVICE_PROMPT);
+    for (const key of ["OPENAI_API_KEY", "CODEX_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"])
+      vi.stubEnv(key, "unrelated-host-value");
+    const login = startLocalBrowserLogin("openai", home);
+    try {
+      await vi.waitFor(() => expect(login.outcome).toBeDefined(), { timeout: 20000 });
+      expect(login.outcome).toBe("success");
+      expect(login.authorizationUrl).toBe("https://auth.openai.com/codex/device");
+      expect(login.code).toBe("ABCD-EFGHJ");
+      const seen = JSON.parse(await readFile(path.join(home, "seen-env.json"), "utf8"));
+      expect(seen.CODEX_HOME.toLowerCase()).toBe(home.toLowerCase());
+      for (const key of ["OPENAI_API_KEY", "CODEX_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"])
+        expect(seen[key]).toBe("");
+    } finally { login.abort(); }
+  });
+
+  it("accepts a Claude browser code through the ConPTY and stores its token only in the attempt home", async () => {
+    const url = "https://claude.com/cai/oauth/authorize?client_id=cid&code=abcdefgh&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&response_type=code&scope=user&state=0123456789abcdef";
+    const home = await fakeWindowsCli("claude", [
+      "import os, sys",
+      'sys.stdout.write("Welcome to Claude Code\\nOpening browser to sign in...\\nBrowser didn\'t open? Use the url below to sign in (c to copy)\\n")',
+      `sys.stdout.write(${JSON.stringify(url)} + "\\n")`,
+      'sys.stdout.write("Paste code here if prompted >\\n"); sys.stdout.flush()',
+      // Read keys like a raw-mode CLI: the bridge forwards the code bytes unchanged.
+      "import msvcrt",
+      "entered = \"\"",
+      "while True:",
+      "    key = msvcrt.getwch()",
+      '    if key in ("\\r", "\\n"): break',
+      "    entered += key",
+      'open(os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "entered-code.txt"), "w").write(entered)',
+      'sys.stdout.write("Long-lived authentication token created successfully!\\n\\nYour OAuth token (valid for 1 year):\\n\\nsk-ant-oat01-AAAABBBBCCCCDDDDEEEE11112222FFFFGGGG_HHHH-IIII\\n\\nStore this token securely. You won\'t be able to see it again.\\n")',
+    ].join("\n"));
+    const login = startLocalBrowserLogin("anthropic", home);
+    try {
+      await vi.waitFor(() => expect(login.authorizationUrl).toBe(url), { timeout: 20000 });
+      login.submitCode?.("fixture-code");
+      await vi.waitFor(() => expect(login.outcome).toBe("success"), { timeout: 20000 });
+      expect(await readFile(path.join(home, "entered-code.txt"), "utf8")).toBe("fixture-code");
+      const credential = JSON.parse(await readFile(path.join(home, ".credentials.json"), "utf8"));
+      expect(credential.claudeAiOauth.accessToken).toMatch(/^sk-ant-oat01-/);
+    } finally { login.abort(); }
+  });
+
+  it("terminates the provider process under the ConPTY when sign-in is cancelled", async () => {
+    const home = await fakeWindowsCli("codex", [
+      "import os, sys, time",
+      'open(os.path.join(os.environ["CODEX_HOME"], "login.pid"), "w").write(str(os.getpid()))',
+      'sys.stdout.write("waiting\\n"); sys.stdout.flush()',
+      "time.sleep(60)",
+    ].join("\n"));
+    const login = startLocalBrowserLogin("openai", home);
+    let pid = 0;
+    await vi.waitFor(async () => { pid = Number(await readFile(path.join(home, "login.pid"), "utf8")); expect(pid).toBeGreaterThan(0); }, { timeout: 20000 });
+    login.abort();
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 20000 });
+    await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), { timeout: 20000 });
+  });
+
+  it("names the pywinpty prerequisite when the bridge cannot import it", async () => {
+    const home = await fakeWindowsCli("codex", CODEX_DEVICE_PROMPT);
+    const shadow = path.join(root!, "shadow-site-packages", "winpty");
+    await mkdir(shadow, { recursive: true });
+    await writeFile(path.join(shadow, "__init__.py"), 'raise ImportError("fixture: pywinpty is not installed")\n');
+    vi.stubEnv("PYTHONPATH", path.dirname(shadow));
+    const login = startLocalBrowserLogin("openai", home);
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 20000 });
+    expect(login.error).toMatch(/Python 3 with the pywinpty package.*pip install pywinpty/);
+    expect(login.authorizationUrl).toBeUndefined();
+    expect(JSON.stringify(login)).not.toContain(root!);
+  });
+
+  it("names the Python prerequisite when python is not on PATH", async () => {
+    const home = await fakeWindowsCli("codex", CODEX_DEVICE_PROMPT);
+    process.env.PATH = path.join(root!, "bin with space");
+    const login = startLocalBrowserLogin("openai", home);
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 20000 });
+    expect(login.error).toMatch(/Python 3 with the pywinpty package/);
+    expect(JSON.stringify(login)).not.toContain(process.env.PATH);
+  });
+
+  it("reports a missing provider CLI without revealing the host PATH", async () => {
+    root ??= await mkdtemp(path.join(os.tmpdir(), "paperclip-browser-login-"));
+    const home = path.join(root, "credential-home");
+    await mkdir(home, { recursive: true });
+    process.env.PATH = path.join(root, "empty");
+    const login = startLocalBrowserLogin("anthropic", home);
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 20000 });
+    expect(login.error).toMatch(/requires the Claude Code CLI.*Paperclip's PATH/);
+    expect(JSON.stringify(login)).not.toContain(process.env.PATH);
+  });
+});

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { describeError } from "@/api/errors";
+import { ApiError } from "@/api/client";
 
 /** Every authentication host uses the same local credential check and login lifecycle. */
 export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLoginIntent, enabled: boolean) {
@@ -37,6 +38,7 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
     if (!active || !companyId) return;
     let cancelled = false;
     let checking = false;
+    let statusFailures = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const key = JSON.stringify([companyId, target, generation]);
     if (isolated && current.current?.key !== key) {
@@ -52,14 +54,17 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
       if (checking || cancelled || (isolated && current.current?.request !== request)) return;
       checking = true;
       clearTimeout(timer);
+      let attemptStarted = false;
       try {
         const result = await request;
+        attemptStarted = true;
         if (cancelled || (isolated && current.current?.request !== request)) return;
         setAttempt(result);
         const next = await aiConnectionsApi.checkLocalLogin(companyId!, {
           ...latestIntent.current, ...(result ? { localSessionId: result.sessionId } : {}),
         });
         if (cancelled || (isolated && current.current?.request !== request)) return;
+        statusFailures = 0;
         setStatus(next.status);
         setAuthorizationUrl(next.authorizationUrl ?? null);
         setCode(next.code ?? null);
@@ -67,9 +72,17 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
         setError(next.error ?? (next.status === "expired" ? "This sign-in attempt expired. Start sign-in again." : null));
         // Stop polling a verified account. Focus rechecks after the provider
         // browser visit; sign-in never requires repeated Connect clicks.
-        if (next.status === "sign_in_required") timer = setTimeout(() => void check(), 5000);
+        if (next.status === "sign_in_required" && !next.error) timer = setTimeout(() => void check(), 5000);
       } catch (cause) {
-        if (!cancelled && (!isolated || current.current?.request === request)) setError(describeError(cause).body);
+        if (!cancelled && (!isolated || current.current?.request === request)) {
+          setError(describeError(cause).body);
+          // Retry status reads for this active attempt, never the sign-in POST.
+          // A brief network interruption must not strand a completed browser login.
+          const transient = !(cause instanceof ApiError) || cause.status >= 500 || cause.status === 429;
+          if (attemptStarted && transient && statusFailures < 3) {
+            timer = setTimeout(() => void check(), 1000 * 2 ** statusFailures++);
+          }
+        }
       } finally { checking = false; }
     }
     const onFocus = () => { if (!document.hidden) void check(); };

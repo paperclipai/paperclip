@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { StrictMode } from "react";
+import { act, StrictMode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -61,6 +61,21 @@ it("detects browser completion on focus without needing a Connect attempt", asyn
   expect(host.textContent).not.toContain("ABCD-12345");
   expect(api.connectLocal).not.toHaveBeenCalled();
 });
+it("recovers a temporary status failure without abandoning browser sign-in", async () => {
+  vi.useFakeTimers();
+  try {
+    api.checkLocalLogin.mockRejectedValueOnce(new Error("Connection interrupted"))
+      .mockResolvedValue({ status: "ready" });
+    flushSync(() => root.render(<Harness />));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.checkLocalLogin).toHaveBeenCalledTimes(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(api.checkLocalLogin).toHaveBeenCalledTimes(2);
+    expect(api.startLocalLogin).toHaveBeenCalledTimes(1);
+    expect(host.textContent).toContain("is signed in");
+    expect(host.querySelector('[role="alert"]')).toBeNull();
+  } finally { vi.useRealTimers(); }
+});
 it("keeps a browser sign-in attempt alive after leaving the page", async () => {
   flushSync(() => root.render(<Harness />));
   await vi.waitFor(() => expect(host.textContent).toContain("ABCD-12345"));
@@ -70,6 +85,22 @@ it("keeps a browser sign-in attempt alive after leaving the page", async () => {
   const checks = api.checkLocalLogin.mock.calls.length;
   window.dispatchEvent(new Event('focus'));
   expect(api.checkLocalLogin).toHaveBeenCalledTimes(checks);
+});
+it("bounds status retries and stops checking after a terminal provider failure", async () => {
+  vi.useFakeTimers();
+  try {
+    api.checkLocalLogin.mockRejectedValue(new Error("Offline"));
+    flushSync(() => root.render(<Harness />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+    expect(api.checkLocalLogin).toHaveBeenCalledTimes(4);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+    expect(api.checkLocalLogin).toHaveBeenCalledTimes(4);
+    api.checkLocalLogin.mockResolvedValue({ status: "sign_in_required", error: "Sign-in ended" });
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(api.checkLocalLogin).toHaveBeenCalledTimes(5);
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000); });
+    expect(api.checkLocalLogin).toHaveBeenCalledTimes(5);
+  } finally { vi.useRealTimers(); }
 });
 
 it("explicit retry can replace an attempt opened in another authentication host", async () => {

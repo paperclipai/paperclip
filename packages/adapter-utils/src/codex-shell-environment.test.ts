@@ -1,5 +1,40 @@
 import { expect, it } from "vitest";
+import { execFile } from "node:child_process";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import path from "node:path";
+import { promisify } from "node:util";
 import { codexShellEnvironmentKeys } from "./codex-shell-environment.js";
+
+it("retains Windows host context merged after the shell allowlist is built", () => {
+  const names = codexShellEnvironmentKeys({}, {}, false);
+  expect(names).toEqual(expect.arrayContaining(["SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "USERPROFILE"]));
+  expect(names).not.toContain("*");
+  expect(names).not.toContain("OPENAI_API_KEY");
+});
+
+it.skipIf(process.platform !== "win32")("lets a filtered Windows shell reach the local control plane", async () => {
+  const server = createServer((_req, res) => res.end("paperclip-test-ok"));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const names = new Set(codexShellEnvironmentKeys({}, {}, false).map((name) => name.toUpperCase()));
+    const env = Object.fromEntries(Object.entries(process.env)
+      .filter(([name]) => names.has(name.toUpperCase()))
+      .map(([name, value]) => [name.toUpperCase(), value]));
+    // Node restores an omitted SystemRoot automatically; Codex's shell launcher
+    // does not. An empty value prevents Node from hiding the missing-variable bug.
+    env.SYSTEMROOT ??= "";
+    const { port } = server.address() as AddressInfo;
+    const { stdout } = await promisify(execFile)(
+      path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "curl.exe"),
+      ["--noproxy", "*", "--silent", "--show-error", "--fail", "--max-time", "5", `http://127.0.0.1:${port}/health`],
+      { env, timeout: 7000 },
+    );
+    expect(stdout).toBe("paperclip-test-ok");
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
 
 it("admits assigned service secrets by name while retaining unassigned secret exclusions", () => {
   const assigned = { SLACK_BOT_TOKEN: "slack-canary", SERVICE_API_KEY: "key-canary", APP_SECRET: "secret-canary" };
