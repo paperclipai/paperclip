@@ -11,6 +11,13 @@ export const STORAGE_UNAVAILABLE_MESSAGE = "File storage was unavailable, so thi
 
 export const STORAGE_CREDENTIALS_REJECTED_MESSAGE = "File storage rejected Paperclip's storage credentials (they may have expired or been rotated), so this attempt stopped before it could save its work. Paperclip will retry automatically when valid credentials are available.";
 
+/** For a storage failure that no storage wait owns, such as a run whose native
+ * recovery keeps its files without replaying an unfinished turn. Nothing
+ * retries it automatically, so the text offers Retry instead of promising one. */
+export const STORAGE_UNAVAILABLE_HELD_MESSAGE = "File storage was unavailable, so this attempt stopped before it could save its work. Paperclip is not retrying it automatically. Retry or send a message to continue.";
+
+export const STORAGE_CREDENTIALS_REJECTED_HELD_MESSAGE = "File storage rejected Paperclip's storage credentials (they may have expired or been rotated), so this attempt stopped before it could save its work. Paperclip is not retrying it automatically. Retry or send a message to continue.";
+
 export const STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE = "File storage stayed unavailable or kept rejecting Paperclip's storage credentials through every automatic retry, so Paperclip stopped retrying this task. Check the storage service and its credentials, then Retry.";
 
 export const STORAGE_UNAVAILABLE_RETRY = {
@@ -64,6 +71,24 @@ export function isStorageCredentialRejection(error: unknown): boolean {
 
 export function storageUnavailableMessage(error: unknown): string {
   return isStorageCredentialRejection(error) ? STORAGE_CREDENTIALS_REJECTED_MESSAGE : STORAGE_UNAVAILABLE_MESSAGE;
+}
+
+/** The text for a storage failure that no storage wait owns. */
+export function storageUnavailableHeldMessage(error: unknown): string {
+  return isStorageCredentialRejection(error) ? STORAGE_CREDENTIALS_REJECTED_HELD_MESSAGE : STORAGE_UNAVAILABLE_HELD_MESSAGE;
+}
+
+/**
+ * Only a run recorded as `storage_unavailable` has a storage wait. Releases
+ * before this check could save the retry promise under another code (a
+ * native recovery hold), where nothing retries. Reads present those rows with
+ * the held text, so they are truthful after deploy without a migration.
+ */
+export function presentStorageFailureMessage(run: { error?: string | null; errorCode?: string | null }): string | null | undefined {
+  if (run.errorCode === STORAGE_UNAVAILABLE_CODE) return run.error;
+  if (run.error === STORAGE_UNAVAILABLE_MESSAGE) return STORAGE_UNAVAILABLE_HELD_MESSAGE;
+  if (run.error === STORAGE_CREDENTIALS_REJECTED_MESSAGE) return STORAGE_CREDENTIALS_REJECTED_HELD_MESSAGE;
+  return run.error;
 }
 
 export function isStorageUnavailableError(error: unknown): boolean {
