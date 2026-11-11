@@ -4648,7 +4648,16 @@ recovery then reclaims the retained sandbox's inactive provider cache and saves 
 files again with no provider turn. The export Retry stays available. A read-only
 fallback that only lost its connection (a closed transport, a provider 5xx or rate
 limit, or a sandbox state change) reports its own cause instead, and finalization
-keeps its bounded retry for it.
+keeps its bounded retry for it. When saved-work recovery's own save still finds the
+disk full after a confirmed reclaim, or with nothing to reclaim, the recovery
+generation ends at once as
+`export_interrupted` with cause `sandbox_disk_full` (retry class
+`user_action_required`) and goes to the board. It is not retried on the automatic
+schedule, and it never falls back to the last save, so the run's unsaved files stay
+in the retained sandbox and the workspace keeps its previous saved version. The
+board's Retry saves again; once the save succeeds, the accepted Retry starts one run.
+A reclaim whose outcome is unknown keeps the scheduled retry, because its journal
+resumes on the next attempt and can still free space.
 
 Native assigned app tools save governed responses above 500,000 encoded bytes before returning
 a bounded reference through PRP. `read_tool_result` retrieves the saved JSON in
