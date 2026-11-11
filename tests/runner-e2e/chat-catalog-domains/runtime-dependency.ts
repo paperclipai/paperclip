@@ -99,7 +99,8 @@ export const runtimeDependencyCases = [runtimeDefinition("task-coordination.bloc
     await expect.poll(async () => await blockedBy.isVisible() || await propertiesTab.isVisible()).toBe(true);
     if (!await blockedBy.isVisible()) await propertiesTab.click();
     await expect(blockedBy.getByText(design.identifier ?? "Design").first()).toBeVisible(); state.blockerVisible = true;
-    const pending = ctx.input.page.waitForResponse(row => row.request().method() === "PATCH" && new URL(row.url()).pathname === websiteRoot);
+    const websitePaths = [websiteRoot, ...(task.identifier ? [`/api/issues/${task.identifier}`] : [])];
+    const pending = ctx.input.page.waitForResponse(row => row.request().method() === "PATCH" && websitePaths.includes(new URL(row.url()).pathname));
     await chooseStatus(ctx.input.page, "Todo"); state.beforeApprovalStatus = (await pending).status(); state.attemptedBeforeApproval = true;
     // Reload and independent reads observe the real admission gate, rather
     // than setting a run's blocked status or pretending the worker executed.
