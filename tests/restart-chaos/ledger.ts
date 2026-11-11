@@ -2,6 +2,8 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { replayCommand } from "./config.js";
 import type { RuleId, TaskGrade, TaskRecord, WavePlan } from "./types.js";
+import { diskFullLedger } from "./disk-full-faults.js";
+import { expectedFinalStatus } from "./grader.js";
 
 export interface LedgerLine {
   schema: "paperclip.restart-chaos.ledger/v1";
@@ -37,6 +39,8 @@ export interface LedgerLine {
   /** Universal checks U1–U4 (universal.ts): verdict per rule, and the details of warnings that did not fail the task. */
   universal?: Record<string, string>;
   universalWarnings?: string[];
+  /** DF1: faulted saves, the disk-full rest with a Retry offered, and whether that Retry worked. */
+  diskFull?: { faultedSaves: number; restedDiskFull: boolean; retryOffered: boolean; retryWorked: boolean };
 }
 
 export function ledgerLine(plan: WavePlan, record: TaskRecord, grade: TaskGrade, gitSha: string, evidence: string | null,
@@ -55,6 +59,7 @@ export function ledgerLine(plan: WavePlan, record: TaskRecord, grade: TaskGrade,
     recordedAt: new Date().toISOString(),
     ...(plan.options.masks?.length ? { masks: [...plan.options.masks] } : {}),
     ...(plan.options.crashPoint ? { crashPoint: plan.options.crashPoint } : {}),
+    ...(record.diskFull ? { diskFull: diskFullLedger(record, expectedFinalStatus(record)) } : {}),
     ...(grade.universal ? {
       universal: Object.fromEntries(Object.entries(grade.universal).map(([id, rule]) => [id, rule.verdict])),
       universalWarnings: Object.entries(grade.universal).filter(([, rule]) => !rule.enforced && rule.verdict === "fail")

@@ -1,4 +1,4 @@
-import { questionHandoffWorkload } from "./question-handoff.js";
+import { questionHandoffWorkload, questionSequenceWorkload } from "./question-handoff.js";
 import { l1Workload } from "./contention.js";
 import { journeyWorkloadDefinitions } from "./journeys.js";
 import type { OracleArtifacts, OracleResult, WorkloadId } from "./types.js";
@@ -215,6 +215,7 @@ function budgetChecks(artifacts: OracleArtifacts) {
 
 export const workloadDefinitions: Record<WorkloadId, WorkloadDefinition> = {
   Q1: questionHandoffWorkload,
+  Q4: questionSequenceWorkload,
   L1: l1Workload,
   ...journeyWorkloadDefinitions,
   G1: {

@@ -125,6 +125,14 @@ function isRetainedExport(action: IssueRecoveryAction, issueId: string, companyI
     && typeof action.evidence.runId === "string" && action.evidence.runId.length > 0;
 }
 
+/** Saved-work recovery ended because the sandbox disk was still full (#20758). */
+function isSandboxDiskFullRest(action: IssueRecoveryAction) {
+  const system = asObject(action.evidence.systemRecovery);
+  const failure = asObject(system.failure);
+  return system.state === "exhausted" && failure.retryClass === "user_action_required"
+    && asObject(failure.cause).label === "sandbox_disk_full";
+}
+
 function isControllerStopRequired(action: IssueRecoveryAction, issueId: string, companyId: string) {
   return action.companyId === companyId && action.sourceIssueId === issueId
     && action.ownerType === "board" && ["active", "escalated"].includes(action.status)
@@ -343,21 +351,26 @@ function RetainedFilesRecovery({ action, issueId, companyId, className, onRecove
   const waiting = !failedReceipt && !saved && (restoring || acknowledged || serverAcknowledged);
   const unconfirmed = Boolean(pending && !acknowledged && !serverAcknowledged);
   const sourceLoading = sourceView.kind === "loading" || sourceView.kind === "reconnecting";
+  // A save that rested on a full sandbox disk is resumed by the task's Retry,
+  // which saves the files again and then applies the saved result. Its note
+  // names Retry, so this panel offers no separate control for it.
+  const diskFullRest = isSandboxDiskFullRest(current ?? action);
   // A verified source makes this panel the governed recovery path. Otherwise the
   // task's own Retry (renewed, re-verified recovery) remains the next action.
-  const ownsRecoveryControl = canMutate && (sourceLoading || Boolean(current && verified && !saved));
+  const ownsRecoveryControl = canMutate && !diskFullRest && (sourceLoading || Boolean(current && verified && !saved));
   // `waiting` already excludes a failed accepted request, so the reason stays
   // visible after a failed attempt and hides only while recovery is running.
   const unverified = Boolean(current && !verified && !saved && !waiting);
   return <div className={cn("flex flex-col gap-2 text-sm", className)} data-testid="retained-file-recovery">
     <ReportRecoveryControl owns={ownsRecoveryControl} onChange={onRecoveryControlChange} />
     <p role="status">{saved ? "Saved files recovered. Task recovery is still being checked."
+      : diskFullRest && !waiting ? "The sandbox disk was full when Paperclip saved the files. Free space, then use Retry to save them and finish the task."
       : failedReceipt ? "File recovery has not finished. The saved source remains protected."
       : restoring ? "Recovering saved files. Work remains paused until recovery is verified."
         : waiting ? "File recovery is queued. Waiting for verified saved files."
           : "The saved files need recovery before work can continue."}</p>
     {canMutate ? <>
-      {current && verified && retryable && !waiting && (!pending || unconfirmed && checkedUnconfirmed || confirmedFailedAttempt) ? <Button variant="outline" size="sm"
+      {current && verified && retryable && !waiting && !diskFullRest && (!pending || unconfirmed && checkedUnconfirmed || confirmedFailedAttempt) ? <Button variant="outline" size="sm"
         className="self-start" disabled={request.isPending || check.isPending}
         onClick={() => request.mutate(confirmedFailedAttempt)}>{request.isPending ? "Requesting file recovery…"
           : confirmedFailedAttempt ? "Try file recovery again" : "Recover saved files"}</Button> : null}

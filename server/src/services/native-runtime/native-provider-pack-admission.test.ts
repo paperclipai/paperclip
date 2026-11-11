@@ -257,6 +257,50 @@ describe("provider pack admission PostgreSQL fencing", () => {
     expect((await read(f.identity.runId)).runnerProfileJson?.nativeProviderPackAdmissionState)
       .toEqual({ ...f.profile.nativeProviderPackAdmissionState, state: "verified" });
   });
+  it("keeps the admission when a checkpoint write holds the claim longer than one lock wait", async () => {
+    // Staging run 3f317172 (OpenCode, fresh Daytona sandbox): the pack upload
+    // and runner start succeeded, the runner began writing durable checkpoints,
+    // and the admission write lost one 1000 ms lock wait on the coordinator row
+    // a checkpoint transaction held. The state stayed pending, artifact
+    // retention failed the run as native_provider_artifacts_admission_unverified
+    // and the task rested blocked before its first turn.
+    const f = await fixture();
+    let release!: () => void, acquired!: () => void;
+    const holding = new Promise<void>(resolve => { acquired = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const checkpoint = db.transaction(async tx => {
+      await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.identity.runId)).for("update");
+      acquired(); await gate;
+    });
+    await holding;
+    const recording = recordNativeProviderPackAdmission(db, { ...f, waitForClaim: true } as Parameters<typeof recordNativeProviderPackAdmission>[1])
+      .then(value => ({ value }), error => ({ error }));
+    // Longer than one lock wait, shorter than the bounded retry window.
+    const held = setTimeout(release, 1_600);
+    try {
+      expect(await recording).toEqual({ value: true });
+    } finally { clearTimeout(held); release(); await checkpoint; }
+    expect((await read(f.identity.runId)).runnerProfileJson?.nativeProviderPackAdmissionState)
+      .toEqual({ ...f.profile.nativeProviderPackAdmissionState, state: "verified" });
+  });
+  it("gives up after the bounded retry window while the claim stays held", async () => {
+    const f = await fixture();
+    let release!: () => void, acquired!: () => void;
+    const holding = new Promise<void>(resolve => { acquired = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const checkpoint = db.transaction(async tx => {
+      await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.identity.runId)).for("update");
+      acquired(); await gate;
+    });
+    await holding;
+    const started = Date.now();
+    try {
+      await expect(recordNativeProviderPackAdmission(db, { ...f, waitForClaim: true } as Parameters<typeof recordNativeProviderPackAdmission>[1]))
+        .rejects.toMatchObject({ cause: { code: "55P03" } });
+      expect(Date.now() - started).toBeLessThan(15_000);
+    } finally { release(); await checkpoint; }
+    expect((await read(f.identity.runId)).runnerProfileJson).toEqual(f.profile);
+  }, 30_000);
   it.each([false, true])("waits within the durable-capture bound and rechecks the claim after its lock (revoked: %s)", async revoked => {
     const f = await fixture();
     let release!: () => void, acquired!: () => void;

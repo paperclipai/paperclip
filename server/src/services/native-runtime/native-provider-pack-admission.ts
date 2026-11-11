@@ -123,13 +123,51 @@ export function admittedNativeProviderPack(session: NativeSession, identity: Nat
     ...(admittedRunId === actual.runId ? {} : { inheritedFromRunId: admittedRunId }) };
 }
 
-export async function recordNativeProviderPackAdmission(db: Db, input: {
+type AdmissionInput = {
   session: NativeSession;
   identity: NativeRunIdentity;
   admissionEpoch: string;
   claim: { leaseOwner: string; attempt: number; controllerGeneration: number; controllerBootId: string };
   waitForClaim?: boolean;
-}): Promise<boolean> {
+};
+
+/** Lock timeouts, deadlocks and serialization aborts that clear on their own. */
+const CONTENDED_ADMISSION_CODES = new Set(["55P03", "40P01", "40001"]);
+/** Attempts of one admission write while its claim is contended. */
+export const NATIVE_PROVIDER_PACK_ADMISSION_ATTEMPTS = 5;
+
+export function nativeProviderPackAdmissionFailureCode(error: unknown): string | null {
+  for (let value = error, depth = 0; value && typeof value === "object" && depth < 4; depth += 1) {
+    const code = (value as { code?: unknown }).code;
+    if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) return code;
+    value = (value as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+/**
+ * Saves the session's verified provider-pack admission on its run row. A run
+ * that waits for its claim retries a contended write: the runner's durable
+ * checkpoint writes hold the same coordinator row, and on a loaded database one
+ * can outlast a single lock wait. Each attempt is a new transaction that
+ * re-proves the claim, the run and the admission epoch, so a retry never
+ * admits anything the first attempt would have refused. Only contention is
+ * retried; a stale claim still returns false and other errors still throw.
+ */
+export async function recordNativeProviderPackAdmission(db: Db, input: AdmissionInput): Promise<boolean> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await recordNativeProviderPackAdmissionOnce(db, input);
+    } catch (error) {
+      const code = nativeProviderPackAdmissionFailureCode(error);
+      if (!input.waitForClaim || attempt >= NATIVE_PROVIDER_PACK_ADMISSION_ATTEMPTS
+        || !code || !CONTENDED_ADMISSION_CODES.has(code)) throw error;
+      await new Promise(resolve => setTimeout(resolve, 100 * attempt));
+    }
+  }
+}
+
+async function recordNativeProviderPackAdmissionOnce(db: Db, input: AdmissionInput): Promise<boolean> {
   const receipt = admittedNativeProviderPack(input.session, input.identity);
   return db.transaction(async tx => {
     // Bounds every lock wait below, including the run-row lock. A run-event

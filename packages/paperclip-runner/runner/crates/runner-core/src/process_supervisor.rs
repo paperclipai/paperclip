@@ -1502,13 +1502,16 @@ mod tests {
     /// Plays a provider whose tool runs `nohup job &` in a new session, the
     /// way Claude Code runs a Bash tool command. The wrapper reports the job's
     /// PID and exits, so the job is re-parented and outside the owned group.
+    /// The orphaned job is held apart from a reap that must verify.
     fn spawn_provider_with_escaped_tool_job(
         name: &str,
     ) -> (
         SupervisedProcess,
         PathBuf,
         paperclip_process_table::ProcessEntry,
+        crate::process_lineage::host_orphans::MayOrphan,
     ) {
+        let orphans = crate::process_lineage::host_orphans::may_orphan();
         let directory = std::env::temp_dir().join(format!(
             "paperclip-escaped-tool-{name}-{}-{}",
             std::process::id(),
@@ -1558,10 +1561,14 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         };
         assert_ne!(job.pgid, i32::try_from(process.process_group_id()).unwrap());
-        (process, directory, job)
+        (process, directory, job, orphans)
     }
 
-    fn assert_stopped_and_clean_up(job: paperclip_process_table::ProcessEntry, directory: &Path) {
+    fn assert_stopped_and_clean_up(
+        job: paperclip_process_table::ProcessEntry,
+        directory: &Path,
+        orphans: crate::process_lineage::host_orphans::MayOrphan,
+    ) {
         let alive = paperclip_process_table::read(job.pid)
             .entry()
             .is_some_and(|current| current.started == job.started && !current.zombie);
@@ -1570,30 +1577,34 @@ mod tests {
             if let Some(group) = rustix::process::Pid::from_raw(job.pgid) {
                 let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
             }
+            crate::process_lineage::host_orphans::wait_until_group_gone(job.pgid);
         }
+        drop(orphans);
         let _ = fs::remove_dir_all(directory);
         assert!(!alive, "tool job {} outlived its provider", job.pid);
     }
 
     #[test]
     fn terminating_the_group_stops_a_tool_job_that_left_its_session() {
-        let (mut process, directory, job) = spawn_provider_with_escaped_tool_job("terminate");
+        let (mut process, directory, job, orphans) =
+            spawn_provider_with_escaped_tool_job("terminate");
         process.terminate_group().unwrap();
-        assert_stopped_and_clean_up(job, &directory);
+        assert_stopped_and_clean_up(job, &directory, orphans);
     }
 
     #[test]
     fn immediate_fence_stops_a_tool_job_that_left_its_session() {
-        let (mut process, directory, job) = spawn_provider_with_escaped_tool_job("immediate");
+        let (mut process, directory, job, orphans) =
+            spawn_provider_with_escaped_tool_job("immediate");
         process.terminate_group_immediately().unwrap();
-        assert_stopped_and_clean_up(job, &directory);
+        assert_stopped_and_clean_up(job, &directory, orphans);
     }
 
     #[test]
     fn dropping_the_provider_stops_a_tool_job_that_left_its_session() {
-        let (process, directory, job) = spawn_provider_with_escaped_tool_job("drop");
+        let (process, directory, job, orphans) = spawn_provider_with_escaped_tool_job("drop");
         drop(process);
-        assert_stopped_and_clean_up(job, &directory);
+        assert_stopped_and_clean_up(job, &directory, orphans);
     }
 
     #[test]

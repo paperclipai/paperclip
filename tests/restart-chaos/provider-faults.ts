@@ -25,9 +25,11 @@ export const PROVIDER_FAULT_KINDS = ["PV1", "PV2", "PV3"] as const;
 export type ProviderFaultKind = (typeof PROVIDER_FAULT_KINDS)[number];
 export const PROVIDER_FAULT_ACTIONS: Record<ProviderFaultKind, "delay" | "drop" | "duplicate"> = { PV1: "delay", PV2: "drop", PV3: "duplicate" };
 
-/** `terminal`: the turn/completed that follows a turn/interrupt. `interrupt_ack`: the response to that turn/interrupt. */
-export const PROVIDER_MESSAGES = ["terminal", "interrupt_ack"] as const;
+/** `terminal`: the turn/completed that follows a turn/interrupt. `interrupt_ack`: the response to that turn/interrupt. `tool_completed`: Codex's item/completed for the first non-terminal Paperclip tool call. */
+export const PROVIDER_MESSAGES = ["terminal", "interrupt_ack", "tool_completed"] as const;
 export type ProviderMessage = (typeof PROVIDER_MESSAGES)[number];
+export const UNINTERRUPTED_PROVIDER_MESSAGES: readonly ProviderMessage[] = ["tool_completed"];
+export const TOOL_COMPLETED_WORKLOADS: readonly WorkloadId[] = ["A1", "C1"];
 
 /** Restarts a provider fault may straddle: K1 kill -9, K2 SIGTERM graceful restart, K4 kill -9 then an outage hold. */
 export const PROVIDER_RESTART_KINDS = ["K1", "K2", "K4"] as const;
@@ -46,6 +48,11 @@ export interface ProviderFaultRule {
   /** PV1 only. */
   delayMs?: number;
   /**
+   * Take the task's Nth matching message instead of its first (Q4: the second saved question,
+   * asked by the run that continues from the first answer). Earlier ones pass unchanged.
+   */
+  occurrence?: number;
+  /**
    * `--provider-fault-restart K1|K2|K4` (PV1, PV2): restart the control plane this long after the fault
    * applied, so the held or dropped message straddles a restart. `holdMs` is the K4 outage.
    */
@@ -59,7 +66,7 @@ export const DEFAULT_PROVIDER_FAULT_RESTART_AFTER_MS = 3_000;
 export interface ProviderFaultEvent {
   at: number;
   pid: number;
-  event: "spawned" | "bound" | "interrupt_requested" | "applied" | "released" | "held_message_discarded" | "exited" | "spawn_failed";
+  event: "spawned" | "bound" | "interrupt_requested" | "passed" | "applied" | "released" | "held_message_discarded" | "exited" | "spawn_failed";
   nonce?: string | null;
   kind?: ProviderFaultKind;
   message?: ProviderMessage;
@@ -70,12 +77,15 @@ export interface ProviderFaultEvent {
 }
 
 /**
- * Workloads whose run sends turn/interrupt: a saved question (Q1) and a board Stop (S1). Not G1: its agent
+ * Workloads whose run sends turn/interrupt: a saved question (Q1, and Q4 a second one from the answer's
+ * continuation run) and a board Stop (S1). Not G1: its agent
  * asks for approval through `call_api` and ends its own turn, so nothing interrupts the provider and no
  * rule ever applies (waves w-20261110T050407-s206, w-20261110T063253-s208 and w-20261110T085554-s211:
  * applied=0 for Codex and Claude, and the board then waits for a restart that never comes).
  */
-export const PROVIDER_FAULT_WORKLOADS: readonly WorkloadId[] = ["Q1", "S1"];
+export const PROVIDER_FAULT_WORKLOADS: readonly WorkloadId[] = ["Q1", "Q4", "S1"];
+/** Q4's fault targets its second saved question, the one asked inside the answer's continuation run. */
+export const Q4_PROVIDER_FAULT_OCCURRENCE = 2;
 
 export function isProviderFault(value: string): value is ProviderFaultKind {
   return (PROVIDER_FAULT_KINDS as readonly string[]).includes(value);
@@ -118,7 +128,8 @@ export function parseProviderMessages(raw: string | undefined): { message?: Prov
       if (result.message) throw new Error("--provider-fault-message takes one default message");
       result.message = right as ProviderMessage;
     } else {
-      if (!PROVIDER_FAULT_WORKLOADS.includes(left as WorkloadId)) throw new Error(`--provider-fault-message: ${left} is not one of ${PROVIDER_FAULT_WORKLOADS.join(", ")}`);
+      const allowed = UNINTERRUPTED_PROVIDER_MESSAGES.includes(right as ProviderMessage) ? TOOL_COMPLETED_WORKLOADS : PROVIDER_FAULT_WORKLOADS;
+      if (!allowed.includes(left as WorkloadId)) throw new Error(`--provider-fault-message: ${left} is not one of ${allowed.join(", ")}`);
       result.byWorkload = { ...result.byWorkload, [left]: right as ProviderMessage };
     }
   }
@@ -139,6 +150,7 @@ export function withProviderFaultRules(tasks: TaskPlan[], options: Pick<WaveOpti
     const rule: ProviderFaultRule = { kind: task.fault,
       message: options.providerFaultMessageByWorkload?.[task.workload] ?? options.providerFaultMessage ?? "terminal",
       ...(task.fault === "PV1" ? { delayMs: delays[pv1++ % delays.length]! } : {}),
+      ...(task.workload === "Q4" ? { occurrence: Q4_PROVIDER_FAULT_OCCURRENCE } : {}),
       ...(restartKind
         ? { restart: { kind: restartKind, afterAppliedMs: options.providerFaultRestartAfterMs ?? DEFAULT_PROVIDER_FAULT_RESTART_AFTER_MS,
           ...(restartKind === "K4" ? { holdMs: PROVIDER_FAULT_K4_HOLD_MS } : {}) } } : {}) };
@@ -147,7 +159,8 @@ export function withProviderFaultRules(tasks: TaskPlan[], options: Pick<WaveOpti
 }
 
 export function describeProviderFault(rule: ProviderFaultRule): string {
-  return `${rule.kind} ${PROVIDER_FAULT_ACTIONS[rule.kind]} ${rule.message}${rule.delayMs !== undefined ? ` ${rule.delayMs}ms` : ""}`
+  return `${rule.kind} ${PROVIDER_FAULT_ACTIONS[rule.kind]} ${rule.message}${rule.occurrence && rule.occurrence > 1 ? ` #${rule.occurrence}` : ""}`
+    + `${rule.delayMs !== undefined ? ` ${rule.delayMs}ms` : ""}`
     + (rule.restart ? ` +${rule.restart.kind}@${rule.restart.afterAppliedMs}ms${rule.restart.holdMs ? `/hold${rule.restart.holdMs}ms` : ""}` : "");
 }
 

@@ -24,6 +24,15 @@ show an error rather than treating the user as signed out.
 Self-hosted authenticated instances retain their instance sign-in form, and
 `local_trusted` instances retain their normal access path.
 
+The account create hook keeps `local:credential` on new email/password accounts
+so a surviving Better Auth 1.7.2 process can still sign those users in during an
+upgrade. This internal field is not client input. Better Auth 1.7.16 still owns
+account lookup and the unique `(provider_id, account_id)` key. Existing NULL
+issuer rows remain readable by the new version. Cloud workspace handoff creates
+users and sessions without account rows. No social provider is configured here;
+other providers retain their trusted internal issuer, or NULL when absent. This
+bridge does not claim old-reader compatibility for those unconfigured providers.
+
 Cloud stack Admins can change experimental settings on their dedicated instance.
 This permission comes from the current trusted Cloud stack role and does not
 grant other instance-admin powers. Members, Support users, and agents cannot

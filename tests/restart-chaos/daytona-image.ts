@@ -327,6 +327,19 @@ async function readReceipt(directory: string): Promise<DaytonaImageArtifacts | n
   return receipt;
 }
 
+/**
+ * `--daytona-pack-mismatch`: the sandbox image must not carry the controller's
+ * provider pack. With the same pack the runtime reuses the preinstalled copy and
+ * the wave would never take the upload and admission path it exists to test.
+ */
+export function assertProviderPackMismatch(controller: Pick<DaytonaImageArtifacts, "image" | "providerPackDigest">,
+  sandbox: Pick<DaytonaImageArtifacts, "image" | "providerPackDigest">): void {
+  if (controller.providerPackDigest === sandbox.providerPackDigest) {
+    throw new Error(`--daytona-pack-mismatch image ${sandbox.image} carries the controller's provider pack `
+      + `(${controller.providerPackDigest}); choose an image with a different pack`);
+  }
+}
+
 export function defaultDaytonaImageCacheRoot(): string {
   return path.resolve(process.env.RESTART_CHAOS_IMAGE_CACHE ?? path.join(import.meta.dirname, "results", "daytona-images"));
 }

@@ -147,8 +147,6 @@ export interface Project {
   color: string | null;
   icon: string | null;
   env: AgentEnvConfig | null;
-  /** Project-owned execution target; null inherits the agent/instance default. */
-  environmentId?: string | null;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;

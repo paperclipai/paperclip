@@ -429,7 +429,27 @@ export function createPluginRunnerTaskOwner(input: {
     }
     return result.outcome;
   };
-  return { launcher, registration, driver, readWorkspaceFile, release, resume,
+  // A successor that discards this owner's session must not inherit its
+  // failed close. Repeat the unsettled checkpoint's task obligations: confirmed
+  // stop (sent once), credential handoff, then completion. Never reads state.
+  const retireSupersededTask = async () => {
+    if (!submitted || detached) return false;
+    if (!completed) {
+      stopRequested = true;
+      if (stoppedState?.executionStopped !== true) await stopAndConfirm();
+      if (input.accountIdentity && input.onCredentials) {
+        const snapshot = await call({ kind: "credentials", accountIdentity: input.accountIdentity });
+        if (snapshot.kind !== "credentials") throw new Error("Plugin Runner credential snapshot unavailable");
+        if (snapshot.credential !== null) await input.onCredentials(snapshot.credential);
+      }
+      await call({ kind: "complete" });
+      completed = true;
+      const identity = preparedIdentity ?? launchIdentity ?? input.priorIdentity;
+      if (identity) await input.onRetired?.(identity);
+    }
+    return stoppedState?.executionStopped === true && completed && !detached;
+  };
+  return { launcher, registration, driver, readWorkspaceFile, release, resume, retireSupersededTask,
     // A warm transport outlives its first lease and invocation's private home.
     credentialsUpdated: async (event: PrpEvent) => { await input.onCredentialsUpdated?.(event); },
     // This is a lease-bound Launcher receipt, not a terminal phase or a sent

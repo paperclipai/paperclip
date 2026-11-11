@@ -49,6 +49,24 @@ describe("readTransientEnvironmentProviderFailure", () => {
     expect(readTransientEnvironmentProviderFailure(rpcError)).toEqual({ httpStatus: 429 });
   });
 
+  const stagingLeaseTimeout = (diagnostic: { phase: string; elapsedMs: number; budgetMs: number; providerState?: string }) =>
+    Object.assign(new Error("Daytona lease acquisition timed out; allocation cleanup is pending"), {
+      data: { schema: "paperclip/environment-creation-cleanup/v1",
+        cleanup: { providerLeaseId: "paperclip-create-05f81d77", companyId: "company", environmentId: "environment",
+          runId: "f41857b6", attemptId: "05f81d77", accountFingerprint: "a".repeat(64),
+          labels: { "paperclip-provider": "daytona", "paperclip-create-attempt": "05f81d77" } },
+        acquisitionDiagnostic: diagnostic },
+    });
+
+  it("treats an acquisition that reached its deadline as transient", () => {
+    const timeout = stagingLeaseTimeout({ phase: "create", elapsedMs: 300_004, budgetMs: 300_000, providerState: "creating" });
+    expect(readTransientEnvironmentProviderFailure(new Error("outer", { cause: timeout }))).toEqual({ acquisitionTimedOut: true });
+  });
+
+  it("does not retry an acquisition whose first failure came before its deadline", () => {
+    expect(readTransientEnvironmentProviderFailure(stagingLeaseTimeout({ phase: "workspace", elapsedMs: 100, budgetMs: 300_000 }))).toBeNull();
+  });
+
   it("never parses message text", () => {
     expect(readTransientEnvironmentProviderFailure(new Error("HTTP 502 Bad Gateway ECONNRESET"))).toBeNull();
   });
@@ -68,6 +86,15 @@ describe("EnvironmentProviderUnavailableError", () => {
     });
     expect(error.providerFailure.category).toBe(category);
     expect(error.providerFailure.retryability).toBe("transient");
+  });
+
+  it("names an acquisition timeout in plain words", () => {
+    const error = new EnvironmentProviderUnavailableError({
+      environmentName: "Paperclip Sandbox", driver: "sandbox", evidence: { acquisitionTimedOut: true }, cause: null,
+    });
+    expect(error.providerFailure).toMatchObject({ category: "timeout", retryability: "transient", phase: "startup" });
+    expect(error.providerFailure.message).toContain("did not finish starting");
+    expect(error.providerFailure.message).not.toMatch(/ETIMEDOUT|undefined/);
   });
 
   it("falls back to a generic provider label for an unsafe driver key", () => {

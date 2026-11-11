@@ -1,5 +1,5 @@
 {
-  "id": "d39ddd45-622e-4af1-bccf-63bf72d044e3",
+  "id": "593f81c4-2b4d-4fb4-a3e3-848b19bc9b0f",
   "prevId": "38dbf2b9-da26-4c3a-b813-f37d0c19cba2",
   "version": "7",
   "dialect": "postgresql",
@@ -51058,12 +51058,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "environment_id": {
-          "name": "environment_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "git_authorization_grant_id": {
           "name": "git_authorization_grant_id",
           "type": "uuid",
@@ -51213,19 +51207,6 @@
             "id"
           ],
           "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "projects_environment_id_environments_id_fk": {
-          "name": "projects_environment_id_environments_id_fk",
-          "tableFrom": "projects",
-          "tableTo": "environments",
-          "columnsFrom": [
-            "environment_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "projects_git_authorization_grant_id_connection_grants_id_fk": {
@@ -65163,12 +65144,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
-        },
-        "dot_device_cutover": {
-          "name": "dot_device_cutover",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "device_cutover_stack_id": {
           "name": "device_cutover_stack_id",

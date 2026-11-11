@@ -77,6 +77,8 @@ export function applyJourneyOptions(options: WaveOptions, input: { matrix: boole
     if (input.tasksGiven) throw new Error("--matrix runs one task per cell; do not pass --tasks");
     if (input.triggersGiven) throw new Error("--matrix uses each workload's own triggers; do not pass --triggers");
     if (options.faults.includes("K14")) throw new Error("--matrix does not cross K14 (an upgrade happens once per wave)");
+    // The matrix crosses restart and provider faults only; SR1 would silently run as its K0 baseline.
+    if (options.sessionFaults?.length) throw new Error("--matrix does not cross session faults (SR*); run SR1 as its own wave");
     options.matrix = true;
     options.tasks = matrixCells(options).length;
   }

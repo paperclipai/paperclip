@@ -23,8 +23,9 @@ import { NativeTrigger, nativeTriggerMarkdown, nativeTriggerShortfall, triggered
 import { needsCredentialRotation, startCredentialRotation, type CredentialRotation } from "./storage-credentials.js";
 import { describeProviderFault, installProviderFaultSeam, resolveRealCodex, withProviderFaultCheck, type ProviderFaultSeam } from "./provider-faults.js";
 import { installAcpxSidecarSeam, withAcpxSidecarHook, type AcpxSidecarSeam } from "./acpx-provider-faults.js";
+import { DiskFullFaultSeam, isDiskFullFault, receiptsForIssue, withDiskFullCheck } from "./disk-full-faults.js";
 import { CREDENTIAL_FOR_ADAPTER, parseCommand, replayCommand, waveIdFor } from "./config.js";
-import { assertControllerMatchesImage, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
+import { assertControllerMatchesImage, assertProviderPackMismatch, defaultDaytonaImageCacheRoot, prepareDaytonaImageArtifacts } from "./daytona-image.js";
 import { PLUGIN_BUILD_STAMP, pluginBuildState } from "./plugin-build.js";
 import { DaytonaWaveSweeper, leaksForTask, unattributedLeaks, type DaytonaSweepResult } from "./daytona-sweep.js";
 import { knownSecretValues, redactKnownSecrets, writeEvidenceBundle } from "./evidence.js";
@@ -134,6 +135,14 @@ async function prepareDaytona(plan: WavePlan, timeline: Timeline): Promise<Recor
   timeline.add("daytona_image_matched", { image, contentId: artifacts.contentId, localContentId, sourceRevision: artifacts.sourceRevision,
     runnerdSha256: artifacts.runnerdSha256, providerPackDigest: artifacts.providerPackDigest, platformManifestDigest: artifacts.platformManifestDigest });
   ensureDaytonaPlugin(timeline);
+  if (plan.options.daytonaSandboxImage) {
+    // Prove the sandbox image's preinstalled pack differs, so every fresh sandbox must upload the controller's.
+    const sandbox = await prepareDaytonaImageArtifacts({ image: plan.options.daytonaSandboxImage, cacheRoot: defaultDaytonaImageCacheRoot(),
+      log: line => console.info(`[daytona-image] ${line}`) });
+    assertProviderPackMismatch(artifacts, sandbox);
+    timeline.add("daytona_pack_mismatch", { controllerImage: image, sandboxImage: sandbox.image,
+      controllerProviderPackDigest: artifacts.providerPackDigest, sandboxProviderPackDigest: sandbox.providerPackDigest });
+  }
   timeline.add("daytona_vcpu_plan", { cpuPerSandbox: plan.options.daytonaCpu, concurrency: plan.options.concurrency,
     taskVcpu: plan.options.concurrency * (plan.options.daytonaCpu ?? 0) });
   return { PAPERCLIP_RUNNER_REMOTE_BINARY_PATH: artifacts.runnerdPath, PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH: artifacts.providerPackPath };
@@ -274,6 +283,7 @@ async function main(): Promise<number> {
   let storageAuditor: StorageAuditor | null = null;
   let providerFaults: ProviderFaultSeam | null = null;
   let acpxSidecarSeam: AcpxSidecarSeam | null = null;
+  let diskFullSeam: DiskFullFaultSeam | null = null;
   let speedSection: string | null = null;
   let storageSection: string | null = null;
   let harnessError: unknown;
@@ -336,12 +346,20 @@ async function main(): Promise<number> {
       timeline.add("provider_faults_installed", { realCodex: realCodex.command, codexVersion: realCodex.version,
         rules: plan.tasks.flatMap(task => task.providerFault ? [`${task.taskId}:${describeProviderFault(task.providerFault)}`] : []) });
     }
+    if (plan.tasks.some(task => isDiskFullFault(task.fault))) {
+      // DF1: the server's test-only hook reads this control file at each final workspace save.
+      diskFullSeam = await DiskFullFaultSeam.install({ root: supervisor.paths.temporaryRoot, receiptPath: path.join(waveDir, "disk-full-faults.jsonl") });
+      Object.assign(serverEnvironment, diskFullSeam.serverEnvironment);
+      timeline.add("disk_full_faults_installed", { tasks: plan.tasks.filter(task => isDiskFullFault(task.fault)).map(task => task.taskId) });
+    }
     if (plan.options.timeAgeMs) supervisor.timeAgeMs = plan.options.timeAgeMs;
     if (plan.options.rrStopOn) supervisor.rrStopOn = plan.options.rrStopOn;
     await supervisor.start(serverEnvironment);
     // TM2/TM3 age the database; the observer and grader read run times back at their real times.
     const api: ChaosApi = new TimeShiftedApi(supervisor.baseUrl, supervisor.agingShifts);
-    const lab = await seedChaosLab({ api, env: plan.options.env, waitForReadyAgents: true, cancelled: () => interrupted, daytonaImage: plan.options.daytonaImage, daytonaCpu: plan.options.daytonaCpu,
+    const lab = await seedChaosLab({ api, env: plan.options.env, waitForReadyAgents: true, cancelled: () => interrupted,
+      // The controller keeps daytonaImage's runnerd and pack; a pack-mismatch wave starts sandboxes from another image.
+      daytonaImage: plan.options.daytonaSandboxImage ?? plan.options.daytonaImage, daytonaCpu: plan.options.daytonaCpu,
       daytonaReuseLease: plan.options.daytonaReuseLease,
       daytonaWarm: plan.options.daytonaWarm, daytonaInherit: plan.options.daytonaInherit,
       adapters: [...new Set([...plan.tasks.map(task => task.adapter),
@@ -369,6 +387,7 @@ async function main(): Promise<number> {
     board = serverEnvironment.SERVE_UI === "false" ? null
       : new BoardUi(supervisor.baseUrl, undefined, path.join(waveDir, "ui-retry-diagnostics"));
     const observers = plan.tasks.map(task => new TaskObserver(task, api, lab, timeline, supervisor, protectedRoots, board));
+    for (const observer of observers) if (isDiskFullFault(observer.plan.fault)) observer.diskFullSeam = diskFullSeam;
     const pending = [...observers];
     const launched: TaskObserver[] = [];
     const active: TaskObserver[] = [];
@@ -678,8 +697,13 @@ async function main(): Promise<number> {
       const restart = faults.find(receipt => receipt.requestedBy === observer.plan.taskId && receipt.trigger === "provider");
       const oracle = withProviderFaultCheck(graded, observer.plan, artifacts?.providerFaultEvents ?? [], restart?.startedAt ?? null,
         restart?.stoppedAt ?? restart?.startedAt ?? null);
+      if (observer.record.diskFull) {
+        observer.record.diskFull.appliedSaves = receiptsForIssue(await diskFullSeam?.receipts() ?? [], observer.record.issueId).length;
+      }
       // T1: a mid-tool fault only counts when one of the task's faults started while its loop ran (workloads.ts).
-      const toolOracle = withT1CrossingCheck(oracle, observer.plan, artifacts?.documents.brief, faults);
+      // DF1 restarts nothing, so T1's mid-tool restart check does not apply; the disk-full check replaces it.
+      const toolOracle = isDiskFullFault(observer.plan.fault) ? withDiskFullCheck(oracle, observer.plan, observer.record)
+        : withT1CrossingCheck(oracle, observer.plan, artifacts?.documents.brief, faults);
       const grade = gradeTask(observer.record, faults, observer.definition.budgetMs, toolOracle, universalByIssue ? {
         runMessages: allRunMessages, recoveryActions: universalByIssue.get(observer.record.issueId ?? "")?.recoveryActions ?? [] } : undefined);
       let evidence: string | null = null;

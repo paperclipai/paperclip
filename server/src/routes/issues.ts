@@ -5550,11 +5550,7 @@ export function issueRoutes(
       })
       .from(issueRows)
       .where(and(eq(issueRows.companyId, companyId), inArray(issueRows.id, uniqueIds)));
-    const decisions = await Promise.all(rows.map(async (row) => ({
-      id: row.id,
-      allowed: (await decideIssueAccess(req, row, "issue:read")).allowed,
-    })));
-    return new Set(decisions.filter((decision) => decision.allowed).map((decision) => decision.id));
+    return new Set((await filterIssuesForActor(req, rows)).map((row) => row.id));
   }
 
   function lockedIssueStub(issue: Pick<IssueRelationIssueSummary, "id" | "identifier">): IssueLockedStub {
@@ -5750,12 +5746,24 @@ export function issueRoutes(
     return decision !== true && decision.reason === "allow_visible_issue_write";
   }
 
+  /**
+   * Keeps the tasks the actor may read. One batched authorization read decides
+   * all of them, so the number of statements does not grow with the number of
+   * tasks.
+   */
   async function filterIssuesForActor<
     T extends Parameters<typeof decideIssueAccess>[1],
   >(req: Request, rows: T[]) {
-    const decisions = await Promise.all(
-      rows.map((issue) => decideIssueAccess(req, issue, "issue:read")),
-    );
+    const decisions = await access.decideReads(req.actor, rows.map((issue) => ({
+      type: "issue" as const,
+      companyId: issue.companyId,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      parentIssueId: issue.parentId,
+      assigneeAgentId: issue.assigneeAgentId,
+      assigneeUserId: issue.assigneeUserId,
+      status: issue.status,
+    })));
     return rows.filter((_, index) => decisions[index]?.allowed);
   }
 

@@ -287,7 +287,26 @@ export function restoreHoldReleasedForCurrentOwnerPredicate() {
   )}), false)`;
 }
 
-export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: { conversationResetCommentId?: string | null }): Promise<ExecutionBlocker | null> {
+/**
+ * The coordinator's own scheduled resume of one native run: the active action
+ * that its failure wrote for that run and whose wake policy resumes that same
+ * run. It is the authority for that resume, not a hold against it. A saved
+ * governed wait whose shutdown confirmation is still pending records a
+ * reconciliation cause here, and its same-run resume is what settles it.
+ * Strictly true or false, because callers negate it.
+ */
+function ownNativeResumePredicate(runId: string) {
+  return sql`coalesce((${issueRecoveryActions.status} = 'active'
+    and ${issueRecoveryActions.wakePolicy}->>'kind' = 'resume_native_run'
+    and ${issueRecoveryActions.wakePolicy}->>'runId' = ${runId}
+    and ${issueRecoveryActions.evidence}->>'runId' = ${runId}), false)`;
+}
+
+export async function getExecutionBlocker(db: Db, companyId: string, issueId: string, options?: {
+  conversationResetCommentId?: string | null;
+  /** The native run being dispatched; its own scheduled resume does not block it. */
+  resumingNativeRunId?: string | null;
+}): Promise<ExecutionBlocker | null> {
   const [conversation] = await db.select({ agentId: issues.conversationAgentId,
     boundaryId: issues.conversationBoundaryCommentId, status: issues.status,
     assigneeAgentId: issues.assigneeAgentId, statusVersion: issues.statusVersion,
@@ -330,6 +349,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     executionBlockerPredicate(),
     not(restoreHoldReleasedForCurrentOwnerPredicate()),
     boundary ? or(gt(issueRecoveryActions.createdAt, boundary.createdAt), nativeExecutionRecoveryActionPredicate()) : undefined,
+    options?.resumingNativeRunId ? not(ownNativeResumePredicate(options.resumingNativeRunId)) : undefined,
   )).orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id)).limit(1);
   if (!action) return null;
   const parsedRunId = z.string().guid().safeParse(action.evidence.runId ?? action.evidence.sourceRunId);

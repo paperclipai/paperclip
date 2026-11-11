@@ -15,6 +15,7 @@ import { environmentService } from "../environments.js";
 import { classifyEnvironmentCapabilities, environmentRuntimeService } from "../environment-runtime.js";
 import { readSystemRecovery, createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "../system-recovery-state.js";
 import { adoptSystemRecovery } from "../system-recovery.js";
+import { recoverRetainedWorkspace } from "../workspace-recovery.js";
 import { requestTaskRetry } from "../task-retry.js";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -456,4 +457,13 @@ export async function makeRetryDue(actionId: string) {
   const state = readSystemRecovery(current.evidence)!;
   await db.update(issueRecoveryActions).set({ evidence: { ...current.evidence,
     systemRecovery: { ...state, nextAttemptAt: 0 } } }).where(eq(issueRecoveryActions.id, actionId));
+}
+
+/** The recovery worker's steps for every saved-work hold of one run (Retry can
+ * add one beside the board hold), without its post-recovery dispatch. */
+export async function recoverRunHolds(f: Parameters<typeof recoverRetainedWorkspace>[0]) {
+  const holds = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, f.companyId), sql`${issueRecoveryActions.evidence}->>'runId' = ${f.runId}`,
+    sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`)).orderBy(issueRecoveryActions.createdAt);
+  for (const hold of holds) await recoverRetainedWorkspace({ ...f, actionId: hold.id });
 }

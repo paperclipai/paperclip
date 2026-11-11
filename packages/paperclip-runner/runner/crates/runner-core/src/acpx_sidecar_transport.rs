@@ -1398,6 +1398,9 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn a_timed_out_turn_start_never_establishes_a_resumable_rejection() {
+        // Shutdown can orphan the `sleep` for a moment after its shell dies.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let _orphans = crate::process_lineage::host_orphans::may_orphan();
         let mut transport = AcpxSidecarTransport::start(&AcpxSidecarTransportConfig {
             command: "/bin/sh".into(),
             args: vec!["-c".to_owned(), "read request; sleep 10".to_owned()],

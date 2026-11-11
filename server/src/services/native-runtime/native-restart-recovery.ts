@@ -1807,6 +1807,10 @@ export async function claimNativeRestartRecoveries(input: {
             evidence: {
               runId: row.run.id,
               reason,
+              // A saved retryable failure is a same-run retry, not a restart
+              // hold. Read from the coordinator so a deferred or post-restart
+              // check of that retry records the same trigger.
+              ...(row.coordinator.phase === "retryable_failure" ? { trigger: "same_run_retry" } : {}),
               providerAttempt: row.coordinator.attempt,
               ...(hold ? { automaticAdmissionExhausted: true, executorStopEvidence: "unverified",
                 providerPid: row.run.processPid, checkpointPreserved: hasCheckpoint } : {}),

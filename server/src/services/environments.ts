@@ -11,7 +11,7 @@ import { withEnvironmentLeaseController } from "./environment-lease-controller.j
 import { randomUUID } from "node:crypto";
 
 import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "./environment-custom-image-runtime.js";
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1390,7 +1390,7 @@ export function environmentService(db: Db) {
         db
           .select({ count: sql<number>`count(*)::int` })
           .from(projects)
-          .where(or(eq(projects.environmentId, id), sql`${projects.executionWorkspacePolicy} ->> 'environmentId' = ${id}`)),
+          .where(sql`${projects.executionWorkspacePolicy} ->> 'environmentId' = ${id}`),
         db
           .select({ count: sql<number>`count(*)::int` })
           .from(companySecretBindings)
