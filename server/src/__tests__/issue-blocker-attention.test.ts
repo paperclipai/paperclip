@@ -219,6 +219,33 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("never names a blocked issue as its own terminal blocker", async () => {
+    const { companyId } = await createCompany("PBS");
+    const issueId = await insertIssue({ companyId, identifier: "PBS-1", title: "Blocked with no recorded blocker", status: "blocked" });
+
+    const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
+
+    expect(issue?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      terminalBlockerIssueId: null,
+      terminalBlocker: null,
+    });
+  });
+
+  it("never resolves a blocking cycle back to the root issue itself", async () => {
+    const { companyId, agentId } = await createCompany("PBC");
+    const rootId = await insertIssue({ companyId, identifier: "PBC-1", title: "Cycle root", status: "blocked" });
+    const otherId = await insertIssue({ companyId, identifier: "PBC-2", title: "Cycle member", status: "blocked", assigneeAgentId: agentId });
+    await block({ companyId, blockerIssueId: otherId, blockedIssueId: rootId });
+    await block({ companyId, blockerIssueId: rootId, blockedIssueId: otherId });
+
+    const root = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === rootId);
+
+    expect(root?.blockerAttention?.terminalBlockerIssueId).not.toBe(rootId);
+    expect(root?.blockerAttention?.terminalBlocker?.id).not.toBe(rootId);
+  });
+
   it("treats a human-owned backlog blocker as a covered waiting path", async () => {
     const { companyId } = await createCompany("PBU");
     const parentId = await insertIssue({ companyId, identifier: "PBU-1", title: "Parent", status: "blocked" });
