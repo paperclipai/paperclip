@@ -80,6 +80,8 @@ describe("createCoordinatedShutdown", () => {
       stdio: ["ignore", "pipe", "inherit"],
     });
     let stdout = "";
+    let secondSignal: ReturnType<typeof setTimeout> | undefined;
+    let exitDeadline: ReturnType<typeof setTimeout> | undefined;
     const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
       child.once("exit", (code, signal) => resolve({ code, signal }));
     });
@@ -89,11 +91,28 @@ describe("createCoordinatedShutdown", () => {
       stdout += chunk;
       if (waitingForReady && stdout.includes("ready")) {
         child.kill("SIGTERM");
-        setTimeout(() => child.kill("SIGTERM"), 50);
+        secondSignal = setTimeout(() => child.kill("SIGTERM"), 50);
       }
     });
 
-    expect(await exited).toEqual({ code: 0, signal: null });
-    expect(stdout).toContain("teardown finished");
+    try {
+      // A deadline shorter than the test timeout, so the cleanup below always
+      // runs, even when the child hangs.
+      const outcome = await Promise.race([
+        exited,
+        new Promise<"child did not exit">((resolve) => {
+          exitDeadline = setTimeout(() => resolve("child did not exit"), 10_000);
+        }),
+      ]);
+      expect(outcome).toEqual({ code: 0, signal: null });
+      expect(stdout).toContain("teardown finished");
+    } finally {
+      clearTimeout(exitDeadline);
+      clearTimeout(secondSignal);
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await exited;
+      }
+    }
   }, 30_000);
 });
