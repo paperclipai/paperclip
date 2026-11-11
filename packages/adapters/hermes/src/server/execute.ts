@@ -545,17 +545,11 @@ export async function execute(
   } catch {
     // Non-fatal
   }
-  // `hermes chat` runs the session in the shared Hermes gateway, which ignores
-  // the cwd of this child process. `--in <dir>` (Hermes >= 0.21.4) tells Hermes
-  // to start (or resume) the session in that folder, so file tools and shell
-  // commands run in the Paperclip workspace. Set `startInWorkspace: false` for
-  // older Hermes versions that do not know `--in`.
   if (
     cfgBoolean(config.startInWorkspace) !== false &&
     path.isAbsolute(cwd) &&
     !args.includes("--in")
   ) {
-    // Right after `chat -q <prompt>`, so the session flags keep their order.
     args.splice(3, 0, "--in", cwd);
   }
 
