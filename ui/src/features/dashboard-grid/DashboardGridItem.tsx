@@ -109,8 +109,9 @@ export function DashboardGridItem({
       style={style}
       data-testid="dashboard-widget"
       data-widget-id={placement.widgetId}
+      data-editing={editing ? "true" : undefined}
       className={cn(
-        "relative flex min-w-0 flex-col rounded-lg",
+        "group/widget relative flex min-w-0 flex-col rounded-lg",
         sortable.isDragging && "z-10 opacity-80",
         editing && "border border-dashed border-muted-foreground",
       )}
