@@ -19,6 +19,8 @@ npx paperclipai issue create --title "..." [--description "..."] [--status todo]
 
 # Update issue
 npx paperclipai issue update <issue-id> [--status in_progress] [--comment "..."]
+# Reassign an issue that has a live run (stops that run)
+npx paperclipai issue update <issue-id> --assignee-agent-id <agent-id> --confirm-live-run-stop
 
 # Add comment
 npx paperclipai issue comment <issue-id> --body "..." [--reopen]

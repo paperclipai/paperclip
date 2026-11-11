@@ -1011,7 +1011,9 @@ export function IssueProperties({
   };
   const applyAssignee = (next: { assigneeAgentId: string | null; assigneeUserId: string | null }, track?: () => void) => {
     track?.();
-    onUpdate(next);
+    // Reaching this point with a live run means the person accepted the
+    // interrupt prompt, so the stop is the intent and the server may cancel it.
+    onUpdate(hasActiveRun ? { ...next, confirmLiveRunStop: true } : next);
     closeAssigneePicker();
   };
   /** Apply a selection immediately, or stage it for confirmation while a run is live. */

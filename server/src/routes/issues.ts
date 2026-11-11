@@ -14938,6 +14938,7 @@ export function issueRoutes(
                 "assigneeAgentId",
                 "assigneeUserId",
                 "deferWakeForGoal",
+                "confirmLiveRunStop",
               ].includes(key),
           ))
       ) {
@@ -15544,11 +15545,6 @@ export function issueRoutes(
       // own run (for example handing work to a signoff reviewer).
       const issueMutationStopId = randomUUID();
       if (req.actor.source !== "mcp_oauth" && assigneeWillChange && existing.assigneeAgentId) {
-        await stopRunnerGoalForOwnershipChange({
-          companyId: existing.companyId,
-          issueId: existing.id,
-          agentId: existing.assigneeAgentId,
-        });
         const runToStopForReassignment = await resolveActiveIssueRun(existing);
         const isHumanSelfHandoff =
           req.actor.type === "agent" &&
@@ -15561,6 +15557,36 @@ export function issueRoutes(
           runToStopForReassignment.agentId === req.actor.agentId &&
           runToStopForReassignment.companyId === existing.companyId &&
           runToStopForReassignment.contextSnapshot?.issueId === existing.id;
+        // A live run is the expensive part of this mutation: the PATCH below
+        // cancels it and bills the tokens it already spent. Refuse the
+        // reassignment unless the caller says, in the request itself, that
+        // stopping the run is the intent. The refusal costs nothing and leaves
+        // the run untouched, so an automated hand-off cannot spend a run by
+        // accident; `confirmLiveRunStop: true` keeps today's behaviour for a
+        // manager, the operator or a workflow that really means it.
+        // An explicit `interrupt` in the same request already asked for the run
+        // to stop, so the reassignment is not the thing that spends it.
+        if (
+          runToStopForReassignment
+          && !isHumanSelfHandoff
+          && !interruptRequested
+          && req.body.confirmLiveRunStop !== true
+        ) {
+          throw conflict(
+            `The issue has a live run (${runToStopForReassignment.id}); reassigning it would stop that run. `
+            + `Read GET /api/issues/${existing.id}/live-runs, then repeat this update with confirmLiveRunStop: true to stop the run and reassign.`,
+            {
+              code: "live_run_active",
+              liveRunId: runToStopForReassignment.id,
+              liveRunsPath: `/api/issues/${existing.id}/live-runs`,
+            },
+          );
+        }
+        await stopRunnerGoalForOwnershipChange({
+          companyId: existing.companyId,
+          issueId: existing.id,
+          agentId: existing.assigneeAgentId,
+        });
         if (runToStopForReassignment && !isHumanSelfHandoff) {
           let cancelled: Awaited<ReturnType<typeof heartbeat.cancelRun>> = null;
           try {

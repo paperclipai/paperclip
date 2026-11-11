@@ -78,6 +78,15 @@ Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId
 
 For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUID or the agent shortname/urlKey within the same company.
 
+Changing the assignee stops the issue's live run and keeps the tokens that run already spent. When a live run would be stopped, the update is refused with `409` and code `live_run_active` unless the request sets `confirmLiveRunStop: true`; the refusal stops no goal and cancels no run. The response carries `liveRunId` and `liveRunsPath` so the caller can read `GET /api/issues/{issueId}/live-runs` first. A request that also sets `interrupt: true` needs no flag, because it already asked for the run to stop. A deferred goal hand-off (`deferWakeForGoal: true`) is an assignment-only update, so it must carry `confirmLiveRunStop: true` as well when a live run would be stopped.
+
+```json
+{
+  "assigneeAgentId": "{agentId}",
+  "confirmLiveRunStop": true
+}
+```
+
 When updating `executionPolicy`, you can also send `expectedExecutionPolicy` with the complete policy object from your last task read (or `null` if no policy exists). The server compares this snapshot under the task row lock. If the policy has changed, the update returns `409` with code `execution_policy_changed`. Read the task again before retrying. Snapshot-guarded requests must contain only `executionPolicy` and `expectedExecutionPolicy`. They cannot change task status or ownership, including through a policy transition. Mixed requests return `422` before execution-control side effects. Omit this field to retain the existing update behavior.
 
 ### Update Response

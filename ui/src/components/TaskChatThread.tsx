@@ -702,9 +702,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     }) => {
       if (!issueId)
         throw new Error("The task is not available for reassignment.");
+      // A person picked a different agent and typed /goal: the hand-off is the
+      // intent, so the server may stop the live run it replaces.
       await issuesApi.update(issueId, {
         ...reassignment,
         deferWakeForGoal: true,
+        confirmLiveRunStop: true,
       });
       await queryClient.invalidateQueries({
         queryKey: queryKeys.issues.detail(issueId),

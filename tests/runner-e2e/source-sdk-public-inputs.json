@@ -480,7 +480,7 @@
     "packages/shared/src/validators/issue-chat-bootstrap.test.ts": "e1ebb9aa94da22c825bc3ddd32ce2cfc98bfe645",
     "packages/shared/src/validators/issue-tree-control.ts": "7144ef86a83e008ac0626e1d62a1d6164c46f438",
     "packages/shared/src/validators/issue.test.ts": "9a10bf1112d7c85f80cc1fd5db9920dda8974643",
-    "packages/shared/src/validators/issue.ts": "307eb382514fdce6124f36cbf313df2c1cbd8c3a",
+    "packages/shared/src/validators/issue.ts": "bd90f979616d608383e02f5fb1b560f9e053c0bd",
     "packages/shared/src/validators/native-finalization.test.ts": "40c68bdd1d0e8a77cd70c4576fae53334fe5be0d",
     "packages/shared/src/validators/native-finalization.ts": "d4e674de6ac7d36385e6f6c2172fa16ffc9b1830",
     "packages/shared/src/validators/onboarding-seed.ts": "de302a8400d4199053f379d9ed853522a3ac6d32",

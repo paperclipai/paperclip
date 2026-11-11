@@ -5498,6 +5498,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         ...(reassignment ? {
           assigneeAgentId: reassignment.assigneeAgentId,
           assigneeUserId: reassignment.assigneeUserId,
+          confirmLiveRunStop: true,
         } : {}),
         ...(runSettings || reassignment ? {
           assigneeAdapterOverrides: runSettings

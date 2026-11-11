@@ -1375,7 +1375,11 @@ describe("IssueProperties", () => {
       confirmBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flush();
-    expect(onUpdate).toHaveBeenCalledWith({ assigneeAgentId: "agent-2", assigneeUserId: null });
+    expect(onUpdate).toHaveBeenCalledWith({
+      assigneeAgentId: "agent-2",
+      assigneeUserId: null,
+      confirmLiveRunStop: true,
+    });
 
     act(() => root.unmount());
   });

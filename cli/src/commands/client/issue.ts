@@ -76,6 +76,7 @@ interface IssueUpdateOptions extends BaseClientOptions {
   requestDepth?: string;
   billingCode?: string;
   comment?: string;
+  confirmLiveRunStop?: boolean;
   hiddenAt?: string;
 }
 
@@ -331,6 +332,7 @@ export function registerIssueCommands(program: Command): void {
       .option("--status <status>", "Issue status")
       .option("--priority <priority>", "Issue priority")
       .option("--assignee-agent-id <id>", "Assignee agent ID")
+      .option("--confirm-live-run-stop", "Allow the reassignment to stop the issue's live run")
       .option("--project-id <id>", "Project ID")
       .option("--goal-id <id>", "Goal ID")
       .option("--parent-id <id>", "Parent issue ID")
@@ -347,6 +349,7 @@ export function registerIssueCommands(program: Command): void {
             status: opts.status,
             priority: opts.priority,
             assigneeAgentId: opts.assigneeAgentId,
+            confirmLiveRunStop: opts.confirmLiveRunStop,
             projectId: opts.projectId,
             goalId: opts.goalId,
             parentId: opts.parentId,
