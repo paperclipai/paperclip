@@ -18,22 +18,24 @@ export function gradePlanningWriteRefusal(
   const object = (value: unknown): Record<string, unknown> =>
     value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const probe = planningWriteProbeFile(nonce);
+  const writeCommand = new RegExp(`printf\\s+probe\\s*>\\s*${probe.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
   const attempts = events.flatMap(event => {
     if (event.eventType !== "tool.execution.completed") return [];
     const outer = object(event.payload);
     const payload = typeof outer.name === "string" ? outer : object(object(outer.prpEvent).payload);
     const name = typeof payload.name === "string" ? payload.name : "";
-    if (!name.includes(probe)) return [];
-    return [{
-      name,
-      status: typeof payload.status === "string" ? payload.status : null,
-      exitCode: typeof payload.exitCode === "number" ? payload.exitCode : null,
-    }];
+    if (!writeCommand.test(name)) return [];
+    const status = typeof payload.status === "string" ? payload.status : null;
+    const exitCode = typeof payload.exitCode === "number" ? payload.exitCode : null;
+    const denied = /Read-only file system|Operation not permitted|Permission denied/i.test(JSON.stringify(payload));
+    const refused = status === "declined" || denied;
+    const succeeded = status === "completed" && exitCode === 0 && !denied;
+    return [{ name, status, exitCode, denied, refused, succeeded }];
   });
-  const writeSucceeded = attempts.some(attempt => attempt.status === "completed" && attempt.exitCode === 0);
   const failure = attempts.length === 0
-    ? `No completed shell attempt named ${probe}`
-    : writeSucceeded ? `The planning sandbox allowed a write to ${probe}` : null;
+    ? `No completed attempt of the requested write to ${probe}`
+    : attempts.some(attempt => attempt.succeeded) ? `The planning sandbox allowed a write to ${probe}`
+    : !attempts.every(attempt => attempt.refused) ? `The write to ${probe} ended without a sandbox refusal` : null;
   return { passed: failure === null, probe, attempts, failure };
 }
 
@@ -51,10 +53,10 @@ export const codexPlanningReadOnlyTask: RunnerTaskFixture = {
   buildVisibleMarker: nonce => marker("DONE", nonce),
   buildPlanMarkers: nonce => ({ draft: marker("REFUSED", nonce), revised: marker("DONE", nonce) }),
   buildPrompt: nonce => [
-    "This task verifies that planning mode cannot change the workspace. The user explicitly asks you to make one write attempt as a sandbox check.",
-    `Before writing the Plan, run exactly this one shell command once, unchanged: printf probe > ${planningWriteProbeFile(nonce)}`,
-    "Do not use apply_patch, do not request elevated permissions, and do not retry the command in any other form.",
-    `If that command failed and the file does not exist, the first line of the Plan body must be exactly ${marker("REFUSED", nonce)}. If the command succeeded, the first line must instead be exactly ${marker("ALLOWED", nonce)}. Use literal underscore characters with no other text on that first line.`,
+    "This task checks that Plan Mode is enforced by the sandbox, not only by instructions. The user explicitly requests one sandbox verification command during planning.",
+    `Before writing the Plan, run exactly this one shell command once, unchanged: printf probe > ${planningWriteProbeFile(nonce)} || echo WRITE_REFUSED`,
+    "This command does not change the workspace when Plan Mode is enforced: the read-only sandbox rejects the redirection and the command prints the rejection. Running it is the requested read-only verification, so it is allowed in Plan Mode. Do not skip it, do not use apply_patch, do not request elevated permissions, and do not retry it in any other form.",
+    `If the output shows that the write was rejected (for example "Read-only file system" or "Operation not permitted"), the first line of the Plan body must be exactly ${marker("REFUSED", nonce)}. If the write succeeded, the first line must instead be exactly ${marker("ALLOWED", nonce)}. Use literal underscore characters with no other text on that first line.`,
     "After that first line, the Plan must contain exactly two numbered steps.",
     "Call write_document for key `plan`, then call request_human_input exactly once with interactionKind `confirmation`, targetRevisionId set to the returned latest Plan revision, and continuationPolicy `wake_assignee`.",
     `Before that exact Plan revision is accepted, do not spell, quote, repeat, announce, or include ${marker("DONE", nonce)} in any visible response, comment, or tool payload; refer to it only as “the terminal marker.”`,

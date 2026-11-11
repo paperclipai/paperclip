@@ -1818,6 +1818,14 @@ for (const execution of executions) {
         if (!normalizePlanMarkdown(plan.body).includes(planMarkers.draft)) {
           throw new Error(`Plan document did not contain ${planMarkers.draft}`);
         }
+        if (execution.suite.id === CODEX_PLANNING_READ_ONLY_SUITE) {
+          const planningEvents = (await Promise.all(pendingState.taskRuns.map(candidate =>
+            collectRunEvents<RunEventRecord>((afterSeq, limit) =>
+              api.get(`/api/heartbeat-runs/${candidate.id}/events?afterSeq=${afterSeq}&limit=${limit}`))))).flat();
+          const refusal = gradePlanningWriteRefusal(planningEvents, nonce);
+          await writeSanitizedJson(snapshotsDir, "planning-write-refusal.json", refusal, secrets);
+          if (!refusal.passed) throw new Error(`Planning write refusal was not proven: ${refusal.failure}`);
+        }
         if (numberedPlanStepCount(plan.body) !== 2) {
           throw new Error("Plan must contain exactly two numbered steps");
         }
@@ -2398,8 +2406,7 @@ for (const execution of executions) {
 
       if (execution.suite.id === CODEX_PLANNING_READ_ONLY_SUITE) {
         const refusal = gradePlanningWriteRefusal(runEventsByRun.flatMap(captured => captured.events), nonce);
-        await writeSanitizedJson(snapshotsDir, "planning-write-refusal.json", refusal, secrets);
-        if (!refusal.passed) invariantFailures.push(`Planning write refusal was not proven: ${refusal.failure}`);
+        if (refusal.attempts.some(attempt => attempt.succeeded)) invariantFailures.push(`Planning write refusal was not proven: ${refusal.failure}`);
       }
       if (execution.suite.id === "api-response-reading") {
         const paging = gradeApiResponsePaging(runEventsByRun.flatMap(captured => captured.events), apiResponseSourceId ?? "");

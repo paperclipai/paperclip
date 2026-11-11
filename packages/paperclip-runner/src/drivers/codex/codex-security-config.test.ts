@@ -562,6 +562,7 @@ describe("Codex security configuration", () => {
     };
     const external = planningArgs({
       PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+      PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled",
       HOME: "/home/daytona/.paperclip/codex-home",
       CODEX_HOME: "/home/daytona/.paperclip/codex-home",
       PAPERCLIP_GITHUB_BROKER_TOKEN: "broker-capability",
@@ -573,6 +574,14 @@ describe("Codex security configuration", () => {
     });
     expect(external.filesystem).not.toContain('="none"');
     expect(external.filesystem).not.toContain(":workspace_roots");
+    expect(planningArgs({
+      PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1",
+      PAPERCLIP_RUNNER_NETWORK_ACCESS: "disabled",
+      CODEX_HOME: "/home/daytona/.paperclip/codex-home",
+    })).toEqual({
+      filesystem: 'permissions.paperclip-runner-workspace-read-only.filesystem={":root"="read"}',
+      network: "permissions.paperclip-runner-workspace-read-only.network.enabled=false",
+    });
 
     const local = planningArgs({ HOME: "/home/user", CODEX_HOME: "/home/user/.codex" });
     expect(local.filesystem).toContain('":root"="none"');

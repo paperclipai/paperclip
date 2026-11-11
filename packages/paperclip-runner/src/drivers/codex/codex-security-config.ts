@@ -178,7 +178,7 @@ function gitFilesystemRoots(source: NodeJS.ProcessEnv): { read: string[]; write:
   return { read: [...new Set(read)], write: [...new Set(write)] };
 }
 
-function usesExternalRunnerSandbox(source: NodeJS.ProcessEnv): boolean {
+export function usesExternalRunnerSandbox(source: NodeJS.ProcessEnv): boolean {
   return source.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX === "1";
 }
 
@@ -360,7 +360,7 @@ export function createIsolatedCodexAppServerArgs(
     "-c",
     `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.filesystem={${planningFilesystemRules}}`,
     "-c",
-    `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.network.enabled=${networkAccess || externalRunnerSandbox}`,
+    `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.network.enabled=${networkAccess}`,
     "-c",
     `shell_environment_policy.inherit=${tomlString(hasProjectedEnvironment ? "all" : "none")}`,
     "-c",

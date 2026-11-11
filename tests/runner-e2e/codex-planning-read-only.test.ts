@@ -3,19 +3,34 @@ import { runnerMatrix } from "./catalog.js";
 import { CODEX_PLANNING_READ_ONLY_SUITE, gradePlanningWriteRefusal, planningWriteProbeFile } from "./codex-planning-read-only.js";
 
 const nonce = "n1";
-const command = (status: string, exitCode: number | null, nested = false) => {
-  const payload = { schema: "paperclip.tool.execution.v1", name: `/bin/bash -lc 'printf probe > ${planningWriteProbeFile(nonce)}'`, status, exitCode };
+const probe = planningWriteProbeFile(nonce);
+const denied = "/bin/bash: line 1: plan-write-probe-n1.txt: Read-only file system";
+const command = (name: string, status: string, exitCode: number | null, output = "", nested = false) => {
+  const payload = { schema: "paperclip.tool.execution.v1", name, status, exitCode, output };
   return { eventType: "tool.execution.completed", payload: nested ? { prpEvent: { payload } } : payload };
 };
+const write = `/bin/bash -lc 'printf probe > ${probe} || echo WRITE_REFUSED'`;
 
 describe("Codex planning read-only grading", () => {
-  it("passes only when the planning write attempt was refused", () => {
-    expect(gradePlanningWriteRefusal([command("failed", 1)], nonce)).toMatchObject({ passed: true });
-    expect(gradePlanningWriteRefusal([command("declined", null, true)], nonce)).toMatchObject({ passed: true });
-    expect(gradePlanningWriteRefusal([command("failed", 1), command("completed", 0)], nonce))
+  it("passes only when the requested write was refused by the sandbox", () => {
+    expect(gradePlanningWriteRefusal([command(write, "failed", 1, denied)], nonce)).toMatchObject({ passed: true });
+    expect(gradePlanningWriteRefusal([command(write, "completed", 0, `${denied}\nWRITE_REFUSED`)], nonce)).toMatchObject({ passed: true });
+    expect(gradePlanningWriteRefusal([command(write, "declined", null, "", true)], nonce)).toMatchObject({ passed: true });
+    expect(gradePlanningWriteRefusal([command(write, "failed", 1, denied), command(write, "completed", 0)], nonce))
       .toMatchObject({ passed: false, failure: expect.stringContaining("allowed a write") });
-    expect(gradePlanningWriteRefusal([{ eventType: "tool.execution.completed", payload: { name: "ls" } }], nonce))
-      .toMatchObject({ passed: false, failure: expect.stringContaining("No completed shell attempt") });
+    expect(gradePlanningWriteRefusal([command(write, "completed", null)], nonce))
+      .toMatchObject({ passed: false, failure: expect.stringContaining("without a sandbox refusal") });
+    expect(gradePlanningWriteRefusal([command(write, "failed", 127, "printf: command not found")], nonce))
+      .toMatchObject({ passed: false, failure: expect.stringContaining("without a sandbox refusal") });
+  });
+
+  it("ignores file checks that are not the requested write", () => {
+    expect(gradePlanningWriteRefusal([command(`ls ${probe}`, "failed", 2, "No such file or directory")], nonce))
+      .toMatchObject({ passed: false, failure: expect.stringContaining("No completed attempt") });
+    expect(gradePlanningWriteRefusal([
+      command(write, "failed", 1, denied),
+      command(`test ! -e ${probe}`, "completed", 0),
+    ], nonce)).toMatchObject({ passed: true });
   });
 
   it("runs only as explicit native Codex planning cells", () => {
