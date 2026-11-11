@@ -1826,6 +1826,7 @@ describe("environment routes", () => {
       environmentId: "env-1",
       reason: "environment deleted",
       forceStopUnsettled: true,
+      db: expect.anything(),
     });
     expect(mockEnvironmentService.removeIfDeletable).toHaveBeenCalledWith(
       "env-1",

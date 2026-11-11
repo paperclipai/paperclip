@@ -12368,6 +12368,46 @@ describe("native warm session supervision", () => {
       },
     );
 
+    it.each(["destroyed", "stopped", "unproven"] as const)(
+      "releases an idle warm owner whose sandbox lease is gone when its environment is deleted (%s)", async receipt => {
+        const { base } = fixture(`idle-gone-${receipt}`);
+        const environmentId = `idle-gone-env-${receipt}`;
+        const inactive = new Error("Daytona sandbox lease gone-sandbox is no longer active.");
+        const close = vi.fn(async (): Promise<void> => { throw inactive; });
+        const retirementFailed = vi.fn(async () => {});
+        state.execute.mockReset().mockImplementationOnce(async options => {
+          await options.onSession?.({ close }); return result;
+        });
+        const lease = { id: "lease-gone", companyId: base.binding.companyId, environmentId, heartbeatRunId: "pending-cleanup-run",
+          provider: "daytona", providerLeaseId: "gone-sandbox", status: "released", releasedAt: new Date(), cleanupStatus: "success",
+          leasePolicy: "reuse_by_environment",
+          metadata: receipt === "unproven" ? {} : { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1",
+            companyId: base.binding.companyId, runId: "pending-cleanup-run", leaseId: "lease-gone", provider: "daytona",
+            providerLeaseId: "gone-sandbox", state: receipt, confirmedAt: new Date().toISOString() } } };
+        const where = vi.fn(async () => [lease]);
+        const db = { select: () => ({ from: () => ({ where }) }) } as never;
+        try {
+          await executePaperclipNativeSession({ db: leaseDb(base), execution: base, runnerInstanceId: "runner",
+            instructionWorkingCopy: { hasChanges: async () => false, collectStopped: async () => {}, retirementFailed },
+            runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId, remoteCwd: `/tmp/${environmentId}`,
+              sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "gone-sandbox" } } });
+          const deleted = await closeWarmNativeSessionsForEnvironment({ environmentId, reason: "environment deleted", forceStopUnsettled: true, db });
+          expect(where).toHaveBeenCalledOnce();
+          if (receipt === "destroyed") {
+            expect(deleted).toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
+            expect(await closeWarmNativeSessionsForEnvironment({ environmentId, reason: "environment deleted", forceStopUnsettled: true, db }))
+              .toEqual({ closed: 0, busy: 0, failed: 0, failures: [] });
+          } else {
+            expect(deleted).toMatchObject({ closed: 0, failed: 1, failures: [{ runId: base.binding.runId, providerLeaseId: "gone-sandbox",
+              reason: "close failed: Daytona sandbox lease gone-sandbox is no longer active." }] });
+          }
+        } finally {
+          close.mockResolvedValue(undefined);
+          await closeWarmNativeSessionsForEnvironment({ environmentId, reason: "test cleanup" });
+        }
+      },
+    );
+
     it("retains failed retirement for retry and never launches over an uncontained owner", async () => {
       const { base, next, run } = fixture("identity-close-failure");
       const close = vi.fn().mockRejectedValueOnce(new Error("containment unavailable")).mockResolvedValue(undefined);

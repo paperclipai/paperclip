@@ -123,7 +123,7 @@ import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { scheduledResumeContinuationAllowed } from "./scheduled-resume-continuation.js";
 import { readNativeLocalProcessStop, recordedLocalExecutionStopped, PRIOR_OWNER_FENCE_REFUSED, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, withReleasedNativeRunProcess } from "../native-local-process-stop.js";
-import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
+import { hasRemoteTerminationReceipt, remoteLeaseCleanupScope, resolveRemoteTerminationLease } from "../remote-execution-termination.js";
 import { connectorToolDefinitionsForSkills } from "../connector-runtime.js";
 import { NATIVE_PREPARATION_FENCING_VERSION, setNativeExecutionActive } from "./native-active-runs.js";
 import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
@@ -1023,8 +1023,21 @@ export async function closeWarmNativeSessionsForEnvironment(input: {
   environmentId: string;
   reason: string;
   forceStopUnsettled?: boolean;
+  db?: Db;
 }): Promise<WarmNativeSessionCloseResult> {
   return closeIdleWarmNativeSessions(input);
+}
+
+async function warmSandboxDestroyed(db: Db, entry: WarmNativeSession): Promise<boolean> {
+  if (!entry.providerLeaseId || !entry.environmentId) return false;
+  const leases = await db.select().from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, entry.companyId),
+    eq(environmentLeases.environmentId, entry.environmentId),
+    eq(environmentLeases.providerLeaseId, entry.providerLeaseId),
+  ));
+  const resolved = await Promise.all(leases.map(lease => resolveRemoteTerminationLease(db, lease)));
+  return resolved.some(lease => hasRemoteTerminationReceipt(lease)
+    && (lease.metadata?.remoteExecutionTermination as { state?: unknown } | undefined)?.state === "destroyed");
 }
 
 /** Detach released owners and checkpoint unreleased owners before a controller
@@ -1050,6 +1063,7 @@ async function closeIdleWarmNativeSessions(input: {
   detachReleased?: boolean;
   canRetire?: () => boolean;
   forceStopUnsettled?: boolean;
+  db?: Db;
 }): Promise<WarmNativeSessionCloseResult> {
   let closed = 0;
   let busy = 0;
@@ -1091,6 +1105,20 @@ async function closeIdleWarmNativeSessions(input: {
       closed += 1;
     } catch (error) {
       if (detach) entry.closeOnReleaseReason = "released Runner local detach is unconfirmed";
+      const destroyed = !detach && input.forceStopUnsettled && input.db
+        ? await warmSandboxDestroyed(input.db, entry).catch(proofError => {
+          logger.warn({ err: proofError, runId: entry.runId }, "could not read the warm session's sandbox lease");
+          return false;
+        })
+        : false;
+      if (destroyed) {
+        logger.warn({ runId: entry.runId, issueId: entry.issueId, environmentId: entry.environmentId,
+          providerLeaseId: entry.providerLeaseId ?? null, reason: input.reason, closeFailure: describeWarmCloseFailure(error) },
+        "warm native session's sandbox was already destroyed; released its owner");
+        forgetWarmNativeSession(sessionId, entry);
+        closed += 1;
+        continue;
+      }
       failed += 1;
       const forced = forcedStopFailure === undefined ? "" : `; forced Runner stop failed: ${describeWarmCloseFailure(forcedStopFailure)}`;
       failures.push({ runId: entry.runId, issueId: entry.issueId, environmentId: entry.environmentId,

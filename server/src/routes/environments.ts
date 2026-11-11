@@ -1388,6 +1388,7 @@ export function environmentRoutes(
         environmentId: existing.id,
         reason: "environment deleted",
         forceStopUnsettled: true,
+        db,
       });
       if (warmSessions.busy > 0 || warmSessions.failed > 0) {
         throw conflict(
