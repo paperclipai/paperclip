@@ -2344,6 +2344,14 @@ error in `cause`, and is logged with both. A run that fails this way keeps the
 generic `adapter_failed` code, so existing retry paths apply, and records that
 bounded message with the SQLSTATE as its failure cause.
 
+Prompt-injection classifier admission also uses READ COMMITTED. Its company,
+project, configuration, agent, run and secret share locks retain the admission
+fences. Run status and execution identity are read under the run lock, so a
+concurrent run-event append cannot invalidate an earlier snapshot and discard
+a connector result before classification. The budget check, invocation and
+reservation still commit together. Classifier settlement keeps its separate
+repeatable-read transaction and receipt replay rules.
+
 Upgrade all controllers/workers to this accounting contract and drain incompatible
 pre-upgrade database transactions before enabling independent writers. Do not run
 pre-upgrade synchronous counter/evaluation writers beside unlocked writers.

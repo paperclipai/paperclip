@@ -195,6 +195,9 @@ export function promptInjectionPreventionService(db: Db, options: {
     try { credential = await aiConnectionService(db).credential(selected.connection, 0, { responsibleUserId: selected.userId,
       actorType: selected.actorType, actorId: selected.actorId, issueId: selected.issueId, heartbeatRunId: selected.runId }); }
     catch (error) { const reason = unavailableReason(error); if (reason) return { status: "unavailable", reason }; throw error; }
+    // The shared admission fences and run lock protect the live authority
+    // checks below. A snapshot taken before the run lock would go stale on
+    // every streamed run-event append, losing an otherwise valid tool result.
     const admission = await withOperationAccountingTransaction(db, context.companyId, async (tx, publications) => {
       const [company] = await tx.select({ status: companies.status }).from(companies)
         .where(eq(companies.id, context.companyId)).for("share");
@@ -244,7 +247,7 @@ export function promptInjectionPreventionService(db: Db, options: {
         projectId: current.projectId, amountCents: unitsToCents(amount), providerStartedAt: invocation.startedAt });
       await queueBudgetEvaluation(tx, { companyId: context.companyId, agentId: current.agentId, projectId: current.projectId });
       return { invocation };
-    });
+    }, { isolationLevel: "read committed" });
     if (admission.reason) return { status: "unavailable", reason: admission.reason };
     const invocation = admission.invocation!;
     let outcome: PromptInjectionProviderOutcome;
