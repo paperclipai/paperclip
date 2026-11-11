@@ -8,7 +8,7 @@ function valid() {
       installedFromCatalog: true, missingId: "qa", workingId: "coder", expectedMembers: 2, memberIdsBefore: ["coder", "qa"], workingRevisionIdsBefore: ["revision"], workingRevisionIdsAfter: ["revision"],
       initialProbes: [{ agentId: "qa", status: "fail", testedAt: "2026-10-26T10:00:00Z", checks: [{ code: "codex_auth", level: "error" }] }, { agentId: "coder", status: "pass", testedAt: "2026-10-26T10:00:00Z", checks: [] }],
       afterProbes: [{ agentId: "qa", status: "pass", testedAt: "2026-10-26T10:05:01Z", checks: [] }, { agentId: "coder", status: "pass", testedAt: "2026-10-26T10:05:02Z", checks: [] }],
-      repairVerifiedAfter: Date.parse("2026-10-26T10:05:00Z"), initialHandoffSupported: true, repairConfirmed: true, repairChannel: "human-board-configuration", workingHashBefore: "same-config", workingHashAfter: "same-config", memberIdsPreserved: true, initialRunId: "initial",
+      repairVerifiedAfter: Date.parse("2026-10-26T10:05:00Z"), initialHandoffSupported: true, repairConfirmed: true, repairChannel: "human-board-configuration", workingHashBefore: "same-config", workingHashAfter: "same-config", memberIdsPreserved: true, initialRunId: "initial", preVerificationRunIds: ["initial"],
     } };
 }
 describe("installed team per-member readiness oracle", () => {
@@ -60,8 +60,8 @@ const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(valu
 function bindingValid() {
   const o = valid(), marker: TeamBindingApproval = { interactionId: "card", proposalId: "proposal", configPath: "env.OPENROUTER_API_KEY", secretId: "openrouter-secret", targetAgentId: "qa", payloadHash: hash(cardPayload) };
   return { ...o, activity: [] as typeof o.activity, interactions: [card({ status: "accepted", resolvedByUserId: "person" })],
-    runs: [...o.runs, { id: "wake", status: "succeeded" }],
-    state: { ...o.state, repairChannel: "human-approved-binding", bindingApproval: marker, currentUserId: "person",
+    runs: [...o.runs, { id: "wake", status: "succeeded" }], phaseReplies: [o.phaseReplies[0]!, { runId: "wake", body: "QA is now bound to the company account." }, o.phaseReplies[1]!],
+    state: { ...o.state, preVerificationRunIds: ["initial", "wake"], repairChannel: "human-approved-binding", bindingApproval: marker, currentUserId: "person",
       bindingsBefore: ["agent:coder:env.OPENROUTER_API_KEY", "agent:ceo:env.OPENROUTER_API_KEY"], bindingsAfter: ["agent:ceo:env.OPENROUTER_API_KEY", "agent:coder:env.OPENROUTER_API_KEY", "agent:qa:env.OPENROUTER_API_KEY"],
       missingBindingRef: { type: "secret_ref", secretId: "openrouter-secret" } } };
 }
@@ -90,6 +90,9 @@ describe("governed binding approval path", () => {
       (o: ReturnType<typeof bindingValid>) => { o.state.bindingApproval = undefined as never; o.state.initialHandoffSupported = false; },
       (o: ReturnType<typeof bindingValid>) => { o.state.bindingsAfter = [...o.state.bindingsAfter, "agent:coder:env.EXTRA"]; },
       (o: ReturnType<typeof bindingValid>) => { o.state.workingHashAfter = "changed-working-account"; },
+      (o: ReturnType<typeof bindingValid>) => { o.phaseReplies = o.phaseReplies.slice(0, 2); },
+      (o: ReturnType<typeof bindingValid>) => { o.state.preVerificationRunIds = ["initial", "wake", "verified"]; },
+      (o: ReturnType<typeof bindingValid>) => { o.state.preVerificationRunIds = undefined as never; },
     ]) { const o = bindingValid(); change(o); expect(definition.grade(o).passed).toBe(false); }
   });
 });

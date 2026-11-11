@@ -13,7 +13,7 @@ import type { RequestConfirmationInteraction } from "../../../packages/shared/sr
 import { pollUntil } from "../api.js";
 import { sendChatMessage } from "../chat-flow.js";
 import { codexSubscriptionAgentConfig } from "../codex-subscription-fixture.js";
-import { definition, externalObservation, observeExternal, root, checks, verifyRenderedReply } from "./external-support.js";
+import { definition, externalObservation, observeExternal, root, checks } from "./external-support.js";
 import { catalogTeamMembers, observeTeamResources } from "./external-team-install.js";
 import { waitForReply } from "./identity-support.js";
 interface PrivateTeam { emptyHome: string; override: CompanyPortabilityAdapterOverride }
@@ -74,6 +74,10 @@ function humanApprovedBinding(o: NonNullable<ReturnType<typeof externalObservati
     && JSON.stringify([...before, `agent:${o.state.missingId}:${marker.configPath}`].sort()) === JSON.stringify([...after].sort())
     && ref?.type === "secret_ref" && ref.secretId === marker.secretId;
 }
+function verificationReplies(o: NonNullable<ReturnType<typeof externalObservation>>) {
+  const before = o.state.preVerificationRunIds;
+  return Array.isArray(before) && before.includes(o.state.initialRunId) ? o.phaseReplies.filter(row => !before.includes(row.runId)) : [];
+}
 export function gradeTeamConfigure(value: unknown) {
   const c = checks(), o = externalObservation(value); c.add("complete-member-configuration-evidence", !!o, "Real installed members, missing versus ready account probes, scoped repair and fresh per-member tests are required."); if (!o) return c.result();
   const initial = o.state.initialProbes as Probe[] | undefined, after = o.state.afterProbes as Probe[] | undefined;
@@ -96,9 +100,9 @@ export function gradeTeamConfigure(value: unknown) {
     && new Set(after.map(row => row.agentId)).size === after.length && after.every(row => row.status === "pass" && row.checks.every(check => check.level !== "error")
     && Number.isFinite(Date.parse(row.testedAt)) && Date.parse(row.testedAt) >= Number(o.state.repairVerifiedAfter)),
     "After the real repair every member passes its own fresh saved-runtime test; one healthy member cannot stand for the whole team.");
-  const continuation = o.phaseReplies.filter(row => row.runId !== o.state.initialRunId);
+  const continuation = verificationReplies(o);
   c.add("phase-bound-team-result", continuation.some(row => row.body.trim().length > 0 && o.runs.some(run => run.id === row.runId && run.status === "succeeded")),
-    "The verification followup posts its own reply from a succeeded run; its wording is left to human reading against the fresh per-member probes.");
+    "A run started by the verification message posts its own reply; earlier initial or approval-continuation replies cannot stand in. Its wording is left to human reading against the fresh per-member probes.");
   return c.result();
 }
 export const teamConfigureExternalCases = [definition("teams.configure-team", async ctx => {
@@ -130,7 +134,7 @@ export const teamConfigureExternalCases = [definition("teams.configure-team", as
       eligibleBindings: eligibleTeamBindings((override.adapterConfig as { env?: unknown } | undefined)?.env), currentUserId: session.user?.id ?? null };
   } catch (error) { fixtures.delete(ctx); await rm(emptyHome, { recursive: true, force: true }); throw error; }
 }, gradeTeamConfigure, {
-  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.team-configure.v4", expectedRunCount: 3, minimumRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
+  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.team-configure.v5", expectedRunCount: 3, minimumRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
   setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["missing-account-fixture", "working-account-fixture"] },
   async verifySetup(_ctx, state) { const c = checks(), rows = state.initialProbes as Probe[]; c.add("missing-account-fixture", rows.some(row => missingAccountProbe(row, String(state.missingId))), "Actual saved-runtime probe reports the required missing member account."); c.add("working-account-fixture", rows.some(row => readyProbe(row, String(state.workingId))), "A distinct installed member already passes its runtime probe."); return c.result(); },
   sourceFiles: ["chat-catalog-domains/external-team-configure.ts", "chat-catalog-domains/external-team-install.ts", "../../server/src/adapters/registry.ts", "../../packages/adapters/opencode-local/src/server/test.ts", "../../packages/adapters/opencode-local/src/server/parse.ts", "codex-subscription-fixture.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-support.ts", "chat-flow.ts", "chat-scenarios/teams.yaml"],
@@ -157,6 +161,7 @@ export const teamConfigureExternalCases = [definition("teams.configure-team", as
       await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
     } else state.repairChannel = "agent-configuration";
     state.repairVerifiedAfter = Date.now(); state.repairConfirmed = (await probe(ctx, await ctx.input.api.get<Agent>(`/api/agents/${missing.id}`))).status === "pass";
+    state.preVerificationRunIds = (await ctx.allRuns()).map(run => run.id);
     await sendChatMessage(ctx.input.page, "Please verify which installed team members are ready now, including QA, and preserve the already working member's configuration.", chatCatalogNativePhaseRemainingBudget(ctx));
   },
   async observe(ctx, state) {
@@ -172,7 +177,12 @@ export const teamConfigureExternalCases = [definition("teams.configure-team", as
     }
     return observeExternal(ctx, state);
   },
-  async verifyResult(ctx, state, value) { await verifyRenderedReply(ctx, value, String(state.initialRunId)); },
+  async verifyResult(ctx, _state, value) {
+    const o = externalObservation(value), reply = o && verificationReplies(o).at(-1);
+    if (!o || !reply?.commentId || !reply.body.trim()) throw new Error("No persisted reply from the verification run");
+    await expect(ctx.input.page.locator(`[id=${JSON.stringify(`comment-${reply.commentId}`)}]`)).toBeVisible();
+    await ctx.input.evidence("chat-catalog-external-visible-reply.json", { scenarioId: o.scenarioId, commentId: reply.commentId, runId: reply.runId });
+  },
   async cleanup(ctx) { const fixture = fixtures.get(ctx); fixtures.delete(ctx); if (fixture) await rm(fixture.emptyHome, { recursive: true, force: true }); },
 })];
 

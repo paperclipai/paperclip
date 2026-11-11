@@ -6055,7 +6055,7 @@
       "chat-flow.ts",
       "chat-scenarios/teams.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.team-configure.v4",
+    "oracleVersion": "paperclip.chat-catalog.team-configure.v5",
     "expectedRunCount": 3,
     "minimumRunCount": 2,
     "expectedHumanMessageCount": 2,
