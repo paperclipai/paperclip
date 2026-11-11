@@ -2606,6 +2606,20 @@ function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, worksp
             and owning_finalize.finished_at >= latest_blocker_operation.finished_at
         )
       )
+      and not (
+        latest_blocker_operation.status in ('succeeded', 'failed', 'skipped')
+        and exists (
+          select 1 from workspace_operations recovery_finalize
+          where recovery_finalize.company_id = ${companyId}::uuid
+            and recovery_finalize.issue_id = ${issueId}
+            and recovery_finalize.heartbeat_run_id = latest_blocker_operation.heartbeat_run_id
+            and recovery_finalize.phase = 'workspace_finalize' and recovery_finalize.status = 'succeeded'
+            and recovery_finalize.metadata->>'owningService' = 'workspace_recovery'
+            and (recovery_finalize.execution_workspace_id is null
+              or recovery_finalize.execution_workspace_id = ${workspaceId})
+            and recovery_finalize.started_at >= coalesce(latest_blocker_operation.finished_at, latest_blocker_operation.started_at)
+        )
+      )
   )`;
 }
 
@@ -5776,6 +5790,38 @@ function compareBlockedInboxRows(
   return right.id.localeCompare(left.id);
 }
 
+/**
+ * The in-review issues whose external response waits can change a finding
+ * for the given rows. The caller reads only the rows' findings, and the
+ * liveness classifier reads a wait only for a row, or for a blocker that it
+ * reaches from a row through blocker relations. This returns every in-review
+ * issue in that blocker closure, which includes all of those issues.
+ */
+export function blockedInboxReviewWaitIssueIds(
+  rowIssueIds: readonly string[],
+  graphIssues: ReadonlyArray<{ id: string; status: string }>,
+  graphRelations: ReadonlyArray<{ blockerIssueId: string; blockedIssueId: string }>,
+): string[] {
+  const statusById = new Map(graphIssues.map((issue) => [issue.id, issue.status]));
+  const blockersByBlockedId = new Map<string, string[]>();
+  for (const relation of graphRelations) {
+    const blockers = blockersByBlockedId.get(relation.blockedIssueId) ?? [];
+    blockers.push(relation.blockerIssueId);
+    blockersByBlockedId.set(relation.blockedIssueId, blockers);
+  }
+  const reached = new Set<string>();
+  const pending = [...rowIssueIds];
+  while (pending.length > 0) {
+    const issueId = pending.pop()!;
+    if (reached.has(issueId)) continue;
+    reached.add(issueId);
+    for (const blockerId of blockersByBlockedId.get(issueId) ?? []) {
+      if (!reached.has(blockerId)) pending.push(blockerId);
+    }
+  }
+  return [...reached].filter((issueId) => statusById.get(issueId) === "in_review");
+}
+
 async function listIssueBlockedInboxAttentionMap(
   dbOrTx: any,
   companyId: string,
@@ -6040,7 +6086,9 @@ async function listIssueBlockedInboxAttentionMap(
     });
 
   const findings = classifyIssueGraphLiveness({
-    externalResponseWaits: await readExternalReviewWaits(graphIssues.filter(issue => issue.status === "in_review").map(issue => issue.id)),
+    externalResponseWaits: await readExternalReviewWaits(
+      blockedInboxReviewWaitIssueIds(rowIssueIds, graphIssues, graphRelations),
+    ),
     issues: graphIssues.map((issue) => ({
       id: issue.id,
       companyId: issue.companyId,

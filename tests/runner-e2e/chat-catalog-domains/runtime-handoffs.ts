@@ -8,6 +8,7 @@ import { completionDelivery } from "../completion-updates.js";
 import { collectRunEvents } from "../run-observations.js";
 import { apiReadDigests, apiReadStatuses, recordParams, type ApiRead } from "./api-read-receipts.js";
 import { checks, hasLink, type Entity } from "./internal-support.js";
+import { waitForRenderedReply } from "./internal-comment-reference.js";
 import { openStandingChat } from "./identity-support.js";
 import { prepareRuntimeWorkerGate, readRuntimeTaskGate, releaseRuntimeWorker } from "./runtime-busy-worker.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent } from "./runtime-support.js";
@@ -96,8 +97,8 @@ export const runtimeHandoffCases = [runtimeDefinition("agent-chat.track-delegate
   return { worker: prepared.worker, gate: prepared.gate, task, marker, prompt, sourceBefore: source,
     sourceId: source.id, setupRunIds: phase.runs.map(run => run.id), workerRunId: workerRun.id, workerWasReallyWaiting: true, createdFromSource: true };
 }, gradeTrackDelegatedWork, {
-  oracleVersion: "paperclip.chat-catalog.track-delegated-work.v2",
-  sourceFiles: ["chat-catalog-domains/runtime-handoffs.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "completion-update-flow.ts", "completion-updates.ts", "run-observations.ts", "chat-scenarios/agent-chat.yaml"],
+  oracleVersion: "paperclip.chat-catalog.track-delegated-work.v3",
+  sourceFiles: ["chat-catalog-domains/runtime-handoffs.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/internal-comment-reference.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "completion-update-flow.ts", "completion-updates.ts", "run-observations.ts", "chat-scenarios/agent-chat.yaml"],
   setupHumanMessageCount: 1, expectedHumanMessageCount: 2, expectedRunCount: 4, attemptTimeoutMs: 900_000,
   setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "native-handoff-owner", "real-source-provenance"] },
   async verifySetup(ctx, state) {
@@ -123,6 +124,9 @@ export const runtimeHandoffCases = [runtimeDefinition("agent-chat.track-delegate
     const comments = await ctx.input.api.get<Entity[]>(`/api/issues/${state.sourceId}/comments?order=asc`);
     const replies = comments.filter(row => row.authorAgentId === ctx.input.fixtures.agent.id && queryIds.includes(row.createdByRunId ?? ""));
     state.queryReply = replies.map(row => row.body ?? "").join("\n");
+    // Run settle precedes the reply's render in the open conversation; read
+    // rendered links only after each saved reply itself is on the page.
+    await waitForRenderedReply(ctx, { leadId: ctx.input.fixtures.agent.id, runs: phase.runs.filter(run => queryIds.includes(run.id)) });
     const links: string[] = [];
     for (const reply of replies) links.push(...await ctx.input.page.locator(`[id=${JSON.stringify(`comment-${reply.id}`)}] a[href]`).evaluateAll(nodes => nodes.map(node => node.getAttribute("href")!)));
     state.queryLinks = links; state.workerStatusAtQueryReply = phase.runs.find(run => run.id === state.workerRunId)!.status;

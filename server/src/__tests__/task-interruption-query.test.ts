@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, chatActions, chatEndpoints, companies, createDb, applyPendingMigrations, heartbeatRuns, issueRecoveryActions,
+import { agents, agentWakeupRequests, chatActions, chatEndpoints, companies, createDb, applyPendingMigrations, environmentLeases, heartbeatRuns, issueRecoveryActions,
   issueRelations, issues,
   toolApplications, toolConnections,
   nativeRunFinalizations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
@@ -186,6 +186,53 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       executionWait: { reason: "budget.blocked", message: "Company is paused because its budget hard-stop was reached." } } })
       .where(eq(agentWakeupRequests.reason, "task_retry"));
     expect((await taskInterruptionPresentation(db, task))?.retryWait?.reason).toBe("budget.blocked");
+  });
+
+  // Shape saved by the previous release for a remote native run: the provider
+  // turn completed (checkpoint terminal), a same-run recovery was then refused by
+  // the cleanup gate. No migration rewrites it; the projection reads it as is.
+  it("reads a quarantine saved after a completed turn as settled work, not a failed attempt", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), otherRunId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Completed turn", issuePrefix: `K${companyId.slice(0, 7)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Codie", adapterType: "paperclip_runner" });
+    const [task] = await db.insert(issues).values({ companyId, title: "Set up Storie", identifier: "CMP-7",
+      status: "blocked", assigneeAgentId: agentId }).returning();
+    const staged = (id: string, turnTerminalState: string) => ({ id, companyId, agentId, nativeIssueId: task.id, scopeKind: "issue",
+      status: "failed", runtimeMode: "native", errorCode: "native_session_cleanup_quarantined",
+      error: "native_session_cleanup_quarantined: prior session cleanup requires operator recovery; verify its retained process ownership and checkpoint before a controlled restart. Clearing a task session does not resolve this quarantine.",
+      finishedAt: new Date(Date.now() - 60_000),
+      resultJson: { apiToolReceipts: { receipt: { state: "completed" } }, semanticToolReceipts: { doc: { state: "completed" } } },
+      runnerProfileJson: { mode: "native", backend: "codex_app_server", sessionCheckpoint: {
+        cursor: "818", activeTurnId: null, semanticResult: null, driverKind: "codex_app_server", backendKind: "runner",
+        identity: { runId: id, agentId, issueId: task.id, companyId, sessionId: randomUUID() },
+        terminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded", turnTerminalState,
+          reportedWorkDisposition: "yielded" },
+        terminalTurns: [{ turnId: randomUUID(), fingerprint: "{}" }],
+      } } }) as typeof heartbeatRuns.$inferInsert;
+    await db.insert(heartbeatRuns).values(staged(runId, "completed"));
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId: task.id, runId, phase: "terminal_failure",
+      attempt: 2, failureCode: "native_session_cleanup_quarantined" });
+    // Nothing settles a gate without an owner (s9107 t04): Retry is offered.
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: true });
+    // An unreleased remote environment is that owner: its termination receipt retires the gate.
+    const leaseId = randomUUID();
+    await db.insert(environmentLeases).values({ id: leaseId, companyId, heartbeatRunId: runId, provider: "daytona",
+      providerLeaseId: "sandbox" });
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: false,
+      retryWait: { reason: "cleanup_quarantined" } });
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date() }).where(eq(environmentLeases.id, leaseId));
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: true });
+    // The task waits on an active child: it shows that wait, not a failed attempt.
+    const [child] = await db.insert(issues).values({ companyId, title: "Verify review", identifier: "CMP-8",
+      status: "in_progress", assigneeAgentId: agentId }).returning();
+    await db.insert(issueRelations).values({ companyId, issueId: child.id, relatedIssueId: task.id, type: "blocks" });
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "resolved", canRetry: false });
+    // A quarantine whose turn did not complete is still unfinished; with no
+    // owner settling its gate, Retry is the way forward.
+    await db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() - 120_000) }).where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRuns).values(staged(otherRunId, "interrupted"));
+    expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: true,
+      observedRunId: otherRunId });
   });
 
   it("shows a queued-message Interrupt as handing off, not as a failed attempt", async () => {

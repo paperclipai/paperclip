@@ -676,7 +676,8 @@ export function classifyAdapterFailureForRecovery(
   if (parsedClockReset) {
     return {
       kind: "provider_quota",
-      retryAt: parsedClockReset,
+      // A calendar reset read after it passed has released the wait.
+      retryAt: parsedClockReset > now ? parsedClockReset : now,
       parsedResetTime: true,
     };
   }

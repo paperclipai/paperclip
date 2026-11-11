@@ -70,7 +70,7 @@ import type {
   HarnessRuntimeRequestResolution,
   PersistedHarnessProviderIdentity,
 } from "../contracts/harness-driver.js";
-import { NativeRunnerSourceReconciliationRequiredError } from "../contracts/harness-driver.js";
+import { NativeRunnerResumeStateUnavailableError, NativeRunnerSourceReconciliationRequiredError } from "../contracts/harness-driver.js";
 import {
   DurablePrpControlPlane,
   inspectStagedRunAttachment,
@@ -103,7 +103,7 @@ import {
   prepareIsolatedCodexRecoveryHome,
   releaseMaterializedNativeRuntimeSkills,
 } from "../drivers/runtime-context-materializer.js";
-import { resolvePackagedRunnerBinary } from "./runner-binary.js";
+import { resolvePackagedRunnerBinary, resolvePackagedRunnerBinaryAsync } from "./runner-binary.js";
 import { RUNNERD_CANONICAL_ITEM, RUNNERD_RUNTIME_ACTIVITY } from "../drivers/codex/codex-driver-values.js";
 import { crashPoint } from "../crash-point.js";
 import { isTerminalOperation, settleEarlierToolCalls, staleTerminalCallResult } from "./terminal-call-freshness.js";
@@ -117,6 +117,10 @@ const MAX_NOTIFICATION_COUNT = 2_048;
 const MAX_NOTIFICATION_BYTES = 4 * 1024 * 1024;
 const RUNNER_CLIENT_VERSION = "0.3.0";
 const RUNNER_BOOTSTRAP_TICKET_TTL_MS = 60_000;
+const RUNNER_RESTORE_STABLE_MS = 60_000;
+const MAX_UNSTABLE_RUNNER_RESTORES = 3;
+// Bounds the one in-place restart after a runner settles an earlier attempt's suspend.
+const CARRIED_SUSPEND_RESTART_GRACE_MS = 30_000;
 const RUNNERD_MAX_OUTBOX_BYTES = 16 * 1024 * 1024;
 const RUNNERD_P0_RESERVE_BYTES = 1024 * 1024;
 
@@ -4050,6 +4054,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   readonly #failureSignal: Promise<never>;
   #rejectFailureSignal!: (error: Error) => void;
   #runnerRecoveryInProgress = false;
+  /** Controller commands journaled before this attempt queued any. */
+  #carriedCommandCount: number | null = null;
+  /** Each runner exit's carried-suspend classification, read once after exit. */
+  readonly #carriedSuspendExits = new WeakMap<RunnerProcessHandle, Promise<boolean>>();
+  #carriedSuspendRestartUsed = false;
+  #lastRunnerRestoreAt: number | null = null;
+  #unstableRunnerRestores = 0;
   #startupComplete = false;
   readonly #authorityRunId: () => string | undefined;
   #startupFailureCode = "native_runner_process_exited";
@@ -4060,6 +4071,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #nextTraceDebugSequence = 1;
   #traceRehydrationSpoolOverflow = false;
   readonly #traceFrameIndex = new RunnerdTraceFrameIndex();
+  /** Clock of the startup, recovery, or turn-start admission in progress, if any. */
+  #admissionClock: RunnerStallLedger | null = null;
   #startupSteps: {
     begin(name: RunnerdStartupStep["name"]): void;
     /** Move on only from the named open step (later reconnects are not startup milestones). */
@@ -5963,7 +5976,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #start(
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    const work = () => this.#withStartupSteps("bootstrap", () => this.#startWork(params));
+    const work = () => this.#withAdmissionClock(() => this.#withStartupSteps("bootstrap", () => this.#startWork(params)));
     return this.options.measureOperation ? this.options.measureOperation("runner.transport.cold_start", work) : work();
   }
 
@@ -6075,6 +6088,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       connectionLeaseTtlMs: 60 * 60 * 1_000,
     });
     this.#core = core;
+    this.#carriedCommandCount = core.store.state.commands.length;
     // Externally launched runners own their state directory (for example in a
     // Daytona sandbox). Do not create an empty controller-side placeholder:
     // prior-run authority checks must be able to distinguish absent remote
@@ -6215,8 +6229,41 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   async #resume(): Promise<void> {
-    const work = () => this.#withStartupSteps("resume", () => this.#resumeWork());
+    const work = () => this.#withAdmissionClock(() => this.#withStartupSteps("resume", () => this.#resumeWork()));
     return this.options.measureOperation ? this.options.measureOperation("runner.transport.resume", work) : work();
+  }
+
+  /**
+   * One stopped-time clock per admission (startup, recovery, or a turn start);
+   * a nested admission keeps the outer one. It covers the Runner command
+   * barriers, the provider-identity wait, and turn.start with its start-event
+   * and snapshot waits. The warm-transition and source-attachment reconnect
+   * polls keep their own wall-clock grace deadlines.
+   */
+  async #withAdmissionClock<T>(work: () => Promise<T>): Promise<T> {
+    if (this.#admissionClock !== null) return work();
+    const clock = new RunnerStallLedger();
+    const stopWatching = clock.watch();
+    this.#admissionClock = clock;
+    try {
+      return await work();
+    } finally {
+      stopWatching();
+      if (this.#admissionClock === clock) this.#admissionClock = null;
+    }
+  }
+
+  /** Wall time, or the admission clock while a startup, recovery, or turn start runs. */
+  #waitNow(): number {
+    return this.#admissionClock?.now() ?? Date.now();
+  }
+
+  /** Moves a wall-clock deadline onto the admission clock, without the stops already credited. */
+  #onWaitClock(wallDeadline: number): number {
+    const clock = this.#admissionClock;
+    if (clock === null) return wallDeadline;
+    clock.now();
+    return wallDeadline - clock.creditedMs;
   }
 
   async #resumeWork(): Promise<void> {
@@ -6451,7 +6498,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     let rotationSource: Record<string, unknown> | null = null;
     if (controlPlaneState === null) {
       if (!supportsColdRotation) {
-        throw new Error("PRP provider resume state is unavailable");
+        throw new NativeRunnerResumeStateUnavailableError();
       }
       // An interrupted rotation leaves only its archive marker.
       rotationSource = committedRotationSource ?? latestArchivedControlPlaneState(
@@ -6459,7 +6506,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         desiredIdentity,
       );
       if (!rotationSource) {
-        throw new Error("PRP provider resume state is unavailable");
+        throw new NativeRunnerResumeStateUnavailableError();
       }
     } else if (!exactAuthority && warmRecovery === null) {
       if (!supportsColdRotation) {
@@ -6493,7 +6540,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     // A missing control plane either rotated from its archive above or threw.
     if (controlPlaneState === null) {
-      throw new Error("PRP provider resume state is unavailable");
+      throw new NativeRunnerResumeStateUnavailableError();
     }
     const runnerBinaryPath =
       this.options.runnerBinary ?? (this.options.prepareLaunch ? "paperclip-runnerd" : defaultCapabilityRunnerdBinary());
@@ -6617,6 +6664,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       connectionLeaseTtlMs: 60 * 60 * 1_000,
     });
     this.#core = core;
+    this.#carriedCommandCount = core.store.state.commands.length;
     // Reusing resources still requires current environment authorization. The
     // optional hook avoids re-preparation after controller storage is lost.
     // Existing consumers retain the preparation callback's authorization path.
@@ -6939,7 +6987,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#assertStartupOpen();
     const admissionDeadline = this.#sourceAttachmentDeadline === null
       ? this.#coldAdmissionDeadline(adoptedRunner === undefined)
-      : Math.min(Date.now() + 30_000, this.#sourceAttachmentDeadline);
+      : Math.min(this.#waitNow() + 30_000, this.#onWaitClock(this.#sourceAttachmentDeadline));
     // An adopted runner is already live: no launch step (a launch span means a fresh process).
     if (adoptedRunner) this.#startupSteps?.end();
     else this.#startupSteps?.begin("runner.process.launch");
@@ -7164,7 +7212,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
     }
 
-  async #recoverSemanticToolInput(call: Parameters<NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>>[0]) {
+  async #recoverSemanticToolInput(call: Parameters<NonNullable<DurablePrpControlPlaneOptions["recoverSemanticToolInput"]>>[0]) {
     if (this.#retainsSourceInputs() || (this.#authorityRunId() !== undefined && call.correlation.runId !== this.#authorityRunId())) return null;
     if (this.#sourceRecoveryIdentity) throw new NativeRunnerSourceReconciliationRequiredError("semantic");
     if (call.operationId === "paperclip_finish" || call.operationId === "paperclip_block") {
@@ -7301,7 +7349,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #startTurn(
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    return this.options.measureOperation ? this.options.measureOperation("runner.transport.turn_start", () => this.#startTurnWork(params), {inputBytes:Buffer.byteLength(JSON.stringify(params)), tokenDataAvailable:false}) : this.#startTurnWork(params);
+    // turn.start and its start-event and snapshot waits share one deadline, so
+    // they share one stopped-time clock (chaos t05: a 61 s freeze failed a
+    // 30 s turn.start before the Runner or its sidecar could answer).
+    const work = () => this.#withAdmissionClock(() => this.#startTurnWork(params));
+    return this.options.measureOperation ? this.options.measureOperation("runner.transport.turn_start", work, {inputBytes:Buffer.byteLength(JSON.stringify(params)), tokenDataAvailable:false}) : work();
   }
 
   /**
@@ -7343,14 +7395,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (!Number.isSafeInteger(turnStartTimeoutMs) || turnStartTimeoutMs <= 0) {
       throw new Error("turnStartTimeoutMs must be a positive safe integer");
     }
-    let commandDeadline = Date.now() + turnStartTimeoutMs;
+    let commandDeadline = this.#waitNow() + turnStartTimeoutMs;
     const heldCalls = this.#core;
     if (typeof heldCalls?.semanticToolResultsSettled === "function" && !heldCalls.semanticToolResultsSettled()) {
       let recovering = true;
       void Promise.resolve(heldCalls.recoverPendingSemanticInputs())
         .catch(error => this.#failTransport(error instanceof Error ? error : new Error(String(error))))
         .finally(() => { recovering = false; });
-      while (recovering && Date.now() < commandDeadline) {
+      while (recovering && this.#waitNow() < commandDeadline) {
         this.#assertStartupOpen();
         this.#throwIfFailed();
         await new Promise<void>((resolveWait) => setTimeout(resolveWait, 10));
@@ -7358,7 +7410,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#assertStartupOpen();
       this.#throwIfFailed();
       if (recovering) throw new Error("native_turn_start_held_tool_calls_unresolved: recovering an earlier turn's held Paperclip tool calls did not finish before the turn-start deadline");
-      commandDeadline = Date.now() + turnStartTimeoutMs;
+      commandDeadline = this.#waitNow() + turnStartTimeoutMs;
     }
     const compactionTurn = params[COMPACTION_TURN] === true;
     const compactionPayload = compactionTurn ? runnerdCompactionTurnPayload(this.options.provider ?? "codex") : null;
@@ -7460,7 +7512,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // Codex and OpenCode return their provider-assigned identity.
       const deadline =
         this.options.turnStartTimeoutMs === undefined
-          ? Date.now() + 30_000
+          ? this.#waitNow() + 30_000
           : commandDeadline;
       const providerTurnStarted = () =>
         turnStartResponseReady({
@@ -7473,7 +7525,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // the start event early enough to read the runner's snapshot before it.
       const adoptionCheckAt = deadline - Math.min(
         TURN_START_ADOPTION_CHECK_RESERVE_MS,
-        Math.floor(Math.max(0, deadline - Date.now()) / 4),
+        Math.floor(Math.max(0, deadline - this.#waitNow()) / 4),
       );
       // The runner can end the accepted turn before it starts. Its terminal is
       // held for the pending start, so report that real cause at once.
@@ -7488,7 +7540,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           throw new Error(`runnerd failed the provider turn before it started: ${failure}`);
       };
       const waitForStarted = async () => {
-      while (!providerTurnStarted() && Date.now() < adoptionCheckAt) {
+      while (!providerTurnStarted() && this.#waitNow() < adoptionCheckAt) {
         this.#throwIfFailed();
         this.#pumpEvents();
         if (providerTurnStarted()) break;
@@ -7529,7 +7581,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         }
         // Not provably live: keep the original contract and wait for the
         // start event until the configured bound, then fail as before.
-        while (!providerTurnStarted() && Date.now() < deadline) {
+        while (!providerTurnStarted() && this.#waitNow() < deadline) {
           this.#throwIfFailed();
           this.#pumpEvents();
           if (providerTurnStarted()) break;
@@ -7686,21 +7738,21 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #coldAdmissionDeadline(coldProcess = true): number | undefined {
     const timeout = coldAdmissionTimeoutMs(this.options.provider, this.options.acpxAgent, coldProcess);
     // Preserve the existing independent waits for other providers and live adoption.
-    return timeout === 60_000 ? Date.now() + timeout : undefined;
+    return timeout === 60_000 ? this.#waitNow() + timeout : undefined;
   }
 
   async #waitForProviderIdentity(
     expectedEventType?: "harness.ready" | "session.started" | "session.resumed",
-    deadline = Date.now() + 30_000,
+    deadline = this.#waitNow() + 30_000,
   ): Promise<void> {
     return this.options.measureOperation ? this.options.measureOperation("runner.transport.provider_identity", () => this.#waitForProviderIdentityWork(expectedEventType, deadline)) : this.#waitForProviderIdentityWork(expectedEventType, deadline);
   }
 
   async #waitForProviderIdentityWork(
     expectedEventType?: "harness.ready" | "session.started" | "session.resumed",
-    deadline = Date.now() + 30_000,
+    deadline = this.#waitNow() + 30_000,
   ): Promise<void> {
-    while (Date.now() < deadline) {
+    while (this.#waitNow() < deadline) {
       this.#throwIfFailed();
       if (this.#closed) throw new Error("runnerd transport closed during provider startup");
       this.#pumpEvents();
@@ -7724,7 +7776,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #waitCommand(
     type: string,
     commandId?: string,
-    deadline = Date.now() + 30_000,
+    deadline = this.#waitNow() + 30_000,
     abortOnClose = false,
   ): Promise<void> {
     return this.options.measureOperation ? this.options.measureOperation("runner.transport.command_ack", () => this.#waitCommandWork(type, commandId, deadline, abortOnClose)) : this.#waitCommandWork(type, commandId, deadline, abortOnClose);
@@ -7733,12 +7785,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #waitCommandWork(
     type: string,
     commandId?: string,
-    deadline = Date.now() + 30_000,
+    deadline = this.#waitNow() + 30_000,
     abortOnClose = false,
   ): Promise<void> {
     await waitForRunnerCommand({
       type,
       deadline,
+      clock: this.#admissionClock,
       abortOnClose,
       isClosed: () => this.#closed,
       throwIfFailed: () => this.#throwIfFailed(),
@@ -8363,8 +8416,16 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
   async #runnerHasExited(): Promise<boolean> {
     // A runnerd killed by a signal reports exitCode null and its signalCode.
-    if (this.#handle) return this.#handle.isExitConfirmed?.()
-      ?? (this.#handle.child.exitCode !== null || (this.#handle.child.signalCode ?? null) !== null);
+    if (this.#handle) {
+      const handle = this.#handle;
+      const exited = handle.isExitConfirmed?.()
+        ?? (handle.child.exitCode !== null || (handle.child.signalCode ?? null) !== null);
+      // A runner that only settled a suspend left by an earlier attempt is
+      // being restarted in place; startup keeps waiting for its replacement.
+      if (exited && !this.#startupComplete && await this.#carriedSuspendExits.get(handle))
+        return this.#closed || this.#failure !== null;
+      return exited;
+    }
     const adoptedRunner = this.options.adoptExistingRunner;
     if (!adoptedRunner) return true;
     return !(await adoptedRunner.isAlive());
@@ -8442,8 +8503,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   #watchRunner(handle: RunnerProcessHandle): void {
+    const carriedSuspendExit = handle.completion.then(
+      (result) => this.#settledOnlyCarriedSuspend(handle, result.code),
+      () => false,
+    );
+    this.#carriedSuspendExits.set(handle, carriedSuspendExit);
     void handle.completion.then(
-      (result) => {
+      async (result) => {
         const exitConfirmed = handle.isExitConfirmed?.() ?? true;
         this.#evidence.runnerExited = exitConfirmed;
         this.#evidence.runnerExitCode = result.code;
@@ -8459,6 +8525,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.#lostRunnerHandle = handle;
         if (this.#closed || this.#failure !== null || this.#handle !== handle || (this.#releaseEpisode && !this.#releaseEpisode.claimed))
           return;
+        if (await carriedSuspendExit) {
+          if (this.#closed || this.#failure !== null || this.#handle !== handle) return;
+          this.#carriedSuspendRestartUsed = true;
+          this.#diagnostic("runner settled a suspend left by an earlier attempt and exited; restarting it in place");
+          void this.#recoverRunnerProcess(handle, detail, CARRIED_SUSPEND_RESTART_GRACE_MS);
+          return;
+        }
+        if (this.#closed || this.#failure !== null || this.#handle !== handle) return;
         // A per-turn runner exits after its terminal suffix is durably ACKed.
         // Drain that suffix into the provider-facing queue before classifying
         // process completion; clean terminal exit is the expected lifecycle.
@@ -8489,7 +8563,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.options.runnerReconnectGraceMs !== undefined &&
           handle.restart
         ) {
-          void this.#recoverRunnerProcess(handle, detail);
+          this.#recoverOrFailRunnerProcess(handle, detail);
           return;
         }
         this.#failTransport(
@@ -8507,7 +8581,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.options.runnerReconnectGraceMs !== undefined &&
           handle.restart
         ) {
-          void this.#recoverRunnerProcess(
+          this.#recoverOrFailRunnerProcess(
             handle,
             error instanceof Error ? error.message : String(error),
           );
@@ -8528,9 +8602,58 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     );
   }
 
+  /**
+   * A freeze or restart during `runner.suspend` leaves that command pending in
+   * the controller journal. The next attempt's runner settles it from the
+   * welcome and exits as suspended before it accepts this attempt's work. Only
+   * that exit is restarted in place, once, and only when the durable runner
+   * journal proves it: the runner's last command is exactly that earlier
+   * suspend, settled by the controller, and the runner rests suspended with no
+   * fence. It then executed nothing this attempt queued, so no turn started and
+   * no provider work can repeat. The runner file is read only after an exit.
+   */
+  async #settledOnlyCarriedSuspend(handle: RunnerProcessHandle, code: number | null): Promise<boolean> {
+    const core = this.#core;
+    const carried = this.#carriedCommandCount;
+    if (code !== 0 || handle.isExitConfirmed?.() === false || !handle.restart || core === null || carried === null
+      || this.#carriedSuspendRestartUsed || this.#startupComplete || this.#closed || this.#failure !== null
+      || this.options.adoptExistingRunner || this.options.runnerProcessLauncher || this.options.readRunnerState
+      || this.options.runnerStateDirectory !== undefined) return false;
+    let state: Record<string, unknown>;
+    try {
+      state = await this.#readDurableRunnerState();
+    } catch {
+      return false;
+    }
+    return carriedSuspendSettlementProven({
+      runnerState: state,
+      identity: core.store.state.identity,
+      commands: core.store.state.commands,
+      carriedCommandCount: carried,
+    });
+  }
+
+  #recoverOrFailRunnerProcess(handle: RunnerProcessHandle, detail: string): void {
+    this.#unstableRunnerRestores = unstableRunnerRestoreCount(
+      this.#unstableRunnerRestores,
+      this.#lastRunnerRestoreAt,
+      Date.now(),
+    );
+    if (this.#unstableRunnerRestores >= MAX_UNSTABLE_RUNNER_RESTORES) {
+      this.#failTransport(
+        new Error(
+          `native_runner_process_exited: runnerd exited ${this.#unstableRunnerRestores} times within ${RUNNER_RESTORE_STABLE_MS}ms of being restored${detail ? `: ${detail.slice(-1_000)}` : ""}`,
+        ),
+      );
+      return;
+    }
+    void this.#recoverRunnerProcess(handle, detail);
+  }
+
   async #recoverRunnerProcess(
     failedHandle: RunnerProcessHandle,
     initialDetail: string,
+    graceOverrideMs?: number,
   ): Promise<void> {
     if (
       this.#runnerRecoveryInProgress ||
@@ -8542,7 +8665,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     )
       return;
     this.#runnerRecoveryInProgress = true;
-    const graceMs = this.options.runnerReconnectGraceMs ?? 0;
+    const graceMs = graceOverrideMs ?? this.options.runnerReconnectGraceMs ?? 0;
     const deadline = Date.now() + graceMs;
     const delays = [250, 500, 1_000, 2_000, 5_000] as const;
     let attempt = 0;
@@ -8622,6 +8745,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         })();
         if (await Promise.race([completion, authenticated])) {
           this.#diagnostic("runner process restored its durable PRP session");
+          this.#lastRunnerRestoreAt = Date.now();
           this.#watchRunner(recoveredHandle);
           return;
         }
@@ -8710,7 +8834,18 @@ export function defaultCapabilityRunnerdBinary(platform = process.platform, arch
   const outputRoot = resolve(fileURLToPath(new URL("../", import.meta.url)));
   const staged = resolvePackagedRunnerBinary(outputRoot, platform, architecture)
     ?? resolvePackagedRunnerBinary(resolve(packageRoot, "dist"), platform, architecture);
-  if (staged) return staged;
+  return staged ?? unstagedCapabilityRunnerdBinary(platform, architecture);
+}
+
+/** `defaultCapabilityRunnerdBinary` without blocking the event loop. */
+export async function defaultCapabilityRunnerdBinaryAsync(platform = process.platform, architecture = process.arch): Promise<string> {
+  const outputRoot = resolve(fileURLToPath(new URL("../", import.meta.url)));
+  const staged = await resolvePackagedRunnerBinaryAsync(outputRoot, platform, architecture)
+    ?? await resolvePackagedRunnerBinaryAsync(resolve(packageRoot, "dist"), platform, architecture);
+  return staged ?? unstagedCapabilityRunnerdBinary(platform, architecture);
+}
+
+function unstagedCapabilityRunnerdBinary(platform: string, architecture: string): string {
   if (platform !== process.platform || architecture !== process.arch) {
     throw new Error(`runner_remote_artifact_unavailable: install the Paperclip release containing the ${platform}-${architecture} daemon or configure PAPERCLIP_RUNNER_REMOTE_BINARY_PATH`);
   }
@@ -9057,7 +9192,38 @@ export const runnerdLaunchProfileInternals = Object.freeze({
   p0ReserveBytes: RUNNERD_P0_RESERVE_BYTES,
 });
 
+function unstableRunnerRestoreCount(previous: number, restoredAt: number | null, now: number): number {
+  return restoredAt !== null && now - restoredAt < RUNNER_RESTORE_STABLE_MS ? previous + 1 : 0;
+}
+
+/** The durable proof that a runner's clean exit only settled a suspend that an
+ * earlier attempt journaled: its last command is exactly that suspend, which
+ * the controller has settled; it rests suspended with no fence; and nothing
+ * this attempt queued has a result, so no turn or provider work ran. */
+function carriedSuspendSettlementProven(input: {
+  runnerState: Record<string, unknown>;
+  identity: DurableRecoveryIdentity;
+  commands: readonly { commandId: string; controllerSeq: number; type: string; status: string }[];
+  carriedCommandCount: number;
+}): boolean {
+  const { runnerState: state, commands, carriedCommandCount: carried } = input;
+  const seq = state.lastControllerCommandSeq;
+  if (state.schema !== "paperclip.runner.durable.state.v1"
+    || !recoveryIdentityMatches(state, input.identity)
+    || state.lifecycle !== "suspended" || state.pendingTerminalDelivery != null
+    || state.pendingProviderCleanup != null || state.warmTransition != null
+    || typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1 || seq > carried) return false;
+  const suspend = commands.find((command) => command.controllerSeq === seq);
+  if (suspend?.type !== "runner.suspend" || suspend.status === "pending") return false;
+  if (commands.some((command) => command.controllerSeq > carried && command.status !== "pending")) return false;
+  const processed = record(record(state.processedCommands)[suspend.commandId]);
+  return processed.commandId === suspend.commandId && processed.commandType === "runner.suspend"
+    && processed.controllerSeq === seq && processed.status !== "pending";
+}
+
 export const runnerdRecoveryInternals = Object.freeze({
+  carriedSuspendSettlementProven,
+  unstableRunnerRestoreCount,
   projectCopilotRunGrant,
   completedMaintenanceTerminalReceipt,
   completedMaintenanceTerminalReplayMatches,
@@ -9138,10 +9304,70 @@ function closedAcpxRejection(message: unknown): string | null {
     ? message : null;
 }
 
+/**
+ * A gap this long between two observations by a running process (its poll
+ * loops sleep 10 ms, its ticker 1 s) means the process was not running:
+ * SIGSTOP, host sleep, or a whole-process stall.
+ */
+export const RUNNER_STALL_THRESHOLD_MS = 5_000;
+const RUNNER_STALL_TICK_MS = 1_000;
+/** After a stop, the thawed Runner keeps at least this long to answer. */
+export const RUNNER_POST_STOP_GRACE_MS = 5_000;
+/** One admission never credits more stopped time than this in total. */
+export const RUNNER_MAX_STOPPED_CREDIT_MS = 15 * 60_000;
+
+/**
+ * The clock for one startup or recovery admission. Time this process spends
+ * stopped is not waiting time: the Runner it waits on is usually stopped with
+ * it (same host sleep or process tree), and could not answer. The wall clock
+ * still passes the deadline, so a thaw used to report a timeout before either
+ * process ran (chaos t01: "runner.drain timed out" 45 s into a 30 s wait that
+ * held a 44 s freeze).
+ *
+ * `now()` is wall time minus the stopped time observed since the ledger
+ * started. Poll loops and a 1 s ticker share one last-observation time, so a
+ * stop is credited once, wherever the process was when it stopped (a poll
+ * loop, a checkpoint flush, a spawn). A stop is credited in full plus a
+ * grace, so a stop near a deadline still leaves the Runner time to answer
+ * after the thaw. Gaps below the threshold are running time, and total credit
+ * is capped, so a slow process still reaches its deadlines. Deadlines
+ * compared with `now()` must be taken from `now()`.
+ */
+export class RunnerStallLedger {
+  #creditedMs = 0;
+  #last: number;
+  constructor(private readonly wallNow: () => number = Date.now) {
+    this.#last = wallNow();
+  }
+
+  get creditedMs(): number {
+    return this.#creditedMs;
+  }
+
+  now(): number {
+    const at = this.wallNow();
+    if (at - this.#last > RUNNER_STALL_THRESHOLD_MS) {
+      this.#creditedMs = Math.min(RUNNER_MAX_STOPPED_CREDIT_MS,
+        this.#creditedMs + at - this.#last + RUNNER_POST_STOP_GRACE_MS);
+    }
+    this.#last = Math.max(this.#last, at);
+    return at - this.#creditedMs;
+  }
+
+  /** Observes stops between poll loops; runs only while its admission runs. */
+  watch(): () => void {
+    const ticker = setInterval(() => this.now(), RUNNER_STALL_TICK_MS);
+    ticker.unref?.();
+    return () => clearInterval(ticker);
+  }
+}
+
 /** Shared polling path keeps startup cancellation separate from owned cleanup commands. */
 export async function waitForRunnerCommand(input: {
   type: string;
   deadline: number;
+  /** Startup or recovery admission clock; `deadline` was taken from it. */
+  clock?: RunnerStallLedger | null;
   abortOnClose: boolean;
   isClosed: () => boolean;
   throwIfFailed: () => void;
@@ -9149,7 +9375,8 @@ export async function waitForRunnerCommand(input: {
   runnerHasExited: () => Promise<boolean>;
   failureCode: () => string;
 }): Promise<void> {
-  while (Date.now() < input.deadline) {
+  const now = () => input.clock ? input.clock.now() : Date.now();
+  while (now() < input.deadline) {
     input.throwIfFailed();
     if (input.abortOnClose && input.isClosed()) {
       throw new Error(`runnerd transport closed while waiting for ${input.type}`);

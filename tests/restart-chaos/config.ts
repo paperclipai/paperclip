@@ -4,10 +4,13 @@ import { parseArgs } from "node:util";
 import { applyJourneyOptions } from "./journey-matrix.js";
 import { takesJourneyTriggers } from "./journeys.js";
 import { STORAGE_FAULT_KINDS, type StorageFaultKind } from "./storage-chaos.js";
-import { validateMultiServerOptions } from "./multi-server.js";
+import { isMultiServerFault, validateMultiServerOptions } from "./multi-server.js";
+import { parseK15HoldSeconds } from "./redeploy.js";
 import { parseTimeFaultOptions } from "./time-faults-config.js";
 import { parseStorageTrigger } from "./storage-trigger.js";
+import { parseNativeTrigger, parseNativeTriggerOutage } from "./native-trigger.js";
 import { parseRepeatedRestartOptions } from "./repeated-restarts.js";
+import { daytonaRetainsSandboxes } from "./ttft-baseline-stats.js";
 import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, isProviderFault, parseProviderDelays, parseProviderMessages, type ProviderFaultKind } from "./provider-faults.js";
 import { PROVIDER_FAULT_ADAPTERS, parseProviderFaultRestart } from "./acpx-provider-faults.js";
 import {
@@ -15,7 +18,10 @@ import {
   type AdapterId, type EnvironmentKind, type FaultKind, type TriggerId, type WaveOptions, type WorkloadId,
 } from "./types.js";
 
-/** A storm's default faults: every restart kind except K14, which needs an older build (`--upgrade-from`). */
+/**
+ * A storm's default faults: every restart kind except K14, which needs an older build (`--upgrade-from`),
+ * and K15, which changes the deploy identity of every later server (pass `--faults` to include it).
+ */
 export const STORM_DEFAULT_FAULTS: FaultKind[] = ["K1", "K2", "K4", "K6"];
 
 export const CREDENTIAL_FOR_ADAPTER: Record<AdapterId, "OPENAI_API_KEY" | "ANTHROPIC_API_KEY" | "OPENROUTER_API_KEY"> = {
@@ -98,6 +104,9 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "daytona-image": { type: "string" },
       "daytona-cpu": { type: "string" },
       "daytona-reuse-lease": { type: "boolean" },
+      // The reusable warm Daytona fixture, or an environment that inherits the lifecycle (a user's default).
+      "daytona-warm": { type: "boolean" },
+      "daytona-inherit": { type: "boolean" },
       keep: { type: "boolean" },
       "rc06-masked": { type: "boolean" },
       "storm-minutes": { type: "string" },
@@ -112,6 +121,8 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "storage-faults": { type: "string" },
       "storage-fault-seconds": { type: "string" },
       "storage-trigger": { type: "string" },
+      "native-trigger": { type: "string" },
+      "native-trigger-outage": { type: "string" },
       "provider-fault-message": { type: "string" },
       "provider-fault-delays": { type: "string" },
       "db-pressure": { type: "string" },
@@ -122,13 +133,15 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "provider-fault-restart-after-seconds": { type: "string" },
       "rr-gap-seconds": { type: "string" },
       "rr-stop-on": { type: "string" },
+      "k15-hold-seconds": { type: "string" },
+      "tm1-hold-seconds": { type: "string" },
     },
   });
   const keep = values.keep === true;
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "tm1-hold-seconds"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -169,7 +182,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     env,
     adapters,
     // The governance scenarios (G1, H1), the journeys (Q1–Q3) and the contention run (L1) are opt-in: H1 needs a wave of its own.
-    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1"
+    workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1" && id !== "T1"
       && !takesJourneyTriggers(id) && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
     faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault)),
@@ -182,7 +195,8 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     budgetCents,
     pollMs,
     ...(env === "daytona" ? { daytonaImage, daytonaCpu: integer(values["daytona-cpu"], "daytona-cpu", DAYTONA_DEFAULT_CPU, 1, 4),
-      ...(values["daytona-reuse-lease"] ? { daytonaReuseLease: true } : {}) } : {}),
+      ...(values["daytona-reuse-lease"] ? { daytonaReuseLease: true } : {}),
+      ...(values["daytona-warm"] ? { daytonaWarm: true } : {}), ...(values["daytona-inherit"] ? { daytonaInherit: true } : {}) } : {}),
     ...(values["rc06-masked"] ? { masks: ["rc06"] } : {}),
     ...(lifecycle ? { lifecycle } : {}),
     // Seeded K4 hold upper end; the controller-outage cap is 600 s (#19797).
@@ -225,8 +239,13 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     throw new Error("--provider-fault-message, --provider-fault-delays and --provider-fault-restart need a provider fault (PV1, PV2 or PV3) in --faults");
   }
   validateMultiServerOptions(options);
-  Object.assign(options, parseTimeFaultOptions(options, values["time-age-hours"]));
+  // K15 emulates one deploy identity per generation; a second server beside it would run in the real host's process space.
+  if (options.faults.includes("K15") && options.faults.some(isMultiServerFault)) {
+    throw new Error("K15 (redeploy) does not combine with MS1-MS3: the second server would not share the emulated deploy identity");
+  }
+  Object.assign(options, parseTimeFaultOptions(options, values["time-age-hours"], values["tm1-hold-seconds"]));
   Object.assign(options, parseRepeatedRestartOptions(options, values["rr-gap-seconds"], values["rr-stop-on"]));
+  Object.assign(options, parseK15HoldSeconds(options, values["k15-hold-seconds"]));
   const upgradeFrom = values["upgrade-from"];
   if (options.faults.includes("K14") !== (upgradeFrom !== undefined)) {
     throw new Error("K14 (upgrade mid-run) and --upgrade-from <older checkout> go together: pass both or neither");
@@ -269,9 +288,22 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   }
   if (env !== "daytona" && values["daytona-cpu"] !== undefined) throw new Error("--daytona-cpu applies only to --env daytona");
   if (env !== "daytona" && values["daytona-reuse-lease"]) throw new Error("--daytona-reuse-lease applies only to --env daytona");
+  for (const key of ["daytona-warm", "daytona-inherit"] as const) {
+    if (env !== "daytona" && values[key]) throw new Error(`--${key} applies only to --env daytona`);
+  }
+  if (values["daytona-warm"] && values["daytona-inherit"]) throw new Error("--daytona-warm and --daytona-inherit cannot be combined: pick the warm fixture or an inheriting environment");
   if (options.daytonaCpu !== undefined) {
     const budget = integer(process.env.RESTART_CHAOS_DAYTONA_VCPU_BUDGET, "RESTART_CHAOS_DAYTONA_VCPU_BUDGET", DAYTONA_VCPU_BUDGET, 1, 1_000);
-    if (options.concurrency * options.daytonaCpu > budget) {
+    // A warm sandbox outlives its task for the idle window, and a new task cannot reuse
+    // another task's sandbox, so with --daytona-warm (or --daytona-inherit with a warm
+    // agent lifecycle) every task can hold one at once.
+    const retains = daytonaRetainsSandboxes({ warmEnvironment: options.daytonaWarm === true,
+      inheritEnvironment: options.daytonaInherit === true, lifecycle: options.lifecycle });
+    const holders = retains ? Math.max(options.concurrency, options.tasks) : options.concurrency;
+    if (holders * options.daytonaCpu > budget) {
+      if (retains) throw new Error(`${options.daytonaWarm ? "--daytona-warm" : `--daytona-inherit with --lifecycle ${options.lifecycle}`} keeps each task's sandbox for the idle window: ${holders} tasks × `
+        + `--daytona-cpu ${options.daytonaCpu} vCPU exceeds the Daytona vCPU budget of ${budget}. Lower --tasks or --daytona-cpu `
+        + "(RESTART_CHAOS_DAYTONA_VCPU_BUDGET sets the budget).");
       throw new Error(`--concurrency ${options.concurrency} × --daytona-cpu ${options.daytonaCpu} vCPU exceeds the Daytona vCPU budget of ${budget} `
         + "for chaos tasks. Lower one of them (RESTART_CHAOS_DAYTONA_VCPU_BUDGET sets the budget).");
     }
@@ -291,6 +323,8 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     options.storageFaultMs = [min * 1000, max * 1000];
   }
   if (values["storage-trigger"] !== undefined) options.storageTrigger = parseStorageTrigger(values["storage-trigger"], options);
+  if (values["native-trigger"] !== undefined) options.nativeTrigger = parseNativeTrigger(values["native-trigger"], options);
+  if (values["native-trigger-outage"] !== undefined) options.nativeTrigger = { ...options.nativeTrigger!, outageMs: parseNativeTriggerOutage(values["native-trigger-outage"], options) };
   return { mode: "wave", options, keep };
 }
 

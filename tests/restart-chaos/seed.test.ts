@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChaosApi } from "./api.js";
-import { cloneWorkspaceRepository, createFixtureRepository, seedChaosLab, waitForAgentsReady } from "./seed.js";
+import { cloneWorkspaceRepository, createFixtureRepository, inheritingEnvironmentConfig, seedChaosLab, waitForAgentsReady } from "./seed.js";
 import { Timeline } from "./timeline.js";
 
 type Call = { method: string; route: string; body?: unknown };
@@ -126,6 +126,14 @@ describe("seedChaosLab RC-06 mask", () => {
     await seed(api, timeline);
     expect(calls.some(isPolicyCall)).toBe(false);
     expect(timeline.entries.some(entry => entry.kind === "seed_mask_rc06")).toBe(false);
+  });
+});
+
+describe("inheritingEnvironmentConfig", () => {
+  it("drops the lifecycle and lease pins and keeps everything else", () => {
+    const fixture = { provider: "daytona", image: "img", runnerLifecycleMode: "per_turn", reuseLease: false };
+    expect(inheritingEnvironmentConfig(fixture)).toEqual({ provider: "daytona", image: "img" });
+    expect(fixture).toHaveProperty("runnerLifecycleMode", "per_turn");
   });
 });
 

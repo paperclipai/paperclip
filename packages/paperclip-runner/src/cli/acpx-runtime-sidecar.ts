@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { recordSidecarShutdownThenQueue, sidecarShutdownSnapshot } from "./acpx-sidecar-shutdown.js";
 import { classifyClaudeStatusBanner } from "../drivers/acpx/claude-status-banners.js";
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { toolFileChangesFromAcpContent, workspaceRootsFor, type ToolFileChange } from "../tool-file-changes.js";
@@ -113,6 +114,7 @@ import {
 } from "./acpx-sidecar-lifecycle.js";
 
 import { AcpxTurnControlLedger, parseAcpxTurnControl } from "../drivers/acpx/turn-controls.js";
+import { createAcpxTurnDispatchJournal } from "../drivers/acpx/turn-dispatch-journal.js";
 
 const turnControls = new AcpxTurnControlLedger();
 const MAX_PENDING_TOOLS = 512;
@@ -120,6 +122,11 @@ const MAX_PENDING_INPUTS = 16;
 const MAX_BUFFERED_OUTPUT_BYTES = 4 * ACPX_SIDECAR_MAX_FRAME_BYTES;
 const MAX_EVENT_PAYLOAD_BYTES = 256 * 1024;
 let outputFailed = false;
+process.stdout.on("error", () => {
+  outputFailed = true;
+  requestShutdown("ACPX sidecar output failed");
+});
+process.stderr.on("error", () => undefined);
 let goalSourceRevision = 0;
 function observedGoalProjection(...args: Parameters<typeof acpxGoalProjection>) {
   return { ...acpxGoalProjection(...args), providerRevision: ++goalSourceRevision };
@@ -145,6 +152,7 @@ function reportRetainedAcpxCleanupFailure(
 
 interface PendingTool {
   turnId: string;
+  startedAt: number;
   settle(value: unknown): void;
   reject(error: Error): void;
   cleanup(): void;
@@ -225,12 +233,19 @@ process.once("SIGINT", () => {
 function requestShutdown(reason: string): void {
   if (shutdownRequested) return;
   shutdownRequested = true;
-  if (!inputClosed) lines.pause();
-  pendingInput = enqueueAcpxSidecarInput(
-    pendingInput,
-    () => shutdown(reason),
-    (error) => diagnostic("sidecar_shutdown_failed", safeMessage(error)),
-  );
+  if (!recordSidecarShutdownThenQueue(
+    () => diagnostic("sidecar_shutdown_requested", JSON.stringify(sidecarShutdownSnapshot(
+      reason, tools, inputs.size, permissions.size, normalizingTools.size,
+    ))),
+    () => {
+      if (!inputClosed) lines.pause();
+      pendingInput = enqueueAcpxSidecarInput(
+        pendingInput,
+        () => shutdown(reason),
+        (error) => diagnostic("sidecar_shutdown_failed", safeMessage(error)),
+      );
+    },
+  )) outputFailed = true;
 }
 
 async function receiveLine(line: string): Promise<void> {
@@ -474,6 +489,8 @@ async function dispatch(
         onPermissionRequest: (providerRequest, context) =>
           waitForPermission(currentTurnId, activeAgent, providerRequest, context, toolEvidence),
         onTerminalSessionFailure: (failure) => { sessionFailure.value = failure; },
+        // Lets a Runner that lost this request prove whether the prompt left.
+        dispatchJournal: createAcpxTurnDispatchJournal(openParams!.runtimeDirectory, currentTurnId),
       });
     } catch (error) {
       turnId = null;
@@ -907,6 +924,7 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
       call.signal.addEventListener("abort", abort, { once: true });
       tools.set(callId, {
         turnId: activeTurnId,
+        startedAt: performance.now(),
         settle: (result) => {
           // A pipe write alone does not prove receiver admission. Only this
           // call's turn-bound tool.resolve success confirms runnerd accepted
@@ -939,6 +957,7 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
     call.signal.addEventListener("abort", abort, { once: true });
     tools.set(callId, {
       turnId: activeTurnId,
+      startedAt: performance.now(),
       settle,
       reject,
       cleanup: () => call.signal.removeEventListener("abort", abort),

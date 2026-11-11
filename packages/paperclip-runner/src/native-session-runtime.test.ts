@@ -220,7 +220,8 @@ function canonicalTestJson(value: unknown): string {
 const RESTART_LOST_PROCESS_GUIDANCE = "may no longer be running";
 function expectRestartContinuationGuidance(text: string) {
   const events = String(JSON.parse(text).events);
-  expect(events).toContain("This is a resumed session after a Paperclip control-plane restart.");
+  expect(events).toContain("This is a resumed session. The process running the previous turn was lost");
+  expect(events).not.toContain("control-plane restart");
   expect(events).toContain("Shell commands and background processes started in earlier turns " + RESTART_LOST_PROCESS_GUIDANCE);
   expect(events).toContain("check the workspace for the outputs or artifacts");
   expect(events).toContain("If the expected output is missing, re-run the command.");
@@ -6661,6 +6662,67 @@ describe("executeNativeSession recovery", () => {
       expect(openSession).not.toHaveBeenCalled();
       expect(openReplacementSession).not.toHaveBeenCalled();
     }
+  });
+
+  // A remote workspace epoch was abandoned, so the run was assigned a new
+  // sibling root while its checkpoint still names the old one. A checkpoint
+  // that requires the same session (an unfinished goal) ends with the
+  // permanent named code, never a generic retryable failure; a checkpoint that
+  // allows replacement continues in a fresh session in the assigned root.
+  it.each([
+    ["same_session_only", false, false],
+    ["allow_replacement_after_governed_wait", false, false],
+    ["allow_replacement_after_resume_failure", true, false],
+    // An in-flight turn may have an unsettled external effect: never replaced, under any policy.
+    ["same_session_only", false, true],
+    ["allow_replacement_after_resume_failure", false, true],
+  ] as const)("handles a %s checkpoint whose remote workspace root moved (replaces=%s, in flight=%s)", async (providerRecoveryPolicy, replaces, inFlight) => {
+    const parent = "/home/daytona/paperclip-workspace/.paperclip-workspaces";
+    const savedRoot = `${parent}/a5a34403-04fe-4e7e-97cf-d8f371a802a4-1-80214561-2151-4112-a43a-7d65f3071b56`;
+    const assignedRoot = `${parent}/a5a34403-04fe-4e7e-97cf-d8f371a802a4-5-ef79592c-6784-438f-8a17-9800dd2fa2fc`;
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "runner", sessionId: "thread-1", identity, providerSessionId: "provider-session-1",
+      workingDirectory: savedRoot, providerRecoveryPolicy, cursor: "0", activeTurnId: inFlight ? "turn-in-flight" : null,
+      terminalTurns: [], pendingRuntimeRequests: [], lineage: [],
+    };
+    const transportFactory = vi.fn(() => new FakeCodexTransport());
+    const backend = createCodexNativeSessionBackend({ ...input, workspace: { ...input.workspace, cwd: assignedRoot } }, {
+      runnerInstanceId: "runner-recovery", transportFactory,
+      workingDirectoryAuthority: "remote_runner", environment: { PAPERCLIP_WORKSPACE_CWD: assignedRoot },
+    });
+    const replacementAttempted = new Error("replacement attempted");
+    const openReplacementSession = vi.fn(async (sessionInput: { workingDirectory?: string }) => {
+      expect(sessionInput.workingDirectory).toBe(assignedRoot);
+      throw replacementAttempted;
+    });
+    const openRun = vi.fn(async () => undefined);
+    const failure = await executeNativeSession({
+      input: { ...input, workspace: { ...input.workspace, cwd: assignedRoot } },
+      backend: { descriptor: () => backend.descriptor(), openSession: sessionInput => backend.openSession(sessionInput),
+        openReplacementSession, recoverSession: (snapshot, options) => backend.recoverSession!(snapshot, options) },
+      controlPlane: {
+        openRun, appendEvent: vi.fn(), completeRun: vi.fn(),
+        loadSessionCheckpoint: async () => structuredClone(checkpoint),
+        replayEvents: async () => ({ events: [], highestContiguousSourceSeq: 0 }),
+      },
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+    }).catch((error: unknown) => error);
+    if (replaces) {
+      expect(failure).toBe(replacementAttempted);
+      expect(openReplacementSession).toHaveBeenCalledOnce();
+    } else {
+      if (inFlight) {
+        expect(failure).toBeInstanceOf(NativeProviderSideEffectPendingError);
+        expect((failure as NativeProviderSideEffectPendingError).code).toBe("native_provider_side_effect_pending");
+      } else {
+        expect(failure).toBeInstanceOf(NativeProviderStateIncompatibleError);
+        expect((failure as NativeProviderStateIncompatibleError).code).toBe("native_provider_state_incompatible");
+      }
+      expect(openReplacementSession).not.toHaveBeenCalled();
+      expect(openRun).not.toHaveBeenCalled();
+    }
+    // No Runner or provider process starts for a session that cannot resume here.
+    expect(transportFactory).not.toHaveBeenCalled();
   });
 
   it("never replaces a session after a deterministic, non-destructive recovery refusal", async () => {

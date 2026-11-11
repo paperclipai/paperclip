@@ -170,11 +170,20 @@ it("names a budget gate instead of generic execution checks for a refused Retry"
       message: "Retry is waiting for the budget to allow new work. Check Costs for unrecorded or unpriced usage." } });
 });
 
-it.each(["cleanup_quarantined", "cancelled_by_operator", "retry_source_changed"])("does not offer Retry for terminal Retry waits: %s", reason => {
+it.each(["cancelled_by_operator", "retry_source_changed"])("does not offer Retry for terminal Retry waits: %s", reason => {
   const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
   expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false,
     wait: { id: "retry", requestedAt: new Date(), sourceRunId: failed.id, executionWaitReason: reason } }))
     .toMatchObject({ state: "failed", canRetry: false, retryWait: { reason } });
+});
+
+it("holds a Retry on a cleanup gate only while an owner settles it", () => {
+  const failed = { ...run, errorCode: "native_provider_terminal_failed", resultJson: null };
+  const wait = { id: "retry", requestedAt: new Date(), sourceRunId: failed.id, executionWaitReason: "cleanup_quarantined" };
+  expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false, wait, cleanupSettling: true }))
+    .toMatchObject({ state: "failed", canRetry: false, retryWait: { reason: "cleanup_quarantined" } });
+  expect(projectTaskInterruption(issue, { run: failed, agent, paused: false, approval: false, wait }))
+    .toMatchObject({ state: "failed", canRetry: true, retryWait: { reason: "cleanup_quarantined" } });
 });
 
 it("keeps Retry for a Retry declined for its requester's access, since a new click replaces it", () => {
@@ -452,5 +461,86 @@ describe("setup command failure evidence", () => {
     expect(recorded).toMatchObject({ setupCommandFailure: { step: "workspace_provision", exitCode: 1 } });
     const text = JSON.stringify(recorded);
     for (let index = 0; index + 8 <= secret.length; index += 1) expect(text).not.toContain(secret.slice(index, index + 8));
+  });
+});
+
+describe("saved result that ran out of finalization retries", () => {
+  const review = { ...issue, status: "in_review" };
+  const succeeded = { ...run, status: "succeeded", runtimeMode: "native" as const, errorCode: null, resultJson: null };
+
+  it("offers Retry for a succeeded run whose accepted result could not be finalized", () => {
+    expect(projectTaskInterruption(review, { run: { ...succeeded, nativeFinalizationRetry: true }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: true, observedRunId: "run" });
+  });
+
+  it("shows the saved result being applied after Retry", () => {
+    expect(projectTaskInterruption(review, { run: { ...succeeded, nativeFinalizationRetryPending: true }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "working", canRetry: false, recoveryStep: "finishing_recovery" });
+  });
+
+  it("keeps ordinary succeeded and failed runs unchanged", () => {
+    expect(projectTaskInterruption(review, { run: succeeded, agent, paused: false, approval: false }))
+      .toMatchObject({ state: "resolved", canRetry: false });
+    expect(projectTaskInterruption(review, { run: { ...succeeded, status: "failed", errorCode: "adapter_failed" }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption({ ...review, status: "done" }, { run: { ...succeeded, nativeFinalizationRetry: true },
+      agent, paused: false, approval: false })).toMatchObject({ state: "resolved", canRetry: false });
+  });
+});
+
+// Remote native run shape: the provider turn completed and its work was
+// saved, then a same-run recovery was refused by the cleanup gate. The task
+// showed "Couldn't finish this attempt" with a Retry the server refuses (409).
+describe("native cleanup quarantine presentation", () => {
+  const quarantined = { ...run, runtimeMode: "native" as const, errorCode: "native_session_cleanup_quarantined",
+    error: "native_session_cleanup_quarantined: prior session cleanup requires operator recovery; verify its retained process ownership and checkpoint before a controlled restart. Clearing a task session does not resolve this quarantine.",
+    resultJson: null, finishedAt: new Date("2026-11-10T14:39:31.873Z") };
+
+  it("shows the task's blocker wait, not a failed attempt, after a completed turn", () => {
+    expect(projectTaskInterruption(issue, { run: { ...quarantined, completedTurnCleanup: true }, agent,
+      waitingOnBlockers: true, paused: false, approval: false })).toMatchObject({ state: "resolved", canRetry: false });
+  });
+
+  it("waits without Retry while an owner settles the gate", () => {
+    for (const completedTurnCleanup of [true, false]) {
+      const presentation = projectTaskInterruption(issue, { run: { ...quarantined, completedTurnCleanup }, agent,
+        cleanupSettling: true, paused: false, approval: false });
+      expect(presentation).toMatchObject({ state: "failed", canRetry: false, retryWait: { reason: "cleanup_quarantined" } });
+      expect(presentation?.retryWait?.message).not.toMatch(/operator|admin/i);
+    }
+    const preparation = { id: "retry", requestedAt: new Date(0), sourceRunId: quarantined.id, preparationStatus: "failed" };
+    expect(projectTaskInterruption(issue, { run: quarantined, agent, retryWait: preparation, cleanupSettling: true,
+      paused: false, approval: false })).toMatchObject({ canRetry: false });
+  });
+
+  it("offers Retry when nothing settles the gate by itself (s9107 t04/t05)", () => {
+    // An operator-required gate, or one lost with a restarted process, has no
+    // owner. Waiting would never end, so Retry is the way forward.
+    for (const completedTurnCleanup of [true, false]) {
+      const presentation = projectTaskInterruption(issue, { run: { ...quarantined, completedTurnCleanup }, agent,
+        paused: false, approval: false });
+      expect(presentation).toMatchObject({ state: "failed", canRetry: true });
+      expect(presentation).not.toHaveProperty("retryWait");
+    }
+  });
+
+  it("never leaves a failed task without Retry, a scheduled retry or a settling owner", () => {
+    // Invariant: a failed presentation without Retry must name a wait that an
+    // owner is settling. Enumerate the quarantine-related inputs.
+    const waits = [undefined, ...["cleanup_quarantined", "local_cleanup", "execution_settling"].map(reason =>
+      ({ id: "retry", requestedAt: new Date(0), sourceRunId: quarantined.id, executionWaitReason: reason }))];
+    for (const completedTurnCleanup of [true, false]) for (const wait of waits) for (const settling of [true, false]) {
+      const presentation = projectTaskInterruption(issue, { run: { ...quarantined, completedTurnCleanup }, agent,
+        retryWait: wait, cleanupSettling: settling, paused: false, approval: false });
+      if (presentation?.state !== "failed" || presentation.canRetry) continue;
+      expect(presentation.retryWait, JSON.stringify({ completedTurnCleanup, wait: wait?.executionWaitReason, settling }))
+        .toBeDefined();
+      if (presentation.retryWait?.reason === "cleanup_quarantined") expect(settling).toBe(true);
+    }
+  });
+
+  it("keeps Retry for ordinary failed native attempts", () => {
+    expect(projectTaskInterruption(issue, { run: { ...quarantined, errorCode: "native_session_interrupted" }, agent,
+      paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: true });
   });
 });

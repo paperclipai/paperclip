@@ -5,6 +5,21 @@ Run-log events write to the `heartbeat_run_events` table
 Paperclip Telemetry events, and they are not OpenTelemetry exports. A run-log
 event needs no operator endpoint.
 
+## ACPX sidecar shutdown
+
+The ACPX sidecar emits `runtime.diagnostic` with code
+`sidecar_shutdown_requested` once at the first local shutdown request, before
+waiters are removed. Its JSON message records the local reason, pending tool,
+input and permission counts, completion-normalization count, and at most 16
+oldest pending tools. Each tool sample contains elapsed milliseconds and a
+SHA-256 call ID. Hash the corresponding `runtime.tool_called` call ID to match
+it. Arguments, results, operation names and raw call IDs are excluded.
+The existing diagnostic path also writes this message to sidecar stderr.
+A controller that has already stopped may not ingest the frame. Stdin EOF
+identifies a closed controller pipe, not the upstream reason for that closure.
+This is local run evidence; no first-party Telemetry event or OpenTelemetry
+span is added. Retry, cancellation and authorization behavior stay unchanged.
+
 ## Startup reuse evidence
 
 `run.startup.reuse` uses schema `paperclip.startup-reuse.v1`. Each receipt names
@@ -642,6 +657,20 @@ for file storage before <step>." or, when storage stayed unavailable, "Waited Ns
 for file storage before <step>; it was still unavailable." Its payload holds
 `reason: "storage_outage_wait"`, `purpose` (the step), `waitedMs`, and
 `recovered`. The record stays in the instance run log.
+
+When the outage outlasts that wait, the run fails. Only a run recorded with
+`errorCode: "storage_unavailable"` gets a storage wait: a bounded retry
+(`retryReason: "storage_unavailable_wait"`) that starts again after storage is
+back. Its error says "Paperclip will retry automatically when storage is back"
+only while that retry is scheduled. When the retry budget is spent, the error
+says so and asks for Retry. When no storage wait follows, the error says
+"Paperclip is not retrying it automatically. Retry or send a message to
+continue." That happens when a native recovery already holds the run under
+another code (for example `native_continuation_requires_reconciliation`, where
+its files are kept and its unfinished turn is not replayed), or when the retry
+is refused or cannot be written. A run saved by an earlier release with the
+retry promise under another code reads with the same Retry text, with no
+migration.
 
 ## Durable storage timing
 

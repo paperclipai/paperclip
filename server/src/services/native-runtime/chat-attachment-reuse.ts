@@ -1,7 +1,8 @@
 import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
 import { createHash } from "node:crypto";
 
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import type { SelectedFields } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
   assets,
@@ -457,39 +458,47 @@ async function principalAuthorized(
   return endpoint.sponsorUserId ? activeMember(endpoint.sponsorUserId) : true;
 }
 
-function prepareBoundRunLinks(tx: Db, lockMode: AuthorizationLockMode) {
-  const linksQuery = tx
-    .select({
-      commentId: chatMessageLinks.commentId,
-      conversation: {
-        id: chatConversations.id,
-        resourceId: chatConversations.resourceId,
-        isDirectMessage: chatConversations.isDirectMessage,
-      },
-      endpoint: {
-        id: chatEndpoints.id,
-        companyId: chatEndpoints.companyId,
-        provider: chatEndpoints.provider,
-        providerAccountId: chatEndpoints.providerAccountId,
-        status: chatEndpoints.status,
-        allowDirectMessages: chatEndpoints.allowDirectMessages,
-        allowGroupChats: chatEndpoints.allowGroupChats,
-        allowUnlinkedPeople: chatEndpoints.allowUnlinkedPeople,
-        sponsorUserId: chatEndpoints.sponsorUserId,
-        setup: sql<AuthorizationEndpoint["setup"]>`jsonb_build_object(
-          'step', ${chatEndpoints.setup}->'step',
-          'testStartedAt', ${chatEndpoints.setup}->'testStartedAt',
-          'runtimeGeneration', ${chatEndpoints.setup}->'runtimeGeneration'
-        )`,
-      },
-      principalId: chatDeliveries.principalId,
-      normalizedEvent: sql<unknown>`jsonb_build_object('runtimeContext', jsonb_build_object(
-        'generation', ${chatDeliveries.normalizedEvent}->'runtimeContext'->'generation',
-        'credentialFingerprint', ${chatDeliveries.normalizedEvent}->'runtimeContext'->'credentialFingerprint'
-      ))`,
-      processedAt: chatDeliveries.processedAt,
-      receivedAt: chatDeliveries.receivedAt,
-    })
+const boundRunLinkFields = {
+  commentId: chatMessageLinks.commentId,
+  conversation: {
+    id: chatConversations.id,
+    resourceId: chatConversations.resourceId,
+    isDirectMessage: chatConversations.isDirectMessage,
+  },
+  endpoint: {
+    id: chatEndpoints.id,
+    companyId: chatEndpoints.companyId,
+    provider: chatEndpoints.provider,
+    providerAccountId: chatEndpoints.providerAccountId,
+    status: chatEndpoints.status,
+    allowDirectMessages: chatEndpoints.allowDirectMessages,
+    allowGroupChats: chatEndpoints.allowGroupChats,
+    allowUnlinkedPeople: chatEndpoints.allowUnlinkedPeople,
+    sponsorUserId: chatEndpoints.sponsorUserId,
+    setup: sql<AuthorizationEndpoint["setup"]>`jsonb_build_object(
+      'step', ${chatEndpoints.setup}->'step',
+      'testStartedAt', ${chatEndpoints.setup}->'testStartedAt',
+      'runtimeGeneration', ${chatEndpoints.setup}->'runtimeGeneration'
+    )`,
+  },
+  principalId: chatDeliveries.principalId,
+  normalizedEvent: sql<unknown>`jsonb_build_object('runtimeContext', jsonb_build_object(
+    'generation', ${chatDeliveries.normalizedEvent}->'runtimeContext'->'generation',
+    'credentialFingerprint', ${chatDeliveries.normalizedEvent}->'runtimeContext'->'credentialFingerprint'
+  ))`,
+  processedAt: chatDeliveries.processedAt,
+  receivedAt: chatDeliveries.receivedAt,
+};
+
+/** The one join and policy filter for the inbound messages of a bound run.
+ * The caller adds the run's company, comments, issue, provider and agent. */
+function boundRunLinksQuery<T extends SelectedFields>(
+  tx: Db,
+  extraFields: T,
+  bindingFilter: SQL,
+) {
+  return tx
+    .select({ ...boundRunLinkFields, ...extraFields })
     .from(chatMessageLinks)
     .innerJoin(
       chatDeliveries,
@@ -517,23 +526,31 @@ function prepareBoundRunLinks(tx: Db, lockMode: AuthorizationLockMode) {
     )
     .where(
       and(
-        eq(chatMessageLinks.companyId, sql.placeholder("companyId")),
+        bindingFilter,
         eq(chatMessageLinks.direction, "inbound"),
-        sql`${chatMessageLinks.commentId} = any(${sql.placeholder("commentIds")}::uuid[])`,
         eq(chatDeliveries.state, "processed"),
-        eq(chatConversations.issueId, sql.placeholder("issueId")),
         inArray(chatConversations.state, ["active", "waiting"]),
-        eq(chatEndpoints.provider, sql.placeholder("provider")),
-        eq(chatEndpoints.assignedAgentId, sql.placeholder("agentId")),
         inArray(chatEndpoints.status, ["active", "verifying"]),
       ),
     );
+}
+
+function prepareBoundRunLinks(tx: Db, lockMode: AuthorizationLockMode) {
+  const linksQuery = boundRunLinksQuery(tx, {}, and(
+    eq(chatMessageLinks.companyId, sql.placeholder("companyId")),
+    sql`${chatMessageLinks.commentId} = any(${sql.placeholder("commentIds")}::uuid[])`,
+    eq(chatConversations.issueId, sql.placeholder("issueId")),
+    eq(chatEndpoints.provider, sql.placeholder("provider")),
+    eq(chatEndpoints.assignedAgentId, sql.placeholder("agentId")),
+  )!);
   return (lockMode === "read"
     ? linksQuery
     : lockMode === "nonblocking"
       ? linksQuery.for("update", { noWait: true })
       : linksQuery.for("update")).prepare("chat_bound_run_links");
 }
+
+type BoundRunLink = Awaited<ReturnType<ReturnType<typeof prepareBoundRunLinks>["execute"]>>[number];
 
 const boundRunLinksTemplates = new WeakMap<
   Db,
@@ -549,13 +566,25 @@ function boundRunLinksTemplate(tx: Db, lockMode: AuthorizationLockMode) {
   return templates[lockMode] ??= prepareBoundRunLinks(tx, lockMode);
 }
 
-/** Caller must independently verify the current run/issue execution owner. */
-export async function authorizeChatConversationForBoundRun(
+const boundChatAuthorizationDenials = new Set([
+  "paperclip_runner_chat_attachment_binding_denied",
+  "paperclip_runner_chat_attachment_destination_denied",
+  "paperclip_runner_chat_attachment_principal_denied",
+]);
+
+/** True for the three policy denials of bound-run chat authorization. Database
+ * errors, lock contention and malformed input are not denials. */
+export function isBoundChatAuthorizationDenial(error: unknown): boolean {
+  return error instanceof Error && boundChatAuthorizationDenials.has(error.message);
+}
+
+/** The provider and wake comments that the saved context of a run binds. */
+async function boundRunAuthorizationRequest(
   tx: Db,
   binding: ChatReuseBinding,
   contextSnapshot: unknown,
-  lockMode: AuthorizationLockMode = "blocking",
-): Promise<AuthorizedConversation> {
+  lockMode: AuthorizationLockMode,
+): Promise<{ provider: string; commentIds: string[] }> {
   let context = record(contextSnapshot);
   if (context.source === "issue.interaction.respond") {
     const answer = await resolveExternalChatQuestionResponse(tx, binding, context, lockMode);
@@ -573,13 +602,75 @@ export async function authorizeChatConversationForBoundRun(
   ) {
     throw new Error("paperclip_runner_chat_attachment_binding_denied");
   }
-  const links = await boundRunLinksTemplate(tx, lockMode).execute({
-    companyId: binding.companyId,
-    issueId: binding.issueId,
-    agentId: binding.agentId,
-    provider,
-    commentIds,
-  });
+  return { provider, commentIds };
+}
+
+type BoundRunPolicyReads = {
+  resource: (endpoint: AuthorizationEndpoint, resourceId: string) => Promise<AuthorizationResource | null>;
+  principal: (endpoint: AuthorizationEndpoint, principalId: string) => Promise<boolean>;
+};
+
+function boundRunPolicyReads(
+  tx: Db,
+  companyId: string,
+  lockMode: AuthorizationLockMode,
+): BoundRunPolicyReads {
+  return {
+    resource: (endpoint, resourceId) => {
+      const query = tx
+        .select({
+          availability: chatEndpointResources.availability,
+          type: chatEndpointResources.type,
+          enabled: chatEndpointResources.enabled,
+        })
+        .from(chatEndpointResources)
+        .where(
+          and(
+            eq(chatEndpointResources.id, resourceId),
+            eq(chatEndpointResources.companyId, companyId),
+            eq(chatEndpointResources.endpointId, endpoint.id),
+          ),
+        );
+      return lockMode === "read"
+        ? query.then((rows) => rows[0] ?? null)
+        : lockMode === "nonblocking"
+          ? query
+              .for("update", { noWait: true })
+              .then((rows) => rows[0] ?? null)
+          : query.for("update").then((rows) => rows[0] ?? null);
+    },
+    principal: (endpoint, principalId) =>
+      principalAuthorized(tx, endpoint, principalId, lockMode),
+  };
+}
+
+/** Read-only policy reads that the runs of one batch share. The batch reads
+ * each distinct resource and principal one time. */
+function sharedBoundRunPolicyReads(reads: BoundRunPolicyReads): BoundRunPolicyReads {
+  const resources = new Map<string, Promise<AuthorizationResource | null>>();
+  const principals = new Map<string, Promise<boolean>>();
+  const once = <T>(cache: Map<string, Promise<T>>, key: string, read: () => Promise<T>) => {
+    let value = cache.get(key);
+    if (!value) {
+      value = read();
+      cache.set(key, value);
+    }
+    return value;
+  };
+  return {
+    resource: (endpoint, resourceId) =>
+      once(resources, `${endpoint.id}:${resourceId}`, () => reads.resource(endpoint, resourceId)),
+    principal: (endpoint, principalId) =>
+      once(principals, `${endpoint.id}:${principalId}`, () => reads.principal(endpoint, principalId)),
+  };
+}
+
+/** Apply the bound-run policy to the inbound message rows of one run. */
+async function authorizeBoundRunLinks(
+  links: BoundRunLink[],
+  commentIds: string[],
+  reads: BoundRunPolicyReads,
+): Promise<AuthorizedConversation> {
   const linkedCommentIds = new Set(links.map((row) => row.commentId));
   const conversationIds = new Set(links.map((row) => row.conversation.id));
   const endpointIds = new Set(links.map((row) => row.endpoint.id));
@@ -598,39 +689,91 @@ export async function authorizeChatConversationForBoundRun(
     throw new Error("paperclip_runner_chat_attachment_binding_denied");
   }
   const resource = conversation.resourceId
-    ? await (() => {
-        const query = tx
-          .select({
-            availability: chatEndpointResources.availability,
-            type: chatEndpointResources.type,
-            enabled: chatEndpointResources.enabled,
-          })
-          .from(chatEndpointResources)
-          .where(
-            and(
-              eq(chatEndpointResources.id, conversation.resourceId!),
-              eq(chatEndpointResources.companyId, binding.companyId),
-              eq(chatEndpointResources.endpointId, endpoint.id),
-            ),
-          );
-        return lockMode === "read"
-          ? query.then((rows) => rows[0] ?? null)
-          : lockMode === "nonblocking"
-            ? query
-                .for("update", { noWait: true })
-                .then((rows) => rows[0] ?? null)
-            : query.for("update").then((rows) => rows[0] ?? null);
-      })()
+    ? await reads.resource(endpoint, conversation.resourceId)
     : null;
   if (!destinationAllowed(endpoint, conversation, resource)) {
     throw new Error("paperclip_runner_chat_attachment_destination_denied");
   }
   for (const principalId of new Set(links.map((row) => row.principalId!))) {
-    if (!(await principalAuthorized(tx, endpoint, principalId, lockMode))) {
+    if (!(await reads.principal(endpoint, principalId))) {
       throw new Error("paperclip_runner_chat_attachment_principal_denied");
     }
   }
   return { conversationId: conversation.id, endpointId: endpoint.id };
+}
+
+/** Caller must independently verify the current run/issue execution owner. */
+export async function authorizeChatConversationForBoundRun(
+  tx: Db,
+  binding: ChatReuseBinding,
+  contextSnapshot: unknown,
+  lockMode: AuthorizationLockMode = "blocking",
+): Promise<AuthorizedConversation> {
+  const { provider, commentIds } = await boundRunAuthorizationRequest(
+    tx, binding, contextSnapshot, lockMode,
+  );
+  const links = await boundRunLinksTemplate(tx, lockMode).execute({
+    companyId: binding.companyId,
+    issueId: binding.issueId,
+    agentId: binding.agentId,
+    provider,
+    commentIds,
+  });
+  return authorizeBoundRunLinks(
+    links, commentIds, boundRunPolicyReads(tx, binding.companyId, lockMode),
+  );
+}
+
+/**
+ * The read mode of `authorizeChatConversationForBoundRun` for several runs of
+ * one company. One statement reads the inbound messages of all the runs, and
+ * the runs share their resource and principal reads. Each run gets the same
+ * outcome as a separate read-mode call: its conversation, or null for a
+ * policy denial. Other errors are thrown. This takes no locks.
+ */
+export async function authorizeChatConversationsForBoundRuns(
+  db: Db,
+  companyId: string,
+  runs: Array<{ binding: ChatReuseBinding; contextSnapshot: unknown }>,
+): Promise<Array<AuthorizedConversation | null>> {
+  if (runs.some((run) => run.binding.companyId !== companyId)) {
+    throw new Error("paperclip_runner_chat_authorization_batch_company_mismatch");
+  }
+  const deniedAsNull = (error: unknown) => {
+    if (isBoundChatAuthorizationDenial(error)) return null;
+    throw error;
+  };
+  const requests = await Promise.all(runs.map((run) =>
+    boundRunAuthorizationRequest(db, run.binding, run.contextSnapshot, "read").catch(deniedAsNull)));
+  const pending = runs.flatMap((run, index) => {
+    const request = requests[index];
+    return request ? [{ binding: run.binding, ...request }] : [];
+  });
+  if (pending.length === 0) return runs.map(() => null);
+  const unique = (values: string[]) => [...new Set(values)];
+  const rows = await boundRunLinksQuery(db, {
+    issueId: chatConversations.issueId,
+    assignedAgentId: chatEndpoints.assignedAgentId,
+  }, and(
+    eq(chatMessageLinks.companyId, companyId),
+    sql`${chatMessageLinks.commentId} = any(${sql.param(unique(pending.flatMap((run) => run.commentIds)))}::uuid[])`,
+    sql`${chatConversations.issueId} = any(${sql.param(unique(pending.map((run) => run.binding.issueId)))}::uuid[])`,
+    sql`${chatEndpoints.provider} = any(${sql.param(unique(pending.map((run) => run.provider)))}::text[])`,
+    sql`${chatEndpoints.assignedAgentId} = any(${sql.param(unique(pending.map((run) => run.binding.agentId)))}::uuid[])`,
+  )!);
+  const reads = sharedBoundRunPolicyReads(boundRunPolicyReads(db, companyId, "read"));
+  return Promise.all(requests.map(async (request, index) => {
+    if (!request) return null;
+    const { binding } = runs[index]!;
+    const comments = new Set(request.commentIds);
+    // The equality filters of the single-run statement, for this run's rows.
+    const links = rows.filter((row) =>
+      row.issueId === binding.issueId &&
+      row.assignedAgentId === binding.agentId &&
+      row.endpoint.provider === request.provider &&
+      row.commentId !== null && comments.has(row.commentId));
+    return authorizeBoundRunLinks(links, request.commentIds, reads).catch(deniedAsNull);
+  }));
 }
 
 function externalChatWaitCandidate(

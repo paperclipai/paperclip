@@ -13,6 +13,7 @@
 - [Scope enforcement](#scope-enforcement)
 - [Origin and badges](#origin-and-badges)
 - [When not to use a watchdog](#when-not-to-use-a-watchdog)
+- [Authority contract](#authority-contract)
 - [Reference](#reference)
 
 ---
@@ -111,7 +112,7 @@ The mandate also enforces safety constraints that custom instructions **cannot o
 - No creating another watchdog for the watched subtree. No waking itself. Exactly one reusable review task per watched issue.
 - Custom instructions can narrow focus or veto specific shortcuts. They cannot grant authority the server does not already give the watchdog.
 
-The formal authority contract (the full list of allowed and disallowed mutations, plus the ordinary interaction resolver contract) is in [`doc/SPEC-implementation.md`](SPEC-implementation.md) §§9.8.1–9.9.
+The formal authority contract (the full list of allowed and disallowed mutations) is in [Authority contract](#authority-contract) below. The ordinary interaction resolver contract is in [execution semantics](execution-semantics.md#issue-thread-interaction-resolution).
 
 ### Writing custom instructions
 
@@ -172,11 +173,62 @@ If what you actually want is "wake me when this is done," use a routine or an is
 
 ---
 
+## Authority contract
+
+A task watchdog is a scoped execution capacity for a configured watchdog agent on one watched issue subtree. It is not a separate principal, does not inherit board auth, and does not expand the selected agent's company boundary. The server must enforce the watchdog contract from persisted watchdog configuration and run context; custom instructions and prompt text can narrow the mandate but cannot expand it.
+
+The watched subtree is the source issue plus descendants reached through `parent_id`, excluding every issue whose `origin_kind = 'task_watchdog'` and excluding all descendants below those watchdog issues. The generated reusable watchdog issue is outside the watched work subtree for scan purposes, but the watchdog agent may update that reusable watchdog issue to record its own review disposition.
+
+Task-watchdog wakes must include server-derived capability metadata that names the watched root, reusable watchdog issue, excluded `task_watchdog` origin branches, allowed operations, and denied operations. Watchdogs must use that metadata and server denials for capability discovery; they must not create visible probe issues, comments, or throwaway tasks to learn their permissions.
+
+### Allowed watchdog mutations
+
+Within the watched subtree, a watchdog run may perform only mutations that restore or clarify the next live/waiting path:
+
+- add comments that explain findings, evidence, and next action
+- create descendant follow-up issues under an included subtree issue, inheriting company, project, goal, and workspace strategy from that subtree; each follow-up gets its own execution workspace
+- assign or reassign included issues to active, invokable, same-company agents when normal assignment checks and scoped assignment grants allow it
+- move included issues among `todo`, `in_progress`, `in_review`, and `blocked` when the transition is needed to restore a valid action path
+- reopen `done` or `cancelled` included issues only with explicit resume metadata and an audit comment when evidence shows the stopped disposition is wrong or incomplete
+- add, replace, or clear blockers on included issues when the blocker target is in the same company and the change makes the waiting path more accurate
+- set or refresh a one-shot monitor on an included issue when the current assignee owns the future check
+- resolve issue-thread interactions through the ordinary resolver-audience path
+  when the watchdog agent otherwise has issue access and the effective policy allows it
+- update the reusable watchdog issue itself to `done`, `in_review`, or `blocked` with the evidence for the watchdog decision
+
+Every watchdog-triggered mutation must write activity with the watchdog id, source issue id, watchdog issue id when present, run id, and stop fingerprint. Mutations still use the normal status-transition, blocker, assignment, budget, and company-boundary guards.
+
+The atomic recovery batch, restoration verification and escalation, and interaction
+resolution rules for watchdog runs are in
+[execution semantics §11](execution-semantics.md#11-task-watchdog-for-issue-trees).
+
+### Disallowed watchdog mutations
+
+A task watchdog must not:
+
+- mutate issues outside the watched subtree, except for comments or newly created follow-up issues that are children of included subtree issues
+- mutate company, project, goal, agent, auth, API key, budget, secret, environment, plugin, or deployment settings
+- approve or reject rows in the `approvals` table, including hiring, CEO strategy, spend, budget override, or `request_board_approval` decisions
+- resolve execution-policy decisions unless the watchdog agent is the typed participant under that policy outside of its watchdog capacity
+- force-release checkout/execution locks, cancel active runs, terminate processes, or perform active-run output watchdog decisions
+- create visible probe issues, comments, or throwaway tasks to discover whether an operation is allowed
+- delete issue documents, comments, attachments, work products, or activity records
+- change the watchdog configuration, select a different watchdog agent, or create nested watchdog configurations
+- treat custom instructions as authority to bypass approval gates, cross company boundaries, access secrets, or override this contract
+
+When the safe next action needs one of these disallowed mutations, the watchdog must leave a valid waiting path by commenting, creating an in-subtree escalation/follow-up issue, assigning to the correct owner, or leaving the source issue blocked on a first-class blocker.
+
+### Deferred capabilities
+
+Deliberately deferred and disallowed for the first implementation: letting watchdogs cancel active runs, approving board/governance actions, mutating outside the watched subtree, or allowing watchdog agents to modify their own watchdog configuration. Any expansion of those capabilities requires a new product/security review.
+
+---
+
 ## Reference
 
 | Topic                            | File                                                                  |
 | -------------------------------- | --------------------------------------------------------------------- |
-| Authority contract (formal)      | [`doc/SPEC-implementation.md`](SPEC-implementation.md) §9.9           |
+| Authority contract (formal)      | [Authority contract](#authority-contract) (this doc)                  |
 | Execution semantics (formal)     | [`doc/execution-semantics.md`](execution-semantics.md) §11           |
 | Silent active-run watchdog       | [`doc/execution-semantics.md`](execution-semantics.md) §12           |
 | Database schema                  | `packages/db/src/schema/issue_watchdogs.ts`                           |

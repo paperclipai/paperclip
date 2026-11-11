@@ -3186,6 +3186,62 @@
       "when": 1794270045155,
       "tag": "0456_chat_review_lookup_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 457,
+      "version": "7",
+      "when": 1794323383634,
+      "tag": "0457_native_session_run_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 458,
+      "version": "7",
+      "when": 1794326875077,
+      "tag": "0458_chat_admission_issue_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 459,
+      "version": "7",
+      "when": 1794329161946,
+      "tag": "0459_environment_lease_backup_scope_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 460,
+      "version": "7",
+      "when": 1794332988056,
+      "tag": "0460_workspace_activity_context_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 461,
+      "version": "7",
+      "when": 1794334724911,
+      "tag": "0461_created_from_legacy_origin_run_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 462,
+      "version": "7",
+      "when": 1794335976242,
+      "tag": "0462_plugin_lifecycle_resource_cursors",
+      "breakpoints": true
+    },
+    {
+      "idx": 463,
+      "version": "7",
+      "when": 1794340358740,
+      "tag": "0463_gateway_token_pending_reveal",
+      "breakpoints": true
+    },
+    {
+      "idx": 464,
+      "version": "7",
+      "when": 1794346237220,
+      "tag": "0464_project_environment",
+      "breakpoints": true
     }
   ]
 }

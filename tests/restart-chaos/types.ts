@@ -6,11 +6,13 @@ import type { TimeFaultRecord } from "./time-faults.js";
 
 /**
  * K14 (upgrade mid-run): a graceful stop, then the replacement starts from the current build (`--upgrade-from`).
+ * K15 (redeploy, redeploy.ts): a graceful stop, then the replacement starts in a new emulated process space with a new
+ * Railway-shaped deployment id on the same volume, as a hosted deploy replaces the server's container.
  * TM1–TM3 (time faults, time-faults.ts): freeze the server, sleep with aged rows, or an aged outage.
  * RR1–RR3 (repeated restarts, repeated-restarts.ts): a K1, then more restarts while the replacement recovers.
  * MS1–MS3 (two servers, one database, multi-server.ts): a second server beside the first.
  */
-export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14", "TM1", "TM2", "TM3", "RR1", "RR2", "RR3", "MS1", "MS2", "MS3"] as const;
+export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14", "K15", "TM1", "TM2", "TM3", "RR1", "RR2", "RR3", "MS1", "MS2", "MS3"] as const;
 export type FaultKind = (typeof FAULT_KINDS)[number];
 /** The shortest seeded K4 outage (scheduler.ts K4_HOLD_RANGE_MS), also the K4 hold after a provider fault. */
 export const K4_MIN_HOLD_MS = 120_000;
@@ -25,8 +27,10 @@ export type TaskFaultKind = FaultKind | "K13" | "K0" | ProviderFaultKind;
  * G1: an approval-gated action across a restart. H1: a budget hard stop crossed mid-run with a restart (its own wave).
  * Q1: a saved question (question-handoff.ts). Q2, Q3: journeys.ts.
  * L1: high-output, high-accounting run for database contention (contention.ts).
+ * F1: an absolute symlink pointing out of the repository workspace, kept at rest (staging save-back class F).
+ * T1: a 100-second shell tool in the agent's workspace, so a fault lands while the remote Runner runs a tool (staging class R).
  */
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3"] as const;
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "F1", "T1"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
@@ -59,8 +63,16 @@ export interface WaveOptions {
   daytonaCpu?: number;
   /** `--daytona-reuse-lease`: the chaos environment keeps its sandboxes between turns (a per-turn run stops and keeps its sandbox). */
   daytonaReuseLease?: boolean;
+  /** `--daytona-warm`: the reusable warm Daytona environment fixture. */
+  daytonaWarm?: boolean;
+  /** `--daytona-inherit`: a Daytona environment that inherits the lifecycle and leaves lease reuse unset. */
+  daytonaInherit?: boolean;
   /** `--k4-hold-max-seconds`: upper end of the seeded K4 hold (default 300 s, cap 600 s). */
   k4HoldMaxMs?: number;
+  /** `--k15-hold-seconds`: the seeded K15 outage range (redeploy.ts); absent restarts at once. */
+  k15HoldMs?: [number, number];
+  /** `--tm1-hold-seconds`: the seeded TM1 stall range (time-faults-config.ts); absent uses 95–150 s. */
+  tm1HoldMs?: [number, number];
   faultAfterMs?: number;
   /**
    * Known product signatures this wave deliberately masks. "rc06" keeps the
@@ -100,6 +112,7 @@ export interface WaveOptions {
   storageFaultMs?: [number, number];
   storageWindows?: import("./storage-chaos.js").StorageFaultWindow[];
   storageTrigger?: import("./storage-trigger.js").StorageTriggerTarget;
+  nativeTrigger?: import("./native-trigger.js").NativeTriggerSpec;
   workspaceCommit?: string;
   workspaceGitUrl?: string;
   /** Provider message faults from `--faults` (PV1 delay, PV2 drop, PV3 duplicate); see provider-faults.ts. */
@@ -247,10 +260,13 @@ export interface RetryAttempt {
   error: string | null;
   via?: "ui" | "api";
   bannerText?: string | null;
+  diagnostics?: { screenshot: string | null; dom: string | null } | null;
+  dismissedDialogs?: string[];
 }
 
 export const UI_RETRY_BUTTON_MISSING = "ui_retry_button_missing";
 export const UI_RETRY_NO_REQUEST = "ui_retry_no_request";
+export const UI_RETRY_BLOCKED_BY_MODAL = "ui_retry_blocked_by_modal";
 
 export interface FaultReceipt {
   faultId: string;
@@ -275,6 +291,8 @@ export interface FaultReceipt {
   crashPoint?: { name: string; hit: number; pid: number; token?: string };
   /** K14: the build the stopped server ran and the build its replacement runs. */
   upgrade?: { fromRoot: string; fromSha: string | null; toRoot: string; toSha: string | null; switched: boolean };
+  /** K15: the deploy generation, emulated host name and deployment id before and after. */
+  redeploy?: ReturnType<typeof import("./redeploy.js").redeployReceipt>;
   /** TM1–TM3: what was frozen and which rows were aged. */
   timeFault?: TimeFaultRecord;
   /** RR1–RR3: every stop and replacement of the sequence, the first kill included. */

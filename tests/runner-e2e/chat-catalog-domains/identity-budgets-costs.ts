@@ -3,6 +3,7 @@ import { expect } from "@playwright/test";
 import type { BudgetOverview } from "../../../packages/shared/src/types/budget.js";
 import { checks, entity } from "./internal-support.js";
 import { identityDefinition, identityObservation, identityWorker, observeIdentity, waitForReply, probeAgentPermission } from "./identity-support.js";
+import { waitForRenderedReply } from "./internal-comment-reference.js";
 
 export function gradeBudget(value: unknown) {
   const c = checks(); const o = identityObservation(value);
@@ -30,8 +31,13 @@ export const budgetIdentityCases = [identityDefinition("budgets-costs.set-budget
   const workerConfig = await employeeConfiguration(ctx, worker.id);
   return { worker, other, workerConfig };
 }, gradeBudget, {
+  oracleVersion: "paperclip.chat-catalog.identity.set-budget.v2",
+  sourceFiles: ["chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-budgets-costs.ts", "chat-catalog-domains/internal-comment-reference.ts", "chat-scenarios/budgets-costs.yaml"],
   async act(ctx, state) {
     await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx));
+    // The API sees the saved reply before the open conversation renders it;
+    // read the reply's anchors only once that reply is on the page.
+    await waitForRenderedReply(ctx, { leadId: ctx.input.fixtures.agent.id, runs: await ctx.allRuns() });
     const root = `/api/companies/${ctx.input.fixtures.company.id}`; const worker = entity(state, "worker");
     state.agentWriteStatus = await probeAgentPermission(ctx, `${root}/budgets/policies`, "POST", {
       scopeType: "agent", scopeId: worker.id, amount: 5000, windowKind: "calendar_month_utc" });
@@ -46,9 +52,13 @@ export const budgetIdentityCases = [identityDefinition("budgets-costs.set-budget
     if (!href) throw new Error("The budget guidance did not link the intended Morgan record");
     await ctx.input.page.locator(`[id^="comment-"] a[href=${JSON.stringify(href)}]`).first().click();
     if (!(await ctx.input.page.getByPlaceholder("0.00").isVisible())) await ctx.input.page.getByRole("link", { name: "Budgets", exact: true }).click();
-    await ctx.input.page.getByPlaceholder("0.00").fill("50.00");
+    // The draft resets whenever the loaded policy changes; fill only after the
+    // form shows the currently saved cap, and confirm the typed value stuck.
+    const amount = ctx.input.page.getByPlaceholder("0.00");
+    await expect(amount).toHaveValue((Number(state.beforeHumanAmount ?? 0) / 100).toFixed(2));
+    await amount.fill("50.00"); await expect(amount).toHaveValue("50.00");
     await ctx.input.page.getByRole("button", { name: "Update budget", exact: true }).click();
-    await expect(ctx.input.page.getByPlaceholder("0.00")).toHaveValue("50.00"); state.humanSaved = true;
+    await expect(amount).toHaveValue("50.00"); state.humanSaved = true;
     await ctx.input.evidence("identity-human-budget-action.json", { workerId: worker.id, amountCents: 5000, url: ctx.input.page.url() });
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
   },

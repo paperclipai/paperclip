@@ -9,6 +9,8 @@ import { nativePostResultFailureCategory, type NativePostResultFailureCategory }
 import { logger } from "../../middleware/logger.js";
 import { canRestoreMigratedNativeSession } from "./native-workspace-migration.js";
 import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES, nativeHarnessBackupManifestSha256, retiredSourceAuthorizesNativeBackupRestore } from "./native-retired-backup-source.js";
+import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_COMPLETED_TURN_CLEANUP_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED,
+  nativeCheckpointRecordsCompletedTurn } from "./completed-turn-cleanup.js";
 import { prepareCursorCloudRuntime } from "./cursor-cloud-runtime.js";
 import { LocalRuntimeApiListenerClosedError, resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
@@ -51,7 +53,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notificati
 import { writeExecutionControl } from "../execution-control-notifications.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { createRunUsageRecorder } from "../usage-receipts.js";
-import { registerPluginTaskCredentialHandoff, type PluginTaskCredentialWritebackBinding } from "../plugin-task-credential-writeback.js";
+import { syncPluginTaskCredentialHandoff, registerPluginTaskCredentialHandoff } from "../plugin-task-credential-writeback.js";
 import { resolvePluginTaskResume } from "../environment-task-runtime.js";
 import { environmentTaskOperationSchema, environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
@@ -79,7 +81,7 @@ import { dotRunnerBroker } from "../dot-runner-broker.js";
 import { CURSOR_DISTRIBUTION_PINS, KIMI_DISTRIBUTION_CLOSURE_SHA256, QUALIFIED_ACPX_PROFILES, QUALIFIED_ACPX_VERSION } from "../../vendor/paperclip-runner/index.js";
 import { isProviderMode } from "../../vendor/paperclip-runner/index.js";
 import { codexUsageBaselineForNextRun } from "../../vendor/paperclip-runner/index.js";
-import { PROVIDER_PACK_COMPATIBILITY, bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary, runnerBinaryTarget } from "../../vendor/paperclip-runner/index.js";
+import { PROVIDER_PACK_COMPATIBILITY, bundledRemoteProviderPackManifestPath, runnerBinaryTarget } from "../../vendor/paperclip-runner/index.js";
 import { nativeRetryCancellationEligible, rethrowNativeCancellationLockConflict, assertCancellationRequest, cancellationIntentId as callerCancellationIntentId, cancellationRequestId } from "./native-cancellation-request.js";
 import { readNativePlanWait } from "./native-plan-wait.js";
 import { nativeProviderLifecycle } from "./provider-lifecycle.js";
@@ -103,6 +105,8 @@ import { RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
 import { createNativeDeliverableTextObservation } from "./native-deliverable-text.js";
 import { createNativeGitHubAccess, type NativeGitHubAccess } from "./native-github-access.js";
 import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
+import { syncManagedAiCredentials, type ManagedAiCredentialWritebackBinding } from "../managed-ai-credential-writeback.js";
+import { createNativeCredentialStore } from "./native-credential-store.js";
 import { bindManagedNativeCredentialTurn, completeManagedNativeCredentialTurn } from "./managed-native-credentials.js";
 import { createLocalNativeQuestionBridge } from "./local-native-question-bridge.js";
 import { createArtifactInstaller } from "./artifact-transfer.js";
@@ -115,6 +119,7 @@ import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
 import { prepareVerifiedRemoteProviderPack, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
+import { scheduledResumeContinuationAllowed } from "./scheduled-resume-continuation.js";
 import { readNativeLocalProcessStop, recordedLocalExecutionStopped, PRIOR_OWNER_FENCE_REFUSED, PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, withReleasedNativeRunProcess } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
 import { connectorToolDefinitionsForSkills } from "../connector-runtime.js";
@@ -125,10 +130,11 @@ import {
   EXECUTION_CONTROL_DEADLINE_MS,
 } from "../execution-control-deadline.js";
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
+  createReadStream,
   closeSync,
   constants,
   existsSync,
@@ -147,6 +153,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { lstat, readFile, readdir, readlink } from "node:fs/promises";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES, loadNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
@@ -182,6 +189,7 @@ import {
   NativeSessionProtocolIntegrityError,
   completeRetainedNativeSessionCleanup,
   completeTerminatedLocalNativeSessionCleanup,
+  nativeSessionCleanupBlock,
   acpxRuntimeSessionDirectoryName,
   OPENCODE_ISOLATED_HOMES_DIRECTORY,
   opencodeRuntimeSessionDirectoryName,
@@ -243,10 +251,11 @@ import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { assertNativeRetainedSandboxBinding, deferNativeControllerRecovery, NativeControllerRecoveryWaitingError, readNativeControllerRecovery, resolveNativeControllerRecovery } from "./native-controller-recovery.js";
 import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
-import { appendNativeCredentialUpdate } from "./native-credential-updates.js";
+import { createNativeCredentialUpdateOwner, appendNativeCredentialUpdate } from "./native-credential-updates.js";
 import { canonicalNativeJson, nativeSha256 } from "./canonical.js";
 import { lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import { dispatchToolCallback, recoverToolCallback, type SemanticInputAdmission } from "../../vendor/paperclip-runner/index.js";
 import { createAssignedMcpTools, getAssignedMcpGateway } from "./assigned-mcp-tools.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { NativeChatAttachmentReadScope } from "./chat-attachment-read.js";
@@ -288,7 +297,8 @@ import {
 } from "./status-arbiter.js";
 import { conflict, HttpError } from "../../errors.js";
 import { redactSensitiveText } from "../../redaction.js";
-import { resolvePaperclipRunnerBinary, resolveRemotePaperclipRunnerBinary } from "./native-codex-runner.js";
+import { classifyRemoteConnectionError } from "../remote-connection-failure.js";
+import { resolvePaperclipRunnerBinary, resolvePaperclipRunnerBinaryAsync, resolveRemotePaperclipRunnerBinary, verifiedBundledRemoteRunnerBinary } from "./native-codex-runner.js";
 import {
   createNativeRunTrace,
   isNativeRunRootHistoricalSpan,
@@ -308,6 +318,13 @@ import { registerLiveRunnerGoalController } from "../runner-goal-control-broker.
 import { applyRunnerGoalPrpEvent } from "../runner-goals.js";
 import { currentControllerProcessStamp, currentProcessSpaceHash } from "../controller-process-identity.js";
 import { proveOwnerGone } from "../owner-proof.js";
+import {
+  binaryTargetFromHeader,
+  cachedFileSha256,
+  execFileBuffered,
+  sha256DirectoryTreeStreamed,
+  sha256FileStreamed,
+} from "./off-loop-file-work.js";
 import {
   NativeRunnerOwnershipUnverifiedError,
   isNativeRunnerOwnershipHeld,
@@ -330,6 +347,7 @@ import {
   NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT,
   type NativeControllerIdentity,
   type NativeRestartRecoveryClaim,
+  carriesSettledPredecessorSession,
 } from "./native-restart-recovery.js";
 
 type ActiveNativeSession = {
@@ -554,6 +572,8 @@ const CODEX_HOME_REDOWNLOADABLE_ENTRIES = [
 ] as const;
 const CODEX_HOME_CHECKPOINT_EXCLUDED_ENTRIES = [
   ...CODEX_HOME_NON_PERSISTENT_ENTRIES,
+  "auth-refresh.json",
+  "auth-refresh.json.tmp",
   ...CODEX_HOME_REDOWNLOADABLE_ENTRIES,
 ] as const;
 const OPENCODE_RUNTIME_CHECKPOINT_EXCLUDED_ENTRIES = [
@@ -693,6 +713,7 @@ type WarmNativeSession = {
   environmentId: string | null;
   busy: boolean;
   released?: boolean;
+  controllerDetachedForRestart?: boolean;
   finishRelease?: () => Promise<void>;
   closeOnReleaseReason?: string;
   idleTimer: ReturnType<typeof setTimeout> | null;
@@ -703,6 +724,7 @@ async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, 
   preserveInstructionsForRunId?: string;
   discardUnsettledSession?: boolean;
 }) {
+  if (entry.controllerDetachedForRestart) return detachReleasedWarmNativeSession(entry);
   // Revoke before awaiting process retirement/checkpoint IO.
   const stopping = entry.githubAccess?.stop();
   try {
@@ -726,6 +748,13 @@ async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, 
     if (entry.instructionCopy?.runId !== options?.preserveInstructionsForRunId) await entry.instructionCopy?.collectStopped();
   }
   finally { await stopping; }
+}
+
+async function detachReleasedWarmNativeSession(entry: WarmNativeSession) {
+  entry.controllerDetachedForRestart = true;
+  if (!entry.session.detachControllerForRestart) throw new Error("native_session_released_detach_unavailable");
+  await entry.session.detachControllerForRestart();
+  await entry.githubAccess?.stop();
 }
 
 const warmNativeSessions = new Map<string, WarmNativeSession>();
@@ -895,7 +924,7 @@ export async function closeWarmNativeSessionsForEnvironment(input: {
   return closeIdleWarmNativeSessions(input);
 }
 
-/** Suspend idle owners and persist their remote backup before a controller
+/** Detach released owners and checkpoint unreleased owners before a controller
  * exits. Active turns keep their separate authenticated restart handoff. */
 export async function closeIdleWarmNativeSessionsForRestart(): Promise<{
   closed: number; busy: number; failed: number;
@@ -903,6 +932,7 @@ export async function closeIdleWarmNativeSessionsForRestart(): Promise<{
   return closeIdleWarmNativeSessions({
     reason: "controller restart",
     closeBusyOnRelease: true,
+    detachReleased: true,
   });
 }
 
@@ -916,6 +946,7 @@ async function closeIdleWarmNativeSessions(input: {
   environmentId?: string;
   reason: string;
   closeBusyOnRelease?: boolean;
+  detachReleased?: boolean;
   canRetire?: () => boolean;
 }): Promise<{ closed: number; busy: number; failed: number }> {
   let closed = 0;
@@ -937,13 +968,14 @@ async function closeIdleWarmNativeSessions(input: {
     }
     // The host owns retention after release; a quiet local handle needs no retirement for sleep.
     if (input.canRetire && entry.released && !entry.closeOnReleaseReason) continue;
+    const detach = input.detachReleased === true && entry.released === true && !entry.closeOnReleaseReason;
     if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
     // Keep a fenced owner until both retirement and stopped collection succeed.
     // Failure must not make a live directory eligible for a replacement owner.
     entry.busy = true;
-    entry.closeOnReleaseReason = input.reason;
+    if (!detach) entry.closeOnReleaseReason = input.reason;
     const closing = Promise.resolve().then(() =>
-      closeWarmNativeSession(entry, input.reason),
+      detach ? detachReleasedWarmNativeSession(entry) : closeWarmNativeSession(entry, input.reason),
     );
     closingWarmNativeSessions.set(sessionId, closing);
     try {
@@ -951,6 +983,7 @@ async function closeIdleWarmNativeSessions(input: {
       forgetWarmNativeSession(sessionId, entry);
       closed += 1;
     } catch {
+      if (detach) entry.closeOnReleaseReason = "released Runner local detach is unconfirmed";
       failed += 1;
     } finally {
       entry.busy = false;
@@ -1995,18 +2028,21 @@ class SessionAuthorityEpoch {
     return this.#authority.definitions();
   }
 
-  async recover(call: Parameters<PaperclipRunnerToolAuthority["recover"]>[0]) {
+  /** Replay a durable receipt, or settle a callback a restart orphaned
+   * (orphaned-tool-callback.ts). Never executes the tool again. */
+  async recover(call: Parameters<PaperclipRunnerToolAuthority["recover"]>[0], admission?: SemanticInputAdmission) {
     this.#assertCurrent();
-    const result = await this.#authority.recover(call);
+    const result = await recoverToolCallback({ runId: this.runId, call, admission,
+      recover: () => this.#authority.recover(call) });
     this.#assertCurrent();
     return result;
   }
 
   async execute(call: Parameters<PaperclipRunnerToolAuthority["execute"]>[0]) {
     this.#assertCurrent();
-    return this.toolTrace
+    return dispatchToolCallback(this.runId, call.callId, async () => this.toolTrace
       ? await this.toolTrace.execute(call, () => this.#authority.execute(call))
-      : await this.#authority.execute(call);
+      : await this.#authority.execute(call));
   }
 }
 
@@ -2192,10 +2228,15 @@ function runnerdStateBase(): string {
 /**
  * A runner launch requested without a recorded process identity leaves no PID
  * to verify. On this host it is proven absent when no process carries the
- * run's runner arguments and no saved runner state belongs to the run: a
- * provider starts only after its runner connects and writes that state.
+ * run's runner arguments and no saved runner state belongs to the run, or,
+ * when the caller passes `launchRequestedAt` because every earlier runner of
+ * the run was proven stopped, when that state's command journal and lineage
+ * files all predate the launch request: a provider starts only from a command
+ * the runner journals first.
  */
-export async function unidentifiedLocalRunnerProvenAbsent(input: { runId: string; execution: unknown }): Promise<boolean> {
+export async function unidentifiedLocalRunnerProvenAbsent(input: {
+  runId: string; execution: unknown; launchRequestedAt?: number | null;
+}): Promise<boolean> {
   let execution: NativeExecutionInput;
   try {
     execution = parseNativeExecutionInput(input.execution);
@@ -2219,12 +2260,29 @@ export async function unidentifiedLocalRunnerProvenAbsent(input: { runId: string
   for (const candidate of candidates) {
     if (!existsSync(resolve(candidate, "control-plane", "control-plane-state.json"))) continue;
     try {
-      if (record(readRunnerdControlPlaneState(candidate).identity).runId === input.runId) return false;
+      if (record(readRunnerdControlPlaneState(candidate).identity).runId === input.runId &&
+          !runnerStateUnchangedSince(candidate, input.launchRequestedAt)) return false;
     } catch {
       return false;
     }
   }
   return true;
+}
+
+const COARSE_FILE_TIMESTAMP_MARGIN_MS = 2_000;
+
+function runnerStateUnchangedSince(root: string, requestedAt: number | null | undefined): boolean {
+  if (typeof requestedAt !== "number" || !Number.isFinite(requestedAt)) return false;
+  const stateFile = resolve(root, "runner", "runner-state.json");
+  const lineage = resolve(root, "runner", "process-lineage");
+  const paths = [stateFile, ...existsSync(lineage) ? readdirSync(lineage).map(name => resolve(lineage, name)) : []];
+  return paths.every(path => {
+    const stats = lstatSync(path, { throwIfNoEntry: false });
+    if (path === stateFile && !stats) return true;
+    if (!stats?.isFile()) return false;
+    const coarseTimestamp = stats.mtimeMs % 1000 === 0;
+    return stats.mtimeMs + (coarseTimestamp ? COARSE_FILE_TIMESTAMP_MARGIN_MS : 0) < requestedAt;
+  });
 }
 
 /** `paperclip-runnerd` is always launched with `--run-id <runId>`. A failed or
@@ -3469,6 +3527,155 @@ export async function verifyStoppedNativeSessionForAutomaticReplacement(
   const replacement = await verifyStoppedNativeSessionForReplacement(db, run);
   if (replacement || run.errorCode !== "native_session_cleanup_quarantined") return replacement;
   return verifyStoppedNativeSessionForContinuation(db, run);
+}
+
+const SESSION_OPEN_EVENT_TYPES = ["session.started", "session.resumed", "session.reconciled"] as const;
+
+/** This local run's exact runner process and group are durably recorded as
+ * stopped (no later launch), and every provider process it recorded is gone.
+ * Remote process IDs belong to another host, so remote runs never qualify. */
+export async function provenStoppedOwnNativeSession(
+  db: Db,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "runtimeMode" | "runnerInstanceId" | "runnerProfileJson"
+    | "processPid" | "processGroupId" | "processStartedAt">,
+): Promise<{ processPid: number; processGroupId: number; providerPids: number[] } | null> {
+  if (run.runtimeMode !== "native" || !run.runnerInstanceId || process.platform === "win32") return null;
+  if (activeNativeSessions.has(run.id)) return null;
+  const leases = await db.select({ provider: environmentLeases.provider }).from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
+  if (leases.some(lease => lease.provider !== "local")) return null;
+  // A finished run whose process fields were never cleared proves its stop
+  // from the recorded launch identity instead (the same prover as above).
+  const stopped = await readNativeLocalProcessStop(db, run.companyId, run.id)
+    ?? (run.processPid && run.processPid > 1 && run.processGroupId === run.processPid
+      && await recordedLocalExecutionStopped(db, run) ? { processPid: run.processPid, processGroupId: run.processPid } : null);
+  if (!stopped) return null;
+  const events = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
+    .from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+      inArray(heartbeatRunEvents.eventType, [...SESSION_OPEN_EVENT_TYPES, "harness.diagnostic"])));
+  // Every recorded provider process identity, from the durable projection,
+  // the saved checkpoint and the run's own raw runner journal. Codex session
+  // opens carry the PID only in the raw journal; ACPX reports its sidecar in
+  // a diagnostic. Extra identities can only add a stop requirement.
+  const providerPids: unknown[] = [];
+  const pidKeys = ["processId", "process_id", "pid", "processGroupId", "providerPid", "codexPid", "sidecarPid", "agentPid",
+    "agentProcessId", "previousProcessId"];
+  const collect = (...owners: unknown[]) => {
+    for (const owner of owners) for (const key of pidKeys) {
+      const value = record(owner)[key];
+      if (value != null) providerPids.push(value);
+    }
+  };
+  const collectSessionOpen = (payload: Record<string, unknown>) =>
+    collect(payload, payload.runtimeIdentity, payload.providerDescriptor, payload.providerIdentity, payload.started);
+  let sessionOpens = 0;
+  for (const event of events) {
+    const payload = record(record(record(event.payload).prpEvent).payload);
+    if (event.eventType === "harness.diagnostic") {
+      if (payload.providerMethod === "acpx/process") providerPids.push(payload.pid);
+      if (payload.code === "acpx_process") {
+        const details = record(payload.details);
+        // A sidecar in its own group may leave its agent behind, which no record names.
+        if (details.processGroupId != null) return null;
+        providerPids.push(details.pid);
+      }
+      continue;
+    }
+    sessionOpens += 1;
+    collectSessionOpen(payload);
+  }
+  const checkpoint = record(record(run.runnerProfileJson).sessionCheckpoint);
+  collect(checkpoint.process);
+  // Without a parseable execution input there is no raw journal to locate;
+  // the projection and checkpoint above remain the evidence.
+  let execution: NativeExecutionInput | null = null;
+  try {
+    execution = parseNativeExecutionInput(record(run.runnerProfileJson).nativeExecutionInput);
+  } catch {
+    execution = null;
+  }
+  // An existing journal that cannot be read may name a live provider, so it fails closed.
+  try {
+    const root = execution ? scopedRunnerdStateRoot(execution) : null;
+    if (execution && root && existsSync(root)) {
+      const snapshot = cleanupStateSnapshot(root, runnerProviderStateFilename(execution));
+      if (record(snapshot.control.identity).runId === run.id) {
+        collect(snapshot.provider, record(snapshot.provider).identity, record(snapshot.provider).startupAttempt);
+        for (const entry of Array.isArray(snapshot.control.committedEvents) ? snapshot.control.committedEvents : []) {
+          const event = record(record(record(entry).envelope).payload);
+          if (!(SESSION_OPEN_EVENT_TYPES as readonly string[]).includes(String(event.eventType))) continue;
+          sessionOpens += 1;
+          collectSessionOpen(record(event.payload));
+        }
+      }
+    }
+  } catch {
+    return null;
+  }
+  // A provider that opened a session but left no process identity cannot be proven gone.
+  if (sessionOpens > 0 && providerPids.length === 0) return null;
+  if (!providerPids.every(cleanupProcessAbsent)) return null;
+  return { processPid: stopped.processPid, processGroupId: stopped.processGroupId, providerPids: providerPids as number[] };
+}
+
+type CleanupGateOwner = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "runtimeMode"
+  | "nativeIssueId" | "runnerInstanceId" | "runnerProfileJson" | "processPid" | "processGroupId" | "processStartedAt">;
+// Runs the gate refused before launch also count toward this bound, so it is
+// wide enough for a long refused-Retry history behind the owner.
+const CLEANUP_GATE_OWNER_SCAN_LIMIT = 50;
+
+/**
+ * A local session close can fail without proof that its runner suspended (for
+ * example while the server was paused), which leaves an operator-required
+ * cleanup gate in this process. It refuses every later session of the task:
+ * the run's own same-run recovery, and a follow-up run for a new message.
+ * The gate guards process ownership only. When the host proves that the
+ * owner's exact runner process and group stopped, and every provider process
+ * the owner recorded is gone, nothing can still own that session, so the gate
+ * is retired before the next session is admitted.
+ *
+ * This never authorizes provider work: the caller's own recovery or admission
+ * decision, made from durable records, still decides how the task continues.
+ * Returns true when no operator-required gate blocks the task afterwards.
+ */
+export async function retireStoppedSessionCleanupGates(
+  db: Db,
+  input: { companyId: string; issueId: string; run?: CleanupGateOwner;
+    /** Read-only: true when some finished owner of the task is proven stopped. Retires nothing. */
+    preview?: boolean },
+): Promise<boolean> {
+  const blocked = () => nativeSessionCleanupBlock({ companyId: input.companyId, issueId: input.issueId }) === "operator_required";
+  if (!blocked()) return true;
+  const finished = await db.select().from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.nativeIssueId, input.issueId),
+    eq(heartbeatRuns.runtimeMode, "native"), isNotNull(heartbeatRuns.finishedAt), isNotNull(heartbeatRuns.runnerInstanceId),
+    inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"]),
+  )).orderBy(desc(heartbeatRuns.createdAt)).limit(CLEANUP_GATE_OWNER_SCAN_LIMIT);
+  const owners: CleanupGateOwner[] = [...(input.run ? [input.run] : []), ...finished.filter(row => row.id !== input.run?.id)];
+  for (const owner of owners) {
+    if (!blocked()) break;
+    if (!owner.runnerInstanceId || owner.companyId !== input.companyId) continue;
+    const stopped = await provenStoppedOwnNativeSession(db, owner);
+    if (!stopped) continue;
+    if (input.preview) return true;
+    let retired = false;
+    try {
+      retired = completeTerminatedLocalNativeSessionCleanup({
+        companyId: owner.companyId, runId: owner.id, runnerInstanceId: owner.runnerInstanceId,
+      });
+    } catch {
+      continue;
+    }
+    // True also when this owner held no entry; record only a real release.
+    if (!retired || blocked()) continue;
+    await appendHeartbeatRunEvent(db, {
+      companyId: owner.companyId, runId: owner.id, agentId: owner.agentId,
+      eventType: "native.session_cleanup_gate_retired", stream: "system", level: "info",
+      message: "The run's runner and provider processes are verified stopped, so its session cleanup gate was retired.",
+      payload: { processPid: stopped.processPid, processGroupId: stopped.processGroupId, providerPids: stopped.providerPids },
+    }).catch(() => undefined);
+  }
+  return !blocked();
 }
 
 /** Exact local cleanup only: the accepted result and original quarantine are
@@ -5472,6 +5679,12 @@ function moveNativeContinuityState(root: string, archiveRoot: string): void {
 type SettledRunnerdProjection = { bytes: string; refused?: never } | { bytes?: never; refused: string };
 
 const LOCAL_RUNNER_LIFECYCLE_COMMANDS = new Set(["runner.suspend", "runner.drain", "runner.shutdown"]);
+/** Commands that only deliver something to the Runner that held this journal:
+ * its attachment, an answer to a tool it already called, or a read. None
+ * carries new user intent, and none can run without that Runner. When its
+ * sandbox lease ended on another sandbox, no process remains to receive them. */
+const GONE_REMOTE_RUNNER_DELIVERY_COMMANDS = new Set(["run.attach", "semantic_tool.result", "session.snapshot",
+  "session.goal.get"]);
 
 function readSettledRunnerdProjection(root: string, identity: Record<string, string>,
   options: { localRunner?: boolean; controlBytes?: string; remoteRunnerGone?: boolean } = {}): SettledRunnerdProjection {
@@ -5494,12 +5707,18 @@ function readSettledRunnerdProjection(root: string, identity: Record<string, str
     const control = record(JSON.parse(bytes));
     const commands = (Array.isArray(control.commands) ? control.commands : []).map(record);
     // A stopped local Runner can no longer act on its own lifecycle commands.
+    // A remote Runner whose sandbox lease ended elsewhere also cannot receive
+    // a delivery that it never acknowledged.
+    const goneCommandTypes = options.remoteRunnerGone ? new Set([...LOCAL_RUNNER_LIFECYCLE_COMMANDS, ...GONE_REMOTE_RUNNER_DELIVERY_COMMANDS])
+      : LOCAL_RUNNER_LIFECYCLE_COMMANDS;
     const settledCommands = ((options.localRunner && lifecycle === "not_suspended") || options.remoteRunnerGone) && Array.isArray(control.commands)
-      ? commands.filter(command => !LOCAL_RUNNER_LIFECYCLE_COMMANDS.has(String(command.type)) || command.status === "completed")
+      ? commands.filter(command => !goneCommandTypes.has(String(command.type)) || command.status === "completed")
       : commands;
     const settledControl = settledCommands === commands ? control : { ...control, commands: settledCommands };
+    // The controller journals a tool's answer after the tool ran. Only its
+    // delivery can be outstanding, and only to a Runner that is gone.
     const answered = new Set(commands
-      .filter(command => command.type === "semantic_tool.result" && command.status === "completed")
+      .filter(command => command.type === "semantic_tool.result" && (command.status === "completed" || options.remoteRunnerGone))
       .map(command => record(command.payload).sourceEventId));
     if (!RUNNERD_CONTROL_PLANE_STATE_SCHEMAS.has(String(control.schema))) return refuse("journal_schema_unsupported");
     if (control.warmTransition != null) return refuse("journal_warm_transition");
@@ -5562,6 +5781,15 @@ function retirementReasonName(kind: keyof typeof RETIREMENT_REASON_NAMES, value:
  * receipt is a claim of one recorded Runner process. Once that process and its
  * recorded provider processes are proven stopped by exact PID and start time,
  * the claim has no owner left and the same retirement applies.
+ *
+ * A warm sandbox owner keeps its Runner `ready` in its own sandbox after the
+ * turn, waiting for live adoption. A restart or deploy that replaces its
+ * controller leaves that Runner without anyone who could adopt it, and when
+ * this run received a different sandbox (created or replacement) it can never
+ * be adopted here. Its terminal state is then as knowable as a per-turn
+ * owner's: the same committed result, released lease, stopped controller and
+ * settled journal prove it finished, so the same retirement applies. A local
+ * warm Runner, or a resumed sandbox that still holds it, keeps the live path.
  */
 async function inspectFinishedPerTurnRunnerdOwner(input: {
   db: Db;
@@ -5577,8 +5805,9 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
   // A resumed sandbox still holds the prior Runner's own lifecycle, which its
   // existing recovery path reads. Plugin tasks own a separate saved checkpoint.
   const refuse = (refused: string) => ({ finished: false as const, refused });
-  if (input.execution.session.lifecyclePolicy.mode !== "per_turn") return refuse("lifecycle_not_per_turn");
+  const lifecycle = input.execution.session.lifecyclePolicy.mode;
   const localRunner = !target || target.kind === "local";
+  if (lifecycle !== "per_turn" && !(lifecycle === "warm" && !localRunner)) return refuse("lifecycle_not_per_turn");
   if (!localRunner) {
     if (target.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.runnerTask) {
       return refuse("target_not_sandbox_runner");
@@ -6950,8 +7179,9 @@ async function refreshFinishedPerTurnRunnerdProjection(
 }
 
 /** The controller checkpoint and Runner lifecycle have separate authorities.
- * Rehydrate a missing suspension receipt before choosing live warm adoption. */
-async function restoreRemoteSuspendedRunnerCheckpoint(input: {
+ * Rehydrate a missing suspension receipt before choosing live warm adoption.
+ * Exported for the provider-boundary regression only. */
+export async function restoreRemoteSuspendedRunnerCheckpoint(input: {
   db: Db; execution: NativeExecutionInput;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
 }, root: string): Promise<void> {
@@ -6964,6 +7194,9 @@ async function restoreRemoteSuspendedRunnerCheckpoint(input: {
     || !durableIdentityMatchesSession(prior, input.execution) || prior.runId === input.execution.binding.runId
     || runnerdAuthorityLifecycle(root, prior) !== "absent") return;
   let state: Record<string, unknown>;
+  // A Runner left in an abandoned allocation is never adopted live: the new
+  // execution restored the last save into its own root of the same sandbox.
+  let movedAllocation = false;
   if (target.runnerTask) {
     // The admitted task owner binds this read to the surviving physical task;
     // its suspended identity still belongs to the previous business turn.
@@ -6972,19 +7205,49 @@ async function restoreRemoteSuspendedRunnerCheckpoint(input: {
     state = result.state;
   } else {
     if (!target.runner) throw new Error("native_controller_recovery_dependency_unavailable:runner_state_reader");
-    await assertNativeRetainedSandboxBinding(input.db, { ...input.execution.binding, runId: prior.runId, target });
-    const stateDirectory = posix.join(target.remoteCwd, ".paperclip-runtime", "paperclip-runner", "sessions",
-      createHash("sha256").update(nativeSessionKey(input.execution)).digest("hex"), "runner");
-    state = await readRemoteRunnerState({ runner: target.runner, stateDirectory });
+    // The retained Runner wrote under its own lease's directory, which differs
+    // from this target when the workspace moved within the same sandbox.
+    const retained = await assertNativeRetainedSandboxBinding(input.db, { ...input.execution.binding, runId: prior.runId, target });
+    movedAllocation = retained.remoteCwd !== target.remoteCwd;
+    state = await readRemoteRunnerState({ runner: target.runner,
+      stateDirectory: remoteRunnerStateDirectory(retained.remoteCwd, nativeSessionKey(input.execution)) });
   }
   // A running warm source keeps the existing live-adoption identity, idle,
   // controller-fencing and physical-process checks. Only suspension is cached.
-  if (input.execution.session.lifecyclePolicy.mode === "warm" && state.lifecycle !== "suspended") return;
+  if (!movedAllocation && input.execution.session.lifecyclePolicy.mode === "warm" && state.lifecycle !== "suspended") return;
   if (state.lifecycle !== "suspended" || !Array.isArray(state.outbox) || state.outbox.length !== 0
-    || state.pendingTerminalDelivery != null || state.pendingProviderCleanup != null || state.warmTransition != null) {
+    || (state.pendingTerminalDelivery != null && !isUndeliveredSuspendReceipt(state, root))
+    || state.pendingProviderCleanup != null || state.warmTransition != null) {
     throw new Error("native_controller_recovery_missing_evidence:runner_not_settled");
   }
   savePluginRunnerCheckpoint(root, state, prior);
+}
+
+/** The Runner saves `suspended` and a terminal fence for its suspend result
+ * before it sends that result. When a restart stops the controller first, the
+ * fence stays: the suspension finished, and only its acknowledgement is
+ * missing. A later authorized Runner process reconciles that receipt, so it
+ * does not hold the suspended state. Any other fence (a turn's terminal, a
+ * provider cleanup, unsent events), or a journal that lacks the command,
+ * names it differently or holds a later command still refuses. */
+function isUndeliveredSuspendReceipt(state: Record<string, unknown>, root: string): boolean {
+  const pending = record(state.pendingTerminalDelivery);
+  if (pending.commandType !== "runner.suspend" || pending.lifecycle !== "suspended"
+    || typeof pending.commandId !== "string" || !pending.commandId
+    || !Number.isSafeInteger(pending.controllerSeq) || Number(pending.controllerSeq) <= 0
+    || pending.controllerSeq !== state.lastControllerCommandSeq) return false;
+  try {
+    const control = record(JSON.parse(readBoundedNativeFile(resolve(root, "control-plane", "control-plane-state.json"),
+      NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "runner_durable_identity_too_large").toString("utf8")));
+    const commands = Array.isArray(control.commands) ? control.commands.map(record) : [];
+    const matching = commands.filter(command => command.commandId === pending.commandId);
+    // The suspend must be journaled exactly once and be the controller's last command.
+    return matching.length === 1 && matching[0]!.type === "runner.suspend"
+      && matching[0]!.controllerSeq === pending.controllerSeq
+      && commands.every(command => !(Number(command.controllerSeq) > Number(pending.controllerSeq)));
+  } catch {
+    return false;
+  }
 }
 
 /** Materialize opaque controller state before ordinary warm admission reads it.
@@ -7354,6 +7617,24 @@ function providerSessionIdentityIsPresent(value: unknown): boolean {
   );
 }
 
+export function remoteProviderStateNeverOpened(execution: NativeExecutionInput, providerState: unknown): boolean {
+  const state = record(providerState);
+  if (state.lifecycle !== "prepared") return false;
+  switch (execution.provider.kind) {
+    case "acpx":
+      return state.schema === ACPX_PROVIDER_STATE_SCHEMA && (state.identity ?? null) === null
+        && (state.activeTurnId ?? null) === null && (state.providerExitUnconfirmed ?? false) === false;
+    case "cursor_cloud":
+    case "codex":
+    case "opencode":
+      return state.schema === CODEX_PROVIDER_STATE_SCHEMA && (state.threadId ?? null) === null
+        && (state.providerSessionId ?? null) === null && (state.activeProviderTurnId ?? null) === null
+        && state.ambiguousTurnStartPending !== true;
+    default:
+      return false;
+  }
+}
+
 /** Closed diagnostic categories; durable state may contain private provider data. */
 export function durableProviderCheckpointFailureReason(execution: NativeExecutionInput, providerState: unknown): string {
   if (execution.provider.kind !== "acpx") return "identity_binding";
@@ -7504,6 +7785,60 @@ function digestBackupDirectory(directory: string): {
   return { sha256: `sha256:${hash.digest("hex")}`, bytes };
 }
 
+// `digestBackupDirectory` for run paths: the same digest, streamed. A harness
+// backup can hold large provider databases, and hashing it synchronously
+// blocked every lease renewal for the whole read.
+async function digestBackupDirectoryStreamed(directory: string): Promise<{
+  sha256: string;
+  bytes: number;
+}> {
+  let hash = createHash("sha256");
+  let bytes = 0;
+  const visit = async (current: string, relative: string): Promise<void> => {
+    const entries = (await readdir(current, { withFileTypes: true })).sort(
+      (left, right) => left.name.localeCompare(right.name),
+    );
+    if (entries.length === 0) hash.update(`directory:${relative}\0`);
+    for (const entry of entries) {
+      const entryPath = resolve(current, entry.name);
+      const entryRelative = relative ? `${relative}/${entry.name}` : entry.name;
+      const stats = await lstat(entryPath);
+      if (entry.isDirectory()) {
+        hash.update(`directory:${entryRelative}:${stats.mode & 0o777}\0`);
+        await visit(entryPath, entryRelative);
+      } else if (entry.isSymbolicLink()) {
+        hash.update(`symlink:${entryRelative}:${await readlink(entryPath)}\0`);
+      } else if (entry.isFile()) {
+        // The record names the byte count before the contents. Stream with the
+        // size from lstat; if the file changed size meanwhile, hash the bytes
+        // actually read, exactly as the synchronous digest would.
+        const before = hash.copy();
+        const header = (size: number) => `file:${entryRelative}:${stats.mode & 0o777}:${size}\0`;
+        hash.update(header(stats.size));
+        let fileBytes = 0;
+        for await (const chunk of createReadStream(entryPath)) {
+          fileBytes += (chunk as Buffer).byteLength;
+          hash.update(chunk as Buffer);
+        }
+        if (fileBytes !== stats.size) {
+          const contents = await readFile(entryPath);
+          hash = before;
+          hash.update(header(contents.byteLength));
+          hash.update(contents);
+          fileBytes = contents.byteLength;
+        }
+        bytes += fileBytes;
+      } else {
+        throw new Error(
+          `runner_harness_backup_unsupported_entry:${entryRelative}`,
+        );
+      }
+    }
+  };
+  await visit(directory, "");
+  return { sha256: `sha256:${hash.digest("hex")}`, bytes };
+}
+
 function harnessBackupRoot(root: string): string {
   return resolve(root, "failover-backups");
 }
@@ -7595,14 +7930,16 @@ function compatibleNativeHarnessBackupManifests(input: {
   return compatible;
 }
 
-export function buildNativeHarnessBackupManifest(input: {
+type NativeHarnessBackupManifestInput = {
   backupRoot: string;
   execution: NativeExecutionInput;
   runnerInstanceId: string;
   providerSessionIdentity: unknown;
   sourceProviderLeaseId: string;
   completedAt?: string;
-}): NativeHarnessBackupManifest {
+};
+
+export function buildNativeHarnessBackupManifest(input: NativeHarnessBackupManifestInput): NativeHarnessBackupManifest {
   if (!providerSessionIdentityIsPresent(input.providerSessionIdentity)) {
     throw new Error("runner_harness_state_mismatch: backup_provider_identity_missing");
   }
@@ -7612,6 +7949,31 @@ export function buildNativeHarnessBackupManifest(input: {
     if (!existsSync(path)) throw new Error("runner_harness_state_mismatch: backup_directory_missing");
     return { name: directory.name, ...digestBackupDirectory(path) };
   });
+  return nativeHarnessBackupManifest(input, profile, directories);
+}
+
+/** `buildNativeHarnessBackupManifest` for run paths: the backup is hashed by streaming. */
+export async function buildNativeHarnessBackupManifestStreamed(
+  input: NativeHarnessBackupManifestInput,
+): Promise<NativeHarnessBackupManifest> {
+  if (!providerSessionIdentityIsPresent(input.providerSessionIdentity)) {
+    throw new Error("runner_harness_state_mismatch: backup_provider_identity_missing");
+  }
+  const profile = resolveNativeHarnessPersistenceProfile(input.execution);
+  const directories: NativeHarnessBackupManifest["directories"] = [];
+  for (const directory of profile.directories) {
+    const path = resolve(input.backupRoot, directory.name);
+    if (!existsSync(path)) throw new Error("runner_harness_state_mismatch: backup_directory_missing");
+    directories.push({ name: directory.name, ...await digestBackupDirectoryStreamed(path) });
+  }
+  return nativeHarnessBackupManifest(input, profile, directories);
+}
+
+function nativeHarnessBackupManifest(
+  input: NativeHarnessBackupManifestInput,
+  profile: ReturnType<typeof resolveNativeHarnessPersistenceProfile>,
+  directories: NativeHarnessBackupManifest["directories"],
+): NativeHarnessBackupManifest {
   return {
     schema: "paperclip.native-harness-backup.v1",
     normalizedSessionId: nativeSessionKey(input.execution),
@@ -7627,6 +7989,44 @@ export function buildNativeHarnessBackupManifest(input: {
     directories,
     completedAt: input.completedAt ?? new Date().toISOString(),
   };
+}
+
+/** `verifyNativeHarnessBackup` for run paths: the same checks, streamed. */
+export async function verifyNativeHarnessBackupStreamed(input: {
+  root: string;
+  execution: NativeExecutionInput;
+  runnerInstanceId: string;
+}): Promise<VerifiedHarnessBackup | null> {
+  for (const {
+    root: candidateRoot,
+    manifest,
+  } of compatibleNativeHarnessBackupManifests(input)) {
+    let bytes = 0;
+    let valid = true;
+    for (const declared of manifest.directories) {
+      const directoryPath = resolve(candidateRoot, declared.name);
+      if (!existsSync(directoryPath)) {
+        valid = false;
+        break;
+      }
+      try {
+        const digest = await digestBackupDirectoryStreamed(directoryPath);
+        if (
+          digest.sha256 !== declared.sha256 ||
+          digest.bytes !== declared.bytes
+        ) {
+          valid = false;
+          break;
+        }
+        bytes += digest.bytes;
+      } catch {
+        valid = false;
+        break;
+      }
+    }
+    if (valid) return { root: candidateRoot, manifest, bytes };
+  }
+  return null;
 }
 
 export function verifyNativeHarnessBackup(input: {
@@ -7992,11 +8392,7 @@ function armWarmNativeSessionIdleTimer(
     current.busy = true;
     const released = current.released === true;
     if (!released) current.closeOnReleaseReason = "warm native session idle timeout";
-    const closing = (released ? (async () => {
-      if (!current.session.detachControllerForRestart) throw new Error("native_session_released_detach_unavailable");
-      await current.session.detachControllerForRestart();
-      await current.githubAccess?.stop();
-    })() : closeWarmNativeSession(current, current.closeOnReleaseReason!))
+    const closing = (released ? detachReleasedWarmNativeSession(current) : closeWarmNativeSession(current, current.closeOnReleaseReason!))
       .then(() => { forgetWarmNativeSession(sessionId, current); })
       .catch(() => {
         if (released) current.closeOnReleaseReason = "released Runner local detach is unconfirmed";
@@ -8031,6 +8427,7 @@ export function nativeSessionFailureDisposition(
   sourceFailureCode?: ReturnType<typeof nativeSessionFailureSourceCode>,
 ) {
   const permanentFailure =
+    sourceFailureCode === "runner_task_admission_rejected" ||
     sourceFailureCode === "runner_ingress_access_rejected" ||
     sourceFailureCode === "native_provider_runtime_missing" ||
     sourceFailureCode === "native_provider_model_rejected" ||
@@ -8045,7 +8442,8 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ ||
     sourceFailureCode === "native_session_cleanup_quarantined" ||
     sourceFailureCode === "native_adopted_runner_authentication_timeout" ||
-    sourceFailureCode === "native_provider_usage_limit";
+    sourceFailureCode === "native_provider_usage_limit" ||
+    sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED;
   const permissionDeclined = sourceFailureCode === "native_permission_declined";
   const exhausted = permanentFailure || permissionDeclined || attempt >= 3;
   return {
@@ -8086,6 +8484,33 @@ export function nativeSessionRecoveryProjection(input: {
   };
 }
 
+/**
+ * The Runner closed this run's provider session after a turn start whose prompt
+ * may have reached the provider. Every later same-run `turn.start` is refused
+ * the same way, and resending could duplicate the prompt, so the run stops and
+ * the board offers Retry (a new run with a fresh provider session). A start the
+ * Runner proved never dispatched is not classified and still retries.
+ */
+export const NATIVE_PROVIDER_SESSION_CLOSED = "native_provider_session_closed";
+export const NATIVE_PROVIDER_SESSION_CLOSED_ACTION =
+  "The provider session closed after a turn start that may have reached the provider, and this run cannot reopen it. Retry starts a new run with a fresh provider conversation and the saved task context.";
+const RUNNER_PROVIDER_SESSION_CLOSED = "provider_session_closed";
+
+/** Reads the Runner's closed class from an authenticated turn.start failure. */
+function runnerClosedTurnStartSession(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== "object" || depth > 5) return false;
+  const value = error as Record<string, unknown>;
+  const result = record(value.runnerCommandResult);
+  if (result.commandType === "turn.start" && record(result.result).classification === RUNNER_PROVIDER_SESSION_CLOSED) {
+    return true;
+  }
+  // The structured result can be lost when the failure is rewrapped; the
+  // authenticated command failure text carries the same closed class.
+  const message = error instanceof Error ? error.message : "";
+  if (/\bPRP command turn\.start failed: \{.*"classification":"provider_session_closed"/.test(message)) return true;
+  return runnerClosedTurnStartSession(value.cause, depth + 1);
+}
+
 export function nativeSessionFailureSourceCode(
   error: unknown,
 ):
@@ -8096,6 +8521,7 @@ export function nativeSessionFailureSourceCode(
   | typeof NATIVE_PROVIDER_SIDE_EFFECT_PENDING
   | "native_provider_approval_required"
   | "native_provider_usage_limit"
+  | typeof NATIVE_PROVIDER_SESSION_CLOSED
   | "native_session_cleanup_quarantined"
   | "native_adopted_runner_authentication_timeout"
   | "runner_remote_provider_artifact_incompatible"
@@ -8119,6 +8545,7 @@ export function nativeSessionFailureSourceCode(
   | typeof NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ
   | "provider_session_open_rejected"
   | "provider_session_open_timeout"
+  | "runner_task_admission_rejected"
   | "runner_ingress_access_rejected"
   | "runner_ingress_acquisition_failed"
   | "local_runtime_api_listener_unavailable"
@@ -8157,7 +8584,11 @@ export function nativeSessionFailureSourceCode(
     return error.failure.httpStatus === 401 || error.failure.httpStatus === 403
       ? "runner_ingress_access_rejected" : "runner_ingress_acquisition_failed";
   }
+  if (runnerClosedTurnStartSession(error)) return NATIVE_PROVIDER_SESSION_CLOSED;
   const message = error instanceof Error ? error.message : String(error);
+  if (/^(?:runner_ingress_unavailable: runnerd exited unexpectedly with code 1: )?runner_task_admission_rejected: (session_state_unavailable|account_binding_mismatch)$/.test(message)) {
+    return "runner_task_admission_rejected";
+  }
   if (/classification=runtime_package_missing\)/.test(message))
     return "native_provider_runtime_missing";
   if (/native_provider_model_rejected/i.test(message))
@@ -8252,7 +8683,10 @@ export function nativeSessionFailureSourceCode(
 }
 
 const NATIVE_PROVIDER_SIDE_EFFECT_PENDING_ACTION =
-  "The saved provider session has a tool call whose result never reached the runner, so Paperclip did not replace the session or retry it. Reconcile the action: check whether it ran and record the outcome. The task then continues in a fresh provider session in the same workspace. The saved session and workspace are unchanged.";
+  "The saved provider session has an unfinished provider turn, or a tool call whose result never reached the runner, so Paperclip did not replace the session or retry it. Reconcile the action: check whether it ran and record the outcome. The task then continues in a fresh provider session in the same workspace. The saved session and workspace are unchanged.";
+
+const RUNNER_TASK_ADMISSION_REJECTED_ACTION =
+  "The execution provider refused to start this task. Review the admission reason before retrying. Automatic retries are stopped.";
 
 const NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION =
   "The current runner cannot restore this task's saved provider session, so retrying this run cannot succeed. Retry the task to continue in a fresh provider session with the same workspace. The earlier provider conversation is not carried over.";
@@ -8265,8 +8699,11 @@ const NATIVE_STARTUP_MODEL_REJECTED_ACTION =
 const NATIVE_TURN_MODEL_REJECTED_ACTION =
   "The provider rejected the selected model. Choose a supported model for this agent, then retry the task. Automatic retries are stopped.";
 
-const NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE =
-  "Send a new message to continue after Paperclip verifies that the previous provider and its tools have stopped. Clearing a task session does not resolve this quarantine. Automatic retries are stopped.";
+// The cleanup gate needs no person: environment release proves the old
+// runner, provider and tools stopped, and the agent continues on its next wake.
+const nativeCleanupRefusalAction = (completedTurnCleanup: boolean) => completedTurnCleanup
+  ? NATIVE_COMPLETED_TURN_CLEANUP_MESSAGE
+  : `${NATIVE_CLEANUP_SETTLING_MESSAGE} Send a message to continue; it starts once the previous session has stopped.`;
 
 const PROVIDER_DURABLE_EVENT_TYPES = NATIVE_PROVIDER_DURABLE_EVENT_TYPES;
 
@@ -8295,7 +8732,7 @@ export async function nativeProviderRecoveryEvidence(input: {
   const run = await input.db
     .select({ runnerProfileJson: heartbeatRuns.runnerProfileJson, companyId: heartbeatRuns.companyId,
       nativeIssueId: heartbeatRuns.nativeIssueId, nativeSessionId: heartbeatRuns.nativeSessionId,
-      runnerInstanceId: heartbeatRuns.runnerInstanceId })
+      runnerInstanceId: heartbeatRuns.runnerInstanceId, id: heartbeatRuns.id, createdAt: heartbeatRuns.createdAt })
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, input.runId))
     .limit(1)
@@ -8329,6 +8766,7 @@ export async function nativeProviderRecoveryEvidence(input: {
     ? await loadNativeUnclaimedBootstrapCheckpoint(input.db, input.bootstrap.binding, input.bootstrap.identity)
     : null;
   let controllerCheckpointMatches = true;
+  let controllerCheckpointAbsent = false;
   if (input.executionTargetKind === "remote" && checkpointRecord.backendKind === "runner"
     && record(run?.runnerProfileJson).nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION) {
     controllerCheckpointMatches = false;
@@ -8336,6 +8774,7 @@ export async function nativeProviderRecoveryEvidence(input: {
       const header = await loadNativeRunnerCheckpointHeader(input.db, {
         companyId: run.companyId, issueId: run.nativeIssueId, runId: input.runId,
       });
+      controllerCheckpointAbsent = !header;
       if (header && Buffer.byteLength(header) <= NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES) {
         const identity = inspectDurablePrpCheckpointHeader(header);
         const staged = inspectStagedRunAttachmentHeader(header);
@@ -8375,6 +8814,30 @@ export async function nativeProviderRecoveryEvidence(input: {
     "provider_session_open_timeout",
     "local_runtime_api_listener_unavailable",
   ]).has(input.sourceFailureCode);
+  // A closed runtime API listener means this server stopped serving (a
+  // graceful drain) before the attempt could reach its remote runner. A
+  // follow-up may still carry its settled predecessor's provider session,
+  // rebound at admission with no cursor, turn, result or request of its own.
+  // With no runner checkpoint and no provider event for this run, that
+  // carried session is not this run's provider work: retry its startup on the
+  // same run instead of holding the task for a manual Retry.
+  const carriedAdmissionCheckpointOnly = checkpointExists && !providerEventsExist
+    && input.sourceFailureCode === "local_runtime_api_listener_unavailable"
+    && controllerCheckpointAbsent && !!run
+    && checkpointRecord.cursor == null && checkpointRecord.activeTurnId == null
+    && checkpointRecord.semanticResult == null && checkpointRecord.terminal == null
+    && (!Array.isArray(checkpointRecord.terminalTurns) || checkpointRecord.terminalTurns.length === 0)
+    && (checkpointRecord.pendingRuntimeRequests == null || (Array.isArray(checkpointRecord.pendingRuntimeRequests)
+      && checkpointRecord.pendingRuntimeRequests.length === 0))
+    && await carriesSettledPredecessorSession(input.db, run, checkpointRecord.providerSessionId);
+  if (carriedAdmissionCheckpointOnly) {
+    return {
+      recoveryMode: "bootstrap_retry",
+      providerSessionEstablished: false,
+      providerEventsExist: false,
+      checkpointExists: true,
+    };
+  }
   if (!checkpointExists && !providerEventsExist && (definitelyPreSession
     || unclaimedBootstrap && input.bootstrap?.transientIngressFailure)) {
     return {
@@ -9395,7 +9858,7 @@ export async function executePaperclipNativeSession(input: {
   managedAiCredentialHome?: string;
   managedAiCredentialIdentity?: string;
   managedAiAccountIdentity?: string;
-  managedAiCredentialWriteback?: PluginTaskCredentialWritebackBinding;
+  managedAiCredentialWriteback?: ManagedAiCredentialWritebackBinding;
   billingIdentity?: Pick<AdapterExecutionResult, "provider" | "biller" | "billingType">;
   onTaskDispatched?: () => Promise<void> | void;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
@@ -9870,10 +10333,8 @@ async function executePaperclipNativeSessionAttempt(
         const resumeFrom = await resolvePluginTaskResume(input.db, { companyId: input.execution.binding.companyId,
           leaseId: target.leaseId, priorIdentity: proof.source, inspectCheckpoint: true });
         if (resumeFrom !== proof.taskId) throw new Error("native_session_released_owner_scope_mismatch");
-        if (!cachedReleasedOwner.session.detachControllerForRestart) throw new Error("native_session_released_detach_unavailable");
         try {
-          await cachedReleasedOwner.session.detachControllerForRestart();
-          await cachedReleasedOwner.githubAccess?.stop();
+          await detachReleasedWarmNativeSession(cachedReleasedOwner);
         } catch (error) {
           cachedReleasedOwner.closeOnReleaseReason = "released Runner local detach is unconfirmed";
           throw error;
@@ -9925,8 +10386,8 @@ async function executePaperclipNativeSessionAttempt(
         canReuseProcess: previous => !needsCoreGitHubAccess(input) && canReuseNativeProcess(input,
           record(JSON.parse(readBoundedNativeFile(nativeSessionCheckpointPath(previous),
             NATIVE_WARM_CHECKPOINT_MAX_BYTES, "native_session_supervisor_checkpoint_too_large").toString("utf8"))).processConfigDigest),
-      });
-      remoteWarmRecovery.releasedSource = releasedSource;
+      }) ?? undefined;
+      if (remoteWarmRecovery) remoteWarmRecovery.releasedSource = releasedSource;
     }
   }
   if (input.useRunnerd) {
@@ -9977,6 +10438,7 @@ async function executePaperclipNativeSessionAttempt(
   let confirmedLeaseDeadline = 0;
   let claimedStartupContext: NativeExecutionContext | undefined;
   let freshClaimAttempt: number | undefined;
+  let scheduledResumeContinuation = false;
   try {
     attempt = await trace.measure(
       "native.coordinator.claim",
@@ -10126,6 +10588,18 @@ async function executePaperclipNativeSessionAttempt(
           );
           if (nextAttempt > 3)
             throw new Error("native_session_retry_exhausted");
+          scheduledResumeContinuation = (await scheduledResumeContinuationAllowed(tx as unknown as Db, {
+            companyId: input.execution.binding.companyId,
+            runId: input.execution.binding.runId,
+            restartRecovery: Boolean(recovering),
+            targetKind: input.runnerExecutionTarget?.kind === "remote" ? "remote" : "local",
+            coordinatorPhase: coordinator.phase,
+            failureDetail: coordinator.failureDetail,
+            resumeClaim: Array.isArray(coordinator.recoveryHistory)
+              ? (coordinator.recoveryHistory.at(-1) as Record<string, unknown> | undefined) ?? null : null,
+            controllerBootId: controller.bootId,
+            admittedAttempt: nextAttempt,
+          })).allowed;
           const nextControllerGeneration = recovering
             ? recovering.controllerGeneration
             : coordinator.controllerBootId === controller.bootId
@@ -11216,7 +11690,7 @@ async function executePaperclipNativeSessionAttempt(
         trace.activate(runnerSessionStartupScope);
         const runExecution = () =>
           executeNativeSession({
-            resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner",
+            resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner" || scheduledResumeContinuation,
             getFreshSessionHandoff: input.getFreshSessionHandoff,
             // A failed seal commits nothing: the messages stay queued for the
             // turn boundary instead of failing this run before its turn.
@@ -11243,7 +11717,7 @@ async function executePaperclipNativeSessionAttempt(
                 // Binds a later identity-less stop proof to the host that launched.
                 // The provider attempt opens that attempt's outcome window for
                 // the work-based budget (provider-attempt-outcome.ts).
-                payload: { hostname: hostname(), providerAttempt: attempt },
+                payload: { hostname: hostname(), providerAttempt: attempt, requestedAt: new Date().toISOString() },
               });
               crashPoint("native.process_start.after_requested_before_spawn");
             },
@@ -11883,6 +12357,27 @@ async function executePaperclipNativeSessionAttempt(
           : startupRetry
             ? startupRetry.nextAttemptAt
             : disposition.nextAttemptAt;
+      // A cleanup-gate refusal after this run's own turn completed (for example
+      // a same-run disposition recovery) leaves saved work; say so plainly. The
+      // task disposition may still be missing, so ownership is unchanged.
+      const completedTurnCleanup = sourceFailureCode === NATIVE_SESSION_CLEANUP_QUARANTINED
+        && phase === "terminal_failure" && await input.db
+          .select({ id: heartbeatRuns.id, runnerProfileJson: heartbeatRuns.runnerProfileJson })
+          .from(heartbeatRuns).where(eq(heartbeatRuns.id, input.execution.binding.runId))
+          .then(rows => rows.some(row => nativeCheckpointRecordsCompletedTurn(row.runnerProfileJson, input.execution.binding.runId)))
+          .catch(() => false);
+      // An exhausted provider allowance is not ambiguous session state: the
+      // provider ended its turn. Say when it resets and whether Paperclip will
+      // retry then. A failed read only loses that detail.
+      const providerLimit = sourceFailureCode === "native_provider_usage_limit" && phase === "terminal_failure"
+        ? await import("./provider-limit-resume.js").then(async ({ planProviderLimitResume, providerLimitNextAction }) => {
+          const plan = await planProviderLimitResume(input.db, input.execution.binding.runId);
+          return { plan, nextAction: providerLimitNextAction(plan) };
+        }).catch((failure: unknown) => {
+          logger.warn({ err: failure, runId: input.execution.binding.runId }, "provider limit reset unavailable");
+          return null;
+        })
+        : null;
       const recoveryProjection = nativeSessionRecoveryProjection({
         phase,
         failureCode,
@@ -11950,16 +12445,23 @@ async function executePaperclipNativeSessionAttempt(
               providerEventsExist: recoveryEvidence.providerEventsExist,
               checkpointExists: recoveryEvidence.checkpointExists,
               ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
+              ...(providerLimit?.plan.resetAt ? { providerLimitResetAt: providerLimit.plan.resetAt.toISOString() } : {}),
               recoveryOwner: recoveryProjection.recoveryOwner,
               nextAction:
-                sourceFailureCode === "native_permission_declined"
+                providerLimit
+                  ? providerLimit.nextAction
+                  : sourceFailureCode === "native_permission_declined"
                   ? "Provider permission was declined. Inspect the task and give explicit direction before starting further provider work. Automatic recovery is stopped."
                   : sourceFailureCode === "native_provider_approval_required"
                   ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
+                  : sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED
+                  ? NATIVE_PROVIDER_SESSION_CLOSED_ACTION
                   : sourceFailureCode === "native_session_cleanup_quarantined"
-                  ? NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE
+                  ? nativeCleanupRefusalAction(completedTurnCleanup)
                   : sourceFailureCode === "runner_remote_provider_verification_unavailable"
                     ? "Provider files could not be verified after two read attempts. Inspect the retained workspace and command transport before retrying the original run."
+                  : sourceFailureCode === "runner_task_admission_rejected"
+                    ? RUNNER_TASK_ADMISSION_REJECTED_ACTION
                   : sourceFailureCode === "runner_ingress_access_rejected"
                     ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
                   : sourceFailureCode === "native_provider_terminal_failed"
@@ -11988,7 +12490,9 @@ async function executePaperclipNativeSessionAttempt(
                               ? "Inspect the persisted native session after its bounded resume budget was exhausted."
                               : recoveryEvidence.recoveryMode ===
                                   "bootstrap_retry"
-                                ? `Retry provider bootstrap on this same run${nativeStartupRetryWait(providerCooldownAt)}; durable evidence proves no provider session or provider event was created.`
+                                ? recoveryEvidence.checkpointExists
+                                  ? `Retry provider bootstrap on this same run${nativeStartupRetryWait(providerCooldownAt)}; durable evidence proves this run did no provider work of its own, and it resumes the provider session carried from its settled predecessor.`
+                                  : `Retry provider bootstrap on this same run${nativeStartupRetryWait(providerCooldownAt)}; durable evidence proves no provider session or provider event was created.`
                                 : "Resume this same run from its exact persisted native provider checkpoint after the retry delay.",
             }),
             nextAttemptAt,
@@ -12186,6 +12690,9 @@ async function executePaperclipNativeSessionAttempt(
             .where(eq(issues.id, input.execution.binding.issueId));
         }
         if (!stillOwnsTask) return;
+        // The hold's reset deadline belongs to the provider-limit owner.
+        if (providerLimit?.plan.automatic) await notifyDeliveryWork(tx, DELIVERY_QUEUES.providerLimitResume,
+          JSON.stringify({ companyId: input.execution.binding.companyId }));
         await issueRecoveryActionService(
           tx as unknown as Db,
         ).upsertSourceScoped({
@@ -12213,14 +12720,21 @@ async function executePaperclipNativeSessionAttempt(
             providerSessionEstablished:
               recoveryEvidence.providerSessionEstablished,
             ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
+            ...(providerLimit?.plan.resetAt ? { providerLimitResetAt: providerLimit.plan.resetAt.toISOString() } : {}),
           },
           nextAction:
-            sourceFailureCode === "native_permission_declined"
+            providerLimit
+              ? providerLimit.nextAction
+              : sourceFailureCode === "native_permission_declined"
               ? "Provider permission was declined. Inspect the task and give explicit direction before starting further provider work. Automatic recovery is stopped."
               : sourceFailureCode === "native_provider_approval_required"
               ? "Approval required. Review the operation and update the agent's permission setting before retrying. This runner has no interactive approval handler."
+              : sourceFailureCode === NATIVE_PROVIDER_SESSION_CLOSED
+              ? NATIVE_PROVIDER_SESSION_CLOSED_ACTION
               : sourceFailureCode === "native_session_cleanup_quarantined"
-              ? NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE
+              ? nativeCleanupRefusalAction(completedTurnCleanup)
+              : sourceFailureCode === "runner_task_admission_rejected"
+                ? RUNNER_TASK_ADMISSION_REJECTED_ACTION
               : sourceFailureCode === "runner_ingress_access_rejected"
                 ? "The computer provider rejected access. Restore the environment's credentials or permissions before retrying. Automatic retries are stopped."
               : sourceFailureCode === "native_provider_terminal_failed"
@@ -12775,6 +13289,10 @@ function sha256File(path: string): string {
   return `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
 }
 
+const unsupportedProviderDistEntry = (relativePath: string) => new Error(
+  `runner_remote_provider_artifact_incompatible: unsupported dist entry ${relativePath}`,
+);
+
 export function sha256DirectoryTree(root: string): string {
   const hash = createHash("sha256");
   const visit = (directory: string, prefix = "") => {
@@ -12794,9 +13312,7 @@ export function sha256DirectoryTree(root: string): string {
           `symlink\0${relativePath}\0${readlinkSync(absolutePath)}\n`,
         );
       } else {
-        throw new Error(
-          `runner_remote_provider_artifact_incompatible: unsupported dist entry ${relativePath}`,
-        );
+        throw unsupportedProviderDistEntry(relativePath);
       }
     }
   };
@@ -12824,6 +13340,23 @@ export function readRemoteProviderPackManifest(packRoot: string): RemoteProvider
   return readRemoteProviderPackIdentity(packRoot, true);
 }
 
+/**
+ * `readRemoteProviderPackManifest` for a run path: the same checks in the same
+ * order, but the controller files are hashed by streaming, off the event loop.
+ */
+export async function verifyRemoteProviderPackManifest(packRoot: string): Promise<RemoteProviderPackManifest> {
+  const checks = providerPackIdentityChecks(packRoot, true);
+  let step = checks.next();
+  while (!step.done) {
+    const request = step.value;
+    const digest = request.kind === "file"
+      ? await sha256FileStreamed(request.path)
+      : await sha256DirectoryTreeStreamed(request.path, unsupportedProviderDistEntry);
+    step = checks.next(digest);
+  }
+  return step.value;
+}
+
 export function readBundledRemoteProviderPackManifest(manifestPath = bundledRemoteProviderPackManifestPath(), target: "linux-x64" | "linux-arm64" = "linux-x64"): RemoteProviderPackManifest {
   const manifest = readRemoteProviderPackIdentity(dirname(manifestPath), false);
   if (`${manifest.payload.target.platform}-${manifest.payload.target.architecture}` !== target) {
@@ -12832,7 +13365,25 @@ export function readBundledRemoteProviderPackManifest(manifestPath = bundledRemo
   return manifest;
 }
 
+type ProviderPackHashRequest = { kind: "file" | "tree"; path: string };
+
 function readRemoteProviderPackIdentity(packRoot: string, verifyControllerFiles: boolean): RemoteProviderPackManifest {
+  const checks = providerPackIdentityChecks(packRoot, verifyControllerFiles);
+  let step = checks.next();
+  while (!step.done) {
+    const request = step.value;
+    step = checks.next(request.kind === "file" ? sha256File(request.path) : sha256DirectoryTree(request.path));
+  }
+  return step.value;
+}
+
+// Validates a provider pack manifest. Each controller-file digest it needs is
+// yielded to the caller, so the sync and streamed readers share one order of
+// checks and one set of errors.
+function* providerPackIdentityChecks(
+  packRoot: string,
+  verifyControllerFiles: boolean,
+): Generator<ProviderPackHashRequest, RemoteProviderPackManifest, string> {
   let manifest: RemoteProviderPackManifest;
   try {
     manifest = JSON.parse(
@@ -12922,14 +13473,14 @@ function readRemoteProviderPackIdentity(packRoot: string, verifyControllerFiles:
     }
     if (
       !/^sha256:[a-f0-9]{64}$/.test(artifact?.sha256 ?? "") ||
-      (verifyControllerFiles && sha256File(resolve(packRoot, artifactPath)) !== artifact.sha256)
+      (verifyControllerFiles && (yield { kind: "file", path: resolve(packRoot, artifactPath) }) !== artifact.sha256)
     ) {
       throw new Error(
         `runner_remote_provider_artifact_incompatible: ${label} digest mismatch`,
       );
     }
   }
-  if (verifyControllerFiles && sha256DirectoryTree(resolve(packRoot, "dist")) !== payload.distDigest) {
+  if (verifyControllerFiles && (yield { kind: "tree", path: resolve(packRoot, "dist") }) !== payload.distDigest) {
     throw new Error(
       "runner_remote_provider_artifact_incompatible: provider dist tree digest mismatch",
     );
@@ -12987,7 +13538,7 @@ function readRemoteProviderPackIdentity(packRoot: string, verifyControllerFiles:
           throw new Error("runner_remote_provider_artifact_incompatible: Kimi profile or closure does not match this release");
         }
       }
-      if (verifyControllerFiles && sha256DirectoryTree(resolve(packRoot, candidatePath)) !== candidate.sha256) {
+      if (verifyControllerFiles && (yield { kind: "tree", path: resolve(packRoot, candidatePath) }) !== candidate.sha256) {
         throw new Error("runner_remote_provider_artifact_incompatible: candidate asset tree digest mismatch");
       }
     }
@@ -13073,7 +13624,7 @@ export async function stageRemoteRunnerFile(input: {
     ]);
     return;
   }
-  const bytes = readFileSync(input.sourcePath);
+  const bytes = await readFile(input.sourcePath);
   const directory = posix.dirname(input.targetPath);
   const escapedDirectory = directory.replaceAll("'", "'\\''");
   const escapedTarget = input.targetPath.replaceAll("'", "'\\''");
@@ -13149,16 +13700,15 @@ export async function stageRemoteRunnerDirectory(input: {
     try {
       if (excludeArgs.length > 0) {
         stagingRoot = mkdtempSync(join(tmpdir(), "paperclip-runner-restore-"));
-        const archive = execFileSync(
+        const archive = await execFileBuffered(
           "tar",
           [...excludeArgs, "--no-xattrs", "-czf", "-", "-C", input.sourcePath, "."],
           {
-            encoding: "buffer",
             maxBuffer: 64 * 1024 * 1024,
             env: { ...process.env, COPYFILE_DISABLE: "1" },
           },
         );
-        execFileSync("tar", ["-xzf", "-", "-C", stagingRoot], {
+        await execFileBuffered("tar", ["-xzf", "-", "-C", stagingRoot], {
           input: archive,
           maxBuffer: 64 * 1024 * 1024,
         });
@@ -13182,11 +13732,10 @@ export async function stageRemoteRunnerDirectory(input: {
     }
     return;
   }
-  const archive = execFileSync(
+  const archive = await execFileBuffered(
     "tar",
     [...excludeArgs, "--no-xattrs", "-czf", "-", "-C", input.sourcePath, "."],
     {
-      encoding: "buffer",
       maxBuffer: 64 * 1024 * 1024,
       env: { ...process.env, COPYFILE_DISABLE: "1" },
     },
@@ -13323,7 +13872,7 @@ export async function prepareRemoteProviderPackOnTarget(input: {
         targetPath: stagedRemoteProviderPackRoot,
         reuseRoots: preinstalledProviderPackRoots,
         trace: input.trace,
-        verifyDirectory: (sourceRoot) => { readRemoteProviderPackManifest(sourceRoot); },
+        verifyDirectory: async (sourceRoot) => { await verifyRemoteProviderPackManifest(sourceRoot); },
         stageDirectory: (sourceRoot) => stageRemoteRunnerDirectory({
           target: remoteTarget,
           runner: remoteCommandRunner,
@@ -13372,27 +13921,27 @@ async function remoteRunnerPathExists(input: {
   return result.exitCode === 0 && !result.timedOut;
 }
 
-function assertSafeRemoteCheckpointArchive(archive: Buffer): void {
+async function assertSafeRemoteCheckpointArchive(archive: Buffer): Promise<void> {
   if (archive.length > MAX_REMOTE_CHECKPOINT_ARCHIVE_BYTES) {
     throw new Error("runner_remote_checkpoint_archive_too_large");
   }
   let names: string[];
   let verboseEntries: string[];
   try {
-    names = execFileSync("tar", ["-tzf", "-"], {
+    names = (await execFileBuffered("tar", ["-tzf", "-"], {
       input: archive,
-      encoding: "utf8",
       maxBuffer: 8 * 1024 * 1024,
       timeout: 30_000,
-    })
+    }))
+      .toString("utf8")
       .split("\n")
       .filter((line) => line.length > 0);
-    verboseEntries = execFileSync("tar", ["-tvzf", "-"], {
+    verboseEntries = (await execFileBuffered("tar", ["-tvzf", "-"], {
       input: archive,
-      encoding: "utf8",
       maxBuffer: 8 * 1024 * 1024,
       timeout: 30_000,
-    })
+    }))
+      .toString("utf8")
       .split("\n")
       .filter((line) => line.length > 0);
   } catch {
@@ -13422,9 +13971,8 @@ function assertSafeRemoteCheckpointArchive(archive: Buffer): void {
     }
   }
   try {
-    execFileSync("tar", ["-xOzf", "-"], {
+    await execFileBuffered("tar", ["-xOzf", "-"], {
       input: archive,
-      stdio: ["pipe", "pipe", "pipe"],
       maxBuffer: MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES,
       timeout: 60_000,
     });
@@ -13460,6 +14008,55 @@ function assertSafeExtractedCheckpoint(root: string): void {
           throw new Error("runner_remote_checkpoint_expanded_too_large");
         }
       }
+    }
+  }
+}
+
+const REMOTE_CHECKPOINT_CAPTURE_ATTEMPTS = 3;
+const REMOTE_CHECKPOINT_CAPTURE_RETRY_MS = 1_000;
+const TRANSIENT_REMOTE_READ_MESSAGE = /\b(?:ECONNRESET|EPIPE|ETIMEDOUT|ECONNREFUSED|socket hang up|fetch failed|no response returned)\b/;
+/** `provider_state_unreadable` refusals whose underlying read was a dropped
+ * connection. The refusal keeps its message for every other caller; only the
+ * checkpoint read retry looks through it. */
+const providerStateReadTransportFailures = new WeakMap<Error, unknown>();
+
+/** A dropped or refused sandbox connection while reading settled state. A
+ * mismatch, a missing directory or an unsafe archive is never transient. */
+export function isTransientRemoteCheckpointReadFailure(error: unknown): boolean {
+  if (error instanceof Error && providerStateReadTransportFailures.has(error)) {
+    return isTransientRemoteCheckpointReadFailure(providerStateReadTransportFailures.get(error));
+  }
+  const reason = classifyRemoteConnectionError(error);
+  if (reason !== null) return reason !== "tls_failure";
+  return error instanceof Error && !error.message.startsWith("runner_")
+    && TRANSIENT_REMOTE_READ_MESSAGE.test(error.message);
+}
+
+/** The refusal `inspectRemoteHarnessState` throws when the provider state
+ * cannot be read, remembering the read failure behind it. */
+export function remoteProviderStateUnreadable(readFailure: unknown): Error {
+  const refusal = new Error("runner_harness_state_mismatch: provider_state_unreadable");
+  providerStateReadTransportFailures.set(refusal, readFailure);
+  return refusal;
+}
+
+/**
+ * Repeats a read of settled state out of the sandbox after a dropped
+ * connection, at most {@link REMOTE_CHECKPOINT_CAPTURE_ATTEMPTS} times in all.
+ * Any other failure, and the last transient one, is thrown unchanged.
+ */
+export async function retryTransientRemoteCheckpointRead<T>(
+  read: () => Promise<T>,
+  onRetry: (attempt: number, attempts: number) => Promise<void> | void,
+  retryDelayMs = REMOTE_CHECKPOINT_CAPTURE_RETRY_MS,
+): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await read();
+    } catch (error) {
+      if (attempt >= REMOTE_CHECKPOINT_CAPTURE_ATTEMPTS || !isTransientRemoteCheckpointReadFailure(error)) throw error;
+      await onRetry(attempt, REMOTE_CHECKPOINT_CAPTURE_ATTEMPTS);
+      await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, retryDelayMs * attempt));
     }
   }
 }
@@ -13578,7 +14175,7 @@ export async function syncRemoteRunnerDirectoryOut(input: {
     throw new Error("runner_remote_checkpoint_failed");
   }
   const archive = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
-  assertSafeRemoteCheckpointArchive(archive);
+  await assertSafeRemoteCheckpointArchive(archive);
   const parent = resolve(input.targetPath, "..");
   const stagingRoot = mkdtempSync(join(parent, ".paperclip-checkpoint-"));
   const stagedTarget = join(stagingRoot, "payload");
@@ -13590,7 +14187,10 @@ export async function syncRemoteRunnerDirectoryOut(input: {
   let replacementInstalled = false;
   try {
     mkdirSync(stagedTarget, { recursive: true, mode: input.mode });
-    execFileSync(
+    // Extraction runs off the event loop into this call's private staging
+    // directory. The swap below stays synchronous, so no other run can observe
+    // or interleave with a half-installed checkpoint.
+    await execFileBuffered(
       "tar",
       [
         "--no-same-owner",
@@ -14329,7 +14929,7 @@ export { resolveRemoteRunnerTransportMode } from "./native-runner-execution-driv
 
 export function remoteCheckpointIncompleteFailure(
   settlement: "settled" | "unsettled",
-  incompleteReason: "unavailable" | "not_suspended" | null,
+  incompleteReason: "unavailable" | "not_suspended" | "provider_unopened" | null,
 ): Error | null {
   // A transport that never completed provider bootstrap has no provider state
   // to preserve; its original launch failure remains authoritative. Once
@@ -14374,7 +14974,7 @@ export async function createRunnerdBackend(input: {
   managedAiCredentialHome?: string;
   managedAiCredentialIdentity?: string;
   managedAiAccountIdentity?: string;
-  managedAiCredentialWriteback?: PluginTaskCredentialWritebackBinding;
+  managedAiCredentialWriteback?: ManagedAiCredentialWritebackBinding;
   onTaskDispatched?: () => Promise<void> | void;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
   /** Resolved per-run authorization; not an independent instance setting. */
@@ -14863,7 +15463,20 @@ async function createRunnerdBackendWithinSessionClaim(
     const ownerInput: Parameters<typeof createPluginRunnerTaskOwner>[0] = { ...credentials, taskId: description.taskId,
       executionContext: input.executionContext?.pluginSupported ? input.executionContext : undefined,
       // Warm retirement can outlive the run's temporary credential home; complete uses the durable handoff.
-      onCredentials: input.execution.session.lifecyclePolicy.mode === "warm" ? undefined : credentials.onCredentials,
+      onCredentials: input.managedAiCredentialWriteback || input.execution.session.lifecyclePolicy.mode === "warm" ? undefined : credentials.onCredentials,
+      onCredentialsUpdated: event => appendNativeCredentialUpdate(input.db, {
+        companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+        normalizedSessionId: nativeSessionKey(input.execution),
+        runnerInstanceId: adoptionIdentity?.runnerInstanceId ?? prior?.runnerInstanceId ?? effectiveRunnerInstanceId,
+        event,
+        synchronizeCredentials: event.payload.provider === "codex" ? () => syncPluginTaskCredentialHandoff(input.db, {
+          companyId: input.execution.binding.companyId, leaseId: remoteTarget.leaseId!, expectedTaskId: description.taskId,
+        }, async accountIdentity => {
+          const snapshot = environmentTaskResultSchema.parse(await pluginTask({ kind: "credentials", accountIdentity }, { expectedTaskId: description.taskId }));
+          if (snapshot.kind !== "credentials") throw new Error("Plugin Runner credential snapshot unavailable");
+          return snapshot.credential;
+        }) : undefined,
+      }),
       warmTaskVersion: description.warmTaskVersion,
       releaseResumeVersion: description.releaseResumeVersion,
       authorityRunId: description.releaseResumeVersion === 1 ? input.execution.binding.runId : undefined,
@@ -14934,6 +15547,7 @@ async function createRunnerdBackendWithinSessionClaim(
         measureOperation: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? measureRunnerOperation : undefined,
         recordTimingReceipt: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? recordRunnerTimingReceipt : undefined,
         ...owner.driver, get authorityRunId() { return owner.driver.authorityRunId; }, runnerArtifact: input.controllerPersistence?.runnerArtifact ?? description.runner,
+        onCredentialsUpdated: event => owner.credentialsUpdated(event),
         controlPlaneRegistration: input.controllerPersistence ? async (authority, identity, signal) => {
           await nativeRunnerCheckpointRegistration({
             ...nativeRunnerCheckpointPersistence(input.db, input.controllerPersistence!.bootId,
@@ -14949,7 +15563,7 @@ async function createRunnerdBackendWithinSessionClaim(
         recoverSemanticToolInput: input.controllerPersistence ? call => {
           const current = sessionToolAuthorityEpochs.get(sessionScopeId);
           if (!current || current.runId !== call.correlation.runId) throw new Error("native_tool_authority_epoch_revoked");
-          return current.recover({ tool: call.operationId, callId: call.callId, arguments: call.input });
+          return current.recover({ tool: call.operationId, callId: call.callId, arguments: call.input }, call.admission);
         } : undefined,
         ...(provider.kind === "codex" ? { disableCodexWebSearch: "webSearch" in provider && provider.webSearch === "disabled" } : {}),
         ...(provider.kind === "acpx" ? { acpxAgent: provider.agent,
@@ -14998,8 +15612,8 @@ async function createRunnerdBackendWithinSessionClaim(
         stateDirectory: root, runnerBinary: remoteDot?.runnerBinary ?? resolvePaperclipRunnerBinary(),
         runnerArtifact: input.controllerPersistence?.runnerArtifact,
         runnerReconnectGraceMs: remoteDot ? REMOTE_RUNNER_RECONNECT_GRACE_MS : undefined,
-        recoverSemanticToolInput: (call: { operationId: string; callId: string; input: unknown }) =>
-          authorityEpoch.recover({ tool: call.operationId, callId: call.callId, arguments: call.input }),
+        recoverSemanticToolInput: (call: { operationId: string; callId: string; input: unknown; admission: SemanticInputAdmission }) =>
+          authorityEpoch.recover({ tool: call.operationId, callId: call.callId, arguments: call.input }, call.admission),
         ...(remoteDot ?? {}),
         identity: { runnerInstanceId: effectiveRunnerInstanceId, environmentLeaseId: effectiveEnvironmentLeaseId,
           runId: input.execution.binding.runId, normalizedSessionId: nativeSessionKey(input.execution),
@@ -15050,7 +15664,7 @@ async function createRunnerdBackendWithinSessionClaim(
   const providerArtifactsSignal = () => input.executionContext?.signal
     ? AbortSignal.any([input.executionContext.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000);
   const liveProviderRecovery = input.restartRecovery?.kind === "reattach_remote_runner" || input.remoteWarmRecovery !== undefined;
-  const artifactBackup = artifactStorage ? verifyNativeHarnessBackup({ root, execution: input.execution,
+  const artifactBackup = artifactStorage ? await verifyNativeHarnessBackupStreamed({ root, execution: input.execution,
     runnerInstanceId: input.runnerInstanceId }) : null;
   let providerArtifacts = artifactStorage ? artifactBackup?.manifest.providerArtifacts
     ?? input.providerPackAdmissionSource?.artifacts as NativeProviderArtifactReceipt | undefined : undefined;
@@ -15068,7 +15682,7 @@ async function createRunnerdBackendWithinSessionClaim(
   const remoteClaudeRunnerBinary = remoteClaude && !adoptingPersistedRemoteRunner
     ? await resolveRemotePaperclipRunnerBinary({ runner: remoteCommandRunner!, remoteCwd: remoteTarget!.remoteCwd, configuredPath: input.runnerRemoteBinaryPath })
     : null;
-  const remoteClaudeTarget = remoteClaudeRunnerBinary ? runnerBinaryTarget(readFileSync(remoteClaudeRunnerBinary)) : null;
+  const remoteClaudeTarget = remoteClaudeRunnerBinary ? await binaryTargetFromHeader(remoteClaudeRunnerBinary, runnerBinaryTarget) : null;
   const useBundledClaudePack = remoteClaude && !adoptingPersistedRemoteRunner && !input.runnerRemoteProviderPackPath?.trim();
   if (useBundledClaudePack && remoteClaudeTarget !== "linux-x64" && remoteClaudeTarget !== "linux-arm64") {
     throw new Error("runner_remote_provider_artifact_incompatible: Claude remote provider packs require a qualified Linux target");
@@ -15129,12 +15743,12 @@ async function createRunnerdBackendWithinSessionClaim(
   // The persisted admission owns a surviving runner's identity. Local release
   // files are launch inputs and may no longer exist on a replacement controller.
   const controllerRunnerBinary = adoptingPersistedRemoteRunner
-    ? input.runnerRemoteBinaryPath?.trim() || resolvePaperclipRunnerBinary()
+    ? input.runnerRemoteBinaryPath?.trim() || await resolvePaperclipRunnerBinaryAsync()
     : targetMatchedCodexArtifact
     ? await timeController("runner_binary", () => resolveRemotePaperclipRunnerBinary({ runner: remoteCommandRunner!, remoteCwd: remoteTarget.remoteCwd, configuredPath: input.runnerRemoteBinaryPath }))
     : remoteTarget
-    ? remoteClaudeRunnerBinary || input.runnerRemoteBinaryPath?.trim() || remotePiCompanion?.runnerBinary || (useBundledRemoteImageAssets ? bundledRemoteRunnerBinary() : resolvePaperclipRunnerBinary())
-    : resolvePaperclipRunnerBinary();
+    ? remoteClaudeRunnerBinary || input.runnerRemoteBinaryPath?.trim() || remotePiCompanion?.runnerBinary || (useBundledRemoteImageAssets ? await verifiedBundledRemoteRunnerBinary() : await resolvePaperclipRunnerBinaryAsync())
+    : await resolvePaperclipRunnerBinaryAsync();
   const selectProviderPackAuthority = (reattach: boolean) => requiresRemoteProviderPack ? resolveRemoteProviderPackAuthority({
     stateDirectory: root,
     binding: { companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
@@ -15150,6 +15764,10 @@ async function createRunnerdBackendWithinSessionClaim(
   let expectedProviderPackManifest: RemoteProviderPackManifest | null = providerPackAuthority?.manifest
     ?? providerArtifacts?.manifest as RemoteProviderPackManifest ?? null;
   let providerPackVerified = false;
+  // Set when a persisted-runner reattachment finds that runner settled and
+  // exited. The transport then relaunches it from durable state, which needs
+  // the admitted provider pack's launch inputs that adoption does not.
+  let relaunchesSettledRemoteRunner = false;
   const explicitRemoteCodex = input.runnerRemoteCodexPath?.trim() || null;
   const remoteCodexNpmSpec = input.runnerRemoteCodexNpmSpec?.trim() || null;
   if (explicitRemoteCodex && remoteCodexNpmSpec) {
@@ -15310,7 +15928,7 @@ async function createRunnerdBackendWithinSessionClaim(
       return;
     selectedRemoteMode = requiredMode;
     if (input.restartRecovery?.kind === "reattach_remote_runner" || input.remoteWarmRecovery) {
-      if (input.controllerPersistence?.runnerArtifact) {
+      if (input.controllerPersistence?.runnerArtifact && !relaunchesSettledRemoteRunner) {
         remotePrepared = true;
         return;
       }
@@ -15380,13 +15998,20 @@ async function createRunnerdBackendWithinSessionClaim(
    * this invocation's archived rotation snapshot; every other caller,
    * including close checkpointing, must inspect the live Runner state.
    */
+  const provenOwnBootstrapRestart = (runId: string | null | undefined) =>
+    input.restartRecovery?.kind === "bootstrap_incomplete"
+    && runId === input.execution.binding.runId
+    && hasRemoteBootstrapRestartProof(input.execution.binding.runId);
+  const restartableBootstrapState = (state: { incompleteReason: string | null; notSuspendedRunId?: string | null }) =>
+    (state.incompleteReason === "not_suspended" || state.incompleteReason === "provider_unopened")
+    && provenOwnBootstrapRestart(state.notSuspendedRunId);
   const inspectRemoteHarnessState = async (
     source: "live" | "host_preparation" = "live",
   ): Promise<{
     complete: boolean;
     runnerState: Record<string, unknown> | null;
     providerSessionIdentity: Record<string, unknown> | null;
-    incompleteReason: "unavailable" | "not_suspended" | null;
+    incompleteReason: "unavailable" | "not_suspended" | "provider_unopened" | null;
     notSuspendedRunId?: string | null;
   }> => {
     if (!remoteCommandRunner || !remoteStateDirectory) {
@@ -15465,8 +16090,8 @@ async function createRunnerdBackendWithinSessionClaim(
         stateDirectory: remoteStateDirectory,
         execution: input.execution,
       });
-    } catch {
-      throw new Error("runner_harness_state_mismatch: provider_state_unreadable");
+    } catch (error) {
+      throw remoteProviderStateUnreadable(error);
     }
     const providerSessionIdentity =
       providerSessionIdentityFromDurableProviderState({
@@ -15474,6 +16099,16 @@ async function createRunnerdBackendWithinSessionClaim(
         providerState,
       });
     if (!providerSessionIdentityIsPresent(providerSessionIdentity)) {
+      if (source === "host_preparation" && remoteProviderStateNeverOpened(input.execution, providerState)
+        && provenOwnBootstrapRestart(typeof runnerState.runId === "string" ? runnerState.runId : null)) {
+        return {
+          complete: false,
+          runnerState: null,
+          providerSessionIdentity: null,
+          incompleteReason: "provider_unopened",
+          notSuspendedRunId: input.execution.binding.runId,
+        };
+      }
       throw new Error(`runner_harness_state_mismatch: provider_identity_incomplete (${durableProviderCheckpointFailureReason(input.execution, providerState)})`);
     }
     const previousManifest = compatibleNativeHarnessBackupManifests({
@@ -15618,12 +16253,13 @@ async function createRunnerdBackendWithinSessionClaim(
     if (!updated) throw new Error("runner_harness_backup_lease_missing");
   };
 
-  // A created lease may restore the backup when Paperclip destroyed its
-  // source sandbox and no provider work followed the checkpoint.
-  // The verified backup is reused by the restore, so files are hashed once.
+  // A lease without this session's state may restore the backup when its
+  // source sandbox is retired or idle and no provider work followed the
+  // checkpoint. The verified backup is reused by the restore, so files are
+  // hashed once.
   let retiredSourceBackup: VerifiedHarnessBackup | null = null;
   const retiredSourceBackupAuthorized = async (): Promise<boolean> => {
-    const backup = verifyNativeHarnessBackup({ root, execution: input.execution, runnerInstanceId: input.runnerInstanceId });
+    const backup = await verifyNativeHarnessBackupStreamed({ root, execution: input.execution, runnerInstanceId: input.runnerInstanceId });
     const sessionId = nativeSessionKey(input.execution);
     if (!backup || !sessionId) return false;
     retiredSourceBackup = backup;
@@ -15631,6 +16267,7 @@ async function createRunnerdBackendWithinSessionClaim(
       companyId: input.execution.binding.companyId, currentRunId: input.execution.binding.runId,
       normalizedSessionId: sessionId, manifest: backup.manifest,
       manifestSha256: nativeHarnessBackupManifestSha256(readFileSync(resolve(backup.root, "manifest.json"))),
+      targetProviderLeaseId: sandboxLeaseAcquisition?.providerLeaseId ?? null,
     });
   };
 
@@ -15638,7 +16275,7 @@ async function createRunnerdBackendWithinSessionClaim(
     if (!remoteTarget || !remoteCommandRunner) {
       throw new Error("runner_harness_backup_unavailable");
     }
-    const backup = retiredSourceBackup ?? verifyNativeHarnessBackup({
+    const backup = retiredSourceBackup ?? await verifyNativeHarnessBackupStreamed({
       root,
       execution: input.execution,
       runnerInstanceId: input.runnerInstanceId,
@@ -15811,13 +16448,21 @@ async function createRunnerdBackendWithinSessionClaim(
                       !state.runnerState ||
                       !state.providerSessionIdentity
                     ) {
-                      const provenRestart = state.incompleteReason === "not_suspended" && !backupAvailable
-                        && input.restartRecovery?.kind === "bootstrap_incomplete"
-                        && state.notSuspendedRunId === input.execution.binding.runId
-                        && hasRemoteBootstrapRestartProof(input.execution.binding.runId)
+                      const provenRestart = restartableBootstrapState(state) && !backupAvailable
                         && await moveInterruptedBootstrapSessionAside()
                         && takeRemoteBootstrapRestartProof(input.execution.binding.runId);
-                      if ((state.incompleteReason !== "unavailable" && !provenRestart) || backupAvailable ||
+                      // A resumed allocation that never held this session (for example
+                      // the created lease of a run that failed before restoring) takes
+                      // the backup under the same retired-or-idle source proof.
+                      const restoresRetiredSource = !provenRestart && state.incompleteReason === "unavailable"
+                        && backupAvailable && remoteTarget.reusableLeaseConfigured === true
+                        && await retiredSourceBackupAuthorized();
+                      if (restoresRetiredSource) {
+                        await measureNativeRunnerSpan(input.trace, "sandbox.lease.replacement", restoreVerifiedHarnessBackup, {
+                          attributes: { provider: remoteTarget.providerKey ?? "sandbox", harness: input.execution.session.driverKind,
+                            lifecycleMode: input.execution.session.lifecyclePolicy.mode, outcome: "resumed", reason: "state_absent" },
+                        });
+                      } else if ((state.incompleteReason !== "unavailable" && !provenRestart) || backupAvailable ||
                           !(await claimUntouchedRemoteSession())) {
                         throw new Error(`runner_harness_state_mismatch: resumed_${state.incompleteReason}`);
                       }
@@ -15882,10 +16527,7 @@ async function createRunnerdBackendWithinSessionClaim(
                       // lease was not provider-confirmed lost. Never silently create a new
                       // provider session from that ambiguous state.
                       throw new Error("runner_harness_state_mismatch: backup_without_reusable_lease");
-                    } else if (state.incompleteReason === "not_suspended"
-                      && input.restartRecovery?.kind === "bootstrap_incomplete"
-                      && state.notSuspendedRunId === input.execution.binding.runId
-                      && hasRemoteBootstrapRestartProof(input.execution.binding.runId)) {
+                    } else if (restartableBootstrapState(state)) {
                       if (!(await moveInterruptedBootstrapSessionAside()
                         && takeRemoteBootstrapRestartProof(input.execution.binding.runId)
                         && await claimUntouchedRemoteSession())) {
@@ -15999,14 +16641,23 @@ async function createRunnerdBackendWithinSessionClaim(
     // `runner_harness_state_mismatch`. Only checkpoint a harness that runnerd
     // has proved complete. A malformed or identity-conflicting state still
     // throws from inspectRemoteHarnessState and therefore fails closed.
-    let checkpointable = await measureNativeRunnerSpan(input.trace, "harness_state.inspect", () => inspectRemoteHarnessState());
+    // A dropped sandbox connection repeats the read (bounded) instead of
+    // losing the only backup of the provider session.
+    const inspectForCheckpoint = () => retryTransientRemoteCheckpointRead(
+      () => measureNativeRunnerSpan(input.trace, "harness_state.inspect", () => inspectRemoteHarnessState()),
+      (attempt, attempts) => input.onLog?.(
+        "stderr",
+        `[paperclip-runner] remote checkpoint inspection interrupted (attempt ${attempt} of ${attempts}); reading the settled state again\n`,
+      ),
+    );
+    let checkpointable = await inspectForCheckpoint();
     // The remote runner writes its suspended lifecycle and provider state
     // before the outer process-owner RPC necessarily observes completion.
     // Allow a very small bounded visibility window without ever accepting an
     // active, incomplete, malformed, or identity-conflicting checkpoint.
     for (let attempt = 1; !checkpointable.complete && attempt < 3; attempt++) {
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
-      checkpointable = await measureNativeRunnerSpan(input.trace, "harness_state.inspect", () => inspectRemoteHarnessState());
+      checkpointable = await inspectForCheckpoint();
     }
     if (!checkpointable.complete) {
       const incompleteFailure = remoteCheckpointIncompleteFailure(
@@ -16036,24 +16687,27 @@ async function createRunnerdBackendWithinSessionClaim(
             input.trace,
             "harness_state.backup.persist",
             async () => {
-              const verified = await measureNativeRunnerSpan(input.trace, "harness_state.inspect", () => inspectRemoteHarnessState());
-              if (
-                !verified.complete ||
-                !verified.runnerState ||
-                !verified.providerSessionIdentity
-              ) {
-                throw new Error("runner_harness_state_mismatch: checkpoint_identity_incomplete");
-              }
-              const providerSessionIdentity = verified.providerSessionIdentity;
-
               const backupRoot = harnessBackupRoot(root);
               mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
               const pendingRoot = resolve(
                 backupRoot,
                 `.pending-${randomUUID()}`,
               );
-              mkdirSync(pendingRoot, { recursive: true, mode: 0o700 });
-              try {
+              // Reading the settled state out of the sandbox writes nothing
+              // durable, so a dropped sandbox connection can repeat the whole
+              // read. Without this, one reset loses the only copy of the
+              // provider session when the per-turn sandbox is released.
+              const captureSettledState = async () => {
+                rmSync(pendingRoot, { recursive: true, force: true });
+                const verified = await measureNativeRunnerSpan(input.trace, "harness_state.inspect", () => inspectRemoteHarnessState());
+                if (
+                  !verified.complete ||
+                  !verified.runnerState ||
+                  !verified.providerSessionIdentity
+                ) {
+                  throw new Error("runner_harness_state_mismatch: checkpoint_identity_incomplete");
+                }
+                mkdirSync(pendingRoot, { recursive: true, mode: 0o700 });
                 for (const directory of persistenceProfile.directories) {
                   const sourcePath = remotePersistencePath(directory);
                   if (!sourcePath)
@@ -16070,7 +16724,17 @@ async function createRunnerdBackendWithinSessionClaim(
                     throw new Error("runner_harness_state_mismatch: checkpoint_directory_missing");
                   }
                 }
-                const manifest = buildNativeHarnessBackupManifest({
+                return verified.providerSessionIdentity;
+              };
+              try {
+                const providerSessionIdentity = await retryTransientRemoteCheckpointRead(
+                  captureSettledState,
+                  (attempt, attempts) => input.onLog?.(
+                    "stderr",
+                    `[paperclip-runner] remote checkpoint read interrupted (attempt ${attempt} of ${attempts}); reading the settled state again\n`,
+                  ),
+                );
+                const manifest = await buildNativeHarnessBackupManifestStreamed({
                   backupRoot: pendingRoot,
                   execution: input.execution,
                   runnerInstanceId: input.runnerInstanceId,
@@ -16392,6 +17056,13 @@ async function createRunnerdBackendWithinSessionClaim(
               signalVerifiedRecoveryProcess(localRecoveryProcess, signal),
           }
         : undefined;
+  if (adoptingPersistedRemoteRunner && !adoptedProcess && requiresRemoteProviderPack) {
+    // Bind the relaunch to the pack this session was admitted with (the saved
+    // authority, verified as an exact installed identity), never a newer one.
+    relaunchesSettledRemoteRunner = true;
+    providerPackAuthority = selectProviderPackAuthority(true);
+    expectedProviderPackManifest = providerPackAuthority?.manifest ?? expectedProviderPackManifest;
+  }
   if (adoptedProcess && remoteTarget) {
     const markSpawned = resolveRemoteRunnerProcessSpawned as (() => void) | null;
     markSpawned?.();
@@ -16419,6 +17090,33 @@ async function createRunnerdBackendWithinSessionClaim(
     owner => logger.warn({ companyId: owner.companyId, runId: owner.runId }, "Native session diagnostic recording failed"));
   const diagnosticLease = diagnostics.activate(diagnosticOwner, input.onLog);
   input.onDiagnosticLease?.(diagnosticLease);
+  const credentialProvider = input.execution.provider.kind === "codex" ? "codex"
+    : input.execution.provider.kind === "acpx" && (input.execution.provider.agent === "codex" || input.execution.provider.agent === "grok")
+      ? input.execution.provider.agent : null;
+  const acpxCredential = input.execution.provider.kind === "acpx";
+  const credentialRelativeHome = credentialProvider && acpxCredential
+    ? `acpx/acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(input.execution))}/${credentialProvider}-home` : "codex-home";
+  const credentialStore = credentialProvider && !preconfiguredHome ? createNativeCredentialStore({
+    provider: credentialProvider,
+    localHome: acpxCredential ? resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner", credentialRelativeHome) : join(root, "codex-home"),
+    ...(remoteRunnerFilesystemRoot && remoteCommandRunner ? {
+      remoteHome: posix.join(remoteRunnerFilesystemRoot, credentialRelativeHome), runner: remoteCommandRunner,
+    } : {}),
+  }) : null;
+  const synchronizeCredentials = input.managedAiCredentialWriteback && credentialProvider && credentialStore
+    ? async () => {
+      const outcome = await syncManagedAiCredentials(input.db, input.execution.binding.companyId,
+        input.managedAiCredentialWriteback!, credentialProvider, credentialStore.read);
+      if (outcome === "no_credentials") throw new Error("Native credential snapshot unavailable");
+    } : undefined;
+  const credentialUpdates = credentialProvider ? createNativeCredentialUpdateOwner(event => appendNativeCredentialUpdate(input.db, {
+    companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+    normalizedSessionId: nativeSessionKey(input.execution), runnerInstanceId: effectiveRunnerInstanceId, event,
+    synchronizeCredentials: synchronizeCredentials ? async () => {
+      if (event.payload.provider !== credentialProvider) throw new Error("native_credential_update_provider_mismatch");
+      await synchronizeCredentials();
+    } : undefined,
+  })) : null;
   const backend = createNativeSessionBackend(runnerExecution, {
     retainedSystemInstructions,
     runnerInstanceId:
@@ -16461,13 +17159,7 @@ async function createRunnerdBackendWithinSessionClaim(
         ...(input.execution.provider.kind === "codex" ? { disableCodexWebSearch: "webSearch" in input.execution.provider && input.execution.provider.webSearch === "disabled" } : {}),
         homeMode: preconfiguredHome ? "preconfigured" : "isolated",
         ...accountingTransportOptions,
-        onCredentialsUpdated: (event) => appendNativeCredentialUpdate(input.db, {
-          companyId: input.execution.binding.companyId,
-          agentId: input.execution.binding.agentId,
-          normalizedSessionId: nativeSessionKey(input.execution),
-          runnerInstanceId: effectiveRunnerInstanceId,
-          event,
-        }),
+        onCredentialsUpdated: credentialUpdates?.onCredentialsUpdated,
         provider:
           input.execution.provider.kind === "cursor_cloud" ? "cursor_cloud" : input.execution.provider.kind === "codex"
             ? "codex"
@@ -16596,7 +17288,7 @@ async function createRunnerdBackendWithinSessionClaim(
         recoverSemanticToolInput: call => {
           const current = sessionToolAuthorityEpochs.get(sessionScopeId);
           if (!current || current.runId !== call.correlation.runId) throw new Error("native_tool_authority_epoch_revoked");
-          return current.recover({ tool: call.operationId, callId: call.callId, arguments: call.input });
+          return current.recover({ tool: call.operationId, callId: call.callId, arguments: call.input }, call.admission);
         },
         codexCommand: remoteCodexBinary ?? undefined,
         sourceCodexHome: remoteTarget
@@ -16780,6 +17472,7 @@ async function createRunnerdBackendWithinSessionClaim(
   });
   const boundManagedSessions = new WeakSet<NativeSession>();
   const wrapManagedSession = (session: NativeSession): NativeSession => {
+    credentialUpdates?.bindSession(session);
     if (cursorCloudRuntime && !boundManagedSessions.has(session)) {
       boundManagedSessions.add(session);
       const close = session.close.bind(session);
@@ -16797,61 +17490,18 @@ async function createRunnerdBackendWithinSessionClaim(
         managedHome: antigravityCredential.home, credential: antigravityCredential.credential, runtimeHome,
       });
     }
-    if (isGrok && grokCredential?.home && !boundManagedSessions.has(session)) {
-      boundManagedSessions.add(session);
-      // The launch runtime directory already ends in "acpx"; ACPX adds its
-      // own namespace beneath it in resolveAcpxRuntimeRoot.
-      const relativeHome = `acpx/acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(input.execution))}/grok-home`;
-      const localHome = resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner", relativeHome);
-      const remoteHome = remoteRunnerFilesystemRoot ? posix.join(remoteRunnerFilesystemRoot, relativeHome) : null;
-      const readAuth = async (name: string): Promise<Buffer> => {
-        if (!remoteHome || !remoteCommandRunner) return Buffer.from(await readLocalAiCredentialFile(join(localHome, name)));
-        const script = `const fs=require('node:fs'),path=require('node:path');let fd;try{const file=process.argv[1];let parent=path.dirname(file);while(true){if(!fs.lstatSync(parent).isDirectory())throw Error('directory');const next=path.dirname(parent);if(next===parent)break;parent=next;}fd=fs.openSync(file,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);const st=fs.fstatSync(fd);if(!st.isFile()||st.uid!==process.getuid()||(st.mode&511)!==384||st.size>65536)throw Error('credential');const b=Buffer.alloc(65537);let n=0;while(n<b.length){const k=fs.readSync(fd,b,n,b.length-n,n);if(!k)break;n+=k;}if(n>65536)throw Error('size');process.stdout.write(b.subarray(0,n).toString('base64'));b.fill(0);}catch(e){process.exitCode=e.code==='ENOENT'?66:1;}finally{if(fd!==undefined)fs.closeSync(fd);}`;
-        const result = await remoteCommandRunner.execute({ command: "node", args: ["-e", script, posix.join(remoteHome, name)], bypassSession: true, timeoutMs: 10000 });
-        if (result.exitCode !== 0 || result.timedOut) throw Object.assign(new Error("Grok credential refresh handoff unavailable"), { code: result.exitCode === 66 ? "ENOENT" : "INVALID_CREDENTIAL" });
-        return Buffer.from(result.stdout, "base64");
-      };
-      return bindManagedNativeCredentialTurn(session, {
-        copyBack: async () => {
-          await copyBackGrokAuth({ hostHomeDir: grokCredential.home!, log: () => {},
-            readSandboxAuth: () => readAuth("auth.json").catch((error) => {
-              if (error.code !== "ENOENT") throw error;
-              return readAuth("auth-refresh.json");
-            }),
-          });
-        },
-        remove: async () => {
-          for (const name of ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp"]) {
-            rmSync(join(localHome, name), { force: true });
-            if (remoteHome && remoteCommandRunner) {
-              const result = await remoteCommandRunner.execute({ command: "rm", args: ["-f", "--", posix.join(remoteHome, name)], bypassSession: true, timeoutMs: 10000 });
-              if (result.exitCode !== 0 || result.timedOut) throw new Error("Grok credential cleanup failed");
-            }
-          }
-        },
-      });
-    }
-    if (preconfiguredHome || !input.managedAiCredentialHome || input.execution.provider.kind !== "codex" || boundManagedSessions.has(session)) return session;
+    const destinationHome = credentialProvider === "grok" ? grokCredential?.home : input.managedAiCredentialHome;
+    if (!credentialProvider || !credentialStore || !destinationHome || boundManagedSessions.has(session)) return session;
     boundManagedSessions.add(session);
-    const remoteAuth = remoteRunnerFilesystemRoot ? posix.join(remoteRunnerFilesystemRoot, "codex-home", "auth.json") : null;
-    const localAuth = join(root, "codex-home", "auth.json");
     return bindManagedNativeCredentialTurn(session, {
-      copyBack: async () => {
-        await copyBackCodexAuth({
-          hostAuthPath: join(input.managedAiCredentialHome!, "auth.json"),
-          readSandboxAuth: async () => {
-            if (!remoteAuth || !remoteCommandRunner) return readFileSync(localAuth);
-            const result = await remoteCommandRunner.execute({ command: "base64", args: [remoteAuth], bypassSession: true, timeoutMs: 10000 });
-            if (result.exitCode !== 0 || result.timedOut) throw new Error("AI credential copy-back failed");
-            return Buffer.from(result.stdout, "base64");
-          },
-          log: () => {},
-        });
+      copyBack: synchronizeCredentials ? async () => {} : async () => {
+        if (credentialProvider === "grok") await copyBackGrokAuth({ hostHomeDir: destinationHome,
+          readSandboxAuth: async () => Buffer.from(await credentialStore.read()), log: () => {} });
+        else await copyBackCodexAuth({ hostAuthPath: join(destinationHome, "auth.json"),
+          readSandboxAuth: async () => Buffer.from(await credentialStore.read()), log: () => {} });
       },
-      remove: async () => {
-        rmSync(localAuth, { force: true });
-        if (remoteAuth && remoteCommandRunner) await remoteCommandRunner.execute({ command: "rm", args: ["-f", "--", remoteAuth], bypassSession: true, timeoutMs: 10000 });
-      },
+      retire: synchronizeCredentials,
+      remove: credentialStore.remove,
     });
   };
   input.executionContext?.signal.throwIfAborted();
@@ -17104,9 +17754,9 @@ export function createRemoteNativeArtifactPreparation(input: {
 
   const prepare = async (requiredMode: "dial_wss" | "listen_ws") => {
     const matchesControllerRunnerArtifact = async (executable: string): Promise<boolean> => {
-      const expected = createHash("sha256")
-        .update(readFileSync(controllerRunnerBinary))
-        .digest("hex");
+      // Streamed once per boot and reused while the binary is unchanged; a
+      // synchronous 31 MB read here blocked the event loop on every run.
+      const expected = (await cachedFileSha256(controllerRunnerBinary)).slice("sha256:".length);
       try {
         const probe = await remoteCommandRunner.execute({
           command: "sh",
