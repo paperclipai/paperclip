@@ -28,11 +28,6 @@ const ORIGIN = "http://127.0.0.1:41999";
 const EMAIL = "founder@example.com";
 const PASSWORD = "correct-horse-battery-staple";
 
-// The issuer Better Auth stamps on an email/password account:
-// `createLocalAccountIssuer("credential")`. Sign-in matches on it, so a row
-// written with anything else is a row nobody can sign in as.
-const CREDENTIAL_ISSUER = "local:credential";
-
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -107,7 +102,7 @@ describeEmbeddedPostgres("Better Auth credential sign-up against the real schema
     expect(accounts).toHaveLength(1);
     expect(accounts[0]).toMatchObject({
       providerId: "credential",
-      issuer: CREDENTIAL_ISSUER,
+      issuer: null,
     });
     expect(accounts[0]?.password).toBeTruthy();
 
@@ -119,5 +114,17 @@ describeEmbeddedPostgres("Better Auth credential sign-up against the real schema
     expect(signIn.status).toBe(200);
     expect(signIn.body?.user?.email).toBe(EMAIL);
     expect(sessionCookies(signIn).length).toBeGreaterThan(0);
+
+    await db.update(authAccounts).set({ issuer: "local:credential" });
+    const legacySignIn = await request(app)
+      .post("/api/auth/sign-in/email")
+      .set("origin", ORIGIN)
+      .send({ email: EMAIL, password: PASSWORD });
+    expect(legacySignIn.status).toBe(200);
+    expect(legacySignIn.body?.user?.email).toBe(EMAIL);
+
+    await expect(db.insert(authAccounts).values({ ...accounts[0]!, id: "duplicate-credential" }))
+      .rejects.toMatchObject({ cause: { code: "23505", constraint_name: "account_provider_account_id_uq" } });
+    await db.insert(authAccounts).values({ ...accounts[0]!, id: "other-provider", providerId: "other" });
   });
 });

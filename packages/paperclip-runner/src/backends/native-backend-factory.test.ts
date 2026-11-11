@@ -488,6 +488,7 @@ describe("native backend factory", () => {
           recovered: false,
           reason: expect.stringContaining("PRP provider resume state is unavailable"),
           failureClass: PROVIDER_STATE_INCOMPATIBLE,
+          resumeStateUnavailable: true,
         });
     });
 
@@ -499,6 +500,7 @@ describe("native backend factory", () => {
       const recovered = await backend.recoverSession!({ ...snapshot, ...inFlight } as never, { signal: new AbortController().signal });
       expect(recovered).toMatchObject({ recovered: false, reason: expect.stringContaining("PRP provider resume state is unavailable") });
       expect(recovered).not.toHaveProperty("failureClass");
+      expect(recovered).not.toHaveProperty("resumeStateUnavailable");
     });
   });
 
