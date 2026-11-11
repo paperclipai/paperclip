@@ -6092,7 +6092,7 @@ const costSummaryPaths = [
 
 /** Reports whose rows count usage that has no known price. */
 const UNPRICED_COUNT_COST_REPORTS = new Set<string>(["summary", "by-agent", "by-user", "by-agent-model", "by-provider", "by-biller", "by-project"]);
-export const UNPRICED_COST_REPORT_DESCRIPTION = "costCents counts priced usage only. A row whose unpricedEventCount is above 0 includes usage with no known price, so its real cost is unknown, not zero: report that usage as unpriced and its total as incomplete, never as $0.00. GET /api/companies/{companyId}/costs/data-quality lists the unpriced runs (runId, agentId, reason); link each run you cite at /<prefix>/agents/<agentId>/runs/<runId>.";
+export const UNPRICED_COST_REPORT_DESCRIPTION = "costCents counts priced usage only. A row whose unpricedEventCount is above 0 includes usage with no known price, so its real cost is unknown, not zero: report that usage as unpriced and its total as incomplete, never as $0.00. To find that usage, list the agent's runs with GET /api/companies/{companyId}/heartbeat-runs?agentId=<agentId>: a run whose usageJson.costStatus is \"unpriced\" is one, and its usageJson.ledgerScope.issueId names its task. Link each run you cite at /<prefix>/agents/<agentId>/runs/<runId>, or its task.";
 
 for (const segment of costSummaryPaths) {
   registry.registerPath({

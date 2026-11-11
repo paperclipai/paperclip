@@ -340,7 +340,8 @@ describe("openapi routes", () => {
       const description = paths[`/api/companies/{companyId}/costs/${segment}`].get.description as string;
       expect(description).toContain("unpricedEventCount is above 0");
       expect(description).toContain("never as $0.00");
-      expect(description).toContain("GET /api/companies/{companyId}/costs/data-quality lists the unpriced runs");
+      expect(description).toContain("GET /api/companies/{companyId}/heartbeat-runs?agentId=<agentId>");
+      expect(description).not.toContain("costs/data-quality");
     }
     expect(paths["/api/companies/{companyId}/costs/window-spend"].get.description).toBeUndefined();
   });
