@@ -806,6 +806,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let require_plan_collaboration = args
         .iter()
         .any(|value| value == "--require-plan-collaboration");
+    let forbid_plan_collaboration = args
+        .iter()
+        .any(|value| value == "--forbid-plan-collaboration");
     let expected_canonical_task_context = argument(&args, "--expected-canonical-task-context")
         .map(|value| serde_json::from_str::<Value>(&value))
         .transpose()?;
@@ -1763,6 +1766,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     && message.pointer("/params/collaborationMode/mode") != Some(&json!("plan"))
                 {
                     return Err("turn/start omitted native plan collaboration mode".into());
+                }
+                if forbid_plan_collaboration
+                    && message.pointer("/params/collaborationMode").is_some()
+                {
+                    return Err("turn/start requested a collaboration mode outside planning".into());
                 }
                 if let Some(pid_file) = escaped_tool_pid_file.as_deref() {
                     if turn_start_count == 0 {
