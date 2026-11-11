@@ -116,6 +116,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     executionState?: Record<string, unknown> | null;
     description?: string | null;
     unblockDescriptor?: { owner: { agentId: string } | { userId: string } | "board"; action: string } | null;
+    ownerNotified?: boolean;
   }) {
     const id = input.id ?? randomUUID();
     await db.insert(issues).values({
@@ -134,6 +135,8 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       executionState: input.executionState ?? null,
       description: input.description ?? null,
       unblockDescriptor: input.unblockDescriptor ?? null,
+      // Mirrors routable-blocked delivery: the owner was woken for this transition.
+      ...(input.ownerNotified ? { blockedTransitionAt: new Date(), blockedOwnerNotifiedAt: new Date() } : {}),
     });
     return id;
   }
@@ -1029,6 +1032,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
         status: "blocked",
         assigneeAgentId: agentId,
         unblockDescriptor: { owner: { agentId }, action: "Resume when the outside reply arrives." },
+        ownerNotified: true,
       });
       const dependantId = await insertIssue({ companyId, identifier: "PBU-2", title: "Dependant", status: "blocked" });
       await block({ companyId, blockerIssueId: waitingId, blockedIssueId: dependantId });
@@ -1058,6 +1062,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
         parentId,
         assigneeAgentId: agentId,
         unblockDescriptor: { owner: { agentId }, action: "Resume after the rollout window." },
+        ownerNotified: true,
       });
 
       const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
@@ -1074,6 +1079,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
         status: "blocked",
         assigneeAgentId: pausedAgentId,
         unblockDescriptor: { owner: { agentId: pausedAgentId }, action: "Resume when unpaused." },
+        ownerNotified: true,
       });
 
       const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
@@ -1099,6 +1105,83 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
 
       expect(issue?.blockerAttention).toMatchObject({ state: "needs_attention", blockingTreeLive: false });
+    });
+
+    it("keeps surfacing an agent-owned unblock path whose owner was never woken", async () => {
+      const { companyId, agentId } = await createCompany("PBW");
+      const issueId = await insertIssue({
+        companyId,
+        identifier: "PBW-1",
+        title: "Descriptor added without delivery",
+        status: "blocked",
+        assigneeAgentId: agentId,
+        unblockDescriptor: { owner: { agentId }, action: "Resume when the outside reply arrives." },
+      });
+
+      const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
+
+      expect(issue?.blockerAttention).toMatchObject({ state: "needs_attention", blockingTreeLive: false });
+    });
+
+    it("clears delivery evidence when the unblock owner changes while the issue stays blocked", async () => {
+      const { companyId, agentId, pausedAgentId } = await createCompany("PBO");
+      const issueId = await insertIssue({
+        companyId,
+        identifier: "PBO-1",
+        title: "Owner handed over",
+        status: "blocked",
+        assigneeAgentId: agentId,
+        unblockDescriptor: { owner: { agentId }, action: "Resume when the outside reply arrives." },
+        ownerNotified: true,
+      });
+
+      await svc.update(issueId, { unblockDescriptor: { owner: { agentId }, action: "Resume after the new date." } });
+      const sameOwner = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+      expect(sameOwner?.blockedOwnerNotifiedAt).not.toBeNull();
+
+      await svc.update(issueId, { unblockDescriptor: { owner: { agentId: pausedAgentId }, action: "Resume after the new date." } });
+      const newOwner = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+      expect(newOwner?.blockedOwnerNotifiedAt).toBeNull();
+    });
+
+    it("covers a dependant whose blocked blocker has a queued run that is not yet its execution run", async () => {
+      const { companyId, agentId } = await createCompany("PBR");
+      const blockerId = await insertIssue({
+        companyId,
+        identifier: "PBR-1",
+        title: "Blocker woken after its child closed",
+        status: "blocked",
+        assigneeAgentId: agentId,
+      });
+      const dependantId = await insertIssue({ companyId, identifier: "PBR-2", title: "Dependant", status: "blocked" });
+      await block({ companyId, blockerIssueId: blockerId, blockedIssueId: dependantId });
+      await activeRun({ companyId, agentId, issueId: blockerId, status: "queued", current: false });
+
+      const dependant = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === dependantId);
+
+      expect(dependant?.blockerAttention).toMatchObject({ state: "covered", blockingTreeLive: true });
+    });
+
+    it("treats a pending wake for the issue as covered after its last blocker closes", async () => {
+      const { companyId, agentId } = await createCompany("PBK");
+      const issueId = await insertIssue({
+        companyId,
+        identifier: "PBK-1",
+        title: "Parent with a pending wake",
+        status: "blocked",
+        assigneeAgentId: agentId,
+      });
+      await db.insert(agentWakeupRequests).values({
+        companyId,
+        agentId,
+        source: "automation",
+        status: "queued",
+        payload: { issueId },
+      });
+
+      const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
+
+      expect(issue?.blockerAttention).toMatchObject({ state: "covered", blockingTreeLive: true });
     });
 
     it("treats a queued run for the issue as covered after its last blocker closes", async () => {

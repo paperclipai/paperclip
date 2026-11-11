@@ -4195,6 +4195,33 @@ async function readIssueBlockerAttentionBatch(
     }
   }
 
+  // A wake run for a node may be queued behind the agent's other work before
+  // it becomes the node's executionRunId (for example the wake that follows a
+  // child's completion). Count a not-yet-started run for the node's current
+  // assignee. A running run the node no longer owns stays stale.
+  const runProvenanceIssueId = sql<string>`coalesce(
+    ${heartbeatRuns.nativeIssueId}::text,
+    nullif(${heartbeatRuns.contextSnapshot}->>'issueId', ''),
+    nullif(${heartbeatRuns.contextSnapshot}->>'taskId', ''),
+    nullif(${heartbeatRuns.contextSnapshot}->>'taskKey', '')
+  )`;
+  const openAssignedNodes = [...evidenceNodes.values()].filter((node) => node.status !== "done" && node.assigneeAgentId);
+  for (const chunk of chunkList(openAssignedNodes.map((node) => node.id), ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    const runRows: Array<{ agentId: string; issueId: string | null; provenanceIssueId: string | null }> = await dbOrTx
+      .select({ agentId: heartbeatRuns.agentId, issueId: heartbeatRuns.issueId, provenanceIssueId: runProvenanceIssueId })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "queued"),
+        or(inArray(heartbeatRuns.issueId, chunk), inArray(runProvenanceIssueId, chunk)),
+      ));
+    for (const row of runRows) {
+      for (const id of new Set([row.issueId, row.provenanceIssueId])) {
+        if (id && evidenceNodes.get(id)?.assigneeAgentId === row.agentId) activeIssueIds.add(id);
+      }
+    }
+  }
+
   const explicitWaitCandidateIds = [...evidenceNodes.values()]
     .filter((node) => node.status !== "done")
     .map((node) => node.id);
@@ -4352,11 +4379,13 @@ async function readIssueBlockerAttentionBatch(
     }
   }
 
-  // A blocked issue whose unblockDescriptor names an agent owner has been
-  // routed to that agent (see routable-blocked.ts): the owner is woken with the
-  // unblock action and resumes the issue itself. Treat that as a waiting path
-  // while the owner can still be invoked, so the board is not asked to act on
-  // work an agent has explicitly taken responsibility for.
+  // A blocked issue whose unblockDescriptor names an agent owner, and whose
+  // owner was woken with the unblock action for this blocked transition
+  // (blockedOwnerNotifiedAt, see routable-blocked.ts), has been routed to that
+  // agent. Treat it as a waiting path while the owner can still be invoked, so
+  // the board is not asked to act on work an agent has taken responsibility
+  // for. Without delivery evidence the owner may never have been told, so the
+  // issue keeps surfacing.
   const agentUnblockOwnerByIssueId = new Map<string, string>();
   for (const chunk of chunkList(explicitWaitCandidateIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
     const descriptorRows: Array<{ id: string; unblockDescriptor: IssueUnblockDescriptor | null }> = await dbOrTx
@@ -4367,6 +4396,7 @@ async function readIssueBlockerAttentionBatch(
         inArray(issues.id, chunk),
         eq(issues.status, "blocked"),
         isNotNull(issues.unblockDescriptor),
+        isNotNull(issues.blockedOwnerNotifiedAt),
       ));
     for (const row of descriptorRows) {
       const owner = row.unblockDescriptor?.owner;
@@ -4615,35 +4645,15 @@ async function readIssueBlockerAttentionBatch(
         pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId)
       );
     });
-  // When the last blocker closes, the blocked issue's owner is woken with a
-  // fresh run that may wait in the agent's queue behind other work. That run
-  // is not the issue's executionRunId yet, so look it up by its context.
-  const rootIdsWithQueuedRun = new Set<string>();
-  const unblockedRootIds = roots
-    .filter((root) => unresolvedTopLevelEdges(root.id).length === 0)
-    .map((root) => root.id);
-  for (const chunk of chunkList(unblockedRootIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
-    const runIssueId = sql<string>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId')`;
-    const runRows: Array<{ issueId: string | null }> = await dbOrTx
-      .select({ issueId: runIssueId })
-      .from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.companyId, companyId),
-        inArray(heartbeatRuns.status, BLOCKER_ATTENTION_ACTIVE_RUN_STATUSES),
-        inArray(runIssueId, chunk),
-      ));
-    for (const row of runRows) if (row.issueId) rootIdsWithQueuedRun.add(row.issueId);
-  }
-
   for (const root of roots) {
     const traversal = traversals.get(root.id)!;
     const topLevelEdges = unresolvedTopLevelEdges(root.id);
     if (topLevelEdges.length === 0) {
-      // With no open blocker the issue's own waiting path decides: a pending
-      // interaction or approval, a healthy recovery, an invokable agent
-      // unblock owner, or a queued/running run for the issue means someone
-      // resumes it without the board.
-      const rootHasWaitingPath = explicitWaitingIssueIds.has(root.id) || rootIdsWithQueuedRun.has(root.id);
+      // With no open blocker the issue's own waiting path decides, with the
+      // same evidence the blocker walk uses: a pending interaction or
+      // approval, a healthy recovery, a routed agent unblock owner, a live
+      // execution run, a queued run for its assignee, or a pending wake.
+      const rootHasWaitingPath = explicitWaitingIssueIds.has(root.id) || activeIssueIds.has(root.id);
       attentionMap.set(
         root.id,
         rootHasWaitingPath
@@ -11847,6 +11857,14 @@ export function issueService(db: Db) {
       ) {
         patch.unblockDescriptor = null;
         patch.blockedTransitionAt = null;
+        patch.blockedOwnerNotifiedAt = null;
+      } else if (
+        existing.status === "blocked" &&
+        issueData.unblockDescriptor !== undefined &&
+        !isDeepStrictEqual(issueData.unblockDescriptor?.owner ?? null, existing.unblockDescriptor?.owner ?? null)
+      ) {
+        // The new owner was not woken for this blocked transition. Clear the
+        // delivery evidence so blocker attention keeps surfacing the issue.
         patch.blockedOwnerNotifiedAt = null;
       }
       if (issueData.requestDepth !== undefined) {
