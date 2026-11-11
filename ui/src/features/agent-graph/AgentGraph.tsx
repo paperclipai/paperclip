@@ -137,7 +137,12 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
     for (const agent of graphAgents) index.set(agent.id, agent);
     return index;
   }, [graphAgents]);
-  const managerIndex = useMemo(() => buildManagerIndex(graphAgents), [graphAgents]);
+  const reportingAgentsById = useMemo(() => {
+    const index = new Map<string, Agent>();
+    for (const agent of agents) if (agent.status !== "terminated") index.set(agent.id, agent);
+    return index;
+  }, [agents]);
+  const managerIndex = useMemo(() => buildManagerIndex([...reportingAgentsById.values()]), [reportingAgentsById]);
   const reportCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const agent of graphAgents) {
@@ -210,18 +215,18 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
         pushToast({ tone: "warn", title: "Reporting line not changed", body: REPARENT_REJECTION_MESSAGES[check.reason] });
         return;
       }
-      const agent = agentsById.get(agentId)!;
+      const agent = reportingAgentsById.get(agentId)!;
       setPendingReparent({
         agentId,
         agentName: agent.name,
         fromId: agent.reportsTo,
-        fromName: agent.reportsTo ? agentsById.get(agent.reportsTo)?.name ?? null : null,
+        fromName: agent.reportsTo ? reportingAgentsById.get(agent.reportsTo)?.name ?? null : null,
         toId,
-        toName: toId ? agentsById.get(toId)?.name ?? null : null,
+        toName: toId ? reportingAgentsById.get(toId)?.name ?? null : null,
         origin,
       });
     },
-    [managerIndex, agentsById, pushToast, document.settleReparentStep],
+    [managerIndex, reportingAgentsById, pushToast, document.settleReparentStep],
   );
 
   const reparentMutation = useMutation({
@@ -269,6 +274,18 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
           ...current,
           stickies: current.stickies.map((sticky) => (sticky.id === id ? { ...sticky, ...patch } : sticky)),
         })),
+      editStickyText: (id, text) =>
+        apply(
+          (current) => ({
+            ...current,
+            stickies: current.stickies.map((sticky) => (sticky.id === id && sticky.text !== text ? { ...sticky, text } : sticky)),
+          }),
+          { group: `sticky-text:${id}` },
+        ),
+      finishStickyText: () => {
+        document.closeGroup();
+        document.flush();
+      },
       requestHire: (draftId) => {
         hireMutation.reset();
         setHireDraftId(draftId);
@@ -276,7 +293,7 @@ function AgentGraphCanvas({ companyId, agents, visibleAgentIdsKey, className }: 
       removeDraft: (draftId) =>
         apply((current) => ({ ...current, drafts: current.drafts.filter((draft) => draft.id !== draftId) })),
     }),
-    [apply, hireMutation.reset],
+    [apply, document.closeGroup, document.flush, hireMutation.reset],
   );
 
   const selectionClipboard = useCallback(() => {

@@ -3,6 +3,8 @@ import type { AgentGraphSticky } from "@paperclipai/shared";
 
 export interface AgentGraphActions {
   updateSticky: (id: string, patch: Partial<Omit<AgentGraphSticky, "id">>) => void;
+  editStickyText: (id: string, text: string) => void;
+  finishStickyText: () => void;
   requestHire: (draftId: string) => void;
   removeDraft: (draftId: string) => void;
 }

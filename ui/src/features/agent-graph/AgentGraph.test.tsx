@@ -7,6 +7,7 @@ import type { Agent } from "@paperclipai/shared";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { UI_LAYOUT_SAVE_DEBOUNCE_MS } from "@/hooks/useUiLayout";
 import { buildClipboard, serializeClipboard } from "./lib/clipboard";
+import { queryKeys } from "@/lib/queryKeys";
 import { syntheticOrg } from "./lib/synthetic-org";
 
 const AGENT_COUNT = 250;
@@ -18,12 +19,21 @@ const heartbeatsApi = vi.hoisted(() => ({ liveRunsForCompany: vi.fn(), list: vi.
 const uiLayoutsApi = vi.hoisted(() => ({ get: vi.fn(), save: vi.fn(), reset: vi.fn() }));
 const pushToast = vi.hoisted(() => vi.fn());
 
-const flowOverrides = vi.hoisted(() => ({ nodesInitialized: false }));
+const flowOverrides = vi.hoisted(() => ({
+  nodesInitialized: false,
+  onConnect: null as null | ((connection: { source: string; target: string; sourceHandle: null; targetHandle: null }) => void),
+}));
 
 vi.mock("@xyflow/react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@xyflow/react")>();
+  const { createElement } = await import("react");
+  const ReactFlow = (props: Parameters<typeof actual.ReactFlow>[0]) => {
+    flowOverrides.onConnect = props.onConnect as typeof flowOverrides.onConnect;
+    return createElement(actual.ReactFlow, props);
+  };
   return {
     ...actual,
+    ReactFlow,
     useNodesInitialized: () => {
       const measured = actual.useNodesInitialized();
       return flowOverrides.nodesInitialized || measured;
@@ -114,6 +124,7 @@ beforeEach(() => {
     surface, schemaVersion: 1, layout, updatedAt: null,
   }));
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -354,6 +365,92 @@ describe("AgentGraph with 250 agents", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(agentsApi.hire.mock.calls[0]![1].reportsTo).toBeNull();
+  });
+
+  it("undoes a reporting line change when a filter hides the previous manager", async () => {
+    const agents = roster().slice(0, 12);
+    const previousManager = agents[1]!;
+    const nextManager = agents[0]!;
+    const report = agents.find((agent) => agent.reportsTo === previousManager.id)!;
+    const confirm = async () => {
+      const dialog = document.querySelector('[role="alertdialog"]')!;
+      const button = [...dialog.querySelectorAll("button")].find((element) => element.textContent === "Change reporting line") as HTMLButtonElement;
+      await act(async () => button.click());
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    };
+    agentsApi.update.mockResolvedValue({});
+    await mount(agents);
+    await act(async () => flowOverrides.onConnect!({ source: nextManager.id, target: report.id, sourceHandle: null, targetHandle: null }));
+    await confirm();
+    expect(agentsApi.update).toHaveBeenLastCalledWith(report.id, { reportsTo: nextManager.id }, "company-1");
+
+    const changed = agents.map((agent) => (agent.id === report.id ? { ...agent, reportsTo: nextManager.id } : agent)) as Agent[];
+    const visibleKey = changed.filter((agent) => agent.id !== previousManager.id).map((agent) => agent.id).join(",");
+    await mount(changed, visibleKey);
+    expect(host.querySelectorAll('[data-testid="agent-graph-node"]')).toHaveLength(11);
+
+    const undo = [...host.querySelectorAll("button")].find((element) => element.getAttribute("aria-label") === "Undo") as HTMLButtonElement;
+    await act(async () => undo.click());
+    expect(pushToast).not.toHaveBeenCalledWith(expect.objectContaining({ title: "Reporting line not changed" }));
+    expect(document.querySelector('[role="alertdialog"]')!.textContent).toContain(previousManager.name);
+    await confirm();
+    expect(agentsApi.update).toHaveBeenLastCalledWith(report.id, { reportsTo: previousManager.id }, "company-1");
+    expect(undo.disabled).toBe(true);
+  });
+
+  it("saves sticky note text while it is typed and groups the typing into one undo step", async () => {
+    const agents = roster().slice(0, 12);
+    const sticky = { id: "saved-note", x: 0, y: 0, width: 200, height: 120, text: "kept", color: "yellow" };
+    uiLayoutsApi.get.mockResolvedValue({
+      surface: "agent_graph", schemaVersion: 1, updatedAt: null,
+      layout: { schemaVersion: 1, direction: "TB", viewport: null, positions: {}, hiddenAgentIds: [], stickies: [sticky], drafts: [] },
+    });
+    await mount(agents);
+    const textarea = host.querySelector<HTMLTextAreaElement>('textarea[aria-label="Sticky note text"]')!;
+    const type = async (value: string) => {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, value);
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    };
+    await type("kept and");
+    await type("kept and more");
+    expect(uiLayoutsApi.save).not.toHaveBeenCalled();
+
+    await act(async () => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(uiLayoutsApi.save).toHaveBeenCalledTimes(1);
+    expect(uiLayoutsApi.save.mock.calls[0]![2]).toMatchObject({ stickies: [{ ...sticky, text: "kept and more" }] });
+    expect(uiLayoutsApi.save.mock.calls[0]![3]).toEqual({ keepalive: true });
+
+    const undo = [...host.querySelectorAll("button")].find((element) => element.getAttribute("aria-label") === "Undo") as HTMLButtonElement;
+    await act(async () => undo.click());
+    expect(textarea.value).toBe("kept");
+    expect(undo.disabled).toBe(true);
+  });
+
+  it("shows the layout of the new account after the session changes", async () => {
+    const agents = roster().slice(0, 12);
+    const stored = (hiddenAgentIds: string[]) => ({
+      surface: "agent_graph", schemaVersion: 1, updatedAt: null,
+      layout: { schemaVersion: 1, direction: "TB", viewport: null, positions: {}, hiddenAgentIds, stickies: [], drafts: [] },
+    });
+    uiLayoutsApi.get.mockResolvedValueOnce(stored([agents[5]!.id, agents[6]!.id])).mockResolvedValueOnce(stored([]));
+    await mount(agents);
+    expect(host.querySelectorAll('[data-testid="agent-graph-node"]')).toHaveLength(10);
+
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(uiLayoutsApi.get).toHaveBeenCalledTimes(2);
+    expect(host.querySelectorAll('[data-testid="agent-graph-node"]')).toHaveLength(12);
+    expect(uiLayoutsApi.save).not.toHaveBeenCalled();
   });
 
   it("applies the saved viewport when a retry recovers the saved layout", async () => {

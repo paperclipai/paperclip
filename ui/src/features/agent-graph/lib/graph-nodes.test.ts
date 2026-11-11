@@ -45,6 +45,25 @@ describe("syncNodes with 250 agents", () => {
     expect(edges).toHaveLength(249);
   });
 
+  it("keeps the position of a node that is being dragged when live data changes", () => {
+    const dragged = roster[7]!;
+    const idle = roster[9]!;
+    const moving = nodes.map((node) => {
+      if (node.id === dragged.id) return { ...node, dragging: true, position: { x: 4_321, y: 1_234 } };
+      if (node.id === idle.id) return { ...node, position: { x: 9_999, y: 9_999 } };
+      return node;
+    });
+    const next = syncNodes(moving, { ...base, liveAgentIds: new Set([dragged.id]) });
+    const draggedNode = next.find((node) => node.id === dragged.id)!;
+    expect(draggedNode.position).toEqual({ x: 4_321, y: 1_234 });
+    expect(draggedNode.dragging).toBe(true);
+    expect(draggedNode.data).toMatchObject({ live: true });
+    expect(next.find((node) => node.id === idle.id)!.position).toEqual(autoPositions.get(idle.id));
+
+    const unchanged = syncNodes(moving, { ...base, agents: roster.map((agent) => ({ ...agent })) });
+    expect(unchanged.find((node) => node.id === dragged.id)).toBe(moving.find((node) => node.id === dragged.id));
+  });
+
   it("returns the same arrays when nothing changed, even with a refetched roster", () => {
     const refetched = roster.map((agent) => ({ ...agent }));
     expect(syncNodes(nodes, { ...base, agents: refetched })).toBe(nodes);
@@ -97,6 +116,25 @@ describe("syncNodes with 250 agents", () => {
     expect(changedCount(nodes, next)).toBe(2);
     expect(next.at(-1)?.data).toMatchObject({ managerName: "Agent 0" });
     expect(syncEdges(edges, { ...base, layout: withExtras })).toHaveLength(250);
+  });
+});
+
+describe("syncNodes while a note or a draft is dragged", () => {
+  it("keeps the dragged position until the drag is committed", () => {
+    const roster = agents(6);
+    const sticky = { id: "note", x: 10, y: 20, width: 200, height: 120, text: "", color: "yellow" as const };
+    const draft = {
+      id: "draft", x: 30, y: 40, name: "Copy", role: "engineer", title: null, capabilities: null,
+      adapterType: "claude_local", model: null, reportsTo: null, sourceAgentId: null,
+    };
+    const layout = { ...defaultAgentGraphLayout(), stickies: [sticky], drafts: [draft] };
+    const input = { agents: roster, layout, autoPositions: layoutHierarchy(roster), liveAgentIds: new Set<string>(), managerNames: new Map<string, string>() };
+    const moving = syncNodes([], input).map((node) =>
+      node.type === "agent" ? node : { ...node, dragging: true, position: { x: 777, y: 888 } }) as GraphFlowNode[];
+    const next = syncNodes(moving, { ...input, liveAgentIds: new Set([roster[2]!.id]) });
+    expect(next.filter((node) => node.type !== "agent").map((node) => node.position)).toEqual([{ x: 777, y: 888 }, { x: 777, y: 888 }]);
+    const released = syncNodes(moving.map((node) => ({ ...node, dragging: false })) as GraphFlowNode[], input);
+    expect(released.filter((node) => node.type !== "agent").map((node) => node.position)).toEqual([{ x: 10, y: 20 }, { x: 30, y: 40 }]);
   });
 });
 
