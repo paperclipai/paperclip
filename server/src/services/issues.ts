@@ -58,6 +58,7 @@ import { loadRunBoundIssue } from "./issue-creation-source.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import type { IssueParentAdjustment } from "@paperclipai/shared";
+import type { IssueUnblockDescriptor } from "@paperclipai/shared";
 import {
   confirmPlacement,
   planIssueParentChange,
@@ -4351,12 +4352,42 @@ async function readIssueBlockerAttentionBatch(
     }
   }
 
+  // A blocked issue whose unblockDescriptor names an agent owner has been
+  // routed to that agent (see routable-blocked.ts): the owner is woken with the
+  // unblock action and resumes the issue itself. Treat that as a waiting path
+  // while the owner can still be invoked, so the board is not asked to act on
+  // work an agent has explicitly taken responsibility for.
+  const agentUnblockOwnerByIssueId = new Map<string, string>();
+  for (const chunk of chunkList(explicitWaitCandidateIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    const descriptorRows: Array<{ id: string; unblockDescriptor: IssueUnblockDescriptor | null }> = await dbOrTx
+      .select({ id: issues.id, unblockDescriptor: issues.unblockDescriptor })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        inArray(issues.id, chunk),
+        eq(issues.status, "blocked"),
+        isNotNull(issues.unblockDescriptor),
+      ));
+    for (const row of descriptorRows) {
+      const owner = row.unblockDescriptor?.owner;
+      if (!owner || typeof owner !== "object" || !("agentId" in owner) || typeof owner.agentId !== "string") continue;
+      agentUnblockOwnerByIssueId.set(row.id, owner.agentId);
+      agentIds.add(owner.agentId);
+    }
+  }
+
   const agentRows: IssueBlockerAttentionAgentRow[] = [];
   for (const chunk of chunkList([...agentIds], ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
     agentRows.push(...await dbOrTx.select({ id: agents.id, companyId: agents.companyId, status: agents.status })
       .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, chunk))));
   }
   const agentsById = new Map(agentRows.map((agent) => [agent.id, agent]));
+  for (const [issueId, ownerAgentId] of agentUnblockOwnerByIssueId) {
+    const owner = agentsById.get(ownerAgentId);
+    if (owner?.companyId === companyId && BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES.has(owner.status)) {
+      explicitWaitingIssueIds.add(issueId);
+    }
+  }
 
   type PathClassification = {
     covered: boolean;
@@ -4576,23 +4607,52 @@ async function readIssueBlockerAttentionBatch(
     return null;
   };
 
-  for (const root of roots) {
-    const traversal = traversals.get(root.id)!;
-    const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => {
+  const unresolvedTopLevelEdges = (rootId: string) =>
+    (edgesByIssueId.get(rootId) ?? []).filter((edge) => {
       const blocker = nodesById.get(edge.blockerIssueId);
       return (
         blocker?.status !== "done" ||
         pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId)
       );
     });
+  // When the last blocker closes, the blocked issue's owner is woken with a
+  // fresh run that may wait in the agent's queue behind other work. That run
+  // is not the issue's executionRunId yet, so look it up by its context.
+  const rootIdsWithQueuedRun = new Set<string>();
+  const unblockedRootIds = roots
+    .filter((root) => unresolvedTopLevelEdges(root.id).length === 0)
+    .map((root) => root.id);
+  for (const chunk of chunkList(unblockedRootIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+    const runIssueId = sql<string>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId')`;
+    const runRows: Array<{ issueId: string | null }> = await dbOrTx
+      .select({ issueId: runIssueId })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        inArray(heartbeatRuns.status, BLOCKER_ATTENTION_ACTIVE_RUN_STATUSES),
+        inArray(runIssueId, chunk),
+      ));
+    for (const row of runRows) if (row.issueId) rootIdsWithQueuedRun.add(row.issueId);
+  }
+
+  for (const root of roots) {
+    const traversal = traversals.get(root.id)!;
+    const topLevelEdges = unresolvedTopLevelEdges(root.id);
     if (topLevelEdges.length === 0) {
+      // With no open blocker the issue's own waiting path decides: a pending
+      // interaction or approval, a healthy recovery, an invokable agent
+      // unblock owner, or a queued/running run for the issue means someone
+      // resumes it without the board.
+      const rootHasWaitingPath = explicitWaitingIssueIds.has(root.id) || rootIdsWithQueuedRun.has(root.id);
       attentionMap.set(
         root.id,
-        createIssueBlockerAttention({
-          state: "needs_attention",
-          reason: "attention_required",
-          terminalBlockerIssueId: root.id,
-        }),
+        rootHasWaitingPath
+          ? createIssueBlockerAttention({ state: "covered", reason: null, blockingTreeLive: true })
+          : createIssueBlockerAttention({
+            state: "needs_attention",
+            reason: "attention_required",
+            terminalBlockerIssueId: root.id,
+          }),
       );
       continue;
     }
