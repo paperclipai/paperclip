@@ -75,14 +75,18 @@ function packedMigrations(dbBytes) {
 
 /**
  * Whether each packed migration can be applied while the previous release is
- * still running. `classify` is classifyMigrationSql from @paperclipai/db; the
- * overrides it honours come only from the packed SQL itself.
+ * still running. `classify` is classifyMigrationSequence from @paperclipai/db:
+ * it takes the SQL of every migration in apply order. The overrides it honours
+ * come only from the packed SQL itself.
  */
 export function migrationCompatibility(dbBytes, classify) {
+  const packed = packedMigrations(dbBytes);
+  const results = classify(packed.map(({ sql }) => sql.toString("utf8")));
+  if (!Array.isArray(results) || results.length !== packed.length) throw new Error("The classifier did not return one result per migration.");
   return {
     version: 1,
-    migrations: packedMigrations(dbBytes).map(({ idx, tag, sql, sqlSha256 }) => {
-      const result = classify(sql.toString("utf8"));
+    migrations: packed.map(({ idx, tag, sqlSha256 }, position) => {
+      const result = results[position];
       return {
         idx, tag, sqlSha256,
         compatibility: result.compatibility,
@@ -307,8 +311,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (command === "build") {
       // Type-stripped by Node; the module has no imports, so the build job
       // needs nothing beyond the checkout.
-      const { classifyMigrationSql } = await import(new URL("../packages/db/src/migration-compatibility.ts", import.meta.url).href);
-      buildBundle(directory, sha, { classify: classifyMigrationSql });
+      const { classifyMigrationSequence } = await import(new URL("../packages/db/src/migration-compatibility.ts", import.meta.url).href);
+      buildBundle(directory, sha, { classify: classifyMigrationSequence });
     }
     else if (command === "validate") validateBundle(directory, sha);
     else if (command === "verify-install") verifyInstall(directory, sha);

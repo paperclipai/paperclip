@@ -14,12 +14,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   checkNewMigrationCompatibility,
-  classifyMigrationSql,
+  classifyMigrationSequence,
+  parseNonTransactionalMigrations,
   summarizeMigrationCompatibility,
   type MigrationCompatInput,
 } from "../src/migration-compatibility.js";
 
 const migrationsDir = fileURLToPath(new URL("../src/migrations", import.meta.url));
+const executorPath = fileURLToPath(new URL("../src/client.ts", import.meta.url));
 
 function journalFiles(): string[] {
   const journal = JSON.parse(readFileSync(path.join(migrationsDir, "meta", "_journal.json"), "utf8")) as {
@@ -43,8 +45,8 @@ function git(args: string[]): string | null {
   }
 }
 
-/** Journal migrations that the merge base does not have, or null without git history. */
-function migrationsAddedSince(requestedBase: string | null): { base: string; files: string[] } | null {
+/** Journal migrations split by whether the merge base has them, or null without git history. */
+function migrationsAddedSince(requestedBase: string | null): { base: string; prior: string[]; files: string[] } | null {
   for (const ref of requestedBase ? [requestedBase] : ["origin/master", "master"]) {
     const base = git(["merge-base", "HEAD", ref])?.trim();
     if (!base) continue;
@@ -52,7 +54,8 @@ function migrationsAddedSince(requestedBase: string | null): { base: string; fil
     const listed = git(["ls-tree", "--name-only", base]);
     if (!listed?.includes(".sql")) continue;
     const existing = new Set(listed.split("\n"));
-    return { base, files: journalFiles().filter((file) => !existing.has(file)) };
+    const journal = journalFiles();
+    return { base, prior: journal.filter((file) => existing.has(file)), files: journal.filter((file) => !existing.has(file)) };
   }
   return null;
 }
@@ -65,7 +68,15 @@ function check(requestedBase: string | null): number {
     console.log("migration compatibility: no merge base available, skipped.");
     return requestedBase ? 2 : 0;
   }
-  const result = checkNewMigrationCompatibility(added.files.map((file) => read(path.join(migrationsDir, file))));
+  const nonTransactionalMigrations = parseNonTransactionalMigrations(readFileSync(executorPath, "utf8"));
+  if (!nonTransactionalMigrations) {
+    console.error("error: MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS was not found in packages/db/src/client.ts.");
+    return 1;
+  }
+  const result = checkNewMigrationCompatibility(added.files.map((file) => read(path.join(migrationsDir, file))), {
+    priorMigrationSql: added.prior.map((file) => read(path.join(migrationsDir, file)).sql),
+    nonTransactionalMigrations,
+  });
   for (const notice of result.notices) console.log(`notice: ${notice}`);
   for (const error of result.errors) console.error(`error: ${error}`);
   if (result.passed) {
@@ -81,9 +92,17 @@ function main(): number {
   const base = baseIndex === -1 ? null : args[baseIndex + 1] ?? null;
   if (flag("--check")) return check(base);
 
-  const named = args.filter((arg, index) => !arg.startsWith("--") && index !== baseIndex + 1);
-  const inputs = (named.length > 0 ? named : journalFiles().map((file) => path.join(migrationsDir, file))).map(read);
-  const results = inputs.map((input) => ({ fileName: input.fileName, ...classifyMigrationSql(input.sql) }));
+  const named = args.filter((arg, index) => !arg.startsWith("--") && (baseIndex === -1 || index !== baseIndex + 1));
+  const journal = journalFiles().map((file) => read(path.join(migrationsDir, file)));
+  // A named file is judged after the journal migrations that precede it, or
+  // after the whole journal when it is not in the journal yet.
+  const results = named.length === 0
+    ? classifyMigrationSequence(journal.map((input) => input.sql)).map((result, index) => ({ fileName: journal[index].fileName, ...result }))
+    : named.map(read).map((input) => {
+      const position = journal.findIndex((entry) => entry.fileName === input.fileName);
+      const prior = (position === -1 ? journal : journal.slice(0, position)).map((entry) => entry.sql);
+      return { fileName: input.fileName, ...classifyMigrationSequence([input.sql], prior)[0] };
+    });
   if (flag("--json")) {
     console.log(JSON.stringify(results, null, 2));
     return 0;

@@ -10,12 +10,13 @@ import { gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { artifactBase, assertManifest, assertLockfile, buildBundle, descriptor, migrationCompatibility, validateBundle, verifyPublished, publishBundle } from "./cloud-migrator-artifacts.mjs";
 import { previewManifest, versionFor } from "./preview-artifacts.mjs";
-import { classifyMigrationSql as classify } from "../packages/db/src/migration-compatibility.ts";
+import { classifyMigrationSequence as classify } from "../packages/db/src/migration-compatibility.ts";
 
 const sha = "a".repeat(40);
 const migrations = {
-  "0000_first": 'CREATE TABLE "widgets" ("id" uuid PRIMARY KEY NOT NULL);\n--> statement-breakpoint\nCREATE INDEX "widgets_idx" ON "widgets" ("id");\n',
-  "0001_second": 'CREATE INDEX "issues_idx" ON "issues" ("id");\n',
+  "0000_first": 'CREATE TABLE IF NOT EXISTS "widgets" ("id" uuid PRIMARY KEY NOT NULL);\n--> statement-breakpoint\nCREATE INDEX "widgets_idx" ON "widgets" ("id");\n',
+  // IF NOT EXISTS does not make a table from an earlier migration new again.
+  "0001_second": 'CREATE TABLE IF NOT EXISTS "widgets" ("id" uuid);\n--> statement-breakpoint\nCREATE INDEX "widgets_again_idx" ON "widgets" ("id");\n',
   "0002_third": '-- paperclip:migration-compat online_compatible: no release since 0.2 reads issues.legacy\nALTER TABLE "issues" DROP COLUMN "legacy";\n',
 };
 function tarEntry(name, content) {
@@ -80,13 +81,13 @@ test("manifest publishes how each packed migration behaves under the previous re
     { idx: 0, tag: "0000_first", sqlSha256: digest("0000_first"), compatibility: "online_compatible", classified: "online_compatible", override: false,
       reasons: ["create_table", "create_index_new_table"] },
     { idx: 1, tag: "0001_second", sqlSha256: digest("0001_second"), compatibility: "unknown", classified: "unknown", override: false,
-      reasons: ["lock_hazard_create_index"] },
+      reasons: ["create_table_if_not_exists", "lock_hazard_create_index"] },
     { idx: 2, tag: "0002_third", sqlSha256: digest("0002_third"), compatibility: "online_compatible", classified: "requires_staging", override: true,
       overrideJustification: "no release since 0.2 reads issues.legacy", reasons: ["drop_column"] },
   ]);
-  const [reason] = manifest.migrationCompatibility.migrations[1].reasons;
+  const reason = manifest.migrationCompatibility.migrations[1].reasons[1];
   assert.deepEqual(Object.keys(reason), ["code", "compatibility", "message", "statements"]);
-  assert.deepEqual([reason.compatibility, reason.statements], ["unknown", [1]]);
+  assert.deepEqual([reason.compatibility, reason.statements], ["unknown", [2]]);
   // Everything a consumer pinned before this field existed is unchanged.
   assert.deepEqual(Object.keys(manifest), ["version", "sourceSha", "packageVersion", "packages", "lockfile", "migrationCompatibility"]);
   assert.equal(manifest.version, 1);
@@ -109,6 +110,7 @@ test("migration compatibility is optional for earlier manifests and fails closed
     (c) => { c.migrations[2].compatibility = "unknown"; },
     (c) => { c.migrations[0].overrideJustification = "without an override"; },
     (c) => { c.migrations[1].reasons[0].statements = [0]; },
+    (c) => { c.migrations[1].reasons[1].compatibility = "fine"; },
     (c) => { c.migrations[1].reasons[0].code = 7; },
   ]) {
     const bad = structuredClone(manifest); mutate(bad.migrationCompatibility);
@@ -126,6 +128,7 @@ test("migration compatibility is optional for earlier manifests and fails closed
   writeFileSync(path.join(dir, "manifest.json"), JSON.stringify(earlier));
   assert.throws(() => validateBundle(dir, sha), /does not match the packed migrations/);
   assert.throws(() => migrationCompatibility(dbArchive({}), classify), /empty migration journal/);
+  assert.throws(() => migrationCompatibility(dbArchive(), () => []), /one result per migration/);
   // The shipped journal repeats idx 178; order then follows the file name, as in the migrator.
   const repeated = structuredClone(manifest); repeated.migrationCompatibility.migrations[1].idx = 0;
   assert.doesNotThrow(() => assertManifest(repeated, sha));

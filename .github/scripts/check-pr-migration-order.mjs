@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const MIGRATIONS_DIRECTORY = 'packages/db/src/migrations/';
@@ -70,12 +71,27 @@ export function checkMigrationOrder(baseMigrationFiles, prMigrationFiles) {
  * release is still running. `unknown` without an in-file override fails;
  * `requires_staging` only produces a notice.
  */
-export async function checkMigrationCompatibility(migrations) {
+export async function checkMigrationCompatibility(migrations, { priorMigrationSql, executorSource } = {}) {
   // Type-stripped by Node: the policy job runs before dependencies are installed.
-  const { checkNewMigrationCompatibility } = await import(
+  const { checkNewMigrationCompatibility, parseNonTransactionalMigrations } = await import(
     new URL('../../packages/db/src/migration-compatibility.ts', import.meta.url).href
   );
-  const { passed, errors, notices } = checkNewMigrationCompatibility(migrations);
+  // `executorSource` is the text of packages/db/src/client.ts. It names the
+  // migrations that run outside a transaction, which CONCURRENTLY needs.
+  const nonTransactionalMigrations = executorSource === undefined
+    ? undefined
+    : parseNonTransactionalMigrations(executorSource);
+  if (nonTransactionalMigrations === null) {
+    return {
+      passed: false,
+      errors: ['MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS was not found in packages/db/src/client.ts, so CONCURRENTLY migrations cannot be checked.'],
+      notices: [],
+    };
+  }
+  const { passed, errors, notices } = checkNewMigrationCompatibility(migrations, {
+    priorMigrationSql,
+    nonTransactionalMigrations,
+  });
   return { passed, errors, notices };
 }
 
@@ -118,10 +134,22 @@ async function main() {
   }
   console.log(result.message);
 
-  const compatibility = await checkMigrationCompatibility(prMigrationFiles.map((file) => ({
-    fileName: file,
-    sql: execFileSync('git', ['show', `${headSha}:${file}`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }),
-  })));
+  if (prMigrationFiles.length === 0) return;
+  // The checkout is the merge of the PR into the target branch, so it holds
+  // the target branch's migrations and the migrator source.
+  const root = fileURLToPath(new URL('../../', import.meta.url));
+  const compatibility = await checkMigrationCompatibility(
+    [...prMigrationFiles].sort().map((file) => ({
+      fileName: file,
+      sql: execFileSync('git', ['show', `${headSha}:${file}`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }),
+    })),
+    {
+      priorMigrationSql: [...baseMigrationFiles].sort()
+        .filter((file) => existsSync(`${root}${file}`))
+        .map((file) => readFileSync(`${root}${file}`, 'utf8')),
+      executorSource: readFileSync(`${root}packages/db/src/client.ts`, 'utf8'),
+    },
+  );
   for (const notice of compatibility.notices) {
     console.log(`::notice title=Migration compatibility::${escapeWorkflowCommand(notice)}`);
     console.log(notice);
@@ -133,9 +161,7 @@ async function main() {
     console.error(error);
   }
   if (!compatibility.passed) process.exit(1);
-  if (prMigrationFiles.length > 0) {
-    console.log('Every new migration is classified for application under the running release.');
-  }
+  console.log('Every new migration is classified for application under the running release.');
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

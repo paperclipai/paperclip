@@ -1332,10 +1332,22 @@ against the same database. Every migration is therefore classified by
 A migration takes the worst class of its statements. Lock and duration hazards
 are `unknown`, not compatible with a warning.
 
+A table counts as created in the migration when the statement is a plain
+`CREATE TABLE`, or a `CREATE TABLE IF NOT EXISTS` for a table that no earlier
+migration created. `IF NOT EXISTS` on a table from an earlier migration proves
+nothing, so later statements on that table are judged as changes to an existing
+table.
+
 `drizzle-kit` emits validated foreign keys and plain indexes. For an existing
 table, edit the generated SQL: append `NOT VALID` to the foreign key, and use
-`CREATE INDEX CONCURRENTLY` (see the checklist below for running a migration
-outside a transaction).
+`CREATE INDEX CONCURRENTLY IF NOT EXISTS`.
+
+PostgreSQL rejects `CONCURRENTLY` inside a transaction, and the migrator runs
+each migration file in one transaction. A migration that uses `CONCURRENTLY`
+must therefore be listed in `MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS` in
+`packages/db/src/client.ts`, and every statement in it must be idempotent,
+because a failed run starts again from the first statement. The pull-request
+guard fails a new `CONCURRENTLY` migration that is not in that list.
 
 **The rule for a new migration.** A pull request fails when a migration it adds
 is `unknown`. Rewrite the migration, split it into expand and contract
@@ -1357,9 +1369,10 @@ follows an expand release) always classifies as `requires_staging`; mark it
 Check a migration locally:
 
 ```sh
-pnpm --filter @paperclipai/db migration-compat src/migrations/0468_busy_wendell_rand.sql
-pnpm --filter @paperclipai/db migration-compat            # distribution over all migrations
-pnpm --filter @paperclipai/db migration-compat --check    # the pull-request guard
+cd packages/db
+pnpm exec tsx scripts/migration-compatibility.ts src/migrations/0468_busy_wendell_rand.sql
+pnpm exec tsx scripts/migration-compatibility.ts            # distribution over all migrations
+pnpm exec tsx scripts/migration-compatibility.ts --check    # the pull-request guard
 ```
 
 The guard runs in `check:migrations` (so in the `@paperclipai/db` typecheck and

@@ -89,3 +89,36 @@ test('reports requires_staging as a notice without failing', async () => {
 test('passes when a PR adds no migrations', async () => {
   assert.deepEqual(await checkMigrationCompatibility([]), { passed: true, errors: [], notices: [] });
 });
+
+const executorSource = 'const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([\n  "0232_listed.sql",\n]);';
+const concurrentIndex = 'CREATE INDEX CONCURRENTLY IF NOT EXISTS "issues_note_idx" ON "issues" ("note");';
+
+test('fails a CONCURRENTLY migration that the migrator would run in a transaction', async () => {
+  const result = await checkMigrationCompatibility(
+    [{ fileName: migration('0232_unlisted'), sql: concurrentIndex }, { fileName: migration('0232_listed'), sql: concurrentIndex }],
+    { executorSource },
+  );
+
+  assert.equal(result.passed, false);
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0], /0232_unlisted\.sql: uses CONCURRENTLY/);
+  assert.match(result.errors[0], /Add "0232_unlisted\.sql" to MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS in packages\/db\/src\/client\.ts/);
+});
+
+test('fails closed when the migrator source no longer names its non-transactional migrations', async () => {
+  const result = await checkMigrationCompatibility([], { executorSource: 'export const nothing = 1;' });
+
+  assert.equal(result.passed, false);
+  assert.match(result.errors[0], /MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS was not found/);
+});
+
+test('treats CREATE TABLE IF NOT EXISTS as new only when the target branch never created the table', async () => {
+  const sql = 'CREATE TABLE IF NOT EXISTS "widgets" ("id" uuid);\nALTER TABLE "widgets" DROP COLUMN "title";';
+  const fresh = await checkMigrationCompatibility([{ fileName: migration('0231_widgets'), sql }], { priorMigrationSql: [] });
+  const existing = await checkMigrationCompatibility([{ fileName: migration('0231_widgets'), sql }], {
+    priorMigrationSql: ['CREATE TABLE "widgets" ("id" uuid, "title" text);'],
+  });
+
+  assert.deepEqual(fresh.notices, []);
+  assert.match(existing.notices[0], /0231_widgets\.sql: requires_staging/);
+});

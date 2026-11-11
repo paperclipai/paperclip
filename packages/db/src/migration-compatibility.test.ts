@@ -1,18 +1,22 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   MIGRATION_COMPAT_REASON_CODES,
   checkNewMigrationCompatibility,
+  classifyMigrationSequence,
   classifyMigrationSql,
+  collectCreatedTables,
   parseMigrationCompatOverride,
+  parseNonTransactionalMigrations,
   summarizeMigrationCompatibility,
   type MigrationCompatibility,
   type MigrationCompatReasonCode,
 } from "./migration-compatibility.js";
 
 const BP = "--> statement-breakpoint\n";
-const NEW_TABLE = `CREATE TABLE IF NOT EXISTS "widgets" ("id" uuid PRIMARY KEY NOT NULL, "issue_id" uuid);${BP}`;
+const NEW_TABLE = `CREATE TABLE "widgets" ("id" uuid PRIMARY KEY NOT NULL, "issue_id" uuid);${BP}`;
 
 function codes(sql: string): MigrationCompatReasonCode[] {
   return classifyMigrationSql(sql).reasons.map((reason) => reason.code);
@@ -23,6 +27,7 @@ type Case = readonly [name: string, sql: string, compatibility: MigrationCompati
 const cases: readonly Case[] = [
   // Compatible: additive changes the previous release never touches.
   ["create table", `CREATE TABLE "widgets" ("id" uuid PRIMARY KEY, "issue_id" uuid REFERENCES "issues"("id"));`, "online_compatible", "create_table"],
+  ["create table if not exists", `CREATE TABLE IF NOT EXISTS "widgets" ("id" uuid PRIMARY KEY);`, "online_compatible", "create_table_if_not_exists"],
   ["create temp table", `CREATE TEMP TABLE scratch (old_id uuid) ON COMMIT DROP;`, "online_compatible", "create_temp_table"],
   ["plain index on a table created here", `${NEW_TABLE}CREATE UNIQUE INDEX "widgets_uq" ON "widgets" USING btree ("issue_id");`, "online_compatible", "create_index_new_table"],
   ["constraints on a table created here", `${NEW_TABLE}ALTER TABLE "widgets" ADD CONSTRAINT "widgets_issue_fk" FOREIGN KEY ("issue_id") REFERENCES "public"."issues"("id") ON DELETE cascade ON UPDATE no action;`, "online_compatible", "alter_new_table"],
@@ -152,6 +157,38 @@ describe("classifyMigrationSql", () => {
       .toBe("online_compatible");
   });
 
+  it("does not take CREATE TABLE IF NOT EXISTS as proof that a table is new", () => {
+    const sql = `CREATE TABLE IF NOT EXISTS issues (id uuid);${BP}ALTER TABLE issues DROP COLUMN title;${BP}CREATE INDEX "i" ON issues (id);`;
+    expect(classifyMigrationSql(sql)).toMatchObject({ compatibility: "requires_staging" });
+    expect(codes(sql)).toEqual(["create_table_if_not_exists", "drop_column", "lock_hazard_create_index"]);
+    // An earlier migration created the table: it exists.
+    expect(classifyMigrationSql(sql, { existingTables: new Set(["issues"]) }).compatibility).toBe("requires_staging");
+    // No earlier migration created it: the table is new, whatever the spelling.
+    expect(classifyMigrationSql(sql, { existingTables: new Set(["projects"]) }).compatibility).toBe("online_compatible");
+    expect(classifyMigrationSql(sql.replace("issues (id uuid)", `"public"."issues" (id uuid)`), { existingTables: new Set() }).compatibility)
+      .toBe("online_compatible");
+    // A temporary table always belongs to the migration session.
+    expect(classifyMigrationSql(`CREATE TEMP TABLE IF NOT EXISTS scratch (id uuid);${BP}DROP TABLE scratch;`).compatibility).toBe("online_compatible");
+  });
+
+  it("classifies a sequence knowing the tables earlier migrations created", () => {
+    const create = `DO $$ BEGIN IF to_regclass('public.widgets') IS NULL THEN CREATE TABLE "widgets" ("id" uuid); END IF; END $$;`;
+    const repair = `CREATE TABLE IF NOT EXISTS "widgets" ("id" uuid);${BP}ALTER TABLE "widgets" ADD COLUMN "n" integer NOT NULL;`;
+    const rename = `ALTER TABLE "widgets" RENAME TO "gadgets";`;
+    const again = `CREATE TABLE IF NOT EXISTS "gadgets" ("id" uuid);${BP}CREATE INDEX "g" ON "gadgets" ("id");`;
+    expect(collectCreatedTables(create)).toEqual(["widgets"]);
+    expect(collectCreatedTables(rename)).toEqual(["gadgets"]);
+    expect(classifyMigrationSequence([repair, create, repair, rename, again]).map((result) => result.compatibility))
+      .toEqual(["online_compatible", "online_compatible", "requires_staging", "requires_staging", "unknown"]);
+    expect(classifyMigrationSequence([repair], [create])[0].compatibility).toBe("requires_staging");
+  });
+
+  it("reports whether a migration needs to run outside a transaction", () => {
+    expect(classifyMigrationSql(`CREATE INDEX CONCURRENTLY "i" ON "issues" ("a");`).usesConcurrently).toBe(true);
+    expect(classifyMigrationSql(`DROP INDEX CONCURRENTLY IF EXISTS "i";`).usesConcurrently).toBe(true);
+    expect(classifyMigrationSql(`COMMENT ON TABLE "issues" IS 'built CONCURRENTLY';${BP}CREATE INDEX "i" ON "issues" ("a");`).usesConcurrently).toBe(false);
+  });
+
   it("does not treat an existing table as new because another table was created", () => {
     expect(classifyMigrationSql(`${NEW_TABLE}CREATE INDEX "i" ON "widgets_archive" ("id");`).compatibility).toBe("unknown");
   });
@@ -253,6 +290,26 @@ describe("checkNewMigrationCompatibility", () => {
     expect(result.errors).toEqual([expect.stringMatching(/0500_additive\.sql: .*needs a justification/)]);
   });
 
+  it("fails a CONCURRENTLY migration that the migrator would run inside a transaction", () => {
+    const concurrent = { fileName: "packages/db/src/migrations/0503_index.sql", sql: `CREATE INDEX CONCURRENTLY IF NOT EXISTS "i" ON "issues" ("a");` };
+    const result = checkNewMigrationCompatibility([concurrent], { nonTransactionalMigrations: new Set(["0313_private_task_access.sql"]) });
+    expect(result.passed).toBe(false);
+    expect(result.errors).toEqual([expect.stringMatching(/0503_index\.sql: uses CONCURRENTLY[\s\S]*Add "0503_index\.sql" to MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS in packages\/db\/src\/client\.ts/)]);
+    expect(checkNewMigrationCompatibility([concurrent], { nonTransactionalMigrations: new Set(["0503_index.sql"]) }).passed).toBe(true);
+    // Without the list (a caller that cannot read the migrator) the check is skipped.
+    expect(checkNewMigrationCompatibility([concurrent]).passed).toBe(true);
+  });
+
+  it("judges new migrations after the ones already on the target branch", () => {
+    const repair = { fileName: "0504_repair.sql", sql: `CREATE TABLE IF NOT EXISTS "widgets" ("id" uuid);${BP}CREATE INDEX "w" ON "widgets" ("id");` };
+    expect(checkNewMigrationCompatibility([repair], { priorMigrationSql: [] }).passed).toBe(true);
+    expect(checkNewMigrationCompatibility([repair], { priorMigrationSql: [`CREATE TABLE "widgets" ("id" uuid);`] }).passed).toBe(false);
+    expect(checkNewMigrationCompatibility([repair]).passed).toBe(false);
+    // The second new migration sees the table the first one created.
+    expect(checkNewMigrationCompatibility([repair, { ...repair, fileName: "0505_again.sql" }], { priorMigrationSql: [] }).errors)
+      .toEqual([expect.stringContaining("0505_again.sql")]);
+  });
+
   it("does not fail requires_staging, and prints a notice instead", () => {
     const result = checkNewMigrationCompatibility([staged]);
     expect(result).toMatchObject({ passed: true, errors: [] });
@@ -261,10 +318,14 @@ describe("checkNewMigrationCompatibility", () => {
 });
 
 describe("the shipped migrations", () => {
-  const migrationsDir = fileURLToPath(new URL("./migrations", import.meta.url));
-  const results = readdirSync(migrationsDir)
-    .filter((file) => file.endsWith(".sql"))
-    .map((file) => ({ file, result: classifyMigrationSql(readFileSync(`${migrationsDir}/${file}`, "utf8")) }));
+  const dbDir = fileURLToPath(new URL("..", import.meta.url));
+  const migrationsDir = `${dbDir}src/migrations`;
+  const journal = JSON.parse(readFileSync(`${migrationsDir}/meta/_journal.json`, "utf8")) as { entries: { idx: number; tag: string }[] };
+  const files = [...journal.entries]
+    .sort((left, right) => left.idx - right.idx || left.tag.localeCompare(right.tag))
+    .map((entry) => `${entry.tag}.sql`);
+  const classified = classifyMigrationSequence(files.map((file) => readFileSync(`${migrationsDir}/${file}`, "utf8")));
+  const results = files.map((file, index) => ({ file, result: classified[index] }));
 
   it("classifies every file without an invalid override and with a consistent summary", () => {
     expect(results.filter(({ result }) => result.overrideError).map(({ file }) => file)).toEqual([]);
@@ -284,4 +345,24 @@ describe("the shipped migrations", () => {
     // 0466 drops a column the previous release wrote.
     expect(verdict("0466_")).toBe("requires_staging");
   });
+
+  it("finds the migrator's non-transactional list, which holds every CONCURRENTLY migration", () => {
+    const listed = parseNonTransactionalMigrations(readFileSync(`${dbDir}src/client.ts`, "utf8"));
+    expect(listed?.has("0313_private_task_access.sql")).toBe(true);
+    expect(results.filter(({ file, result }) => result.usesConcurrently && !listed?.has(file)).map(({ file }) => file)).toEqual([]);
+    expect(parseNonTransactionalMigrations("const other = new Set([]);")).toBeNull();
+  });
+
+  it("classifies the files named on the command line, after the migrations that precede them", () => {
+    const run = (...args: string[]) => execFileSync(process.execPath, ["--import", "tsx", "scripts/migration-compatibility.ts", ...args], { cwd: dbDir, encoding: "utf8" });
+    const one = run("src/migrations/0224_unified_adapter_auth_sessions.sql");
+    expect(one).toMatch(/^0224_unified_adapter_auth_sessions\.sql: requires_staging\n/);
+    expect(one).toContain("add_not_null_column_without_default");
+    expect(one.match(/^\S+\.sql: /gm)).toHaveLength(1);
+    const two = JSON.parse(run("--json", "src/migrations/0468_busy_wendell_rand.sql", "src/migrations/0466_drop_project_environment.sql")) as { fileName: string; compatibility: string }[];
+    expect(two.map(({ fileName, compatibility }) => [fileName, compatibility])).toEqual([
+      ["0468_busy_wendell_rand.sql", "online_compatible"],
+      ["0466_drop_project_environment.sql", "requires_staging"],
+    ]);
+  }, 60_000);
 });

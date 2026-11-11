@@ -28,6 +28,7 @@ type ReasonDefinition = {
 // must not start a statement whose duration grows with table size.
 const REASONS = {
   create_table: { compatibility: "online_compatible", message: "Creates a table the previous release does not use." },
+  create_table_if_not_exists: { compatibility: "online_compatible", message: "Creates a table only when it is missing. It may already exist, so later statements on it are judged as changes to an existing table." },
   create_temp_table: { compatibility: "online_compatible", message: "Creates a temporary table visible only to the migration session." },
   alter_new_table: { compatibility: "online_compatible", message: "Changes a table created earlier in this migration." },
   create_index_new_table: { compatibility: "online_compatible", message: "Builds an index on a table created earlier in this migration." },
@@ -117,6 +118,16 @@ export type MigrationCompatResult = {
   readonly override: MigrationCompatOverride | null;
   /** Set when the file carries an override directive that cannot be honoured. */
   readonly overrideError: string | null;
+  /** True when a statement uses CONCURRENTLY, which cannot run in a transaction. */
+  readonly usesConcurrently: boolean;
+};
+
+export type MigrationCompatOptions = {
+  /**
+   * Tables created by the migrations that apply before this one. Without it,
+   * CREATE TABLE IF NOT EXISTS is never proof that a table is new.
+   */
+  readonly existingTables?: ReadonlySet<string>;
 };
 
 type Statement = {
@@ -126,6 +137,7 @@ type Statement = {
 };
 
 type Context = {
+  readonly existingTables: ReadonlySet<string> | null;
   readonly createdTables: Set<string>;
   readonly addedColumns: Set<string>;
 };
@@ -346,9 +358,14 @@ function classifyStatement(statement: Statement, context: Context, nested = fals
 
   if (/^do\b/.test(text)) return classifyDoBlock(statement, context, nested);
 
-  if ((match = new RegExp(String.raw`^create (?:(?:global |local )?(temp|temporary) |unlogged )?table (?:if not exists )?(${QUALIFIED})(.*)$`).exec(text))) {
+  if ((match = new RegExp(String.raw`^create (?:(?:global |local )?(temp|temporary) |unlogged )?table (if not exists )?(${QUALIFIED})(.*)$`).exec(text))) {
     const temporary = Boolean(match[1]);
-    let rest = match[3].trim();
+    const name = tableName(match[3]);
+    // Plain CREATE TABLE fails when the table exists, and a temporary table
+    // belongs to this session. IF NOT EXISTS proves nothing by itself: the
+    // table is new only when no earlier migration created it.
+    const provenNew = temporary || !match[2] || (context.existingTables !== null && !context.existingTables.has(name));
+    let rest = match[4].trim();
     if (rest.startsWith("(")) {
       const end = closingParen(rest, 0);
       rest = end === -1 ? rest : rest.slice(end);
@@ -356,10 +373,11 @@ function classifyStatement(statement: Statement, context: Context, nested = fals
     if (/\b(?:partition of|inherits|like)\b/.test(rest)) return ["unrecognized_statement"];
     if (/\bas (?:select|with|values|table)\b/.test(rest)) {
       // A temporary copy only reads; it is still registered as migration-owned.
-      if (temporary) context.createdTables.add(tableName(match[2]));
+      if (temporary) context.createdTables.add(name);
       return ["create_table_as"];
     }
-    context.createdTables.add(tableName(match[2]));
+    if (!provenNew) return ["create_table_if_not_exists"];
+    context.createdTables.add(name);
     return [temporary ? "create_temp_table" : "create_table"];
   }
 
@@ -468,8 +486,8 @@ export function parseMigrationCompatOverride(sql: string): OverrideParse {
  * and without long blocking locks. Anything the classifier does not positively
  * recognize is `unknown`.
  */
-export function classifyMigrationSql(sql: string): MigrationCompatResult {
-  const context: Context = { createdTables: new Set(), addedColumns: new Set() };
+export function classifyMigrationSql(sql: string, options: MigrationCompatOptions = {}): MigrationCompatResult {
+  const context: Context = { existingTables: options.existingTables ?? null, createdTables: new Set(), addedColumns: new Set() };
   const statementsByCode = new Map<MigrationCompatReasonCode, number[]>();
   const record = (code: MigrationCompatReasonCode, position: number) => {
     const positions = statementsByCode.get(code) ?? [];
@@ -498,7 +516,47 @@ export function classifyMigrationSql(sql: string): MigrationCompatResult {
     reasons,
     override,
     overrideError: error,
+    usesConcurrently: statements.some((statement) => /\bconcurrently\b/.test(statement.text)),
   };
+}
+
+/** Names of the tables a migration creates or renames to, including inside DO blocks. */
+export function collectCreatedTables(sql: string): string[] {
+  const names: string[] = [];
+  const created = new RegExp(String.raw`\bcreate (?:unlogged )?table (?:if not exists )?(${QUALIFIED})`, "g");
+  const renamed = new RegExp(String.raw`\brename to (${IDENT})`, "g");
+  const visit = (statements: Statement[]) => {
+    for (const statement of statements) {
+      for (const match of statement.text.matchAll(created)) names.push(tableName(match[1]));
+      for (const match of statement.text.matchAll(renamed)) names.push(tableName(match[1]));
+      for (const body of statement.dollarBodies) visit(parseStatements(body));
+    }
+  };
+  visit(parseStatements(sql));
+  return names;
+}
+
+/**
+ * Classifies migrations in apply order. Each one is judged knowing the tables
+ * that `priorSql` and the earlier entries of `sqls` created.
+ */
+export function classifyMigrationSequence(sqls: readonly string[], priorSql: readonly string[] = []): MigrationCompatResult[] {
+  const existingTables = new Set<string>(priorSql.flatMap(collectCreatedTables));
+  return sqls.map((sql) => {
+    const result = classifyMigrationSql(sql, { existingTables });
+    for (const table of collectCreatedTables(sql)) existingTables.add(table);
+    return result;
+  });
+}
+
+/**
+ * Reads, from the source of packages/db/src/client.ts, the migration files the
+ * migrator runs outside a transaction. Returns null when the list is not found.
+ */
+export function parseNonTransactionalMigrations(executorSource: string): Set<string> | null {
+  const match = /MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS\s*=\s*new Set(?:<[^>]*>)?\(\[([\s\S]*?)\]\)/.exec(executorSource);
+  if (!match) return null;
+  return new Set([...match[1].matchAll(/"([^"]+\.sql)"/g)].map((entry) => entry[1]));
 }
 
 export type MigrationCompatInput = { readonly fileName: string; readonly sql: string };
@@ -518,16 +576,45 @@ function describeReasons(result: MigrationCompatResult, compatibility: Migration
     .map((reason) => `    - ${reason.code}${reason.statements.length ? ` (statement ${reason.statements.join(", ")})` : ""}: ${reason.message}`);
 }
 
+export type MigrationCompatGuardOptions = {
+  /**
+   * SQL of every migration that applies before the new ones. Without it,
+   * CREATE TABLE IF NOT EXISTS never counts as creating a new table.
+   */
+  readonly priorMigrationSql?: readonly string[];
+  /**
+   * File names the migrator runs outside a transaction (see
+   * parseNonTransactionalMigrations). When given, a new migration that uses
+   * CONCURRENTLY must be in it.
+   */
+  readonly nonTransactionalMigrations?: ReadonlySet<string>;
+};
+
 /**
- * The pull-request guard for migrations a change adds. `unknown` without a valid
- * override fails. `requires_staging` passes with a notice until deployers
- * enforce staging.
+ * The pull-request guard for migrations a change adds, in apply order.
+ * `unknown` without a valid override fails. `requires_staging` passes with a
+ * notice until deployers enforce staging.
  */
-export function checkNewMigrationCompatibility(migrations: readonly MigrationCompatInput[]): MigrationCompatGuardResult {
+export function checkNewMigrationCompatibility(
+  migrations: readonly MigrationCompatInput[],
+  options: MigrationCompatGuardOptions = {},
+): MigrationCompatGuardResult {
   const errors: string[] = [];
   const notices: string[] = [];
-  const results = migrations.map(({ fileName, sql }) => ({ fileName, result: classifyMigrationSql(sql) }));
+  const sqls = migrations.map((migration) => migration.sql);
+  const classified = options.priorMigrationSql
+    ? classifyMigrationSequence(sqls, options.priorMigrationSql)
+    : sqls.map((sql) => classifyMigrationSql(sql));
+  const results = migrations.map(({ fileName }, index) => ({ fileName, result: classified[index] }));
   for (const { fileName, result } of results) {
+    const baseName = fileName.split("/").pop() ?? fileName;
+    if (result.usesConcurrently && options.nonTransactionalMigrations && !options.nonTransactionalMigrations.has(baseName)) {
+      errors.push([
+        `${fileName}: uses CONCURRENTLY, which PostgreSQL rejects inside a transaction, and the migrator runs each file in one transaction.`,
+        `  Add "${baseName}" to MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS in packages/db/src/client.ts.`,
+        "  Make every statement in the file idempotent (IF NOT EXISTS), because a failed run starts again from the first statement.",
+      ].join("\n"));
+    }
     if (result.overrideError) {
       errors.push(`${fileName}: ${result.overrideError}`);
     } else if (result.compatibility === "unknown") {
