@@ -1,3 +1,4 @@
+import { connect as netConnect, type Socket } from "node:net";
 import { createHash } from "node:crypto";
 import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
 import { readFile, readdir } from "node:fs/promises";
@@ -259,7 +260,18 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
 // A long advisory-lock transaction must not borrow the normal pool that its
 // work needs for progress writes. Keep connection configuration private to the
 // originating Db lifetime; callers receive neither URLs nor credentials.
-const dedicatedDbFactories = new WeakMap<object, () => Db>();
+export type DedicatedDbConnectionOptions = { connectTimeoutSeconds?: number; onSocket?: (socket: Socket) => void };
+function ownedSocketDriverOptions(onSocket: (socket: Socket) => void): Record<string, unknown> {
+  return {
+    socket: (options: { host: string[]; port: number[]; path?: string }) => new Promise<Socket>((resolve, reject) => {
+      const socket = options.path ? netConnect(options.path) : netConnect({ host: options.host[0], port: options.port[0] });
+      onSocket(socket);
+      socket.once("connect", () => { socket.off("error", reject); resolve(socket); });
+      socket.once("error", reject);
+    }),
+  };
+}
+const dedicatedDbFactories = new WeakMap<object, (options?: DedicatedDbConnectionOptions) => Db>();
 const ownedDatabaseListenerFactories = new WeakMap<object, () => Db>();
 
 export interface OwnedDatabaseListener {
@@ -277,10 +289,10 @@ export function createOwnedDatabaseListener(db: Db): OwnedDatabaseListener {
   };
 }
 
-export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: Db) => Promise<T>): Promise<T> {
+export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: Db) => Promise<T>, options?: DedicatedDbConnectionOptions): Promise<T> {
   const factory = dedicatedDbFactories.get(db);
   if (!factory) throw new Error("dedicated_connection_requires_create_db");
-  const dedicated = factory();
+  const dedicated = factory(options);
   try { return await action(dedicated); }
   finally { await dedicated.$client.end({ timeout: 1 }); }
 }
@@ -363,8 +375,8 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
   return createDbClient(url, resolved);
 }
 
-function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: object) {
-  const sql = postgres(url, postgresJsOptions(resolved));
+function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: object, driverOverrides?: Record<string, unknown>) {
+  const sql = postgres(url, { ...postgresJsOptions(resolved), ...driverOverrides });
   if (resolved.prepare === true) installPreparedQueries(sql);
   const key = hostPortKeyOrNull(url);
   if (key) registerClient(key, sql);
@@ -374,9 +386,10 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   // that know the complete operation is idempotent.
   const db = installDatabaseWorkSignals(drizzlePg(sql, { schema }), owner);
   installDatabaseResponseCapture(db, schema);
-  dedicatedDbFactories.set(db, () => createDbClient(url, {
-    ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
-  }, db));
+  dedicatedDbFactories.set(db, (options?: DedicatedDbConnectionOptions) => createDbClient(url, {
+    ...resolved, ...(options?.connectTimeoutSeconds !== undefined ? { connectTimeoutSeconds: options.connectTimeoutSeconds } : {}),
+    maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
+  }, db, options?.onSocket ? ownedSocketDriverOptions(options.onSocket) : undefined));
   ownedDatabaseListenerFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1,
   }, db));

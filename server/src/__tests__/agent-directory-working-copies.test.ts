@@ -1122,7 +1122,14 @@ describe("persistent agent directories", () => {
     const timing = { ...agentDirectoryOperationLockTiming };
     Object.assign(agentDirectoryOperationLockTiming, { waitMs: 1_500, attemptTimeoutMs: 200, retryMinMs: 20, retryMaxMs: 40, maxConcurrentAttempts: 4 });
     const sockets = new Set<import("node:net").Socket>();
-    const silent = net.createServer(socket => { sockets.add(socket); socket.on("error", () => undefined); });
+    let open = 0, peak = 0;
+    const silent = net.createServer(socket => {
+      sockets.add(socket);
+      peak = Math.max(peak, ++open);
+      socket.on("close", () => { open--; });
+      socket.on("error", () => undefined);
+      socket.resume();
+    });
     await new Promise<void>(resolve => silent.listen(0, "127.0.0.1", () => resolve()));
     const port = (silent.address() as import("node:net").AddressInfo).port;
     const stalled = createDb(`postgres://stalled:stalled@127.0.0.1:${port}/stalled`);
@@ -1139,6 +1146,8 @@ describe("persistent agent directories", () => {
       expect(results).toEqual(Array(5).fill("Agent directory operation is already active"));
       expect(Date.now() - started).toBeLessThan(2_500);
       expect(work).not.toHaveBeenCalled();
+      expect(sockets.size).toBeGreaterThanOrEqual(4);
+      expect(peak).toBeLessThanOrEqual(4);
     } finally {
       Object.assign(agentDirectoryOperationLockTiming, timing);
       for (const socket of sockets) socket.destroy();

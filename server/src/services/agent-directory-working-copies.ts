@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { setTimeout } from "node:timers/promises";
 import path from "node:path";
+import type { Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
@@ -76,12 +77,17 @@ export async function withAgentDirectoryOperationLock<T>(db: Db, companyId: stri
   for (;;) {
     if (Date.now() >= deadline) throw agentDirectoryBusy();
     const releaseSlot = await takeLockAttemptSlot(`${companyId}:${agentId}`, deadline);
-    const stopTimer = new AbortController();
     let abandoned = false;
+    let attemptSettled = false;
+    let connection: Db | undefined;
+    const sockets = new Set<Socket>();
+    const openSockets = new Set<Socket>();
+    const releaseIfClosed = () => { if (abandoned && attemptSettled && openSockets.size === 0) releaseSlot(); };
     let decided!: (outcome: "acquired" | "busy") => void;
     const decision = new Promise<"acquired" | "busy">(resolve => { decided = resolve; });
-    try {
-      const attempt = withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {
+    const attempt = withDedicatedDbConnection(db, dedicated => {
+      connection = dedicated;
+      return dedicated.transaction(async tx => {
         const idleTimeoutMs = await tryAcquireAgentDirectoryOperationLock(tx, companyId, agentId);
         if (abandoned || idleTimeoutMs === null) {
           decided("busy");
@@ -89,23 +95,45 @@ export async function withAgentDirectoryOperationLock<T>(db: Db, companyId: stri
         }
         decided("acquired");
         return { value: await work(tx as unknown as Db, idleTimeoutMs) };
-      }));
-      const outcome = await Promise.race([
+      });
+    }, { connectTimeoutSeconds: Math.max(1, Math.ceil(attemptTimeoutMs / 1000)), onSocket: socket => {
+      sockets.add(socket);
+      openSockets.add(socket);
+      socket.once("close", () => {
+        openSockets.delete(socket);
+        releaseIfClosed();
+      });
+      if (abandoned) socket.destroy();
+    } });
+    void attempt.then(() => undefined, () => undefined).then(() => {
+      attemptSettled = true;
+      releaseIfClosed();
+    });
+    const releaseWhenClosed = () => {
+      abandoned = true;
+      void connection?.$client.end({ timeout: 0 }).catch(() => undefined);
+      for (const socket of sockets) socket.destroy();
+      releaseIfClosed();
+    };
+    const stop = new AbortController();
+    let outcome: "acquired" | "busy" | "stalled";
+    try {
+      outcome = await Promise.race([
         decision,
         attempt.then(() => "busy" as const),
-        setTimeout(Math.max(1, Math.min(attemptTimeoutMs, deadline - Date.now())), "stalled" as const, { signal: stopTimer.signal, ref: false }),
+        setTimeout(Math.max(1, Math.min(attemptTimeoutMs, deadline - Date.now())), "stalled" as const, { signal: stop.signal, ref: false }),
       ]);
-      if (outcome === "acquired") {
-        releaseSlot();
-        const result = await attempt;
-        if (result) return result.value;
-      } else {
-        abandoned = true;
-        attempt.catch(() => undefined);
-      }
-    } finally {
-      stopTimer.abort();
+    } catch (error) {
+      releaseWhenClosed();
+      throw error;
+    } finally { stop.abort(); }
+    if (outcome === "acquired") {
       releaseSlot();
+      const result = await attempt;
+      if (result) return result.value;
+    } else {
+      attempt.catch(() => undefined);
+      releaseWhenClosed();
     }
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw agentDirectoryBusy();

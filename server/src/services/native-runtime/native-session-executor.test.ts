@@ -10665,7 +10665,7 @@ describe("native warm session supervision", () => {
       copies = agentInstructionWorkingCopyService(db, { environmentRuntime: { execute: cleanup } as never });
       await db.update(tables.agentInstructionWorkingCopies).set({ nextAttemptAt: null }).where(eq(tables.agentInstructionWorkingCopies.runId, prior!.binding.runId));
       await copies.recoverCaptured();
-      expect(cleanup).toHaveBeenCalledOnce();
+      expect(cleanup.mock.calls.map(([input]) => [input.command, String(input.args[1]).split(" ")[0]])).toEqual([["sh", "for"], ["sh", "rm"]]);
       await expect(access(originalRoot)).rejects.toMatchObject({ code: "ENOENT" });
       expect((await copies.get(companyId, prior!.binding.runId))!.receipt?.cleanupPending).toBe(false);
     } catch (error) { bodyFailure = error; throw error; }
