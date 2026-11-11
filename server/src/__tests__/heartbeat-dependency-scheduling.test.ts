@@ -1482,6 +1482,94 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
   }, 40_000);
 
+  it.each([
+    { name: "drops dependency-blocked context from a queued run whose blockers resolved before it starts", openBlocker: false },
+    { name: "refreshes dependency-blocked context to the blockers that remain when a queued run starts", openBlocker: true },
+  ])("$name", async ({ openBlocker }) => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const doneBlockerId = randomUUID();
+    const openBlockerId = randomUUID();
+    const parentId = randomUUID();
+    const commentId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+    const wakeReason = openBlocker ? "issue_commented" : "issue_children_completed";
+    await db.insert(companies).values({
+      id: companyId, name: "Paperclip", issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "QAChecker", role: "qa", status: "active", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {},
+    });
+    await db.insert(issues).values([
+      { id: parentId, companyId, title: "Parent diagnosis", status: openBlocker ? "blocked" : "in_progress", priority: "medium",
+        assigneeAgentId: agentId, responsibleUserId: "responsible-user" },
+      { id: doneBlockerId, companyId, title: "Reserve a window", status: "done", priority: "medium", parentId,
+        responsibleUserId: "responsible-user" },
+      ...(openBlocker ? [{ id: openBlockerId, companyId, title: "Security review", status: "todo", priority: "medium",
+        responsibleUserId: "responsible-user" }] : []),
+    ]);
+    await db.insert(issueRelations).values([
+      { companyId, issueId: doneBlockerId, relatedIssueId: parentId, type: "blocks" },
+      ...(openBlocker ? [{ companyId, issueId: openBlockerId, relatedIssueId: parentId, type: "blocks" as const }] : []),
+    ]);
+    if (openBlocker) {
+      await db.insert(issueComments).values({ id: commentId, companyId, issueId: parentId, authorType: "user",
+        authorUserId: "responsible-user", body: "Explain the current dependency without starting blocked work." });
+    }
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId, companyId, agentId, source: "automation", triggerDetail: "system",
+      reason: wakeReason, payload: { issueId: parentId, ...(openBlocker ? { commentId } : {}) }, status: "queued",
+    });
+    const staleBlockerIds = openBlocker ? [doneBlockerId, openBlockerId] : [doneBlockerId];
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId, agentId, invocationSource: "automation", triggerDetail: "system", status: "queued",
+      wakeupRequestId,
+      contextSnapshot: {
+        issueId: parentId,
+        wakeReason,
+        ...(openBlocker ? { commentId, wakeCommentId: commentId } : { completedChildIssueId: doneBlockerId }),
+        dependencyBlockedInteraction: true,
+        unresolvedBlockerIssueIds: staleBlockerIds,
+        unresolvedBlockerCount: staleBlockerIds.length,
+        unresolvedBlockerSummaries: staleBlockerIds.map((id) => ({ id, status: "todo" })),
+      },
+    });
+    await db.update(agentWakeupRequests).set({ runId }).where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db.update(issues).set({ executionRunId: runId, executionAgentNameKey: "qa-checker", executionLockedAt: new Date() })
+      .where(eq(issues.id, parentId));
+
+    await heartbeat.resumeQueuedRuns();
+    expect(await waitForCondition(async () => mockAdapterExecute.mock.calls.length === 1, 30_000)).toBe(true);
+    await heartbeat.drainActiveRunExecutions();
+
+    const calls = mockAdapterExecute.mock.calls as unknown as Array<[{ context: Record<string, unknown> }]>;
+    const [run] = await db.select({ status: heartbeatRuns.status, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run?.status).toBe("succeeded");
+    for (const context of [calls[0][0].context, run!.contextSnapshot as Record<string, unknown>]) {
+      expect(context).toMatchObject({ issueId: parentId, wakeReason });
+      if (openBlocker) {
+        expect(context).toMatchObject({
+          dependencyBlockedInteraction: true,
+          unresolvedBlockerIssueIds: [openBlockerId],
+          unresolvedBlockerCount: 1,
+        });
+        expect(context.unresolvedBlockerSummaries).toEqual([
+          expect.objectContaining({ id: openBlockerId, title: "Security review", status: "todo" }),
+        ]);
+      } else {
+        expect(context).not.toHaveProperty("dependencyBlockedInteraction");
+        expect(context).not.toHaveProperty("unresolvedBlockerIssueIds");
+        expect(context).not.toHaveProperty("unresolvedBlockerCount");
+        expect(context).not.toHaveProperty("unresolvedBlockerSummaries");
+      }
+    }
+  }, 40_000);
+
   it("suppresses normal wakeups while allowing comment interaction wakes under a pause hold", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

@@ -291,6 +291,13 @@ export function shouldRequireIssueCommentForWake(
   );
 }
 
+const DEPENDENCY_BLOCKED_CONTEXT_KEYS = [
+  "dependencyBlockedInteraction",
+  "unresolvedBlockerIssueIds",
+  "unresolvedBlockerCount",
+  "unresolvedBlockerSummaries",
+] as const;
+
 async function listUnresolvedBlockerSummaries(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
@@ -1141,6 +1148,26 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           "claimQueuedRun: cancelled blocked queued run",
         );
         return null;
+      }
+
+      if (unresolvedBlockerCount > 0 || context.dependencyBlockedInteraction === true) {
+        const unresolvedBlockerIssueIds = readiness?.unresolvedBlockerIssueIds ?? [];
+        const dependencyContext = unresolvedBlockerCount > 0
+          ? {
+            dependencyBlockedInteraction: true,
+            unresolvedBlockerIssueIds,
+            unresolvedBlockerCount,
+            unresolvedBlockerSummaries: await listUnresolvedBlockerSummaries(
+              db, run.companyId, issueId, unresolvedBlockerIssueIds),
+          }
+          : {};
+        for (const key of DEPENDENCY_BLOCKED_CONTEXT_KEYS) delete context[key];
+        Object.assign(context, dependencyContext);
+        await db.update(heartbeatRuns).set({
+          contextSnapshot: sql`(coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) ${sql.raw(
+            DEPENDENCY_BLOCKED_CONTEXT_KEYS.map((key) => `- '${key}'`).join(" "))}) || ${JSON.stringify(dependencyContext)}::jsonb`,
+          updatedAt: new Date(),
+        }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")));
       }
 
       const staleness = await runDispatch.cancelStaleQueuedRun({
