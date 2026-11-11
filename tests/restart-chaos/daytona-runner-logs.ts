@@ -29,9 +29,14 @@ export const RUNNER_LOG_PROBE = [
     + ' echo "== file $f $(stat -c "%s bytes, modified %y" "$f" 2>/dev/null)"; tail -c 24576 "$f"; echo; done',
 ].join("; ");
 
+/** The whole capture (client, listing and every probe) gets this long; the outage it runs in must not grow. */
+export const RUNNER_LOG_CAPTURE_DEADLINE_MS = 45_000;
+
 export interface RunnerLogCapture {
   label: string;
   observedAt: string;
+  /** True when the deadline ended the capture; sandboxes not reached are recorded with `error: "deadline"`. */
+  deadlineExceeded?: boolean;
   sandboxes: Array<{ id: string; name: string | null; state: string | null; file: string | null; exitCode: number | null; error: string | null }>;
   error: string | null;
 }
@@ -60,36 +65,56 @@ export function probeableSandbox(sandbox: DaytonaSandboxRow): boolean {
  */
 export async function captureWaveRunnerLogs(input: {
   apiKey: string; companyId: string; environmentId: string; outDir: string; label: string; secrets: readonly string[];
-  client?: ProbeClient; timeoutSeconds?: number;
+  client?: ProbeClient; timeoutSeconds?: number; deadlineMs?: number;
 }): Promise<RunnerLogCapture> {
   const label = captureDirectoryName(input.label);
   const capture: RunnerLogCapture = { label, observedAt: new Date().toISOString(), sandboxes: [], error: null };
   const directory = path.join(input.outDir, label);
+  const deadlineMs = input.deadlineMs ?? RUNNER_LOG_CAPTURE_DEADLINE_MS;
+  const deadlineAt = Date.now() + deadlineMs;
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<"deadline">(resolve => { timer = setTimeout(() => resolve("deadline"), deadlineMs); });
+  // Each step races the shared deadline; a step that loses keeps running in the background but is no longer awaited.
+  const withinDeadline = <T>(step: Promise<T>) => Promise.race([step, deadline]);
   try {
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    const client = input.client ?? await createRemoteFixtureClient(input.apiKey) as unknown as ProbeClient;
-    const wave = { companyId: input.companyId, environmentId: input.environmentId };
-    const rows: DaytonaSandboxRow[] = [];
-    for await (const row of client.list({ labels: { "paperclip-company-id": wave.companyId, "paperclip-environment-id": wave.environmentId } })) rows.push(row);
-    for (const row of selectWaveSandboxes(rows, wave)) {
-      const entry: RunnerLogCapture["sandboxes"][number] = { id: row.id, name: row.name ?? null, state: row.state ?? null, file: null, exitCode: null, error: null };
-      capture.sandboxes.push(entry);
-      if (!probeableSandbox(row)) continue;
-      try {
-        const sandbox = await client.get(row.id);
-        const response = await sandbox.process.executeCommand(`sh -c '${RUNNER_LOG_PROBE.replace(/'/g, `'\\''`)}'`, undefined, {}, input.timeoutSeconds ?? 20);
-        entry.exitCode = response.exitCode;
-        entry.file = `${row.id}.txt`;
-        await writeFile(path.join(directory, entry.file), redactKnownSecrets(String(response.result ?? ""), input.secrets), { mode: 0o600 });
-      } catch (error) {
-        entry.error = error instanceof Error ? error.message : String(error);
-      }
+    const outcome = await withinDeadline(probeWave());
+    if (outcome === "deadline") {
+      capture.deadlineExceeded = true;
+      capture.error = `capture deadline ${deadlineMs} ms exceeded`;
     }
-  } catch (error) {
-    capture.error = error instanceof Error ? error.message : String(error);
+  } finally {
+    clearTimeout(timer);
   }
   try {
     await writeFile(path.join(directory, "index.json"), `${JSON.stringify(capture, null, 2)}\n`, { mode: 0o600 });
   } catch { /* the directory itself failed; the returned record still carries the error */ }
   return capture;
+
+  async function probeWave(): Promise<void> {
+    try {
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      const client = input.client ?? await createRemoteFixtureClient(input.apiKey) as unknown as ProbeClient;
+      if (Date.now() >= deadlineAt) return;
+      const wave = { companyId: input.companyId, environmentId: input.environmentId };
+      const rows: DaytonaSandboxRow[] = [];
+      for await (const row of client.list({ labels: { "paperclip-company-id": wave.companyId, "paperclip-environment-id": wave.environmentId } })) rows.push(row);
+      for (const row of selectWaveSandboxes(rows, wave)) {
+        const entry: RunnerLogCapture["sandboxes"][number] = { id: row.id, name: row.name ?? null, state: row.state ?? null, file: null, exitCode: null, error: null };
+        capture.sandboxes.push(entry);
+        if (!probeableSandbox(row)) continue;
+        if (Date.now() >= deadlineAt) { entry.error = "deadline"; continue; }
+        try {
+          const sandbox = await client.get(row.id);
+          const response = await sandbox.process.executeCommand(`sh -c '${RUNNER_LOG_PROBE.replace(/'/g, `'\\''`)}'`, undefined, {}, input.timeoutSeconds ?? 20);
+          entry.exitCode = response.exitCode;
+          entry.file = `${row.id}.txt`;
+          await writeFile(path.join(directory, entry.file), redactKnownSecrets(String(response.result ?? ""), input.secrets), { mode: 0o600 });
+        } catch (error) {
+          entry.error = error instanceof Error ? error.message : String(error);
+        }
+      }
+    } catch (error) {
+      capture.error = error instanceof Error ? error.message : String(error);
+    }
+  }
 }

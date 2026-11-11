@@ -353,10 +353,16 @@ minutes. In staging class R, recovery then found the remote Runner gone
   next deploy generation starts. Without the option, a K15 restarts at once.
   The range is drawn only for K15 cells, so other seeds keep their plans.
 - **T1** (opt-in workload) has the agent run one shell command in the
-  foreground for about 100 s (50 ticks of 2 s). It then saves `brief`, whose
-  first line is `TICKS-<nonce>=50`. Its fault window (35–80 s after launch)
-  lands while the tool runs in the sandbox. The window stays short of provider
-  shell-tool timeouts.
+  foreground for about 100 s (50 ticks of 2 s). The command prints the loop's
+  own clock window. The agent then saves `brief`, whose first line is
+  `TICKS-<nonce>=50 start=<epoch s> end=<epoch s>`. Its fault window (35–80 s
+  after launch) aims to land while the tool runs in the sandbox, and stays short
+  of provider shell-tool timeouts.
+
+  The `fault_crossed_tool` check fails the task unless one of its own faults
+  started inside the reported window, with 5 s of clock slack. A fault that hit
+  preparation, with the loop run afterwards, tested nothing mid-tool, as a
+  provider-fault task whose fault never applied.
 - **Runner evidence:** on a Daytona K15 wave, the harness captures every
   started sandbox of the wave three times:
   - right after the server stopped (`<fault>-stopped`);
@@ -375,6 +381,11 @@ minutes. In staging class R, recovery then found the remote Runner gone
   The probe never stops, starts or deletes a sandbox. It only touches sandboxes
   that carry the wave's company and environment labels. Known secret values are
   redacted. A failed capture is recorded and does not fail the wave.
+
+  The whole capture (client, listing and every probe) has one 45 s deadline.
+  The capture runs while the server is down, so a slow Daytona API cannot
+  stretch the outage. A capture that hits the deadline is recorded as
+  `deadlineExceeded`, and the restart continues.
 
 ## Absolute symlink in the workspace (F1)
 

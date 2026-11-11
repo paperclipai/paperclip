@@ -3,12 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { parseCommand } from "./config.js";
-import { RUNNER_LOG_PROBE, captureDirectoryName, captureWaveRunnerLogs, probeableSandbox } from "./daytona-runner-logs.js";
+import { RUNNER_LOG_CAPTURE_DEADLINE_MS, RUNNER_LOG_PROBE, captureDirectoryName, captureWaveRunnerLogs, probeableSandbox } from "./daytona-runner-logs.js";
 import { WORKLOAD_TRIGGERS } from "./journeys.js";
 import { K15_MAX_HOLD_SECONDS } from "./redeploy.js";
 import { planStorm, planTasks } from "./scheduler.js";
 import type { OracleArtifacts } from "./types.js";
-import { T1_TICKS, t1Command, t1Marker, workloadDefinitions } from "./workloads.js";
+import { T1_CLOCK_SLACK_MS, T1_TICKS, parseT1Report, t1Command, t1Marker, withT1CrossingCheck, workloadDefinitions } from "./workloads.js";
+import { planMatrixTasks } from "./journey-matrix.js";
 
 const IMAGE = `ghcr.io/paperclipai/paperclip-daytona-runner@sha256:${"c".repeat(64)}`;
 const COMPANY = "11111111-1111-4111-8111-111111111111";
@@ -60,11 +61,47 @@ describe("T1: long shell tool in the agent's workspace", () => {
     expect(defaults.mode === "wave" && defaults.options.workloads).not.toContain("T1");
   });
 
-  it("passes only when the finished tool's count is reported and the task is done", () => {
-    expect(t1.grade(NONCE, done(`${t1Marker(NONCE)}=${T1_TICKS}\nmore`)).verdict).toBe("pass");
-    expect(t1.grade(NONCE, done(`${t1Marker(NONCE)}=49`)).verdict).toBe("fail");
+  const START = 1_794_370_000;
+  const line = (ticks: number, start = START, end = START + 100) => `${t1Marker(NONCE)}=${ticks} start=${start} end=${end}`;
+
+  it("passes only when the finished tool's count and window are reported and the task is done", () => {
+    expect(t1.grade(NONCE, done(`${line(T1_TICKS)}\nmore`)).verdict).toBe("pass");
+    expect(t1.grade(NONCE, done(line(49))).verdict).toBe("fail");
+    expect(t1.grade(NONCE, done(`${t1Marker(NONCE)}=${T1_TICKS}`)).verdict).toBe("fail");
     expect(t1.grade(NONCE, done("")).verdict).toBe("fail");
-    expect(t1.grade(NONCE, { ...done(`${t1Marker(NONCE)}=${T1_TICKS}`), issueStatus: "blocked" }).verdict).toBe("fail");
+    expect(t1.grade(NONCE, { ...done(line(T1_TICKS)), issueStatus: "blocked" }).verdict).toBe("fail");
+    expect(parseT1Report(NONCE, line(T1_TICKS, START + 10, START))).toBeNull();
+  });
+
+  it("counts a mid-tool test only when one of the task's own faults started inside the loop's window", () => {
+    const plan = { taskId: "t01", workload: "T1" as const, nonce: NONCE };
+    const pass = t1.grade(NONCE, done(line(T1_TICKS)));
+    const fault = (taskId: string, atSeconds: number) => ({ faultId: "f01", requestedBy: taskId, startedAt: atSeconds * 1000 });
+    expect(withT1CrossingCheck(pass, plan, line(T1_TICKS), [fault("t01", START + 40)]).verdict).toBe("pass");
+    // Clock slack at the edges, but a fault during preparation (before the loop) tested nothing mid-tool.
+    expect(withT1CrossingCheck(pass, plan, line(T1_TICKS), [fault("t01", START - T1_CLOCK_SLACK_MS / 1000)]).verdict).toBe("pass");
+    const missed = withT1CrossingCheck(pass, plan, line(T1_TICKS), [fault("t01", START - 30)]);
+    expect(missed.verdict).toBe("fail");
+    expect(missed.checks.find(check => check.name === "fault_crossed_tool")?.ok).toBe(false);
+    // Another task's fault does not count, and other workloads are untouched.
+    expect(withT1CrossingCheck(pass, plan, line(T1_TICKS), [fault("t02", START + 40)]).verdict).toBe("fail");
+    expect(withT1CrossingCheck(pass, { ...plan, workload: "A1" }, null, [])).toBe(pass);
+  });
+
+  it("prints the loop's own clock window", () => {
+    expect(t1Command(NONCE)).toContain("start=$s end=$(date +%s)");
+  });
+});
+
+describe("hold options in --matrix", () => {
+  it("plans the requested K15 and TM1 holds for matrix cells", () => {
+    const parsed = parseCommand(["--matrix", "--workloads", "T1", "--adapters", "codex", "--faults", "K15,TM1",
+      "--k15-hold-seconds", "300", "--tm1-hold-seconds", "100", "--seed", "5"]);
+    if (parsed.mode !== "wave") throw new Error("expected a wave");
+    const cells = planMatrixTasks(parsed.options);
+    expect(cells.filter(cell => cell.fault === "K15").every(cell => cell.holdMs === 300_000)).toBe(true);
+    expect(cells.filter(cell => cell.fault === "TM1").every(cell => cell.holdMs === 100_000)).toBe(true);
+    expect(cells.some(cell => cell.fault === "K15") && cells.some(cell => cell.fault === "TM1")).toBe(true);
   });
 });
 
@@ -113,5 +150,20 @@ describe("Daytona Runner log capture", () => {
     const failed = await captureWaveRunnerLogs({ apiKey: "unused", companyId: COMPANY, environmentId: ENVIRONMENT, outDir, label: "f02-stopped",
       secrets: [], client: { async *list() { throw new Error("list failed"); }, get } });
     expect(failed.error).toBe("list failed");
+  });
+
+  it("stops at one deadline for the whole capture, so the outage it runs in does not grow", async () => {
+    const outDir = await mkdtemp(path.join(os.tmpdir(), "runner-logs-"));
+    const labels = { "paperclip-company-id": COMPANY, "paperclip-environment-id": ENVIRONMENT };
+    const hung = { async *list() { yield { id: "slow", state: "started", labels }; },
+      get: () => new Promise<never>(() => { /* a Daytona API that never answers */ }) };
+    const started = Date.now();
+    const capture = await captureWaveRunnerLogs({ apiKey: "unused", companyId: COMPANY, environmentId: ENVIRONMENT, outDir,
+      label: "f03-stopped", secrets: [], client: hung, deadlineMs: 200 });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(capture.deadlineExceeded).toBe(true);
+    expect(capture.error).toMatch(/deadline 200 ms exceeded/);
+    expect(JSON.parse(await readFile(path.join(outDir, "f03-stopped", "index.json"), "utf8")).deadlineExceeded).toBe(true);
+    expect(RUNNER_LOG_CAPTURE_DEADLINE_MS).toBeLessThanOrEqual(60_000);
   });
 });
