@@ -43,6 +43,7 @@ const ISSUE: IssueSnapshot = {
   originKind: null,
   monitorNextCheckAt: null,
   executionState: null,
+  completedAt: null,
   responsibleUserId: null,
   parentId: null,
   originId: null,
@@ -114,7 +115,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
       reason: null,
       releasePolicy: null,
     })),
-    getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false })),
+    getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false, hasCommentCreatedAfter: true })),
     isCompletedDelegationMention: vi.fn(async () => false),
     reopenIssue: vi.fn(async () => null),
     claimDeferredWakeForPromotion: vi.fn(async () => true),
@@ -594,7 +595,15 @@ describe("releaseIssueExecution", () => {
     expect(result.outcome.kind).toBe("promoted");
   });
 
-  it.each(["done_live", "cancelled_live", "done_missing", "done_self", "done_no_resume", "done_untracked_comment"])("handles explicit agent feedback after completion: %s", async (scenario) => {
+  it.each([
+    "done_live",
+    "cancelled_live",
+    "done_missing",
+    "done_self",
+    "done_no_resume",
+    "done_untracked_comment",
+    "done_stale_pre_completion",
+  ])("handles explicit agent feedback after completion: %s", async (scenario) => {
     const commentIds = ["accepted-agent-feedback"];
     const queue = [wakeCandidate({
       agentId: ISSUE.assigneeAgentId!,
@@ -611,11 +620,18 @@ describe("releaseIssueExecution", () => {
         liveNonSelfCommentIds: scenario === "done_missing" || scenario === "done_self" ? [] : commentIds,
         containedSelfAuthoredComment: scenario === "done_self",
       })),
-      getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: scenario === "done_self" })),
-      reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "todo" })),
+      getCommentSelfAuthorship: vi.fn(async () => ({
+        allSelfAuthored: scenario === "done_self",
+        hasCommentCreatedAfter: scenario !== "done_stale_pre_completion",
+      })),
+      reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "todo", completedAt: null })),
     });
     const release = createReleaseIssueExecution({
-      issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status: scenario === "cancelled_live" ? "cancelled" : "done" }),
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, {
+        ...ISSUE,
+        status: scenario === "cancelled_live" ? "cancelled" : "done",
+        completedAt: new Date("2026-01-01T00:00:00.000Z"),
+      }),
       recovery: createFakeRecovery(),
     });
 
@@ -626,6 +642,9 @@ describe("releaseIssueExecution", () => {
       expect(transaction.reopenIssue).toHaveBeenCalledTimes(1);
       expect(transaction.finalizePromotedWake).toHaveBeenCalledTimes(1);
       expect(result.outcome.kind).toBe("promoted");
+      expect(transaction.getCommentSelfAuthorship).toHaveBeenCalledWith(
+        expect.objectContaining({ after: new Date("2026-01-01T00:00:00.000Z") }),
+      );
     } else {
       expect(transaction.cancelDeferredWake).toHaveBeenCalledTimes(1);
       expect(transaction.reopenIssue).not.toHaveBeenCalled();

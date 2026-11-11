@@ -441,7 +441,7 @@ describe("decideQueuedRunStaleness", () => {
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
   });
 
-  it("allows a comment wake to bypass the ownership, terminal-status, and review-participant checks", () => {
+  it("allows a comment wake to bypass the ownership and review-participant checks", () => {
     const facts: QueuedRunFacts = {
       ...baseStalenessFacts(),
       issueAssigneeAgentId: "agent-1",
@@ -458,6 +458,19 @@ describe("decideQueuedRunStaleness", () => {
       },
     };
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
+  });
+
+  it("does not let a comment wake alone bypass a terminal status", () => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      issueStatus: "done",
+      wakeCommentIdPresent: true,
+      isInteractionWake: true,
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toMatchObject({
+      stale: true,
+      errorCode: "issue_terminal_status",
+    });
   });
 
   it("allows resume intent to bypass a terminal status", () => {
