@@ -34,7 +34,9 @@ export interface QuestionRecord {
 }
 
 export interface QuestionArtifacts extends QuestionRecord {
-  runs: Array<{ id: string; status: string; errorCode: string | null; createdAt: string | null; startedAt?: string | null }>;
+  runs: Array<{ id: string; status: string; errorCode: string | null; createdAt: string | null; startedAt?: string | null;
+    /** SR1: the run's normalized provider session, read only when the board replaced the session. */
+    nativeSessionId?: string | null }>;
   statuses: Record<string, string>;
 }
 
@@ -122,13 +124,30 @@ export async function collectQuestionArtifacts(api: Pick<ChaosApi, "get">, issue
   const runs = await api.get<Json[]>(`/api/issues/${issueId}/runs`, 10_000).catch(() => []);
   const interactions = questionInteractions(await api.get<Json[]>(`/api/issues/${issueId}/interactions`, 10_000).catch(() => []));
   const question = record.question ?? { interactionIds: [], seenAt: null, askedByRunId: null, pendingNow: false };
+  // SR1 proves its follow-up started a new provider session, so a pass is not a resumed session.
+  const sessions = new Map<string, string | null>();
+  if (question.rotation) for (const run of runs ?? []) {
+    const id = String(run.runId ?? run.id);
+    const detail = await api.get<Json>(`/api/heartbeat-runs/${id}`, 10_000).catch(() => null);
+    sessions.set(id, typeof detail?.nativeSessionId === "string" ? detail.nativeSessionId : null);
+  }
   return {
     ...question,
     interactionIds: [...new Set([...question.interactionIds, ...interactions.map(interaction => String(interaction.id))])],
     statuses: Object.fromEntries(interactions.map(interaction => [String(interaction.id), String(interaction.status)])),
     runs: (runs ?? []).map(run => ({ id: String(run.runId ?? run.id), status: String(run.status), errorCode: run.errorCode ?? null,
-      createdAt: run.createdAt ?? null, startedAt: run.startedAt ?? null })),
+      createdAt: run.createdAt ?? null, startedAt: run.startedAt ?? null,
+      ...(sessions.has(String(run.runId ?? run.id)) ? { nativeSessionId: sessions.get(String(run.runId ?? run.id)) } : {}) })),
   };
+}
+
+/** SR1: a run created after the answer used a different provider session than the asking run. */
+function followUpSessionCheck(runs: QuestionArtifacts["runs"], asked: QuestionArtifacts["runs"][number] | undefined, answeredAt: number | null) {
+  const followUps = runs.filter(run => run.id !== asked?.id && answeredAt !== null && run.createdAt && Date.parse(run.createdAt) > answeredAt);
+  const before = asked?.nativeSessionId ?? null;
+  const replaced = before !== null && followUps.some(run => typeof run.nativeSessionId === "string" && run.nativeSessionId !== before);
+  return { name: "follow_up_new_session", ok: replaced,
+    detail: `asked=${before ?? "unknown"} followUps=${followUps.map(run => run.nativeSessionId ?? "unknown").join(",") || "none"}` };
 }
 
 export function gradeQuestionHandoff(nonce: string, artifacts: OracleArtifacts): OracleResult {
@@ -154,7 +173,7 @@ export function gradeQuestionHandoff(nonce: string, artifacts: OracleArtifacts):
       detail: asked ? `${asked.id} ${asked.status}${asked.errorCode ? ` ${asked.errorCode}` : ""}` : `run=${question?.askedByRunId ?? "unknown"}` },
     { name: "no_failed_attempt", ok: failed.length === 0, detail: failed.map(run => `${run.id}:${run.status}:${run.errorCode ?? ""}`).join(",") || "none" },
     { name: "nothing_ran_before_answer", ok: between.length === 0, detail: between.map(run => run.id).join(",") || "none" },
-    ...(question?.rotation ? [{ name: "session_rotated_before_answer", ok: question.rotation.httpStatus === 200
+    ...(question?.rotation ? [followUpSessionCheck(runs, asked, answeredAt), { name: "session_rotated_before_answer", ok: question.rotation.httpStatus === 200
       && (answeredAt === null || question.rotation.at < answeredAt),
       detail: `idleTimeoutMs=${question.rotation.idleTimeoutMs} http=${question.rotation.httpStatus}${question.rotation.error ? ` ${question.rotation.error}` : ""}` }] : []),
     { name: "brief_has_answer", ok: brief.includes(q1AnswerMarker(nonce, code)), detail: q1AnswerMarker(nonce, code) },

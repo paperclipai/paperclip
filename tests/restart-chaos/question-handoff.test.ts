@@ -129,6 +129,13 @@ describe("Q1 saved question", () => {
       expect(notes).toEqual(["question_pending", "session_rotated", "question_answered"]);
       const graded = gradeQuestionHandoff(NONCE, artifacts({ rotation: task.question!.rotation }));
       expect(graded.checks.find(check => check.name === "session_rotated_before_answer")).toMatchObject({ ok: true });
+      // A resumed session would not exercise the superseded-owner retirement.
+      expect(graded.checks.find(check => check.name === "follow_up_new_session")).toMatchObject({ ok: false });
+      const sessions = (first: string, second: string) => question({ rotation: task.question!.rotation }).runs
+        .map((run, index) => ({ ...run, nativeSessionId: index === 0 ? first : second }));
+      const replaced = gradeQuestionHandoff(NONCE, artifacts({ rotation: task.question!.rotation, runs: sessions("s1", "s2") }));
+      expect(replaced).toMatchObject({ verdict: "pass" });
+      expect(gradeQuestionHandoff(NONCE, artifacts({ rotation: task.question!.rotation, runs: sessions("s1", "s1") })).verdict).toBe("fail");
       const refused = gradeQuestionHandoff(NONCE, artifacts({ rotation: { at: 2_000, idleTimeoutMs: 300_002, httpStatus: 422, error: "invalid" } }));
       expect(refused.verdict).toBe("fail");
     });
