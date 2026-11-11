@@ -198,8 +198,14 @@ fn an_out_of_order_new_command_is_rejected_without_changing_the_journal() {
     let (mut state, _) = store.load_or_create(&config).expect("create durable state");
     state.last_controller_command_seq = 12;
 
-    let stale = Command { command_id: "command_stale".to_owned(), controller_seq: 11, ..command() };
-    let disposition = state.begin_command(&stale).expect("an out-of-order command is not fatal");
+    let stale = Command {
+        command_id: "command_stale".to_owned(),
+        controller_seq: 11,
+        ..command()
+    };
+    let disposition = state
+        .begin_command(&stale)
+        .expect("an out-of-order command is not fatal");
     assert!(matches!(
         &disposition,
         CommandDisposition::Reject(result)
@@ -208,7 +214,11 @@ fn an_out_of_order_new_command_is_rejected_without_changing_the_journal() {
                 && result.result["expectedControllerSeq"] == 13
                 && result.result["receivedControllerSeq"] == 11
     ));
-    let gap = Command { command_id: "command_gap".to_owned(), controller_seq: 15, ..command() };
+    let gap = Command {
+        command_id: "command_gap".to_owned(),
+        controller_seq: 15,
+        ..command()
+    };
     assert!(matches!(
         state.begin_command(&gap).expect("a sequence gap is not fatal"),
         CommandDisposition::Reject(result) if result.result["code"] == "controller_sequence_mismatch"
@@ -216,8 +226,15 @@ fn an_out_of_order_new_command_is_rejected_without_changing_the_journal() {
     assert_eq!(state.last_controller_command_seq, 12);
     assert!(!state.processed_commands.contains_key("command_stale"));
 
-    let next = Command { command_id: "command_next".to_owned(), controller_seq: 13, ..command() };
-    assert_eq!(state.begin_command(&next).expect("the contiguous command"), CommandDisposition::Execute);
+    let next = Command {
+        command_id: "command_next".to_owned(),
+        controller_seq: 13,
+        ..command()
+    };
+    assert_eq!(
+        state.begin_command(&next).expect("the contiguous command"),
+        CommandDisposition::Execute
+    );
 
     fs::remove_dir_all(directory).expect("remove integration-test state");
 }
