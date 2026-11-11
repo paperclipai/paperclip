@@ -87,13 +87,21 @@ export function leadApiCalls(events: readonly Record<string, unknown>[]): LeadAp
   return calls;
 }
 /** Agent-readable saved cost projections. Company reports are bound by operation (one company per attempt);
- * the task cost summary is bound to the prerequisite task by its input digest. */
+ * the task cost summary is bound to the prerequisite task, and the run record (which carries its saved
+ * accounting state and usage cost status) to the original run, by input digest. */
 const COMPANY_COST_READS = new Set(["summary", "by-agent", "by-agent-model", "by-provider", "by-biller", "by-project", "data-quality"]
   .map(segment => `GET /api/companies/{companyId}/costs/${segment}`));
-export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string, task: Pick<Entity, "id" | "identifier"> | undefined) {
+export function readSavedAccounting(calls: readonly LeadApiCall[], runId: string, task: Pick<Entity, "id" | "identifier"> | undefined, originalRunId?: string) {
   const taskDigests = task ? apiReadDigests([{ operationId: "GET /api/issues/{id}/cost-summary", pathParams: recordParams("id", task.id, task.identifier), queries: [{ excludeRoot: "true" }, { excludeRoot: "false" }] }]) : new Set<string>();
-  return calls.some(call => call.runId === runId && call.ok && call.status >= 200 && call.status < 300
-    && (COMPANY_COST_READS.has(call.operationId) || call.operationId === "GET /api/issues/{id}/cost-summary" && taskDigests.has(call.digest)));
+  const runDigests = originalRunId ? apiReadDigests([{ operationId: "GET /api/heartbeat-runs/{runId}", pathParams: recordParams("runId", originalRunId) }]) : new Set<string>();
+  const ok = (call: LeadApiCall) => call.ok && call.status >= 200 && call.status < 300;
+  const runRead = (call: LeadApiCall) => call.operationId === "GET /api/heartbeat-runs/{runId}" && ok(call);
+  // A re-read of the run record can carry extra input fields that change its digest. It counts once the
+  // conversation has already read the original run by its bound digest, so the agent knows which run it checks.
+  const originalRunKnown = calls.some(call => runRead(call) && runDigests.has(call.digest));
+  return calls.some(call => call.runId === runId && ok(call)
+    && (COMPANY_COST_READS.has(call.operationId) || call.operationId === "GET /api/issues/{id}/cost-summary" && taskDigests.has(call.digest)
+      || runRead(call) && (runDigests.has(call.digest) || originalRunKnown)));
 }
 /** A successful agent write to cost, finance, budget or accounting records, or to run/issue execution, would
  * fabricate the repair or redo the work. Denied attempts (403) are not writes. */
@@ -157,7 +165,7 @@ export function gradeAccounting(value: unknown) {
     // saved accounting: the post-retry run must read it through a product cost projection.
     const calls = Array.isArray(o.state.leadApiCalls) ? o.state.leadApiCalls as LeadApiCall[] : undefined;
     const preflight = o.state.preflightTask as Entity | undefined;
-    c.add("post-retry-reply-reads-saved-accounting", !!calls && !!finalRun && readSavedAccounting(calls, finalRun.id, preflight),
+    c.add("post-retry-reply-reads-saved-accounting", !!calls && !!finalRun && readSavedAccounting(calls, finalRun.id, preflight, String(o.state.originalRunId ?? "")),
       "After the human retry, the chat run reads the saved cost projections before explaining whether the cost is recorded or still unresolved.");
     const initialIds = Array.isArray(o.state.initialReplyCommentIds) ? o.state.initialReplyCommentIds as string[] : [];
     c.add("initial-guidance-links-saved-cost-retry", initialIds.length > 0 && costsPageLinked(o, initialIds),
@@ -235,7 +243,7 @@ export const accountingIdentityCases: readonly ChatCatalogCase[] = [
       return { ...state };
     } catch (error) { const fault = accountingFaults.get(ctx.input.fixtures.company.id); accountingFaults.delete(ctx.input.fixtures.company.id); await fault?.close(); throw error; }
   }, gradeAccounting, {
-    authentication: "human-session", oracleVersion: "paperclip.chat-catalog.repair-cost-recording.structural.v3", sourceFiles: repairSources,
+    authentication: "human-session", oracleVersion: "paperclip.chat-catalog.repair-cost-recording.structural.v4", sourceFiles: repairSources,
     async cleanup(ctx) { const fault = accountingFaults.get(ctx.input.fixtures.company.id); accountingFaults.delete(ctx.input.fixtures.company.id); await fault?.close(); }, expectedRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 780_000, observe: observeAccounting, verifyResult: verifyAccountingLink, verifySetup: verifyUnresolvedSetup,
     setupPolicy: { funding: "standard", readiness: "all-ready", invariantCheckIds: ["genuine-unresolved-saved-native-usage"] },
     async act(ctx, state) {

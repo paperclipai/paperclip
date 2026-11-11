@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountingIdentityCases, leadApiCalls, nativeAccountingPrerequisite, type LeadApiCall } from "./identity-accounting.js";
+import { accountingIdentityCases, leadApiCalls, nativeAccountingPrerequisite, readSavedAccounting, type LeadApiCall } from "./identity-accounting.js";
 import { callApiInputDigest } from "./api-read-receipts.js";
 import type { IdentityObservation } from "./identity-support.js";
 const costRead = (runId: string, operationId: string, status = 200, digest = "d"): LeadApiCall => ({ runId, operationId, digest, ok: status < 300, status });
@@ -106,5 +106,21 @@ describe("saved-run retry prerequisite classification", () => {
     expect(nativeAccountingPrerequisite(run, { ...quality, runs: [], events: quality.runs }, true).eligible).toBe(false);
     expect(nativeAccountingPrerequisite(run, { ...quality, canRetry: false }, true).eligible).toBe(false);
     expect(nativeAccountingPrerequisite(run, { ...quality, runs: [] }, true).disposition).toBe("settled-accounting");
+  });
+});
+
+// Paid run 43115760592: the post-retry run re-read the original run record (its saved accounting state),
+// with an input whose digest differed from the first, bound read of that run.
+describe("post-retry read of the original run record", () => {
+  const original = "11111111-1111-4111-8111-111111111111";
+  const bound = callApiInputDigest({ operationId: "GET /api/heartbeat-runs/{runId}", pathParams: { runId: original } });
+  const runRead = (runId: string, digest: string, status = 200) => costRead(runId, "GET /api/heartbeat-runs/{runId}", status, digest);
+  it("accepts a bound read of the original run in the post-retry run", () => expect(readSavedAccounting([runRead("final", bound)], "final", undefined, original)).toBe(true));
+  it("accepts a re-read once an earlier run read the original run by its bound digest", () =>
+    expect(readSavedAccounting([runRead("initial", bound), runRead("final", "other-input")], "final", undefined, original)).toBe(true));
+  it("rejects an unbound run read when no run ever read the original run", () => expect(readSavedAccounting([runRead("final", "other-input")], "final", undefined, original)).toBe(false));
+  it("rejects a denied run read and a read in another run", () => {
+    expect(readSavedAccounting([runRead("initial", bound), runRead("final", bound, 403)], "final", undefined, original)).toBe(false);
+    expect(readSavedAccounting([runRead("initial", bound)], "final", undefined, original)).toBe(false);
   });
 });
