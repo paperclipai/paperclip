@@ -3,7 +3,7 @@ import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, agentWakeupRequests, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { getExecutionBlocker } from "./execution-blocker.js";
@@ -213,6 +213,51 @@ describe("saves exhausted under an older workspace capture policy", () => {
     await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, onRecovered, true) ?? []);
     expect(await action(f.noReplayHoldId)).toEqual(sibling);
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+  }, 90_000);
+
+  /**
+   * The second staging record (Nov 10, 14:37): the export hold also carries
+   * the workspace finalization block that the run's result finalizer
+   * recorded, and the run's finished coordinator still names the lease owner
+   * of a finalizer pass from a replaced server, whose lease lapsed. Discovery
+   * once left that owner to the abandoned-owner settlement, which handles only
+   * unfinished coordinators, so the worker never re-armed this save.
+   */
+  it("re-arms a save whose finished coordinator still names a lapsed finalizer owner", async () => {
+    const f = await stagingIncident(false);
+    const exportHold = await action(f.actionId);
+    const source = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]!;
+    await db.update(issueRecoveryActions).set({ evidence: { ...exportHold.evidence, workspaceFinalizationBlock: {
+      schema: "paperclip.native-workspace-finalization-block.v1", runId: f.runId, agentId: source.agentId, issueId: f.issueId,
+      companyId: f.companyId, resultId: f.resultId, contractId: source.completionContractId, resultSha256: "5".repeat(64),
+      contractSha256: "0".repeat(64), statusVersion: 7, priorDecisionId: null, identityContextId: randomUUID(),
+      responsibleUserId: "board" } } }).where(eq(issueRecoveryActions.id, f.actionId));
+    const lapsedOwner = `native-finalizer:${randomUUID()}`;
+    await db.update(nativeRunFinalizations).set({ leaseOwner: lapsedOwner, leaseExpiresAt: new Date(Date.now() - 8 * 60 * 60_000),
+      controllerBootId: randomUUID(), controllerPid: 2_147_000_000 }).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ phase: "terminal_failure" });
+
+    // The worker is woken for the hold and selects it; it runs while work is
+    // due (its sweep cursor is shared with earlier passes) and then goes idle.
+    expect(await nextWorkspaceRecoveryAt(db)).toBeLessThanOrEqual(Date.now());
+    expect((await retainedWorkspaceCandidates(db, undefined, false, true)).map(row => row.action.id)).toContain(f.actionId);
+    let passes = 0;
+    for (; passes < 6; passes += 1) {
+      const due = await nextWorkspaceRecoveryAt(db);
+      if (due === null || due > Date.now()) break;
+      await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, async () => undefined, true) ?? []);
+    }
+    expect(passes).toBeLessThan(6);
+
+    const saved = await action(f.actionId);
+    expect(readSystemRecovery(saved.evidence)).toMatchObject({ state: "complete", capturePolicyVersion: REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION });
+    expect(readWorkspaceRecovery(saved.evidence)?.status).toBe("recovered");
+    expect(saved.evidence.capturePolicyRecovery).toMatchObject({ releasedLapsedOwner: true });
+    expect(saved.ownerType).toBe("system");
+    expect(String(saved.nextAction)).not.toMatch(adminText);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]?.leaseOwner)
+      .not.toBe(lapsedOwner);
   }, 90_000);
 
   it("does not re-arm a save that the current policy already exhausted", async () => {
