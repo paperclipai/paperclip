@@ -680,6 +680,8 @@ describe("OpenCodeServerDriver", () => {
           { status: 200, headers: { "Content-Type": "text/event-stream" } },
         );
       }
+      if (method === "GET" && url.pathname === "/mcp")
+        return json({ paperclip: { status: "connected" } });
       if (method === "POST" && url.pathname === "/session")
         return json({ id: providerSessionId });
       if (method === "GET" && url.pathname === "/question") return json([]);

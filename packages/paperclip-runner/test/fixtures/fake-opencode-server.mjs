@@ -193,6 +193,34 @@ async function mcpRequest(method, params, signal) {
   return response.json();
 }
 
+// OpenCode 1.18 connects each MCP server once and keeps a failed status until
+// POST /mcp/:name/connect. Tests seed `fake-mcp-connect-failures` with how many
+// connects fail ("always" for every one) to reproduce a toolless session.
+let mcpStatus = null;
+async function connectPaperclipMcp() {
+  const failuresPath = join(process.env.XDG_DATA_HOME, "fake-mcp-connect-failures");
+  const failures = (await readFile(failuresPath, "utf8").catch(() => "")).trim();
+  await appendFile(join(process.env.XDG_DATA_HOME, "fake-mcp-connects.log"), "connect\n");
+  if (failures === "always" || Number(failures) > 0) {
+    if (failures !== "always") await writeFile(failuresPath, String(Number(failures) - 1));
+    mcpStatus = { status: "failed", error: "Failed to get tools" };
+    return;
+  }
+  try {
+    await mcpRequest("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "fake-opencode", version: "1" },
+    });
+    const listed = await mcpRequest("tools/list");
+    mcpStatus = Array.isArray(listed.result?.tools)
+      ? { status: "connected" }
+      : { status: "failed", error: "Failed to get tools" };
+  } catch (error) {
+    mcpStatus = { status: "failed", error: String(error) };
+  }
+}
+
 async function callFirstPaperclipTool() {
   if (!mcp?.url) return;
   await mcpRequest("initialize", {
@@ -328,6 +356,15 @@ const server = createServer(async (request, response) => {
     clients.add(response);
     request.on("close", () => clients.delete(response));
     return;
+  }
+  if (request.method === "GET" && request.url === "/mcp") {
+    if (mcp?.url && mcpStatus === null) await connectPaperclipMcp();
+    return json(response, 200, mcp?.url ? { paperclip: mcpStatus } : {});
+  }
+  if (request.method === "POST" && request.url === "/mcp/paperclip/connect") {
+    if (!mcp?.url) return json(response, 404, { error: "not found" });
+    await connectPaperclipMcp();
+    return json(response, 200, true);
   }
   if (request.method === "POST" && request.url === "/session")
     return json(response, 200, session);

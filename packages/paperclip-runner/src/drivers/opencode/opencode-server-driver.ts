@@ -417,6 +417,15 @@ export class OpenCodeServerDriver implements HarnessDriver {
           },
         });
         const fetcher = this.#options.fetch ?? globalThis.fetch;
+        // OpenCode connects its MCP servers once per instance and never
+        // retries. Confirm the Paperclip tools while the session loads, so a
+        // turn never starts without them.
+        const paperclipTools = ensurePaperclipMcpConnected(
+          fetcher,
+          runtime,
+          this.#options.onDiagnostic,
+        );
+        paperclipTools.catch(() => undefined);
         let providerSessionId =
           snapshot?.providerSessionId ?? snapshot?.driverSessionId ?? null;
         if (providerSessionId !== null) {
@@ -436,6 +445,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
           if (!providerSessionId)
             throw new Error("OpenCode session creation omitted its id");
         }
+        await paperclipTools;
         session = new OpenCodeHarnessSession({
           runtime,
           fetcher,
@@ -3057,9 +3067,46 @@ async function api(
   }
 }
 
+const PAPERCLIP_MCP_SERVER = "paperclip";
+const PAPERCLIP_MCP_RECONNECT_ATTEMPTS = 2;
+const PAPERCLIP_TOOLS_UNAVAILABLE = "paperclip_tools_unavailable";
+
+/**
+ * OpenCode 1.18 connects each configured MCP server once per instance. One
+ * failed initialize or tools/list leaves the server "failed" for the whole
+ * process, and the model then works without any Paperclip tools. Reconnect it
+ * through OpenCode's own MCP API, and refuse the session if that fails.
+ */
+async function ensurePaperclipMcpConnected(
+  fetcher: typeof globalThis.fetch,
+  runtime: OpenCodeRuntime,
+  onDiagnostic?: (message: string) => void,
+): Promise<void> {
+  const status = async () => {
+    const entry = record(record(await api(fetcher, runtime, "/mcp"))[PAPERCLIP_MCP_SERVER]);
+    return { status: text(entry.status, "missing"), error: text(entry.error) };
+  };
+  let current = await status();
+  for (let attempt = 1; current.status !== "connected" && attempt <= PAPERCLIP_MCP_RECONNECT_ATTEMPTS; attempt += 1) {
+    onDiagnostic?.(redact(
+      `OpenCode reported the Paperclip tools as ${current.status}${current.error ? ` (${current.error})` : ""}; reconnecting (attempt ${attempt}).`,
+      runtime.sensitiveValues,
+    ));
+    await api(fetcher, runtime, `/mcp/${PAPERCLIP_MCP_SERVER}/connect`, { method: "POST" });
+    current = await status();
+  }
+  if (current.status !== "connected") {
+    throw new Error(redact(
+      `${PAPERCLIP_TOOLS_UNAVAILABLE}: OpenCode could not load the Paperclip tools (${current.status}${current.error ? `: ${current.error}` : ""})`,
+      runtime.sensitiveValues,
+    ));
+  }
+}
+
 function retryableOpenCodeStartupError(error: unknown): boolean {
   const message = String(error);
   return (
+    message.includes(PAPERCLIP_TOOLS_UNAVAILABLE) ||
     message.includes("request failed") ||
     message.includes("did not become healthy") ||
     message.includes("exited during startup") ||
