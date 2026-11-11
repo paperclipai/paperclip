@@ -351,6 +351,35 @@ function agentViewDescription(view: AgentDetailView, name: string): string | nul
   }
 }
 
+/**
+ * Presentational header row for the agent detail page. The header wraps on
+ * narrow screens so the action row moves below the identity instead of
+ * clipping the agent name between the portrait and the buttons.
+ */
+export function AgentDetailHeader({
+  avatarLabel,
+  portrait,
+  identity,
+  actions,
+}: {
+  avatarLabel: string;
+  portrait: React.ReactNode;
+  identity: React.ReactNode;
+  actions: React.ReactNode;
+}) {
+  return (
+    <header className="agent-character-header flex flex-wrap items-center gap-x-2 gap-y-3">
+      <div role="img" aria-label={avatarLabel} className="shrink-0">
+        {portrait}
+      </div>
+      <div className="min-w-0 flex-1">{identity}</div>
+      <div className="flex shrink-0 max-sm:w-full max-sm:justify-end">
+        {actions}
+      </div>
+    </header>
+  );
+}
+
 export function AgentDetail() {
   const { companyPrefix, agentId, tab: urlTab, runId: urlRunId } = useParams<{
     companyPrefix?: string;
@@ -884,64 +913,69 @@ export function AgentDetail() {
         </div>
       ) : null}
       {/* Header */}
-      <header className="agent-character-header flex items-center gap-2">
-        <div role="img" aria-label={`${agent.name} avatar`} className="shrink-0">
+      <AgentDetailHeader
+        avatarLabel={`${agent.name} avatar`}
+        portrait={
           <AgentCharacter agent={agent} state={characterStateForAgent(currentAgent.status) === "rest" ? "idle" : characterStateForAgent(currentAgent.status)} size={128} className="agent-header-character" trackingScope="page" followCursor />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center gap-2">
-            <InlineEditor
-              as="h1"
-              value={agent.title ?? ""}
-              fitContent
-              nullable
-              placeholder={roleLabels[agent.role] ?? agent.role}
-              className="min-w-0 truncate text-2xl font-semibold leading-8 text-foreground"
-              onSave={(title) => saveHeaderField({ title: title || null })}
-            />
-            <PrimaryAgentCrownButton agent={agent} />
-          </div>
-          <div className="mt-1 flex min-w-0 items-center gap-2 text-sm leading-5 text-muted-foreground">
-            <Link
-              to={agentDetailHref(canonicalAgentRef, "runtime")}
-              aria-label={`Open ${getAdapterDisplay(agentDisplayAdapterType(agent)).label} harness settings`}
-              className="flex shrink-0 items-center gap-1 rounded-sm no-underline transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-            >
-              {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
-                ? <img src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`} className="-ml-0.5 size-4" alt="" />
-                : null}
-              <span>{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span>
-            </Link>
-            <span aria-hidden="true">•</span>
-            <InlineEditor
-              fitContent
-              value={agent.name}
-              placeholder="Agent name"
-              className="min-w-0 truncate text-sm leading-5 text-muted-foreground"
-              onSave={(name) => saveHeaderField({ name })}
-            />
-          </div>
-          <AgentLifecycleStatus agent={currentAgent} refreshError={lifecycle.isError} onRetry={() => agentAction.mutate("retryLifecycle")} retryPending={agentAction.isPending} />
-        </div>
-        <AgentActionButtons
-          agent={currentAgent}
-          companyId={resolvedCompanyId}
-          assignLabel="New task"
-          size="default"
-          showAssignIcon={false}
-          showChat
-          showStatus={false}
-          workActionsInMenu
-          menuItems={[{ label: "Agent history", icon: HistoryIcon, onSelect: () => setHistoryOpen(true) }]}
-          actionsDisabled={agentAction.isPending || (activeView === "advanced" && configSaving)}
-          workActionsDisabled={hasInvalidOrgChain}
-          workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
-          hasPendingNavigationChanges={configDirty}
-          onBeforeNavigate={prepareAgentNavigation}
-          onActionError={setActionError}
-          onTerminateSuccess={() => navigate("/agents/all", { replace: true })}
-          hideTerminate={Boolean(builtInState)}
-          pauseConfirm={
+        }
+        identity={
+          <>
+            <div className="flex min-w-0 items-center gap-2">
+              <InlineEditor
+                as="h1"
+                value={agent.title ?? ""}
+                fitContent
+                nullable
+                placeholder={roleLabels[agent.role] ?? agent.role}
+                className="min-w-0 truncate text-2xl font-semibold leading-8 text-foreground"
+                onSave={(title) => saveHeaderField({ title: title || null })}
+              />
+              <PrimaryAgentCrownButton agent={agent} />
+            </div>
+            <div className="mt-1 flex min-w-0 items-center gap-2 text-sm leading-5 text-muted-foreground">
+              <Link
+                to={agentDetailHref(canonicalAgentRef, "runtime")}
+                aria-label={`Open ${getAdapterDisplay(agentDisplayAdapterType(agent)).label} harness settings`}
+                className="flex shrink-0 items-center gap-1 rounded-sm no-underline transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              >
+                {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
+                  ? <img src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`} className="-ml-0.5 size-4" alt="" />
+                  : null}
+                <span>{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span>
+              </Link>
+              <span aria-hidden="true">•</span>
+              <InlineEditor
+                fitContent
+                value={agent.name}
+                placeholder="Agent name"
+                className="min-w-0 truncate text-sm leading-5 text-muted-foreground"
+                onSave={(name) => saveHeaderField({ name })}
+              />
+            </div>
+            <AgentLifecycleStatus agent={currentAgent} refreshError={lifecycle.isError} onRetry={() => agentAction.mutate("retryLifecycle")} retryPending={agentAction.isPending} />
+          </>
+        }
+        actions={
+          <AgentActionButtons
+            agent={currentAgent}
+            companyId={resolvedCompanyId}
+            assignLabel="New task"
+            size="default"
+            className="flex items-center gap-1 sm:gap-2 shrink-0"
+            showAssignIcon={false}
+            showChat
+            showStatus={false}
+            workActionsInMenu
+            menuItems={[{ label: "Agent history", icon: HistoryIcon, onSelect: () => setHistoryOpen(true) }]}
+            actionsDisabled={agentAction.isPending || (activeView === "advanced" && configSaving)}
+            workActionsDisabled={hasInvalidOrgChain}
+            workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
+            hasPendingNavigationChanges={configDirty}
+            onBeforeNavigate={prepareAgentNavigation}
+            onActionError={setActionError}
+            onTerminateSuccess={() => navigate("/agents/all", { replace: true })}
+            hideTerminate={Boolean(builtInState)}
+            pauseConfirm={
             builtInState
               ? {
                   title: `Pause the ${builtInState.definition.displayName}?`,
@@ -969,7 +1003,8 @@ export function AgentDetail() {
             </Link>
           )}
         </AgentActionButtons>
-      </header>
+        }
+      />
       <AgentHistoryDialog agent={agent} companyId={resolvedCompanyId ?? undefined} open={historyOpen} onOpenChange={setHistoryOpen} />
       <AlertDialog open={pendingLeave !== null} onOpenChange={(open) => (open ? undefined : setPendingLeave(null))}>
         <AlertDialogContent>
