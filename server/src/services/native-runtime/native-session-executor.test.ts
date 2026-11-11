@@ -11886,6 +11886,9 @@ describe("native warm session supervision", () => {
         const drainTimedOut = mode === "journal-drain-timeout";
         const failure = mode === "other-error" ? new Error("controller retirement unconfirmed")
           : drainTimedOut ? new Error("Controller journal drain timed out; preserve the session before replacing its writer.")
+          // releaseRunnerProcessOwnership rethrows the checkpoint's failed stop
+          // before the transport can raise NativeSessionCloseUnrecoverableError.
+          : mode === "stop-unconfirmed-at-close" ? new Error("launcher stop unavailable")
           // A local Runner that durably suspended is contained without a task owner.
           : mode === "suspended-unbound" ? new NativeSessionCloseUnrecoverableError({ runnerSuspended: true, providerDrained: true }, false)
           : new NativeSessionCloseUnrecoverableError(undefined, mode !== "pending-semantic");

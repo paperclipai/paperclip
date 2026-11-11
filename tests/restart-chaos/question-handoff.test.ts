@@ -108,6 +108,8 @@ describe("Q1 saved question", () => {
       expect(() => parseCommand(["--workloads", "Q1", "--faults", "SR1"])).toThrow("--lifecycle warm");
       expect(() => parseCommand(["--workloads", "A1", "--faults", "SR1", "--lifecycle", "warm"])).toThrow("remove A1");
       expect(() => parseCommand(["--workloads", "Q1", "--faults", "SR1,K1", "--lifecycle", "warm"])).toThrow("without K* or PV*");
+      // The matrix would run only its K0 baseline and pass without replacing a session.
+      expect(() => parseCommand(["--matrix", "--workloads", "Q1", "--faults", "SR1", "--lifecycle", "warm"])).toThrow("session faults");
     });
 
     it("changes the agent's session configuration after the asking run settles, then answers on a later poll", async () => {
