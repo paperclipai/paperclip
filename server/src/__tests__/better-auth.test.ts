@@ -6,6 +6,7 @@ import {
   buildBetterAuthRateLimitOptions,
   deriveAuthCookiePrefix,
   deriveAuthTrustedOrigins,
+  legacyAccountIssuerForCreate,
   shouldDisableSecureAuthCookies,
 } from "../auth/better-auth.js";
 
@@ -17,6 +18,22 @@ afterEach(() => {
   else process.env.PAPERCLIP_INSTANCE_ID = ORIGINAL_INSTANCE_ID;
   if (ORIGINAL_PUBLIC_URL === undefined) delete process.env.PAPERCLIP_PUBLIC_URL;
   else process.env.PAPERCLIP_PUBLIC_URL = ORIGINAL_PUBLIC_URL;
+});
+
+describe("Better Auth legacy account issuer", () => {
+  it("keeps credential identities readable by the previous credential reader", () => {
+    expect(legacyAccountIssuerForCreate({ providerId: "credential" })).toBe("local:credential");
+  });
+  it("preserves a trusted internal OAuth issuer without normalizing its identity", () => {
+    expect(legacyAccountIssuerForCreate({ providerId: "google", issuer: "https://accounts.google.com" }))
+      .toBe("https://accounts.google.com");
+    expect(legacyAccountIssuerForCreate({ providerId: "custom", issuer: "local:oauth:custom" }))
+      .toBe("local:oauth:custom");
+  });
+  it("does not invent a legacy issuer for unconfigured or dynamic providers", () => {
+    expect(legacyAccountIssuerForCreate({ providerId: "unknown" })).toBeNull();
+    expect(legacyAccountIssuerForCreate({ providerId: "google", issuer: " " })).toBeNull();
+  });
 });
 
 describe("Better Auth cookie scoping", () => {
