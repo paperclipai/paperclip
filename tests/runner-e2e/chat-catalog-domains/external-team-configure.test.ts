@@ -102,3 +102,9 @@ it("derives eligible bindings only from the profile's saved secret references", 
     .toEqual([{ configPath: "env.OPENROUTER_API_KEY", secretId: "s1" }]);
   expect(eligibleTeamBindings(undefined)).toEqual([]);
 });
+
+// Paid run 43086418488: a member installed from the catalog has no configuration revisions until it is edited.
+it("accepts a working member that still has no configuration revisions after the repair", () => {
+  const o = valid(); o.state.workingRevisionIdsBefore = []; o.state.workingRevisionIdsAfter = []; expect(teamConfigureExternalCases[0]!.grade(o).passed).toBe(true);
+  o.state.workingRevisionIdsAfter = ["new-revision"]; expect(teamConfigureExternalCases[0]!.grade(o).passed).toBe(false);
+});

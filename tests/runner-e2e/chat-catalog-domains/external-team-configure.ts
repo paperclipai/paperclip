@@ -92,7 +92,7 @@ export function gradeTeamConfigure(value: unknown) {
     "Chat identifies the incomplete member by linking its own configuration page, proposing a governed binding of the eligible company account to that member, or repairing it itself; the repair changes only that member through actual agent or human authority.");
   c.add("already-working-member-preserved", typeof o.state.workingHashBefore === "string" && o.state.workingHashBefore === o.state.workingHashAfter && o.state.memberIdsPreserved === true,
     "The already working member's semantic configuration and the installed member identities remain unchanged.");
-  c.add("working-configuration-revisions-preserved", Array.isArray(o.state.workingRevisionIdsBefore) && o.state.workingRevisionIdsBefore.length > 0
+  c.add("working-configuration-revisions-preserved", Array.isArray(o.state.workingRevisionIdsBefore) && Array.isArray(o.state.workingRevisionIdsAfter)
     && JSON.stringify(o.state.workingRevisionIdsBefore) === JSON.stringify(o.state.workingRevisionIdsAfter),
     "Public immutable configuration revision identities also remain unchanged, so redacted environment placeholders cannot hide an account change.");
   c.add("fresh-readiness-for-every-member", Array.isArray(after) && after.length === o.state.expectedMembers
@@ -134,7 +134,7 @@ export const teamConfigureExternalCases = [definition("teams.configure-team", as
       eligibleBindings: eligibleTeamBindings((override.adapterConfig as { env?: unknown } | undefined)?.env), currentUserId: session.user?.id ?? null };
   } catch (error) { fixtures.delete(ctx); await rm(emptyHome, { recursive: true, force: true }); throw error; }
 }, gradeTeamConfigure, {
-  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.team-configure.v5", expectedRunCount: 3, minimumRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
+  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.team-configure.v6", expectedRunCount: 3, minimumRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
   setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["missing-account-fixture", "working-account-fixture"] },
   async verifySetup(_ctx, state) { const c = checks(), rows = state.initialProbes as Probe[]; c.add("missing-account-fixture", rows.some(row => missingAccountProbe(row, String(state.missingId))), "Actual saved-runtime probe reports the required missing member account."); c.add("working-account-fixture", rows.some(row => readyProbe(row, String(state.workingId))), "A distinct installed member already passes its runtime probe."); return c.result(); },
   sourceFiles: ["chat-catalog-domains/external-team-configure.ts", "chat-catalog-domains/external-team-install.ts", "../../server/src/adapters/registry.ts", "../../packages/adapters/opencode-local/src/server/test.ts", "../../packages/adapters/opencode-local/src/server/parse.ts", "codex-subscription-fixture.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-support.ts", "chat-flow.ts", "chat-scenarios/teams.yaml"],
