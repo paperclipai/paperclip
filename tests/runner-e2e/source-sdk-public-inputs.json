@@ -360,7 +360,7 @@
     "packages/shared/src/telemetry/types.ts": "083d4341a72ac47bc1a3bbff163965de8b06f90a",
     "packages/shared/src/trust-policy.ts": "88001a8d629a2af66dcd8d75b7b4d36298455ef6",
     "packages/shared/src/types/access.ts": "015d51792da07acaebe59e0e395698d207811d0d",
-    "packages/shared/src/types/activity.ts": "9d383f85775bf3657a7f9bdfb32a6e58e58c12a3",
+    "packages/shared/src/types/activity.ts": "d01c76dbb46454db7901623ba69ecca4cf963039",
     "packages/shared/src/types/adapter-registry.ts": "bd9b0a1f7980bf444f7f3d75a4687874014c4bca",
     "packages/shared/src/types/adapter-skills.ts": "ac77f7e013e8fb8de6fcbe916b7f7923554de815",
     "packages/shared/src/types/agent-lifecycle.ts": "3ff9d17a2b7e1710463961b50e8e61014f80a55a",
