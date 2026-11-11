@@ -149,6 +149,50 @@ describe("managed AI gate settings", () => {
     expect(isManagedAiGateUnreachableError(error) && error.detail).toEqual([hookPath]);
   });
 
+  it("fails loudly when a carried hook command is a directory", async () => {
+    const hookDir = path.join(root, "hook-dir");
+    await mkdir(hookDir, { mode: 0o755 });
+    await writeHostSettings({
+      hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: hookDir }] }] },
+    });
+
+    const error = await seedManagedAiGateSettings({ providerHome, hostSettingsDir: hostDir }).catch(
+      (thrown: unknown) => thrown,
+    );
+
+    expect(isManagedAiGateUnreachableError(error)).toBe(true);
+    if (!isManagedAiGateUnreachableError(error)) throw error;
+    expect(error.reason).toBe("hook_command_unreachable");
+    expect(error.detail).toEqual([hookDir]);
+  });
+
+  it("checks the hook file named before shell punctuation", async () => {
+    const hookPath = path.join(root, "gate.sh");
+    await writeFile(hookPath, "#!/bin/sh\nexit 0\n");
+    await chmod(hookPath, 0o755);
+    await writeHostSettings({
+      hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: `${hookPath}; echo done` }] }] },
+    });
+
+    const result = await seedManagedAiGateSettings({ providerHome, hostSettingsDir: hostDir });
+
+    expect(result.settingsPath).toBe(path.join(providerHome, "settings.json"));
+  });
+
+  it("reports a failed settings write as a gate that was not carried", async () => {
+    await writeHostSettings({ permissions: { deny: ["Bash(gh pr merge:*)"] } });
+    const missingHome = path.join(root, "missing", "provider");
+
+    const error = await seedManagedAiGateSettings({ providerHome: missingHome, hostSettingsDir: hostDir }).catch(
+      (thrown: unknown) => thrown,
+    );
+
+    expect(isManagedAiGateUnreachableError(error)).toBe(true);
+    if (!isManagedAiGateUnreachableError(error)) throw error;
+    expect(error.reason).toBe("gate_not_carried");
+    expect(error.message).toContain(missingHome);
+  });
+
   it("leaves a PATH-resolved or shell-snippet hook command to the runner", async () => {
     await writeHostSettings({
       hooks: {
@@ -225,6 +269,14 @@ describe("managed AI gate settings", () => {
       expect(hookCommandLocalPath("  /opt/a.sh --flag ")).toBe("/opt/a.sh");
       expect(hookCommandLocalPath("'/opt/with space/a.sh' --flag")).toBe("/opt/with space/a.sh");
       expect(hookCommandLocalPath('"/opt/with space/a.sh"')).toBe("/opt/with space/a.sh");
+    });
+
+    it("stops the path at shell punctuation", () => {
+      expect(hookCommandLocalPath("/opt/gate.sh; echo done")).toBe("/opt/gate.sh");
+      expect(hookCommandLocalPath("/opt/gate.sh&&echo done")).toBe("/opt/gate.sh");
+      expect(hookCommandLocalPath("/opt/gate.sh|tee /tmp/log")).toBe("/opt/gate.sh");
+      expect(hookCommandLocalPath("/opt/gate.sh>/tmp/log")).toBe("/opt/gate.sh");
+      expect(hookCommandLocalPath("/opt/gate.sh</dev/null")).toBe("/opt/gate.sh");
     });
 
     it("returns null for anything it cannot resolve to one local file", () => {

@@ -1,9 +1,8 @@
 import { constants as fsConstants } from "node:fs";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { HttpError } from "../errors.js";
-
 
 export const MANAGED_AI_GATE_SETTINGS_FILE = "settings.json";
 
@@ -96,7 +95,7 @@ export function hookCommandLocalPath(command: string): string | null {
     if (end < 0) return null;
     token = trimmed.slice(1, end);
   } else {
-    token = trimmed.split(/\s+/, 1)[0] ?? "";
+    token = /^[^\s;&|<>()`]+/.exec(trimmed)?.[0] ?? "";
   }
   return token.startsWith("/") ? token : null;
 }
@@ -143,6 +142,16 @@ async function readHostSettings(hostSettingsDir: string): Promise<unknown | unde
   }
 }
 
+async function isExecutableFile(localPath: string): Promise<boolean> {
+  try {
+    if (!(await stat(localPath)).isFile()) return false;
+    await access(localPath, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function seedManagedAiGateSettings(input: {
   providerHome: string;
   hostSettingsDir: string;
@@ -156,9 +165,17 @@ export async function seedManagedAiGateSettings(input: {
   }
 
   const settingsPath = path.join(input.providerHome, MANAGED_AI_GATE_SETTINGS_FILE);
-  await writeFile(settingsPath, `${JSON.stringify(selection.settings, null, 2)}\n`, {
-    mode: 0o600,
-  });
+  try {
+    await writeFile(settingsPath, `${JSON.stringify(selection.settings, null, 2)}\n`, {
+      mode: 0o600,
+    });
+  } catch {
+    throw new ManagedAiGateUnreachableError(
+      "gate_not_carried",
+      `Could not write the runner gate declared in ${input.hostSettingsDir} into the managed Claude config dir ${input.providerHome}.`,
+      Object.keys(selection.settings),
+    );
+  }
 
   const carried = await readHostSettings(input.providerHome);
   if (JSON.stringify(carried) !== JSON.stringify(selection.settings)) {
@@ -173,10 +190,7 @@ export async function seedManagedAiGateSettings(input: {
   for (const command of selection.hookCommands) {
     const localPath = hookCommandLocalPath(command);
     if (!localPath) continue;
-    const reachable = await access(localPath, fsConstants.X_OK).then(
-      () => true,
-      () => false,
-    );
+    const reachable = await isExecutableFile(localPath);
     if (!reachable) unreachable.push(localPath);
   }
   if (unreachable.length > 0) {
