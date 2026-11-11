@@ -538,7 +538,7 @@ function didAutomaticRecoveryFail(
   const latestRetryReason = readNonEmptyString(latestContext.retryReason);
   return (
     (latestRetryReason === expectedRetryReason
-      || (expectedRetryReason !== EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
+      || (expectedRetryReason === "issue_continuation_needed"
         && latestRetryReason === INTERRUPTED_PREPARATION_RETRY_REASON)) &&
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],

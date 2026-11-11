@@ -290,11 +290,14 @@ suite("held interrupted preparations on the shared ownership path", () => {
       ne(heartbeatRuns.id, f.runId)))).not.toHaveLength(0);
   }, 60_000);
 
-  it("bounds repeated lost leases before provider work across release and recovery, then lets Retry continue", async () => {
+  it.each([
+    ["an in-progress continuation", "in_progress", { retryReason: "issue_continuation_needed", source: "issue.continuation_recovery" }, 2],
+    ["a todo task that never reached checkout", "todo", {}, 12],
+  ] as const)("bounds repeated lost leases before provider work for %s, then lets Retry continue", async (_label, status, firstContext, cap) => {
     const heartbeat = heartbeatService(db);
     const controller = await deadController();
     const issueId = randomUUID(), firstRunId = randomUUID();
-    await db.insert(issues).values({ id: issueId, companyId, title: "Lease loop", status: "in_progress",
+    await db.insert(issues).values({ id: issueId, companyId, title: "Lease loop", status,
       assigneeAgentId: agentId, statusVersion: 2 });
     const lostLease = (runId: string, context: Record<string, unknown>, retry: Partial<typeof heartbeatRuns.$inferInsert> = {}) => {
       const finishedAt = new Date(Date.now() - 30 * 60_000);
@@ -305,14 +308,14 @@ suite("held interrupted preparations on the shared ownership path", () => {
         runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
         contextSnapshot: { issueId, ...context }, ...retry } as typeof heartbeatRuns.$inferInsert;
     };
-    await db.insert(heartbeatRuns).values(lostLease(firstRunId,
-      { retryReason: "issue_continuation_needed", source: "issue.continuation_recovery" }));
+    await db.insert(heartbeatRuns).values(lostLease(firstRunId, { ...firstContext }));
     let latest = firstRunId;
     let successors = 0;
     for (let round = 0; round < 40; round += 1) {
       await heartbeat.reconcileStrandedAssignedIssues({ companyId, issueId });
       const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
       if (task!.status === "blocked") break;
+      expect(task!.status).toBe(status);
       const [next] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, latest));
       expect(next).toBeDefined();
       expect(next!.contextSnapshot).toMatchObject({ retryReason: "interrupted_preparation",
@@ -327,7 +330,7 @@ suite("held interrupted preparations on the shared ownership path", () => {
         runnerProfileJson: finished.runnerProfileJson }).where(eq(heartbeatRuns.id, next!.id));
       latest = next!.id;
     }
-    expect(successors).toBe(2);
+    expect(successors).toBe(cap);
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "blocked" });
     const receipt = await requestTaskRetry({ db, companyId, issueId, actorId: "local-board",
       actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: latest });
