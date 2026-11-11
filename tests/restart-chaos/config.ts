@@ -12,6 +12,7 @@ import { parseNativeTrigger, parseNativeTriggerOutage } from "./native-trigger.j
 import { parseRepeatedRestartOptions } from "./repeated-restarts.js";
 import { daytonaRetainsSandboxes } from "./ttft-baseline-stats.js";
 import { PROVIDER_FAULT_KINDS, PROVIDER_FAULT_WORKLOADS, TOOL_COMPLETED_WORKLOADS, UNINTERRUPTED_PROVIDER_MESSAGES, isProviderFault, parseProviderDelays, parseProviderMessages, type ProviderFaultKind } from "./provider-faults.js";
+import { SESSION_FAULT_KINDS, SESSION_FAULT_WORKLOADS, isSessionFault, type SessionFaultKind } from "./session-faults.js";
 import { PROVIDER_FAULT_ADAPTERS, parseProviderFaultRestart } from "./acpx-provider-faults.js";
 import { DISK_FULL_FAULT_KINDS, isDiskFullFault, type DiskFullFaultKind } from "./disk-full-faults.js";
 import {
@@ -184,12 +185,13 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   }
   if (lifecycle !== undefined && lifecycle !== "per_turn" && lifecycle !== "warm" && lifecycle !== "default") throw new Error("--lifecycle must be per_turn, warm or default");
   const adapters = list<AdapterId>(values.adapters, ADAPTER_IDS, "adapters", ["codex", "claude"]);
-  // `--faults` takes restart faults (K*), provider message faults (PV*, provider-faults.ts) and the
-  // sandbox disk-full fault (DF1, disk-full-faults.ts).
-  const allFaults = list<FaultKind | ProviderFaultKind | DiskFullFaultKind>(values.faults, [...FAULT_KINDS, ...PROVIDER_FAULT_KINDS, ...DISK_FULL_FAULT_KINDS], "faults",
+  // `--faults` takes restart faults (K*), provider message faults (PV*, provider-faults.ts), the
+  // sandbox disk-full fault (DF1, disk-full-faults.ts) and session faults (SR*, session-faults.ts).
+  const allFaults = list<FaultKind | ProviderFaultKind | DiskFullFaultKind | SessionFaultKind>(values.faults, [...FAULT_KINDS, ...PROVIDER_FAULT_KINDS, ...DISK_FULL_FAULT_KINDS, ...SESSION_FAULT_KINDS], "faults",
     stormMinutes ? STORM_DEFAULT_FAULTS : crashPoint ? ["K1"] : ["K1", "K2", "K4"]);
   const providerFaults = allFaults.filter(isProviderFault);
   const diskFullFaults = allFaults.filter(isDiskFullFault);
+  const sessionFaults = allFaults.filter(isSessionFault);
   const options: WaveOptions = {
     env,
     adapters,
@@ -197,9 +199,10 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
     workloads: list<WorkloadId>(values.workloads, workloadChoices, "workloads", workloadChoices.filter(id => id !== "G1" && id !== "H1" && id !== "R1" && id !== "S1" && id !== "L1" && id !== "F1" && id !== "T1" && id !== "Q4"
       && !takesJourneyTriggers(id) && (id !== "M1" || adapters.length >= 2))),
     // A crash-point wave schedules no fault; K1 is the restart its self-kill gets.
-    faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault) && !isDiskFullFault(fault)),
+    faults: allFaults.filter((fault): fault is FaultKind => !isProviderFault(fault) && !isDiskFullFault(fault) && !isSessionFault(fault)),
     ...(providerFaults.length ? { providerFaults } : {}),
     ...(diskFullFaults.length ? { diskFullFaults } : {}),
+    ...(sessionFaults.length ? { sessionFaults } : {}),
     triggers: list<TriggerId>(values.triggers, TRIGGER_IDS, "triggers", ["time"]),
     concurrency: integer(values.concurrency, "concurrency", 4, 1, 20),
     tasks: integer(values.tasks, "tasks", stormMinutes ? 200 : 8, 1, 200),
@@ -271,6 +274,14 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   } else if (values["provider-fault-message"] !== undefined || values["provider-fault-delays"] !== undefined
     || values["provider-fault-restart"] !== undefined || values["provider-fault-restart-after-seconds"] !== undefined) {
     throw new Error("--provider-fault-message, --provider-fault-delays and --provider-fault-restart need a provider fault (PV1, PV2 or PV3) in --faults");
+  }
+  if (sessionFaults.length) {
+    if (stormMinutes) throw new Error("Session faults (SR*) are planned per task; do not combine them with --storm-minutes");
+    if (options.faults.length || providerFaults.length) throw new Error("Session faults (SR*) restart nothing; run them in a wave without K* or PV* faults");
+    const other = options.workloads.filter(id => !SESSION_FAULT_WORKLOADS.includes(id));
+    if (other.length) throw new Error(`Session faults (SR*) need ${SESSION_FAULT_WORKLOADS.join(", ")}; remove ${other.join(", ")} from --workloads`);
+    // Only a retained warm owner can be superseded; a per-turn Runner exits after each turn.
+    if (options.lifecycle !== "warm" && !options.daytonaWarm) throw new Error("Session faults (SR*) need a retained owner: add --lifecycle warm (or --daytona-warm)");
   }
   validateMultiServerOptions(options);
   // K15 emulates one deploy identity per generation; a second server beside it would run in the real host's process space.

@@ -882,6 +882,37 @@ The Q4 oracle checks that two questions were asked and both were answered, that 
 ended `succeeded`, that no run of the task failed or was cancelled, and that the brief carries both
 answers. Q4 is not a default workload.
 
+## Session replaced under a retained owner (SR1)
+
+```sh
+# One task: the parked question's warm owner is superseded before the answer.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local --lifecycle warm \
+  --adapters codex --workloads Q1 --faults SR1 --concurrency 1 --tasks 1 --seed 301
+# Two tasks on the same agent: one change supersedes both owners at once.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env local --lifecycle warm \
+  --adapters codex --workloads Q1 --faults SR1 --concurrency 2 --tasks 2 --seed 302
+```
+
+A session fault restarts nothing. It covers a staging failure class: a new run on a task whose
+previous run left a warm Runner retained needed a new provider session, retired that owner first,
+and failed with `provider_transport_failed: runner did not durably suspend before checkpoint`
+before any provider work. A Q1 park leaves the owner with an unsettled question callback, the
+condition that made its close unprovable.
+
+The failure needs a Daytona task owner: locally a parked owner closes cleanly, so the local cell
+passes before and after the fix and guards only the ordinary reset path. Run the Daytona variant
+(`--env daytona --daytona-warm`) with an image that matches the checkout to exercise the
+superseded-owner retirement itself.
+
+SR1 runs Q1 with `--lifecycle warm` (or `--daytona-warm`). After the asking run settles and before
+the board answers, the harness changes the agent's `adapterConfig.idleTimeoutMs` through
+`PATCH /api/agents/:id`, as a user editing the agent would. That setting is part of the session's
+configuration fingerprint, so the answer's follow-up cannot resume the saved session. The Q1 oracle
+applies unchanged (`no_failed_attempt` and `issue_done` cover the follow-up), plus
+`session_rotated_before_answer` and `follow_up_new_session` (a follow-up that resumed the saved
+session would not exercise the retirement). Because tasks share their adapter's agent, `--tasks 2 --concurrency 2`
+is the two-concurrent-runs variant. SR1 does not combine with K* or PV* faults.
+
 ## Database contention (L1, `--db-pressure`)
 
 ```sh

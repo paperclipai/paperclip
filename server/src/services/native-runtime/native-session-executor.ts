@@ -731,14 +731,23 @@ async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, 
   try {
     try { await entry.session.close({ reason }); }
     catch (error) {
-      // A new conversation does not consume the old checkpoint. Its failed
-      // suspension must not poison every later reset after Launcher has proved
-      // that the exact task stopped and completed its credential handoff.
-      // Other close errors can mean controller authority is still live.
-      const retiredWithoutCheckpoint = options?.discardUnsettledSession === true
-        && error instanceof NativeSessionCloseUnrecoverableError
-        && error.semanticToolsSettled
-        && pluginTaskSessionOwners.get(entry.session)?.isRetired() === true;
+      // A new conversation does not consume the old checkpoint, so the old
+      // owner's unprovable close must not fail it once that owner is contained:
+      // Launcher proves the exact task stopped and completed its credential
+      // handoff (the successor forces this when close left it unproven), or,
+      // without a task owner, the Runner itself durably suspended. Unsettled
+      // Core tool callbacks (a governed-wait park leaves one) belong to the
+      // discarded conversation: its run is terminal, its provider is stopped,
+      // and the new conversation never replays them. With a Launcher receipt
+      // any close error qualifies, including a controller journal drain that
+      // outlived the close grace: the old journal lives in the discarded
+      // session's own state root, and its Runner is stopped. Without a task
+      // owner, other close errors can mean controller authority is still live.
+      const discardable = options?.discardUnsettledSession === true;
+      const owner = discardable ? pluginTaskSessionOwners.get(entry.session) : undefined;
+      const retiredWithoutCheckpoint = discardable && (owner
+        ? owner.isRetired() || await owner.retireSupersededTask().catch(() => false)
+        : error instanceof NativeSessionCloseUnrecoverableError && error.settlement?.runnerSuspended === true);
       if (!retiredWithoutCheckpoint) {
         try { await entry.instructionWorkingCopy?.retirementFailed?.(); }
         catch (receiptError) { throw new AggregateError([error, receiptError], "Warm instruction retirement and receipt both failed"); }
