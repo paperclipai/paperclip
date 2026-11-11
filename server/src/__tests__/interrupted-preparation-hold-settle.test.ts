@@ -309,7 +309,7 @@ suite("held interrupted preparations on the shared ownership path", () => {
         contextSnapshot: { issueId, ...context }, ...retry } as typeof heartbeatRuns.$inferInsert;
     };
     await db.insert(heartbeatRuns).values(lostLease(firstRunId, { ...firstContext }));
-    let latest = firstRunId;
+    let latest: string = firstRunId;
     let successors = 0;
     for (let round = 0; round < 40; round += 1) {
       await heartbeat.reconcileStrandedAssignedIssues({ companyId, issueId });
