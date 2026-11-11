@@ -1138,10 +1138,11 @@ type BlockedWorkEdge = {
  * Per-root visited sets make corrupt cycles harmless; the blocker analyzer's
  * existing traversal caps bound unusually large graphs.
  */
-async function blockedWorkCountMap(db: Db, companyId: string, blockerIssueIds: string[]) {
+/** Open work transitively blocked by each blocker, as issue-id sets. */
+async function blockedWorkMap(db: Db, companyId: string, blockerIssueIds: string[]) {
   const rootIds = [...new Set(blockerIssueIds)];
   const seenByRoot = new Map(rootIds.map((rootId) => [rootId, new Set<string>()]));
-  if (rootIds.length === 0) return new Map<string, number>();
+  if (rootIds.length === 0) return seenByRoot;
 
   const loadEdges = async (fromIssueIds: string[], includeChildren: boolean) => {
     const rows: BlockedWorkEdge[] = [];
@@ -1212,7 +1213,7 @@ async function blockedWorkCountMap(db: Db, companyId: string, blockerIssueIds: s
     rootsByFrontierId = nextRootsByFrontierId;
   }
 
-  return new Map([...seenByRoot].map(([rootId, seen]) => [rootId, seen.size]));
+  return seenByRoot;
 }
 
 /**
@@ -1230,6 +1231,7 @@ async function blockedWorkCountMap(db: Db, companyId: string, blockerIssueIds: s
 type TerminalBlockerAgent = { name: string; status: string };
 type TerminalBlockerFacts = {
   status: string;
+  monitorNextCheckAt: Date | null;
   assigneeAgent: TerminalBlockerAgent | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -1252,6 +1254,7 @@ async function terminalBlockerFactsMap(db: Db, companyId: string, issueIds: stri
     assigneeAgentId: string | null;
     assigneeUserId: string | null;
     unblockDescriptor: IssueUnblockDescriptor | null;
+    monitorNextCheckAt: Date | null;
   }> = [];
   for (const chunk of chunkValues(ids, ATTENTION_GRAPH_QUERY_CHUNK_SIZE)) {
     rows.push(...await db
@@ -1261,6 +1264,7 @@ async function terminalBlockerFactsMap(db: Db, companyId: string, issueIds: stri
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
         unblockDescriptor: issues.unblockDescriptor,
+        monitorNextCheckAt: issues.monitorNextCheckAt,
       })
       .from(issues)
       .where(and(eq(issues.companyId, companyId), inArray(issues.id, chunk))));
@@ -1285,6 +1289,7 @@ async function terminalBlockerFactsMap(db: Db, companyId: string, issueIds: stri
     const agentOwnerId = ownerAgentId(row);
     facts.set(row.id, {
       status: row.status,
+      monitorNextCheckAt: row.monitorNextCheckAt,
       assigneeAgentId: row.assigneeAgentId,
       assigneeAgent: row.assigneeAgentId ? agentById.get(row.assigneeAgentId) ?? null : null,
       assigneeUserId: row.assigneeUserId,
@@ -1311,7 +1316,7 @@ function terminalBlockerAgentLabel(agent: TerminalBlockerAgent | null) {
 
 const TERMINAL_BLOCKER_UNASSIGNED_CAUSE = "Has no assignee.";
 
-function terminalBlockerCause(facts: TerminalBlockerFacts | undefined) {
+function terminalBlockerCause(facts: TerminalBlockerFacts | undefined, now: number) {
   if (!facts) return "No live owner, run, or wake path.";
   switch (facts.status) {
     case "blocked":
@@ -1319,7 +1324,11 @@ function terminalBlockerCause(facts: TerminalBlockerFacts | undefined) {
     case "cancelled":
       return "Cancelled while open work still depends on it.";
     case "in_review":
-      return "In review with no reviewer, active run, or scheduled monitor.";
+      // Only claim facts this card checked: a saved future monitor is named,
+      // not denied.
+      return facts.monitorNextCheckAt && facts.monitorNextCheckAt.getTime() > now
+        ? `In review with no reviewer or active run; its monitor is next due ${facts.monitorNextCheckAt.toISOString()}.`
+        : "In review with no reviewer, active run, or scheduled monitor.";
     case "backlog":
       return "Parked in backlog.";
   }
@@ -2332,8 +2341,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         state: "stalled" | "needs_attention";
       }>();
       // Blocked issues that resolved to each terminal blocker. A child blocks
-      // its blocked parent, which the relation-only work count below does not
-      // walk, so keep these as a floor for the count.
+      // its blocked parent, which the relation-only work walk below does not
+      // follow, so the count is the union of both sets.
       const blockedRootIdsByTerminal = new Map<string, Set<string>>();
 
       for (const issue of typedBlockedIssues) {
@@ -2402,22 +2411,22 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       }
 
       const terminalIds = [...terminalCandidates.keys()];
-      const [blockedWorkCounts, terminalFacts] = summaryOnly
-        ? [new Map<string, number>(), new Map<string, TerminalBlockerFacts>()]
+      const [blockedWork, terminalFacts] = summaryOnly
+        ? [new Map<string, Set<string>>(), new Map<string, TerminalBlockerFacts>()]
         : await Promise.all([
-          blockedWorkCountMap(db, companyId, terminalIds),
+          blockedWorkMap(db, companyId, terminalIds),
           terminalBlockerFactsMap(db, companyId, terminalIds),
         ]);
       for (const [terminalIssueId, candidate] of terminalCandidates) {
-        const blockedTaskCount = Math.max(
-          blockedWorkCounts.get(terminalIssueId) ?? 0,
-          blockedRootIdsByTerminal.get(terminalIssueId)?.size ?? 0,
-        );
+        const blockedTaskCount = new Set([
+          ...(blockedWork.get(terminalIssueId) ?? []),
+          ...(blockedRootIdsByTerminal.get(terminalIssueId) ?? []),
+        ]).size;
         const taskLabel = blockedTaskCount === 1 ? "task" : "tasks";
         const dedupKey = `blocker:${terminalIssueId}`;
         const facts = terminalFacts.get(terminalIssueId);
         const ownerLine = terminalBlockerOwnerLine(facts, options.userId);
-        const cause = terminalBlockerCause(facts);
+        const cause = terminalBlockerCause(facts, now);
         add(createItem({
           companyId,
           sourceKind: "blocker_attention",
