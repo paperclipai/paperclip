@@ -17,16 +17,17 @@ import {
   type WorkspaceProviderBinding,
 } from "@paperclipai/shared";
 import {
-  parseWorkspaceProviderResult,
   workspaceProviderOperationSchema,
   type PluginWorkspaceOperation,
   type PluginWorkspaceRecoveryPullRequest,
   type PluginWorkspaceParams,
+  type PluginWorkspaceResult,
   type PluginFreshWorkspace,
 } from "@paperclipai/plugin-sdk";
+import { invokeWorkspaceProvider } from "./plugin-workspace-preparation.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
-import { workspaceProviderCallFailure } from "./workspace-provider-failure.js";
+import { WorkspaceProviderFailureError, workspaceProviderCallFailure } from "./workspace-provider-failure.js";
 import {
   assertTaskWorkspaceExecutionAccess,
   assertTaskWorkspaceSourceProjectAccess,
@@ -87,7 +88,7 @@ export async function callWorkspaceProvider(
     operation.fresh = await stageProviderFreshWorkspace({ db, companyId: workspace.companyId,
       issueId: workspace.sourceIssueId, ...operation.fresh, existing: operation.fresh });
   }
-  const params: PluginWorkspaceParams = {
+  const params: Omit<PluginWorkspaceParams, "deadline"> = {
     pluginId,
     companyId: workspace.companyId,
     projectId: workspace.projectId,
@@ -102,22 +103,17 @@ export async function callWorkspaceProvider(
             )
             .digest("hex")),
     generation: operationGeneration,
-    deadline: new Date(Date.now() + (verifyExisting ? 10_000 : operation.kind === "finalize" ? 30_000 : 300_000)).toISOString(),
     runId: input.runId ?? null,
     agentId: input.agentId ?? null,
     operation,
   };
-  let value: unknown;
+  let result: PluginWorkspaceResult;
   try {
-    value = await workers!.call(
-      pluginId,
-      "workspaceOperation",
-      params,
-      verifyExisting ? 12_000 : operation.kind === "finalize" ? 40_000 : 310_000,
-    );
+    result = await invokeWorkspaceProvider(workers!, params);
   } catch (error) {
     // A worker that never received the call, a lost reply and a provider-reported
     // failure need different recovery; only a closed provider reason crosses over.
+    if (error instanceof WorkspaceProviderFailureError) throw error;
     throw workspaceProviderCallFailure(error);
   }
   // Recheck enablement and ownership after an external effect, including an ambiguous retry.
@@ -139,7 +135,6 @@ export async function callWorkspaceProvider(
   ) {
     throw conflict("Workspace changed during storage preparation");
   }
-  const result = parseWorkspaceProviderResult(params, value);
   if (result.kind === "prepared" && result.binding.pluginId !== pluginId)
     throw conflict("Workspace provider ownership changed");
   return result;
