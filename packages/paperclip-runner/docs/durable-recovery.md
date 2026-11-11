@@ -603,6 +603,18 @@ callback that this process is not running (`dispatchToolCallback`) as
 earlier controller can never record a result, so this is the callback's only
 settlement, and it never executes the operation again. Every other unresolved
 input stays unsettled.
+
+`write_document` needs neither fallback. Its revision and its idempotency
+receipt commit in one transaction under the run and issue row locks, and the
+revision is compare-and-swap on `baseRevisionId`. The receipt is therefore the
+durable outcome record: present means the write applied, absent means it did
+not. Recovery runs the same receipt-guarded mutation, whichever controller
+admitted the callback. It returns the saved result when the receipt exists and
+applies the write once when it does not. A stale base, a reused key or invalid
+input is the call's real outcome and settles as a tool error. Any other failure
+leaves the call unsettled. A late original callback then replays the receipt,
+so the document is never written twice.
+
 A different case is a runner crash after the controller saved the result but
 before its delivery command completed. Codex/OpenCode explicitly opt in to
 reconciling that exact `semantic_tool.result` command through their durable tool

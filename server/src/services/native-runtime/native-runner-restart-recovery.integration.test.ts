@@ -929,8 +929,11 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     } } }).where(eq(heartbeatRuns.id, fixture.runId));
     await expect(recover(call))
       .resolves.toEqual({ result: { revision: "revision-1" } });
+    // write_document's receipt commits with its revision, so a key whose
+    // receipt holds other input proves this call can never apply under it.
     await expect(recover({ ...call, input: { ...call.input, body: "changed" } }))
-      .resolves.toBeNull();
+      .resolves.toMatchObject({ isError: true, result: { success: false, contentItems: [
+        { type: "inputText", text: expect.stringContaining("paperclip_runner_tool_idempotency_conflict") }] } });
     await expect(recover({ ...call, operationId: "unknown_external_write" }))
       .resolves.toBeNull();
     expect(executeRead).not.toHaveBeenCalled();
