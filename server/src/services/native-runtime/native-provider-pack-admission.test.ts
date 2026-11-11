@@ -240,10 +240,19 @@ describe("provider pack admission PostgreSQL fencing", () => {
       acquired(); await gate;
     });
     await holding;
+    let settled = false;
     const recording = recordNativeProviderPackAdmission(db, { ...f, waitForClaim } as Parameters<typeof recordNativeProviderPackAdmission>[1])
-      .then(value => ({ value }), error => ({ error }));
-    setTimeout(release, 150);
-    await append;
+      .then(value => { settled = true; return { value }; }, error => { settled = true; return { error }; });
+    try {
+      // Release only after the admission is proven to wait on the run row, so
+      // the old NOWAIT code cannot pass by running after the append commits.
+      await vi.waitFor(async () => {
+        const [row] = await db.execute<{ waiting: boolean }>(sql`select exists(select 1 from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock' and state = 'active'
+            and query like '%heartbeat_runs%') as waiting`);
+        expect(settled || row.waiting).toBe(true);
+      }, { timeout: 800 });
+    } finally { release(); await append; }
     expect(await recording).toEqual({ value: true });
     expect((await read(f.identity.runId)).runnerProfileJson?.nativeProviderPackAdmissionState)
       .toEqual({ ...f.profile.nativeProviderPackAdmissionState, state: "verified" });
