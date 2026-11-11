@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
 /** Native binary headers bind the packaged executable to its actual target. */
@@ -30,6 +30,21 @@ const RUNNER_BINARY_HEADER_BYTES = 64 * 1024;
  * of it to classify the target blocked the server's event loop on a slow disk.
  */
 export function runnerBinaryFileTarget(path: string): string | null {
+  // The packaged daemon is release-owned and does not change while the process
+  // runs. After the first read, each run costs one stat: the target is reused
+  // while the device, inode, size, modification and change times match.
+  const metadata = statSync(path, { bigint: true });
+  const key = `${metadata.dev}:${metadata.ino}:${metadata.size}:${metadata.mtimeNs}:${metadata.ctimeNs}`;
+  const cached = targetCache.get(path);
+  if (cached?.key === key) return cached.target;
+  const target = readRunnerBinaryFileTarget(path);
+  targetCache.set(path, { key, target });
+  return target;
+}
+
+const targetCache = new Map<string, { key: string; target: string | null }>();
+
+function readRunnerBinaryFileTarget(path: string): string | null {
   const descriptor = openSync(path, "r");
   try {
     const header = Buffer.alloc(RUNNER_BINARY_HEADER_BYTES);

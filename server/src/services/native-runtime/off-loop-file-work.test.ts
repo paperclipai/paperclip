@@ -45,7 +45,9 @@ const SLOW_MS = 800;
 // Generous for a loaded CI runner, and far below one blocked slow step.
 const RESPONSIVE_GAP_MS = 400;
 
-describe("run-path file work stays off the event loop", () => {
+// The fixtures use POSIX tools (mkfifo, sh, sleep, find); the controller
+// paths under test are the Linux and macOS ones.
+describe.skipIf(process.platform === "win32")("run-path file work stays off the event loop", () => {
   let root: string;
   let originalPath: string | undefined;
 
@@ -135,7 +137,7 @@ describe("run-path file work stays off the event loop", () => {
   });
 });
 
-describe("off-loop file helpers", () => {
+describe.skipIf(process.platform === "win32")("off-loop file helpers", () => {
   let root: string;
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "paperclip-off-loop-helpers-"));
