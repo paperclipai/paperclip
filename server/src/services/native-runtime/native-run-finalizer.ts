@@ -29,6 +29,7 @@ import { isNativePlanWaitResult, readNativePlanWait } from "./native-plan-wait.j
 import { hasPendingNativeChildCompletion } from "./native-child-completion-delivery.js";
 import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
+import { isFailedTurnContinuationRun } from "./native-failed-turn-continuation.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
 import { explainFailedRun, NATIVE_RUN_FAILED_UNEXPLAINED } from "./native-run-failure-explanation.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
@@ -1655,6 +1656,8 @@ export async function finalizeNativeRun(input: {
       providerOverloaded: providerFailure?.errorCode === "native_provider_overloaded" && ownsProviderFailureDecision,
       providerFailureSuperseded: providerFailure?.errorCode === "native_provider_overloaded" && !ownsProviderFailureDecision,
       failureRetryCount: executionFailureRetryCount(run),
+      failedTurnContinuationUsed: terminalState === "failed"
+        && await isFailedTurnContinuationRun(input.db, run, authoritativeIssue.id),
       ...(reviewContext ? { nativeReviewOutcome: nativeReview
         ? nativeReview.interaction.status === "pending" ? "pending" as const : "resolved" as const
         : "stale" as const } : {}),
