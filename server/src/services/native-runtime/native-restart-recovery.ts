@@ -1404,6 +1404,10 @@ export async function claimNativeRestartRecoveries(input: {
           runId: row.run.id,
           reason: takeover.reason,
           ...(durableAuthority && row.coordinator.leaseExpiresAt ? { retryAt: row.coordinator.leaseExpiresAt }
+            // This process's own unexpired lease with no driver here lapses by
+            // itself; look again then instead of waiting for another signal.
+            : ownControllerProcess && row.coordinator.leaseExpiresAt && row.coordinator.leaseExpiresAt > now
+              && !input.handedOffForShutdown?.(row.run.id) ? { retryAt: row.coordinator.leaseExpiresAt }
             : ["controller_lease_held", "controller_lease_grace"].includes(takeover.reason)
               ? { retryAt: new Date(now.getTime() + CONTROLLER_LEASE_RENEW_MS) } : {}),
         } as const;
