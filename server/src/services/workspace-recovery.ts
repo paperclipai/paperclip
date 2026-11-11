@@ -664,10 +664,10 @@ export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRu
   if (!rows.length) {
     rows = await retainedWorkspaceCandidates(db, passiveSweep ? passiveSweep.cursor : cursors.get(db), false, obligationsOnly, inFlightRunIds);
     if (passiveSweep && !rows.length && passiveSweep.restart) {
-      Object.assign(passiveSweep, { cursor: undefined, complete: false, restart: false });
+      Object.assign(passiveSweep, { cursor: undefined, restart: false });
       rows = await retainedWorkspaceCandidates(db, undefined, false, obligationsOnly, inFlightRunIds);
     }
-    if (passiveSweep && !rows.length) passiveSweep.complete = true;
+    if (passiveSweep) passiveSweep.complete = !rows.length;
   }
   if (!rows.length && !passiveSweep) rows = await retainedWorkspaceCandidates(db, undefined, false, obligationsOnly, inFlightRunIds);
   const work: Promise<void>[] = [];

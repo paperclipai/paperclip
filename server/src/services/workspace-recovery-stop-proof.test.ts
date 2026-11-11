@@ -16,7 +16,7 @@ import { prepareSandboxStopAndRetain, settleStopOnlyCleanup } from "./sandbox-st
 import { nextWorkspaceRecoveryAt } from "./system-recovery.js";
 import { RETAINED_SOURCE_FALLBACK_OUTCOME } from "./workspace-recovery-fallback.js";
 import { readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
-import { reconcileRetainedWorkspaces, recoverRetainedWorkspace, retainedWorkspaceCandidates } from "./workspace-recovery.js";
+import { reconcileRetainedWorkspaces, recoverRetainedWorkspace, retainedWorkspaceCandidates, type PassiveSweep } from "./workspace-recovery.js";
 import { acceptedRemoteExport, action, connectionString, db, run, seed, useWorkspaceRecoveryFixture } from "./__tests__/workspace-recovery-fixture.js";
 
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
@@ -298,6 +298,7 @@ describe("exhausted stop-proof holds", () => {
 
   async function waitingSettledHold(id: string) {
     const f = await seed("native", true);
+    settledRuns.set(id, f.runId);
     await adoptSystemRecovery(db, f);
     const prior = await action(f.actionId);
     const system = readSystemRecovery(prior.evidence)!;
@@ -311,7 +312,32 @@ describe("exhausted stop-proof holds", () => {
     await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: source.agentId, source: "on_demand",
       reason: "issue_commented", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "board",
       payload: { issueId: f.issueId } });
+    return f;
   }
+
+  const settledRuns = new Map<string, string>();
+
+  it("restarts a finished passive pass when a change adds work both before and after its cursor", async () => {
+    const first = await waitingSettledHold("00000002-0000-4000-8000-000000000000");
+    await waitingSettledHold("00000003-0000-4000-8000-000000000000");
+    const visited: string[] = [];
+    const onRecovered = async (source: { id: string }) => { visited.push(source.id); };
+    const sweep: PassiveSweep = {};
+    for (let pass = 0; pass < 4 && !sweep.complete; pass += 1)
+      await Promise.all(await reconcileRetainedWorkspaces(db, first.environmentRuntime, onRecovered, true, undefined, sweep) ?? []);
+    expect(sweep.complete).toBe(true);
+    await waitingSettledHold("00000001-0000-4000-8000-000000000000");
+    const f = await exhaustedStopProofHold();
+    await db.update(issueRecoveryActions).set({ id: "ffffffff-0000-4000-8000-000000000000" }).where(eq(issueRecoveryActions.id, f.actionId));
+    sweep.restart = true;
+    visited.length = 0;
+    await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, onRecovered, true, undefined, sweep) ?? []);
+    expect(sweep).toMatchObject({ complete: false, restart: true });
+    for (let pass = 0; pass < 6 && !(sweep.complete && !sweep.restart && visited.includes(settledRuns.get("00000001-0000-4000-8000-000000000000")!)); pass += 1)
+      await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, onRecovered, true, undefined, sweep) ?? []);
+    expect(visited).toContain(settledRuns.get("00000001-0000-4000-8000-000000000000"));
+    expect((await action("ffffffff-0000-4000-8000-000000000000")).evidence.stopProofRecovery).toMatchObject({ rearms: 1 });
+  }, 60_000);
 
   it("re-arms the hold on a busy instance whose passive sweep keeps selecting earlier settled holds", async () => {
     for (const prefix of ["00000001", "00000002", "00000003", "00000004", "00000005", "00000006"])
