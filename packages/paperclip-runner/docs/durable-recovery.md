@@ -243,6 +243,15 @@ runner refused), and its acknowledgement names the runner's journal status
 runners accept only `indeterminate` and otherwise exit with "terminal command
 result acknowledgement changed its durable identity".
 
+That runner exits before it accepts any command of the new attempt. During
+startup, the controller restarts it in place once, so the attempt continues.
+It does this only when the runner's durable journal proves the exit: its last
+command is exactly the suspend that an earlier attempt journaled, the
+controller has settled that suspend, the runner rests `suspended` with no
+terminal or provider cleanup fence, and no command of this attempt has a
+result. The runner file is read only after such an exit. Any other exit keeps
+its earlier failure.
+
 A kill during that attachment's provider launch can also leave a `spawned`
 startup fence over a `prepared` state that holds a saved thread. The next runner
 retires that fence once the recorded provider process and its group have exited,

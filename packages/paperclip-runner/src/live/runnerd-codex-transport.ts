@@ -119,6 +119,8 @@ const RUNNER_CLIENT_VERSION = "0.3.0";
 const RUNNER_BOOTSTRAP_TICKET_TTL_MS = 60_000;
 const RUNNER_RESTORE_STABLE_MS = 60_000;
 const MAX_UNSTABLE_RUNNER_RESTORES = 3;
+// Bounds the one in-place restart after a runner settles an earlier attempt's suspend.
+const CARRIED_SUSPEND_RESTART_GRACE_MS = 30_000;
 const RUNNERD_MAX_OUTBOX_BYTES = 16 * 1024 * 1024;
 const RUNNERD_P0_RESERVE_BYTES = 1024 * 1024;
 
@@ -4052,6 +4054,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   readonly #failureSignal: Promise<never>;
   #rejectFailureSignal!: (error: Error) => void;
   #runnerRecoveryInProgress = false;
+  /** Controller commands journaled before this attempt queued any. */
+  #carriedCommandCount: number | null = null;
+  /** Each runner exit's carried-suspend classification, read once after exit. */
+  readonly #carriedSuspendExits = new WeakMap<RunnerProcessHandle, Promise<boolean>>();
+  #carriedSuspendRestartUsed = false;
   #lastRunnerRestoreAt: number | null = null;
   #unstableRunnerRestores = 0;
   #startupComplete = false;
@@ -6081,6 +6088,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       connectionLeaseTtlMs: 60 * 60 * 1_000,
     });
     this.#core = core;
+    this.#carriedCommandCount = core.store.state.commands.length;
     // Externally launched runners own their state directory (for example in a
     // Daytona sandbox). Do not create an empty controller-side placeholder:
     // prior-run authority checks must be able to distinguish absent remote
@@ -6655,6 +6663,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       connectionLeaseTtlMs: 60 * 60 * 1_000,
     });
     this.#core = core;
+    this.#carriedCommandCount = core.store.state.commands.length;
     // Reusing resources still requires current environment authorization. The
     // optional hook avoids re-preparation after controller storage is lost.
     // Existing consumers retain the preparation callback's authorization path.
@@ -8402,8 +8411,16 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
   async #runnerHasExited(): Promise<boolean> {
     // A runnerd killed by a signal reports exitCode null and its signalCode.
-    if (this.#handle) return this.#handle.isExitConfirmed?.()
-      ?? (this.#handle.child.exitCode !== null || (this.#handle.child.signalCode ?? null) !== null);
+    if (this.#handle) {
+      const handle = this.#handle;
+      const exited = handle.isExitConfirmed?.()
+        ?? (handle.child.exitCode !== null || (handle.child.signalCode ?? null) !== null);
+      // A runner that only settled a suspend left by an earlier attempt is
+      // being restarted in place; startup keeps waiting for its replacement.
+      if (exited && !this.#startupComplete && await this.#carriedSuspendExits.get(handle))
+        return this.#closed || this.#failure !== null;
+      return exited;
+    }
     const adoptedRunner = this.options.adoptExistingRunner;
     if (!adoptedRunner) return true;
     return !(await adoptedRunner.isAlive());
@@ -8481,8 +8498,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   #watchRunner(handle: RunnerProcessHandle): void {
+    const carriedSuspendExit = handle.completion.then(
+      (result) => this.#settledOnlyCarriedSuspend(handle, result.code),
+      () => false,
+    );
+    this.#carriedSuspendExits.set(handle, carriedSuspendExit);
     void handle.completion.then(
-      (result) => {
+      async (result) => {
         const exitConfirmed = handle.isExitConfirmed?.() ?? true;
         this.#evidence.runnerExited = exitConfirmed;
         this.#evidence.runnerExitCode = result.code;
@@ -8498,6 +8520,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.#lostRunnerHandle = handle;
         if (this.#closed || this.#failure !== null || this.#handle !== handle || (this.#releaseEpisode && !this.#releaseEpisode.claimed))
           return;
+        if (await carriedSuspendExit) {
+          if (this.#closed || this.#failure !== null || this.#handle !== handle) return;
+          this.#carriedSuspendRestartUsed = true;
+          this.#diagnostic("runner settled a suspend left by an earlier attempt and exited; restarting it in place");
+          void this.#recoverRunnerProcess(handle, detail, CARRIED_SUSPEND_RESTART_GRACE_MS);
+          return;
+        }
+        if (this.#closed || this.#failure !== null || this.#handle !== handle) return;
         // A per-turn runner exits after its terminal suffix is durably ACKed.
         // Drain that suffix into the provider-facing queue before classifying
         // process completion; clean terminal exit is the expected lifecycle.
@@ -8567,6 +8597,37 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     );
   }
 
+  /**
+   * A freeze or restart during `runner.suspend` leaves that command pending in
+   * the controller journal. The next attempt's runner settles it from the
+   * welcome and exits as suspended before it accepts this attempt's work. Only
+   * that exit is restarted in place, once, and only when the durable runner
+   * journal proves it: the runner's last command is exactly that earlier
+   * suspend, settled by the controller, and the runner rests suspended with no
+   * fence. It then executed nothing this attempt queued, so no turn started and
+   * no provider work can repeat. The runner file is read only after an exit.
+   */
+  async #settledOnlyCarriedSuspend(handle: RunnerProcessHandle, code: number | null): Promise<boolean> {
+    const core = this.#core;
+    const carried = this.#carriedCommandCount;
+    if (code !== 0 || handle.isExitConfirmed?.() === false || !handle.restart || core === null || carried === null
+      || this.#carriedSuspendRestartUsed || this.#startupComplete || this.#closed || this.#failure !== null
+      || this.options.adoptExistingRunner || this.options.runnerProcessLauncher || this.options.readRunnerState
+      || this.options.runnerStateDirectory !== undefined) return false;
+    let state: Record<string, unknown>;
+    try {
+      state = await this.#readDurableRunnerState();
+    } catch {
+      return false;
+    }
+    return carriedSuspendSettlementProven({
+      runnerState: state,
+      identity: core.store.state.identity,
+      commands: core.store.state.commands,
+      carriedCommandCount: carried,
+    });
+  }
+
   #recoverOrFailRunnerProcess(handle: RunnerProcessHandle, detail: string): void {
     this.#unstableRunnerRestores = unstableRunnerRestoreCount(
       this.#unstableRunnerRestores,
@@ -8587,6 +8648,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   async #recoverRunnerProcess(
     failedHandle: RunnerProcessHandle,
     initialDetail: string,
+    graceOverrideMs?: number,
   ): Promise<void> {
     if (
       this.#runnerRecoveryInProgress ||
@@ -8598,7 +8660,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     )
       return;
     this.#runnerRecoveryInProgress = true;
-    const graceMs = this.options.runnerReconnectGraceMs ?? 0;
+    const graceMs = graceOverrideMs ?? this.options.runnerReconnectGraceMs ?? 0;
     const deadline = Date.now() + graceMs;
     const delays = [250, 500, 1_000, 2_000, 5_000] as const;
     let attempt = 0;
@@ -9118,7 +9180,33 @@ function unstableRunnerRestoreCount(previous: number, restoredAt: number | null,
   return restoredAt !== null && now - restoredAt < RUNNER_RESTORE_STABLE_MS ? previous + 1 : 0;
 }
 
+/** The durable proof that a runner's clean exit only settled a suspend that an
+ * earlier attempt journaled: its last command is exactly that suspend, which
+ * the controller has settled; it rests suspended with no fence; and nothing
+ * this attempt queued has a result, so no turn or provider work ran. */
+function carriedSuspendSettlementProven(input: {
+  runnerState: Record<string, unknown>;
+  identity: DurableRecoveryIdentity;
+  commands: readonly { commandId: string; controllerSeq: number; type: string; status: string }[];
+  carriedCommandCount: number;
+}): boolean {
+  const { runnerState: state, commands, carriedCommandCount: carried } = input;
+  const seq = state.lastControllerCommandSeq;
+  if (state.schema !== "paperclip.runner.durable.state.v1"
+    || !recoveryIdentityMatches(state, input.identity)
+    || state.lifecycle !== "suspended" || state.pendingTerminalDelivery != null
+    || state.pendingProviderCleanup != null || state.warmTransition != null
+    || typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1 || seq > carried) return false;
+  const suspend = commands.find((command) => command.controllerSeq === seq);
+  if (suspend?.type !== "runner.suspend" || suspend.status === "pending") return false;
+  if (commands.some((command) => command.controllerSeq > carried && command.status !== "pending")) return false;
+  const processed = record(record(state.processedCommands)[suspend.commandId]);
+  return processed.commandId === suspend.commandId && processed.commandType === "runner.suspend"
+    && processed.controllerSeq === seq && processed.status !== "pending";
+}
+
 export const runnerdRecoveryInternals = Object.freeze({
+  carriedSuspendSettlementProven,
   unstableRunnerRestoreCount,
   projectCopilotRunGrant,
   completedMaintenanceTerminalReceipt,
