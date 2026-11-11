@@ -1,5 +1,5 @@
 import { settleOwnableKind } from "../recovery/ownership-invariant-report.js";
-import { markRunHandedOffForShutdown } from "./shutdown-handoff.js";
+import { isRunHandedOffForShutdown, markRunHandedOffForShutdown } from "./shutdown-handoff.js";
 import { ORPHANED_RUN_LEASE_FAILURE_REASON } from "../environment-run-lease-settlement.js";
 import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../environment-lease-controller.js";
 import { readNativeStartupCleanup, readNativeStartupContext } from "../native-runtime/native-startup-cleanup.js";
@@ -1009,6 +1009,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         },
         db,
         liveRunExecutions: activeRunExecutions,
+        handedOffForShutdown: isRunHandedOffForShutdown,
         runIds,
         restartKind,
         recoveryRequestId: intent?.recoveryRequestId ?? null,
