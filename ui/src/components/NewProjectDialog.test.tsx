@@ -175,6 +175,21 @@ describe("project environment selection", () => {
     expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
   });
 
+  it("uses the only remaining storage when a refresh removes the chosen one", async () => {
+    vi.mocked(projectsApi.environmentOptions).mockResolvedValueOnce({ groups, defaultEnvironmentId: "sandbox", error: null })
+      .mockResolvedValue({ groups: [groups[0]], defaultEnvironmentId: "ssh", error: null });
+    const client = await renderForm();
+    const select = container.querySelector<HTMLSelectElement>("select")!;
+    act(() => { select.value = "computer"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => { await client.refetchQueries({ queryKey: queryKeys.projects.environments("company-1") }); });
+    await settle();
+    expect(container.querySelector("select")).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
+    act(() => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    await settle();
+    expect(projectsApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ environmentId: "ssh", expectedStorageProviderPluginId: null }));
+  });
+
   it("does not silently substitute storage when the default is unavailable", async () => {
     vi.mocked(projectsApi.environmentOptions).mockResolvedValue({ groups, defaultEnvironmentId: null, error: "Default is unavailable" });
     await renderForm();

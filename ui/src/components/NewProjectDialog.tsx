@@ -34,8 +34,10 @@ export function NewProjectForm({ companyId, onClose }: { companyId: string; onCl
   const environments = useQuery({ queryKey: queryKeys.projects.environments(companyId), queryFn: () => projectsApi.environmentOptions(companyId), gcTime: 0 });
   const environmentView = useQueryView(environments);
   const options = environmentView.data;
-  const environmentId = selectedEnvironmentId ?? options?.defaultEnvironmentId;
-  const selectedGroup = options?.groups.find(group => group.environments.some(environment => environment.id === environmentId));
+  const groupOf = (id: string | null | undefined) => options?.groups.find(group => group.environments.some(environment => environment.id === id));
+  const onlyGroupRemains = options?.groups.length === 1 && Boolean(selectedEnvironmentId) && !groupOf(selectedEnvironmentId);
+  const environmentId = onlyGroupRemains ? options?.defaultEnvironmentId : selectedEnvironmentId ?? options?.defaultEnvironmentId;
+  const selectedGroup = groupOf(environmentId);
   const environmentReady = Boolean(environmentView.kind !== "error" && options && (!options.error || selectedGroup) && (!options.groups.length || selectedGroup));
 
   const create = useMutation({
