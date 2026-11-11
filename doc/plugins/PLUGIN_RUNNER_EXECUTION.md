@@ -218,6 +218,26 @@ Legacy intents without a recovery hint retain their deterministic ID. A hinted
 intent without a recorded ID is ambiguous and fails closed. None of these
 receipts replaces the provider's checks.
 
+A reservation is a workspace whose `prepare` never returned a binding. When its
+source task is done or cancelled, no task points at it, and no run for the task
+is queued or running, Core archives it and sends `remove` with `binding: null`
+and `expectedHeadSha: null` instead of reconciling it with an agent-free
+`prepare`. The provider must resolve its own record for that execution
+workspace, discard anything the unfinished preparation created, and return
+`{ kind: "removed" }`, including when nothing was created. The removal is
+persisted and replayed with the same operation ID like any other removal. A
+provider that refuses it fails the removal, which backs off like any other
+cleanup failure. A reservation that a task still points at, or whose task is
+open, keeps the `prepare` reconciliation.
+
+When terminal cleanup inspection or removal fails, Core records
+`metadata.terminalCleanupRetry` on the workspace with the failure count, the
+next attempt time, and the failure `kind`, `reason`, and Core's message. Retries
+back off from 5 minutes, doubling up to 4 hours. A successful inspection or
+removal clears the record, and a reopen, which raises the lifecycle generation,
+discards it. Other wakes, including provider upgrades, wait for the next attempt
+time. Core keeps the record through workspace metadata updates.
+
 The optional `prepared.destinationRef` records the resolved delivery branch as
 `refs/heads/<branch>`, up to 266 characters including the prefix. Providers should
 return null when preparation cannot establish an unambiguous branch destination
@@ -323,6 +343,17 @@ it is not reused by the new session. A failed handoff, failed file collection,
 unsettled Core tool result, other close error, or continuation of the same
 session still blocks replacement.
 A controller restart is not required for this stopped-owner reset path.
+
+Core ends a dispatched task lease with `stop`, `status`, and `complete`. When
+that sequence confirms the stop and completes the same task, Core does not also
+call `onEnvironmentReleaseLease`. Core still calls it when the release did not
+complete a dispatched task, and the cleanup retry calls it after any failure.
+When `onEnvironmentResumeLease` returns no provider lease, Core sends `status`
+first. It sends `stop` only when that `status` does not report
+`executionStopped: true` and any required `preparationStopped: true` proof.
+An old warm-start preparation marker does not force a repeated stop when both
+proofs are present. A driver must release task-scoped resources in its
+`status` or `complete` handling, not only in `onEnvironmentReleaseLease`.
 
 Termination receipts cover all run leases that owned the retired physical task.
 A stopped task gets a new provider task ID for checkpoint resumption. Inspection

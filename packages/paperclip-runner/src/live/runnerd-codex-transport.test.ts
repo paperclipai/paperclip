@@ -4,7 +4,7 @@ import {
   runnerLaunchRequirementsDigest,
   type RunnerProviderLaunchRequirements,
 } from "./runner-provider-launch.js";
-import { coldAdmissionTimeoutMs, waitForRunnerCommand } from "./runnerd-codex-transport.js";
+import { coldAdmissionTimeoutMs, RUNNER_MAX_STOPPED_CREDIT_MS, RUNNER_POST_STOP_GRACE_MS, RunnerStallLedger, waitForRunnerCommand } from "./runnerd-codex-transport.js";
 import { configuredEnvironmentProjection } from "../configured-environment.js";
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -69,6 +69,7 @@ import {
   resolveRunnerdCodexSkillInputs,
   withCodexCollaborationRuntimeInstructions,
   controllerAcceptedTurnStartId,
+  committedEventWindowComplete,
 } from "./runnerd-codex-transport.js";
 import {
   defaultCapabilityRunnerdBinary,
@@ -77,6 +78,18 @@ import {
   fakeCodexArgs,
   assignedRuntimeContext,
 } from "../../test/support/runnerd-transport.js";
+
+describe("committedEventWindowComplete", () => {
+  const events = (...seqs: number[]) => seqs.map(sourceSeq => ({ sourceSeq }));
+  it("is complete only when every acknowledged event from the first one is retained", () => {
+    expect(committedEventWindowComplete({ committedEvents: events(1, 2, 3), ackedSourceSeq: 3 })).toBe(true);
+    expect(committedEventWindowComplete({ committedEvents: [], ackedSourceSeq: 0 })).toBe(true);
+    expect(committedEventWindowComplete({ committedEvents: events(1, 3, 4), ackedSourceSeq: 4 })).toBe(false);
+    expect(committedEventWindowComplete({ committedEvents: events(2, 3), ackedSourceSeq: 3 })).toBe(false);
+    expect(committedEventWindowComplete({ committedEvents: events(1, 2, 2), ackedSourceSeq: 3 })).toBe(false);
+    expect(committedEventWindowComplete(undefined)).toBe(false);
+  });
+});
 
 describe("controllerAcceptedTurnStartId", () => {
   // Shapes copied from the RC-59 durable controller journal.
@@ -102,6 +115,36 @@ describe("controllerAcceptedTurnStartId", () => {
     ["a later pending turn.start", [attach, start(), start({ controllerSeq: 5, status: "pending", payload: { turnId: "turn_lab_2" }, result: undefined })]],
   ])("returns null for %s", (_label, commands) => {
     expect(controllerAcceptedTurnStartId(commands)).toBeNull();
+  });
+
+  // Codex assigns its own provider turn id; only ACPX echoes the requested one.
+  it("accepts a Codex result whose provider turn id differs from the requested id while that turn is the runner's live turn", () => {
+    const codex = start({ result: { result: { providerTurnId: "019a-provider-turn", status: "accepted" } } });
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: false, runnerActiveTurnId: "019a-provider-turn" })).toBe("019a-provider-turn");
+    // A turn the restored runner reports lost (no live turn) is left to the restart continuation.
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: false, runnerActiveTurnId: null })).toBeNull();
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: false, runnerActiveTurnId: "another" })).toBeNull();
+    expect(controllerAcceptedTurnStartId([attach, codex], { requireRequestedIdentity: true })).toBeNull();
+  });
+
+  // A restart landed right after turn.start: the runner journaled it, died, and
+  // settled it as execution_indeterminate; its restored session reconciled the
+  // ambiguous start to the provider's live replacement turn (t77).
+  const indeterminate = start({ status: "failed", result: { commandType: "turn.start", controllerSeq: 4, status: "failed",
+    result: { code: "execution_indeterminate", message: "runner recovered after journaling this command; it will not execute twice" } } });
+
+  it("names the runner's reconciled active turn for an indeterminate turn.start", () => {
+    expect(controllerAcceptedTurnStartId([attach, indeterminate], {
+      requireRequestedIdentity: false, runnerActiveTurnId: "019a-provider-turn" })).toBe("019a-provider-turn");
+  });
+
+  it.each([
+    ["no reconciled active turn", [attach, indeterminate], null, false],
+    ["an ordinary failed turn.start", [attach, start({ status: "failed", result: { result: { code: "provider_turn_failed" } } })], "019a-provider-turn", false],
+    ["a later run attachment", [{ ...indeterminate, controllerSeq: 1 }, { ...attach, controllerSeq: 2 }], "019a-provider-turn", false],
+    ["an ACPX turn other than the requested one", [attach, indeterminate], "turn_lab_other", true],
+  ] as const)("fails closed on an indeterminate start with %s", (_label, commands, active, requireRequestedIdentity) => {
+    expect(controllerAcceptedTurnStartId([...commands], { requireRequestedIdentity, runnerActiveTurnId: active })).toBeNull();
   });
 });
 
@@ -494,6 +537,67 @@ it("retries a replacement whose staging failed before any process launched", asy
     await rm(directory, { recursive: true, force: true });
   }
 }, 15_000);
+
+it("fails instead of relaunching a runner that keeps exiting right after it is restored", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-restore-crash-loop-"));
+  const crash = "paperclip-runnerd: redacted display activity exceeds its schema bounds";
+  const children: ReturnType<typeof spawn>[] = [];
+  const exits: Promise<void>[] = [];
+  const launch = vi.fn((spec: durableControlPlane.RunnerProcessLaunchSpec) => {
+    const child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore" });
+    children.push(child);
+    exits.push(new Promise(resolveExit => child.once("exit", () => resolveExit())));
+    return {
+      child,
+      completion: new Promise<durableControlPlane.RunnerProcessResult>((resolveExit, rejectExit) => {
+        child.once("error", rejectExit);
+        child.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr: crash }));
+      }),
+      isExitConfirmed: () => child.exitCode !== null || child.signalCode !== null,
+    };
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(directory), stateDirectory: directory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    runnerReconnectGraceMs: 5_000, runnerProcessLauncher: launch,
+  });
+  const restored = () => bundle.evidence().diagnostics
+    .filter(line => line === "runner process restored its durable PRP session").length;
+  try {
+    await bundle.transport.request("thread/start", { cwd: directory });
+    children[0]!.kill("SIGKILL");
+    for (let restore = 1; restore <= 3; restore += 1) {
+      await vi.waitFor(() => expect(restored()).toBe(restore), { timeout: 4_000 });
+      children[restore]!.kill("SIGKILL");
+    }
+    await vi.waitFor(
+      () => expect(bundle.evidence().diagnostics).toContain(
+        `native_runner_process_exited: runnerd exited 3 times within 60000ms of being restored: ${crash}`,
+      ),
+      { timeout: 4_000 },
+    );
+    await new Promise(resolveWait => setTimeout(resolveWait, 500));
+    expect(launch).toHaveBeenCalledTimes(4);
+    expect(restored()).toBe(3);
+  } finally {
+    const providerPid = bundle.evidence().codexPid;
+    if (providerPid) { try { process.kill(providerPid, "SIGKILL"); } catch {} }
+    await bundle.transport.detachControllerForRestart!();
+    for (const child of children) child.kill("SIGKILL");
+    await Promise.all(exits);
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 20_000);
+
+it("counts only runner exits that follow a restore within the stable window", () => {
+  const count = runnerdRecoveryInternals.unstableRunnerRestoreCount;
+  expect(count(0, null, 1_000)).toBe(0);
+  expect(count(0, 1_000, 1_000)).toBe(1);
+  expect(count(2, 1_000, 60_999)).toBe(3);
+  expect(count(2, 1_000, 61_000)).toBe(0);
+  expect(count(5, null, 1_000)).toBe(0);
+});
 
 it.each(["alive", "pending_liveness", "pending_registration"] as const)(
   "bounds adopted runner authentication at its exact deadline with %s evidence",
@@ -976,6 +1080,32 @@ it("replays the durable run attachment outcome and latest provider identity", ()
   });
 });
 
+it("re-issues only this run's own cut-off attachment before any provider work", () => {
+  const unknown = { status: "failed", result: { result: { code: "execution_indeterminate" } } };
+  const attach = { type: "run.attach", controllerSeq: 1, payload: { provider: { kind: "codex" } }, ...unknown };
+  const state = (overrides: Record<string, unknown> = {}, later: Record<string, unknown>[] = [], events: string[] = []) => ({
+    commands: [{ ...attach, ...overrides }, ...later.map((command, index) => ({ controllerSeq: index + 2, payload: {}, status: "completed", ...command }))],
+    committedEvents: events.map(eventType => ({ eventType })),
+  }) as never;
+  const reissue = runnerdRecoveryInternals.cutOffRunAttachmentPayload;
+  expect(reissue(state())).toEqual(attach.payload);
+  expect(reissue(state({ status: "indeterminate", result: null }))).toEqual(attach.payload);
+  expect(reissue(state({}, [{ type: "runner.drain", status: "failed" }, { type: "runner.suspend" }, { type: "session.goal.get" },
+    { type: "turn.stop" }, { type: "session.snapshot" }], ["runner.reconciled", "session.resumed"]))).toEqual(attach.payload);
+  // A definite answer, a pending command, or a warm or staged attachment keeps its own path.
+  expect(reissue(state({ status: "completed", result: { status: "completed" } }))).toBeNull();
+  expect(reissue(state({ status: "failed", result: { result: { code: "command_execution_failed" } } }))).toBeNull();
+  expect(reissue(state({ status: "pending", result: null }))).toBeNull();
+  expect(reissue(state({ payload: { paperclipNextAuthority: {} } }))).toBeNull();
+  expect(reissue({ ...(state() as object), warmTransition: {} } as never)).toBeNull();
+  expect(reissue({ ...(state() as object), stagedRunAttachment: {} } as never)).toBeNull();
+  // Any provider work after it means the run moved on.
+  for (const type of ["turn.start", "turn.steer", "request.resolve", "semantic_tool.result", "session.goal.set", "run.attach"]) {
+    expect(reissue(state({}, [{ type }]))).toBeNull();
+  }
+  expect(reissue(state({}, [], ["turn.started"]))).toBeNull();
+});
+
 it("identifies an active provider turn that must stop before suspension", () => {
   expect(
     runnerdRecoveryInternals.providerDrainStateFromSnapshot({
@@ -1226,7 +1356,8 @@ it.each([false, true])("uses the same API result envelope and fences handler pub
   try {
     await bundle.transport.request("thread/start", { cwd: tmpdir() });
     const call = { callId: "recovered-api", operationId: "call_api", input: { operationId: "POST /api/example" },
-      sourceEventId: "saved-event", sourceEventType: "semantic_tool.input", correlation: core.store.state.identity };
+      sourceEventId: "saved-event", sourceEventType: "semantic_tool.input", correlation: core.store.state.identity,
+      admission: "earlier_controller" as const };
     if (changedOwner) {
       owner = core.store.state.identity.runId;
       const pending = callbacks.onSemanticToolInput!(call);
@@ -1252,6 +1383,162 @@ it.each([false, true])("uses the same API result envelope and fences handler pub
     await rm(stateDirectory, { recursive: true, force: true });
   }
 }, 20_000);
+
+it.each([false, true])("refuses a terminal call decided before earlier results were seen (seen: %s)", async seen => {
+  // Restart chaos t03: Codex called write_document, the controller was held,
+  // and Codex re-sampled the model until it called paperclip_block. After the
+  // reattach the Runner delivered the backlog in order: write_document ran and
+  // returned, then the stale block arrived before Codex had seen that result.
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-stale-terminal-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let callbacks!: ConstructorParameters<typeof OriginalCore>[0];
+  let core!: DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    callbacks = options;
+    return core = new OriginalCore(options);
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+  });
+  const handler = vi.fn(async () => ({ success: true, contentItems: [{ type: "inputText" as const, text: "{\"blocked\":true}" }] }));
+  bundle.transport.setServerRequestHandler(handler);
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir() });
+    const identity = core.store.state.identity;
+    let seq = 9000;
+    const commit = (eventType: string, payload: Record<string, unknown>) => {
+      seq += 1;
+      core.store.state.committedEvents.push({ sourceSeq: seq, sourceEventId: `stale-terminal-${seq}`, eventType, priority: 1,
+        envelope: { payload: { eventType, turnId: identity.turnId, payload } }, deliveryCount: 1, logicalEffectCount: 1 });
+      return `stale-terminal-${seq}`;
+    };
+    const write = { executionId: "exec-write", transport: "dynamic", name: "write_document" };
+    commit("tool.execution.started", { ...write, status: "running" });
+    // Paperclip's result, recorded as the controller records it for the Runner.
+    core.queueCommand("semantic_tool.result", { callId: "exec-write", operationId: "write_document",
+      inputDigest: "sha256:write", result: { created: true }, isError: false }, "command_tool_stale_terminal_write", true);
+    if (seen) commit("tool.execution.completed", { ...write, status: "completed" });
+    // The terminal call's own event bounds the history (in production its
+    // semantic_tool.input event; any later event works the same way).
+    const sourceEventId = commit("tool.execution.started", { executionId: "exec-block", transport: "dynamic", name: "paperclip_block", status: "running" });
+    const blockInput = { summary: "Paperclip has not returned the save" };
+    const outcome = await callbacks.onSemanticToolInput!({ callId: "block-call", operationId: "paperclip_block",
+      input: blockInput, sourceEventId, sourceEventType: "semantic_tool.input", correlation: identity });
+    if (seen) {
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(outcome.isError).not.toBe(true);
+    } else {
+      expect(handler).not.toHaveBeenCalled();
+      expect(outcome).toMatchObject({ isError: true, result: { error: { code: "terminal_call_before_results", retryable: true } } });
+      expect(JSON.stringify(outcome.result)).toContain("write_document");
+    }
+  } finally {
+    coreSpy.mockRestore();
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 20_000);
+
+it("refuses a terminal call that arrives before a held call's result (restart chaos t05)", async () => {
+  // Restart chaos t05: Codex called write_document during a K4 hold, then
+  // re-sampled until it called paperclip_block. After the reattach the
+  // controller recovered the held write while the Runner delivered the block,
+  // and the block arrived a few milliseconds before the write's result.
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-held-terminal-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let callbacks!: ConstructorParameters<typeof OriginalCore>[0];
+  let core!: DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    callbacks = options;
+    return core = new OriginalCore(options);
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory,
+  });
+  const handler = vi.fn(async () => ({ success: true, contentItems: [{ type: "inputText" as const, text: "{\"blocked\":true}" }] }));
+  bundle.transport.setServerRequestHandler(handler);
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir() });
+    const identity = core.store.state.identity;
+    let seq = 9100;
+    const commit = (eventType: string, payload: Record<string, unknown>) => {
+      seq += 1;
+      core.store.state.committedEvents.push({ sourceSeq: seq, sourceEventId: `held-terminal-${seq}`, eventType, priority: 1,
+        envelope: { payload: { eventType, turnId: identity.turnId, payload } }, deliveryCount: 1, logicalEffectCount: 1 });
+      return `held-terminal-${seq}`;
+    };
+    commit("tool.execution.started", { executionId: "exec-held-write", transport: "dynamic", name: "write_document", status: "running" });
+    const sourceEventId = commit("tool.execution.started", { executionId: "exec-held-block", transport: "dynamic", name: "paperclip_block", status: "running" });
+    // The recovered write returns just after the block reaches the transport.
+    setTimeout(() => core.queueCommand("semantic_tool.result", { callId: "exec-held-write", operationId: "write_document",
+      inputDigest: "sha256:write", result: { created: false }, isError: false }, "command_tool_held_terminal_write", true), 100);
+    const outcome = await callbacks.onSemanticToolInput!({ callId: "held-block-call", operationId: "paperclip_block",
+      input: { summary: "Paperclip has not confirmed the save" }, sourceEventId, sourceEventType: "semantic_tool.input", correlation: identity });
+    expect(handler).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({ isError: true, result: { error: { code: "terminal_call_before_results", retryable: true } } });
+    expect(JSON.stringify(outcome.result)).toContain("Those calls have now returned");
+  } finally {
+    coreSpy.mockRestore();
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 20_000);
+
+it("answers a held call before starting the next turn (restart chaos t101)", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-held-before-turn-"));
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  let core!: DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane").mockImplementation(function (options) {
+    return core = new OriginalCore(options);
+  });
+  const order: string[] = [];
+  const recovered = vi.fn(async (call: { callId: string }) => {
+    order.push(`recover:${call.callId}`);
+    await new Promise<void>((resolveRead) => setTimeout(resolveRead, 300));
+    return { result: { success: true, contentItems: [{ type: "inputText", text: "brief body" }] } };
+  });
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory), stateDirectory, recoverSemanticToolInput: recovered,
+  });
+  bundle.transport.setServerRequestHandler(vi.fn(async () => ({ success: true, contentItems: [] })));
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: codexSemanticToolSpecs() });
+    const identity = core.store.state.identity;
+    const correlation = { runId: identity.runId, normalizedSessionId: identity.normalizedSessionId,
+      turnId: identity.turnId, itemId: identity.itemId };
+    core.store.state.committedEvents.unshift({ sourceSeq: 0, sourceEventId: "held-read-input", eventType: "semantic_tool.input",
+      priority: 1, deliveryCount: 1, logicalEffectCount: 1, envelope: { payload: { runId: identity.runId,
+        normalizedSessionId: identity.normalizedSessionId, sourceEventId: "held-read-input", eventType: "semantic_tool.input",
+        itemId: identity.itemId, payload: { semantic_tool: { callId: "exec-held-read", operationId: "read_document",
+          input: { key: "brief" }, correlation } } } } });
+    expect(core.semanticToolResultsSettled()).toBe(false);
+    const queueCommand = core.queueCommand.bind(core);
+    vi.spyOn(core, "queueCommand").mockImplementation((type, ...rest) => {
+      order.push(type);
+      return queueCommand(type, ...rest);
+    });
+    const startupPass = core.recoverPendingSemanticInputs();
+    await vi.waitFor(() => expect(recovered).toHaveBeenCalledOnce());
+    const turnStarted = expectTurnStarted(bundle.transport.notifications()[Symbol.asyncIterator]());
+    void turnStarted.catch(() => undefined);
+    await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Continue after the restart." }] });
+    await turnStarted;
+    await startupPass;
+    expect(recovered).toHaveBeenCalledOnce();
+    expect(order.slice(0, 2)).toEqual(["recover:exec-held-read", "semantic_tool.result"]);
+    expect(order.indexOf("semantic_tool.result")).toBeLessThan(order.indexOf("turn.start"));
+    const result = core.store.state.commands.find(command => command.type === "semantic_tool.result");
+    expect(result).toMatchObject({ payload: { callId: "exec-held-read", operationId: "read_document" } });
+    expect(result!.status).not.toBe("pending");
+  } finally {
+    coreSpy.mockRestore();
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 30_000);
 
 it.each(["after_budget", "within_budget", "interrupted_within_budget", "persistence_failure"] as const)(
   "fences reusable suspension against late semantic completion (%s)",
@@ -5829,13 +6116,34 @@ it("surfaces a runner exit while provider-ingress readiness is still pending", a
   }
 });
 
-it("rejects the notification stream promptly when runnerd exits after accepting a turn", async () => {
+function processAlive(pid: number | null | undefined): boolean {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  // An exited child of this test process stays a zombie until reaped.
+  try {
+    return !execFileSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" }).trim().startsWith("Z");
+  } catch {
+    return false;
+  }
+}
+
+it.each([
+  { journal: true },
+  // A runnerd that never journalled (an older build) proves nothing: the
+  // cleanup stays fail-closed, as before the journal existed.
+  { journal: false },
+])("stops a lost runnerd's provider and escaped tool job from its lineage journal (journal=$journal)", async ({ journal }) => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-exit-stream-"));
+  const jobPidFile = join(stateDirectory, "escaped-tool-job.pid");
   const diagnostics: string[] = [];
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
-    codexArgs: fakeCodexArgs(stateDirectory, "--linger-after-turn-start"),
+    codexArgs: fakeCodexArgs(stateDirectory, "--linger-after-turn-start", "--spawn-escaped-tool-job", jobPidFile),
     stateDirectory,
     closeGraceMs: 400,
     onDiagnostic: (message) => diagnostics.push(message),
@@ -5844,6 +6152,8 @@ it("rejects the notification stream promptly when runnerd exits after accepting 
     success: true,
     contentItems: [],
   }));
+  let jobPid: number | null = null;
+  let providerPid: number | null = null;
   try {
     await bundle.transport.request("initialize", {});
     await bundle.transport.request("thread/start", {
@@ -5867,8 +6177,23 @@ it("rejects the notification stream promptly when runnerd exits after accepting 
       .notifications()
       [Symbol.asyncIterator]();
     await expectTurnStarted(notifications);
+    await vi.waitFor(async () => {
+      jobPid = Number((await readFile(jobPidFile, "utf8")).trim());
+      expect(processAlive(jobPid)).toBe(true);
+    }, { timeout: 10_000, interval: 20 });
+    // The tool job left the provider's session; give the lineage sampler
+    // (50ms) several reads to record it, as a real tool runs far longer.
+    await new Promise((resolveWait) => setTimeout(resolveWait, 400));
     const runnerPid = bundle.evidence().runnerPid;
     expect(runnerPid).not.toBeNull();
+    const lineage = join(stateDirectory, "runner", "process-lineage");
+    const journals = (await readdir(lineage)).filter((name) => name.startsWith("lineage-"));
+    expect(journals).toHaveLength(1);
+    const recorded = JSON.parse(await readFile(join(lineage, journals[0]!), "utf8"));
+    providerPid = recorded.root[0];
+    expect(processAlive(providerPid)).toBe(true);
+    expect(recorded.members.map((member: [number, number]) => member[0])).toContain(jobPid);
+    if (!journal) await rm(lineage, { recursive: true, force: true });
     process.kill(runnerPid!, "SIGKILL");
     await expect(
       Promise.race([
@@ -5881,27 +6206,47 @@ it("rejects the notification stream promptly when runnerd exits after accepting 
         ),
       ]),
     ).rejects.toThrow("native_runner_process_exited");
-  } finally {
-    try {
+    // The fake provider exits when runnerd's stdin pipe closes; the tool job
+    // that left its session is re-parented and keeps running.
+    expect(processAlive(jobPid)).toBe(true);
+    const runnerState = () => readFile(join(stateDirectory, "runner", "runner-state.json"), "utf8")
+      .then((text) => JSON.parse(text));
+    if (journal) {
+      await bundle.transport.close();
+      expect(processAlive(providerPid)).toBe(false);
+      expect(processAlive(jobPid)).toBe(false);
+      const report = diagnostics.find((message) => message.startsWith("native_session_runner_loss_lineage "));
+      expect(JSON.parse(report!.slice("native_session_runner_loss_lineage ".length))).toMatchObject({
+        verified: true, journals: 1, remaining: [],
+      });
+      // The crash stop keeps the durable record for recovery to read, and
+      // queues no suspend that the next runnerd on this root would receive.
+      expect((await runnerState()).lifecycle).not.toBe("suspended");
+      const control = JSON.parse(await readFile(join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8"));
+      expect(control.commands.filter((command: { type: string; status: string }) =>
+        command.type === "runner.suspend" && command.status === "pending")).toEqual([]);
+    } else {
       await expect(bundle.transport.close()).rejects.toThrow(
         "runner did not durably suspend before checkpoint",
       );
-      const runnerState = JSON.parse(
-        await readFile(
-          join(stateDirectory, "runner", "runner-state.json"),
-          "utf8",
-        ),
-      );
-      expect(runnerState.lifecycle).not.toBe("suspended");
+      expect((await runnerState()).lifecycle).not.toBe("suspended");
+      const report = diagnostics.find((message) => message.startsWith("native_session_runner_loss_lineage "));
+      expect(JSON.parse(report!.slice("native_session_runner_loss_lineage ".length))).toMatchObject({
+        verified: false, reason: "journal_unavailable",
+      });
       const settlement = diagnostics.find((message) => message.startsWith("native_session_settlement_incomplete "));
-      expect(settlement).toBeDefined();
       expect(JSON.parse(settlement!.slice("native_session_settlement_incomplete ".length))).toMatchObject({
         runnerSuspended: false,
-        suspensionState: { commandStatus: "pending", runnerIdentityMatches: true },
+        suspensionState: { commandStatus: null },
       });
-    } finally {
-      await rm(stateDirectory, { recursive: true, force: true });
+      // Nothing was signalled without proof.
+      expect(processAlive(jobPid)).toBe(true);
     }
+  } finally {
+    for (const pid of [jobPid, providerPid]) {
+      if (pid && processAlive(pid)) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
+    }
+    await rm(stateDirectory, { recursive: true, force: true });
   }
 }, 30_000);
 
@@ -6356,6 +6701,129 @@ it("shares Pi's absolute cold deadline across recovery barriers and rejects a la
     status = "completed";
     await expect(wait("session.open")).rejects.toThrow("session.open timed out");
   } finally { vi.useRealTimers(); }
+});
+
+// Chaos w-20261111T011704-s9107/t01: the control plane was stopped (SIGSTOP, as in
+// a host sleep) 1 s into the resume barrier, together with the Runner it waits on.
+// On thaw, the wall clock had passed the 30 s deadline before either process could
+// act, so recovery reported "runner.drain timed out" and spent a recovery attempt.
+describe("admission waits do not count time this process was stopped", () => {
+  const pending = (clock: RunnerStallLedger | undefined, deadline: number, status: () => string, type = "runner.drain") =>
+    waitForRunnerCommand({
+      type, deadline, clock, abortOnClose: true, isClosed: () => false,
+      throwIfFailed: () => undefined, command: () => ({ status: status() }),
+      runnerHasExited: async () => false, failureCode: () => "runner_local_connect_failed",
+    });
+
+  it("completes a resume barrier that the Runner answers after a 44 s freeze", async () => {
+    vi.useFakeTimers();
+    const clock = new RunnerStallLedger();
+    const stop = clock.watch();
+    try {
+      let status = "pending";
+      const drain = pending(clock, clock.now() + 30_000, () => status);
+      await vi.advanceTimersByTimeAsync(1_000);
+      // Stopped for 44 s: the wall clock moves, but no timer of this process runs.
+      vi.setSystemTime(Date.now() + 44_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      status = "completed";
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(drain).resolves.toBeUndefined();
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it("keeps the wall-clock timeout for a wait outside an admission", async () => {
+    vi.useFakeTimers();
+    try {
+      const drain = pending(undefined, Date.now() + 30_000, () => "pending");
+      const rejection = expect(drain).rejects.toThrow("runner_local_connect_failed: PRP command runner.drain timed out");
+      await vi.advanceTimersByTimeAsync(1_000);
+      vi.setSystemTime(Date.now() + 44_000);
+      await vi.advanceTimersByTimeAsync(10);
+      await rejection;
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("still times out a barrier that the Runner never answers after a freeze", async () => {
+    vi.useFakeTimers();
+    const clock = new RunnerStallLedger();
+    const stop = clock.watch();
+    try {
+      const drain = pending(clock, clock.now() + 30_000, () => "pending");
+      const rejection = expect(drain).rejects.toThrow("runner_local_connect_failed: PRP command runner.drain timed out");
+      await vi.advanceTimersByTimeAsync(1_000);
+      vi.setSystemTime(Date.now() + 44_000);
+      // Running time reaches the deadline: 1 s before, then the rest of the
+      // 30 s budget plus the 5 s post-stop grace.
+      await vi.advanceTimersByTimeAsync(40_000);
+      await rejection;
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it("leaves the Runner time to answer after a freeze in a wait's last half second", async () => {
+    vi.useFakeTimers();
+    const clock = new RunnerStallLedger();
+    const stop = clock.watch();
+    try {
+      let status = "pending";
+      const drain = pending(clock, clock.now() + 30_000, () => status);
+      await vi.advanceTimersByTimeAsync(29_500);
+      vi.setSystemTime(Date.now() + 60_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      status = "completed";
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(drain).resolves.toBeUndefined();
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it("credits a freeze outside any poll loop to the next barrier on the same deadline", async () => {
+    vi.useFakeTimers();
+    const clock = new RunnerStallLedger();
+    const stop = clock.watch();
+    try {
+      const deadline = clock.now() + coldAdmissionTimeoutMs("acpx", "pi", true);
+      let status = "pending";
+      const prepared = pending(clock, clock.now() + 30_000, () => status, "run.prepare");
+      await vi.advanceTimersByTimeAsync(5_000);
+      status = "completed";
+      await vi.advanceTimersByTimeAsync(10);
+      await prepared;
+      // Stopped for 70 s between barriers (a checkpoint flush, a spawn): only the ticker observes it.
+      vi.setSystemTime(Date.now() + 70_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+      status = "pending";
+      const opened = pending(clock, deadline, () => status, "session.open");
+      await vi.advanceTimersByTimeAsync(20_000);
+      status = "completed";
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(opened).resolves.toBeUndefined();
+    } finally { stop(); vi.useRealTimers(); }
+  });
+
+  it("credits only stalls, so a slow but running process still reaches its deadline", () => {
+    let wall = 0;
+    const clock = new RunnerStallLedger(() => wall);
+    const deadline = clock.now() + 30_000;
+    // Every observation is 4.9 s apart on a loaded host: that is running time.
+    while (clock.now() < deadline) wall += 4_900;
+    expect(wall).toBeGreaterThanOrEqual(30_000);
+    expect(wall).toBeLessThan(35_000);
+    expect(clock.creditedMs).toBe(0);
+    // A 6 s gap is a stop: credited in full plus the post-stop grace, and only once.
+    wall += 6_000;
+    clock.now();
+    clock.now();
+    expect(clock.creditedMs).toBe(6_000 + RUNNER_POST_STOP_GRACE_MS);
+    // Total credit is capped, so a process that never runs normally still times out.
+    wall += 2 * RUNNER_MAX_STOPPED_CREDIT_MS;
+    clock.now();
+    expect(clock.creditedMs).toBe(RUNNER_MAX_STOPPED_CREDIT_MS);
+    // A wall-clock grace taken now moves onto the clock without the earlier
+    // credit, so it keeps exactly its own running-time budget.
+    const wallGrace = wall + 5_000;
+    const onClock = wallGrace - clock.creditedMs;
+    expect(onClock - clock.now()).toBe(5_000);
+  });
 });
 
 it("aborts startup promptly on close while allowing the owned cleanup command to drain", async () => {

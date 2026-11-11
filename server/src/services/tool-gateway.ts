@@ -1,4 +1,9 @@
+import { assertAgentToolAssignmentInteractions } from "./connection-management.js";
 import { isNewHumanIntentAfterToolRejection } from "./tool-action-replay-intent.js";
+import { approvalSnapshotsMatch, approvalTargetChangeMessage, oauthApprovalConfig,
+  approvalGrantTenantIdentity, externalCredentialApprovalIdentity } from "./tool-approval-target.js";
+import { isToolApprovalConnectionError, toolApprovalConnectionRevision, toolApprovalConnectionCanResume,
+  TOOL_APPROVAL_CONNECTION_MESSAGE, TOOL_APPROVAL_CONNECTION_REQUIRED } from "./tool-approval-connection.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import { writeApprovalChange } from "./approval-work-notifications.js";
@@ -22,6 +27,7 @@ import { composeConnectionInstructions } from "./connection-instructions.js";
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "./connection-permission-errors.js";
 import { githubAccessDeniedInstructions, githubAccessError } from "./tool-access/github-access-errors.js";
+import { githubDefaultOwnerApplies, githubDefaultOwnerArguments } from "./tool-access/github-default-owner.js";
 import { toolSourceTemplateKeySql } from "./tool-access/source-template-key.js";
 import { boundedMcpToolName } from "./mcp-tool-names.js";
 import { browserUseService } from "./browser-use.js";
@@ -46,6 +52,7 @@ import { extractRemoteMcpPending } from "./remote-mcp-pending.js";
 import { logger } from "../middleware/logger.js";
 import { getAppDefinitionForApplicationKey, isConnectorFeatureEnabled } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
+import { redactSensitiveText } from "../redaction.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -54,6 +61,7 @@ import {
   asc,
   desc,
   eq,
+  gt,
   inArray,
   isNull,
   lte,
@@ -130,7 +138,7 @@ import type {
   AgentToolDescriptor,
   PluginToolDispatcher,
 } from "./plugin-tool-dispatcher.js";
-import { logActivity, type LogActivityInput } from "./activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication, type LogActivityInput } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { connectionGrantCredentialRef, resolveConnectionGrantSecret } from "./connection-credentials.js";
 import { railwayCommandBudgetMs, createRailwayClient, isRailwayConnection, isRailwayEndpoint, isRailwayToolBlocked, normalizeRailwayToolName, RAILWAY_API_URL, RAILWAY_TOOL_PREFIX, RailwayError } from "./railway.js";
@@ -142,6 +150,7 @@ import {
   readMcpHttpResponse,
   McpHttpResponseError,
   McpHttpInitializationError,
+  type McpHttpResponseProgress,
   mcpHttpRequestHeaders,
   parseMcpHttpResponseBody,
 } from "./mcp-http.js";
@@ -155,6 +164,7 @@ import { assertGmailArchiveToolArgumentsSupported, gmailArchiveToolDescription }
 import { parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
 import {
   guardedRemoteHttpFetch,
+  DEFAULT_REMOTE_HTTP_RESPONSE_TIMEOUT_MS,
   type GuardedRemoteHttpFetchOptions,
 } from "./remote-http-fetch.js";
 import {
@@ -490,7 +500,54 @@ type RemoteHttpExecutionAudit = {
     bodySizeBytes: number;
     upstreamRequestId: string | null;
   };
+  failureKind?: "invocation_timeout" | "transport_failure" | "protocol_failure";
+  error?: RemoteHttpErrorEvidence;
+  deadline?: { timeoutMs: number; aborted: boolean };
+  stream?: McpHttpResponseProgress;
 };
+
+type RemoteHttpErrorEvidence = {
+  name: string | null;
+  message: string;
+  code: string | null;
+  stack: string | null;
+  cause: RemoteHttpErrorEvidence | null;
+};
+
+// Deliberate stops of a remote tool call. They are not failures, and a deadline
+// that passes while they are recorded must not turn them into a timeout.
+const REMOTE_TOOL_CALL_WORKFLOW_REASON_CODES = new Set([
+  "elicitation_required",
+  "provider_interaction_required",
+  "oauth_insufficient_scope",
+  "oauth_refreshed_retry_required",
+]);
+
+const REMOTE_TOOL_CALL_PROTOCOL_REASON_CODES = new Set([
+  "mcp_remote_invalid_json",
+  "remote_mcp_malformed_response",
+  "mcp_remote_response_too_large",
+]);
+
+function remoteToolCallFailureKind(reasonCode: string): RemoteHttpExecutionAudit["failureKind"] {
+  if (reasonCode === "tool_timeout") return "invocation_timeout";
+  if (REMOTE_TOOL_CALL_PROTOCOL_REASON_CODES.has(reasonCode)) return "protocol_failure";
+  if (reasonCode === "mcp_remote_fetch_failed" || reasonCode.startsWith("remote_http_")) return "transport_failure";
+  return undefined;
+}
+
+function remoteHttpErrorEvidence(error: unknown, seen = new Set<unknown>()): RemoteHttpErrorEvidence {
+  if (seen.has(error)) return { name: null, message: "[Circular cause]", code: null, stack: null, cause: null };
+  const record = asRecord(error);
+  seen.add(error);
+  return {
+    name: typeof record?.name === "string" ? redactSensitiveText(record.name) : null,
+    message: redactSensitiveText(typeof record?.message === "string" ? record.message : String(error)),
+    code: typeof record?.code === "string" ? redactSensitiveText(record.code) : null,
+    stack: typeof record?.stack === "string" ? redactSensitiveText(record.stack) : null,
+    cause: record?.cause == null ? null : remoteHttpErrorEvidence(record.cause, seen),
+  };
+}
 
 type LocalStdioRuntimeTemplate = {
   templateId: string;
@@ -622,6 +679,14 @@ function executionAuditFromError(
 
 function generateGatewayToken(sessionId: string) {
   return `pcgt_${sessionId}.${randomBytes(32).toString("base64url")}`;
+}
+
+interface NamedGatewayTokenInput {
+  companyId: string;
+  gatewayId: string;
+  body: CreateToolMcpGatewayToken;
+  actor?: { agentId?: string | null; userId?: string | null };
+  managementContext?: ConnectionManagementContext;
 }
 
 function generateNamedGatewayToken(tokenId: string) {
@@ -913,26 +978,11 @@ function stableHash(value: unknown): string {
   return createHash("sha256").update(stableSerialize(value)).digest("hex");
 }
 
-function normalizeSignedApprovalSnapshot(
-  value: unknown,
-): Record<string, unknown> | null {
-  return asRecord(value);
-}
-
-function approvalSnapshotsMatch(
-  reviewed: unknown,
-  live: Record<string, unknown> | null,
-): boolean {
-  const reviewedRecord = normalizeSignedApprovalSnapshot(reviewed);
-  if (!reviewedRecord && !live) return true;
-  if (!reviewedRecord || !live) return false;
-  return stableSerialize(reviewedRecord) === stableSerialize(live);
-}
-
 type ConnectedCredentialVersionSnapshot = {
   refHash: string;
   versionSelector: string;
   resolvedVersion: number;
+  identityEpoch?: number;
 };
 
 const REDACTED_ARGUMENT_SENTINEL = "***REDACTED***";
@@ -2586,7 +2636,9 @@ export function createToolGatewayService(
       );
     }
     const actionRequest = input.actionRequest;
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    // Human review has no implicit token/session deadline. Explicit action
+    // deadlines, task closure and current authorization still gate execution.
+    const expiresAt = actionRequest.expiresAt;
 
     let signedArguments: ReturnType<typeof signToolArguments>;
     try {
@@ -2747,7 +2799,7 @@ export function createToolGatewayService(
             previewMarkdown,
             argumentsSummaryJson: input.argumentsSummary.summary,
             argumentsHash: canonicalArgumentsHash,
-            expiresAt: expiresAt.toISOString(),
+            expiresAt: expiresAt?.toISOString() ?? null,
           },
         },
       },
@@ -4474,7 +4526,7 @@ export function createToolGatewayService(
   ): Promise<ConnectedCredentialVersionSnapshot> {
     const versionSelector = input.versionSelector ?? "latest";
     try {
-      const resolvedVersion = await secrets.resolveSecretVersion(
+      const identity = await secrets.resolveSecretVersionIdentity(
         connection.companyId,
         input.secretId,
         versionSelector,
@@ -4482,7 +4534,10 @@ export function createToolGatewayService(
       return {
         refHash: input.refHash,
         versionSelector: String(versionSelector),
-        resolvedVersion,
+        resolvedVersion: identity.version,
+        ...(connection.authKind === "oauth" && versionSelector === "latest" &&
+          ["oauth.access_token", "oauth.refresh_token"].includes(input.configPath)
+          ? { identityEpoch: identity.identityEpoch } : {}),
       };
     } catch {
       await markRemoteConnectionHealth(
@@ -5075,7 +5130,12 @@ export function createToolGatewayService(
   ): Promise<unknown> {
     if (tool.providerType !== "mcp_remote_http" && tool.providerType !== "provider_rest") return parameters;
     const { connection, entry } = await resolveConnectedRemoteTool(session, tool);
-    return projectedConnectionToolArguments(connection, parameters, entry.toolName, entry.inputSchema ?? {});
+    const projected = projectedConnectionToolArguments(connection, parameters, entry.toolName, entry.inputSchema ?? {});
+    if (!githubDefaultOwnerApplies(connection, entry.toolName, entry.inputSchema, projected)) return projected;
+    // An unavailable credential keeps the call unchanged and fails with its own
+    // error at dispatch.
+    const grant = await resolveConnectionGrant(session, connection, false).catch(() => null);
+    return githubDefaultOwnerArguments(entry.toolName, projected, grant?.providerTenant?.github);
   }
 
   async function approvedManagedArgumentsRemainCurrent(
@@ -5870,6 +5930,18 @@ export function createToolGatewayService(
       },
     );
     return {
+      approvalSnapshotVersion: 2,
+      connectionIdentityHash: stableHash({ authKind: row.connection.authKind,
+        credentialSource: row.connection.credentialSource, credentialPolicy: row.connection.credentialPolicy,
+        externalCredential: row.connection.externalCredential }),
+      connectionAuthorizationConfigHash: stableHash(row.connection.authKind === "oauth"
+        ? oauthApprovalConfig(row.connection.config ?? {}) : row.connection.config ?? {}),
+      connectionAuthorizationTransportConfigHash: stableHash(row.connection.authKind === "oauth"
+        ? oauthApprovalConfig(row.connection.transportConfig ?? {}) : row.connection.transportConfig ?? {}),
+      credentialGrantIdentityHash: stableHash({ kind: grant.kind, subjectUserId: grant.subjectUserId,
+        subjectAgentId: grant.subjectAgentId, externalCredential: externalCredentialApprovalIdentity(grant.externalCredential),
+        providerTenant: row.connection.authKind === "oauth"
+          ? approvalGrantTenantIdentity(grant.providerTenant, row.connection.config.oauth) : grant.providerTenant }),
       applicationId: row.application.id,
       applicationKey: row.application.applicationKey ?? null,
       applicationStatus: row.application.status,
@@ -5903,6 +5975,21 @@ export function createToolGatewayService(
     };
   }
 
+  async function prepareApprovedConnectionAuthorization(session: ToolGatewaySession, tool: ToolGatewayDescriptor, reviewedSnapshot: unknown) {
+    if (tool.providerType !== "mcp_remote_http" && tool.providerType !== "provider_rest") return;
+    const { connection } = await resolveConnectedRemoteTool(session, tool);
+    if (connection.authKind !== "oauth") return;
+    // Never send a refresh credential to a changed endpoint. Validate the saved
+    // target before refresh, then let the caller revalidate its resulting grant.
+    const beforeRefresh = await connectedRemoteApprovalSnapshot(session, tool);
+    if (!approvalSnapshotsMatch(reviewedSnapshot, beforeRefresh))
+      throw new ToolGatewayHttpError(409, approvalTargetChangeMessage(reviewedSnapshot, beforeRefresh), "approved_tool_target_changed");
+    const grant = await resolveConnectionGrant(session, connection);
+    // Discover refresh/sign-in failures before startToolInvocation records a
+    // provider dispatch. No action is sent during this credential preparation.
+    await resolveCredentialHeaders(session, connection, grant);
+  }
+
   function responseTooLargeError() {
     return new ToolGatewayHttpError(
       502,
@@ -5914,6 +6001,7 @@ export function createToolGatewayService(
 
   async function readBoundedRemoteResponse(
     response: Response,
+    onBytes?: (bytes: number) => void,
   ): Promise<string> {
     const contentLength = response.headers.get("content-length");
     if (
@@ -5922,11 +6010,36 @@ export function createToolGatewayService(
     ) {
       throw responseTooLargeError();
     }
-    const body = await response.text();
-    if (Buffer.byteLength(body, "utf8") > MAX_REMOTE_MCP_RESPONSE_BYTES) {
-      throw responseTooLargeError();
+    const reader = response.body?.getReader();
+    // Injected HTTP transports can expose a buffered text response rather than a
+    // Web ReadableStream. Keep the same size check for that form.
+    if (!reader) {
+      const body = await response.text();
+      onBytes?.(Buffer.byteLength(body, "utf8"));
+      if (Buffer.byteLength(body, "utf8") > MAX_REMOTE_MCP_RESPONSE_BYTES) {
+        throw responseTooLargeError();
+      }
+      return body;
     }
-    return body;
+    // Count each chunk as it arrives, so a body that fails partway still
+    // reports the bytes that were read.
+    const decoder = new TextDecoder();
+    let body = "";
+    let bytes = 0;
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        onBytes?.(bytes);
+        if (bytes > MAX_REMOTE_MCP_RESPONSE_BYTES) throw responseTooLargeError();
+        body += decoder.decode(value, { stream: true });
+      }
+      return body + decoder.decode();
+    } finally {
+      await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
+    }
   }
 
   function malformedRemoteMcpResponse(): ToolGatewayHttpError {
@@ -6208,6 +6321,7 @@ export function createToolGatewayService(
     // and connections whose stored grant/catalog predates scope reduction.
     assertGoogleChatToolArgumentsSupported(connection, entry.toolName, parameters);
     assertGmailArchiveToolArgumentsSupported(connection, entry.toolName, parameters);
+    if (useDefaultTimeout) ms = DEFAULT_REMOTE_HTTP_RESPONSE_TIMEOUT_MS;
     if (useDefaultTimeout && isRailwayConnection(connection) && entry.toolName === `${RAILWAY_TOOL_PREFIX}run-command`) {
       ms = railwayCommandBudgetMs(parameters);
     }
@@ -6492,9 +6606,21 @@ export function createToolGatewayService(
         // automatically: the failed call may have changed app data.
         if (mcpSession) forgetMcpHttpSession(mcpSession);
       }
+      // Record the response headers before the body is read, so a body that
+      // fails partway still has its status and content type in the evidence.
+      execution.response = {
+        httpStatus: response.status,
+        contentType: response.headers.get("content-type"),
+        bodySizeBytes: 0,
+        upstreamRequestId:
+          response.headers.get("x-request-id") ??
+          response.headers.get("x-zapier-request-id") ??
+          response.headers.get("traceparent"),
+      };
       const body = response.ok
         ? JSON.stringify(await readMcpHttpResponse(response, requestId, {
             maxBytes: MAX_REMOTE_MCP_RESPONSE_BYTES,
+            onProgress: (progress) => { execution.stream = progress; },
             onRequest: async (message) => {
               const pending = extractRemoteMcpPending(message);
               if (pending) {
@@ -6511,16 +6637,10 @@ export function createToolGatewayService(
               if (request) await requestElicitationForRecordedToolCall({ session, tool, invocationId, request });
             },
           }))
-        : await readBoundedRemoteResponse(response);
-      execution.response = {
-        httpStatus: response.status,
-        contentType: response.headers.get("content-type"),
-        bodySizeBytes: Buffer.byteLength(body, "utf8"),
-        upstreamRequestId:
-          response.headers.get("x-request-id") ??
-          response.headers.get("x-zapier-request-id") ??
-          response.headers.get("traceparent"),
-      };
+        : await readBoundedRemoteResponse(response, (bytes) => {
+            execution.response!.bodySizeBytes = bytes;
+          });
+      execution.response.bodySizeBytes = Buffer.byteLength(body, "utf8");
       if (isInsufficientConnectionScope(response, body)) {
         await markCallHealth("degraded", INSUFFICIENT_CONNECTION_SCOPE_MESSAGE);
         throw new ToolGatewayHttpError(403, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE, "oauth_insufficient_scope", {
@@ -6621,7 +6741,26 @@ export function createToolGatewayService(
       );
       return { result, failureInstructions, headerSummary, execution };
     } catch (error) {
+      execution.error = remoteHttpErrorEvidence(error);
+      execution.deadline = { timeoutMs: ms, aborted: controller.signal.aborted };
+      if (execution.response && execution.stream) execution.response.bodySizeBytes = execution.stream.bytesReceived;
+      // A deliberate workflow stop, such as a tool question for the user, keeps
+      // its own reason even when the deadline passes while it is recorded.
+      if (error instanceof ToolGatewayHttpError && REMOTE_TOOL_CALL_WORKFLOW_REASON_CODES.has(error.reasonCode)) {
+        throw new ToolGatewayHttpError(error.status, error.message, error.reasonCode, {
+          ...error.details,
+          execution: error.details.execution ?? execution,
+        });
+      }
+      if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+        if (mcpSession) forgetMcpHttpSession(mcpSession);
+        execution.failureKind = "invocation_timeout";
+        throw new ToolGatewayHttpError(504, "Remote MCP tool call timed out", "tool_timeout", {
+          connectionId: connection.id, catalogEntryId: entry.id, execution, failureKind: "invocation_timeout",
+        });
+      }
       if (error instanceof McpHttpResponseError) {
+        execution.failureKind = "protocol_failure";
         const failure = error.reason === "too_large" ? responseTooLargeError()
           : error.reason === "malformed_response" ? malformedRemoteMcpResponse()
           : new ToolGatewayHttpError(502, "Remote MCP server returned invalid JSON", "mcp_remote_invalid_json");
@@ -6639,6 +6778,8 @@ export function createToolGatewayService(
         throw new ToolGatewayHttpError(error.status, error.message, error.code, { connectionId: connection.id, catalogEntryId: entry.id, execution });
       }
       if (error instanceof ToolGatewayHttpError) {
+        const failureKind = remoteToolCallFailureKind(error.reasonCode);
+        if (failureKind) execution.failureKind = failureKind;
         throw new ToolGatewayHttpError(
           error.status,
           error.message,
@@ -6649,19 +6790,7 @@ export function createToolGatewayService(
           },
         );
       }
-      if (error instanceof Error && error.name === "AbortError") {
-        if (mcpSession) forgetMcpHttpSession(mcpSession);
-        throw new ToolGatewayHttpError(
-          504,
-          "Remote MCP tool call timed out",
-          "tool_timeout",
-          {
-            connectionId: connection.id,
-            catalogEntryId: entry.id,
-            execution,
-          },
-        );
-      }
+      execution.failureKind = "transport_failure";
       if (error instanceof McpHttpInitializationError && (error.status === 401 || error.status === 403)) {
         await markCallHealth("error", "Remote MCP session authorization failed.");
       }
@@ -6880,6 +7009,85 @@ export function createToolGatewayService(
     };
   }
 
+  async function insertNamedGatewayToken(input: NamedGatewayTokenInput, pendingReveal: boolean) {
+    await input.managementContext?.reauthorize();
+    const [gateway] = await db
+      .select()
+      .from(toolMcpGateways)
+      .where(
+        and(
+          eq(toolMcpGateways.companyId, input.companyId),
+          eq(toolMcpGateways.id, input.gatewayId),
+        ),
+      )
+      .limit(1);
+    if (!gateway)
+      throw new ToolGatewayHttpError(
+        404,
+        "MCP gateway not found",
+        "gateway_not_found",
+      );
+    if (input.actor?.agentId && !input.managementContext && input.body.subjectType !== "heartbeat_run") {
+      throw new ToolGatewayHttpError(403, "Agent client tokens require delegated authority", "gateway_token_run_context_invalid");
+    }
+    if (input.managementContext?.actor.type === "agent" && input.body.subjectType === "heartbeat_run" &&
+        (!input.managementContext.actor.runId || input.body.subjectId !== input.managementContext.actor.runId)) {
+      throw new ToolGatewayHttpError(403, "Heartbeat tokens must bind the authenticated run", "gateway_token_run_context_invalid");
+    }
+    const tokenId = randomUUID();
+    const token = generateNamedGatewayToken(tokenId);
+    const tokenPrefix = `pcgw_${tokenId.slice(0, 8)}`;
+    const now = new Date();
+    const [row] = await db.transaction(async tx => {
+      if (input.body.expiresAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.gatewayCredentialExpiry);
+      return tx
+        .insert(toolMcpGatewayTokens)
+        .values({
+          id: tokenId,
+          companyId: input.companyId,
+          gatewayId: input.gatewayId,
+          name: input.body.name,
+          // A pending token's stored hash is of a value nobody receives.
+          tokenHash: hashGatewayToken(token),
+          tokenPrefix,
+          pendingReveal,
+          subjectType: input.body.subjectType ?? "gateway_client",
+          subjectId: input.body.subjectId ?? null,
+          clientLabel: input.body.clientLabel,
+          ownerNote: input.body.ownerNote,
+          allowedActions: input.body.allowedActions ?? [
+            "tools/list",
+            "tools/call",
+            "resources/list",
+            "resources/read",
+            "prompts/list",
+            "prompts/get",
+          ],
+          expiresAt: input.body.expiresAt ?? null,
+          expiryOverrideReason: input.body.expiryOverrideReason ?? null,
+          expiryOverrideByAgentId:
+            input.actor?.agentId && input.body.expiryOverrideReason
+              ? input.actor.agentId
+              : null,
+          expiryOverrideByUserId:
+            input.actor?.userId && input.body.expiryOverrideReason
+              ? input.actor.userId
+              : null,
+          expiryOverrideAt: input.body.expiryOverrideReason ? now : null,
+          responsibleUserId: input.managementContext?.actor.type === "agent" ? input.managementContext.responsibleUserId : null,
+          createdByAgentId: input.actor?.agentId ?? null,
+          createdByUserId: input.actor?.userId ?? null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+    });
+    if (input.managementContext) await logActivity(db, { companyId: input.companyId, ...input.managementContext.audit,
+      action: "tool_gateway.token_created", entityType: "tool_mcp_gateway", entityId: input.gatewayId,
+      details: { tokenId: row.id, subjectType: row.subjectType, allowedActions: row.allowedActions, ...(pendingReveal ? { pendingReveal } : {}) } });
+  return { row, token };
+}
+
   function toGatewayToken(
     row: typeof toolMcpGatewayTokens.$inferSelect,
   ): ToolMcpGatewayToken {
@@ -6904,6 +7112,7 @@ export function createToolGatewayService(
       createdByAgentId: row.createdByAgentId,
       createdByUserId: row.createdByUserId,
       responsibleUserId: row.responsibleUserId,
+      pendingReveal: row.pendingReveal,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
@@ -7323,6 +7532,15 @@ export function createToolGatewayService(
         gatewayPublicId: input.gatewayPublicId,
         bearerToken,
         reasonCode: "gateway_token_revoked",
+        clientMetadata,
+      });
+    }
+    if (row.token.pendingReveal) {
+      await recordNamedGatewayAuthFailure({
+        gatewayId: input.gatewayId,
+        gatewayPublicId: input.gatewayPublicId,
+        bearerToken,
+        reasonCode: "gateway_token_invalid",
         clientMetadata,
       });
     }
@@ -7828,7 +8046,9 @@ export function createToolGatewayService(
   ): Promise<void> {
     const claim = await claimToolTestApproval(db, actionRequestId, invocation.id);
     if (!claim) return;
+    claim.enforceDeadline = asRecord(signedPayload.approvalSnapshot)?.approvalSnapshotVersion === 2;
     let execution: Parameters<typeof runTestToolInvocation>[0];
+    let connectionRevision: string | null = null;
     try {
       const agentId = invocation.agentId;
       if (!invocation.connectionId || !agentId) {
@@ -7852,11 +8072,15 @@ export function createToolGatewayService(
         }, "connections:test", delegated.resource, { targetAgentIds: [agentId], afterHumanAction: true });
         Object.assign(session, managementContext.workContext, { originatingAgentId: delegated.agentId, approvedInvocationId: invocation.id });
       }
+      connectionRevision = await toolApprovalConnectionRevision(db, invocation.companyId,
+        invocation.connectionId, signedPayload.approvalSnapshot);
       const tool = (await connectedMcpToolsForConnection(invocation.companyId, invocation.connectionId))
         .find(candidate => candidate.name === invocation.toolName || candidate.upstreamToolName === invocation.toolName);
       if (!tool) throw new ToolGatewayHttpError(404, `Tool "${invocation.toolName}" is no longer connected`, "tool_not_found");
-      if (!approvalSnapshotsMatch(signedPayload.approvalSnapshot, await connectedRemoteApprovalSnapshot(session, tool))) {
-        throw new ToolGatewayHttpError(409, "Tool definition or connection changed; request a new review", "approved_tool_target_changed");
+      await prepareApprovedConnectionAuthorization(session, tool, signedPayload.approvalSnapshot);
+      const liveApprovalSnapshot = await connectedRemoteApprovalSnapshot(session, tool);
+      if (!approvalSnapshotsMatch(signedPayload.approvalSnapshot, liveApprovalSnapshot)) {
+        throw new ToolGatewayHttpError(409, approvalTargetChangeMessage(signedPayload.approvalSnapshot, liveApprovalSnapshot), "approved_tool_target_changed");
       }
       if (!(await approvedManagedArgumentsRemainCurrent(session, tool, signedPayload.arguments))) {
         throw new ToolGatewayHttpError(409, "Approved tool action managed arguments changed after review", "approved_tool_managed_arguments_changed");
@@ -7892,6 +8116,13 @@ export function createToolGatewayService(
         companyId: invocation.companyId, agentId, userId, argumentsSummary, reasonCode: "approval_granted",
         approvedClaim: claim, matchedPolicyIds: invocation.matchedPolicyIds ?? [] };
     } catch (err) {
+      if (connectionRevision !== null && isToolApprovalConnectionError(err)) {
+        if (await releaseToolApproval(db, claim, connectionRevision)) {
+          await reflectToolActionInteractionLifecycle({ actionRequestId, status: "approved",
+            errorCode: TOOL_APPROVAL_CONNECTION_REQUIRED, errorMessage: TOOL_APPROVAL_CONNECTION_MESSAGE });
+        }
+        return;
+      }
       if (!isApprovalPreparationRejection(err)) {
         // Preparation has not entered runTestToolInvocation. Preserve approval
         // through dependency failures; the claim owner still verifies no dispatch.
@@ -8264,6 +8495,7 @@ export function createToolGatewayService(
       actionRequestId: claimed.id, invocationId: invocation.id, claimedAt: claimed.updatedAt,
     };
     const agentId = invocation.agentId;
+    let connectionRevision: string | null = null;
     async function prepareExecution() {
       // Terminal-issue expiry revokes pending/approved requests, but a claim that
       // committed just before the issue closed slips past that revocation. Recheck
@@ -8296,6 +8528,7 @@ export function createToolGatewayService(
         );
         throw error;
       }
+      claim.enforceDeadline = asRecord(signedPayload.approvalSnapshot)?.approvalSnapshotVersion === 2;
 
       const session: ToolGatewaySession = {
         id: `approved-action:${claimed.id}`,
@@ -8320,7 +8553,10 @@ export function createToolGatewayService(
       );
       session.approvedInvocationId = invocation.id;
       session.approvedSlackInvocationId = invocation.id;
+      connectionRevision = await toolApprovalConnectionRevision(db, invocation.companyId,
+        invocation.connectionId, signedPayload.approvalSnapshot);
       const tool = await findToolForSession(session, invocation.toolName);
+      await prepareApprovedConnectionAuthorization(session, tool, signedPayload.approvalSnapshot);
       const liveApprovalSnapshot = await connectedRemoteApprovalSnapshot(
         session,
         tool,
@@ -8333,7 +8569,7 @@ export function createToolGatewayService(
       ) {
         const error = new ToolGatewayHttpError(
           409,
-          "Approved tool action target changed after review",
+          approvalTargetChangeMessage(signedPayload.approvalSnapshot, liveApprovalSnapshot),
           "approved_tool_target_changed",
         );
         throw error;
@@ -8421,7 +8657,12 @@ export function createToolGatewayService(
     try {
       prepared = await prepareExecution();
     } catch (error) {
-      if (isApprovalPreparationRejection(error)) {
+      if (connectionRevision !== null && isToolApprovalConnectionError(error)) {
+        if (await releaseToolApproval(db, claim, connectionRevision)) {
+          await reflectToolActionInteractionLifecycle({ actionRequestId: claimed.id, status: "approved",
+            errorCode: TOOL_APPROVAL_CONNECTION_REQUIRED, errorMessage: TOOL_APPROVAL_CONNECTION_MESSAGE });
+        }
+      } else if (isApprovalPreparationRejection(error)) {
         await markApprovedActionFailed({
           actionRequestId: claimed.id,
           invocationId: invocation.id,
@@ -8969,54 +9210,60 @@ export function createToolGatewayService(
         input.body.displaySlug ??
         input.body.slug ??
         slugSegment(input.body.name, "gateway");
-      const [gateway] = await db
-        .insert(toolMcpGateways)
-        .values({
-          companyId: input.companyId,
-          name: input.body.name,
-          slug,
-          displaySlug: slug,
-          description: input.body.description ?? null,
-          defaultProfileMode: input.body.defaultProfileMode ?? "gateway_only",
-          contextScopeType: input.body.contextScopeType ?? "none",
-          contextScopeId: input.body.contextScopeId ?? null,
-          profileId: input.body.profileId,
-          agentId: input.body.agentId ?? null,
-          projectId: input.body.projectId ?? null,
-          issueId: input.body.issueId ?? null,
-          approvalIssueId: input.body.approvalIssueId ?? null,
-          ...(input.body.authConfig !== undefined
-            ? { authConfig: input.body.authConfig }
-            : {}),
-          ...(input.body.headerPolicy !== undefined
-            ? { headerPolicy: input.body.headerPolicy }
-            : {}),
-          ...(input.body.metadataPolicy !== undefined
-            ? { metadataPolicy: input.body.metadataPolicy }
-            : {}),
-          ...(input.body.onDemandToolsConfig !== undefined
-            ? { onDemandToolsConfig: input.body.onDemandToolsConfig }
-            : {}),
-          metadata: input.body.metadata ?? {},
-          createdByAgentId: input.actor?.agentId ?? null,
-          createdByUserId: input.actor?.userId ?? null,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning();
-      await db
-        .insert(toolProfileBindings)
-        .values({
-          companyId: input.companyId,
-          profileId: input.body.profileId,
-          targetType: "gateway",
-          targetId: gateway.id,
-          priority: 10,
-          metadata: { source: "named_mcp_gateway" },
-          createdByAgentId: input.actor?.agentId ?? null,
-          createdByUserId: input.actor?.userId ?? null,
-        })
-        .onConflictDoNothing();
+      const gateway = await db.transaction(async tx => {
+        await assertAgentToolAssignmentInteractions(tx as unknown as Db,
+          input.managementContext?.actor.type === "agent" ? input.managementContext.actor.agentId : input.actor?.agentId,
+          input.companyId, input.body.agentId ? [input.body.agentId] : []);
+        const [gateway] = await tx
+          .insert(toolMcpGateways)
+          .values({
+            companyId: input.companyId,
+            name: input.body.name,
+            slug,
+            displaySlug: slug,
+            description: input.body.description ?? null,
+            defaultProfileMode: input.body.defaultProfileMode ?? "gateway_only",
+            contextScopeType: input.body.contextScopeType ?? "none",
+            contextScopeId: input.body.contextScopeId ?? null,
+            profileId: input.body.profileId,
+            agentId: input.body.agentId ?? null,
+            projectId: input.body.projectId ?? null,
+            issueId: input.body.issueId ?? null,
+            approvalIssueId: input.body.approvalIssueId ?? null,
+            ...(input.body.authConfig !== undefined
+              ? { authConfig: input.body.authConfig }
+              : {}),
+            ...(input.body.headerPolicy !== undefined
+              ? { headerPolicy: input.body.headerPolicy }
+              : {}),
+            ...(input.body.metadataPolicy !== undefined
+              ? { metadataPolicy: input.body.metadataPolicy }
+              : {}),
+            ...(input.body.onDemandToolsConfig !== undefined
+              ? { onDemandToolsConfig: input.body.onDemandToolsConfig }
+              : {}),
+            metadata: input.body.metadata ?? {},
+            createdByAgentId: input.actor?.agentId ?? null,
+            createdByUserId: input.actor?.userId ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+        await tx
+          .insert(toolProfileBindings)
+          .values({
+            companyId: input.companyId,
+            profileId: input.body.profileId,
+            targetType: "gateway",
+            targetId: gateway.id,
+            priority: 10,
+            metadata: { source: "named_mcp_gateway" },
+            createdByAgentId: input.actor?.agentId ?? null,
+            createdByUserId: input.actor?.userId ?? null,
+          })
+          .onConflictDoNothing();
+        return gateway;
+      });
       await writeAudit({
         session: {
           id: `gateway:${gateway.id}`,
@@ -9069,205 +9316,188 @@ export function createToolGatewayService(
       managementContext?: ConnectionManagementContext;
     }): Promise<ToolMcpGatewayWithTokens> {
       await input.managementContext?.reauthorize();
-      const [existing] = await db
-        .select()
-        .from(toolMcpGateways)
-        .where(
-          and(
-            eq(toolMcpGateways.companyId, input.companyId),
-            eq(toolMcpGateways.id, input.gatewayId),
-          ),
-        )
-        .limit(1);
-      if (!existing)
-        throw new ToolGatewayHttpError(
-          404,
-          "MCP gateway not found",
-          "gateway_not_found",
-        );
-      await assertGatewayContext({
-        companyId: input.companyId,
-        profileId: input.body.profileId ?? existing.profileId,
-        agentId:
-          input.body.agentId === undefined
-            ? existing.agentId
-            : input.body.agentId,
-        projectId:
-          input.body.projectId === undefined
-            ? existing.projectId
-            : input.body.projectId,
-        issueId:
-          input.body.issueId === undefined
-            ? existing.issueId
-            : input.body.issueId,
-      });
-      const [updated] = await db
-        .update(toolMcpGateways)
-        .set({
-          ...(input.body.name !== undefined ? { name: input.body.name } : {}),
-          ...(input.body.slug !== undefined ||
-          input.body.displaySlug !== undefined
-            ? { slug: input.body.displaySlug ?? input.body.slug }
-            : {}),
-          ...(input.body.slug !== undefined ||
-          input.body.displaySlug !== undefined
-            ? { displaySlug: input.body.displaySlug ?? input.body.slug }
-            : {}),
-          ...(input.body.description !== undefined
-            ? { description: input.body.description ?? null }
-            : {}),
-          ...(input.body.status !== undefined
-            ? { status: input.body.status }
-            : {}),
-          ...(input.body.profileId !== undefined
-            ? { profileId: input.body.profileId }
-            : {}),
-          ...(input.body.defaultProfileMode !== undefined
-            ? { defaultProfileMode: input.body.defaultProfileMode }
-            : {}),
-          ...(input.body.contextScopeType !== undefined
-            ? { contextScopeType: input.body.contextScopeType }
-            : {}),
-          ...(input.body.contextScopeId !== undefined
-            ? { contextScopeId: input.body.contextScopeId ?? null }
-            : {}),
-          ...(input.body.agentId !== undefined
-            ? { agentId: input.body.agentId ?? null }
-            : {}),
-          ...(input.body.projectId !== undefined
-            ? { projectId: input.body.projectId ?? null }
-            : {}),
-          ...(input.body.issueId !== undefined
-            ? { issueId: input.body.issueId ?? null }
-            : {}),
-          ...(input.body.approvalIssueId !== undefined
-            ? { approvalIssueId: input.body.approvalIssueId ?? null }
-            : {}),
-          ...(input.body.authConfig !== undefined
-            ? { authConfig: input.body.authConfig }
-            : {}),
-          ...(input.body.headerPolicy !== undefined
-            ? { headerPolicy: input.body.headerPolicy }
-            : {}),
-          ...(input.body.metadataPolicy !== undefined
-            ? { metadataPolicy: input.body.metadataPolicy }
-            : {}),
-          ...(input.body.onDemandToolsConfig !== undefined
-            ? { onDemandToolsConfig: input.body.onDemandToolsConfig }
-            : {}),
-          ...(input.body.metadata !== undefined
-            ? { metadata: input.body.metadata ?? {} }
-            : {}),
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(toolMcpGateways.companyId, input.companyId),
-            eq(toolMcpGateways.id, input.gatewayId),
-          ),
-        )
-        .returning();
-      if (input.body.profileId && input.body.profileId !== existing.profileId) {
-        await db
-          .insert(toolProfileBindings)
-          .values({
-            companyId: input.companyId,
-            profileId: input.body.profileId,
-            targetType: "gateway",
-            targetId: input.gatewayId,
-            priority: 10,
-            metadata: { source: "named_mcp_gateway" },
+      const updated = await db.transaction(async tx => {
+        const [existing] = await tx
+          .select()
+          .from(toolMcpGateways)
+          .where(
+            and(
+              eq(toolMcpGateways.companyId, input.companyId),
+              eq(toolMcpGateways.id, input.gatewayId),
+            ),
+          )
+          .limit(1).for("update");
+        if (!existing)
+          throw new ToolGatewayHttpError(
+            404,
+            "MCP gateway not found",
+            "gateway_not_found",
+          );
+        const targets = [...new Set([existing.agentId, input.body.agentId].filter((id): id is string => Boolean(id)))];
+        await assertAgentToolAssignmentInteractions(tx as unknown as Db,
+          input.managementContext?.actor.type === "agent" ? input.managementContext.actor.agentId : null, input.companyId, targets);
+        await assertGatewayContext({
+          companyId: input.companyId,
+          profileId: input.body.profileId ?? existing.profileId,
+          agentId:
+            input.body.agentId === undefined
+              ? existing.agentId
+              : input.body.agentId,
+          projectId:
+            input.body.projectId === undefined
+              ? existing.projectId
+              : input.body.projectId,
+          issueId:
+            input.body.issueId === undefined
+              ? existing.issueId
+              : input.body.issueId,
+        });
+        const [updated] = await tx
+          .update(toolMcpGateways)
+          .set({
+            ...(input.body.name !== undefined ? { name: input.body.name } : {}),
+            ...(input.body.slug !== undefined ||
+            input.body.displaySlug !== undefined
+              ? { slug: input.body.displaySlug ?? input.body.slug }
+              : {}),
+            ...(input.body.slug !== undefined ||
+            input.body.displaySlug !== undefined
+              ? { displaySlug: input.body.displaySlug ?? input.body.slug }
+              : {}),
+            ...(input.body.description !== undefined
+              ? { description: input.body.description ?? null }
+              : {}),
+            ...(input.body.status !== undefined
+              ? { status: input.body.status }
+              : {}),
+            ...(input.body.profileId !== undefined
+              ? { profileId: input.body.profileId }
+              : {}),
+            ...(input.body.defaultProfileMode !== undefined
+              ? { defaultProfileMode: input.body.defaultProfileMode }
+              : {}),
+            ...(input.body.contextScopeType !== undefined
+              ? { contextScopeType: input.body.contextScopeType }
+              : {}),
+            ...(input.body.contextScopeId !== undefined
+              ? { contextScopeId: input.body.contextScopeId ?? null }
+              : {}),
+            ...(input.body.agentId !== undefined
+              ? { agentId: input.body.agentId ?? null }
+              : {}),
+            ...(input.body.projectId !== undefined
+              ? { projectId: input.body.projectId ?? null }
+              : {}),
+            ...(input.body.issueId !== undefined
+              ? { issueId: input.body.issueId ?? null }
+              : {}),
+            ...(input.body.approvalIssueId !== undefined
+              ? { approvalIssueId: input.body.approvalIssueId ?? null }
+              : {}),
+            ...(input.body.authConfig !== undefined
+              ? { authConfig: input.body.authConfig }
+              : {}),
+            ...(input.body.headerPolicy !== undefined
+              ? { headerPolicy: input.body.headerPolicy }
+              : {}),
+            ...(input.body.metadataPolicy !== undefined
+              ? { metadataPolicy: input.body.metadataPolicy }
+              : {}),
+            ...(input.body.onDemandToolsConfig !== undefined
+              ? { onDemandToolsConfig: input.body.onDemandToolsConfig }
+              : {}),
+            ...(input.body.metadata !== undefined
+              ? { metadata: input.body.metadata ?? {} }
+              : {}),
+            updatedAt: new Date(),
           })
-          .onConflictDoNothing();
-      }
+          .where(
+            and(
+              eq(toolMcpGateways.companyId, input.companyId),
+              eq(toolMcpGateways.id, input.gatewayId),
+            ),
+          )
+          .returning();
+        if (input.body.profileId && input.body.profileId !== existing.profileId) {
+          await tx
+            .insert(toolProfileBindings)
+            .values({
+              companyId: input.companyId,
+              profileId: input.body.profileId,
+              targetType: "gateway",
+              targetId: input.gatewayId,
+              priority: 10,
+              metadata: { source: "named_mcp_gateway" },
+            })
+            .onConflictDoNothing();
+        }
+        return updated;
+      });
       if (input.managementContext) await logActivity(db, { companyId: input.companyId, ...input.managementContext.audit,
         action: "tool_gateway.updated", entityType: "tool_mcp_gateway", entityId: updated.id,
         details: { profileId: updated.profileId, status: updated.status } });
       return getGatewayWithTokens(input.companyId, updated.id);
     },
 
-    async createNamedGatewayToken(input: {
-      companyId: string;
-      gatewayId: string;
-      body: CreateToolMcpGatewayToken;
-      actor?: { agentId?: string | null; userId?: string | null };
-      managementContext?: ConnectionManagementContext;
-    }): Promise<ToolMcpGatewayTokenCreated> {
-      await input.managementContext?.reauthorize();
-      const [gateway] = await db
-        .select()
-        .from(toolMcpGateways)
-        .where(
-          and(
-            eq(toolMcpGateways.companyId, input.companyId),
-            eq(toolMcpGateways.id, input.gatewayId),
-          ),
-        )
-        .limit(1);
-      if (!gateway)
-        throw new ToolGatewayHttpError(
-          404,
-          "MCP gateway not found",
-          "gateway_not_found",
-        );
-      if (input.actor?.agentId && !input.managementContext && input.body.subjectType !== "heartbeat_run") {
-        throw new ToolGatewayHttpError(403, "Agent client tokens require delegated authority", "gateway_token_run_context_invalid");
-      }
-      if (input.managementContext?.actor.type === "agent" && input.body.subjectType === "heartbeat_run" &&
-          (!input.managementContext.actor.runId || input.body.subjectId !== input.managementContext.actor.runId)) {
-        throw new ToolGatewayHttpError(403, "Heartbeat tokens must bind the authenticated run", "gateway_token_run_context_invalid");
-      }
-      const tokenId = randomUUID();
-      const token = generateNamedGatewayToken(tokenId);
-      const tokenPrefix = `pcgw_${tokenId.slice(0, 8)}`;
-      const now = new Date();
-      const [row] = await db.transaction(async tx => {
-        if (input.body.expiresAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.gatewayCredentialExpiry);
-        return tx
-          .insert(toolMcpGatewayTokens)
-          .values({
-            id: tokenId,
-            companyId: input.companyId,
-            gatewayId: input.gatewayId,
-            name: input.body.name,
-            tokenHash: hashGatewayToken(token),
-            tokenPrefix,
-            subjectType: input.body.subjectType ?? "gateway_client",
-            subjectId: input.body.subjectId ?? null,
-            clientLabel: input.body.clientLabel,
-            ownerNote: input.body.ownerNote,
-            allowedActions: input.body.allowedActions ?? [
-              "tools/list",
-              "tools/call",
-              "resources/list",
-              "resources/read",
-              "prompts/list",
-              "prompts/get",
-            ],
-            expiresAt: input.body.expiresAt ?? null,
-            expiryOverrideReason: input.body.expiryOverrideReason ?? null,
-            expiryOverrideByAgentId:
-              input.actor?.agentId && input.body.expiryOverrideReason
-                ? input.actor.agentId
-                : null,
-            expiryOverrideByUserId:
-              input.actor?.userId && input.body.expiryOverrideReason
-                ? input.actor.userId
-                : null,
-            expiryOverrideAt: input.body.expiryOverrideReason ? now : null,
-            responsibleUserId: input.managementContext?.actor.type === "agent" ? input.managementContext.responsibleUserId : null,
-            createdByAgentId: input.actor?.agentId ?? null,
-            createdByUserId: input.actor?.userId ?? null,
-            createdAt: now,
-            updatedAt: now,
-          })
-          .returning();
-      });
-      if (input.managementContext) await logActivity(db, { companyId: input.companyId, ...input.managementContext.audit,
-        action: "tool_gateway.token_created", entityType: "tool_mcp_gateway", entityId: input.gatewayId,
-        details: { tokenId: row.id, subjectType: row.subjectType, allowedActions: row.allowedActions } });
+    async createNamedGatewayToken(input: NamedGatewayTokenInput): Promise<ToolMcpGatewayTokenCreated> {
+      const { row, token } = await insertNamedGatewayToken(input, false);
       return { ...toGatewayToken(row), token };
     },
+
+    /**
+     * Saves an agent-created client token without a usable value. The value is
+     * generated only when the responsible person reveals it, so the creating
+     * agent never receives it in a tool result.
+     */
+    async createPendingRevealGatewayToken(input: NamedGatewayTokenInput): Promise<ToolMcpGatewayToken> {
+      return toGatewayToken((await insertNamedGatewayToken(input, true)).row);
+    },
+
+    async revealNamedGatewayToken(input: {
+      companyId: string;
+      tokenId: string;
+      userId: string;
+    }): Promise<ToolMcpGatewayTokenCreated> {
+      const [existing] = await db.select().from(toolMcpGatewayTokens).where(and(
+        eq(toolMcpGatewayTokens.companyId, input.companyId),
+        eq(toolMcpGatewayTokens.id, input.tokenId),
+      )).limit(1);
+      if (!existing) throw new ToolGatewayHttpError(404, "MCP gateway token not found", "gateway_token_not_found");
+      if (!existing.pendingReveal) throw new ToolGatewayHttpError(409, "This token's value was already shown once. Issue a new token to get a new value.", "gateway_token_already_revealed");
+      if (existing.revokedAt) throw new ToolGatewayHttpError(409, "This token was revoked before its value was revealed.", "gateway_token_revoked");
+      if (existing.expiresAt && existing.expiresAt.getTime() <= Date.now()) {
+        throw new ToolGatewayHttpError(409, "This token expired before its value was revealed. Create a new token instead.", "gateway_token_expired");
+      }
+      if (existing.responsibleUserId && existing.responsibleUserId !== input.userId) {
+        throw new ToolGatewayHttpError(403, "Only the person this agent-created token acts for can reveal its value.", "gateway_token_reveal_requires_responsible_person");
+      }
+      const token = generateNamedGatewayToken(existing.id);
+      const now = new Date();
+      // Conditional on pendingReveal so concurrent reveals produce one value.
+      // The value exists only in this response, so the reveal and its audit
+      // entry commit together: a failed audit write leaves the token pending.
+      const publications: ActivityPublication[] = [];
+      const row = await db.transaction(async tx => {
+        const [updated] = await tx.update(toolMcpGatewayTokens)
+          .set({ tokenHash: hashGatewayToken(token), pendingReveal: false, updatedAt: now })
+          .where(and(
+            eq(toolMcpGatewayTokens.companyId, input.companyId),
+            eq(toolMcpGatewayTokens.id, input.tokenId),
+            eq(toolMcpGatewayTokens.pendingReveal, true),
+            isNull(toolMcpGatewayTokens.revokedAt),
+            or(isNull(toolMcpGatewayTokens.expiresAt), gt(toolMcpGatewayTokens.expiresAt, now)),
+          ))
+          .returning();
+        if (!updated) throw new ToolGatewayHttpError(409, "This token's value was already shown once. Issue a new token to get a new value.", "gateway_token_already_revealed");
+        await logActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "user", actorId: input.userId,
+          action: "tool_gateway.token_revealed", entityType: "tool_mcp_gateway", entityId: updated.gatewayId,
+          details: { tokenId: updated.id } }, publications);
+        return updated;
+      });
+      for (const publication of publications) publishActivity(publication);
+      return { ...toGatewayToken(row), token };
+    },
+
 
     async revokeNamedGatewayToken(input: {
       companyId: string;
@@ -9810,7 +10040,7 @@ export function createToolGatewayService(
             canonicalArgumentsSummary: argumentValidation.summary,
             signedArguments,
             previewMarkdown,
-            expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+            expiresAt: pendingActionRequest.expiresAt,
             updatedAt: new Date(),
           })
           .where(eq(toolActionRequests.id, pendingActionRequest.id)));
@@ -10001,9 +10231,10 @@ export function createToolGatewayService(
           if (!isTestOriginInvocation(invocation) && payload.executionOnApprove !== true) return false;
           await this.approveActionRequest({ companyId: request.companyId, actionRequestId: request.id,
             actor: { userId: request.decidedByUserId ?? request.resolvedByUserId } });
-          const [remaining] = await db.select({ status: toolActionRequests.status }).from(toolActionRequests)
+          const [remaining] = await db.select({ status: toolActionRequests.status, errorCode: toolInvocations.errorCode })
+            .from(toolActionRequests).innerJoin(toolInvocations, eq(toolInvocations.id, toolActionRequests.invocationId))
             .where(eq(toolActionRequests.id, request.id));
-          return remaining?.status === "approved";
+          return remaining?.status === "approved" && remaining.errorCode !== TOOL_APPROVAL_CONNECTION_REQUIRED;
         } catch (err) {
           logger.warn({ err, actionRequestId: row.request.id }, "Could not recover approved tool action");
           return true;
@@ -10166,6 +10397,10 @@ export function createToolGatewayService(
         }
       }
       if (actionRequest.status === "approved") {
+        if (invocation.errorCode === TOOL_APPROVAL_CONNECTION_REQUIRED &&
+          !await toolApprovalConnectionCanResume(db, invocation.companyId, invocation.connectionId,
+            signedPayload.approvalSnapshot, invocation.policyExplanation?.approvalConnectionWait))
+          return actionRequest;
         await reflectToolActionInteractionLifecycle({
           actionRequestId: actionRequest.id,
           status: "approved",
@@ -10201,75 +10436,77 @@ export function createToolGatewayService(
         !isTestOriginInvocation(invocation) &&
         signedPayload.executionOnApprove === true
       ) {
-        const [issue] = await db
-          .select()
-          .from(issues)
-          .where(
-            and(
-              eq(issues.id, invocation.issueId!),
-              eq(issues.companyId, input.companyId),
-            ),
-          )
-          .limit(1);
-        if (!issue || issue.status === "done" || issue.status === "cancelled")
-          throw new ToolGatewayHttpError(
-            409,
-            "Task is closed",
-            "action_task_closed",
-          );
-        const session: ToolGatewaySession = {
-          id: `review:${actionRequest.id}`,
-          token: "",
-          companyId: input.companyId,
-          agentId: invocation.agentId,
-          actorType: "agent",
-          actorId: invocation.actorId,
-          originatingAgentId: typeof invocation.policyExplanation?.delegatedGatewayIssuer === "string" ? invocation.policyExplanation.delegatedGatewayIssuer : invocation.actorType === "agent" && invocation.gatewayId && !invocation.runId && !invocation.gatewayTokenId ? invocation.actorId : null,
-          gatewayId: invocation.gatewayId,
-          gatewayPublicId: invocation.gatewayPublicId,
-          gatewayTokenId: invocation.gatewayTokenId,
-          runId: invocation.runId,
-          issueId: issue.id,
-          projectId: issue.projectId,
-          createdAt: new Date(),
-          expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
-        };
-        await restoreApprovedActionIdentity(
-          session,
-          signedPayload.identityContextId,
-        );
-        session.approvedSlackInvocationId = invocation.id;
-        const tool = await findToolForSession(session, invocation.toolName);
-        if (
-          !approvalSnapshotsMatch(
-            signedPayload.approvalSnapshot,
-            await connectedRemoteApprovalSnapshot(session, tool),
-          )
-        )
-          throw new ToolGatewayHttpError(
-            409,
-            "Tool definition or connection changed; request a new review",
-            "approved_tool_target_changed",
-          );
-        const previewHash = summarizeToolValue(signedPayload.arguments).sha256;
-        const access = await policyService.decide(
-          policyInputForTool({
+        try {
+          const [issue] = await db
+            .select()
+            .from(issues)
+            .where(
+              and(
+                eq(issues.id, invocation.issueId!),
+                eq(issues.companyId, input.companyId),
+              ),
+            )
+            .limit(1);
+          if (!issue || issue.status === "done" || issue.status === "cancelled")
+            throw new ToolGatewayHttpError(
+              409,
+              "Task is closed",
+              "action_task_closed",
+            );
+          const session: ToolGatewaySession = {
+            id: `review:${actionRequest.id}`,
+            token: "",
+            companyId: input.companyId,
+            agentId: invocation.agentId,
+            actorType: "agent",
+            actorId: invocation.actorId,
+            originatingAgentId: typeof invocation.policyExplanation?.delegatedGatewayIssuer === "string" ? invocation.policyExplanation.delegatedGatewayIssuer : invocation.actorType === "agent" && invocation.gatewayId && !invocation.runId && !invocation.gatewayTokenId ? invocation.actorId : null,
+            gatewayId: invocation.gatewayId,
+            gatewayPublicId: invocation.gatewayPublicId,
+            gatewayTokenId: invocation.gatewayTokenId,
+            runId: invocation.runId,
+            issueId: issue.id,
+            projectId: issue.projectId,
+            createdAt: new Date(),
+            expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
+          };
+          await restoreApprovedActionIdentity(
             session,
-            tool,
-            parameters: signedPayload.arguments,
-            consumeRateLimit: false,
-          }),
-          { admittedInvocationId: invocation.id, requiredGatewayAction: "tools/call",
-            admittedPreviewHash: [previewHash, toolRequestIdentityHash(signedPayload.arguments, options.toolActionSigningSecret)]
-              .includes(actionRequest.canonicalArgumentsHash) ? previewHash : undefined,
-          },
-        );
-        if (!access.allowed && access.decision !== "require_approval")
-          throw new ToolGatewayHttpError(
-            403,
-            access.explanation,
-            access.reasonCode,
+            signedPayload.identityContextId,
           );
+          session.approvedSlackInvocationId = invocation.id;
+          const tool = await findToolForSession(session, invocation.toolName);
+          const liveApprovalSnapshot = await connectedRemoteApprovalSnapshot(session, tool);
+          if (!approvalSnapshotsMatch(signedPayload.approvalSnapshot, liveApprovalSnapshot))
+            throw new ToolGatewayHttpError(
+              409,
+              approvalTargetChangeMessage(signedPayload.approvalSnapshot, liveApprovalSnapshot),
+              "approved_tool_target_changed",
+            );
+          const previewHash = summarizeToolValue(signedPayload.arguments).sha256;
+          const access = await policyService.decide(
+            policyInputForTool({
+              session,
+              tool,
+              parameters: signedPayload.arguments,
+              consumeRateLimit: false,
+            }),
+            { admittedInvocationId: invocation.id, requiredGatewayAction: "tools/call",
+              admittedPreviewHash: [previewHash, toolRequestIdentityHash(signedPayload.arguments, options.toolActionSigningSecret)]
+                .includes(actionRequest.canonicalArgumentsHash) ? previewHash : undefined,
+            },
+          );
+          if (!access.allowed && access.decision !== "require_approval")
+            throw new ToolGatewayHttpError(
+              403,
+              access.explanation,
+              access.reasonCode,
+            );
+        } catch (error) {
+          // Save the human decision even if the existing authorization needs
+          // repair. Dispatch revalidates the signed target after reconnection.
+          if (!isToolApprovalConnectionError(error)) throw error;
+        }
       }
       const updated = await commitToolActionReview(db, {
         ...input,
@@ -10895,7 +11132,7 @@ export function createToolGatewayService(
         ) {
           throw new ToolGatewayHttpError(
             409,
-            "Approved tool action target changed after review",
+            approvalTargetChangeMessage(signedPayload.approvalSnapshot, liveApprovalSnapshot),
             "approved_tool_target_changed",
             {
               invocationId: storedInvocation.id,

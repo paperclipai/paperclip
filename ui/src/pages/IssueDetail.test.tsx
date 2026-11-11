@@ -1,6 +1,8 @@
 import { TaskChatPausedTakeover, type TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 // @vitest-environment jsdom
 
+import type { Breadcrumb } from "../context/BreadcrumbContext";
+
 import { DispositionRecoveryNotice, type DispositionRecoverySnapshot } from "../components/DispositionRecoveryNotice";
 import { RichWorkProductCard } from "../components/task-chat/RichWorkProductCard";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -46,6 +48,8 @@ import { taskPluginPanelActivationKey } from "@/hooks/useTaskPluginPanels";
 import {
   armIssueDetailInboxQuickArchive,
   createIssueDetailLocationState,
+  readIssueDetailBreadcrumb,
+  rememberIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
 import { getRecentTasksStorageKey, readRecentTasks } from "../lib/recent-tasks";
 import { getLastProjectId, trackRecentProject } from "../lib/recent-projects";
@@ -2882,7 +2886,7 @@ describe("IssueDetail", () => {
     },
   );
 
-  it("keeps hierarchy breadcrumbs and label chips out of the Streamlined task header", async () => {
+  it("includes the parent in the global Streamlined breadcrumbs while keeping label chips out of the task header", async () => {
     mockIssuesApi.get.mockResolvedValue(
       createIssue({
         ancestors: [
@@ -2891,6 +2895,7 @@ describe("IssueDetail", () => {
             identifier: "PAP-0",
             title: "Parent task visible in Properties",
           },
+          { id: "root-1", identifier: "PAP-99", title: "Root task" },
         ] as Issue["ancestors"],
         labels: [
           {
@@ -2916,6 +2921,90 @@ describe("IssueDetail", () => {
     );
     expect(container.textContent).not.toContain("Quick win");
     expect(container.textContent).toContain("Issue detail smoke");
+    expect(mockSetBreadcrumbs).toHaveBeenLastCalledWith([
+      { label: "Tasks", href: "/issues" },
+      expect.objectContaining({ label: "Parent task visible in Properties", identifier: "PAP-0", href: "/issues/PAP-0" }),
+      expect.objectContaining({ label: "Issue detail smoke" }),
+    ]);
+  });
+
+  it.each(["location", "stored", "query"] as const)("preserves the %s collection context when opening the breadcrumb parent", async (source) => {
+    const state = createIssueDetailLocationState("Mine", "/issues?view=mine&status=in_progress", "inbox");
+    if (source === "location") mockLocation.state = state;
+    if (source === "stored") rememberIssueDetailLocationState("PAP-1", state);
+    if (source === "query") mockLocation.search = "?from=inbox&fromHref=%2Fissues%3Fview%3Dmine%26status%3Din_progress";
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      ancestors: [{ id: "parent-1", identifier: "PAP-0", title: "Parent task" }] as Issue["ancestors"],
+    }));
+    await act(async () => { renderIssueView(); });
+    await flushReact();
+    const parentCrumb = mockSetBreadcrumbs.mock.calls.at(-1)![0][1];
+    expect(parentCrumb.onClick).toBeTypeOf("function");
+    parentCrumb.onClick();
+    const expected = { label: source === "query" ? "Inbox" : "Mine", href: state.issueDetailBreadcrumb!.href };
+    expect(readIssueDetailBreadcrumb("PAP-0", null)).toEqual(expected);
+
+    mockRouteParams.issueId = "PAP-0";
+    mockLocation.pathname = "/issues/PAP-0";
+    mockLocation.state = null;
+    mockLocation.search = "";
+    mockIssuesApi.get.mockResolvedValue(createIssue({ id: "parent-1", identifier: "PAP-0", title: "Parent task" }));
+    await act(async () => { renderIssueView(); });
+    await waitForAssertion(() => {
+      expect(mockSetBreadcrumbs.mock.calls.at(-1)![0][0]).toEqual(expected);
+    });
+  });
+
+  it.each([false, true])("renders a noninteractive private parent with mobile=%s", async (isMobile) => {
+    mockSidebarState.isMobile = isMobile;
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      ancestors: [{ id: "private-parent", identifier: "PAP-0", locked: true }] as unknown as Issue["ancestors"],
+    }));
+    await act(async () => { renderIssueView(); });
+    await flushReact();
+    expect(mockSetBreadcrumbs).toHaveBeenLastCalledWith([
+      { label: "Tasks", href: "/issues" },
+      expect.objectContaining({ label: "Private task", identifier: "PAP-0", href: undefined }),
+      expect.objectContaining({ label: "Issue detail smoke" }),
+    ]);
+    const parentCrumb = mockSetBreadcrumbs.mock.calls.at(-1)![0][1];
+    expect(parentCrumb.onClick).toBeUndefined();
+    await act(async () => { renderIssueView(parentCrumb.control); });
+    const chip = container.querySelector('[data-testid="locked-issue-chip"]');
+    expect(chip).not.toBeNull();
+    expect(chip?.textContent).toBe(isMobile ? "Private" : "PAP-0");
+    expect(container.querySelector('a, [role="link"]')).toBeNull();
+  });
+
+  it("updates the private parent label when an open task changes viewport", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      ancestors: [{ id: "private-parent", identifier: "PAP-0", locked: true }] as unknown as Issue["ancestors"],
+    }));
+    const captured: Breadcrumb[][] = [];
+    for (const isMobile of [false, true, false]) {
+      mockSidebarState.isMobile = isMobile;
+      await act(async () => { renderIssueView(); });
+      await flushReact();
+      captured.push(mockSetBreadcrumbs.mock.calls.at(-1)![0]);
+    }
+
+    const { BreadcrumbProvider, useBreadcrumbs } = await vi.importActual<
+      typeof import("../context/BreadcrumbContext")
+    >("../context/BreadcrumbContext");
+    let updateBreadcrumbs: (crumbs: Breadcrumb[]) => void = () => {};
+    function RenderBreadcrumbControl() {
+      const { breadcrumbs, setBreadcrumbs } = useBreadcrumbs();
+      updateBreadcrumbs = setBreadcrumbs;
+      return breadcrumbs[1]?.control;
+    }
+    await act(async () => {
+      renderIssueView(<BreadcrumbProvider><RenderBreadcrumbControl /></BreadcrumbProvider>);
+    });
+    for (const [index, expected] of ["PAP-0", "Private", "PAP-0"].entries()) {
+      await act(async () => { updateBreadcrumbs(captured[index]); });
+      expect(container.querySelector('[data-testid="locked-issue-chip"]')?.textContent).toBe(expected);
+      expect(container.querySelector('a, [role="link"]')).toBeNull();
+    }
   });
 
   it("preserves hierarchy breadcrumbs and label chips when Streamlined UI is off", async () => {
@@ -3756,7 +3845,12 @@ describe("IssueDetail", () => {
     mockIssuesApi.update.mockReset();
   });
 
-  it.each(["verified", "unverified", "stale", "denied"] as const)("keeps native export Retry closed with %s preservation access or source", async mode => {
+  it.each(["verified", "unverified", "unverified-plain-http", "stale", "denied"] as const)("offers exactly one native export recovery control with %s preservation access or source", async mode => {
+    // Plain-HTTP LAN and tailnet previews have no crypto.randomUUID.
+    const originalCrypto = globalThis.crypto;
+    if (mode === "unverified-plain-http")
+      vi.stubGlobal("crypto", { getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto) });
+    try {
     const action = {
       id: "file-recovery", companyId: "company-1", sourceIssueId: "issue-1",
       kind: "active_run_watchdog", cause: "native_workspace_sync_out_retry_exhausted",
@@ -3765,9 +3859,11 @@ describe("IssueDetail", () => {
         stage: "restoring_files", requestIds: [], retryable: true,
       }, systemRecovery: { state: "exhausted", preservationOperationIds: [] } },
     } as unknown as NonNullable<Issue["activeRecoveryAction"]>;
-    const issue = createIssue({ status: "blocked", assigneeAgentId: "agent-1", activeRecoveryAction: action,
-      interruption: { intentId: "held-input", responsibility: "system", state: "failed", nextRetryAt: null,
-        canRetry: true, userAction: null, sourceRunIds: ["stopped-run"], observedRunId: "stopped-run" },
+    const interruption: NonNullable<Issue["interruption"]> = { intentId: "held-input", responsibility: "system", state: "failed", nextRetryAt: null,
+      canRetry: true, userAction: null, sourceRunIds: ["stopped-run"], observedRunId: "stopped-run",
+      retryWait: { reason: "saved_work_recovery_failed",
+        message: "Saving the agent's files failed after automatic retries. Retry to try again; the agent will not repeat its work." } };
+    const issue = createIssue({ status: "blocked", assigneeAgentId: "agent-1", activeRecoveryAction: action, interruption,
       executionBlocker: { runId: "stopped-run", cause: "native_workspace_sync_out_retry_exhausted", canRetry: false, workspaceRepairRequired: true,
         workspaceRecovery: { status: "blocked", stage: "restoring_files", canRetry: true } } as Issue["executionBlocker"],
     });
@@ -3779,16 +3875,33 @@ describe("IssueDetail", () => {
     });
     mockIssuesApi.recoveryActions.mockResolvedValue({ active: action, actions: [action], sourceInspection: {
       actionId: mode === "stale" ? "other-action" : action.id, runId: "stopped-run",
-      status: mode === "unverified" ? "blocked" : "verified", scope: "recorded_source_identity",
+      status: mode.startsWith("unverified") ? "blocked" : "verified", scope: "recorded_source_identity",
     } });
     mockIssuesApi.recoverWorkspace.mockResolvedValue({ actionId: action.id, status: "queued" });
+    mockIssuesApi.retryTask.mockResolvedValue({ requestId: "export-retry", accepted: true, stale: false, presentation: interruption });
     await act(async () => renderIssueView());
-    if (mode !== "verified") {
-      await waitForAssertion(() => expect(container.textContent).toContain(mode === "denied"
-        ? "A board member with task access" : "The recorded source is unavailable or has changed"));
-      expect([...container.querySelectorAll("button")].some(button => ["Recover saved files", "Retry"].includes(button.textContent ?? ""))).toBe(false);
+    const labels = () => [...container.querySelectorAll("button")].map(button => button.textContent ?? "");
+    if (mode === "denied") {
+      await waitForAssertion(() => expect(container.textContent).toContain("A board member with task access"));
+      expect(labels().some(label => ["Recover saved files", "Retry"].includes(label))).toBe(false);
       expect(mockIssuesApi.recoverWorkspace).not.toHaveBeenCalled();
       expect(mockIssuesApi.retryTask).not.toHaveBeenCalled();
+      return;
+    }
+    if (mode !== "verified") {
+      // The notice says "Retry to try again"; an unverifiable source must not
+      // leave it without a Retry. The server re-verifies the source.
+      await waitForAssertion(() => expect(labels()).toContain("Retry"));
+      expect(labels()).not.toContain("Recover saved files");
+      expect(container.textContent).not.toContain("Refresh the task");
+      const retry = [...container.querySelectorAll("button")].find(button => button.textContent === "Retry")!;
+      await act(async () => retry.click());
+      await waitForAssertion(() => expect(mockIssuesApi.retryTask).toHaveBeenCalledExactlyOnceWith(issue.id, {
+        idempotencyKey: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+        observedRunId: "stopped-run",
+      }));
+      expect(mockIssuesApi.recoverWorkspace).not.toHaveBeenCalled();
+      expect(mockIssuesApi.resolveRecoveryAction).not.toHaveBeenCalled();
       return;
     }
     await waitForAssertion(() => expect([...container.querySelectorAll("button")]
@@ -3803,6 +3916,7 @@ describe("IssueDetail", () => {
     expect(mockIssuesApi.update).not.toHaveBeenCalled();
     expect(issue.executionBlocker?.workspaceRepairRequired).toBe(true);
     expect(container.textContent).not.toContain("Saved files recovered");
+    } finally { vi.unstubAllGlobals(); }
   });
 
   it("keeps the existing Retry path for exhausted legacy workspace restoration", async () => {
@@ -7432,6 +7546,61 @@ describe("IssueDetail", () => {
     });
   });
 
+  it.each(["success", "dispatch", "forbidden", "network"] as const)(
+    "discards a saved message before queue acknowledgement (%s)",
+    async (outcome) => {
+      const queue = createQueuedCommentQueue({ queueId: null, state: null });
+      const comment = queue.entries[0].comment;
+      mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1" }));
+      mockAgentsApi.list.mockResolvedValue([createAgent({ adapterType: "paperclip_runner" })]);
+      mockIssuesApi.getQueuedComments.mockResolvedValue(queue);
+      mockIssuesApi.recentComments.mockResolvedValue({ comments: [comment], latestCommentId: comment.id, hasMore: false });
+      mockIssuesApi.listComments.mockResolvedValue([comment]);
+      const failure = outcome === "dispatch"
+        ? new ApiError("The queued message is already being dispatched", 409, {
+            details: { code: "queued_comment_already_dispatching" },
+          })
+        : outcome === "forbidden"
+          ? new ApiError("Only the queued message author can discard it", 403, {})
+          : new Error("Connection lost");
+      if (outcome === "success") mockIssuesApi.cancelComment.mockResolvedValue(comment);
+      else mockIssuesApi.cancelComment.mockRejectedValue(failure);
+
+      await act(async () => { renderIssueView(); });
+      const props = () => mockIssueChatThreadRender.mock.calls.at(-1)![0] as {
+        queuedCommentQueue: IssueQueuedCommentQueue | null;
+        comments: IssueComment[];
+        onDiscardQueuedComment: (commentId: string, revision: string) => Promise<void>;
+      };
+      await waitForAssertion(() => {
+        expect(props().queuedCommentQueue).toMatchObject({
+          queueId: null,
+          entries: [{ comment: { id: comment.id } }],
+        });
+      });
+      let result: unknown;
+      await act(async () => {
+        result = await props().onDiscardQueuedComment(comment.id, queue.revision).catch((error: unknown) => error);
+      });
+      expect(mockIssuesApi.cancelComment).toHaveBeenCalledWith("issue-1", comment.id);
+      expect(mockIssuesApi.discardQueuedComment).not.toHaveBeenCalled();
+      if (outcome === "success") {
+        expect(result).toBeUndefined();
+        await waitForAssertion(() => {
+          expect(props().queuedCommentQueue).toBeNull();
+          expect(props().comments.some((value) => value.id === comment.id)).toBe(false);
+        });
+      } else {
+        expect(result).toBe(failure);
+        expect(props().queuedCommentQueue?.entries[0].comment.id).toBe(comment.id);
+        expect(props().comments.some((value) => value.id === comment.id)).toBe(true);
+        if (outcome === "dispatch") {
+          expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Message is already being sent" }));
+        }
+      }
+    },
+  );
+
   it.each([true, false])("keeps a discarded queued comment out of the thread (expanded=%s)", async (expanded) => {
     queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], expanded);
     const queue = createQueuedCommentQueue();
@@ -7510,8 +7679,8 @@ describe("IssueDetail", () => {
     });
   });
 
-  it.each(["discard", "cancel", "delete"] as const)("keeps %s responses in both comment caches after reopening by either task ref", async (action) => {
-    const queue = createQueuedCommentQueue();
+  it.each(["discard", "discard-unacknowledged", "cancel", "delete"] as const)("keeps %s responses in both comment caches after reopening by either task ref", async (action) => {
+    const queue = createQueuedCommentQueue(action === "discard-unacknowledged" ? { queueId: null, state: null } : {});
     const comment = queue.entries[0].comment;
     const earlier = createIssueComment({ id: "earlier-comment", createdAt: new Date("2026-04-21T00:00:01.000Z") });
     const deleted = { ...comment, body: "", deletedAt: new Date() };
@@ -7549,7 +7718,7 @@ describe("IssueDetail", () => {
       queryFn: () => new Promise<IssueRecentComments>((resolve) => { finishStaleRead = resolve; }),
     }).catch(() => undefined);
     await act(async () => {
-      if (action === "discard") await props().onDiscardQueuedComment(comment.id, queue.revision);
+      if (action === "discard" || action === "discard-unacknowledged") await props().onDiscardQueuedComment(comment.id, queue.revision);
       if (action === "cancel") props().onCancelQueued(comment.id);
       if (action === "delete") await props().onDeleteComment(comment.id);
     });

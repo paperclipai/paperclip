@@ -36,6 +36,7 @@ import plugin, {
   __getDaytonaWritableDirsForTest,
   __setDaytonaPluginContextForTest,
   WARM_IDLE_AUTO_STOP_MARGIN_MINUTES,
+  STUCK_STOPPING_FORCE_AFTER_MS,
 } from "./plugin.js";
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, environmentCreationCleanupErrorData, readEnvironmentCreationCleanupError, readEnvironmentAcquisitionDiagnostic, PluginEnvironmentStopError, environmentStopErrorData, readEnvironmentStopFailure } from "@paperclipai/plugin-sdk";
@@ -276,6 +277,172 @@ describe("Daytona idle eligibility", () => {
     expect(await plugin.definition.onIdleDrain!(signal)).toBe("present");
     finishSecond(); await stopSecond;
     expect(await plugin.definition.onIdleDrain!(signal)).toBe("none");
+  });
+
+  describe("a sandbox in a state change during workspace realize", () => {
+    beforeEach(() => { vi.stubEnv("DAYTONA_API_KEY", "host-key"); });
+    const realize = (timeoutMs = 300_000) => plugin.definition.onEnvironmentRealizeWorkspace!({
+      driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+      config: { timeoutMs, reuseLease: false },
+      lease: { providerLeaseId: "sandbox-transition", metadata: { remoteCwd: "/home/daytona/paperclip-workspace" } },
+      workspace: { localPath: "/tmp/workspace" },
+    } as never);
+    const stateChangeInProgress = () => Object.assign(new Error("Sandbox state change in progress"), { statusCode: 409 });
+
+    it("waits for a stopping sandbox to settle, then starts it", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.refreshData.mockImplementation(async () => { sandbox.state = "stopped"; });
+      sandbox.start.mockImplementation(async () => {
+        if (sandbox.state !== "stopped") throw stateChangeInProgress();
+        sandbox.state = "started";
+      });
+      await expect(realize()).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+      expect(sandbox.fs.createFolder).toHaveBeenCalledWith("/home/daytona/paperclip-workspace", "755");
+    });
+
+    it("retries a start the provider rejected while its state was changing", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopped" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.start.mockRejectedValueOnce(stateChangeInProgress())
+        .mockImplementationOnce(async () => { sandbox.state = "started"; });
+      await expect(realize()).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      expect(sandbox.start).toHaveBeenCalledTimes(2);
+    });
+
+    it("gives up when the state change outlasts the start deadline", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.start.mockRejectedValue(stateChangeInProgress());
+      await expect(realize(1_000)).rejects.toThrow("is still stopping at its start deadline");
+      expect(sandbox.start).not.toHaveBeenCalled();
+      expect(sandbox.fs.createFolder).not.toHaveBeenCalled();
+    });
+
+    it("gives the start only the budget the wait left", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      let reads = 0;
+      sandbox.refreshData.mockImplementation(async () => { if (++reads === 2) sandbox.state = "stopped"; });
+      sandbox.start.mockImplementation(async () => { sandbox.state = "started"; });
+      await expect(realize(4_000)).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      expect(reads).toBe(2);
+      expect(sandbox.start.mock.calls[0]![0]).toBeLessThanOrEqual(2);
+    });
+
+    it("does not force a stop that settles on its own", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.refreshData.mockImplementation(async () => { sandbox.state = "stopped"; });
+      sandbox.start.mockImplementation(async () => { sandbox.state = "started"; });
+      await expect(realize()).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      expect(sandbox.stop).not.toHaveBeenCalled();
+    });
+
+    it("force-stops a sandbox stuck stopping, then starts it", async () => {
+      // A graceful stop whose processes ignore SIGTERM can leave Daytona in
+      // `stopping` for many minutes. Only a forced stop completes it.
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.refreshData.mockImplementation(async () => {});
+      sandbox.stop.mockImplementation(async (_timeout?: number, force?: boolean) => {
+        if (!force) throw stateChangeInProgress();
+        sandbox.state = "stopped";
+      });
+      sandbox.start.mockImplementation(async () => { sandbox.state = "started"; });
+      vi.useFakeTimers();
+      try {
+        const realized = realize();
+        await vi.advanceTimersByTimeAsync(STUCK_STOPPING_FORCE_AFTER_MS + 5_000);
+        await expect(realized).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sandbox.stop).toHaveBeenCalledTimes(1);
+      expect(sandbox.stop.mock.calls[0]![1]).toBe(true);
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+    });
+
+    it("sends one forced stop for parallel callers and starts nothing until it settles", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.refreshData.mockImplementation(async () => {});
+      let finishStop!: () => void;
+      sandbox.stop.mockImplementation(() => new Promise<void>(resolve => {
+        finishStop = () => { sandbox.state = "stopped"; resolve(); };
+      }));
+      sandbox.start.mockImplementation(async () => { sandbox.state = "started"; });
+      vi.useFakeTimers();
+      try {
+        const first = realize();
+        const second = realize();
+        await vi.advanceTimersByTimeAsync(STUCK_STOPPING_FORCE_AFTER_MS + 5_000);
+        expect(sandbox.stop).toHaveBeenCalledTimes(1);
+        // The forced stop outlives its own liveness bound; no caller may start
+        // the sandbox while that request could still land.
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(sandbox.stop).toHaveBeenCalledTimes(1);
+        expect(sandbox.start).not.toHaveBeenCalled();
+        finishStop();
+        await vi.advanceTimersByTimeAsync(2_000);
+        await expect(first).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+        await expect(second).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sandbox.stop).toHaveBeenCalledTimes(1);
+      expect(sandbox.start.mock.invocationCallOrder[0]!).toBeGreaterThan(sandbox.stop.mock.invocationCallOrder[0]!);
+    });
+
+    it("forces a new stuck stop after the sandbox restarted, inside the cooldown", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.refreshData.mockImplementation(async () => {});
+      sandbox.stop.mockImplementation(async (_timeout?: number, force?: boolean) => {
+        if (force) sandbox.state = "stopped";
+      });
+      sandbox.start.mockImplementation(async () => { sandbox.state = "started"; });
+      vi.useFakeTimers();
+      try {
+        for (let cycle = 0; cycle < 2; cycle++) {
+          sandbox.state = "stopping"; // The next graceful stop is stuck again.
+          const realized = realize();
+          await vi.advanceTimersByTimeAsync(STUCK_STOPPING_FORCE_AFTER_MS + 5_000);
+          await expect(realized).resolves.toMatchObject({ cwd: "/home/daytona/paperclip-workspace" });
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sandbox.stop).toHaveBeenCalledTimes(2);
+      expect(sandbox.start).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps waiting to the deadline when the forced stop is refused", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopping" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.refreshData.mockImplementation(async () => {});
+      sandbox.stop.mockRejectedValue(stateChangeInProgress());
+      vi.useFakeTimers();
+      try {
+        const realized = realize(STUCK_STOPPING_FORCE_AFTER_MS + 20_000);
+        const outcome = expect(realized).rejects.toThrow("is still stopping at its start deadline");
+        await vi.advanceTimersByTimeAsync(STUCK_STOPPING_FORCE_AFTER_MS + 40_000);
+        await outcome;
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(sandbox.stop).toHaveBeenCalledTimes(1);
+      expect(sandbox.start).not.toHaveBeenCalled();
+    });
+
+    it("fails other start errors at once", async () => {
+      const sandbox = createMockSandbox({ id: "sandbox-transition", state: "stopped" });
+      mockGet.mockResolvedValue(sandbox);
+      sandbox.start.mockRejectedValue(new Error("quota exceeded"));
+      await expect(realize()).rejects.toThrow("quota exceeded");
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("keeps a stale stopped reply from clearing a start that finished during the read", async () => {
@@ -2450,6 +2617,39 @@ describe("Daytona sandbox provider plugin", () => {
     expect(sandbox.delete).not.toHaveBeenCalled();
   });
 
+  it("resumes a retained sandbox stuck stopping by forcing the stop", async () => {
+    const sandbox = createMockSandbox({ id: "sandbox-retained", state: "stopping" });
+    const allocationRoot = "/home/daytona/paperclip-workspace";
+    const workspaceId = "6028a46b-b65a-421f-952d-66b9c002b8e2";
+    const remoteCwd = `${allocationRoot}/.paperclip-workspaces/${workspaceId}`;
+    const sentinelPath = `${allocationRoot}/.paperclip-runtime/reusable-sandbox-lease.json`;
+    sandbox.process.executeCommand.mockImplementation(async command => ({ exitCode: 0,
+      result: command.startsWith("cat ") ? JSON.stringify({ token: "sentinel-token" }) : "bash" }));
+    sandbox.refreshData.mockImplementation(async () => {});
+    sandbox.stop.mockImplementation(async (_timeout?: number, force?: boolean) => {
+      if (force) sandbox.state = "stopped";
+    });
+    sandbox.start.mockImplementation(async () => { sandbox.state = "started"; });
+    mockGet.mockResolvedValue(sandbox);
+    vi.useFakeTimers();
+    try {
+      const resuming = plugin.definition.onEnvironmentResumeLease!({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1", providerLeaseId: sandbox.id,
+        config: { apiKey: "fixture-key", reuseLease: true }, requestedCwd: remoteCwd, leaseMetadata: { remoteCwd,
+          remoteWorkspaceId: workspaceId, sandboxId: sandbox.id, reuseLease: true, workspaceSentinel: { path: sentinelPath,
+            token: "sentinel-token", runId: "fixture-run", providerLeaseId: sandbox.id, result: "written" } },
+      });
+      await vi.advanceTimersByTimeAsync(STUCK_STOPPING_FORCE_AFTER_MS + 5_000);
+      await expect(resuming).resolves.toMatchObject({ providerLeaseId: sandbox.id });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(sandbox.stop).toHaveBeenCalledWith(expect.any(Number), true);
+    expect(sandbox.start).toHaveBeenCalledTimes(1);
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(sandbox.delete).not.toHaveBeenCalled();
+  });
+
   it.each([null, 7, "", "relative/workspace", "/workspace/../other", "/workspace\0other"])(
     "rejects a malformed recorded cwd before touching the provider: %j", async remoteCwd => {
       await expect(plugin.definition.onEnvironmentResumeLease!({ driverKey: "daytona", companyId: "company-1",
@@ -3387,6 +3587,26 @@ describe("Daytona sandbox provider plugin", () => {
       expect(freshSessionId).not.toBe(staleSessionId);
       const lastExec = sandbox.process.executeSessionCommand.mock.calls.at(-1)!;
       expect(lastExec[0]).toBe(freshSessionId);
+    });
+
+    it("opens a fresh session after a restart outside the plugin that realize waited out", async () => {
+      vi.stubEnv("DAYTONA_API_KEY", "host-key");
+      const sandbox = autoStoppedSandbox();
+      mockGet.mockResolvedValue(sandbox);
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      const staleSessionId = sandbox.process.createSession.mock.calls[0]![0] as string;
+      sandbox.state = "starting";
+      sandbox.refreshData.mockImplementationOnce(async () => { sandbox.state = "started"; });
+      await plugin.definition.onEnvironmentRealizeWorkspace?.({
+        driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: { providerLeaseId: "sandbox-123", metadata: { remoteCwd: "/home/daytona/paperclip-workspace" } },
+        workspace: { localPath: "/tmp/workspace" },
+      } as never);
+      expect(sandbox.start).not.toHaveBeenCalled();
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
+      expect(sandbox.process.createSession).toHaveBeenCalledTimes(2);
+      expect(sandbox.process.createSession.mock.calls[1]![0]).not.toBe(staleSessionId);
     });
 
     it("opens a fresh session after sync-in restarts an auto-stopped sandbox", async () => {

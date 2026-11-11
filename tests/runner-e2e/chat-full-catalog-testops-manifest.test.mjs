@@ -25,7 +25,8 @@ test('the manifest joins all244 source YAML scenarios without importing a domain
     const override = field => manifest.source.repairMetadata.changedFields.find(change => change.key === scenario.id && change.field === field);
     for (const [field, original] of [['originalQuery', scenario.query], ['originalContext', scenario.context], ['expectedOutcome', scenario.expected_outcome]]) {
       const change = override(field);
-      if (change) { assert.equal(change.previous, original); assert.equal(actual[field], change.current); }
+      // The scenario YAML in this tree is the current definition; the manifest keeps the previous value as history.
+      if (change) { assert.notEqual(change.previous, change.current); assert.equal(original, change.current); assert.equal(actual[field], change.current); }
       else assert.equal(actual[field], original);
     }
     assert.ok(!Object.hasOwn(actual, 'status') && !Object.hasOwn(actual, 'passed'));
@@ -59,7 +60,7 @@ test('source bounds retain legacy and pilot runs, native zero turn policy and or
 
 test('definition gaps and private prerequisites remain explicit instead of inferred runnable passes', () => {
   assert.deepEqual(fullCatalogCases.filter(value => value.coverageGaps.length).map(value => value.key), [
-    'access.invite-teammate', 'access.manage-membership', 'activity.routine-audit', 'agents.restore-instructions', 'budgets-costs.subscription-fees',
+    'activity.routine-audit', 'agents.restore-instructions', 'budgets-costs.subscription-fees',
   ]);
   assert.equal(fullCatalogCases.filter(value => value.requiredCredentials.length).length, 18);
   assert.equal(fullCatalogCases.filter(value => value.externalInput !== null).length, 37);
@@ -343,6 +344,80 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   [
     "teams.install-team",
     "sourceFiles"
+  ],
+  // Outcome definitions revised with their structural graders on the chat-eval candidate.
+  [
+    "agents.edit-instructions",
+    "expectedOutcome"
+  ],
+  [
+    "documents-artifacts.revise-delivery",
+    "expectedOutcome"
+  ],
+  // Retargeted removed-feature cases (agent-chat.chat-disabled, agents.restore-instructions).
+  [
+    "agent-chat.chat-disabled",
+    "originalQuery"
+  ],
+  [
+    "agent-chat.chat-disabled",
+    "originalContext"
+  ],
+  [
+    "agent-chat.chat-disabled",
+    "expectedOutcome"
+  ],
+  [
+    "agents.restore-instructions",
+    "originalContext"
+  ],
+  [
+    "agents.restore-instructions",
+    "expectedOutcome"
+  ],
+  // Retargeted to read-and-route: member permission edits are board-only.
+  [
+    "access.manage-membership",
+    "originalQuery"
+  ],
+  [
+    "access.manage-membership",
+    "originalContext"
+  ],
+  [
+    "access.manage-membership",
+    "expectedOutcome"
+  ],
+  // The supported board agent-grant route (#20323) builds both access cases' setup.
+  [
+    "access.invite-teammate",
+    "coverageGaps"
+  ],
+  [
+    "access.manage-membership",
+    "coverageGaps"
+  ],
+  // Real same-morning routine history instead of unproducible prior-day provenance (activity.routine-audit).
+  [
+    "activity.routine-audit",
+    "originalContext"
+  ],
+  // Agents keep delegated gateway and token authority and never receive token values (gateways-profiles.create-gateway, rotate-token).
+  [
+    "gateways-profiles.create-gateway",
+    "originalContext"
+  ],
+  [
+    "gateways-profiles.create-gateway",
+    "expectedOutcome"
+  ],
+  [
+    "gateways-profiles.rotate-token",
+    "originalContext"
+  ],
+  [
+    "gateways-profiles.rotate-token",
+    "expectedOutcome"
   ]
 ]);
   for (const change of repair.changedFields) {

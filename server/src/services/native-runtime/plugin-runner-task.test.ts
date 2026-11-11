@@ -440,6 +440,23 @@ describe("plugin native Runner ownership", () => {
     expect(task.mock.calls.find(([op]) => op.kind === "stop")).toBeUndefined();
     await registration.release(); await registration.checkpoint("settled"); await handle.completion;
   });
+  it("surfaces a proven admission rejection without polling or stopping the task", async () => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    task.mockImplementation(async op => op.kind === "submit"
+      ? { kind: "admission_rejected", taskId: "task", reason: "session_state_unavailable" } : perform(op));
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex" });
+    await prepare(owner);
+    const registration = await owner.registration({} as never, "run");
+    const process = owner.launcher(launchSpec());
+    registration.activate();
+    await expect(registration.ready()).rejects.toThrow("runner_task_admission_rejected: session_state_unavailable");
+    await expect(registration.failure).rejects.toThrow("runner_task_admission_rejected: session_state_unavailable");
+    await expect(process.completion).resolves.toMatchObject({ code: 1 });
+    await registration.checkpoint("unsettled");
+    expect(task.mock.calls.map(([op]) => op.kind)).toEqual(["prepare", "check_project_auth", "submit"]);
+  });
+
   it("reconciles a lost submit reply without launching another attempt", async () => {
     const { task } = provider();
     const perform = task.getMockImplementation()!;
@@ -653,7 +670,25 @@ describe("plugin Runner release/resume facade", () => {
     const owner = createPluginRunnerTaskOwner({ ...input("codex"), task });
     expect(await owner.driver.adoptExistingRunner!.isAlive()).toBe(false);
     await expect(owner.resume(requirements.identity, "transient-ticket")).resolves.toBe("unavailable");
-    expect(task.mock.calls.map(([operation]) => operation.kind)).toEqual(["status", "resume"]);
+    expect(task.mock.calls.map(([operation]) => operation.kind)).toEqual(["status", "resume", "status"]);
+    expect(owner.retiredBeforeClaim()).toBe(false); // stopped, but no saved session state
+  });
+
+  it("records a refused resume as retired only when the exact task stopped with saved session state", async () => {
+    for (const [status, retired] of [
+      [{ kind: "status", taskId: "task", phase: "cancelled", executionStopped: true, sessionStateAvailable: true }, true],
+      [{ kind: "status", taskId: "task", phase: "running", executionStopped: false, sessionStateAvailable: false }, false],
+      [new Error("fixture status reply lost"), false],
+    ] as const) {
+      const task = vi.fn(async (operation: any): Promise<unknown> => {
+        if (operation.kind === "resume") return { kind: "resume", taskId: "task", outcome: "unavailable" };
+        if (status instanceof Error) throw status;
+        return status;
+      });
+      const owner = createPluginRunnerTaskOwner({ ...input("codex"), task });
+      await expect(owner.resume(requirements.identity, "transient-ticket")).resolves.toBe("unavailable");
+      expect(owner.retiredBeforeClaim()).toBe(retired);
+    }
   });
 
   it.each(["release", "resume"] as const)("validates exact task and closed %s result", async operation => {
@@ -837,4 +872,19 @@ it.each(["codex", "claude"] as const)("rejects a foreign %s source tuple before 
     await expect(registration.ready!()).rejects.toThrow("adoption identity mismatch");
     expect(task).not.toHaveBeenCalled(); expect(connect).not.toHaveBeenCalled();
   } finally { await registration.release!("detach"); }
+});
+
+it("routes credential notifications to the current warm lease after rebind", async () => {
+  const { task } = provider();
+  const first = vi.fn(async () => {}), successor = vi.fn(async () => {});
+  const input = { taskId: "task", task, projectIds: [], harness: "codex", adoptIdentity: requirements.identity,
+    onCredentialsUpdated: first };
+  const owner = createPluginRunnerTaskOwner(input);
+  const event = { eventType: "auth.credentials.updated" } as never;
+  await owner.credentialsUpdated(event);
+  owner.rebind({ ...input, onCredentialsUpdated: successor });
+  await owner.credentialsUpdated(event);
+  expect(first).toHaveBeenCalledExactlyOnceWith(event);
+  expect(successor).toHaveBeenCalledExactlyOnceWith(event);
+  expect(task).not.toHaveBeenCalled();
 });

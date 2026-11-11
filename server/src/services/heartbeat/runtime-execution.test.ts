@@ -444,6 +444,19 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expectCleanup(input);
   });
 
+  it.each([["local", null], ["remote", { kind: "remote", transport: "sandbox", remoteCwd: "/workspace" }]] as const)(
+    "passes the spawn origin through the legacy adapter callback (%s)", async (expected, target) => {
+    const { input, adapter } = await fixture();
+    if (target) input.workspace.executionTarget = target as typeof input.workspace.executionTarget;
+    adapter.execute.mockImplementationOnce(async ctx => {
+      await ctx.onSpawn?.({ pid: 4242, processGroupId: 4242, startedAt: new Date().toISOString() });
+      return { exitCode: 0, signal: null, timedOut: false, provider: "test" };
+    });
+    await executeHeartbeatRuntime(db, input).catch(() => undefined);
+    expect(input.services.persistRunProcessMetadata).toHaveBeenCalledWith(expect.any(String),
+      expect.objectContaining({ pid: 4242, targetKind: expected }));
+  });
+
   it("preserves Stop metadata and marks no-work accounting without manufacturing a receipt", async () => {
     const { input, adapter, run } = await fixture();
     await db.update(heartbeatRuns).set({ status: "cancelled", resultJson: { stoppedByUser: true } }).where(eq(heartbeatRuns.id, run.id));

@@ -34,6 +34,7 @@ export {
   summarizeCodexTurnDiff,
 } from "./drivers/codex/codex-turn-diff.js";
 export * from "./native-session-runtime.js";
+export * from "./steering-delivery.js";
 export {
   DurablePrpControlPlane,
   RUNNER_PRP_PROTOCOL_MIN,
@@ -57,7 +58,15 @@ export {
   type RunnerProcessConnection,
   type RunnerProcessLaunchSpec,
   type RunnerProcessHandle,
+  type SemanticInputAdmission,
 } from "./control-plane/durable-prp-control-plane.js";
+export {
+  TOOL_CALLBACK_INTERRUPTED_CODE,
+  dispatchToolCallback,
+  interruptedToolCallbackOutcome,
+  recoverToolCallback,
+  toolCallbackOwnedByThisProcess,
+} from "./control-plane/orphaned-tool-callback.js";
 export type { DurableRecoveryIdentity } from "./control-plane/prp-transport-types.js";
 export * from "./drivers/codex/app-server-transport.js";
 export * from "./drivers/codex/codex-app-server-driver.js";
@@ -86,6 +95,7 @@ export {
   NativeEnvironmentProbeCleanupError,
   runnerCodexDynamicToolsFit,
   defaultCapabilityRunnerdBinary,
+  defaultCapabilityRunnerdBinaryAsync,
   readRunnerdArtifactBinding,
   drainRetainedRunnerdMaintenanceOperations,
   coldAdmissionTimeoutMs,
@@ -97,6 +107,7 @@ export {
   type RetainedRunnerdMaintenanceEpochReceipt,
   type RunnerdCodexTransport,
   type RunnerdCodexTransportOptions,
+  type RunnerdStartupStep,
 } from "./live/runnerd-codex-transport.js";
 export * from "./live/workspace-file-reference.js";
 export { readLinuxProcessStartedAt, type LinuxProcessStartOptions } from "./live/linux-process-start.js";
@@ -114,7 +125,7 @@ export * from "./compatibility.js";
 
 export { probeAcpxClaudeInstallation, probeAcpxGrokInstallation } from "./drivers/acpx/installation-integrity.js";
 export { probeAcpxPiInstallation, probeAcpxKimiInstallation } from "./drivers/acpx/profile-installation.js";
-export { PROVIDER_PACK_COMPATIBILITY, bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary } from "./live/bundled-remote-provider-pack.js";
+export { BUNDLED_REMOTE_RUNNER_IDENTITY_MISMATCH, PROVIDER_PACK_COMPATIBILITY, bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary, bundledRemoteRunnerRelease } from "./live/bundled-remote-provider-pack.js";
 
 export { RunnerdMuseDriver, describeRunnerdMuseDriver, type RunnerdMuseDriverOptions } from "./drivers/muse/runnerd-muse-driver.js";
 export { RunnerdDotDriver, type RunnerdDotDriverOptions } from "./drivers/dot/runnerd-dot-driver.js";
@@ -134,3 +145,4 @@ export { archiveCursorCloudSessionCheckpoint } from "./drivers/cursor-cloud/chec
 
 export { readProviderFailure, type ProviderFailure } from "./contracts/provider-failure.generated.js";
 export { providerFailureFromError } from "./drivers/provider-failure.js";
+export { SAFE_ERROR_CAUSE_PATTERN, safeErrorCauseCode } from "./control-plane/safe-error-cause.js";

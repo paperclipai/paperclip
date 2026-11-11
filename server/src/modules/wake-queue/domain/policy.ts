@@ -13,6 +13,9 @@
 // This file only branches on that facts object; it never queries a
 // database, reads the clock, or reads the wake context payload directly.
 
+/** The error a saved wake records when a completed run already received all of its messages. */
+export const QUEUED_MESSAGES_DELIVERED_REASON = "Queued messages were already delivered to a completed run";
+
 export type WakeAdmissionFacts = {
   /** True when the active execution run's agent and this wake's own agent share an execution-agent-name key. */
   isSameExecutionAgent: boolean;

@@ -1,3 +1,4 @@
+import { withPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { pluginIdleManifestGeneration, type IdlePluginCatalogEntry } from "./plugin-idle-catalog.js";
 import { createHash, randomUUID } from "node:crypto";
 import { PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
@@ -590,6 +591,7 @@ export type ExecuteLogSink = (
  * carries no command string, so a caller cannot select the command.
  */
 export interface LoginPtyOpenInput {
+  expiresAt?: string;
   /** The environment driver key. It routes the worker; it confers no command authority. */
   driverKey: string;
   companyId: string;
@@ -1265,6 +1267,19 @@ export function createPluginWorkerHandle(
   ): PluginInvocationScope | null {
     if (!isRecord(params)) return null;
 
+    if (method === "executeTool" && isRecord(params.runContext)) {
+      const companyId = readNonEmptyString(params.runContext.companyId);
+      const agentId = readNonEmptyString(params.runContext.agentId);
+      const runId = readNonEmptyString(params.runContext.runId);
+      return companyId ? { companyId, ...(agentId ? { agentOrigin: { agentId, runId } } : {}) } : null;
+    }
+    if (method === "performAction" && isRecord(params.actorContext)) {
+      const companyId = readNonEmptyString(params.actorContext.companyId);
+      const agentId = params.actorContext.type === "agent" ? readNonEmptyString(params.actorContext.agentId) : null;
+      const runId = readNonEmptyString(params.actorContext.runId);
+      return companyId ? { companyId, ...(agentId ? { agentOrigin: { agentId, runId } } : {}) } : null;
+    }
+
     const directCompanyId = readNonEmptyString(params.companyId);
     if (directCompanyId) {
       if (method === "resourceLifecycle" && params.resourceType === "project" && readNonEmptyString(params.resourceId)) {
@@ -1285,16 +1300,6 @@ export function createPluginWorkerHandle(
         }
       }
       return { companyId: directCompanyId };
-    }
-
-    if (method === "performAction" && isRecord(params.actorContext)) {
-      const companyId = readNonEmptyString(params.actorContext.companyId);
-      return companyId ? { companyId } : null;
-    }
-
-    if (method === "executeTool" && isRecord(params.runContext)) {
-      const companyId = readNonEmptyString(params.runContext.companyId);
-      return companyId ? { companyId } : null;
     }
 
     if (method === "onEvent" && isRecord(params.event)) {
@@ -1564,7 +1569,9 @@ export function createPluginWorkerHandle(
   type LoginPtyPreBindRecord = LoginPtyPreBindOutputRecord | LoginPtyPreBindExitRecord;
 
   interface LoginPtyRoute {
+    companyId: string;
     hostRouteId: string;
+    closePromise: Promise<void> | null;
     state: LoginPtyRouteState;
     workerSessionId: string | null;
     listener: ((chunk: string) => void) | null;
@@ -1626,11 +1633,11 @@ export function createPluginWorkerHandle(
   // that carries the exact host route identifier. An absent, malformed,
   // mismatched, or timed-out acknowledgement returns false, so the caller fails
   // closed.
-  async function closeLoginPtyTerminal(hostRouteId: string): Promise<boolean> {
+  async function closeLoginPtyTerminal(hostRouteId: string, companyId: string): Promise<boolean> {
     try {
       const ack = await callInternal(
         "loginPtyClose",
-        { hostRouteId },
+        { hostRouteId, companyId },
         loginPtyCloseTimeoutMs,
       );
       return isRecord(ack) && readNonEmptyString(ack.hostRouteId) === hostRouteId;
@@ -1647,6 +1654,9 @@ export function createPluginWorkerHandle(
   // every other route this worker still holds settles through the worker-exit
   // path that follows.
   async function terminalizeLoginPtyRoute(route: LoginPtyRoute): Promise<void> {
+    // A notification may already have started close. Every later disposer must
+    // join that acknowledgement before its owner can release the allocation.
+    if (route.closePromise) return route.closePromise;
     if (route.terminalized) return;
     route.terminalized = true;
     route.state = "closed";
@@ -1660,20 +1670,22 @@ export function createPluginWorkerHandle(
       loginPtyRoutesByWorkerSessionId.delete(route.workerSessionId);
     }
     releaseLoginPtyRouteSlot(route);
-    // A terminalized route reports a null exit code, which the runner treats as a
-    // failure.
+    route.closePromise = (async () => {
+      const confirmed = await closeLoginPtyTerminal(route.hostRouteId, route.companyId);
+      if (!confirmed) {
+        // The worker did not acknowledge the close, so the host cannot prove the
+        // terminal is gone. Retire the worker before any reuse.
+        log.error(
+          { pluginId },
+          "login pseudo-terminal close not acknowledged; retiring worker",
+        );
+        retireWorkerProcess();
+      }
+    })();
+    // Report failure promptly, but retain the shared close barrier so the
+    // runner's following dispose waits for confirmed stop (or worker retirement).
     settleRouteWait(route, { exitCode: null });
-    const confirmed = await closeLoginPtyTerminal(route.hostRouteId);
-    if (!confirmed) {
-      // The worker did not acknowledge the close, so the host cannot prove the
-      // terminal is gone. Fail closed: retire the worker before any reuse. This
-      // also settles and clears every other route the worker still holds.
-      log.error(
-        { pluginId },
-        "login pseudo-terminal close not acknowledged; retiring worker",
-      );
-      retireWorkerProcess();
-    }
+    return route.closePromise;
   }
 
   // Resolve one login pseudo-terminal notification to its route. Return null
@@ -1920,7 +1932,9 @@ export function createPluginWorkerHandle(
       settleWait = resolve;
     });
     const route: LoginPtyRoute = {
+      companyId: input.companyId,
       hostRouteId,
+      closePromise: null,
       state: "reserved",
       workerSessionId: null,
       listener: null,
@@ -1957,6 +1971,7 @@ export function createPluginWorkerHandle(
           providerLeaseId: input.providerLeaseId,
           loginCommandKey: input.loginCommandKey,
           sessionHome: input.sessionHome,
+          ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
         },
         loginPtyOpenTimeoutMs,
       );
@@ -2001,9 +2016,9 @@ export function createPluginWorkerHandle(
         if (route.state !== "open" || !sid) return;
         void callInternal(
           "loginPtyInput",
-          { workerSessionId: sid, data },
+          { companyId: route.companyId, workerSessionId: sid, data, inputId: randomUUID() },
           loginPtyOpenTimeoutMs,
-        ).catch(() => {});
+        ).catch(() => terminalizeLoginPtyRoute(route));
       },
       wait(): Promise<{ exitCode: number | null }> {
         return waitPromise;
@@ -2013,7 +2028,7 @@ export function createPluginWorkerHandle(
         if (!sid) return;
         void callInternal(
           "loginPtyStop",
-          { workerSessionId: sid },
+          { companyId: route.companyId, workerSessionId: sid },
           loginPtyOpenTimeoutMs,
         ).catch(() => {});
       },
@@ -2832,6 +2847,9 @@ export function createPluginWorkerHandle(
       (message as { paperclipInvocationId?: unknown }).paperclipInvocationId,
     );
     if (!invocationId) {
+      if (Array.from(activeInvocations.values()).some(entry => entry.scope.agentOrigin)) {
+        return { invalidInvocationScope: true };
+      }
       // No host-issued invocation is being echoed. This is a genuinely
       // proactive worker→host call (timer/loop). If it references a company the
       // plugin is authorized to act on proactively, resolve it to that
@@ -2912,7 +2930,13 @@ export function createPluginWorkerHandle(
     }
 
     try {
-      const result = await handler(request.params, contextForWorkerMessage(request));
+      const context = contextForWorkerMessage(request);
+      if (context.invalidInvocationScope) throw Object.assign(new Error("Missing or unknown invocation scope"), {
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+      const source = context.invocationScope?.agentOrigin;
+      const origin = source && context.invocationScope ? { ...source, companyId: context.invocationScope.companyId } : undefined;
+      const result = await withPluginInteractionOrigin(origin, () => handler(request.params, context));
       sendMessage({
         jsonrpc: JSONRPC_VERSION,
         id: request.id,

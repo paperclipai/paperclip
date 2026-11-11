@@ -1,4 +1,7 @@
-import { pendingMuseTerminalBindings, type ExternalAgentSettlementScope } from "../modules/external-agents/index.js";
+import { HttpError } from "../errors.js";
+import { museIdentity, inspectMuseConnectionCredential } from "./muse-identity.js";
+import { canConfigureAgentConnection } from "../modules/agent-lifecycle/index.js";
+import { pendingMuseContactVerifications, parseMuseVerificationHint, type MuseVerificationScope, pendingMuseTerminalBindings, type ExternalAgentSettlementScope } from "../modules/external-agents/index.js";
 import { logger } from "../middleware/logger.js";
 import { and, asc, eq, gt, isNull, lte } from "drizzle-orm";
 import { museAgentBindings as bindings, mcpOauthGrants, type Db } from "@paperclipai/db";
@@ -35,6 +38,7 @@ export function startMuseMaintenance(
           startupMarked = true;
         }
         let failed = false;
+        let verificationEnabled: boolean | undefined;
         let after: string | undefined;
         if (global) {
           while (!signal.aborted) {
@@ -86,6 +90,36 @@ export function startMuseMaintenance(
             if (active.length < 100) break;
             after = active.at(-1)!.id;
           }
+        }
+        for (const hint of global ? ["*"] : hints) {
+          const scope: MuseVerificationScope | undefined = hint === "*" ? undefined : parseMuseVerificationHint(hint);
+          if (hint !== "*" && !scope) continue;
+          let after: string | undefined;
+          while (!signal.aborted) {
+            const rows = await pendingMuseContactVerifications(db, scope, after);
+            for (const { binding: b, agent } of rows) {
+              if (signal.aborted) throw new Error("Muse verification recovery stopped");
+              if (!canConfigureAgentConnection(agent)) continue;
+              verificationEnabled ??= await museIdentity(db).enabled();
+              if (!verificationEnabled) break;
+              if (!settlementAllowed) { requested.add(hint); continue; }
+              try {
+                const credential = await inspectMuseConnectionCredential(db, b);
+                if (credential.state !== "active" && credential.state !== "pending") continue;
+                await broker.verify(b.companyId, b.agentId, {
+                  bindingId: b.id, generation: b.generation, expectedRevision: b.revision,
+                });
+              } catch (error) {
+                if (!(error instanceof HttpError && [401, 403, 404, 410].includes(error.status))) {
+                  failed = true;
+                  requested.add(hint);
+                }
+              }
+            }
+            if (rows.length < 100 || verificationEnabled === false) break;
+            after = rows.at(-1)!.binding.id;
+          }
+          if (verificationEnabled === false) break;
         }
         if (settlementAllowed) {
           for (const hint of global ? ["*"] : hints) {

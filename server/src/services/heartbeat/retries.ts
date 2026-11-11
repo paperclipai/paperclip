@@ -1,3 +1,4 @@
+import { runOwnerFenceHeldSql } from "../remote-workspace-writer-hold.js";
 import { isInterruptedNativePreparation } from "../cancelled-native-startup.js";
 import { isPreDispatchExecutionWaitVerified } from "../pre-dispatch-execution-wait.js";
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
@@ -21,6 +22,8 @@ import {
   executionFailureRetryCount,
   executionRetryAttemptCount,
   accountingForScheduledRetry,
+  INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS,
+  INTERRUPTED_PREPARATION_RETRY_REASON,
 } from "../execution-recovery-attempt.js";
 import { WORKSPACE_GIT_SCAN_ERROR_CODES } from "../workspace-git-operation-scheduler.js";
 import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, REMOTE_WORKSPACE_RESTORE_FAILED_CODE } from "../remote-workspace-transport.js";
@@ -30,6 +33,7 @@ import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-u
 import { REPOSITORY_CATALOG_UNAVAILABLE_CODE } from "../repository-catalog-unavailable-error.js";
 import { REVIEWED_CHAT_BINDING_NOT_READY } from "../reviewed-chat-binding-diagnostics.js";
 import { RUNNER_REVISION_MISMATCH_CODE, RUNNER_REVISION_MISMATCH_RETRY, RUNNER_REVISION_WAIT_RETRY_REASON } from "../runner-revision-mismatch.js";
+import { STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_RETRY, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../../storage/storage-unavailable.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE } from "../legacy-controller-lease.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -145,7 +149,8 @@ export function isTransientWorkspacePreparationCode(code: string | null | undefi
     || code === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE || code === REUSABLE_SANDBOX_RESUME_FAILED_CODE
     || code === REMOTE_WORKSPACE_RESTORE_FAILED_CODE || code === PLUGIN_WORKER_UNAVAILABLE_CODE
     || code === RUNNER_REVISION_MISMATCH_CODE || code === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
-    || code === REPOSITORY_CATALOG_UNAVAILABLE_CODE || code === REVIEWED_CHAT_BINDING_NOT_READY;
+    || code === REPOSITORY_CATALOG_UNAVAILABLE_CODE || code === REVIEWED_CHAT_BINDING_NOT_READY
+    || code === STORAGE_UNAVAILABLE_CODE;
 }
 
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
@@ -154,7 +159,9 @@ export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
 export function failedRunRetryBudgetSpent(run: Parameters<typeof executionFailureRetryCount>[0] & { errorCode?: string | null }): boolean {
   return run.errorCode === RUNNER_REVISION_MISMATCH_CODE
     ? executionRetryAttemptCount(run, RUNNER_REVISION_WAIT_RETRY_REASON) >= RUNNER_REVISION_MISMATCH_RETRY.maxAttempts
-    : executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
+    : run.errorCode === STORAGE_UNAVAILABLE_CODE
+      ? executionRetryAttemptCount(run, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON) >= STORAGE_UNAVAILABLE_RETRY.maxAttempts
+      : executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
 }
 
 const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 2;
@@ -362,7 +369,8 @@ function isRetryableInteractionContinuationInfrastructureFailure(
     run.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE ||
     run.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE ||
     run.errorCode === REVIEWED_CHAT_BINDING_NOT_READY ||
-    run.errorCode === RUNNER_REVISION_MISMATCH_CODE
+    run.errorCode === RUNNER_REVISION_MISMATCH_CODE ||
+    run.errorCode === STORAGE_UNAVAILABLE_CODE
   ) {
     return true;
   }
@@ -400,6 +408,28 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
     dueAt: new Date(now.getTime() + delayMs),
     maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
   };
+}
+
+/**
+ * The interrupted-preparation lane: a preparation that a restart interrupted
+ * spent no provider work and hit no transient fault, so its first retry starts
+ * at once. If it is interrupted again it backs off like a transient failure
+ * (the longest delay from then on), so a preparation that itself keeps taking
+ * the server down is slowed and still capped by the lane's attempt limit.
+ */
+export function computeInterruptedPreparationRetrySchedule(
+  attempt: number,
+  now = new Date(),
+  random: () => number = Math.random,
+) {
+  if (!Number.isInteger(attempt) || attempt <= 0) return null;
+  if (attempt === 1) {
+    return { attempt, baseDelayMs: 0, delayMs: 0, dueAt: new Date(now.getTime()),
+      maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS };
+  }
+  const schedule = computeBoundedTransientHeartbeatRetrySchedule(
+    Math.min(attempt - 1, BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS), now, random);
+  return schedule ? { ...schedule, attempt } : null;
 }
 
 export { normalizeAgentNameKey };
@@ -456,6 +486,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       }
     }
     if (!opts?.retryReason && run.errorCode === RUNNER_REVISION_MISMATCH_CODE) opts = { ...RUNNER_REVISION_MISMATCH_RETRY, ...opts };
+    if (!opts?.retryReason && run.errorCode === STORAGE_UNAVAILABLE_CODE) opts = { ...STORAGE_UNAVAILABLE_RETRY, ...opts };
     if (await hasCaseHandoffForRun(run)) return { outcome: "not_scheduled" as const,
       reason: "The durable case handoff owns successor work.", issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     if (["openai_dot", "muse"].includes(String(parseObject(agent.adapterConfig).provider))
@@ -478,19 +509,27 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       preparationRecovery.kind === "bootstrap" && preparationRecovery.providerWorkStarted === false
       && (run.status === "interrupted" || await isInterruptedNativePreparation(db, run));
     const retryReason = opts?.retryReason ??
-      (interruptedPreparation ? "interrupted_preparation" : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
+      (interruptedPreparation ? INTERRUPTED_PREPARATION_RETRY_REASON : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
+    // Interrupted preparation spent no provider work: its own lane, bounded
+    // like the native controller-generation cap (execution-recovery-attempt).
+    const interruptedPreparationLane = retryReason === INTERRUPTED_PREPARATION_RETRY_REASON;
     const maxAttempts = Math.max(
       0,
       Math.floor(
-        opts?.maxAttempts ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
+        opts?.maxAttempts ?? (interruptedPreparationLane
+          ? INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
       ),
     );
     const consumedAttempts = executionRetryAttemptCount(run, retryReason);
     const nextAttempt = consumedAttempts + 1;
-    const computedBaseSchedule =
-      opts?.delayMs != null
+    // An interrupted preparation never spends failures, but it never revives
+    // a chain whose real failures already spent the failure budget either.
+    const failureBudgetSpent = interruptedPreparationLane && opts?.maxAttempts == null
+      && executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
+    const computedBaseSchedule = failureBudgetSpent ? null
+      : opts?.delayMs != null
         ? nextAttempt <= maxAttempts
           ? {
               attempt: nextAttempt,
@@ -503,7 +542,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             }
           : null
         : nextAttempt <= maxAttempts
-          ? computeBoundedTransientHeartbeatRetrySchedule(
+          ? interruptedPreparationLane
+            ? computeInterruptedPreparationRetrySchedule(nextAttempt, now, opts?.random)
+            : computeBoundedTransientHeartbeatRetrySchedule(
               nextAttempt,
               now,
               opts?.random,
@@ -543,7 +584,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         payload: exhaustion,
         retryExhaustion: exhaustion,
       });
-      if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
+      if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON || (retryReason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON
+          && isResolvedInteractionContinuationWakeContext(run.contextSnapshot))) {
         await escalatePlanApprovalResumeFailureNeedsAttention({
           run,
           issueId,
@@ -654,7 +696,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
-    const interactionRunnerWait = retryReason === RUNNER_REVISION_WAIT_RETRY_REASON
+    const interactionRunnerWait = (retryReason === RUNNER_REVISION_WAIT_RETRY_REASON
+      || retryReason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON)
       && isResolvedInteractionContinuationWakeContext(run.contextSnapshot);
     const interactionContinuationPayload =
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON || interactionRunnerWait
@@ -1044,7 +1087,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
 
         const scheduledRunId = randomUUID();
         if (contextSnapshot.explicitUserContinuation) {
-          const continuation = issueId && (retryReason === "transient_failure" || retryReason === RUNNER_REVISION_WAIT_RETRY_REASON) ? await admitExplicitContinuationRetry({
+          const continuation = issueId && (retryReason === "transient_failure" || retryReason === RUNNER_REVISION_WAIT_RETRY_REASON
+            || retryReason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON) ? await admitExplicitContinuationRetry({
             db: tx as unknown as Db, companyId: run.companyId, issueId, agentId: run.agentId,
             parentRunId: run.id, successorRunId: scheduledRunId, now,
           }) : null;
@@ -1423,7 +1467,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           ne(heartbeatRuns.id, input.excludeRunId),
           // Last observed activity: output beats start beats creation. A run
           // that started recently but has not written output yet is live.
-          sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${staleCutoff.toISOString()}::timestamptz`,
+          or(sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${staleCutoff.toISOString()}::timestamptz`,
+            runOwnerFenceHeldSql()),
           eq(issues.projectWorkspaceId, input.projectWorkspaceId),
           ne(sql`${issues.id}::text`, input.excludeIssueId),
           ...(input.honorIsolatedWorkspaceModes
@@ -1463,7 +1508,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       (input.now ?? new Date()).getTime() -
         WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
     );
-    const lastActivityBefore = sql<boolean>`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) < ${staleCutoff.toISOString()}::timestamptz`;
+    const lastActivityBefore = sql<boolean>`(coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) < ${staleCutoff.toISOString()}::timestamptz and not ${runOwnerFenceHeldSql()})`;
     return await db
       .select({
         runId: heartbeatRuns.id,

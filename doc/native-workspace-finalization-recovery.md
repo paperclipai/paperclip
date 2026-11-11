@@ -193,6 +193,28 @@ runs. Another agent's run and a recovery-action wake still prevent takeover.
 Publication checks repeat this validation, so a wake that starts during copyback
 stops publication. Row locks are never held across physical copyback I/O.
 
+**Replaced deployment on a volume-backed service (automatic, no harness call).**
+Railway mounts a service volume into one deployment at a time: it stops the
+previous deployment before the new one starts, and a service with a volume has
+no replicas. When this server runs on a Railway service with an attached volume
+(`RAILWAY_VOLUME_ID` and `RAILWAY_VOLUME_MOUNT_PATH`), and the receipt names the
+same project, environment and service with a different deployment ID, the
+shared owner-liveness primitive (`proveOwnerGone`) returns `gone` with reason
+`deployment_replaced`. That deployment's controller and every copyback child
+in it have exited, on whichever host they ran. The finalizer then claims the
+exact receipt as it does for a harness receipt, logs
+`issue.workspace_owner_stop_verified` with `deploymentProof`, marks the
+recovery `resuming`, and resumes the save with no provider turn. The same
+deployment ID, another service or environment, or a server without a volume
+gives no proof; the harness request below still applies. New receipts also
+record the mounted volume ID, and the proof then requires this server to mount
+that same volume. Receipts saved by earlier releases already record the
+deployment, so they take this path after an upgrade. The finalizer reaches this
+check only after it holds the run's copyback advisory lock, so the previous
+owner's lock session has also ended. A wait that this rule and the harness
+cannot settle names the Resume saved result action; its text never asks a
+person to inspect a server.
+
 The harness endpoint is `POST /v1/tenant/workspace-worker-stop`. The fleet-wide
 server token authorizes a read request, never stop evidence: responses must be
 signed by the harness. This endpoint requires the companion cloud harness change.
@@ -330,6 +352,25 @@ stop evidence. The ordinary reconciliation sweep then resumes workspace
 finalization from the accepted result. Confirm the run's native phase and
 `resultJson.finalizationPhase` are `committed`, there is no `nextAttemptAt`, and
 no workspace operation is still running. The accepted provider result is reused.
+
+## Symlinks in remote workspace saves
+
+The remote workspace save (`remote-workspace-snapshot-archive.ts`) records
+symlinks and never follows them. A link whose target resolves inside the
+workspace, such as `node_modules/.bin/tool -> ../tool/cli.js`, is saved as a
+link and restored as the same link. A link that is absolute or leaves the
+workspace through `..`, such as a headless Chromium profile's
+`SingletonSocket -> /tmp/...` or a link into a sandbox-only cache, has no
+portable meaning: the save records its path in the archive manifest's
+`excluded` list, omits it, and continues. Such a link no longer fails the save
+with `remote_workspace_archive_unsafe_symlink`. Restore materializes only the
+manifest entries, so an omitted link is absent after restore, and restore still
+refuses any archive whose manifest names an absolute or escaping link. Omitting
+a tracked link shows as a deletion in `git status` after restore.
+
+Saves that recovery exhausted before this policy (capture policy version 1) are
+retried once automatically; see the capture-policy re-arm in
+`doc/execution-semantics.md`.
 
 ## Automatic unsafe archive recovery
 

@@ -4,7 +4,7 @@
       "standard",
       "skill_test"
     ],
-    "description": "Save newly authored content as a reusable single-file skill in the company library. To add an existing skill, use source import or catalog install via search_api and call_api so source provenance is retained. Supply a complete SKILL.md whose name and description match the inputs. This saves the skill and shows a card; it does not assign the skill to any agent. Reuse idempotencyKey on retries.",
+    "description": "Save newly authored content as a reusable single-file skill in the company library. To add an existing skill, use source import or catalog install via search_api and call_api so source provenance is retained. A skill already exists when its SKILL.md is in a local directory, repository, URL or catalog, even when the company library has no match; import it instead of copying its content here. Supply a complete SKILL.md whose name and description match the inputs. This saves the skill and shows a card; it does not assign the skill to any agent. Reuse idempotencyKey on retries.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -112,7 +112,7 @@
       "planning",
       "skill_test"
     ],
-    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
+    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. For lossless helper input, use saveResponse:true on a non-sensitive GET to save nonempty responses as artifacts. Empty responses return empty:true without an artifact. Use download_artifact for artifacts up to 10 MiB; larger text artifacts require paged content reads. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -218,6 +218,10 @@
             }
           },
           "type": "object"
+        },
+        "saveResponse": {
+          "description": "GET only: save complete nonempty authorized, non-sensitive response bytes as an immutable artifact even below the inline threshold. Returns artifactId, byteSize and sha256 without inline body transcription. Zero-byte success returns empty:true and no artifact. download_artifact accepts at most 10 MiB; use paged content reads for larger text artifacts. Uses existing capture limits and budgets. Cannot combine with responseText. Denied, sensitive and partial responses are not exported. Never repeats the source request.",
+          "type": "boolean"
         }
       },
       "required": [
@@ -271,7 +275,7 @@
       "planning",
       "skill_test"
     ],
-    "description": "Read bounded comments on the active task.",
+    "description": "Read bounded comments on the active task only. Calling get_task does not change the active task. This is not a status or assignment audit. For progress chronology and handoff actors, use search_api to discover the company timeline or issue activity, then call_api.",
     "effect": "read",
     "inputSchema": {
       "additionalProperties": false,
@@ -3342,7 +3346,7 @@
       "standard",
       "skill_test"
     ],
-    "description": "Create a project task from a conversation, or a child from an ordinary task. When the user names an existing teammate or project, resolve their IDs with list_agents or list_projects and set assigneeActorId or projectId in this creation call. A todo task can start its assignee immediately; creating it for yourself and reassigning later can start the wrong agent. Persist initialPlan before execution. Use backlog to save or plan without starting work; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include required inputs and constraints in self-contained child instructions.",
+    "description": "Create a task. When the user names an existing teammate or project, resolve their IDs with list_agents or list_projects and set assigneeActorId or projectId in this creation call. A todo task can start its assignee immediately; creating it for yourself and reassigning later can start the wrong agent. Persist initialPlan before execution. Use backlog to save or plan without starting work; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include required inputs and constraints in self-contained task instructions.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -3374,7 +3378,7 @@
           "uniqueItems": true
         },
         "description": {
-          "description": "Child task description.",
+          "description": "Task description.",
           "maxLength": 20000,
           "type": [
             "string",
@@ -3874,7 +3878,7 @@
               "type": "string"
             },
             "notes": {
-              "description": "What to check on the next run; do not include secrets.",
+              "description": "What to check on the next run. Maximum 500 characters; do not include secrets.",
               "maxLength": 500,
               "minLength": 1,
               "type": "string"

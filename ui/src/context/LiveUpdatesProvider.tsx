@@ -1,7 +1,9 @@
 import { LiveTranscriptInterests, DISCONNECTED_TRANSCRIPT_STREAM } from "../lib/live-transcript-interests";
-import { resolveAgentAppearance } from "@paperclipai/shared";
+import { resolveAgentAppearance, TASK_IDENTITY_CHANGED_FIELD, issueActivityChangesTaskIdentity } from "@paperclipai/shared";
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { createLiveQueryRecovery } from "../lib/live-query-recovery";
+import { isLiveReconciledQuery } from "../lib/live-reconcile";
+import { refreshPendingTaskBrowserReads, refreshTaskBrowsers } from "../lib/task-browsers-refresh";
 import {
   createContext,
   useCallback,
@@ -20,8 +22,12 @@ import {
   type QueryClient,
 } from "@tanstack/react-query";
 import {
+  AMBIENT_INVALIDATION_SPACING_MS,
   createCoalescingQueryClient,
   createInvalidationBatcher,
+  createLaneRoutingBatcher,
+  excludingQueryKeys,
+  type InvalidationBatcher,
 } from "../lib/query-invalidation-batcher";
 import {
   patchRunStatusInList,
@@ -970,6 +976,96 @@ const ISSUE_TOAST_ACTIONS = new Set([
   "issue.updated",
   "issue.comment_added",
 ]);
+/**
+ * The `@task` mention pool is the 100 most recently updated tasks (one large
+ * response) and only backs a client-side picker. A chat turn emits many task
+ * events, and refetching the pool for each one re-downloads that list again
+ * and again. The pool is kept fresh this way instead:
+ *
+ * - A created, deleted, hidden, unhidden or renamed task changes what the
+ *   picker can offer, so the pool refetches at once. Authenticated sockets
+ *   send no `details`; the server sends the closed `taskIdentityChanged`
+ *   boolean instead, and full-detail events are classified the same way.
+ * - Any other event on a task already in the pool moves it to the front in
+ *   place. No request is needed: its title and identifier have not changed.
+ * - Any other event on a task outside the pool may lift it into the top 100.
+ *   The pool refetches at most once per `MENTION_POOL_REFRESH_WINDOW_MS`,
+ *   trailing, so the picker catches up within that window without a refetch
+ *   per event. Until then a task that just entered the top 100 may be missing.
+ */
+const MENTION_POOL_REFRESH_WINDOW_MS = 30_000;
+const mentionPoolRefreshes = new WeakMap<
+  object,
+  Map<string, { lastRequestedAt: number; timer: ReturnType<typeof setTimeout> | null }>
+>();
+
+function activityChangesTaskIdentity(
+  payload: Record<string, unknown>,
+  action: string | null,
+  details: Record<string, unknown> | null,
+): boolean {
+  const flag = payload[TASK_IDENTITY_CHANGED_FIELD];
+  if (typeof flag === "boolean") return flag;
+  return issueActivityChangesTaskIdentity(action, details);
+}
+
+function refreshMentionPoolForActivity(
+  queryClient: QueryClient,
+  companyId: string,
+  entityId: string | null,
+  identityChanged: boolean,
+) {
+  const queryKey = queryKeys.issues.mentionPool(companyId);
+  if (identityChanged) {
+    queryClient.invalidateQueries({ queryKey });
+    return;
+  }
+  const pool = queryClient.getQueryData<Issue[]>(queryKey);
+  if (!pool) return;
+  const query = queryClient.getQueryCache().find({ queryKey, exact: true });
+  if (!query) return;
+  // A pending invalidation (for example a rename while the picker was closed)
+  // must survive: writing data would clear it and make the old list look fresh.
+  if (query.state.isInvalidated) return;
+  const index = entityId
+    ? pool.findIndex((issue) => issue.id === entityId || issue.identifier === entityId)
+    : -1;
+  if (query.getObserversCount() === 0) {
+    // Nobody shows the picker. A task outside the pool may now belong in it, so
+    // refetch on the next mount; a reorder alone can wait for that mount too.
+    if (index < 0) queryClient.invalidateQueries({ queryKey, refetchType: "none" });
+    return;
+  }
+  if (index >= 0) {
+    if (index > 0) {
+      // Keep the freshness clock: a reorder is not a fetch.
+      queryClient.setQueryData<Issue[]>(
+        queryKey,
+        [pool[index], ...pool.slice(0, index), ...pool.slice(index + 1)],
+        { updatedAt: query.state.dataUpdatedAt },
+      );
+    }
+    return;
+  }
+  let refresh = mentionPoolRefreshes.get(queryClient);
+  if (!refresh) {
+    refresh = new Map();
+    mentionPoolRefreshes.set(queryClient, refresh);
+  }
+  const state = refresh.get(companyId) ?? { lastRequestedAt: 0, timer: null };
+  refresh.set(companyId, state);
+  if (state.timer !== null) return;
+  // Count both the last completed fetch and the last one requested here, so a
+  // burst that arrives before the refetch finishes cannot start another.
+  const lastRefresh = Math.max(query.state.dataUpdatedAt, state.lastRequestedAt);
+  const wait = Math.max(0, lastRefresh + MENTION_POOL_REFRESH_WINDOW_MS - Date.now());
+  state.timer = setTimeout(() => {
+    state.timer = null;
+    state.lastRequestedAt = Date.now();
+    queryClient.invalidateQueries({ queryKey });
+  }, wait);
+}
+
 const ISSUE_DOCUMENT_ACTIVITY_ACTIONS = new Set([
   "issue.document_created",
   "issue.document_updated",
@@ -1487,6 +1583,8 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
+    // Browser lists stop polling while connected; this activity refreshes them.
+    if (entityId && action?.startsWith("browser.")) refreshTaskBrowsers(queryClient, entityId);
     const chatListKey = queryKeys.agentChats.list(companyId, currentActor.userId);
     const knownChat = entityId && queryClient.getQueryData<Issue[]>(chatListKey)?.some(chat => chat.id === entityId);
     const ownChatDelivery = readString(details?.conversationUserId) === (currentActor.userId ?? "local-board");
@@ -1500,7 +1598,14 @@ function invalidateActivityQueries(
     }
     queryClient.invalidateQueries({
       queryKey: queryKeys.issues.list(companyId),
+      predicate: excludingQueryKeys(queryKeys.issues.mentionPool(companyId)),
     });
+    refreshMentionPoolForActivity(
+      queryClient,
+      companyId,
+      entityId,
+      activityChangesTaskIdentity(payload, action, details),
+    );
     queryClient.invalidateQueries({
       queryKey: queryKeys.issues.listMineByMe(companyId),
     });
@@ -2054,6 +2159,41 @@ function handleLiveEvent(
   }
 }
 
+/**
+ * Company-scoped query families whose data is a company-wide list or
+ * projection: task lists and summaries, the agent list, run lists, badges,
+ * the dashboard, costs and the company activity feed. Many events in a busy
+ * company change them, and no single task view depends on them for its own
+ * state. Task detail, comments, runs and other per-entity keys are not listed.
+ */
+const AMBIENT_COMPANY_QUERY_ROOTS: ReadonlySet<string> = new Set([
+  "issues",
+  "agents",
+  "heartbeats",
+  "live-runs",
+  "dashboard",
+  "sidebar-badges",
+  "costs",
+  "activity",
+]);
+
+function isAmbientCompanyQueryKey(companyId: string | null, queryKey: readonly unknown[]): boolean {
+  return !!companyId && queryKey[1] === companyId
+    && typeof queryKey[0] === "string" && AMBIENT_COMPANY_QUERY_ROOTS.has(queryKey[0]);
+}
+
+function createLiveInvalidationBatcher(
+  queryClient: QueryClient,
+  companyId: string | null,
+  ambientSpacingMs: number = AMBIENT_INVALIDATION_SPACING_MS,
+): InvalidationBatcher {
+  return createLaneRoutingBatcher(
+    createInvalidationBatcher(queryClient),
+    createInvalidationBatcher(queryClient, undefined, { minSpacingMs: ambientSpacingMs }),
+    (queryKey) => isAmbientCompanyQueryKey(companyId, queryKey),
+  );
+}
+
 function resolveLiveCompanyId(
   selectedCompanyId: string | null,
   selectedCompanyLiveId: string | null,
@@ -2097,6 +2237,9 @@ function closeSocketQuietly(
 }
 
 export const __liveUpdatesTestUtils = {
+  createLiveInvalidationBatcher,
+  isAmbientCompanyQueryKey,
+  MENTION_POOL_REFRESH_WINDOW_MS,
   buildActivityToast,
   applyRunLifecycleToCompanyLiveRuns,
   buildAgentStatusToast,
@@ -2172,10 +2315,12 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
   // Coalesce the per-event invalidation storm. Optimistic setQueryData writes
   // still pass straight through (immediate); only invalidateQueries is batched
-  // and flushed at most a few times per second.
+  // and flushed at most a few times per second. Company-wide lists and
+  // projections use a slower lane, so a busy company does not refetch them on
+  // every batch while a task is open.
   const invalidationBatcher = useMemo(
-    () => createInvalidationBatcher(queryClient),
-    [queryClient],
+    () => createLiveInvalidationBatcher(queryClient, liveCompanyId),
+    [queryClient, liveCompanyId],
   );
   const coalescingClient = useMemo(
     () => createCoalescingQueryClient(queryClient, invalidationBatcher),
@@ -2205,7 +2350,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     if (wasHidden.current) {
       wasHidden.current = false;
       // Reconcile events missed while hidden, including completed runs/issues.
-      void queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false });
+      void queryClient.invalidateQueries({ type: "active", predicate: isLiveReconciledQuery }, { cancelRefetch: false });
     }
 
     let closed = false;
@@ -2232,7 +2377,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       if (closed || pollTimer !== null) return;
       // Visible queries still need fresh state when realtime is unavailable.
       pollTimer = window.setInterval(() => {
-        void queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false });
+        void queryClient.invalidateQueries({ type: "active", predicate: isLiveReconciledQuery }, { cancelRefetch: false });
       }, DISCONNECTED_POLL_INTERVAL_MS);
     };
 
@@ -2264,7 +2409,8 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       socket = nextSocket;
       let recoveryActive = true;
       const recoverQueries = createLiveQueryRecovery(queryClient,
-        () => !closed && recoveryActive && socket === nextSocket && getPageVisibility().visible);
+        () => !closed && recoveryActive && socket === nextSocket && getPageVisibility().visible,
+        { predicate: isLiveReconciledQuery });
 
       nextSocket.onopen = () => {
         if (closed || socket !== nextSocket) {
@@ -2282,12 +2428,17 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         // too. Reconcile that gap as well as reconnects: events are not replayed.
         const initialHealthyOpen = !hasOpenedSocket.current && !hasNeededSocketRecovery.current;
         hasOpenedSocket.current = true;
+        // Browser lists stop polling on an empty result. A reconcile that joins
+        // an older read needs one more read after it. Scan before reconciling,
+        // so the reconcile's own reads are not followed up again.
+        refreshPendingTaskBrowserReads(queryClient);
         void queryClient.invalidateQueries({
           type: "active",
-          ...(initialHealthyOpen ? { predicate: (query) => {
+          predicate: initialHealthyOpen ? (query) => {
             const key = JSON.stringify(query.queryKey);
-            return key !== JSON.stringify(queryKeys.auth.session) && key !== JSON.stringify(queryKeys.health);
-          } } : {}),
+            return isLiveReconciledQuery(query)
+              && key !== JSON.stringify(queryKeys.auth.session) && key !== JSON.stringify(queryKeys.health);
+          } : isLiveReconciledQuery,
         }, { cancelRefetch: false });
         reconnectAttempt = 0;
       };
@@ -2301,7 +2452,8 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           const parsed = JSON.parse(raw) as LiveEvent;
           if (transcripts.receive(parsed, recoverQueries)) {
             if ((parsed as { type: string }).type === "live.resync") {
-              void queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false });
+              refreshPendingTaskBrowserReads(queryClient);
+              void queryClient.invalidateQueries({ type: "active", predicate: isLiveReconciledQuery }, { cancelRefetch: false });
             }
             return;
           }

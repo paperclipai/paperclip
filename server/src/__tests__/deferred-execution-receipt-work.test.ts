@@ -21,7 +21,7 @@ import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.j
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { notifyDeferredExecutionEligibility, notifyDeferredExecutionWork, notifyNativeStatusWakeWork, notifyTaskRetrySettlement } from "../services/deferred-execution-notifications.js";
 import { registerDeferredReceiptWork } from "../services/heartbeat/deferred-receipt-work.js";
-import { heartbeatService } from "../services/heartbeat.js";
+import { heartbeatService, startTaskDrain, stopTaskDrain } from "../services/heartbeat.js";
 import { requestTaskRetry } from "../services/task-retry.js";
 import { issueService } from "../services/issues.js";
 import { environmentService } from "../services/environments.js";
@@ -185,6 +185,34 @@ describe("deferred receipt durable dispatch", () => {
     return { ...f, receipt, blocker };
   }
 
+  it("starts a deferred children-completed wake left behind when its parent's run blocked the parent (restart chaos t06)", async () => {
+    const f = await fixture();
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: f.issue.id, status: "succeeded",
+      errorCode: null, contextSnapshot: { issueId: f.issue.id, wakeReason: "issue_assigned" } }).where(eq(heartbeatRuns.id, f.source.id));
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issue.id, runId: f.source.id, phase: "committed" });
+    await db.update(issues).set({ status: "blocked", executionRunId: null, checkoutRunId: null }).where(eq(issues.id, f.issue.id));
+    const [child] = await db.insert(issues).values({ companyId: f.companyId, title: "Part 1", parentId: f.issue.id,
+      status: "done", completedAt: new Date() }).returning();
+    const [receipt] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
+      source: "automation", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+      requestedByActorType: "system", idempotencyKey: `issue_children_completed:${f.issue.id}`,
+      payload: { issueId: f.issue.id, childIssueIds: [child.id], _paperclipWakeContext: { issueId: f.issue.id,
+        taskId: f.issue.id, wakeReason: "issue_children_completed", source: "native_status_decision", childIssueIds: [child.id] } },
+    }).returning();
+    await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
+    await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
+    await waitForReal(async () => {
+      await Promise.allSettled([...passes]); await heartbeat.drainActiveRunExecutions();
+      const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.id));
+      expect(saved.status, JSON.stringify({ errors })).toBe("completed");
+      expect(saved.runId).not.toBeNull();
+    }, { timeout: 15_000 });
+    await finish(f.issue.id);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+    expect(runs.filter(run => run.contextSnapshot?.wakeReason === "issue_children_completed")).toHaveLength(1);
+    await quiet();
+  });
+
   it.each(["restart", "cleanup"] as const)("recovers a dependency wake after native audit %s into one continuation", async event => {
     const f = await strandedDependency();
     const { receipt } = f;
@@ -347,6 +375,85 @@ describe("deferred receipt durable dispatch", () => {
     expect(linked.find(row => row.id === receipt.requestId)?.status).toBe("coalesced");
     expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`)).toHaveLength(1);
     await quiet();
+  });
+  it("dispatches a task Retry held by a deploy drain as soon as the drain stops", async () => {
+    const f = await fixture();
+    await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
+    await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
+    await heartbeat.registerScheduledRetryCancellationWork(coordinator, () => !drain).ready;
+    startTaskDrain({ ttlMs: 20 * 60_000 });
+    let requestId: string;
+    try {
+      const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issue.id, actorId: f.actorId,
+        observedRunId: f.source.id, idempotencyKey: randomUUID() });
+      expect(receipt.accepted).toBe(true);
+      requestId = receipt.requestId!;
+      await heartbeat.resumeTaskRetry(f.companyId, requestId);
+      await vi.advanceTimersByTimeAsync(1000);
+      const [held] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, requestId));
+      expect(held).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    } finally { stopTaskDrain(); }
+    let runId: string | undefined;
+    await waitForReal(async () => {
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, requestId));
+      expect(wake.runId, JSON.stringify(wake)).toBeTruthy(); runId = wake.runId!;
+    }, { timeout: 5_000 });
+    await waitForReal(async () => {
+      await heartbeat.drainActiveRunExecutions();
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId!));
+      expect(run.status, JSON.stringify({ error: run.error, code: run.errorCode })).toBe("succeeded");
+    }, { timeout: 15_000 });
+    await finish(f.issue.id);
+    await quiet();
+  });
+  it("dispatches an operator Retry ahead of a backlog of passive waits", async () => {
+    const f = await fixture();
+    await db.insert(agentWakeupRequests).values(Array.from({ length: 120 }, (_, index) => ({
+      id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, companyId: f.companyId, agentId: f.agent.id,
+      source: "automation", status: "deferred_issue_execution", requestedByActorType: "system",
+      payload: { executionWait: { reason: "recovery" } }, updatedAt: new Date(Date.now() - 60_000),
+    })));
+    const [retry] = await db.insert(agentWakeupRequests).values({ id: "ffffffff-ffff-4fff-bfff-ffffffffffff",
+      companyId: f.companyId, agentId: f.agent.id, source: "on_demand", status: "deferred_issue_execution",
+      reason: "task_retry", requestedByActorType: "user", requestedByActorId: f.actorId,
+      payload: { issueId: f.issue.id } }).returning();
+    const order: string[] = [];
+    const resume = vi.fn(async (scope: { requestId?: string }) => {
+      order.push(scope.requestId!);
+      await db.update(agentWakeupRequests).set({ status: "skipped" }).where(eq(agentWakeupRequests.id, scope.requestId!));
+    });
+    await registerDeferredReceiptWork(db, coordinator, { resume, settleTaskChat: vi.fn(), createNativeBatch: () => vi.fn(),
+      schedulingSuppressed: async () => false }, () => !drain).ready;
+    expect(order[0]).toBe(retry.id);
+    await waitForReal(() => expect(order).toHaveLength(121), { timeout: 30_000 });
+    await quiet();
+  });
+  it("reloads a held Retry without a pending notification as soon as a drain ends, right after a full scan", async () => {
+    const f = await fixture();
+    let refresh: (() => void) | undefined;
+    const resume = vi.fn(async (scope: { requestId?: string }) => {
+      await db.update(agentWakeupRequests).set({ status: "skipped" }).where(eq(agentWakeupRequests.id, scope.requestId!));
+    });
+    await registerDeferredReceiptWork(db, coordinator, { resume, settleTaskChat: vi.fn(), createNativeBatch: () => vi.fn(),
+      schedulingSuppressed: async () => false, subscribeRefresh: listener => { refresh = listener; return () => {}; } },
+    () => !drain).ready;
+    const [retry] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
+      source: "on_demand", status: "deferred_issue_execution", reason: "task_retry", requestedByActorType: "user",
+      requestedByActorId: f.actorId, payload: { issueId: f.issue.id } }).returning();
+    refresh!();
+    await waitForReal(() => expect(resume).toHaveBeenCalledWith(expect.objectContaining({ requestId: retry.id })),
+      { timeout: 5_000 });
+    await quiet();
+  });
+  it("removes its task-drain refresh listener when the coordinator stops", async () => {
+    let refresh: (() => void) | undefined;
+    const unsubscribe = vi.fn();
+    await registerDeferredReceiptWork(db, coordinator, { resume: vi.fn(), settleTaskChat: vi.fn(),
+      createNativeBatch: () => vi.fn(), schedulingSuppressed: async () => false,
+      subscribeRefresh: listener => { refresh = listener; return unsubscribe; } }, () => !drain).ready;
+    expect(refresh).toBeTypeOf("function");
+    await coordinator.stop();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
   async function blockedRetry(gate: "budget" | "project budget" | "paused agent", conversation = false) {
     const f = await fixture(), lifecycle = createAgentLifecycle(db), budgets = budgetService(db);

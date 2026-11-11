@@ -20,7 +20,7 @@ import type {
   PersistedHarnessTurnTerminal,
 } from "../../contracts/harness-driver.js";
 import { NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
-import { HarnessReconciliationError, runnerRecoveryFailureClass } from "../../contracts/harness-driver.js";
+import { HarnessReconciliationError, isRunnerResumeStateUnavailable, PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE, runnerRecoveryFailureClass } from "../../contracts/harness-driver.js";
 import {
   CODEX_CODEX_PROTOCOL_VERSION,
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -38,6 +38,7 @@ import {
 import {
   boundedCodexValue,
   codexThreadWorkingDirectory,
+  remoteRunnerWorkingDirectoryMoved,
   validateCodexWorkingDirectory as validateWorkingDirectory,
 } from "./codex-boundaries.js";
 import {
@@ -124,6 +125,18 @@ function bootstrapCancellation(
       return result;
     },
   };
+}
+
+
+/** A saved turn or runtime request whose outcome is unknown. A crash can save a
+ * turn's terminal record before clearing its active marker; that turn finished
+ * and is not in flight. */
+function persistedSessionInFlight(snapshot: PersistedHarnessSession): boolean {
+  const activeTurnIsTerminal = (snapshot.terminalTurns ?? []).some(
+    (terminal) => terminal.turnId === snapshot.activeTurnId,
+  );
+  return (Boolean(snapshot.activeTurnId) && !activeTurnIsTerminal)
+    || Boolean(snapshot.pendingRuntimeRequests?.length);
 }
 
 export class CodexAppServerDriver implements HarnessDriver {
@@ -395,6 +408,33 @@ export class CodexAppServerDriver implements HarnessDriver {
         reason: "persisted session identity is incomplete",
       };
     }
+    // A session saved under an abandoned remote workspace root cannot resume
+    // in the newly assigned root. When it holds no in-flight turn or runtime
+    // request (a follow-up's inherited checkpoint, for example), decline
+    // before any Runner or provider process starts, so the runtime's recovery
+    // policy decides: a replacement in the assigned workspace, or the
+    // permanent named refusal when the checkpoint requires the same session.
+    // Retrying cannot move the saved session, so this is incompatible state,
+    // not a transient failure. A session with an in-flight turn or runtime
+    // request may have an external effect nothing here can prove settled, so
+    // it is never replaced: it stops by name for an operator to reconcile.
+    if (
+      snapshot.workingDirectory &&
+      this.#options.workingDirectoryAuthority === "remote_runner" &&
+      remoteRunnerWorkingDirectoryMoved(snapshot.workingDirectory, this.#options.environment)
+    ) {
+      return persistedSessionInFlight(snapshot)
+        ? {
+            recovered: false,
+            reason: "persisted session working directory is not the assigned remote workspace, and a provider turn or runtime request was in flight",
+            failureClass: PROVIDER_SIDE_EFFECT_PENDING,
+          }
+        : {
+            recovered: false,
+            reason: "persisted session working directory is not the assigned remote workspace",
+            failureClass: PROVIDER_STATE_INCOMPATIBLE,
+          };
+    }
     const transport = this.#transport({
       workingDirectory: snapshot.workingDirectory
         ? validateWorkingDirectory(snapshot.workingDirectory, this.#options.environment, this.#options.workingDirectoryAuthority)
@@ -641,6 +681,11 @@ export class CodexAppServerDriver implements HarnessDriver {
       // that turn and no other turn is active; any other active turn stays
       // foreign and fails closed when its notifications arrive.
       let adoptedAcceptedTurnId: string | null = null;
+      // A turn this run's latest turn.start had the runner accept, which the
+      // restore neither adopted nor finds live (the provider lost it). Its
+      // undelivered reports, such as a turn/started the runner recorded after
+      // the previous controller detached, are earlier-generation history.
+      let lostAcceptedTurnId: string | null = null;
       if (
         !recoveringAutonomousGoal &&
         recoveredActiveTurnId === null &&
@@ -650,8 +695,15 @@ export class CodexAppServerDriver implements HarnessDriver {
         const turns = Array.isArray(existingThread.turns)
           ? existingThread.turns.map(record)
           : [];
-        const acceptedTurnId = transport.controllerAcceptedTurnId?.() ?? "";
         const active = turns.filter((turn) => text(turn.status) === "inProgress");
+        // A Codex turn that finished while no controller was attached is no longer live;
+        // adopt it only when history shows that exact turn completed (a turn the runner
+        // reports lost on restore keeps the restart continuation).
+        const completedTurnId = transport.controllerAcceptedCompletedTurnId?.() ?? "";
+        const acceptedTurnId = transport.controllerAcceptedTurnId?.()
+          || (completedTurnId.length > 0 && active.length === 0
+            && turns.some((turn) => text(turn.id) === completedTurnId && text(turn.status) === "completed")
+            ? completedTurnId : "");
         // The accepted turn may still run, or it may have finished while no
         // controller was attached. Either way it must be the only live turn.
         if (
@@ -662,6 +714,14 @@ export class CodexAppServerDriver implements HarnessDriver {
         ) {
           recoveredActiveTurnId = acceptedTurnId;
           adoptedAcceptedTurnId = acceptedTurnId;
+        } else if (
+          completedTurnId.length > 0 &&
+          completedTurnId !== acceptedTurnId &&
+          !active.some((turn) => text(turn.id) === completedTurnId) &&
+          // A checkpointed terminal turn keeps the existing history behavior.
+          !(snapshot.terminalTurns ?? []).some((turn) => turn.turnId === completedTurnId)
+        ) {
+          lostAcceptedTurnId = completedTurnId;
         }
       }
       if (opened.context.liveConsole)
@@ -684,6 +744,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         dispositionOnlyRecoveryConsumed,
         dispositionOnlyRecoveryTurnId,
         adoptedAcceptedTurnId,
+        lostAcceptedTurnId,
         stalePendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
         lineage: snapshot.lineage,
         sourceSequence: snapshot.lastSourceSequence ?? 0,
@@ -708,7 +769,13 @@ export class CodexAppServerDriver implements HarnessDriver {
       await cancellation.close().catch(() => {});
       if (error instanceof NativeSessionProtocolIntegrityError) throw error;
       if (options.signal.aborted) options.signal.throwIfAborted();
-      const failureClass = runnerRecoveryFailureClass(error);
+      // A Runner with no saved control-plane state for this session can never
+      // resume it here. With nothing in flight, the runtime's recovery policy
+      // decides, as for a moved workspace root. An in-flight session keeps the
+      // unclassified failure.
+      const failureClass = runnerRecoveryFailureClass(error)
+        ?? (isRunnerResumeStateUnavailable(error) && !persistedSessionInFlight(snapshot)
+          ? PROVIDER_STATE_INCOMPATIBLE : undefined);
       return {
         recovered: false,
         reason: redactCodexDiagnostic(String(error)),
@@ -1011,6 +1078,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     dispositionOnlyRecoveryConsumed?: boolean;
     dispositionOnlyRecoveryTurnId?: string | null;
     adoptedAcceptedTurnId?: string | null;
+    lostAcceptedTurnId?: string | null;
     stalePendingRuntimeRequests?: HarnessRuntimeRequest[];
     lineage?: HarnessThreadLineageEntry[];
     sourceSequence: number;

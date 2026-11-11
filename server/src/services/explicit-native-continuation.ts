@@ -16,8 +16,8 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { canContinueCancelledRun, userStopBoundaryAt } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
 import { isCancelledNativeStartup, isFailedNativePreparation, isFailedNativePreparationRetryAncestor } from "./cancelled-native-startup.js";
-import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, nativeRunRefusedBeforeLaunch, recordedLocalExecutionStopped, recordUnidentifiedLocalRunnerStop } from "./native-local-process-stop.js";
-import { completeTerminatedRemoteNativeSessionCleanup, nativeSessionCleanupBlock } from "../vendor/paperclip-runner/index.js";
+import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, nativeGatedRunNeverLaunched, nativeRunNeverLaunched, recordedLocalExecutionStopped, recordUnidentifiedLocalRunnerStop } from "./native-local-process-stop.js";
+import { completeTerminatedLocalNativeSessionCleanup, completeTerminatedRemoteNativeSessionCleanup, nativeSessionCleanupBlock } from "../vendor/paperclip-runner/index.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
 import { z } from "zod";
 import { and, desc, eq, gt, inArray, isNull, ne, not, or, sql } from "drizzle-orm";
@@ -34,6 +34,7 @@ import { activeIssueInteractionCondition } from "./issue-question-context.js";
 
 import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+import { firstTurnDeliveredCommentIds } from "./queued-comment-delivery.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "status" | "startedAt" | "finishedAt" | "createdAt" |
@@ -121,7 +122,9 @@ export async function undeliveredLegacyUserCommentIds(
       for (const id of context.wakeCommentIds) if (typeof id === "string") valid.delete(id);
     }
   }
-  return commentIds.filter(id => valid.has(id));
+  // An accepted first turn that took a queued message consumed it too.
+  const firstTurn = await firstTurnDeliveredCommentIds(db, { companyId, issueId, agentId, commentIds: [...valid] });
+  return commentIds.filter(id => valid.has(id) && !firstTurn.has(id));
 }
 
 /** Called under the issue lock, in the transaction that creates the new turn.
@@ -409,18 +412,21 @@ export async function admitExplicitNativeContinuation(input: {
           ownerHold: sql<boolean>`${issueRecoveryActions.evidence}#>>'{workspaceOwnerRecovery,state}' = 'operator_required'
             and ${issueRecoveryActions.evidence}->'workspaceOwnerStop' is null`,
           recoveryState: sql<string | null>`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}'`,
+          retryClass: sql<string | null>`${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,retryClass}'`,
         }).from(issueRecoveryActions).where(and(
           eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
           inArray(issueRecoveryActions.status, ["active", "escalated"]),
           sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
           sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`));
         if (live.some(row => row.ownerHold))
-          return blocked("workspace_owner_stop_required", "A board member must confirm that the previous server stopped copying files. Your Retry is saved.");
+          return blocked("workspace_owner_stop_required", "Paperclip is waiting to confirm that the previous server stopped saving files. Your Retry is saved.");
         // A spent recovery budget finishes nothing by itself. Another Retry
         // starts one new recovery generation (task-retry), so name that action
         // instead of an endless finalizing wait (RC-50b, s14).
         if (live.length && live.every(row => row.recoveryState === "exhausted"))
-          return blocked("saved_work_recovery_failed", "Saving the agent's files failed after automatic retries. Retry to try again.");
+          return live.some(row => row.retryClass === "service_required")
+            ? blocked("saved_work_recovery_refused", "Paperclip refused to recover the saved files because a safety check on them cannot pass. Retry runs the same check again.")
+            : blocked("saved_work_recovery_failed", "Saving the agent's files failed. Retry to try again.");
         return blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
       }
     }
@@ -508,7 +514,7 @@ export async function admitExplicitNativeContinuation(input: {
         if (!run.processPid && !run.processGroupId &&
             !await hasNativeLocalProcessStop(db, companyId, run.id) &&
             !await hasHistoricalSuspendedNativeSession(db, run) &&
-            !await nativeRunRefusedBeforeLaunch(db, run) &&
+            !await nativeRunNeverLaunched(db, run) &&
             !(run.runtimeMode === "native" &&
               await recordUnidentifiedLocalRunnerStop(db, run, { record: !input.dryRun }))) return blocked("process_identity_missing", "The previous run has no verified stop record. Paperclip cannot start this message yet.");
         if (run.processPid && !processStopped(run.processPid)) return blocked("process_running", "Waiting for the previous process to stop. Your message will start automatically.");
@@ -526,11 +532,36 @@ export async function admitExplicitNativeContinuation(input: {
       return blocked("local_cleanup", "Waiting for the previous provider session to finish cleanup. Your message will start automatically.");
     if (!remote && run.runtimeMode === "native" &&
         (run.errorCode === "native_session_cleanup_quarantined" || retainedCleanup === "operator_required")) {
-      // This is new user input, never permission to retry the interrupted turn.
-      if (retry) return blocked("cleanup_quarantined", "Send a new message after the previous provider has stopped.");
-      const { verifyStoppedNativeSessionForContinuation } = await import("./native-runtime/native-session-executor.js");
-      const stopped = await verifyStoppedNativeSessionForContinuation(db, run);
-      if (!stopped) return blocked("local_cleanup", "Waiting for the previous provider and its tools to stop. Your message is saved.");
+      // Never permission to resume the interrupted turn: new input and a
+      // native Retry both start a fresh provider conversation, and only after
+      // the old runner, provider and tools are proven stopped.
+      const { verifyStoppedNativeSessionForContinuation, provenStoppedOwnNativeSession, retireStoppedSessionCleanupGates } =
+        await import("./native-runtime/native-session-executor.js");
+      let stopped = await verifyStoppedNativeSessionForContinuation(db, run);
+      // The run's own session (s9107 t04): its saved state may be past the
+      // states the inventory proof reads, but its exact runner and every
+      // provider process it recorded are durably proven stopped.
+      const ownStop = stopped || retainedCleanup === "pending" ? null : await provenStoppedOwnNativeSession(db, run);
+      if (ownStop && run.runnerInstanceId) {
+        const runnerInstanceId = run.runnerInstanceId;
+        stopped = { evidence: { schema: "paperclip.stopped_own_native_session.v1", runId: run.id,
+          runnerInstanceId, ...ownStop },
+          retire: () => { try { return completeTerminatedLocalNativeSessionCleanup({ companyId, runId: run.id, runnerInstanceId }); }
+            catch { return false; } } };
+      }
+      // A source the gate refused before it launched (s9107 rerun t05: a
+      // follow-up run after its predecessor's failed close) owns no process.
+      // Once the task's gate is retired from its stopped owner, nothing holds
+      // the old session any more.
+      if (!stopped && retainedCleanup === "operator_required" && await nativeGatedRunNeverLaunched(db, run)
+          // A preview stays read-only; the committing call retires the gate.
+          && await retireStoppedSessionCleanupGates(db, { companyId, issueId, preview: input.dryRun === true })) {
+        stopped = { evidence: { schema: "paperclip.unlaunched_gated_source.v1", runId: run.id },
+          retire: () => nativeSessionCleanupBlock({ companyId, issueId }) !== "operator_required" };
+      }
+      if (!stopped) return retry
+        ? blocked("cleanup_quarantined", "Send a new message after the previous provider has stopped.")
+        : blocked("local_cleanup", "Waiting for the previous provider and its tools to stop. Your message is saved.");
       stoppedSessions.push(stopped);
     }
     if (nativeQueuedSend && await hasPendingRunCleanup(db, companyId, run.id))

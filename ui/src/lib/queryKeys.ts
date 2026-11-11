@@ -1,4 +1,6 @@
 export const queryKeys = {
+  linkPreview: (companyId: string, userId: string | null, url: string) =>
+    ["link-preview", companyId, userId, url] as const,
   workspacePreferences: {
     mine: (userId: string | null) => ["workspace-preferences", userId] as const,
   },
@@ -310,9 +312,12 @@ export const queryKeys = {
   issues: {
     recoveryActions: (id: string, actionId: string | null, runId: string | null) =>
       ["issues", id, "recovery-actions", actionId, runId] as const,
+    allRecoveryActions: (id: string) => ["issues", id, "recovery-actions"] as const,
     list: (companyId: string) => ["issues", companyId] as const,
     onboardingFirstTask: (companyId: string) =>
       ["issues", companyId, "onboarding-first-task"] as const,
+    starPromptDone: (companyId: string) =>
+      ["issues", companyId, "star-prompt-done"] as const,
     mentionPool: (companyId: string) =>
       ["issues", companyId, "mention-pool"] as const,
     search: (
@@ -514,6 +519,7 @@ export const queryKeys = {
       ["environment-custom-image-setup-sessions", sessionId] as const,
   },
   projects: {
+    environments: (companyId: string) => ["project-environments", companyId] as const,
     all: (companyId: string) => ["projects", companyId] as const,
     list: (companyId: string, opts: { includeArchived?: boolean } = {}) =>
       [

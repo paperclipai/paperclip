@@ -36,7 +36,18 @@ export interface AppendHeartbeatRunEventInput {
     protocolSchemaVersion: number;
     canonicalPayload: Record<string, unknown>;
   };
+  /**
+   * Run columns to change in the same UPDATE that reserves the sequence. A
+   * second UPDATE of a run row this transaction already changed makes
+   * PostgreSQL re-check every foreign key on heartbeat_runs (KEY SHARE on the
+   * agent, issue, predecessor run, ...), so it can wait behind, or deadlock
+   * with, an unrelated transaction that holds one of those rows FOR UPDATE.
+   */
+  runUpdate?: HeartbeatRunEventRunUpdate;
 }
+
+export type HeartbeatRunEventRunUpdate = Partial<Pick<typeof heartbeatRuns.$inferInsert,
+  "legacyProcessSettlement" | "processPid" | "processGroupId" | "processHostHash" | "processStartedAt">>;
 
 export interface AppendHeartbeatRunEventResult {
   row: typeof heartbeatRunEvents.$inferSelect;
@@ -61,10 +72,12 @@ export class HeartbeatRunEventConflictError extends Error {
 export async function allocateHeartbeatRunEventSeq(
   db: Db,
   runId: string,
+  runUpdate: HeartbeatRunEventRunUpdate = {},
 ): Promise<number> {
   const [updated] = await db
     .update(heartbeatRuns)
     .set({
+      ...runUpdate,
       nextEventSeq: sql`${heartbeatRuns.nextEventSeq} + 1`,
       updatedAt: new Date(),
     })
@@ -86,7 +99,9 @@ export async function appendHeartbeatRunEvent(
   const projectsReassessment = readNativeEventEvidenceOutcome(input.payload?.prpEvent) !== null;
   const projectsProgress = isSafeNativeChatProgressEventType(input.eventType);
   const projectsResponse = isNativeResponseEvidence(input.eventType, input.payload?.prpEvent);
-  if (!input.nativeSource && !input.retryExhaustion && !projectsProgress && !projectsResponse && !projectsReassessment && !projectsRecovery && !projectsRetention) {
+  // Deduplicated receipts return without allocating, so they cannot carry run changes.
+  if (input.runUpdate && (input.nativeSource || input.retryExhaustion)) throw new Error("heartbeat_run_event_run_update_unsupported");
+  if (!input.runUpdate && !input.nativeSource && !input.retryExhaustion && !projectsProgress && !projectsResponse && !projectsReassessment && !projectsRecovery && !projectsRetention) {
     const allocated = db.$with("allocated_run_event", {}).as(sql`
       update ${heartbeatRuns}
       set next_event_seq = ${heartbeatRuns.nextEventSeq} + 1,
@@ -119,7 +134,11 @@ export async function appendHeartbeatRunEvent(
         ...(projectsProgress ? { issueId: boundRunIssueIdSql() } : {}) })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, input.runId))
-      .for("update")
+      // Appenders, Stop, recovery and deletion still serialize on this row.
+      // The append never changes key columns, so it must not block foreign
+      // key checks (FOR KEY SHARE) of child rows, such as controller
+      // checkpoints, that are written for the same run while events stream.
+      .for("no key update")
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!run || run.companyId !== input.companyId || run.agentId !== input.agentId) {
@@ -202,6 +221,7 @@ export async function appendHeartbeatRunEvent(
     const seq = await allocateHeartbeatRunEventSeq(
       tx as unknown as Db,
       input.runId,
+      input.runUpdate,
     );
     const [row] = await tx.insert(heartbeatRunEvents).values({
       companyId: input.companyId,

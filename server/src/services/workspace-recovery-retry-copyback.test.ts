@@ -121,6 +121,7 @@ describe("automatic retained workspace recovery", () => {
     { title: "a restart lost its sandbox before the turn started", turn: "none" as const, error: "native_remote_recovery_lease_mismatch", initial: false },
     { title: "a same-run retry found the settled turn's remote runner gone", turn: "settled" as const, error: "runner_remote_process_identity_unavailable", initial: false },
     { title: "a same-run retry found the settled turn's sandbox lease gone", turn: "settled" as const, error: "native_remote_recovery_lease_mismatch", initial: false },
+    { title: "a same-run retry named the lease check that failed", turn: "settled" as const, error: "native_remote_recovery_lease_mismatch: stage=environment_acquire field=lease_status", initial: false },
   ])("continues a user turn once, without a second message, after $title and recovery saved the work", async ({ turn, error, initial }) => {
     const f = await restartAllocationLostSource(turn, error);
     const service = heartbeatService(db, { environmentRuntime: f.environmentRuntime });
@@ -165,6 +166,10 @@ describe("automatic retained workspace recovery", () => {
     { title: "its provider turn ended without an observed provider terminal", change: "unproven" },
     { title: "the source was a system wake", change: "system" },
     { title: "the failure was not a lost runner or allocation", change: "error" },
+    // Staging class P: the new sandbox had no Runner state to resume the saved
+    // provider session. The Runner now names it, so the run ends with the
+    // permanent code and Retry continues in a fresh provider session.
+    { title: "the Runner had no saved state to resume the provider session", change: "unrestorable" },
   ])("does not continue automatically when $title, and offers a Retry that works on first use", async ({ change }) => {
     const f = await restartAllocationLostSource(change === "turn" ? "in_flight" : change === "unproven" ? "unproven" : "none");
     if (change === "system") await db.update(agentWakeupRequests).set({ requestedByActorType: "system", requestedByActorId: null,
@@ -172,6 +177,9 @@ describe("automatic retained workspace recovery", () => {
     if (change === "system") await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, wakeReason: "issue_children_completed" } })
       .where(eq(heartbeatRuns.id, f.runId));
     if (change === "error") await db.update(heartbeatRuns).set({ error: "native_provider_terminal_failed" }).where(eq(heartbeatRuns.id, f.runId));
+    if (change === "unrestorable") await db.update(heartbeatRuns).set({ errorCode: "native_provider_state_incompatible",
+      error: "native_session_recovery_failed: NativeRunnerResumeStateUnavailableError: PRP provider resume state is unavailable" })
+      .where(eq(heartbeatRuns.id, f.runId));
     const service = heartbeatService(db, { environmentRuntime: f.environmentRuntime });
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     expect(await requestRestartInterruptedTurnRetry(db, f.claim)).toMatchObject({ requested: false,
@@ -194,7 +202,8 @@ describe("automatic retained workspace recovery", () => {
     await service.resumeTaskRetry(f.companyId, receipt.requestId!);
     const successors = await queuedSuccessors(f.companyId);
     expect(successors).toHaveLength(1);
-    expect(successors[0].contextSnapshot).toMatchObject({ previousRunId: f.runId, taskRetryRequestId: receipt.requestId });
+    expect(successors[0].contextSnapshot).toMatchObject({ previousRunId: f.runId, taskRetryRequestId: receipt.requestId,
+      forceFreshSession: true });
   }, 30_000);
 
   // S54: the automatic Retry's own run then lost its runner too. Saved-work
@@ -507,7 +516,7 @@ describe("automatic retained workspace recovery", () => {
       const stable = (row: typeof after) => ({ ...row, updatedAt: null, ownerType: null, nextAction: null,
         evidence: { ...row.evidence, workspaceRecovery: { ...(row.evidence.workspaceRecovery as object), message: null } } });
       if (spent) {
-        expect(after).toMatchObject({ ownerType: "board", nextAction: expect.stringMatching(/Retry recovery/) });
+        expect(after).toMatchObject({ ownerType: "board", nextAction: expect.stringMatching(/Paperclip refused to recover the saved files: .*Retry runs the check again/) });
         expect(stable(after)).toEqual(stable(before));
       } else expect(after).toEqual(before);
       expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0].leasePolicy).toBe("reuse_by_environment");

@@ -32,6 +32,11 @@ export interface LedgerLine {
   recordedAt: string;
   /** Known signatures masked for this wave, e.g. ["rc06"]. */
   masks?: string[];
+  /** Crash-point suite: the named point this wave armed. */
+  crashPoint?: string;
+  /** Universal checks U1–U4 (universal.ts): verdict per rule, and the details of warnings that did not fail the task. */
+  universal?: Record<string, string>;
+  universalWarnings?: string[];
 }
 
 export function ledgerLine(plan: WavePlan, record: TaskRecord, grade: TaskGrade, gitSha: string, evidence: string | null,
@@ -49,6 +54,12 @@ export function ledgerLine(plan: WavePlan, record: TaskRecord, grade: TaskGrade,
     signature: grade.signature, retried: Boolean(record.retry), evidence, replay: replayCommand(plan.waveId, record.plan.taskId),
     recordedAt: new Date().toISOString(),
     ...(plan.options.masks?.length ? { masks: [...plan.options.masks] } : {}),
+    ...(plan.options.crashPoint ? { crashPoint: plan.options.crashPoint } : {}),
+    ...(grade.universal ? {
+      universal: Object.fromEntries(Object.entries(grade.universal).map(([id, rule]) => [id, rule.verdict])),
+      universalWarnings: Object.entries(grade.universal).filter(([, rule]) => !rule.enforced && rule.verdict === "fail")
+        .map(([id, rule]) => `${id}: ${rule.detail}`),
+    } : {}),
   };
 }
 
@@ -84,6 +95,13 @@ export function renderSummary(lines: readonly LedgerLine[], latestWave?: string)
       out.push(`| ${line.taskId} ${line.issue ?? ""} | ${line.adapter} ${line.workload} ${line.fault}${line.trigger ? ` ^${line.trigger}${line.triggerMissed?.length ? " (missed)" : ""}` : ""}${line.masks?.length ? ` (${line.masks.map(mask => `${mask}-masked`).join(", ")})` : ""} | ${line.crossed ? "yes" : "no"} | ${line.rules.R1} | ${line.rules.R2} | ${line.rules.R3} | ${line.rules.R4} | ${line.rules.R5} | ${line.rules.R6} | ${line.T} | ${line.pass ? "PASS" : `FAIL ${line.signature}`} |`);
     }
     out.push("");
+    // Universal checks that are still warnings (universal.ts) never fail a task; list them so they are seen.
+    const warnings = lines.filter(line => line.waveId === latestWave && line.universalWarnings?.length);
+    if (warnings.length) {
+      out.push("Universal check warnings (not failing):", "");
+      for (const line of warnings) for (const warning of line.universalWarnings!) out.push(`- ${line.taskId}: ${warning}`);
+      out.push("");
+    }
   }
   out.push("## Cells", "", "| Cell | Pass | Total | Crossed |", "| --- | --- | --- | --- |");
   for (const [key, cell] of [...cells].sort()) out.push(`| ${key} | ${cell.pass} | ${cell.total} | ${cell.crossed} |`);

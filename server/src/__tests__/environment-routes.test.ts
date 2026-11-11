@@ -28,6 +28,7 @@ const mockProjectService = vi.hoisted(() => ({
 
 const mockEnvironmentRuntimeService = vi.hoisted(() => ({
   destroyReusableSandboxLeasesForEnvironment: vi.fn(async () => ({ destroyed: 0, failed: 0, skippedLiveRun: 0 })),
+  releaseRestoreSourcesForEnvironmentDelete: vi.fn(async () => 0),
 }));
 const mockCloseWarmNativeSessionsForEnvironment = vi.hoisted(() =>
   vi.fn(async () => ({ closed: 0, busy: 0, failed: 0 })),
@@ -506,6 +507,29 @@ describe("environment routes", () => {
       envVars: {},
       metadata: null,
     });
+  });
+
+  it.each(["list", "detail"])("exposes only plugin driver identity in the restricted environment %s", async view => {
+    const environment = {
+      ...createEnvironment(),
+      driver: "plugin",
+      config: { pluginKey: "example.runtime", driverKey: "tasks", driverConfig: { token: "fixture" } },
+      envVars: { API_KEY: "fixture" },
+    };
+    mockEnvironmentService.list.mockResolvedValue([environment]);
+    mockEnvironmentService.getById.mockResolvedValue(environment);
+    const app = createApp({
+      type: "board", userId: "user-2", source: "session", companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "member" }],
+      isInstanceAdmin: false,
+    });
+    const response = await request(app).get(view === "list" ? "/api/companies/company-1/environments" : "/api/environments/env-1");
+    expect(response.status).toBe(200);
+    expect(view === "list" ? response.body[0] : response.body).toMatchObject({
+      id: "env-1", pluginDriver: { pluginKey: "example.runtime", driverKey: "tasks" },
+      config: {}, envVars: {}, metadata: null,
+    });
+    expect(JSON.stringify(response.body)).not.toContain("fixture");
   });
 
   describe("platform-provisioned environment floor on cloud-managed instances", () => {
@@ -1774,6 +1798,7 @@ describe("environment routes", () => {
     ).toHaveBeenCalledExactlyOnceWith({
       environmentId: "env-1",
       failureReason: "environment_deleted",
+      consentedBy: "admin-1",
     });
     expect(
       mockCloseWarmNativeSessionsForEnvironment,
@@ -1845,6 +1870,12 @@ describe("environment routes", () => {
 
     expect(res.status).toBe(200);
     expect(retryPendingEnvironmentCleanup).toHaveBeenCalledExactlyOnceWith({ environmentId: "env-1", actorId: "admin-1" });
+    // Consent releases restore-source protection before the cleanup retry, or a
+    // protected source would refuse every attempt and keep the delete blocked.
+    expect(mockEnvironmentRuntimeService.releaseRestoreSourcesForEnvironmentDelete)
+      .toHaveBeenCalledWith({ environmentId: "env-1", consentedBy: "admin-1" });
+    expect(mockEnvironmentRuntimeService.releaseRestoreSourcesForEnvironmentDelete.mock.invocationCallOrder[0])
+      .toBeLessThan(retryPendingEnvironmentCleanup.mock.invocationCallOrder[0]!);
     expect(mockEnvironmentService.removeIfDeletable).toHaveBeenCalledWith("env-1");
   });
 
