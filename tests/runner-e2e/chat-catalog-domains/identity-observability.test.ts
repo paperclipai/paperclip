@@ -14,5 +14,13 @@ describe("actual optional agent trace delivery", () => {
   it("rejects a successful settings save without collector marker matches", () => { const o = valid(); o.state.collectorMatchedTestSignals = 0; expect(gradeObservability(o).passed).toBe(false); });
   it("rejects control-plane sample delivery alone as proof of coding-agent export", () => { const o = valid(); o.state.nativeExportMatched = false; expect(gradeObservability(o).passed).toBe(false); });
   it("rejects export continuing on the next actual run after disable", () => { const o = valid(); o.state.callsAfterDisabledRun = 8; expect(gradeObservability(o).passed).toBe(false); });
-  it("rejects sending credentials through public settings or conflating Telemetry with run logs", () => { const o = valid(); o.state.publicSettingsContainsKey = true; expect(gradeObservability(o).passed).toBe(false); const wrong = valid(); wrong.reply = "All telemetry and run logs are now exported."; expect(gradeObservability(wrong).passed).toBe(false); });
+  it("rejects sending credentials through public settings or conflating Telemetry with run logs", () => { const o = valid(); o.state.publicSettingsContainsKey = true; expect(gradeObservability(o).passed).toBe(false); const silent = valid(); silent.reply = ""; expect(gradeObservability(silent).passed).toBe(false); });
+  it("does not grade Telemetry or run-log wording; the collector receipts prove the export path", () => {
+    for (const reply of ["The local run log is not what gets exported; only traces go to your collector.", "Telemetry and the run log aren't exported; only traces are."]) {
+      const o = valid(); o.reply = reply; expect(gradeObservability(o).passed, reply).toBe(true);
+    }
+    const leaked = valid(); leaked.state.publicSettingsContainsKey = true; expect(gradeObservability(leaked).passed).toBe(false);
+  });
+
+  it("does not require the reply to name Telemetry or the run log when the query did not ask", () => { const o = valid(); o.reply = "Trace export is a board-only setting: a board user sets the collector URL in company settings, enables export and sends a test trace."; expect(gradeObservability(o).passed).toBe(true); const runLog = valid(); runLog.reply = "The local run log is not what gets exported; only traces go to your collector."; expect(gradeObservability(runLog).passed).toBe(true); });
 });

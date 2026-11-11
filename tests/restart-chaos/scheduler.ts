@@ -4,6 +4,7 @@ import { workloadDefinitions } from "./workloads.js";
 import { isTimeFault, timeFaultHoldMs } from "./time-faults-config.js";
 import { isMultiServerFault, multiServerHoldMs } from "./multi-server.js";
 import { isRepeatedRestartFault, planRestartSteps, type RestartStep } from "./repeated-restarts.js";
+import { k15HoldMs } from "./redeploy.js";
 import { K4_MIN_HOLD_MS, type AdapterId, type FaultKind, type ScheduledFault, type StormFault, type StormPlan, type TaskFaultKind, type TaskPlan, type TriggerId, type WavePlan, type WaveOptions, type WorkloadId } from "./types.js";
 import type { ReplayRef } from "./config.js";
 
@@ -95,7 +96,7 @@ function pinnedFireAfterMs(faultAfterMs: number | undefined, drawn: number): num
   return faultAfterMs ?? drawn;
 }
 
-export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes" | "k4HoldMaxMs" | "faultAfterMs" | "providerFaults" | "rrGapMs">): TaskPlan[] {
+export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloads" | "adapters" | "faults" | "triggers" | "stormMinutes" | "k4HoldMaxMs" | "k15HoldMs" | "tm1HoldMs" | "faultAfterMs" | "providerFaults" | "rrGapMs">): TaskPlan[] {
   const rng = createRng(options.seed);
   const triggers = options.triggers?.length ? options.triggers : ["time" as const];
   for (const trigger of triggers) {
@@ -126,8 +127,9 @@ export function planTasks(options: Pick<WaveOptions, "seed" | "tasks" | "workloa
       ...cellRest,
       ...(trigger === "time" ? {} : { trigger, triggerDelayMs: rng.int(...TRIGGER_DELAY_RANGE_MS[trigger]) }),
       fireAfterMs: cell.fault === "K13" ? 0 : pinnedFireAfterMs(options.faultAfterMs, rng.int(fireMin, fireMax)),
-      holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : isTimeFault(cell.fault) ? timeFaultHoldMs(cell.fault, rng.int)
-        : isMultiServerFault(cell.fault) ? multiServerHoldMs(cell.fault, rng.int) : 0,
+      holdMs: cell.fault === "K4" ? rng.int(...k4HoldRange(options.k4HoldMaxMs)) : isTimeFault(cell.fault) ? timeFaultHoldMs(cell.fault, rng.int, options.tm1HoldMs)
+        : isMultiServerFault(cell.fault) ? multiServerHoldMs(cell.fault, rng.int)
+        : cell.fault === "K15" ? k15HoldMs(options.k15HoldMs, rng.int) : 0,
       // Drawn only for RR tasks, so the plans of existing seeds do not change.
       ...(isRepeatedRestartFault(cell.fault) ? { restartSteps: planRestartSteps(cell.fault, rng.int, options.rrGapMs) } : {}),
       followUpAfterMs: definition.followUpWindowMs ? rng.int(definition.followUpWindowMs[0], definition.followUpWindowMs[1]) : null,
@@ -151,7 +153,7 @@ function replayMasks(source: readonly string[] | undefined, added: readonly stri
 export function planWave(waveId: string, options: WaveOptions, createdAt = new Date()): WavePlan {
   return { schema: "paperclip.restart-chaos.wave-plan/v1", waveId, seed: options.seed,
     createdAt: createdAt.toISOString(), options, tasks: withProviderFaultRules(planTasks(options), options),
-    ...(options.stormMinutes ? { storm: planStorm(options.seed, options.stormMinutes, options.faults, options.k4HoldMaxMs) } : {}) };
+    ...(options.stormMinutes ? { storm: planStorm(options.seed, options.stormMinutes, options.faults, options.k4HoldMaxMs, options.k15HoldMs) } : {}) };
 }
 
 /** K13: the gap between one storm fault settling and the next one firing. */
@@ -162,7 +164,8 @@ export const STORM_GAP_RANGE_MS: readonly [number, number] = [120_000, 240_000];
  * after a 2-4 minute gap, long enough to fill `minutes`. It uses its own RNG
  * stream so adding a storm does not change the task cells for a seed.
  */
-export function planStorm(seed: number, minutes: number, faults: readonly FaultKind[], k4HoldMaxMs?: number): StormPlan {
+export function planStorm(seed: number, minutes: number, faults: readonly FaultKind[], k4HoldMaxMs?: number,
+  k15HoldRangeMs?: readonly [number, number]): StormPlan {
   if (!faults.length) throw new Error("A K13 storm needs at least one fault kind");
   const rng = createRng((seed ^ 0x6b313353) >>> 0);
   const durationMs = minutes * 60_000;
@@ -170,7 +173,8 @@ export function planStorm(seed: number, minutes: number, faults: readonly FaultK
   for (let planned = 0; planned < durationMs;) {
     const gapMs = rng.int(...STORM_GAP_RANGE_MS);
     const kind = faults[rng.int(0, faults.length - 1)]!;
-    sequence.push({ kind, gapMs, holdMs: kind === "K4" ? rng.int(...k4HoldRange(k4HoldMaxMs)) : 0 });
+    sequence.push({ kind, gapMs, holdMs: kind === "K4" ? rng.int(...k4HoldRange(k4HoldMaxMs))
+      : kind === "K15" ? k15HoldMs(k15HoldRangeMs, rng.int) : 0 });
     planned += gapMs;
   }
   return { durationMs, faults: sequence };

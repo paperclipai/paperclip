@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
+import { prepareReviewedSdkReference } from "./source-sdk-reviewed-fixture.js";
+import pins from "./source-sdk-public-inputs.json" with { type: "json" };
 import { afterEach, expect, it } from "vitest";
 import { stagePrivateDiagnostics } from "./private-diagnostics.js";
 import { prepareSourceServerDependencies } from "./source-startup.js";
@@ -110,11 +112,24 @@ it("retains declarations and source maps under names the private result sealer a
   for (const file of receipt.files) expect(hash(await readFile(path.join(uploadDir, SOURCE_SDK_DIAGNOSTICS, file.retainedPath)))).toBe(file.sha256);
   await expect(sealManualResultEvidence(context, [], results)).resolves.not.toThrow();
 });
-// Needs the built SDK (scripts/ensure-plugin-build-deps.mjs) and the pinned public source.
+// Build a genuine OWN normal producer-certified reviewed reference. The live
+// CI lock can be regenerated for unrelated PR patches and must not be relabeled reviewed.
 const builtSdk = ["packages/shared/dist", "packages/plugins/sdk/dist"].every(target =>
   existsSync(new URL(`../../${target}/.paperclip-build-complete`, import.meta.url)));
-it.skipIf(!builtSdk)("seals the real built SDK upload, keeping proven key-shaped declarations out", async () => {
-  const repositoryRoot = await realpath(path.resolve(import.meta.dirname, "../.."));
+it("seals a normal producer-certified reviewed-reference SDK, keeping key-shaped declarations out", async () => {
+  const originalRoot=await realpath(path.resolve(import.meta.dirname,"../.."));
+  const repositoryRoot=await realpath(await mkdtemp(path.join(os.tmpdir(),"source-sdk-reviewed-build-")));roots.push(repositoryRoot);
+  await prepareReviewedSdkReference(originalRoot,repositoryRoot);
+  // Existing normal Shared then SDK producer, exact original configs/options.
+  // Fresh dist directories and OWN cache/Shared resolution; no donor outputs.
+  expect(existsSync(path.join(repositoryRoot,"packages/shared/dist"))).toBe(false);
+  expect(existsSync(path.join(repositoryRoot,"packages/plugins/sdk/dist"))).toBe(false);
+  await prepareSourceServerDependencies(repositoryRoot,{...process.env},false);
+  for(const directory of ["packages/shared/dist","packages/plugins/sdk/dist"]){
+    expect(await realpath(path.join(repositoryRoot,directory))).toBe(path.join(repositoryRoot,directory));
+    expect(JSON.parse(await readFile(path.join(repositoryRoot,directory,".paperclip-build-complete"),"utf8")))
+      .toMatchObject({sources:expect.stringMatching(/^[a-f0-9]{64}$/),outputs:expect.stringMatching(/^[a-f0-9]{64}$/)});
+  }
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "source-sdk-real-unit-"))); roots.push(root);
   const temporaryRoot = path.join(root, "attempt"), results = path.join(root, "results"), uploadDir = path.join(results, "campaign", "attempt-1");
   await mkdir(path.join(temporaryRoot, "artifacts-private"), { recursive: true, mode: 0o700 }); await mkdir(path.join(temporaryRoot, "selected-private-inputs"), { recursive: true, mode: 0o700 });
@@ -126,3 +141,35 @@ it.skipIf(!builtSdk)("seals the real built SDK upload, keeping proven key-shaped
   const context = { root, protocol: MANUAL_PRIVATE_PROTOCOL, private: true, workflowSha: "a".repeat(40), targetSha: "b".repeat(40), runId: "123", attempt: "1", executionIds: [MANUAL_PRIVATE_EXECUTIONS[0]!] } as ManualPrivateHandoff;
   await expect(sealManualResultEvidence(context, secrets, results)).resolves.not.toThrow();
 }, 120_000);
+
+it("withholds real unreviewed-build SDK bytes instead of authenticating the CI-resolved lock",async()=>{
+  const originalRoot=await realpath(path.resolve(import.meta.dirname,"../.."));
+  let repositoryRoot=originalRoot,restoreLock:(()=>Promise<void>)|undefined;
+  const actual=await readFile(path.join(originalRoot,"pnpm-lock.yaml"));
+  if(hash(actual)===pins.lockSha256){
+    // On a reviewed local checkout, make the same refusal observable in an
+    // OWN genuine-built reference by invalidating only its owning lock input.
+    repositoryRoot=await realpath(await mkdtemp(path.join(os.tmpdir(),"source-sdk-unreviewed-build-")));roots.push(repositoryRoot);
+    await prepareReviewedSdkReference(originalRoot,repositoryRoot);
+    await prepareSourceServerDependencies(repositoryRoot,{...process.env},false);
+    const file=path.join(repositoryRoot,"pnpm-lock.yaml"),reviewed=await readFile(file);
+    await writeFile(file,Buffer.concat([reviewed,Buffer.from("\n# unreviewed unit input mutation\n")]));
+    restoreLock=()=>writeFile(file,reviewed);
+  }else if(!builtSdk)throw new Error("Unreviewed CI build requires its actual normal producer outputs");
+  const root=await realpath(await mkdtemp(path.join(os.tmpdir(),"source-sdk-unreviewed-refusal-")));roots.push(root);
+  const temporaryRoot=path.join(root,"attempt");
+  await mkdir(path.join(temporaryRoot,"selected-private-inputs"),{recursive:true,mode:0o700});
+  stagePrivateDiagnostics(temporaryRoot,[executionId],["synthetic-unit-provider-credential-0123456789"]);
+  try{
+    await expect(retainPreparedSourceSdk({repositoryRoot,temporaryRoot,executionIds:[executionId],sourceRevision,installed:false}))
+      .rejects.toThrow("Source SDK evidence privacy check failed; bytes withheld");
+    const file=path.join(temporaryRoot,"artifacts-private/cases/plugins.install-plugin/snapshots/source-sdk-privacy-observations.json");
+    const observation=JSON.parse(await readFile(file,"utf8"));
+    expect(observation.complete).toBe(false);expect(observation.audit.publicSource).toBeNull();
+    expect(observation.audit.bounded).toBe(true);expect(observation.audit.suppressedFindings).toBe(0);
+    expect(observation.audit.observations).toEqual(expect.arrayContaining([expect.objectContaining({
+      pathSha256:hash("packages/shared/dist/validators/agent.d.ts"),detector:3,classification:"unresolved_context"})]));
+    await expect(stat(path.join(temporaryRoot,"artifacts-private/source-sdk-build/receipt.json"))).rejects.toThrow();
+    await expect(stat(path.join(temporaryRoot,"artifacts-private/source-sdk-build/packages"))).rejects.toThrow();
+  }finally{await restoreLock?.();}
+},120_000);

@@ -3,6 +3,7 @@ import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } 
 import path from "node:path";
 import os from "node:os";
 import { beforeAll, afterAll, expect, it } from "vitest";
+import { prepareReviewedSdkReference } from "./source-sdk-reviewed-fixture.js";
 import pins from "./source-sdk-public-inputs.json" with { type: "json" };
 import { createSdkArtifactScanner, sdkPublicTypeSyntax, verifySdkPublicSource } from "./source-sdk-public-type.js";
 import { findSecretLeakMatch, normalizedSecrets } from "./redaction.js";
@@ -12,16 +13,18 @@ const blob = (v: string | Buffer) => createHash("sha1").update(`blob ${Buffer.by
 const originalRoot = path.resolve(import.meta.dirname, "../.."), file = "packages/shared/dist/validators/synthetic-unit.d.ts", inputFile = file.replace("/dist/", "/src/").replace(/\.d\.ts$/, ".ts");
 const source = 'import {z} from "zod";export const schema=z.object({daytona_api_key:z.string().min(1)});';
 const declaration = 'import {z} from "zod";export declare const schema:{daytona_api_key:z.ZodOptional<z.ZodString>};';
-let root: string; let fixtureLockSha256: string;
+let root: string; let reviewedRoot: string; let fixtureLockSha256: string;
 const fixtureInputs: Record<string, string> = {};
 beforeAll(async () => {
   root = await realpath(await mkdtemp(path.join(os.tmpdir(), "sdk-public-type-synthetic-")));
-  for (const [relative] of Object.entries(pins.inputs)) { const dest = path.join(root, relative); await mkdir(path.dirname(dest), { recursive: true }); await copyFile(path.join(originalRoot, relative), dest); fixtureInputs[relative] = blob(await readFile(dest)); }
-  await copyFile(path.join(originalRoot, "pnpm-lock.yaml"), path.join(root, "pnpm-lock.yaml")); fixtureLockSha256 = hash(await readFile(path.join(root, "pnpm-lock.yaml")));
-  await symlink(await realpath(path.join(originalRoot, "node_modules")), path.join(root, "node_modules"));
-  await symlink(await realpath(path.join(originalRoot, "packages/shared/node_modules")), path.join(root, "packages/shared/node_modules"));
+  await prepareReviewedSdkReference(originalRoot,root);
+  reviewedRoot=await realpath(await mkdtemp(path.join(os.tmpdir(),"sdk-public-reviewed-reference-")));
+  await prepareReviewedSdkReference(originalRoot,reviewedRoot);
+  for(const relative of Object.keys(pins.inputs))fixtureInputs[relative]=blob(await readFile(path.join(root,relative)));
+  fixtureLockSha256=hash(await readFile(path.join(root,"pnpm-lock.yaml")));
+
 });
-afterAll(async () => { if (root) await rm(root, { recursive: true, force: true }); });
+afterAll(async () => { for(const directory of [root,reviewedRoot])if(directory)await rm(directory,{recursive:true,force:true}); });
 async function fixture(sourceText = source) {
   await mkdir(path.dirname(path.join(root, inputFile)), { recursive: true }); await writeFile(path.join(root, inputFile), sourceText);
   return { ...pins, lockSha256: fixtureLockSha256, inputs: { ...fixtureInputs, [inputFile]: blob(sourceText) } };
@@ -29,13 +32,7 @@ async function fixture(sourceText = source) {
 it("default public proof accepts the reviewed build lock and still rejects a changed lock", async () => {
   const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "sdk-reviewed-runtime-")));
   try {
-    for (const relative of Object.keys(pins.inputs)) {
-      const destination = path.join(directory, relative);
-      await mkdir(path.dirname(destination), { recursive: true });
-      await copyFile(path.join(originalRoot, relative), destination);
-    }
-    await symlink(await realpath(path.join(originalRoot, "node_modules")), path.join(directory, "node_modules"));
-    await symlink(await realpath(path.join(originalRoot, "packages/shared/node_modules")), path.join(directory, "packages/shared/node_modules"));
+    await prepareReviewedSdkReference(originalRoot,directory);
     const reviewed = JSON.parse(await readFile(path.join(originalRoot, "tests/runner-e2e/report-lock.json"), "utf8"));
     const lock = await readFile(path.join(directory, "pnpm-lock.yaml"));
     expect(hash(lock)).toBe(reviewed.outputSha256);
@@ -56,7 +53,7 @@ it("classifies the shipped agent env schema declaration and keeps a literal at t
   // Plugin cells retain packages/shared/dist/validators/agent.d.ts, whose
   // `OPENROUTER_API_KEY: z.ZodOptional<z.ZodString>` matches the OpenRouter key
   // shape. Stale default pins left it unresolved and blocked web-server startup.
-  const repository = await realpath(originalRoot), agentFile = "packages/shared/dist/validators/agent.d.ts";
+  const repository = reviewedRoot, agentFile = "packages/shared/dist/validators/agent.d.ts";
   const shipped = 'import { z } from "zod";\nexport declare const env: z.ZodObject<{\n    OPENROUTER_API_KEY: z.ZodOptional<z.ZodString>;\n}>;\n';
   const scanner = createSdkArtifactScanner(repository, []); expect(await scanner.scan(agentFile, Buffer.from(shipped))).toBe(true);
   expect((await scanner.audit()).observations.map(row => row.classification)).toEqual(["public_schema_type"]);

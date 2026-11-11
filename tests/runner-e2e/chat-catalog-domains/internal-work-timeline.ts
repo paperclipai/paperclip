@@ -105,7 +105,7 @@ function timeline(): ChatCatalogCase {
     const state = { worker, repairWorker, project: p, task: second.t, prepTask, hiddenTask, firstRun, secondRun, blockedTask: first.t, blockedEventId: blockedEvent.id, handoffEventId: handoff.id, doneEventId: done.id, timezone, today, zoneLabel, personId: session.user.id, personName: session.user.name };
     await ctx.input.evidence("chat-catalog-real-launch-timeline.json", { ...state, verification: verifier.receipts, events }); return state;
   }, gradeWorkTimeline);
-  return { ...base, oracleVersion: "paperclip.chat-catalog.work-timeline.v15", authentication: "human-session", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 720000,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.work-timeline.v16", authentication: "human-session", expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 720000,
     sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-work-timeline.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/internal-timeline-verifier.ts", "chat-catalog-domains/internal-privacy.ts", "chat-catalog-domains/identity-auth.ts", "chat-catalog-domains/internal-routine-audit.ts", "../e2e/fetch-allowed-port.ts", "../../server/src/services/native-runtime/status-decision-committer.ts", "../../server/src/services/work-timeline.ts","../../server/src/services/native-runtime/runner-api-catalog.ts"],
     async observe(ctx, state): Promise<Timeline> {
       const o = await observeInternal(ctx, state), taskId = entity(state, "task").id ?? "";

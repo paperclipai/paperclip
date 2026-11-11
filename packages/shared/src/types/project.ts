@@ -107,6 +107,15 @@ export interface ProjectDiscoveryPage {
   nextCursor: string | null;
 }
 
+export interface ProjectEnvironmentOptions {
+  groups: Array<{
+    storageProviderPluginId: string | null;
+    environments: Array<{ id: string; name: string }>;
+  }>;
+  defaultEnvironmentId: string | null;
+  error: string | null;
+}
+
 export interface ProjectWorkspaceProviderConfiguration {
   source: "project" | "core";
   pluginId: string | null;
@@ -138,6 +147,8 @@ export interface Project {
   color: string | null;
   icon: string | null;
   env: AgentEnvConfig | null;
+  /** Project-owned execution target; null inherits the agent/instance default. */
+  environmentId?: string | null;
   pauseReason: PauseReason | null;
   pausedAt: Date | null;
   executionWorkspacePolicy: ProjectExecutionWorkspacePolicy | null;

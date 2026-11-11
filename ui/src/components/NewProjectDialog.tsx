@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PROJECT_COLORS, type ProjectRepository } from "@paperclipai/shared";
 import { X } from "lucide-react";
 import { useDialog } from "../context/DialogContext";
@@ -10,6 +10,8 @@ import { queryKeys } from "../lib/queryKeys";
 import { trackRecentProject } from "../lib/recent-projects";
 import { ProjectTile } from "./ProjectTile";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
+import { QueryErrorState, useQueryView } from "./QueryView";
+import { NativeSelect } from "./ui/select";
 import { Button } from "./ui/button";
 import { ProjectRepositoryInput, repositoryOptionsKey } from "./ProjectRepositoryInput";
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
@@ -28,8 +30,16 @@ export function NewProjectForm({ companyId, onClose }: { companyId: string; onCl
   const [repos, setRepos] = useState<ProjectRepository[]>([]);
   const [connecting, setConnecting] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<string | null>(null);
+  const environments = useQuery({ queryKey: queryKeys.projects.environments(companyId), queryFn: () => projectsApi.environmentOptions(companyId), gcTime: 0 });
+  const environmentView = useQueryView(environments);
+  const options = environmentView.data;
+  const environmentId = selectedEnvironmentId ?? options?.defaultEnvironmentId;
+  const selectedGroup = options?.groups.find(group => group.environments.some(environment => environment.id === environmentId));
+  const environmentReady = Boolean(environmentView.kind !== "error" && options && (!options.error || selectedGroup) && (!options.groups.length || selectedGroup));
+
   const create = useMutation({
-    mutationFn: () => projectsApi.create(companyId, { name: name.trim(), color, status: "planned", repositoryIds: repos.map((repo) => repo.id) }),
+    mutationFn: () => projectsApi.create(companyId, { name: name.trim(), color, status: "planned", repositoryIds: repos.map((repo) => repo.id), ...(selectedGroup ? { environmentId, expectedStorageProviderPluginId: selectedGroup.storageProviderPluginId } : {}) }),
     onSuccess: (project) => {
       trackRecentProject(project.id, companyId);
       void client.invalidateQueries({ queryKey: queryKeys.projects.all(companyId) });
@@ -46,7 +56,7 @@ export function NewProjectForm({ companyId, onClose }: { companyId: string; onCl
           void client.invalidateQueries({ queryKey: repositoryOptionsKey(companyId) });
           setConnecting(false);
         }} />
-      </div> : <form className="flex min-h-0 flex-col overflow-hidden" onSubmit={(event) => { event.preventDefault(); if (name.trim() && !create.isPending) create.mutate(); }}>
+      </div> : <form className="flex min-h-0 flex-col overflow-hidden" onSubmit={(event) => { event.preventDefault(); if (name.trim() && environmentReady && !create.isPending) create.mutate(); }}>
         <div className="flex shrink-0 flex-col gap-4 px-5 pb-4 pt-5">
           <div className="flex items-center justify-between gap-3">
             <DialogTitle className="text-lg font-semibold">Create project</DialogTitle>
@@ -59,12 +69,27 @@ export function NewProjectForm({ companyId, onClose }: { companyId: string; onCl
           </div>
         </div>
         <div role="region" aria-label="Source repositories" tabIndex={0} className="min-h-0 overflow-y-auto overscroll-contain px-5 pb-1 outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring">
+          {options && (options.groups.length > 1 || (options.error && options.groups.length > 0)) && <div className="mb-4 space-y-2">
+            <label htmlFor="project-environment" className="text-sm font-medium">Available in</label>
+            <NativeSelect id="project-environment" value={selectedGroup?.environments[0].id ?? ""} disabled={create.isPending}
+              onChange={event => setSelectedEnvironmentId(event.target.value)}>
+              {!selectedGroup && <option value="" disabled>Select environments</option>}
+              {options.groups.map(group => <option key={group.environments[0].id} value={group.environments[0].id}>
+                {group.environments.map(environment => environment.name).join(", ")}
+              </option>)}
+            </NativeSelect>
+            <p className="text-xs text-muted-foreground">These environments can share this project's working files. The storage choice stays with the project.</p>
+          </div>}
+          {(environmentView.kind === "loading" || environmentView.kind === "reconnecting") && <p role="status" className="mb-3 text-sm text-muted-foreground">Loading environments…</p>}
+          {environmentView.kind === "error" && <QueryErrorState error={environmentView.error} size="inline" action="load project environments"
+            className="mb-3" onRetry={environmentView.retry} retrying={environmentView.isFetching} />}
+          {options?.error && !selectedGroup && <p role="alert" className="mb-3 text-sm text-destructive">{options.error}</p>}
           <ProjectRepositoryInput companyId={companyId} selected={repos} onChange={setRepos} onConnect={() => setConnecting(true)} disabled={create.isPending} />
         </div>
         {create.status === "error" && <p role="alert" className="px-5 pt-3 text-sm text-destructive">{describeError(create.error).body}</p>}
-        <div className="flex shrink-0 justify-end gap-2 px-5 py-5">
+        <div className="flex shrink-0 justify-between gap-2 px-5 py-5">
           <Button type="button" variant="ghost" disabled={create.isPending} onClick={onClose}>Cancel</Button>
-          <Button type="submit" disabled={!name.trim() || create.isPending}>{create.isPending ? "Creating…" : "Create project"}</Button>
+          <Button type="submit" disabled={!name.trim() || !environmentReady || create.isPending}>{create.isPending ? "Creating…" : "Create project"}</Button>
         </div>
       </form>}
     </DialogContent>

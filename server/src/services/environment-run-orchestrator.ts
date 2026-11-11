@@ -37,9 +37,10 @@ import type {
 import {
   resolveRunnerEnvironmentForRun,
   resolveRunnerReconnectGraceMsForRun,
+  runnerLifecycleDefaultNeedsLeaseProbe,
   resolveWarmRunnerIdleTimeoutMsForRun,
 } from "./runner-environment-lifecycle.js";
-import { environmentService } from "./environments.js";
+import { assertEnvironmentCompanyBinding, environmentService } from "./environments.js";
 import {
   environmentRuntimeService,
   buildEnvironmentLeaseContext,
@@ -208,6 +209,7 @@ export function environmentRunOrchestrator(
       });
     }
 
+    await assertEnvironmentCompanyBinding(db, environment.id, input.companyId);
     return environment;
   }
 
@@ -230,7 +232,7 @@ export function environmentRunOrchestrator(
     runnerReconnectGraceMs?: number;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
-      return await environmentRuntime.acquireRunLease(input);
+      return await environmentRuntime.acquireRunLease({ ...input, assertCompanyBinding: true });
     } catch (err) {
       // A transient provider refusal (HTTP 5xx/429/timeout) is retried by the
       // setup path with its bounded bootstrap budget. Saved-sandbox resume and
@@ -313,8 +315,17 @@ export function environmentRunOrchestrator(
       localEnvironmentId: input.localEnvironmentId,
     });
 
+    // The remote-sandbox warm default needs a provider that keeps reusable
+    // leases. Probe it only for a run the default can apply to; every other
+    // run resolves without it, exactly as before.
+    const reusableLeaseSupported = runnerLifecycleDefaultNeedsLeaseProbe(
+      selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode, input.managedAiCredentialIdentity,
+    ) && await Promise.resolve(environmentRuntime.providerSupportsReusableLeases?.(selectedEnvironment)).then(
+      (supported) => supported === true, () => false);
+    const lifecycleDefaultContext = { reusableLeaseSupported, managedAiCredentialIdentity: input.managedAiCredentialIdentity };
     const environment = resolveRunnerEnvironmentForRun(
       selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode, input.managedAiCredentialIdentity,
+      lifecycleDefaultContext,
     );
 
     if (input.recoverPluginTask && environment.driver === "plugin" && input.adapterType === "paperclip_runner") {
@@ -333,7 +344,7 @@ export function environmentRunOrchestrator(
 
     // Step 2: Acquire lease
     const warmRunnerIdleTimeoutMs = resolveWarmRunnerIdleTimeoutMsForRun(
-      selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode,
+      selectedEnvironment, input.adapterType, input.adapterConfig, input.admittedLifecycleMode, lifecycleDefaultContext,
     );
     const runnerReconnectGraceMs = input.adapterType
       ? resolveRunnerReconnectGraceMsForRun(selectedEnvironment, input.adapterType)

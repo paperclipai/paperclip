@@ -1,4 +1,5 @@
 import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-settlement.js";
+import { registerCompletedTurnCleanupResumer } from "./native-runtime/completed-turn-cleanup-hold-settlement.js";
 import { endStorageOutageWaitOn, reportStorageOutageWaitsTo, runInOwnStorageScope } from "../storage/storage-unavailable.js";
 import { createStorageWaitNotice } from "./heartbeat/storage-wait-notice.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
@@ -8,6 +9,7 @@ import { isContextCompactionRun } from "./context-compaction.js";
 import { isUnstartedTaskQuestionAnswer } from "./unstarted-task-question-answer.js";
 import { isVerifiedDependencyInteractionResponse } from "./queued-interaction-response.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
+import { registerProviderLimitResumeWork, type PrepareChatRetry } from "./native-runtime/provider-limit-resume.js";
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
 import { registerIssueRecoveryWork } from "./recovery/work.js";
 import { registerRunDispatchWork } from "./heartbeat/dispatch-work.js";
@@ -53,7 +55,7 @@ import { prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
 import { selectHeartbeatEnvironment } from "./heartbeat/environment-selection.js";
 import { reconcileMuseNativeTerminalRun } from "./native-runtime/muse-terminal-reconciliation.js";
 import { prepareHeartbeatWorkspace } from "./heartbeat/workspace-preparation.js";
-import { nativeRecoveryClaimRelinquished } from "./native-runtime/native-execution-lease.js";
+import { nativeRecoveryClaimRelinquished, ownNativeExecutionLeaseLapsed, releaseLapsedNativeRestartClaim } from "./native-runtime/native-execution-lease.js";
 import { executeHeartbeatRuntime, NativeSessionResumeScheduledError, NativeWorkspaceFinalizeScheduledError } from "./heartbeat/runtime-execution.js";
 import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
 import { nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
@@ -560,7 +562,8 @@ import { resolveAndRetainRunTrustPreset } from "./run-trust-preset.js";
 import { effectiveProjectWorkspacePolicy, sourcelessProjectWorkspacePolicy } from "./project-workspace-provider.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
-import { computeTaskDrain, applyTaskDrain, startTaskDrain, stopTaskDrain, readTaskDrain } from "./task-admission.js";
+import { computeTaskDrain, applyTaskDrain, startTaskDrain, stopTaskDrain, readTaskDrain, subscribeTaskDrainChanges,
+  subscribeTaskDrainExpiry } from "./task-admission.js";
 
 const execFile = promisify(execFileCallback);
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = [
@@ -1548,10 +1551,12 @@ export function heartbeatService(
   }
   // The interrupted-preparation ownership kind settles a hold, then replays the
   // preparation through this same resume path (bounded, uncharged retry).
-  registerHeldPreparationResumer(async ({ companyId, runId }) => {
+  const resumeSettledRun = async ({ companyId, runId }: { companyId: string; runId: string }) => {
     const run = await getRun(runId);
     if (run && run.companyId === companyId) await resumeRemoteStopComments(run);
-  });
+  };
+  registerHeldPreparationResumer(resumeSettledRun);
+  registerCompletedTurnCleanupResumer(resumeSettledRun);
 
   function cancelRunInternal(...args: Parameters<typeof runControl.cancelRunInternal>) {
     return runControl.cancelRunInternal(...args);
@@ -2022,6 +2027,15 @@ export function heartbeatService(
         run = cleared;
       }
     }
+    // A failed session close (this run's own, or a finished predecessor's) may
+    // still hold this process's cleanup gate for the task. When its runner and
+    // providers are proven stopped, retire it so admission is not refused.
+    const cleanupGateIssueId = run.nativeIssueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
+    if (cleanupGateIssueId) {
+      const { retireStoppedSessionCleanupGates } = await import("./native-runtime/native-session-executor.js");
+      await retireStoppedSessionCleanupGates(db, { companyId: run.companyId, issueId: cleanupGateIssueId,
+        ...(run.runtimeMode === "native" ? { run } : {}) });
+    }
 
     if (run.runtimeMode === "legacy" && run.controllerBootId &&
         run.controllerBootId !== legacyControllerBootId) return;
@@ -2039,6 +2053,12 @@ export function heartbeatService(
     let githubLauncherLocation:
       Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
     let nativeSessionResumeScheduled = false;
+    let restartClaimLapsed = false;
+    // The executor detached for "the next controller" because its own lease
+    // lapsed (for example after a stall), with no shutdown or hot-restart
+    // handoff. The next controller is this process: recover the run here once
+    // the executor has exited. A shutdown detach leaves it to the next server.
+    let detachedWithoutHandoff = false;
     const shutdownHandedOff = watchShutdownHandoff(run.id);
     let nativeOwnershipHeld = false;
     let nativeStartupCleanupScheduled = false;
@@ -2056,6 +2076,11 @@ export function heartbeatService(
     };
     let instructionWorkingCopy: ReturnType<typeof createHeartbeatInstructionWorkingCopy> | null = null;
     let nativeDispatchStarted = false;
+    // Set once the dispatch gate enters the adapter or native executor. Unlike
+    // nativeDispatchStarted it also covers a gate that fails after entering.
+    let dispatchGateEntered = false;
+    const nativeDispatchMayHaveStarted = () => nativeDispatchStarted || dispatchGateEntered || nativeOwnershipHeld
+      || Boolean(runOptions.nativeRestartRecovery || runOptions.nativeLeaseOwner);
     const leaveToNextController = async (error: unknown) => {
       if (!shutdownHandedOff() || legacyAdapterEntered || nativeDispatchStarted) return false;
       nativeSessionResumeScheduled = true;
@@ -3016,6 +3041,7 @@ export function heartbeatService(
         try {
           return await dispatchResolvedInteractionContinuationAfterAdmission((markDispatchStarted) => {
             entered = true;
+            dispatchGateEntered = true;
             return dispatch(markDispatchStarted);
           }, reservation);
         } catch (error) {
@@ -3699,6 +3725,8 @@ export function heartbeatService(
         }
         if (err instanceof NativeControllerDetachedForRestartError) {
           nativeSessionResumeScheduled = true;
+          detachedWithoutHandoff = !shutdownHandedOff() && await ownNativeExecutionLeaseLapsed(db, run)
+            .catch(() => false);
           return;
         }
         if (err instanceof NativeRunnerOwnershipUnverifiedError) {
@@ -3826,13 +3854,30 @@ export function heartbeatService(
           return;
         }
         if (await leaveToNextController(err)) return;
-        if (!(await preserveNativeWorkspaceOnFailure())) return;
+        if (!(await preserveNativeWorkspaceOnFailure())) {
+          const claim = runOptions.nativeRestartRecovery;
+          let releaseFailed = false;
+          restartClaimLapsed = claim !== undefined && await releaseLapsedNativeRestartClaim({ db, companyId: run.companyId, runId: run.id,
+            leaseOwner: claim.leaseOwner, controllerGeneration: claim.controllerGeneration, providerAttempt: claim.providerAttempt })
+            .catch(releaseError => {
+              logger.warn({ err: releaseError, runId: run.id }, "lapsed native restart claim could not be released; restart recovery will reclaim it after expiry");
+              releaseFailed = true;
+              return false;
+            });
+          logger.warn({ runId: run.id, err: identityRedactor.redact({ message: err instanceof Error ? err.message : String(err),
+            stack: err instanceof Error ? err.stack : undefined }), restartClaim: claim?.kind ?? null, restartClaimLapsed },
+            restartClaimLapsed ? "native restart claim lapsed during a failed preparation; released it for restart recovery"
+              : releaseFailed ? "native run failure left to restart recovery after its claim release failed"
+              : "native run failure left to the workspace owner that holds the run");
+          return;
+        }
         await runCompletion.failRun({
           run, agent, issueId, issueRef, signal: executionControl.controller.signal,
           output: runOutput,
           session: { runtimeForAdapter, previousSessionParams, taskKey, configuredModel, sessionConfigMetadata },
           readFailureReportSecrets,
           runId, err, identityRedactor, requiredWorkspaceRestoreEvidence, legacyAdapterEntered,
+          nativeDispatchMayHaveStarted: nativeDispatchMayHaveStarted(),
           goalCheckpointSession, previousSessionDisplayId, taskSession,
         });
       }
@@ -3889,6 +3934,7 @@ export function heartbeatService(
           await runCompletion.failRunSetup({
             run, runId, outerErr, signal: executionControl.controller.signal,
             providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted,
+            nativeDispatchMayHaveStarted: nativeDispatchMayHaveStarted(),
             identityRedactor, readFailureReportSecrets,
           });
           legacyPreparationFailedBeforeDispatch = !legacyAdapterEntered && !nativeDispatchStarted;
@@ -4142,6 +4188,7 @@ export function heartbeatService(
       } finally {
         controllerLease.stop();
         activeRunExecutions.delete(run.id);
+        if (restartClaimLapsed || detachedWithoutHandoff) scheduleNativeSessionResumeDispatch(run.id, new Date(), "restart");
         // A failed owned Stop remains visible until this exact executor settles,
         // including a graceful exit result arriving after the cancellation error.
         // It is never retained beyond the active execution's cleanup.
@@ -4490,8 +4537,19 @@ export function heartbeatService(
         settleTaskChat: scope => reconcileTaskChatRetryReceipts(db, { ...scope, settleOnly: true }),
         createNativeBatch: heartbeatQueue.createNativeStatusWakeBatch,
         schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
+        subscribeRefresh: refresh => {
+          const unsubscribe = [subscribeTaskDrainChanges(refresh), subscribeTaskDrainExpiry(refresh)];
+          return () => { for (const stop of unsubscribe) stop(); };
+        },
       }, () => canRun() && readTaskDrain(new Date()) === null),
     readIdleWatchdogSchedule: taskWatchdogs.readIdleSchedule,
+    registerProviderLimitResumeWork: (coordinator: Parameters<typeof registerProviderLimitResumeWork>[1], canRun: () => boolean,
+      prepareChatRetry?: () => PrepareChatRetry | undefined) =>
+      registerProviderLimitResumeWork(db, coordinator, {
+        resume: (companyId, requestId) => runControl.resumeTaskRetry(companyId, requestId),
+        schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
+        prepareChatRetry,
+      }, () => canRun() && readTaskDrain(new Date()) === null),
     registerIssueStateRecoveryWork: (coordinator: Parameters<typeof registerIssueRecoveryWork>[1], canRun: () => boolean) =>
       registerIssueRecoveryWork(db, coordinator, {
         stranded: scope => reconcileStrandedAssignedIssues({ ...scope, skipExternalConversationSettlement: true, skipRelatedRecovery: true }),

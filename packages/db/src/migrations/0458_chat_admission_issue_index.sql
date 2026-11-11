@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "chat_actions_company_issue_kind_idx" ON "chat_actions" USING btree ("company_id",("payload"->>'issueId'),"kind","status") WHERE "chat_actions"."kind" IN ('inbound_wakeup', 'failed_run_retry');

@@ -43,7 +43,7 @@ An optional drop-in engineering pod for companies that want a working software-d
 
 - `github-pr-workflow` keeps logical commits, branch hygiene, and merge discipline consistent across the pod.
 - `qa-acceptance` gives QA a structured pass/fail format coders can act on.
-- `task-planning` lets the CTO turn larger asks into well-scoped child issues.
+- `task-planning` lets the CTO plan larger asks with clear scope.
 - `doc-maintenance` keeps docs aligned with shipped changes — install if the company has any user-facing docs surface.
 
 ## Migration notes

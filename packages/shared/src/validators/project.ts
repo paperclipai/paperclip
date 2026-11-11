@@ -119,6 +119,7 @@ const projectFields = {
   color: z.string().optional().nullable(),
   icon: z.enum(PROJECT_ICON_NAMES).optional().nullable(),
   env: envConfigSchema.optional().nullable(),
+  environmentId: z.string().guid().optional().nullable(),
   executionWorkspacePolicy: projectExecutionWorkspacePolicySchema.optional().nullable(),
   archivedAt: z.string().datetime().optional().nullable(),
 };
@@ -126,6 +127,8 @@ const projectFields = {
 export const createProjectSchema = z.object({
   idempotencyKey: z.string().trim().min(1).max(255).optional(),
   ...projectFields,
+  environmentId: z.string().guid().optional(),
+  expectedStorageProviderPluginId: z.string().guid().nullable().optional(),
   workspace: createProjectWorkspaceSchema.optional(),
   repositoryIds: z.array(z.string().regex(/^\d+$/)).optional(),
   repositoryUrls: z.array(z.string().url().max(2000)).max(100).optional(),
@@ -134,7 +137,7 @@ export const createProjectSchema = z.object({
 export type CreateProject = z.infer<typeof createProjectSchema>;
 
 export const updateProjectSchema = objectWithoutDefaults(
-  z.object(projectFields),
+  z.object({ ...projectFields, expectedStorageProviderPluginId: z.string().guid().nullable().optional() }),
 ).partial();
 
 export type UpdateProject = z.infer<typeof updateProjectSchema>;
