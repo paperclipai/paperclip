@@ -126,7 +126,7 @@ async function matches(spec: CacheSpec, entry = spec.entry): Promise<boolean> {
  * holders recorded their process identity stays held.
  */
 export async function runtimeSkillCacheLockHolderExited(lockContent: Buffer, options: {
-  /** The proof is abandoned (the lock stays held) after this long, so a stalled read never outlives the lock wait. */
+  /** This wait gives up (the lock stays held) after this long. A stalled read keeps running; later waits on the same holder join it. */
   timeoutMs?: number;
   prove?: (stamp: LocalOwnerStamp) => Promise<OwnerProof>;
 } = {}): Promise<boolean> {
