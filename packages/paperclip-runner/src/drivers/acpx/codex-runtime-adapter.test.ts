@@ -2810,7 +2810,6 @@ describe("Codex ACPX runtime adapter", () => {
       ["holds a conversation", { messages: [{ User: { id: "m", content: [] } }] as unknown as AcpSessionRecord["messages"] }],
       ["recorded a prompt", { lastPromptAt: "2026-11-07T00:33:09.553Z" }],
       ["recorded provider events", { lastSeq: 3 }],
-      // Its own message list starts empty; the provider holds the conversation.
       ["was opened from a resume id", { acpx: { session_origin: "resume" } } as Partial<AcpSessionRecord>],
     ])("keeps a record that %s", async (_label, overrides) => {
       const sessions = store();
@@ -3888,7 +3887,6 @@ describe("a restored Claude session that connects when it opens", () => {
     expect(result.ensured).toMatchObject({ sessionKey: "provider-key", resumeSessionId: "backend-1" });
     expect(result.seenDuringEnsure).toEqual([undefined]);
     expect(result.seenAfterOpen).toBe(saved);
-    // The saved record is never rewritten to force the new path.
     expect(result.sessions.save).not.toHaveBeenCalled();
   });
 
@@ -3902,7 +3900,6 @@ describe("a restored Claude session that connects when it opens", () => {
     const home = join(root, "home"), cwd = join(root, "workspace"), config = join(home, ".claude");
     await Promise.all([mkdir(config, { recursive: true }), mkdir(cwd)]);
     await writeFile(join(config, "settings.json"), JSON.stringify({ model: "claude-sonnet-5-5" }));
-    // The Claude CLI can reach only this local fixture, never a provider.
     const conversations: string[][] = [];
     const api = createServer(async (request, response) => {
       let body = "";
@@ -3947,7 +3944,6 @@ describe("a restored Claude session that connects when it opens", () => {
         ANTHROPIC_BASE_URL: `http://127.0.0.1:${address.port}`, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
     });
     const dependencies = {
-      // This test exercises session open and resume; lifetime-fence tests are separate.
       awaitProviderOwnership: async () => undefined,
       awaitProviderExit: (child: ChildProcess) => new Promise<void>(resolve => {
         if (child.exitCode !== null || child.signalCode !== null) resolve();
@@ -3971,10 +3967,7 @@ describe("a restored Claude session that connects when it opens", () => {
     process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS = "1";
     try {
       expect(await run(false, "turn-first")).toEqual({ openSpawns: 1, turnSpawns: 0 });
-      // An effort control on a lazily reused record would open a temporary
-      // connection here, and the turn would start the agent a second time.
       expect(await run(true, "turn-second")).toEqual({ openSpawns: 1, turnSpawns: 0 });
-      // The resumed turn carries the earlier conversation.
       expect(conversations).toContainEqual(["turn-first", "turn-second"]);
       const saved = JSON.parse(await readFile(join(root, "state", "sessions", "provider-key.json"), "utf8")) as { acpx?: { session_origin?: string } };
       expect(saved.acpx?.session_origin).toBe("resume");
@@ -3983,7 +3976,6 @@ describe("a restored Claude session that connects when it opens", () => {
       else process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS = priorSettingsFlag;
       api.closeAllConnections();
       await new Promise<void>(resolve => api.close(() => resolve()));
-      // Provider shutdown can flush metadata just after the ACP process exits.
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   }, 30_000);
