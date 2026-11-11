@@ -3020,6 +3020,18 @@ replacement behavior. When a replacement does archive remote continuity state
 and the remote move fails, the local state is not moved, and the run error keeps
 the bounded, redacted exit status and output of that move.
 
+When the provider state backup fails to save after the run's result was
+accepted, and the run used a per-turn sandbox (no reusable lease), that backup
+was the only copy of the provider session. The server records
+`nativeProviderStateUnsaved` with the code `native_provider_state_incompatible`
+in that run's runner profile. The run's status, result and task outcome do not
+change. The next run on the session does not rebind that checkpoint: it starts
+a fresh provider session in the same workspace with the full task context,
+without first trying to resume, and its transcript shows the session as started
+rather than resumed. A failure before the result is accepted, a backup that
+saves after a retry, a retained sandbox, an SSH host, and records saved without
+the key keep the resume path described next.
+
 A Runner that keeps no control-plane state for the saved session (none is live
 and no archived authority epoch matches it) reports a typed refusal. This
 happens when a follow-up run starts in a new sandbox and the previous run's
