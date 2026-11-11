@@ -294,7 +294,22 @@ fn only_registered_asset_text_changed(
         .is_some_and(|(current_prefix, prior_prefix)| current_prefix == prior_prefix)
 }
 
+// Earlier ACPX releases whose saved sessions this build continues. The current
+// ACPX loads the session records they wrote, so a saved descriptor naming one
+// is moved to the current release. The launch profile rebind and validation
+// still decide whether that session resumes.
+const CARRIED_ACPX_RELEASES: &[&str] = &["0.13.1"];
+
 impl AcpxProviderDescriptor {
+    fn carry_forward_acpx_release(&mut self) {
+        if self.acpx_version == self.provider_version
+            && CARRIED_ACPX_RELEASES.contains(&self.acpx_version.as_str())
+        {
+            self.acpx_version = QUALIFIED_ACPX_VERSION.to_owned();
+            self.provider_version = QUALIFIED_ACPX_VERSION.to_owned();
+        }
+    }
+
     // Whether this build qualifies the release that the descriptor names.
     fn names_qualified_release(&self) -> bool {
         acpx_release_profile(&self.agent).is_some_and(|expected| {
@@ -1189,6 +1204,7 @@ impl AcpxCommandExecutor {
         let mut state: AcpxDurableState = serde_json::from_slice(&bytes).map_err(|error| {
             DurableRunnerError::invalid(format!("ACPX provider state is malformed: {error}"))
         })?;
+        state.descriptor.carry_forward_acpx_release();
         let launch_profile_digest = self.restore_launch_profile_digest(&state)?;
         if state.launch_profile_digest != launch_profile_digest
             && self.rebinds_settled_session(&state)
@@ -6777,39 +6793,59 @@ mod tests {
         }
     }
 
-    // The previous release pinned ACPX 0.13.1. A session it saved, settled or
-    // with a turn in flight when the deploy lands, is refused by name and kept.
+    // The previous release pinned ACPX 0.13.1. A session it saved continues:
+    // the next run attaches to a settled session, and a deploy that lands
+    // mid-turn takes the ordinary lost-turn recovery.
     #[cfg(unix)]
     #[test]
-    fn sessions_saved_by_the_previous_acpx_release_are_refused_by_name_and_kept() {
-        for mid_turn in [false, true] {
-            let label = if mid_turn {
-                "previous-acpx-mid-turn"
-            } else {
-                "previous-acpx-settled"
-            };
-            let (directory, config, _, saved) = settled_session_after_runner_upgrade(label);
-            let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
-            let mut state: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
-            state.descriptor.acpx_version = "0.13.1".into();
-            state.descriptor.provider_version = "0.13.1".into();
-            if mid_turn {
-                state.lifecycle = "turn_active".into();
-                state.active_turn_id = Some("turn-1".into());
-            }
-            fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
-            let retained = fs::read(&state_path).unwrap();
+    fn a_settled_session_saved_by_the_previous_acpx_release_continues() {
+        let (directory, config, payload, saved) =
+            settled_session_after_runner_upgrade("previous-acpx-settled");
+        let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
+        let mut prior: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
+        prior.descriptor.acpx_version = "0.13.1".into();
+        prior.descriptor.provider_version = "0.13.1".into();
+        fs::write(&state_path, serde_json::to_vec(&prior).unwrap()).unwrap();
 
-            let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
-            let error = recovered.restore().unwrap_err();
-            assert_eq!(
-                error.classification(),
-                Some(crate::durable::PROVIDER_STATE_INCOMPATIBLE),
-                "{label}: {error}"
-            );
-            assert!(recovered.session.is_none(), "{label}");
-            assert_eq!(fs::read(&state_path).unwrap(), retained, "{label}");
-            fs::remove_dir_all(directory).unwrap();
-        }
+        let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        recovered
+            .restore()
+            .expect("a settled 0.13.1 session survives the ACPX upgrade");
+        recovered
+            .attach_run(&payload)
+            .expect("the next run attaches the same conversation");
+        let attached: AcpxDurableState =
+            serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        assert_eq!(attached.descriptor.acpx_version, QUALIFIED_ACPX_VERSION);
+        assert_eq!(attached.descriptor.provider_version, QUALIFIED_ACPX_VERSION);
+        assert_eq!(attached.descriptor.run_id, "run-2");
+        assert_eq!(attached.lifecycle, "suspended");
+        assert_eq!(attached.identity, prior.identity);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_turn_interrupted_by_the_acpx_upgrade_takes_lost_turn_recovery() {
+        let (directory, config, state_path) =
+            interrupted_turn_after_runner_upgrade("previous-acpx-mid-turn");
+        let mut prior: AcpxDurableState =
+            serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        prior.descriptor.acpx_version = "0.13.1".into();
+        prior.descriptor.provider_version = "0.13.1".into();
+        fs::write(&state_path, serde_json::to_vec(&prior).unwrap()).unwrap();
+
+        let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        recovered
+            .restore()
+            .expect("a 0.13.1 turn takes the same lost-turn recovery as a same-release restart");
+        let restored: AcpxDurableState =
+            serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        assert_eq!(restored.descriptor.acpx_version, QUALIFIED_ACPX_VERSION);
+        assert_eq!(restored.identity, prior.identity);
+        // The fixture's provider cannot start, so recovery takes the ordinary
+        // close path of a lost turn instead of failing the restore.
+        assert!(restored.active_turn_id.is_none());
+        fs::remove_dir_all(directory).unwrap();
     }
 }

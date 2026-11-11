@@ -346,8 +346,13 @@ Each provider declares how in `ACPX_RELEASE_ATTESTATIONS`
 
 `generate:acpx-profiles` writes the computed digests and `check:acpx-profiles`
 refuses a stale one, so a digest changes only with its upstream release. Every
-ACPX harness binds the shared ACPX layer the same way: saved inputs must match
-the current ACPX version, and the provider pack's `contractDigest` binds the
+ACPX harness binds the shared ACPX layer the same way. Saved sessions carry
+forward across an ACPX upgrade when the new ACPX loads the records the old one
+wrote: Runner moves a saved descriptor that names a release in
+`CARRIED_ACPX_RELEASES` to the current one, and the session identity keeps its
+original ACPX value, so the saved session key and identity record still match.
+A session saved by any other ACPX release is refused as
+`provider_state_incompatible`. The provider pack's `contractDigest` binds the
 Runner's ACPX patch with the other Runner contracts. Runner source changes
 change no provider digest.
 
