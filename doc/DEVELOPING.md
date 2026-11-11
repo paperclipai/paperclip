@@ -5152,6 +5152,11 @@ lease and save baseline remain unchanged; current canonical files are never
 uploaded over the retained execution. Remote collection and cleanup serialize
 through Postgres across controller homes. A missing remote collector retains a
 pending save instead of treating an empty local cache as the agent's files.
+An operation that finds another run of the same agent holding this lock waits
+for it (up to five minutes) instead of failing the run. The holder bounds its
+session's idle-in-transaction timeout to one minute and pings while it works, so
+a controller that crashes or loses its connection mid-operation releases the
+lock within that minute; no lock row or migration is involved.
 
 ## Cloud startup configuration
 

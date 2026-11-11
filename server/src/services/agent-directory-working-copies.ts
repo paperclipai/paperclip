@@ -28,6 +28,24 @@ function adoptionAuthority(row: Copy) {
 }
 
 export class AgentDirectoryReuseInvalidatedError extends Error {}
+export const agentDirectoryOperationLockTiming = { waitMs: 300_000, ownerSilenceMs: 60_000 };
+export async function acquireAgentDirectoryOperationLock(tx: Pick<Db, "execute">, companyId: string, agentId: string): Promise<number> {
+  const { waitMs, ownerSilenceMs } = agentDirectoryOperationLockTiming;
+  const [bound] = await tx.execute(sql`with current_timeout as (
+      select case when setting::bigint > 0 and setting::bigint < ${ownerSilenceMs} then setting::bigint else ${ownerSilenceMs}::bigint end as ms
+      from pg_settings where name = 'idle_in_transaction_session_timeout')
+    select ms as idle_timeout_ms, set_config('idle_in_transaction_session_timeout', ms::text, true) as idle_timeout,
+      set_config('lock_timeout', ${String(waitMs)}, true) as lock_timeout from current_timeout`);
+  try {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`agent-directory:${companyId}:${agentId}`}, 0))`);
+  } catch (error) {
+    const failure = error as { code?: string; cause?: { code?: string } };
+    if ((failure.cause?.code ?? failure.code) === "55P03") throw conflict("Agent directory operation is already active");
+    throw error;
+  }
+  await tx.execute(sql`select set_config('lock_timeout', '0', true)`);
+  return Number(bound?.idle_timeout_ms ?? ownerSilenceMs);
+}
 const completed = new Set(["saved", "unchanged", "resolved", "unavailable"]);
 const transports = new Map<string, PreparedAdapterExecutionTargetRuntime>();
 const key = (row: Pick<Copy, "companyId" | "runId">) => `${row.companyId}:${row.runId}`;
@@ -655,10 +673,8 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     // Different controllers have different cache roots. Serialize their active
     // collection/cleanup operations in Postgres, without holding row locks over I/O.
     return withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {
-      const [lock] = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(${`agent-directory:${row.companyId}:${row.agentId}`}, 0)) as acquired,
-        (select setting::bigint from pg_settings where name = 'idle_in_transaction_session_timeout') as idle_timeout_ms`);
-      if (lock?.acquired !== true) throw conflict("Agent directory operation is already active");
-      return withWorkspaceLockKeepalive(tx as unknown as Db, Number(lock.idle_timeout_ms), run);
+      const idleTimeoutMs = await acquireAgentDirectoryOperationLock(tx as unknown as Db, row.companyId, row.agentId);
+      return withWorkspaceLockKeepalive(tx as unknown as Db, idleTimeoutMs, run);
     }));
   }
   return { prepare: (input: Parameters<typeof prepareCopy>[0]) => prepareCopy(input), hasChanges, adopt, canReuse, recoverUnavailable,

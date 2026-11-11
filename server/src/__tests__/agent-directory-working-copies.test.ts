@@ -25,10 +25,11 @@ import { buildNativeRuntimeContext } from "../services/native-runtime/runtime-co
 import type { EnvironmentRuntimeService } from "../services/environment-runtime.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { createReusableLeaseHandoff } from "../services/environment-lease-handoff.js";
-import { AgentDirectoryReuseInvalidatedError, agentDirectoryWorkingCopyService } from "../services/agent-directory-working-copies.js";
+import { AgentDirectoryReuseInvalidatedError, acquireAgentDirectoryOperationLock, agentDirectoryOperationLockTiming, agentDirectoryWorkingCopyService } from "../services/agent-directory-working-copies.js";
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { heartbeatRunEvents } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
+import { withWorkspaceLockKeepalive } from "../services/native-runtime/native-workspace-lock-keepalive.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_AGENT_DIRECTORY_TEST_DATABASE_URL");
 
@@ -48,6 +49,20 @@ describe("persistent agent directories", () => {
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", responsibleUserId: userId });
     return (await copies.prepare({ ...target(), runId, cwd: home, ...options }))!;
+  }
+  async function holdAgentDirectoryLock(silent: boolean) {
+    const owner = createDb(external ?? database.connectionString);
+    let acquired!: () => void, finish!: () => void;
+    const ready = new Promise<void>(resolve => { acquired = resolve; });
+    const done = new Promise<void>(resolve => { finish = resolve; });
+    const ended = owner.transaction(async tx => {
+      if (silent) await tx.execute(sql`select set_config('idle_in_transaction_session_timeout', '1000', true)`);
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`agent-directory:${companyId}:${agentId}`}, 0))`);
+      acquired();
+      await done;
+    }).then(() => "released" as const, () => "terminated" as const);
+    await ready;
+    return { ended, release: async () => { finish(); await ended; await owner.$client.end({ timeout: 1 }); } };
   }
   beforeAll(async () => {
     home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "instruction-working-copies-")));
@@ -941,7 +956,7 @@ describe("persistent agent directories", () => {
     expect((await fs.stat(active.localRoot)).isDirectory()).toBe(true);
   });
 
-  it.each(["new-home", "same-path-empty", "foreign-lease", "other-controller", "missing-collector", "over-quota"] as const)("recovers remote agent files after controller cache loss: %s", async scenario => {
+  it.each(["new-home", "same-path-empty", "foreign-lease", "other-controller", "owner-gone", "owner-stuck", "missing-collector", "over-quota"] as const)("recovers remote agent files after controller cache loss: %s", async scenario => {
     const copy = await run({ warm: true });
     const environmentId = randomUUID(), leaseId = randomUUID(), remoteCwd = "/fixture/retained-task";
     const executionRoot = path.posix.join(remoteCwd, ".paperclip-runtime", "agent-files", agentId, copy.runId);
@@ -980,16 +995,28 @@ describe("persistent agent directories", () => {
         expect(transport).not.toHaveBeenCalled();
         return;
       }
-      if (scenario === "other-controller") {
-        await db.transaction(async tx => {
-          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`agent-directory:${companyId}:${agentId}`}, 0))`);
-          await expect(copies.prepare({ ...target(), runId: copy.runId, cwd: remoteCwd, target: remote, warm: true }))
-            .rejects.toThrow("Agent directory operation is already active");
-          expect(transport).not.toHaveBeenCalled();
-        });
-        return;
-      }
+      const holder = scenario === "other-controller" || scenario === "owner-gone" || scenario === "owner-stuck" ? await holdAgentDirectoryLock(scenario === "owner-gone") : null;
+      const timing = { ...agentDirectoryOperationLockTiming };
+      if (scenario === "owner-stuck") agentDirectoryOperationLockTiming.waitMs = 500;
+      if (scenario === "owner-gone") agentDirectoryOperationLockTiming.ownerSilenceMs = 1_000;
       const preparing = copies.prepare({ ...target(), runId: copy.runId, cwd: remoteCwd, target: remote, warm: true });
+      const early = await Promise.race([preparing.then(() => "settled", () => "settled"), new Promise(resolve => setTimeout(resolve, 300, "waiting"))]);
+      try {
+        if (holder) {
+          expect(early).toBe("waiting");
+          expect(transport).not.toHaveBeenCalled();
+        }
+        if (scenario === "owner-stuck") {
+          await expect(preparing).rejects.toThrow("Agent directory operation is already active");
+          expect(transport).not.toHaveBeenCalled();
+          return;
+        }
+        if (scenario === "other-controller") await holder!.release();
+        if (scenario === "owner-gone") expect(await holder!.ended).toBe("terminated");
+      } finally {
+        Object.assign(agentDirectoryOperationLockTiming, timing);
+        await holder?.release();
+      }
       if (scenario === "foreign-lease") {
         await expect(preparing).rejects.toThrow("Agent directory recovery lease changed");
         expect(transport).not.toHaveBeenCalled();
@@ -1019,6 +1046,32 @@ describe("persistent agent directories", () => {
       if (ephemeralBefore === undefined) delete process.env.PAPERCLIP_EPHEMERAL_SERVER;
       else process.env.PAPERCLIP_EPHEMERAL_SERVER = ephemeralBefore;
       transport.mockRestore();
+    }
+  });
+
+  it("releases an agent directory operation lock whose owner goes silent and keeps a live owner's lock", async () => {
+    const timing = { ...agentDirectoryOperationLockTiming };
+    Object.assign(agentDirectoryOperationLockTiming, { ownerSilenceMs: 1_000, waitMs: 5_000 });
+    const silent = createDb(external ?? database.connectionString), live = createDb(external ?? database.connectionString);
+    try {
+      const abandoned = silent.transaction(async tx => {
+        await acquireAgentDirectoryOperationLock(tx as unknown as typeof db, companyId, agentId);
+        await new Promise(resolve => setTimeout(resolve, 3_000));
+      }).then(() => "completed", () => "terminated");
+      await new Promise(resolve => setTimeout(resolve, 200));
+      const started = Date.now();
+      const survivor = await live.transaction(async tx => {
+        const idleTimeoutMs = await acquireAgentDirectoryOperationLock(tx as unknown as typeof db, companyId, agentId);
+        expect(idleTimeoutMs).toBe(1_000);
+        expect(Date.now() - started).toBeLessThan(2_900);
+        await withWorkspaceLockKeepalive(tx as unknown as typeof db, idleTimeoutMs, () => new Promise(resolve => setTimeout(resolve, 2_500)));
+        return "completed";
+      });
+      expect(await abandoned).toBe("terminated");
+      expect(survivor).toBe("completed");
+    } finally {
+      Object.assign(agentDirectoryOperationLockTiming, timing);
+      await Promise.all([silent.$client.end({ timeout: 1 }), live.$client.end({ timeout: 1 })]);
     }
   });
 
