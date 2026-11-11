@@ -14,9 +14,11 @@ import { eq, sql } from "drizzle-orm";
 import {
   buildSshEnvLabFixtureConfig,
   getSshEnvLabSupport,
+  runSshCommand,
   startSshEnvLabFixture,
   stopSshEnvLabFixture,
 } from "@paperclipai/adapter-utils/ssh";
+import { agentExecutionsHaveStopped } from "../services/agent-execution-stop.ts";
 import {
   activityLog,
   workspaceOperations,
@@ -1952,6 +1954,99 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       expect(released[0]?.lease.status).toBe("released");
     } finally {
     }
+  });
+
+  it("lets an agent stop after a cancelled SSH run once the run's remote processes are gone", async () => {
+    if (!sshFixtureSupport.supported) {
+      console.warn(
+        `Skipping SSH termination fixture test: ${sshFixtureSupport.reason ?? "unsupported environment"}`,
+      );
+      return;
+    }
+
+    const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-environment-runtime-ssh-stop-"));
+    fixtureRoots.push(fixtureRoot);
+    const fixture = await startSshEnvLabFixture({ statePath: path.join(fixtureRoot, "state.json") });
+    const sshConfig = await buildSshEnvLabFixtureConfig(fixture);
+    const { companyId, agentId, environment, runId } = await seedEnvironment({
+      driver: "ssh",
+      name: "Fixture SSH",
+      config: { ...sshConfig },
+    });
+    const acquired = await runtime.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+    // The cancelled run left a process in its remote run directory. SSH runs it
+    // without a terminal, so the process outlives the local SSH client.
+    const runDir = path.posix.join(String(acquired.lease.metadata?.remoteCwd), ".paperclip-runtime", "runs", runId, "workspace");
+    const leftover = (await runSshCommand(sshConfig,
+      `mkdir -p ${JSON.stringify(runDir)} && (cd ${JSON.stringify(runDir)} && exec nohup sleep 300 >/dev/null 2>&1) & echo $!`,
+    )).stdout.trim();
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    await runtime.releaseRunLeases(runId, "expired");
+
+    const [released] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, acquired.lease.id));
+    expect(released).toMatchObject({ status: "expired", provider: "ssh" });
+    // The SSH release records no termination receipt, so the stop proof fails.
+    expect(await agentExecutionsHaveStopped(db, [agentId])).toBe(false);
+
+    const stopped = await heartbeatService(db, { environmentRuntime: runtime })
+      .stopInvocationsForAgents([agentId], "Agent lifecycle stop requested");
+    const [confirmed] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, acquired.lease.id));
+    if (process.platform !== "linux") {
+      // Without /proc the host cannot prove that the run stopped: the stop stays pending.
+      expect(stopped).toBe(false);
+      expect(confirmed?.metadata).not.toHaveProperty("remoteExecutionTermination");
+      await runSshCommand(sshConfig, `kill -KILL ${leftover} 2>/dev/null; true`);
+      return;
+    }
+    expect(stopped).toBe(true);
+    expect(confirmed).toMatchObject({ status: "expired", cleanupStatus: "success" });
+    expect(confirmed?.metadata?.remoteExecutionTermination).toMatchObject({
+      schema: "paperclip.remote-termination.v1", runId, leaseId: acquired.lease.id, provider: "ssh", state: "stopped",
+    });
+    expect((await runSshCommand(sshConfig, `kill -0 ${leftover} 2>/dev/null && echo alive || echo gone`)).stdout.trim())
+      .toBe("gone");
+  });
+
+  it("keeps an agent stop pending while a cancelled run's SSH host cannot be checked", async () => {
+    const { companyId, agentId, environment, runId } = await seedEnvironment({
+      driver: "ssh",
+      name: "Unreachable SSH",
+      config: {
+        host: "127.0.0.1",
+        port: 1,
+        username: "ssh-user",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: false,
+      },
+    });
+    const [lease] = await db.insert(environmentLeases).values({
+      companyId,
+      environmentId: environment.id,
+      heartbeatRunId: runId,
+      status: "expired",
+      leasePolicy: "ephemeral",
+      provider: "ssh",
+      providerLeaseId: "ssh://ssh-user@127.0.0.1:1/srv/paperclip/workspace",
+      releasedAt: new Date(),
+      metadata: { agentId, driver: "ssh", remoteCwd: "/srv/paperclip/workspace" },
+    }).returning();
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+
+    const stopped = await heartbeatService(db, { environmentRuntime: runtime })
+      .stopInvocationsForAgents([agentId], "Agent lifecycle stop requested");
+
+    expect(stopped).toBe(false);
+    const [unchanged] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease!.id));
+    expect(unchanged?.cleanupStatus).toBeNull();
+    expect(unchanged?.metadata).not.toHaveProperty("remoteExecutionTermination");
   });
 
   it("acquires and releases a fake sandbox run lease through the runtime seam", async () => {

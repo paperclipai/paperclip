@@ -1360,6 +1360,82 @@ export async function runSshCommand(
   }
 }
 
+export type SshRunProcessStopResult = "stopped" | "running" | "unsupported";
+
+const SSH_RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
+// The script gets the run id and the run directory only through the
+// environment. If they were in the script text, every subshell of this script
+// would carry the run directory in its command line and match itself.
+// A process belongs to the run when its environment has PAPERCLIP_RUN_ID=<id>,
+// or when its command line or its working directory is inside the run
+// directory. The script can signal only processes of the SSH user. A process
+// that it cannot stop keeps the result "running".
+const SSH_RUN_PROCESS_STOP_SCRIPT = [
+  'if [ ! -d /proc/self ]; then echo unsupported; exit 0; fi',
+  'self=$$',
+  'run_env="PAPERCLIP_RUN_ID=$PAPERCLIP_STOP_RUN_ID"',
+  'run_dir="$PAPERCLIP_STOP_RUN_DIR/"',
+  'parent_of() { sed -n "s/^PPid:[[:space:]]*//p" "/proc/$1/status" 2>/dev/null; }',
+  // This script, its subshells and its ancestors (the SSH session shells) are never run processes.
+  'own=" $self "',
+  'ancestor=$(parent_of "$self")',
+  'while [ -n "$ancestor" ] && [ "$ancestor" != 0 ]; do own="$own$ancestor "; ancestor=$(parent_of "$ancestor"); done',
+  'find_run_pids() {',
+  '  for proc_dir in /proc/[0-9]*; do',
+  '    pid=${proc_dir#/proc/}',
+  '    case "$own" in *" $pid "*) continue ;; esac',
+  '    [ "$(parent_of "$pid")" = "$self" ] && continue',
+  '    if tr "\\000" "\\n" < "$proc_dir/environ" 2>/dev/null | grep -qxF "$run_env"; then echo "$pid"; continue; fi',
+  '    if tr "\\000" " " < "$proc_dir/cmdline" 2>/dev/null | grep -qF "$run_dir"; then echo "$pid"; continue; fi',
+  '    cwd=$(readlink "$proc_dir/cwd" 2>/dev/null) || continue',
+  '    case "$cwd/" in "$run_dir"*) echo "$pid" ;; esac',
+  '  done',
+  '}',
+  'pids=$(find_run_pids)',
+  'if [ -z "$pids" ]; then echo stopped; exit 0; fi',
+  'kill -TERM $pids 2>/dev/null',
+  'for attempt in 1 2 3 4 5; do',
+  '  sleep 1',
+  '  pids=$(find_run_pids)',
+  '  if [ -z "$pids" ]; then echo stopped; exit 0; fi',
+  'done',
+  'kill -KILL $pids 2>/dev/null',
+  'sleep 1',
+  'if [ -z "$(find_run_pids)" ]; then echo stopped; else echo running; fi',
+].join("\n");
+
+/**
+ * Stop the processes that a run left on an SSH host, and report whether none
+ * remain. An SSH command runs without a terminal, so a cancelled run's remote
+ * processes can continue after the local SSH client exits.
+ *
+ * "unsupported" means the host has no Linux `/proc`, so the check cannot prove
+ * anything. The caller must not treat it as a stop.
+ */
+export async function stopSshRunProcesses(
+  config: SshConnectionConfig,
+  input: { runId: string; remoteCwd: string; timeoutMs?: number },
+): Promise<SshRunProcessStopResult> {
+  if (!SSH_RUN_ID_PATTERN.test(input.runId)) {
+    throw new Error("Invalid run id for an SSH process stop.");
+  }
+  const remoteCwd = input.remoteCwd.trim().replace(/\/+$/, "");
+  if (!remoteCwd.startsWith("/")) {
+    throw new Error("An SSH process stop requires an absolute remote working directory.");
+  }
+  const result = await runSshCommand(config, SSH_RUN_PROCESS_STOP_SCRIPT, {
+    env: {
+      PAPERCLIP_STOP_RUN_ID: input.runId,
+      PAPERCLIP_STOP_RUN_DIR: path.posix.join(remoteCwd, ".paperclip-runtime", "runs", input.runId),
+    },
+    timeoutMs: input.timeoutMs ?? 30_000,
+  });
+  const answer = result.stdout.trim().split("\n").pop()?.trim();
+  if (answer === "stopped" || answer === "running" || answer === "unsupported") return answer;
+  throw new Error("The SSH process stop returned no result.");
+}
+
 export async function buildSshSpawnTarget(input: {
   spec: SshRemoteExecutionSpec;
   command: string;

@@ -17,6 +17,7 @@ import {
   shellQuote,
   startSshEnvLabFixture,
   stopSshEnvLabFixture,
+  stopSshRunProcesses,
   type SshEnvLabFixtureState,
 } from "./ssh.js";
 import { runChildProcess } from "./server-utils.js";
@@ -525,6 +526,60 @@ describe("ssh env-lab fixture", () => {
 
     await expect(stat(rootDir)).rejects.toThrow();
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("stops only the processes that a cancelled run left on the SSH host", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH run process stop test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const runId = "3f0c2a4e-8d1b-4c55-9a77-1e2d3c4b5a69";
+    const otherRunId = "9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
+    const remoteCwd = started.workspaceDir;
+
+    if (process.platform !== "linux") {
+      // Without /proc the host cannot prove that the run stopped.
+      await expect(stopSshRunProcesses(config, { runId, remoteCwd })).resolves.toBe("unsupported");
+      return;
+    }
+
+    const runDir = path.posix.join(remoteCwd, ".paperclip-runtime", "runs", runId, "workspace");
+    const otherRunDir = path.posix.join(remoteCwd, ".paperclip-runtime", "runs", otherRunId, "workspace");
+    // Leave three detached processes behind, as an SSH command without a terminal can:
+    // one inside the run directory, one that has only the run id in its environment,
+    // and one of another run that must keep running.
+    const pidsOutput = await runSshCommand(config, [
+      `mkdir -p ${JSON.stringify(runDir)} ${JSON.stringify(otherRunDir)}`,
+      `(cd ${JSON.stringify(runDir)} && exec nohup sleep 300 >/dev/null 2>&1) & echo $!`,
+      `(cd / && exec env PAPERCLIP_RUN_ID=${runId} nohup sleep 301 >/dev/null 2>&1) & echo $!`,
+      `(cd ${JSON.stringify(otherRunDir)} && exec env PAPERCLIP_RUN_ID=${otherRunId} nohup sleep 302 >/dev/null 2>&1) & echo $!`,
+    ].join("\n"));
+    const [inRunDir, withRunEnv, otherRun] = pidsOutput.stdout.trim().split("\n").map((pid) => pid.trim());
+    const alive = async (pid: string) =>
+      (await runSshCommand(config, `kill -0 ${pid} 2>/dev/null && echo alive || echo gone`)).stdout.trim();
+    expect(await alive(inRunDir!)).toBe("alive");
+    expect(await alive(withRunEnv!)).toBe("alive");
+
+    try {
+      await expect(stopSshRunProcesses(config, { runId, remoteCwd })).resolves.toBe("stopped");
+      expect(await alive(inRunDir!)).toBe("gone");
+      expect(await alive(withRunEnv!)).toBe("gone");
+      expect(await alive(otherRun!)).toBe("alive");
+      // A second check finds nothing more to stop.
+      await expect(stopSshRunProcesses(config, { runId, remoteCwd })).resolves.toBe("stopped");
+    } finally {
+      await runSshCommand(config, `kill -KILL ${otherRun} 2>/dev/null; true`);
+    }
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("rejects a run id or working directory that an SSH process stop cannot use safely", async () => {
+    const config = { ...UNREACHABLE_SSH_SPEC };
+    await expect(stopSshRunProcesses(config, { runId: "x; rm -rf /", remoteCwd: "/work" }))
+      .rejects.toThrow("Invalid run id");
+    await expect(stopSshRunProcesses(config, { runId: "run-1", remoteCwd: "relative/path" }))
+      .rejects.toThrow("absolute remote working directory");
+  });
 
   it("builds a remote script that sources login profiles but no nvm", async () => {
     const target = await buildSshSpawnTarget({

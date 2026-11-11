@@ -83,6 +83,7 @@ import { canApplyTaskWorkspaceSelectionAtAdmission, taskWorkspaceRuntimeSelectio
 import { agentExecutionsHaveStopped } from "./agent-execution-stop.js";
 import {
   cancelHeartbeatNativeRun,
+  confirmCancelledRemoteRunTerminations,
   terminateHeartbeatRunProcess,
   providerResourceDispositionForTerminalRun,
   createHeartbeatRunControl,
@@ -4454,6 +4455,7 @@ export function heartbeatService(
           agentId: run.agentId, status: run.status, providerResourceDisposition: "destroy" });
       }
     }
+    await confirmCancelledRemoteRunTerminations(db, environmentRuntime, runs);
     return agentExecutionsHaveStopped(db, agentIds);
   }
 
