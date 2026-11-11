@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { mkdir, open, readdir, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { nativeHarnessStateBase } from "./native-harness-backup-stamp.js";
@@ -13,8 +13,18 @@ export function isVolumeFreeControllerStateOwnerEntry(name: string) {
   return name === ownerFile || name.startsWith(`${ownerFile}.`);
 }
 
+async function regularOwnerFile(path: string) {
+  const entry = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+    if (["ENOENT", "ENOTDIR"].includes(error.code ?? "")) return undefined;
+    throw error;
+  });
+  return Boolean(entry?.isFile());
+}
+
 export async function volumeFreeControllerStateOwned(base = nativeHarnessStateBase()): Promise<boolean> {
-  const handle = await open(join(base, ownerFile), constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: NodeJS.ErrnoException) => {
+  const path = join(base, ownerFile);
+  if (!await regularOwnerFile(path)) return false;
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch((error: NodeJS.ErrnoException) => {
     if (["ENOENT", "ENOTDIR", "ELOOP"].includes(error.code ?? "")) return undefined;
     throw error;
   });
@@ -31,7 +41,7 @@ export async function volumeFreeControllerStateOwned(base = nativeHarnessStateBa
 export async function claimVolumeFreeControllerState(volumeFree: boolean, base = nativeHarnessStateBase()): Promise<VolumeFreeControllerStateClaim> {
   if (!volumeFree) {
     const owned = await volumeFreeControllerStateOwned(base);
-    await rm(join(base, ownerFile), { force: true });
+    if (await regularOwnerFile(join(base, ownerFile))) await rm(join(base, ownerFile), { force: true });
     return owned ? "released" : "absent";
   }
   if (await volumeFreeControllerStateOwned(base)) return "owned";
@@ -40,6 +50,7 @@ export async function claimVolumeFreeControllerState(volumeFree: boolean, base =
     throw error;
   });
   if (entries.some(name => !isVolumeFreeControllerStateOwnerEntry(name))) return "unclaimed";
+  if (entries.includes(ownerFile) && !await regularOwnerFile(join(base, ownerFile))) return "unclaimed";
   await mkdir(base, { recursive: true, mode: 0o700 });
   const temporary = join(base, `${ownerFile}.${randomUUID()}`);
   const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
