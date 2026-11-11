@@ -70,6 +70,7 @@ vi.mock("../adapters/index.ts", async () => {
 });
 
 import { heartbeatService } from "../services/heartbeat.ts";
+import { closeProcessRunAdmission, resetProcessRunAdmissionForTests } from "../services/heartbeat/run-admission.ts";
 import { attentionService } from "../services/attention.ts";
 import { issueService } from "../services/issues.ts";
 import { escalateExhaustedIssueReviewPathRecovery } from "../services/recovery/review-path-recovery-escalation.ts";
@@ -1644,29 +1645,45 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     expect(beyondFirstPageIds).toHaveLength(expectedEligible - 500);
 
     const heartbeat = heartbeatService(db);
-    const result = await heartbeat.reconcileResolvedDependencyWakes({ companyId, blockerIssueId });
-    expect(result.checked).toBe(expectedEligible);
-    expect(result.candidateLimitSkipped).toBe(0);
-    expect(result.healed).toBe(expectedEligible);
-    expect([...result.issueIds].sort()).toEqual([...eligibleIds].sort());
-    const healedIds = new Set(result.issueIds);
-    expect(beyondFirstPageIds.every((id) => healedIds.has(id))).toBe(true);
+    // Healing 502 dependents enqueues one wake each, and every wake dispatches
+    // a real heartbeat run execution fire-and-forget (enqueueWakeup →
+    // startNextQueuedRunForAgent → executeRun). That fan-out, not the
+    // reconcile loop or the bulk seeding (already three bulk inserts), is
+    // where the 90s went in CI: 502 concurrent executions contend on the
+    // embedded database, and the afterEach drain then awaits all of them.
+    // Asserting paging/healing semantics is the point of this case, not run
+    // execution, so close process run admission around the reconcile calls:
+    // enqueueWakeup still persists the wake and the queued run, returns it,
+    // and counts the heal, but startNextQueuedRunForAgent returns before
+    // dispatching any execution.
+    closeProcessRunAdmission();
+    try {
+      const result = await heartbeat.reconcileResolvedDependencyWakes({ companyId, blockerIssueId });
+      expect(result.checked).toBe(expectedEligible);
+      expect(result.candidateLimitSkipped).toBe(0);
+      expect(result.healed).toBe(expectedEligible);
+      expect([...result.issueIds].sort()).toEqual([...eligibleIds].sort());
+      const healedIds = new Set(result.issueIds);
+      expect(beyondFirstPageIds.every((id) => healedIds.has(id))).toBe(true);
 
-    const wokenIssueIds = async () =>
-      (await db
-        .select({ payload: agentWakeupRequests.payload })
-        .from(agentWakeupRequests)
-        .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_blockers_resolved")))
-      ).map((row) => (row.payload as { issueId?: string } | null)?.issueId)
-       .filter((value): value is string => typeof value === "string")
-       .sort();
-    expect(await wokenIssueIds()).toEqual([...eligibleIds].sort());
+      const wokenIssueIds = async () =>
+        (await db
+          .select({ payload: agentWakeupRequests.payload })
+          .from(agentWakeupRequests)
+          .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_blockers_resolved")))
+        ).map((row) => (row.payload as { issueId?: string } | null)?.issueId)
+         .filter((value): value is string => typeof value === "string")
+         .sort();
+      expect(await wokenIssueIds()).toEqual([...eligibleIds].sort());
 
-    // A second blocker-scoped call over the same candidate set heals
-    // nothing and creates no duplicate wakes.
-    const secondResult = await heartbeat.reconcileResolvedDependencyWakes({ companyId, blockerIssueId });
-    expect(secondResult.healed).toBe(0);
-    expect(await wokenIssueIds()).toEqual([...eligibleIds].sort());
+      // A second blocker-scoped call over the same candidate set heals
+      // nothing and creates no duplicate wakes.
+      const secondResult = await heartbeat.reconcileResolvedDependencyWakes({ companyId, blockerIssueId });
+      expect(secondResult.healed).toBe(0);
+      expect(await wokenIssueIds()).toEqual([...eligibleIds].sort());
+    } finally {
+      resetProcessRunAdmissionForTests();
+    }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
 });
