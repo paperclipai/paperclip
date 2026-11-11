@@ -74,7 +74,7 @@ describe("T1: long shell tool in the agent's workspace", () => {
   });
 
   it("counts a mid-tool test only when one of the task's own faults started inside the loop's window", () => {
-    const plan = { taskId: "t01", workload: "T1" as const, nonce: NONCE };
+    const plan = { taskId: "t01", workload: "T1" as const, nonce: NONCE, fault: "TM1" };
     const pass = t1.grade(NONCE, done(line(T1_TICKS)));
     const fault = (taskId: string, atSeconds: number) => ({ faultId: "f01", requestedBy: taskId, startedAt: atSeconds * 1000 });
     expect(withT1CrossingCheck(pass, plan, line(T1_TICKS), [fault("t01", START + 40)]).verdict).toBe("pass");
@@ -86,6 +86,12 @@ describe("T1: long shell tool in the agent's workspace", () => {
     // Another task's fault does not count, and other workloads are untouched.
     expect(withT1CrossingCheck(pass, plan, line(T1_TICKS), [fault("t02", START + 40)]).verdict).toBe("fail");
     expect(withT1CrossingCheck(pass, { ...plan, workload: "A1" }, null, [])).toBe(pass);
+    // A matrix baseline expects no fault, and a provider message fault restarts nothing of its own.
+    expect(withT1CrossingCheck(pass, { ...plan, fault: "K0" }, line(T1_TICKS), [])).toBe(pass);
+    expect(withT1CrossingCheck(pass, { ...plan, fault: "PV1" }, line(T1_TICKS), [])).toBe(pass);
+    // A storm task is crossed by the storm's faults, which are requested by "storm".
+    expect(withT1CrossingCheck(pass, { ...plan, fault: "K13" }, line(T1_TICKS), [fault("storm", START + 40)]).verdict).toBe("pass");
+    expect(withT1CrossingCheck(pass, { ...plan, fault: "K13" }, line(T1_TICKS), [fault("storm", START - 60)]).verdict).toBe("fail");
   });
 
   it("prints the loop's own clock window", () => {
@@ -165,5 +171,24 @@ describe("Daytona Runner log capture", () => {
     expect(capture.error).toMatch(/deadline 200 ms exceeded/);
     expect(JSON.parse(await readFile(path.join(outDir, "f03-stopped", "index.json"), "utf8")).deadlineExceeded).toBe(true);
     expect(RUNNER_LOG_CAPTURE_DEADLINE_MS).toBeLessThanOrEqual(60_000);
+  });
+
+  it("never writes evidence that arrives after the deadline", async () => {
+    const outDir = await mkdtemp(path.join(os.tmpdir(), "runner-logs-"));
+    const labels = { "paperclip-company-id": COMPANY, "paperclip-environment-id": ENVIRONMENT };
+    const executeCommand = vi.fn(async () => ({ exitCode: 0, result: "late evidence" }));
+    let release: (() => void) | undefined;
+    const late = { async *list() { yield { id: "late", state: "started", labels }; },
+      get: () => new Promise<{ process: { executeCommand: typeof executeCommand } }>(resolve => {
+        release = () => resolve({ process: { executeCommand } });
+      }) };
+    const capture = await captureWaveRunnerLogs({ apiKey: "unused", companyId: COMPANY, environmentId: ENVIRONMENT, outDir,
+      label: "f04-before_start", secrets: [], client: late, deadlineMs: 100 });
+    expect(capture.deadlineExceeded).toBe(true);
+    release?.();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(executeCommand).not.toHaveBeenCalled();
+    expect((await readdir(path.join(outDir, "f04-before_start"))).sort()).toEqual(["index.json"]);
+    expect(capture.sandboxes.map(sandbox => [sandbox.id, sandbox.file])).toEqual([["late", null]]);
   });
 });

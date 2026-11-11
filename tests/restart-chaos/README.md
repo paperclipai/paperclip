@@ -359,7 +359,8 @@ minutes. In staging class R, recovery then found the remote Runner gone
   after launch) aims to land while the tool runs in the sandbox, and stays short
   of provider shell-tool timeouts.
 
-  The `fault_crossed_tool` check fails the task unless one of its own faults
+  The `fault_crossed_tool` check (skipped for `K0` baselines and provider faults;
+  a storm task counts the storm's faults) fails the task unless one of its own faults
   started inside the reported window, with 5 s of clock slack. A fault that hit
   preparation, with the loop run afterwards, tested nothing mid-tool, as a
   provider-fault task whose fault never applied.
@@ -385,7 +386,8 @@ minutes. In staging class R, recovery then found the remote Runner gone
   The whole capture (client, listing and every probe) has one 45 s deadline.
   The capture runs while the server is down, so a slow Daytona API cannot
   stretch the outage. A capture that hits the deadline is recorded as
-  `deadlineExceeded`, and the restart continues.
+  `deadlineExceeded`, and the restart continues. A probe that answers after the
+  deadline writes nothing, because its evidence is from after the outage window.
 
 ## Absolute symlink in the workspace (F1)
 

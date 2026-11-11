@@ -74,11 +74,14 @@ export async function captureWaveRunnerLogs(input: {
   const deadlineAt = Date.now() + deadlineMs;
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<"deadline">(resolve => { timer = setTimeout(() => resolve("deadline"), deadlineMs); });
-  // Each step races the shared deadline; a step that loses keeps running in the background but is no longer awaited.
-  const withinDeadline = <T>(step: Promise<T>) => Promise.race([step, deadline]);
+  // The probe races the shared deadline. A probe that loses may still be awaiting Daytona in the background:
+  // `expired` stops it from probing or writing anything once the capture has been saved.
+  let expired = false;
+  const live = () => !expired && Date.now() < deadlineAt;
   try {
-    const outcome = await withinDeadline(probeWave());
+    const outcome = await Promise.race([probeWave(), deadline]);
     if (outcome === "deadline") {
+      expired = true;
       capture.deadlineExceeded = true;
       capture.error = `capture deadline ${deadlineMs} ms exceeded`;
     }
@@ -94,27 +97,32 @@ export async function captureWaveRunnerLogs(input: {
     try {
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const client = input.client ?? await createRemoteFixtureClient(input.apiKey) as unknown as ProbeClient;
-      if (Date.now() >= deadlineAt) return;
+      if (!live()) return;
       const wave = { companyId: input.companyId, environmentId: input.environmentId };
       const rows: DaytonaSandboxRow[] = [];
       for await (const row of client.list({ labels: { "paperclip-company-id": wave.companyId, "paperclip-environment-id": wave.environmentId } })) rows.push(row);
+      if (!live()) return;
       for (const row of selectWaveSandboxes(rows, wave)) {
+        if (expired) return;
         const entry: RunnerLogCapture["sandboxes"][number] = { id: row.id, name: row.name ?? null, state: row.state ?? null, file: null, exitCode: null, error: null };
         capture.sandboxes.push(entry);
         if (!probeableSandbox(row)) continue;
-        if (Date.now() >= deadlineAt) { entry.error = "deadline"; continue; }
+        if (!live()) { if (!expired) entry.error = "deadline"; continue; }
         try {
           const sandbox = await client.get(row.id);
+          if (!live()) { if (!expired) entry.error = "deadline"; continue; }
           const response = await sandbox.process.executeCommand(`sh -c '${RUNNER_LOG_PROBE.replace(/'/g, `'\\''`)}'`, undefined, {}, input.timeoutSeconds ?? 20);
+          // Evidence that arrives after the deadline was taken after the outage window: never write it.
+          if (!live()) { if (!expired) entry.error = "deadline"; continue; }
           entry.exitCode = response.exitCode;
           entry.file = `${row.id}.txt`;
           await writeFile(path.join(directory, entry.file), redactKnownSecrets(String(response.result ?? ""), input.secrets), { mode: 0o600 });
         } catch (error) {
-          entry.error = error instanceof Error ? error.message : String(error);
+          if (!expired) entry.error = error instanceof Error ? error.message : String(error);
         }
       }
     } catch (error) {
-      capture.error = error instanceof Error ? error.message : String(error);
+      if (!expired) capture.error = error instanceof Error ? error.message : String(error);
     }
   }
 }

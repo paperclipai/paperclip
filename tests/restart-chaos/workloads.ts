@@ -68,11 +68,13 @@ export const T1_CLOCK_SLACK_MS = 5_000;
  * during preparation, with the loop run afterwards, tested nothing mid-tool: the task fails `fault_crossed_tool`,
  * as a provider-fault task whose fault never applied does.
  */
-export function withT1CrossingCheck(oracle: OracleResult, plan: { taskId: string; workload: WorkloadId; nonce: string },
+export function withT1CrossingCheck(oracle: OracleResult, plan: { taskId: string; workload: WorkloadId; nonce: string; fault: string },
   brief: string | null | undefined, faults: ReadonlyArray<{ requestedBy: string; startedAt: number; faultId: string }>): OracleResult {
-  if (plan.workload !== "T1") return oracle;
+  // A matrix baseline (K0) expects no fault, and a provider message fault (PV*) restarts nothing of its own.
+  if (plan.workload !== "T1" || plan.fault === "K0" || plan.fault.startsWith("PV")) return oracle;
   const report = parseT1Report(plan.nonce, brief);
-  const own = faults.filter(fault => fault.requestedBy === plan.taskId);
+  // A storm task (K13) has no fault of its own: the storm's faults (requested by "storm") are the ones that cross it.
+  const own = faults.filter(fault => fault.requestedBy === plan.taskId || (plan.fault === "K13" && fault.requestedBy === "storm"));
   const crossing = report ? own.filter(fault => fault.startedAt >= report.startMs - T1_CLOCK_SLACK_MS
     && fault.startedAt <= report.endMs + T1_CLOCK_SLACK_MS) : [];
   const check = { name: "fault_crossed_tool", ok: crossing.length > 0,

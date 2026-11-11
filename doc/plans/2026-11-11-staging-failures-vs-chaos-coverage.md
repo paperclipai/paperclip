@@ -326,6 +326,7 @@ Class L turned out not to be a deploy. The server process stalled for about 100 
 | `w-20261111T025307-s9320` | a1ec05a1a4 | K15 hold 460–482 s, past the Runner's 420 s reconnect grace | 4 of 4 pass. The same `runnerd` PID was alive 491–549 s after the stop, every sandbox was `started`, and there was no `transport_reconnect_grace_exceeded`. |
 | `w-20261111T034105-s9330` | a1ec05a1a4 | TM1 70–120 s at `--fault-after-seconds 10`, A1, all three adapters | **RED, 1 of 3 fail.** An OpenCode run was stalled at `native.process_start_requested`. Afterwards it waited forever on `native.recovery.transition` with `reason: controller_still_alive` and `restartKind: hard`. The controller it waited for was its own live, unrestarted process. No Retry was offered. |
 | `w-20261111T040439-s9331` | a1ec05a1a4 | TM1 70–120 s mid-tool, T1, all three adapters | **RED, 3 of 3 fail.** After the stall, `native.session.execute` ended, but the run never got another event: no terminal and no recovery. It stayed `running` for more than 20 minutes with no Retry. Each task crossed three back-to-back stalls. |
+| `w-20261111T043759-s9340` | a1ec05a1a4 | One TM1 stall of 90 s mid-tool, T1, Codex | 1 of 1 pass. `fault_crossed_tool` confirms the stall landed in the loop. The mid-tool wedge needs repeated stalls; one did not cause it. |
 
 Conclusions:
 
@@ -340,7 +341,7 @@ Conclusions:
 - A control-plane stall **without** a restart is a new open product class. A native run whose lease
   lapses while its own server is frozen is never taken back by that same server:
   - **stall during preparation:** the run waits forever on `controller_still_alive`;
-  - **stall mid-turn:** the run is orphaned while still `running`.
+  - **stall mid-turn:** the run is orphaned while still `running`. This took three back-to-back stalls of about 90 s; a single 90 s stall recovered.
 - #20694 fixed the legacy `preparing` case only.
 - Code pointer: `server/src/services/native-runtime/native-restart-recovery.ts` (the same-boot owner is not
   recognized as the server itself).
