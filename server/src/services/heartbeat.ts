@@ -7,6 +7,7 @@ import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
 import type { StopInvocationOptions } from "./heartbeat/run-control.js";
 import { isContextCompactionRun } from "./context-compaction.js";
 import { isUnstartedTaskQuestionAnswer } from "./unstarted-task-question-answer.js";
+import { agentBlockingQuestionState } from "./blocked-question-answer.js";
 import { isVerifiedDependencyInteractionResponse } from "./queued-interaction-response.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
 import { registerProviderLimitResumeWork, type PrepareChatRetry } from "./native-runtime/provider-limit-resume.js";
@@ -43,6 +44,7 @@ import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
+import { AgentDirectoryPreparationDeferral, deferRunForBusyAgentDirectory, prepareWithAgentDirectoryDeferral } from "./heartbeat/agent-directory-busy.js";
 import { preparePredecessorRetirementFallback } from "./heartbeat/predecessor-retirement-fallback.js";
 import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, recordHeartbeatAdapterRuntimeServices } from "./heartbeat/runtime-services.js";
 import { bindHeartbeatRunnerHomeMode, prepareHeartbeatExecutionConfiguration } from "./heartbeat/execution-configuration.js";
@@ -105,6 +107,7 @@ import {
   shouldQueueFollowupForRunningIssueWake,
   DEFERRED_WAKE_CONTEXT_KEY,
   createHeartbeatQueue,
+  unsavedWakeAdmissionCount,
 } from "./heartbeat/queue.js";
 export {
   shouldDeferFollowupWakeForSameIssue,
@@ -1040,6 +1043,7 @@ export function heartbeatService(
     findExecutionWorkspaceHolder,
     finalizeAiConnectionBusyDeferral,
     finalizeWorkspaceBusyDeferral,
+    finalizeAgentDirectoryBusyDeferral,
     promoteDueScheduledRetries,
     nextScheduledRetryAt,
     retryScheduledRetryNow,
@@ -2301,11 +2305,16 @@ export function heartbeatService(
           await timePreparation("issue_checkout", async () => {
             const startsUnstartedTask = issueStatus === "todo" &&
               await isUnstartedTaskQuestionAnswer(db, { companyId: agent.companyId, issueId, interactionId: context.interactionId });
+            const blockedState = issueStatus === "blocked"
+              ? await agentBlockingQuestionState(db, { companyId: agent.companyId, issueId, agentId: agent.id, context })
+              : null;
             await issuesSvc.checkout(
               issueId,
               agent.id,
-              [...resolvedInteractionCheckoutExpectedStatuses(), ...(startsUnstartedTask ? ["todo"] : [])],
+              [...resolvedInteractionCheckoutExpectedStatuses(), ...(startsUnstartedTask ? ["todo"] : []),
+                ...(blockedState ? ["blocked"] : [])],
               run.id,
+              blockedState ? { blockedState } : undefined,
             );
           });
           context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
@@ -3532,7 +3541,7 @@ export function heartbeatService(
         }, {
           measure: timePreparation,
           prepareInstructions: async nativeLifecyclePolicy => {
-            runtimeConfig = await preparedInstructions.prepare({ runtimeConfig, nativeRuntimeResolution, hasInstructionFilesystem, nativeLifecyclePolicy });
+            runtimeConfig = await prepareWithAgentDirectoryDeferral(() => preparedInstructions.prepare({ runtimeConfig, nativeRuntimeResolution, hasInstructionFilesystem, nativeLifecyclePolicy }));
             return { runtimeConfig, instructionCopy: preparedInstructions.instructionCopy };
           },
         });
@@ -3712,6 +3721,18 @@ export function heartbeatService(
         }));
       } catch (err) {
         await persistUsageCaptureFailure?.();
+        const agentDirectoryDeferral = await deferRunForBusyAgentDirectory(db, {
+          run, error: err, leaseOwner: runOptions.nativeLeaseOwner, restartRecovery: runOptions.nativeRestartRecovery,
+          schedule: (runId, retryAt, mode) => scheduleNativeSessionResumeDispatch(runId, retryAt, mode),
+          record: retryAt => appendRunEvent(run, { eventType: "lifecycle", stream: "system", level: "info",
+            message: "Another run of this agent is still using its files; this run continues when it finishes",
+            payload: { retryReasonCode: "agent_directory_operation_busy", nextAttemptAt: retryAt.toISOString() } }),
+        });
+        if (agentDirectoryDeferral === "deferred") {
+          nativeSessionResumeScheduled = true;
+          return;
+        }
+        if (agentDirectoryDeferral === "pre_admission") throw err;
         if (err instanceof NativeStartupCleanupPendingError) {
           await requestStartupCleanup(err);
           return;
@@ -3916,6 +3937,12 @@ export function heartbeatService(
           eventMessage: "stale execution continuation cancelled before dispatch",
           suppressImmediateRecovery: true,
         });
+      } else if (outerErr instanceof AgentDirectoryPreparationDeferral && await finalizeAgentDirectoryBusyDeferral(run, outerErr)
+        .catch(deferralErr => {
+          logger.error({ err: deferralErr, runId }, "failed to finalize agent-directory deferral");
+          return false;
+        })) {
+        logger.info({ runId }, "run deferred while another run of the agent uses its files");
       } else if (isWorkspaceBusyDeferral(outerErr)) {
         // Expected contention on a shared project workspace, not a
         // failure: park the run as a bounded scheduled retry and leave the
@@ -4521,7 +4548,8 @@ export function heartbeatService(
     stopTaskDrain,
     getTaskDrainStatus,
     prepareIdleWarmNativeSessionsForSleep,
-    readUpgradeReadiness: () => readUpgradeReadiness(db, { activeRunIds: activeRunExecutions, counters: getTaskDrainStatus }),
+    readUpgradeReadiness: () => readUpgradeReadiness(db, { activeRunIds: activeRunExecutions,
+      counters: () => ({ ...getTaskDrainStatus(), unsavedWakes: unsavedWakeAdmissionCount() }) }),
     computeTaskDrain,
     applyTaskDrain,
 

@@ -3982,6 +3982,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #observedProviderModel: string | undefined;
   #sessionId: string | null = null;
   #providerIdentity: Record<string, unknown> | null = null;
+  #openingCommandId: string | null = null;
   #turnControls: NativeTurnControlCapabilities = { steering: false, queuedFollowUp: false };
 
   supportsTurnReasoning(): boolean {
@@ -4049,6 +4050,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   readonly #closedSignal: Promise<void>;
   #resolveClosedSignal!: () => void;
   #closePromise: Promise<void> | null = null;
+  #retainUnsettledRemoteRunner = false;
   #pendingCloseCheckpointRetry: CloseCheckpointRetry | null = null;
   #failedCloseCheckpoint: CloseCheckpointRetry | null = null;
   #shutdownSettled = false;
@@ -4293,8 +4295,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
    * new runner: the old one is gone, and its provider never opened a thread.
    */
   runnerExitConfirmed(): boolean {
-    return this.#closeFinished && !this.#startupComplete && this.#providerIdentity === null
+    return this.#closeFinished && !this.#startupComplete
+      && (this.#providerIdentity === null || this.#openingCommandUnanswered())
       && this.#evidence.runnerExited === true && this.#handle?.isExitConfirmed?.() !== false;
+  }
+
+  #openingCommandUnanswered(): boolean {
+    return this.#openingCommandId !== null && this.#core?.getCommand(this.#openingCommandId)?.status === "pending";
   }
 
   async request(
@@ -5304,11 +5311,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     return false;
   }
 
-  close(reason?: string): Promise<void> {
+  close(reason?: string, options?: { retainUnsettledRemoteRunner?: boolean }): Promise<void> {
     // Detachment relinquishes process ownership. A late execution finalizer
     // must not suspend or signal the runner now owned by the next controller.
     if (this.#controllerDetachedForRestart)
       return this.#detachPromise ?? Promise.resolve();
+    if (this.#closePromise === null) this.#retainUnsettledRemoteRunner = options?.retainUnsettledRemoteRunner === true;
     if (reason) {
       this.#diagnostic(
         `runner transport close requested: ${reason.replaceAll(/[\r\n]/g, " ").slice(0, 1_000)}`,
@@ -5516,6 +5524,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     // runnerd exited on its own, unsuspended, while the session was open: it
     // was lost (killed or crashed), not stopped or broken by this close.
     let runnerLost = false;
+    let runnerRetained = false;
+    const remoteRunnerRetainable = this.#retainUnsettledRemoteRunner
+      && this.options.recoveryPurpose !== "stop_cleanup"
+      && (this.options.runnerProcessLauncher !== undefined || adoptedRunner !== undefined);
     let lastSuspensionState: Record<string, unknown> | null = null;
     let suspensionState: {
       commandStatus: string | null;
@@ -5604,9 +5616,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         this.#diagnostic(
           "runner did not prove durable suspension before checkpoint",
         );
+        runnerRetained = remoteRunnerRetainable && !runnerLost && !(await this.#runnerHasExited());
+        if (runnerRetained) this.#diagnostic("remote runner left alive unsettled for same-run reattachment");
       }
       try {
-        if (this.#handle) {
+        if (runnerRetained) {
+          this.#evidence.runnerExited = false;
+        } else if (this.#handle) {
           const result = await waitForProcess(
             this.#handle,
             Math.max(0, closeDeadline - Date.now()),
@@ -5690,6 +5706,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (suspensionRequired && !runnerSettled && !runnerLossReaped) {
         const settlement = {
           runnerSuspended,
+          runnerRetained,
           providerDrained,
           suspensionState,
           semanticTools: this.#core?.semanticToolSettlementDiagnostics(),
@@ -5738,7 +5755,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         }),
         forceKill: async () => {
           const handle = this.#handle;
-          if (!handle || this.#evidence.runnerExited) return;
+          if (!handle || this.#evidence.runnerExited || runnerRetained) return;
           handle.child.kill("SIGKILL");
           // A remote kill dispatches an asynchronous, ownership-fenced RPC.
           // Do not release the session for reuse until its process monitor has
@@ -6193,7 +6210,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     core.persistRunAttachTemplate(runAttachTemplate);
     if (!unclaimedBootstrap) {
       core.queueCommand("run.prepare", runAttachTemplate);
-      core.queueCommand("session.open", { reuse: "same_session" });
+      const opening: { commandId?: string } | undefined = core.queueCommand("session.open", { reuse: "same_session" });
+      this.#openingCommandId = opening?.commandId ?? null;
     }
     const registration = this.options.controlPlaneRegistration
       ? await this.options.controlPlaneRegistration(core)
@@ -6240,6 +6258,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       environment: prepared.environment,
       diagnosticsDirectory: resolve(this.#root, "diagnostics"),
       processLauncher: this.options.runnerProcessLauncher,
+      isRunnerConnected: () => core.activeRunnerConnectionCount() > 0,
     });
     this.#handle = handle;
     this.#watchRunner(handle);
@@ -6869,6 +6888,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         : null;
     if (recoveryProbeCommandId !== null) {
       core.queueCommand(sourceAttachmentTarget ? "session.open" : "runner.drain", {}, recoveryProbeCommandId);
+      this.#openingCommandId = recoveryProbeCommandId;
     }
     // A controller retry can open the exact authority after run.attach has
     // already reached a durable outcome. Re-observe that command instead of
@@ -7113,6 +7133,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ),
           diagnosticsDirectory: resolve(this.#root, "diagnostics"),
           processLauncher: this.options.runnerProcessLauncher,
+          isRunnerConnected: () => core.activeRunnerConnectionCount() > 0,
         });
     if (handle) {
       this.#handle = handle;

@@ -561,6 +561,7 @@ export interface HarnessSessionRecoveryResult {
    * saved state for this session (NativeRunnerResumeStateUnavailableError) and
    * the checkpoint had no turn or runtime request in flight. */
   resumeStateUnavailable?: true;
+  runnerExitConfirmed?: true;
 }
 
 /** Reads the closed class of an authenticated runner command failure, or of a
@@ -660,7 +661,7 @@ export interface HarnessSession {
   release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority without semantically closing the session. */
   detachControllerForRestart?(): Promise<void>;
-  close(input: { reason: string; force?: boolean }): Promise<void>;
+  close(input: { reason: string; force?: boolean; retainUnsettledRemoteRunner?: boolean }): Promise<void>;
 }
 
 /** A local harness implementation hidden behind the runner daemon boundary. */
