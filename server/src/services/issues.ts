@@ -2577,9 +2577,12 @@ function blockerWorkspaceFacts(companyId: string, workspaceScope: SQL) {
 /** An issue's own operation takes precedence over the legacy NULL fallback.
  * A later successful finalize clears either barrier. A successful operation
  * enclosed by its owning finalize is also saved, although it started later.
- * A recovery operation is saved by the recovery's own finalize, which lists it
- * in preservationOperationIds. Releases before this one wrote that finalize
- * without a workspace, so a NULL workspace still settles its listed operation. */
+ * Saved-work recovery ("Recover saved files") ends a terminal run's workspace
+ * work with its own successful finalize. That finalize settles the issue's
+ * finished operations of the same run, and only those: it never counts as a
+ * workspace-wide finalize, because other tasks sharing the workspace can start
+ * work while the recovery waits for sandbox teardown. The recovery finalize
+ * has no workspace (all releases so far), so this rule needs no migration. */
 function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, workspaceId: SQL) {
   return sql`${workspaceId} is not null and exists (
     select 1 from (values (1)) seed(value)
@@ -2610,7 +2613,7 @@ function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, worksp
         )
       )
       and not (
-        latest_blocker_operation.status = 'succeeded'
+        latest_blocker_operation.status in ('succeeded', 'failed', 'skipped')
         and exists (
           select 1 from workspace_operations recovery_finalize
           where recovery_finalize.company_id = ${companyId}::uuid
@@ -2620,8 +2623,7 @@ function pendingFinalizeBlockerCondition(companyId: string, issueId: SQL, worksp
             and recovery_finalize.metadata->>'owningService' = 'workspace_recovery'
             and (recovery_finalize.execution_workspace_id is null
               or recovery_finalize.execution_workspace_id = ${workspaceId})
-            and jsonb_typeof(recovery_finalize.metadata->'preservationOperationIds') = 'array'
-            and recovery_finalize.metadata->'preservationOperationIds' @> jsonb_build_array(latest_blocker_operation.id::text)
+            and recovery_finalize.started_at >= coalesce(latest_blocker_operation.finished_at, latest_blocker_operation.started_at)
         )
       )
   )`;

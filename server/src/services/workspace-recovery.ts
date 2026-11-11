@@ -448,17 +448,9 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
         await notifyNativeWorkspaceFinalization(tx, input);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement);
         await notifyNativeStatusReassessment(tx, input);
-        // The finalize names each workspace whose files it saved. Dependents
-        // gate on a finalize recorded on the blocker's own workspace.
-        const savedWorkspaceIds = next.preservationOperationIds.length ? [...new Set((await tx
-          .select({ id: workspaceOperations.executionWorkspaceId }).from(workspaceOperations).where(and(
-            eq(workspaceOperations.companyId, input.companyId),
-            inArray(workspaceOperations.id, next.preservationOperationIds))))
-          .flatMap(row => row.id ? [row.id] : []))] : [];
-        await tx.insert(workspaceOperations).values((savedWorkspaceIds.length ? savedWorkspaceIds : [null]).map(executionWorkspaceId => ({
-          companyId: input.companyId, issueId: input.issueId, heartbeatRunId: input.runId, executionWorkspaceId,
-          phase: "workspace_finalize", status: "succeeded", finishedAt: new Date(),
-          metadata: { owningService: "workspace_recovery", preservationOperationIds: next.preservationOperationIds } })));
+        await tx.insert(workspaceOperations).values({ companyId: input.companyId, issueId: input.issueId,
+          heartbeatRunId: input.runId, phase: "workspace_finalize", status: "succeeded", finishedAt: new Date(),
+          metadata: { owningService: "workspace_recovery", preservationOperationIds: next.preservationOperationIds } });
         if (!await updateSystemRecovery(tx as unknown as Db, input, current!, next))
           throw new Error("workspace_recovery_generation_changed");
         if (inspected.action.evidence.nativeSourceRetention && !await settleRecoveredNativeSourceRetention(tx as unknown as Db, input, next.preservationOperationIds))

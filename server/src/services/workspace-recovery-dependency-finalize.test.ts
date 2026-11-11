@@ -37,39 +37,56 @@ describe("dependency readiness after a done child's work is recovered", () => {
     return { ...f, parentId: parent.id };
   }
 
-  const recoveryFinalizes = (f: { companyId: string; runId: string }) => db.select().from(workspaceOperations).where(and(
+  const recoveryFinalize = async (f: { companyId: string; runId: string }) => (await db.select().from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, f.companyId), eq(workspaceOperations.heartbeatRunId, f.runId),
-    eq(workspaceOperations.phase, "workspace_finalize"), eq(workspaceOperations.status, "succeeded")));
+    eq(workspaceOperations.phase, "workspace_finalize"), eq(workspaceOperations.status, "succeeded"))))[0]!;
+  const readiness = (id: string) => issueService(db).getDependencyReadiness(id);
 
-  it("records the recovery finalize on the saved workspace and releases the parent", async () => {
+  it("releases the parent once Recover saved files has saved a done child's work", async () => {
     const f = await recoveredDoneChildWithParent();
-    expect((await recoveryFinalizes(f)).map(row => row.executionWorkspaceId)).toEqual([f.workspaceId]);
-    await expect(issueService(db).getDependencyReadiness(f.parentId)).resolves.toMatchObject({
-      isDependencyReady: true, pendingFinalizeBlockerIssueIds: [], unresolvedBlockerIssueIds: [] });
-  }, 30_000);
-
-  it("settles a recovery finalize saved by the previous release without its workspace", async () => {
-    const f = await recoveredDoneChildWithParent();
-    // The previous release wrote the recovery's finalize with no workspace.
-    await db.update(workspaceOperations).set({ executionWorkspaceId: null }).where(and(
-      eq(workspaceOperations.companyId, f.companyId), eq(workspaceOperations.heartbeatRunId, f.runId),
-      eq(workspaceOperations.phase, "workspace_finalize")));
-    await expect(issueService(db).getDependencyReadiness(f.parentId)).resolves.toMatchObject({
+    await expect(readiness(f.parentId)).resolves.toMatchObject({
       isDependencyReady: true, pendingFinalizeBlockerIssueIds: [], unresolvedBlockerIssueIds: [] });
     const listed = (await issueService(db).list(f.companyId, { status: "blocked" }) as Array<{ id: string;
       blockerAttention?: { pendingFinalizeBlockerIssueIds?: string[] } | null }>).find(issue => issue.id === f.parentId);
     expect(listed?.blockerAttention?.pendingFinalizeBlockerIssueIds ?? []).toEqual([]);
   }, 30_000);
 
-  it("keeps the barrier for child workspace work started after the recovery", async () => {
+  it("releases the parent when the recovery saved through a snapshot without a workspace", async () => {
     const f = await recoveredDoneChildWithParent();
+    const finalize = await recoveryFinalize(f);
+    // Snapshot-fallback shape: the preservation receipt has no workspace, so
+    // the child's latest operation on the workspace is the run's failed finalize.
     await db.update(workspaceOperations).set({ executionWorkspaceId: null }).where(and(
       eq(workspaceOperations.companyId, f.companyId), eq(workspaceOperations.heartbeatRunId, f.runId),
-      eq(workspaceOperations.phase, "workspace_finalize")));
+      eq(workspaceOperations.phase, "workspace_recovery")));
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: f.issueId, heartbeatRunId: f.runId,
+      executionWorkspaceId: f.workspaceId, phase: "workspace_finalize", status: "failed",
+      startedAt: new Date(finalize.startedAt.getTime() - 60_000), finishedAt: new Date(finalize.startedAt.getTime() - 59_000) });
+    await expect(readiness(f.parentId)).resolves.toMatchObject({
+      isDependencyReady: true, pendingFinalizeBlockerIssueIds: [] });
+  }, 30_000);
+
+  it("keeps a sibling's work that started during the recovery waiting for its own save", async () => {
+    const f = await recoveredDoneChildWithParent();
+    const finalize = await recoveryFinalize(f);
+    const [sibling] = await db.insert(issues).values({ companyId: f.companyId, title: "Sibling", status: "done",
+      priority: "medium", executionWorkspaceId: f.workspaceId }).returning();
+    await db.insert(issueRelations).values({ companyId: f.companyId, issueId: sibling.id, relatedIssueId: f.parentId, type: "blocks" });
+    // Saving cleared the writer before teardown; the sibling began work then.
+    await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: sibling.id,
+      executionWorkspaceId: f.workspaceId, phase: "worktree_prepare", status: "succeeded",
+      startedAt: new Date(finalize.startedAt.getTime() - 1_000), finishedAt: new Date(finalize.startedAt.getTime() - 500) });
+    await expect(readiness(f.parentId)).resolves.toMatchObject({
+      isDependencyReady: false, pendingFinalizeBlockerIssueIds: [sibling.id] });
+  }, 30_000);
+
+  it("keeps the barrier for child workspace work started after the recovery", async () => {
+    const f = await recoveredDoneChildWithParent();
+    const finalize = await recoveryFinalize(f);
     await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: f.issueId,
-      executionWorkspaceId: f.workspaceId, phase: "worktree_prepare",
-      status: "succeeded", startedAt: new Date(Date.now() + 60_000), finishedAt: new Date(Date.now() + 61_000) });
-    await expect(issueService(db).getDependencyReadiness(f.parentId)).resolves.toMatchObject({
+      executionWorkspaceId: f.workspaceId, phase: "worktree_prepare", status: "succeeded",
+      startedAt: new Date(finalize.startedAt.getTime() + 1_000), finishedAt: new Date(finalize.startedAt.getTime() + 2_000) });
+    await expect(readiness(f.parentId)).resolves.toMatchObject({
       isDependencyReady: false, pendingFinalizeBlockerIssueIds: [f.issueId] });
   }, 30_000);
 });

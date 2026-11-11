@@ -235,12 +235,15 @@ Workspace readiness accepts a completed operation enclosed by a successful
 finalize from the same company, workspace, issue, and run. A nested snapshot
 that finishes before that finalize finishes does not leave a permanent wait.
 Unfinished operations and work after the finalize still require a later save.
-When saved-work recovery ("Recover saved files") finishes, its successful
-finalize is recorded on each workspace whose files it saved, including a
-workspace that a legacy done child shares with its parent. A recovery finalize
-saved by an earlier release without a workspace still settles the recovery
-operations it lists, so the dependents of a done child stop waiting without a
-migration, and a saved Retry starts on the next dependency pass.
+Saved-work recovery ("Recover saved files") ends with its own successful
+finalize for the recovered run. That finalize settles the task's finished
+workspace operations from the same run that started before it, including on a
+workspace that a legacy done child shares with its parent. So the dependents
+of a recovered done child stop waiting, and a saved Retry starts on the next
+dependency pass. Recovery finalizes already saved by earlier releases count,
+with no migration. The recovery finalize never counts as a workspace-wide
+save: another task that started work on a shared workspace while the recovery
+waited for sandbox teardown still waits for its own save.
 
 Daytona file export can preserve an already captured workspace archive when the
 guarded download copy runs out of sandbox capacity. It removes partial copies,
