@@ -53,7 +53,7 @@ function HistoryPanel({ companyId, agents, onClose, mobile = false }: { companyI
   const items = history.data?.pages.flatMap((page) => page.items) ?? [];
   const groups = new Map<string, typeof items>();
   for (const item of items) {
-    const label = groupBy === "task" ? item.issueIdentifier ?? item.issueTitle : groupBy === "agent" ? item.agentName ?? "Other agents" : groupBy === "project" ? item.projectName ?? "No project" : "";
+    const label = groupBy === "task" ? item.issueIdentifier ?? item.issueTitle ?? "Other tasks" : groupBy === "agent" ? item.agentName ?? "Other agents" : groupBy === "project" ? item.projectName ?? "No project" : "";
     groups.set(label, [...(groups.get(label) ?? []), item]);
   }
   const slot = typeof document !== "undefined" ? document.getElementById(PROPERTIES_PANE_HEADER_SLOT_ID) : null;
@@ -123,7 +123,7 @@ export function CoordinatorNeedsYou() {
   const recentGroups = useMemo(() => {
     const result = new Map<string, DecisionHistoryItem[]>();
     for (const item of visibleRecentItems) {
-      const label = groupBy === "task" ? item.issueIdentifier ?? item.issueTitle
+      const label = groupBy === "task" ? item.issueIdentifier ?? item.issueTitle ?? "Other tasks"
         : groupBy === "agent" ? item.agentName ?? "Other agents"
           : groupBy === "project" ? item.projectName ?? "No project" : "";
       result.set(label, [...(result.get(label) ?? []), item]);
