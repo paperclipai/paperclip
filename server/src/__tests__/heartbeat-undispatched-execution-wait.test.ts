@@ -44,6 +44,46 @@ const support = await getEmbeddedPostgresTestSupport();
     return { companyId, agentId, issueId, runId, actionId, originalActionId, run };
   }
 
+  it("does not create reconciliation for discarded messages cancelled before dispatch", async () => {
+    const f = await seed();
+    const [run] = await db.update(heartbeatRuns).set({ errorCode: "queued_comment_discarded", resultJson: null })
+      .where(eq(heartbeatRuns.id, f.runId)).returning();
+    await terminalizeLegacyExecution({ db, run, status: "cancelled", reconcileIfNeeded: true });
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId))).toHaveLength(0);
+  });
+
+  it("releases historical discarded-message holds and promotes saved messages after restart", async () => {
+    const f = await seed(true);
+    await db.update(heartbeatRuns).set({ errorCode: "queued_comment_discarded", resultJson: null })
+      .where(eq(heartbeatRuns.id, f.runId));
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    const { commentIds, queueId } = await saveMessages(f);
+    await heartbeatService(db).resumeQueuedRuns();
+    const successors = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+    expect(successors).toHaveLength(1);
+    expect(successors[0].contextSnapshot).toMatchObject({ issueId: f.issueId, wakeCommentIds: commentIds });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId)))[0])
+      .toMatchObject({ status: "queued", runId: successors[0].id });
+  });
+
+  it.each(["started", "provider", "lease", "profile", "workspace"])(
+    "keeps discarded-message reconciliation with retained %s evidence", async kind => {
+      const f = await seed(true);
+      const [run] = await db.update(heartbeatRuns).set({ errorCode: "queued_comment_discarded", resultJson: null,
+        ...(kind === "started" ? { startedAt: new Date() } : {}),
+        ...(kind === "profile" ? { runnerProfileJson: { sessionCheckpoint: { retained: true } } } : {}),
+        ...(kind === "workspace" ? { resultJson: { workspaceRestoreFailure: "restore_unsafe_archive" } } : {}),
+      }).where(eq(heartbeatRuns.id, f.runId)).returning();
+      if (kind === "provider") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId,
+        agentId: f.agentId, runId: f.runId, seq: 1, eventType: "provider.event", stream: "system" });
+      if (kind === "lease") await db.insert(environmentLeases).values({ companyId: f.companyId,
+        heartbeatRunId: f.runId, provider: "local", status: "released", releasedAt: new Date(), cleanupStatus: "succeeded" });
+      expect(await legacyExecutionNeedsReconciliationWithEvidence(db, run)).toBe(true);
+      expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: f.actionId });
+    },
+  );
+
   async function saveMessages(f: Awaited<ReturnType<typeof seed>>) {
     // Occupy the agent so admission cannot launch a provider in this test.
     const [busy] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" }).returning();

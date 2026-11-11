@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { EXECUTION_BLOCKER_PERSON_RETRY_ACTION, getExecutionBlocker } from "./execution-blocker.js";
+import { terminalizeLegacyExecution } from "./legacy-execution-recovery.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("execution blocker PostgreSQL read projection", () => {
@@ -74,6 +75,41 @@ describe.skipIf(!support.supported)("execution blocker PostgreSQL read projectio
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0]).toEqual(f.run);
     expect(await getExecutionBlocker(db, randomUUID(), f.issueId)).toBeNull();
   });
+
+  it.each(["none", "started", "runtime", "process", "session", "workspace"])(
+    "reconciles discarded queued comments only with retained execution evidence (%s)", async evidence => {
+      const f = await fixture({ status: "cancelled", startedAt: null, errorCode: "queued_comment_discarded",
+        resultJson: null,
+        ...(evidence === "started" ? { startedAt: new Date() } : {}),
+        ...(evidence === "runtime" ? { runtimeModeResolvedAt: new Date() } : {}),
+        ...(evidence === "process" ? { processPid: 123 } : {}),
+        ...(evidence === "session" ? { sessionIdAfter: "provider-session" } : {}),
+        ...(evidence === "workspace" ? { runnerProfileJson: { remoteWorkspace: {} } } : {}),
+      });
+      await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId));
+      await terminalizeLegacyExecution({ db, run: f.run, status: "cancelled", reconcileIfNeeded: true });
+      const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId));
+      expect(actions).toHaveLength(evidence === "none" ? 0 : 1);
+    },
+  );
+
+  it.each(["none", "started", "runtime", "process", "session", "workspace"])(
+    "excludes historical discarded queued-comment holds only without execution evidence (%s)", async evidence => {
+      const f = await fixture({ status: "cancelled", startedAt: null, errorCode: "queued_comment_discarded",
+        resultJson: null,
+        ...(evidence === "started" ? { startedAt: new Date() } : {}),
+        ...(evidence === "runtime" ? { runtimeModeResolvedAt: new Date() } : {}),
+        ...(evidence === "process" ? { processPid: 123 } : {}),
+        ...(evidence === "session" ? { sessionIdAfter: "provider-session" } : {}),
+        ...(evidence === "workspace" ? { runnerProfileJson: { remoteWorkspace: {} } } : {}),
+      }, { automaticRecovery: { replay: "blocked" } });
+      await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "blocked" })
+        .where(eq(issueRecoveryActions.companyId, f.companyId));
+      const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
+      if (evidence === "none") expect(blocker).toBeNull();
+      else expect(blocker).toMatchObject({ runId: f.run.id });
+    },
+  );
 
   it("names Retry as the person's control, so an agent reading the blocker does not re-run the work", async () => {
     const f = await fixture();
