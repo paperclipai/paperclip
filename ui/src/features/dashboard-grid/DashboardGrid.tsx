@@ -67,7 +67,7 @@ function resolveStoredLayout(raw: unknown): DashboardLayout | null {
 }
 
 export function DashboardGrid({ companyId }: { companyId: string }) {
-  const { stored, isLoaded, save, reset, resetting, saveState, blocked, loadError, allowOverwrite, retryLoad } = useUiLayout({
+  const { stored, isLoaded, save, reset, resetting, saveState, saveError, retrySave, blocked, loadError, allowOverwrite, retryLoad } = useUiLayout({
     companyId,
     surface: "dashboard",
     resolve: resolveStoredLayout,
@@ -162,6 +162,8 @@ export function DashboardGrid({ companyId }: { companyId: string }) {
         subject="dashboard"
         onRetry={retryLoad}
         onOverwrite={allowOverwrite}
+        saveError={saveError}
+        onRetrySave={retrySave}
       />
       <div className="flex flex-wrap items-center justify-end gap-2">
         <span
