@@ -33,9 +33,14 @@ import { bindConnectivity, createAppQueryClient } from "./lib/query-client";
 import { captureBrowserException } from "./lib/sentry";
 import { startPersistedQueryCache } from "./lib/persisted-query-cache";
 import { hasPendingWrites, subscribePendingWrites } from "./lib/reload-safety";
+import { installInsecureRandomUuid } from "./lib/uuid";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
+// Plain HTTP is not a secure context, so crypto.randomUUID is missing and any
+// render that calls it throws. Install the fallback before the first paint.
+// The installed function must not call crypto.randomUUID: it is that function.
+installInsecureRandomUuid();
 initPluginBridge(React, ReactDOM);
 
 // React 19.2 emits an unbounded stream of performance.measure() entries for its
