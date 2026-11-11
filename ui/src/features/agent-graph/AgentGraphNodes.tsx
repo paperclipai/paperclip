@@ -110,10 +110,11 @@ export const StickyNode = memo(function StickyNode({ data, selected }: NodeProps
         placeholder="Write a note…"
         maxLength={AGENT_GRAPH_STICKY_TEXT_MAX}
         value={text}
-        onChange={(event) => setText(event.target.value)}
-        onBlur={() => {
-          if (text !== sticky.text) actions.updateSticky(sticky.id, { text });
+        onChange={(event) => {
+          setText(event.target.value);
+          actions.editStickyText(sticky.id, event.target.value);
         }}
+        onBlur={actions.finishStickyText}
       />
     </div>
   );

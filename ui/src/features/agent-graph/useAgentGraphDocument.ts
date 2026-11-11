@@ -17,7 +17,7 @@ import {
 export type GraphHistoryEntry = HistoryEntry<AgentGraphLayout>;
 
 export function useAgentGraphDocument(companyId: string) {
-  const { stored, isLoaded, save, stage, saveState, saveError, retrySave, loadError, blocked, allowOverwrite, retryLoad, owner } = useUiLayout({
+  const { stored, isLoaded, save, stage, flush, saveState, saveError, retrySave, loadError, blocked, allowOverwrite, retryLoad, owner } = useUiLayout({
     companyId,
     surface: "agent_graph",
     resolve: resolveAgentGraphLayout,
@@ -26,6 +26,7 @@ export function useAgentGraphDocument(companyId: string) {
   const [history, setHistory] = useState<HistoryState<AgentGraphLayout>>(() => emptyHistory());
   const layoutRef = useRef<AgentGraphLayout | null>(null);
   const historyRef = useRef(history);
+  const groupRef = useRef<{ key: string; entry: GraphHistoryEntry } | null>(null);
   const hadStoredLayout = useRef(false);
   const [restoreCount, setRestoreCount] = useState(0);
 
@@ -60,20 +61,31 @@ export function useAgentGraphDocument(companyId: string) {
   );
 
   const apply = useCallback(
-    (update: (current: AgentGraphLayout) => AgentGraphLayout, options: { record?: boolean } = {}) => {
+    (update: (current: AgentGraphLayout) => AgentGraphLayout, options: { record?: boolean; group?: string } = {}) => {
       const before = layoutRef.current;
       if (!before) return;
       const after = update(before);
       if (after === before) return;
       write(after);
-      if (options.record !== false) {
-        const next = pushHistory(historyRef.current, { kind: "document", before, after });
-        historyRef.current = next;
-        setHistory(next);
-      }
+      if (options.record === false) return;
+      const past = historyRef.current.past;
+      const open = groupRef.current;
+      const merged = options.group !== undefined && open !== null && open.key === options.group
+        && past[past.length - 1] === open.entry && open.entry.kind === "document"
+        ? open.entry
+        : null;
+      const entry: GraphHistoryEntry = { kind: "document", before: merged ? merged.before : before, after };
+      const next = pushHistory(merged ? { past: past.slice(0, -1), future: [] } : historyRef.current, entry);
+      groupRef.current = options.group === undefined ? null : { key: options.group, entry };
+      historyRef.current = next;
+      setHistory(next);
     },
     [write],
   );
+
+  const closeGroup = useCallback(() => {
+    groupRef.current = null;
+  }, []);
 
   const setViewport = useCallback(
     (viewport: NonNullable<AgentGraphLayout["viewport"]>) => {
@@ -90,6 +102,7 @@ export function useAgentGraphDocument(companyId: string) {
   );
 
   const replaceHistory = useCallback((next: HistoryState<AgentGraphLayout>) => {
+    groupRef.current = null;
     historyRef.current = next;
     setHistory(next);
   }, []);
@@ -149,6 +162,8 @@ export function useAgentGraphDocument(companyId: string) {
   return {
     layout,
     apply,
+    closeGroup,
+    flush,
     setViewport,
     recordReparent,
     settleReparentStep,
