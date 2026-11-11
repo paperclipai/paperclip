@@ -24,6 +24,7 @@ import {
   documentRevisions,
   heartbeatRuns,
   instanceSettings,
+  issueRelations,
   issues,
   labels,
   projects,
@@ -76,6 +77,7 @@ describeEmbeddedPostgres("cases routes", () => {
   const storage: StorageService = {
     provider: "local_disk",
     async putFile(input) {
+      if (!Buffer.isBuffer(input.body)) throw new Error("Expected bounded bytes");
       return {
         provider: "local_disk",
         objectKey: `${input.namespace}/${randomUUID()}`,
@@ -115,6 +117,7 @@ describeEmbeddedPostgres("cases routes", () => {
     await db.delete(documents);
     await db.delete(assets);
     await db.delete(labels);
+    await db.delete(issueRelations);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(projects);
@@ -472,6 +475,74 @@ describeEmbeddedPostgres("cases routes", () => {
       "attachment_added",
     ]));
     expect(eventRows.filter((event) => event.runId === runId)).toHaveLength(eventRows.length);
+  });
+
+  it("holds direct case status writes to the terminal handoff's primary-task authority", async () => {
+    await enableCases();
+    const company = await seedCompany("TRM");
+    const owner = await seedAgent(company.id);
+    const other = await seedAgent(company.id);
+    const [primary] = await db.insert(issues).values({
+      companyId: company.id,
+      identifier: `${company.issuePrefix.toUpperCase()}-1`,
+      title: "Primary case task",
+      status: "done",
+      assigneeAgentId: owner.id,
+    }).returning();
+    const [caseRow] = await db.insert(cases).values({
+      companyId: company.id,
+      caseNumber: 1,
+      identifier: `${company.issuePrefix.toUpperCase()}-C1`,
+      caseType: "customer",
+      key: "accepted-fix",
+      title: "Accepted fix",
+      status: "in_review",
+      workIssueId: primary!.id,
+    }).returning();
+    const agentActor = (agentId: string): Express.Request["actor"] => ({
+      type: "agent",
+      companyId: company.id,
+      agentId,
+      source: "agent_key",
+      keyId: `key-${agentId}`,
+      onBehalfOfUserId: null,
+      onBehalfOfMemberships: [],
+    });
+    const otherHttp = request(app(agentActor(other.id)));
+    const readCase = async () => (await db.select().from(cases).where(eq(cases.id, caseRow!.id)))[0]!;
+
+    for (const status of ["done", "cancelled"] as const) {
+      const denied = await otherHttp.patch(`/api/cases/${caseRow!.id}`).send({ status }).expect(403);
+      expect(denied.body.error).toBe(`Agents may complete only their own case work. ${owner.name} (agent ${owner.id}) owns primary task ${primary!.identifier} and records the terminal handoff. Ask that agent on ${primary!.identifier} to close the case.`);
+    }
+    const upsert = await otherHttp
+      .post(`/api/companies/${company.id}/cases`)
+      .send({ caseType: "customer", key: "accepted-fix", title: "Accepted fix", status: "done" })
+      .expect(403);
+    expect(upsert.body.error).toMatch(/^Agents may complete only their own case work\. /);
+    expect(await readCase()).toMatchObject({ status: "in_review", completedAt: null });
+
+    // Fact edits and non-terminal status remain ordinary case writes.
+    await otherHttp.patch(`/api/cases/${caseRow!.id}`).send({ title: "Accepted checkout fix" }).expect(200);
+    await otherHttp.patch(`/api/cases/${caseRow!.id}`).send({ status: "in_progress" }).expect(200);
+
+    // The owner still closes through the terminal handoff, not a raw status write.
+    const ownerHttp = request(app(agentActor(owner.id)));
+    await ownerHttp.patch(`/api/cases/${caseRow!.id}`).send({ status: "done" }).expect(422);
+    expect(await readCase()).toMatchObject({ status: "in_progress", completedAt: null });
+    await ownerHttp.patch(`/api/cases/${caseRow!.id}`).send({ status: "cancelled" }).expect(200);
+    const reopen = await otherHttp.patch(`/api/cases/${caseRow!.id}`).send({ status: "in_progress" }).expect(403);
+    expect(reopen.body.error).toMatch(/^Agents may complete only their own case work\. /);
+
+    await request(app(boardActor)).patch(`/api/cases/${caseRow!.id}`).send({ status: "done" }).expect(200);
+    expect(await readCase()).toMatchObject({ status: "done", completedAt: expect.any(Date) });
+
+    // An upsert without status keeps the locked row's status and completion.
+    await otherHttp
+      .post(`/api/companies/${company.id}/cases`)
+      .send({ caseType: "customer", key: "accepted-fix", title: "Accepted checkout fix" })
+      .expect(200);
+    expect(await readCase()).toMatchObject({ status: "done", completedAt: expect.any(Date) });
   });
 
   it("rejects cross-company agent access across the cases route surface", async () => {
@@ -967,6 +1038,33 @@ describeEmbeddedPostgres("cases routes", () => {
     expect(forIssue.body).toHaveLength(1);
     expect(forIssue.body[0]).toMatchObject({ role: "work" });
     expect(forIssue.body[0].case).toMatchObject({ id: child.body.id, identifier: child.body.identifier, status: child.body.status });
+  });
+  it("carries glyph-only blocker state on a blocked case task without blocker details (BUG-07)", async () => {
+    await enableCases();
+    const company = await seedCompany("WORK-BLOCKED");
+    const [work, blocker] = await db.insert(issues).values([
+      { companyId: company.id, title: "Blocked case work", identifier: `${company.issuePrefix}-1`, status: "blocked" },
+      { companyId: company.id, title: "Hidden case blocker", identifier: `${company.issuePrefix}-2`, status: "todo" },
+    ]).returning();
+    await db.insert(issueRelations).values({ companyId: company.id, issueId: blocker!.id, relatedIssueId: work!.id, type: "blocks" });
+    const [record] = await db.insert(cases).values({ companyId: company.id, caseNumber: 1, identifier: `${company.issuePrefix}-C1`,
+      caseType: "factory", title: "Blocked case", workIssueId: work!.id }).returning();
+    const detail = await request(app(boardActor)).get(`/api/cases/${record!.id}`).expect(200);
+    expect(detail.body.workIssue).toMatchObject({ id: work!.id, status: "blocked", blockerAttention: { state: "needs_attention", sampleBlockerIdentifier: null } });
+    expect(JSON.stringify(detail.body.workIssue)).not.toContain("Hidden case blocker");
+    expect(JSON.stringify(detail.body.workIssue)).not.toContain(blocker!.id);
+
+    // Related-task links and the activity feed row draw from the same state.
+    await db.insert(caseIssueLinks).values({ companyId: company.id, caseId: record!.id, issueId: work!.id, role: "reference" });
+    const withLink = await request(app(boardActor)).get(`/api/cases/${record!.id}`).expect(200);
+    expect(withLink.body.issueLinks[0].issue).toMatchObject({ id: work!.id, blockerAttention: { state: "needs_attention", sampleBlockerIdentifier: null } });
+
+    await db.insert(caseEvents).values({ companyId: company.id, caseId: record!.id, kind: "issue_linked",
+      actorType: "system", payload: { issueId: work!.id } });
+    const events = await request(app(boardActor)).get(`/api/cases/${record!.id}/events`).expect(200);
+    const linked = events.body.find((event: { kind: string }) => event.kind === "issue_linked");
+    expect(linked.issue).toMatchObject({ id: work!.id, status: "blocked", blockerAttention: { state: "needs_attention", sampleBlockerIdentifier: null } });
+    expect(JSON.stringify(linked.issue)).not.toContain("Hidden case blocker");
   });
   it("enriches case pages and detail with current work in bounded batch queries", async () => {
     await enableCases();

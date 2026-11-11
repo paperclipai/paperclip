@@ -1,3 +1,4 @@
+import { safeErrorCauseCode } from "./safe-error-cause.js";
 import { AGENT_OBSERVABILITY_ENV_KEYS } from "../drivers/agent-observability.js";
 import { configuredEnvironment } from "../configured-environment.js";
 import { spawn } from "node:child_process";
@@ -45,6 +46,7 @@ import {
   type DurableRecoveryIdentity,
   type DurableWarmRunTransition,
 } from "./prp-transport-types.js";
+import { crashPoint } from "../crash-point.js";
 
 const protocol = "paperclip.runner";
 export const RUNNER_PRP_PROTOCOL_MIN = 1;
@@ -53,7 +55,9 @@ export const RUNNER_PRP_PROTOCOL_MAX = 3;
 const protocolVersion = RUNNER_PRP_PROTOCOL_MAX;
 const secureFrameSchema = "paperclip.runner.secure-frame.v1";
 const websocketGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-const coreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
+const legacyCoreStateSchema = "paperclip.runner.durable.control-plane-state.v1";
+const coreStateSchema = "paperclip.runner.durable.control-plane-state.v2";
+const stagedCoreStateSchema = "paperclip.runner.durable.control-plane-state.staged-attachment.v1";
 const externalCoreStateSchema = "paperclip.runner.external-control-plane-state.v1";
 const transitionCoreStateSchema =
   "paperclip.runner.durable.control-plane-state.warm-transition.v1";
@@ -70,10 +74,25 @@ class CommandJournalLimitError extends Error {
 // polling turn regains the event loop. Match the transport's explicit deferred
 // event bound so a valid burst is not compacted before it can be observed.
 const maxCommittedEventWindow = 4_096;
+const EVENT_DELIVERY_STALL_FAILURES = 20;
+const EVENT_DELIVERY_STALL_MS = 45_000;
 const maxStateBytes = 256 * 1024 * 1024;
 const authChallengeTtlMs = 5_000;
 const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
 const runnerDigestPattern = /^sha256:[0-9a-f]{64}$/;
+export function isRunnerRecoveryMaintenanceCommand(type: string): boolean {
+  return ["session.snapshot", "session.goal.get", "runner.drain", "runner.suspend", "runner.shutdown", "turn.stop"].includes(type);
+}
+
+/** The Runner journaled this command before its effect, then died. It sends
+ * that `indeterminate` entry as `failed` with `execution_indeterminate`, never
+ * executes it again, and still treats a lifecycle command as terminal. */
+function isIndeterminateCommandResult(command: DurableRecoveryCoreCommand): boolean {
+  if (command.status === "indeterminate") return true;
+  const detail = command.result?.result;
+  return command.status === "failed" && isRecord(detail) && detail.code === "execution_indeterminate";
+}
+
 const commandTypes = new Set([
   "run.prepare",
   "run.attach",
@@ -140,11 +159,26 @@ interface ConnectionLeaseRecord {
   revokedAt: string | null;
 }
 
+export interface StagedRunAttachment {
+  readonly sourceIdentity: DurableRecoveryIdentity;
+  readonly targetIdentity: DurableRecoveryIdentity;
+  readonly runAttachTemplate: Record<string, unknown>;
+  readonly templateDigest: string;
+  readonly commandId: string | null;
+}
+
 interface StoredCoreState {
-  schema: typeof coreStateSchema | typeof transitionCoreStateSchema;
+  schema: typeof coreStateSchema | typeof legacyCoreStateSchema | typeof transitionCoreStateSchema | typeof stagedCoreStateSchema;
+  stagedRunAttachment?: Omit<StagedRunAttachment, "runAttachTemplate"> & { runAttachTemplate?: Record<string, unknown> };
   identity: DurableRecoveryIdentity;
   /** External checkpoints contain control state, not a duplicate output log. */
   checkpointEventPolicy?: "control-v1";
+  bootstrapHistory?: {
+    schema: "paperclip.runner.bootstrap-history.v1";
+    originIdentity: DurableRecoveryIdentity;
+    credentialsIssued: number;
+    adopted: boolean;
+  };
   warmTransition?: {
     receipt: DurableWarmRunTransition;
     phase: "awaiting_result" | "prepared" | "activated";
@@ -252,6 +286,7 @@ export class SemanticToolNotDispatchedError extends Error {
 export interface DurablePrpControlPlaneOptions {
   stateDirectory: string;
   identity: DurableRecoveryIdentity;
+  authorityRunId?: string;
   expectedRunnerVersion: string;
   expectedRunnerDigest: string;
   /** Complete caller-owned admission before consuming a credential or releasing commands. */
@@ -259,6 +294,7 @@ export interface DurablePrpControlPlaneOptions {
     readonly identity: DurableRecoveryIdentity;
     readonly warmTransitionId: string | null;
   }) => Promise<void>;
+  semanticInputMode?: "dispatch" | "retain_only";
   onSemanticToolInput?: (input: {
     readonly callId: string;
     readonly operationId: string;
@@ -275,15 +311,32 @@ export interface DurablePrpControlPlaneOptions {
   }) => Promise<{ readonly result: unknown; readonly isError?: boolean }>;
   /** Persist the canonical event before the runner receives its cumulative ACK. */
   onCommittedEvent?: (event: PrpEvent) => Promise<void>;
+  /**
+   * Resolve a saved input that has no durable result. Return null to keep it
+   * pending. `admission` says whether this controller instance dispatched the
+   * callback itself, or restored it from a journal that an earlier controller
+   * wrote (for example one that a server restart replaced).
+   */
   recoverSemanticToolInput?: (
-    input: Parameters<NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>>[0],
+    input: Parameters<NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>>[0]
+      & { readonly admission: SemanticInputAdmission },
   ) => Promise<{ readonly result: unknown; readonly isError?: boolean } | null>;
   /** Stop this exact owner after a proven, authenticated permanent integrity fault. */
   onProtocolIntegrityError?: (
     error: NativeSessionProtocolIntegrityError,
   ) => void;
+  /** Diagnostic only: called synchronously after each runner connection is authenticated. */
+  onAuthenticatedConnection?: () => void;
   connectionLeaseTtlMs?: number;
 }
+
+/**
+ * Who dispatched a saved semantic input: this controller instance, or an
+ * earlier one whose journal this controller restored. This controller now
+ * owns the journal, so an earlier controller can never record a result for
+ * its callback. The caller decides whether that callback's owner is gone.
+ */
+export type SemanticInputAdmission = "this_controller" | "earlier_controller";
 
 export interface DurablePrpCheckpoint {
   /** Read-only protocol evidence. Does not grant attachment or execution authority. */
@@ -311,10 +364,12 @@ type CheckpointHeader = {
   schema: "paperclip.runner.controller-checkpoint.v2";
   runnerVersion: string;
   runnerDigest: string;
-  state: Omit<StoredCoreState, "commands" | "committedEvents" | "ackedSourceSeq" | "replayDeliveries">;
+  state: Omit<StoredCoreState, "commands" | "committedEvents" | "ackedSourceSeq" | "replayDeliveries" | "stagedRunAttachment">
+    & { stagedRunAttachment?: Omit<StagedRunAttachment, "runAttachTemplate"> };
 };
 
 function checkpointRunId(state: StoredCoreState): string {
+  if (state.stagedRunAttachment) return state.stagedRunAttachment.targetIdentity.runId;
   if (state.warmTransition) return state.warmTransition.receipt.newIdentity.runId;
   const attachment = state.commands.findLast(command => command.type === "run.attach");
   const next = attachment?.payload.paperclipNextAuthority as { identity?: { runId?: string } } | undefined;
@@ -347,17 +402,19 @@ function checkpointChanges(records: ReadonlyMap<string, string>, runId: string, 
 function captureCheckpoint(state: StoredCoreState, runnerVersion: string, runnerDigest: string): DurablePrpCheckpoint {
   const runId = checkpointRunId(state);
   const records = new Map<string, string>();
-  const { commands, committedEvents, ackedSourceSeq: _cursor, replayDeliveries: _replays, ...metadata } = state;
+  const { commands, committedEvents, ackedSourceSeq: _cursor, replayDeliveries: _replays, stagedRunAttachment, ...metadata } = state;
+  const stagedDescriptor = stagedRunAttachment ? (({ runAttachTemplate: _template, ...descriptor }) => descriptor)(stagedRunAttachment) : undefined;
+  if (stagedRunAttachment?.commandId === null) records.set("staged-attachment-template", JSON.stringify(stagedRunAttachment.runAttachTemplate));
   const latestUsage = committedEvents.findLast(event => event.eventType === "usage.reported");
   const recoveryEvents = committedEvents.filter(event => !isStreamingEvent(event) || event === latestUsage);
   for (const command of commands) records.set(`command:${command.controllerSeq}`, JSON.stringify(command));
   for (const event of recoveryEvents) records.set(`event:${event.sourceSeq}`, JSON.stringify(event));
   const header: CheckpointHeader = { schema: "paperclip.runner.controller-checkpoint.v2",
-    runnerVersion, runnerDigest, state: { ...metadata, checkpointEventPolicy: "control-v1" } };
+    runnerVersion, runnerDigest, state: { ...metadata, ...(stagedDescriptor ? { stagedRunAttachment: stagedDescriptor } : {}), checkpointEventPolicy: "control-v1" } };
   records.set("header", JSON.stringify(header));
   records.set("cursor", JSON.stringify({ ackedSourceSeq: state.ackedSourceSeq, replayDeliveries: state.replayDeliveries,
     commandCount: commands.length, eventCount: recoveryEvents.length }));
-  const maintenance = new Set(["runner.drain", "runner.suspend", "session.snapshot", "session.close"]);
+  const maintenance = new Set(["turn.stop", "runner.drain", "runner.suspend", "session.snapshot", "session.close"]);
   return {
     runnerVersion, runnerDigest, runId, records, ...checkpointChanges(records, runId),
     recoveryEvidence: { runnerInstanceId: state.identity.runnerInstanceId, normalizedSessionId: state.identity.normalizedSessionId,
@@ -377,12 +434,92 @@ function captureCheckpoint(state: StoredCoreState, runnerVersion: string, runner
   };
 }
 
-function checkpointState(records: ReadonlyMap<string, string>) {
-  const header: unknown = JSON.parse(records.get("header") ?? "null");
+export function captureLegacyDurablePrpCheckpoint(contents: string, expected: {
+  runId: string; runnerInstanceId: string; normalizedSessionId: string;
+}, verifiedArtifact?: { version: string; digest: string }): DurablePrpCheckpoint {
+  if (Buffer.byteLength(contents) > maxStateBytes) throw new Error("native_runner_checkpoint_invalid");
+  const value: unknown = JSON.parse(contents);
+  if (!isRecord(value) || !exactIdentity(value.identity) || !isStoredCoreState(value, value.identity)
+    || value.identity.runId !== expected.runId || value.identity.runnerInstanceId !== expected.runnerInstanceId
+    || value.identity.normalizedSessionId !== expected.normalizedSessionId
+    || checkpointRunId(value) !== expected.runId || value.warmTransition
+    || value.stagedRunAttachment && !stagedTargetActivated(value)) {
+    throw new Error("native_runner_checkpoint_binding_mismatch");
+  }
+  const artifacts: Array<{ runnerVersion: string; runnerDigest: string }> = value.completedWarmTransition
+    ? [value.completedWarmTransition.receipt]
+    : Object.values(value.tickets).filter(ticket => ticket.usedAt !== null
+      && Number.isFinite(Date.parse(ticket.usedAt))
+      && canonicalJson(ticket.identity) === canonicalJson(value.identity));
+  if (verifiedArtifact) artifacts.push({ runnerVersion: verifiedArtifact.version, runnerDigest: verifiedArtifact.digest });
+  const artifact = artifacts[0];
+  if (!artifact || typeof artifact.runnerVersion !== "string" || !artifact.runnerVersion
+    || !runnerDigestPattern.test(artifact.runnerDigest)
+    || artifacts.some(candidate => candidate.runnerVersion !== artifact.runnerVersion || candidate.runnerDigest !== artifact.runnerDigest)) {
+    throw new Error("native_runner_checkpoint_artifact_unproven");
+  }
+  return decodeDurablePrpCheckpoint(captureCheckpoint(value, artifact.runnerVersion, artifact.runnerDigest).records);
+}
+
+function parseCheckpointHeader(contents: string): Record<string, unknown> & {
+  runnerVersion: string; runnerDigest: string;
+  state: Record<string, unknown> & { identity: DurableRecoveryIdentity };
+} {
+  const header: unknown = JSON.parse(contents);
   if (!isRecord(header) || !["paperclip.runner.controller-checkpoint.v1", "paperclip.runner.controller-checkpoint.v2"].includes(String(header.schema))
     || typeof header.runnerVersion !== "string" || !header.runnerVersion
     || typeof header.runnerDigest !== "string" || !runnerDigestPattern.test(header.runnerDigest)
     || !isRecord(header.state) || !exactIdentity(header.state.identity)) throw new Error("native_runner_checkpoint_invalid");
+  return { ...header, runnerVersion: header.runnerVersion, runnerDigest: header.runnerDigest,
+    state: { ...header.state, identity: header.state.identity } };
+}
+
+/** Bounded header evidence for rollout policy, not permission to restore or attach.
+ * Full restoration still validates every record through decodeDurablePrpCheckpoint. */
+export function inspectDurablePrpCheckpointHeader(contents: string): DurableRecoveryIdentity | null {
+  try {
+    const header = parseCheckpointHeader(contents);
+    if (header.schema !== "paperclip.runner.controller-checkpoint.v2"
+      || header.state.checkpointEventPolicy !== "control-v1"
+      || ![coreStateSchema, legacyCoreStateSchema, transitionCoreStateSchema, stagedCoreStateSchema].includes(String(header.state.schema))
+      || (header.state.schema === stagedCoreStateSchema && !validStagedRunAttachment(header.state as unknown as StoredCoreState, true))) return null;
+    return { ...header.state.identity };
+  } catch { return null; }
+}
+
+/** Bounded checkpoint metadata inspection; never itself grants recovery authority. */
+export function inspectStagedRunAttachmentHeader(contents: string): {
+  attachment: Omit<StagedRunAttachment, "runAttachTemplate">; runnerVersion: string; runnerDigest: string;
+  protocolIdentity: DurableRecoveryIdentity;
+  phase: "source_bootstrap" | "attachment_queued" | "awaiting_result" | "prepared" | "activated" | "completed";
+  receipt: DurableWarmRunTransition | null;
+} | null {
+  try {
+    if (Buffer.byteLength(contents) > maxStateBytes) return null;
+    const header = parseCheckpointHeader(contents), state = header.state as unknown as StoredCoreState;
+    if (header.schema !== "paperclip.runner.controller-checkpoint.v2"
+      || state.checkpointEventPolicy !== "control-v1" || !validStagedRunAttachment(state, true)
+      || !state.stagedRunAttachment) return null;
+    const transition = state.warmTransition;
+    const completed = stagedTargetActivated(state) ? state.completedWarmTransition : undefined;
+    const bound = transition ?? completed;
+    if (bound) {
+      const receipt = bound.receipt;
+      const result = transition?.phase === "awaiting_result" ? transition.expectedResult : bound.command.result;
+      const expected = warmTransitionReceipt(receipt.oldIdentity, bound.command, result!, receipt.oldAckedSourceSeq,
+        { leaseId: receipt.leaseId, expiresAtUnixMs: receipt.leaseExpiresAtUnixMs, revocationEpoch: receipt.leaseRevocationEpoch },
+        header.runnerVersion, header.runnerDigest);
+      if (canonicalJson(expected) !== canonicalJson(receipt)) return null;
+    }
+    return { attachment: structuredClone(state.stagedRunAttachment), protocolIdentity: structuredClone(state.identity),
+      phase: transition?.phase ?? (completed ? "completed" : state.stagedRunAttachment.commandId ? "attachment_queued" : "source_bootstrap"),
+      receipt: bound ? structuredClone(bound.receipt) : null,
+      runnerVersion: header.runnerVersion, runnerDigest: header.runnerDigest };
+  } catch { return null; }
+}
+
+function checkpointState(records: ReadonlyMap<string, string>) {
+  const header = parseCheckpointHeader(records.get("header") ?? "null");
   const read = (key: string): unknown => {
     const value = records.get(key);
     if (value === undefined) throw new Error("native_runner_checkpoint_incomplete");
@@ -402,9 +539,14 @@ function checkpointState(records: ReadonlyMap<string, string>) {
   }
   const cursor = v2 ? read("cursor") : header.state;
   if (!isRecord(cursor) || (v2 && (cursor.commandCount !== commandKeys.length || cursor.eventCount !== eventKeys.length
-    || records.size !== commandKeys.length + eventKeys.length + 2))) throw new Error("native_runner_checkpoint_incomplete");
+    || records.size !== commandKeys.length + eventKeys.length + 2 + (isRecord(header.state.stagedRunAttachment) && header.state.stagedRunAttachment.commandId === null ? 1 : 0)))) throw new Error("native_runner_checkpoint_incomplete");
   const state = { ...header.state, ackedSourceSeq: cursor.ackedSourceSeq, replayDeliveries: cursor.replayDeliveries,
-    commands: commandKeys.map(read), committedEvents: eventKeys.map(read) };
+    commands: commandKeys.map(read), committedEvents: eventKeys.map(read) } as unknown as StoredCoreState;
+  if (state.stagedRunAttachment?.commandId === null) {
+    const template = read("staged-attachment-template");
+    if (!isRecord(template)) throw new Error("native_runner_checkpoint_invalid");
+    state.stagedRunAttachment = { ...state.stagedRunAttachment, runAttachTemplate: template };
+  }
   if (!isStoredCoreState(state, header.state.identity)) throw new Error("native_runner_checkpoint_invalid");
   if (state.commands.some((command, index) => commandKeys[index] !== `command:${command.controllerSeq}`)
     || state.committedEvents.some((event, index) => eventKeys[index] !== `event:${event.sourceSeq}`)) {
@@ -421,6 +563,48 @@ export function decodeDurablePrpCheckpoint(records: ReadonlyMap<string, string>)
     if (error instanceof SyntaxError) throw new Error("native_runner_checkpoint_invalid", { cause: error });
     throw error;
   }
+}
+
+function isUnclaimedBootstrapState(state: StoredCoreState, expected: DurableRecoveryIdentity): boolean {
+  const history = state.bootstrapHistory;
+  return !(state.schema !== coreStateSchema || state.checkpointEventPolicy !== "control-v1"
+      || canonicalJson(state.identity) !== canonicalJson(expected)
+      || history?.schema !== "paperclip.runner.bootstrap-history.v1"
+      || canonicalJson(history.originIdentity) !== canonicalJson(expected)
+      || history.credentialsIssued !== 0 || history.adopted !== false
+      || state.warmTransition || state.completedWarmTransition || state.stagedRunAttachment
+      || state.connectionCount !== 0 || state.ackedSourceSeq !== 0 || state.committedEvents.length !== 0
+      || state.freshBootstraps !== 0 || Object.keys(state.tickets).length !== 0
+      || Object.keys(state.leases).length !== 0 || state.lastLeaseId !== null || state.lastLeaseExpiresAt !== null
+      || Object.keys(state.commandDeliveryCounts).length !== 0 || state.replayDeliveries !== 0
+      || state.duplicateCommandResults !== 0 || state.malformedFrames !== 0
+      || state.commands.length !== 2 || state.commands[0]?.type !== "run.prepare"
+      || state.commands[1]?.type !== "session.open"
+      || state.commands.some(command => command.status !== "pending" || command.result !== null)
+      || !state.runAttachTemplate || canonicalJson(state.commands[0].payload) !== canonicalJson(state.runAttachTemplate));
+}
+
+export function inspectUnclaimedBootstrapCheckpoint(
+  records: ReadonlyMap<string, string>, expected: DurableRecoveryIdentity,
+): { fingerprint: string; runnerVersion: string; runnerDigest: string } | null {
+  try {
+    if (records.size !== 4 || [...records.values()].reduce((bytes, value) => bytes + Buffer.byteLength(value), 0) > 8 * 1024 * 1024) return null;
+    const { state, runnerVersion, runnerDigest } = checkpointState(records);
+    if (!isUnclaimedBootstrapState(state, expected)) return null;
+    return { runnerVersion, runnerDigest, fingerprint: `sha256:${createHash("sha256")
+      .update(canonicalJson([...records].sort(([left], [right]) => left.localeCompare(right)))).digest("hex")}` };
+  } catch { return null; }
+}
+
+export function inspectUnclaimedBootstrapState(
+  contents: string, expected: DurableRecoveryIdentity, verifiedArtifact: { version: string; digest: string },
+): ReturnType<typeof inspectUnclaimedBootstrapCheckpoint> {
+  try {
+    if (Buffer.byteLength(contents) > 8 * 1024 * 1024) return null;
+    const state: unknown = JSON.parse(contents);
+    if (!isStoredCoreState(state, expected) || !isUnclaimedBootstrapState(state, expected)) return null;
+    return inspectUnclaimedBootstrapCheckpoint(captureLegacyDurablePrpCheckpoint(contents, expected, verifiedArtifact).records, expected);
+  } catch { return null; }
 }
 
 export interface RunnerProcessResult {
@@ -662,9 +846,9 @@ function warmTransitionReceipt(
 
 function validStoredWarmTransition(state: StoredCoreState): boolean {
   const transition = state.warmTransition;
-  if (!transition) return state.schema === coreStateSchema;
+  if (!transition) return state.schema === coreStateSchema || state.schema === legacyCoreStateSchema || (state.schema === stagedCoreStateSchema && validStagedRunAttachment(state));
   if (
-    state.schema !== transitionCoreStateSchema ||
+    (state.schema !== transitionCoreStateSchema && state.schema !== stagedCoreStateSchema) ||
     !["awaiting_result", "prepared", "activated"].includes(transition.phase) ||
     !isRecord(transition.receipt) ||
     !isRecord(transition.command) ||
@@ -711,6 +895,12 @@ function validStoredWarmTransition(state: StoredCoreState): boolean {
   } catch {
     return false;
   }
+}
+
+function eventSchemaIssuePaths(issues: readonly { path?: unknown }[] | undefined): string {
+  const paths = [...new Set((issues ?? []).map(issue => typeof issue.path === "string" ? issue.path : "")
+    .map(path => path.replace(/[^A-Za-z0-9_./-]/g, "_").slice(0, 80)).filter(Boolean))];
+  return paths.length ? paths.slice(0, 3).join(",") : "unknown";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -781,6 +971,96 @@ function unsettledSemanticInput(
   }
 }
 
+function stagedCommandMatches(staged: Pick<StagedRunAttachment, "targetIdentity" | "templateDigest" | "commandId">, command: DurableRecoveryCoreCommand): boolean {
+  if (command.type !== "run.attach" || command.commandId !== staged.commandId) return false;
+  const { paperclipNextAuthority, ...template } = command.payload;
+  return isRecord(paperclipNextAuthority)
+    && canonicalJson(paperclipNextAuthority.identity) === canonicalJson(staged.targetIdentity)
+    && `sha256:${canonicalDigest(template)}` === staged.templateDigest;
+}
+
+function stagedAttachmentTemplate(state: StoredCoreState): Record<string, unknown> | null {
+  const staged = state.stagedRunAttachment;
+  if (!staged) return null;
+  if (staged.commandId === null) return staged.runAttachTemplate ?? null;
+  const command = state.commands?.find(command => command.commandId === staged.commandId)
+    ?? state.warmTransition?.command ?? state.completedWarmTransition?.command;
+  if (!command || !stagedCommandMatches(staged, command)) return null;
+  const { paperclipNextAuthority: _authority, ...template } = command.payload;
+  return template;
+}
+
+function stagedTargetActivated(state: StoredCoreState): boolean {
+  const staged = state.stagedRunAttachment, completed = state.completedWarmTransition;
+  return !!staged && !state.warmTransition && !!completed
+    && canonicalJson(state.identity) === canonicalJson(staged.targetIdentity)
+    && completed.receipt.commandId === staged.commandId
+    && canonicalJson(completed.receipt.oldIdentity) === canonicalJson(staged.sourceIdentity)
+    && canonicalJson(completed.receipt.newIdentity) === canonicalJson(staged.targetIdentity)
+    && stagedCommandMatches(staged, completed.command);
+}
+
+function validStagedRunAttachment(state: StoredCoreState, headerOnly = false): boolean {
+  const staged = state.stagedRunAttachment;
+  if (staged === undefined) return state.schema !== stagedCoreStateSchema;
+  if (!(state.schema === stagedCoreStateSchema && isRecord(staged)
+    && Object.keys(staged).sort().join(",") === (headerOnly || staged.commandId !== null ? "commandId,sourceIdentity,targetIdentity,templateDigest" : "commandId,runAttachTemplate,sourceIdentity,targetIdentity,templateDigest")
+    && exactIdentity(staged.sourceIdentity) && exactIdentity(staged.targetIdentity)
+    && staged.sourceIdentity.runId !== staged.targetIdentity.runId
+    && ["runnerInstanceId", "environmentLeaseId", "normalizedSessionId"].every(key =>
+      staged.sourceIdentity[key as keyof DurableRecoveryIdentity] === staged.targetIdentity[key as keyof DurableRecoveryIdentity])
+    && /^sha256:[0-9a-f]{64}$/.test(staged.templateDigest)
+    && (headerOnly || staged.commandId !== null || (isRecord(staged.runAttachTemplate) && isRecord(staged.runAttachTemplate.provider)
+      && staged.runAttachTemplate.paperclipNextAuthority === undefined
+      && `sha256:${canonicalDigest(staged.runAttachTemplate)}` === staged.templateDigest
+      && Buffer.byteLength(JSON.stringify(staged.runAttachTemplate)) <= maxCommandBytes))
+    && (staged.commandId === null || (typeof staged.commandId === "string" && stableIdPattern.test(staged.commandId))))) return false;
+  const sourceCurrent = canonicalJson(state.identity) === canonicalJson(staged.sourceIdentity);
+  if (!sourceCurrent && canonicalJson(state.identity) !== canonicalJson(staged.targetIdentity)) return false;
+  if (state.warmTransition) {
+    const transition = state.warmTransition;
+    return staged.commandId !== null && stagedCommandMatches(staged, transition.command)
+      && canonicalJson(transition.receipt.oldIdentity) === canonicalJson(staged.sourceIdentity)
+      && canonicalJson(transition.receipt.newIdentity) === canonicalJson(staged.targetIdentity)
+      && (sourceCurrent ? transition.phase !== "activated" : transition.phase === "activated");
+  }
+  if (!sourceCurrent) return stagedTargetActivated(state);
+  if (staged.commandId === null) return true;
+  // Header-only inspection cannot certify the separate command record. Full
+  // restoration below requires its exact tuple, payload and command ID.
+  return !Array.isArray(state.commands) || state.commands.some(command => stagedCommandMatches(staged, command));
+}
+
+/** Inspection is evidence only; the caller still owns recovery authorization. */
+export function inspectStagedRunAttachment(state: unknown, expectedTarget?: DurableRecoveryIdentity): StagedRunAttachment | null {
+  try {
+    if (!isRecord(state) || !exactIdentity(state.identity) || !isStoredCoreState(state, state.identity)
+      || !state.stagedRunAttachment || (expectedTarget && canonicalJson(state.stagedRunAttachment.targetIdentity) !== canonicalJson(expectedTarget))) return null;
+    const template = stagedAttachmentTemplate(state);
+    return template ? { ...structuredClone(state.stagedRunAttachment), runAttachTemplate: structuredClone(template) } : null;
+  } catch { return null; }
+}
+
+/** Recover admitted instructions without opening the retired controller's assets.
+ * Inspection is evidence only; the caller still authorizes the runner and lease. */
+export function inspectRetainedRunInstructions(state: unknown, expected: {
+  runId: string; normalizedSessionId: string; runtimeContextDigest: string;
+}): string | null {
+  try {
+    if (!isRecord(state) || !exactIdentity(state.identity) || !isStoredCoreState(state, state.identity)) return null;
+    const matches = (identity: DurableRecoveryIdentity) => identity.runId === expected.runId
+      && identity.normalizedSessionId === expected.normalizedSessionId;
+    const staged = state.stagedRunAttachment;
+    const template = staged && matches(staged.targetIdentity)
+      ? stagedAttachmentTemplate(state)
+      : matches(state.identity) ? state.runAttachTemplate : null;
+    if (!isRecord(template) || !isRecord(template.provider)) return null;
+    const { instructions, runtimeContext } = template.provider;
+    return isRecord(runtimeContext) && runtimeContext.aggregateDigest === expected.runtimeContextDigest
+      && typeof instructions === "string" && instructions.trim().length > 0 ? instructions : null;
+  } catch { return null; }
+}
+
 function isStoredCoreState(
   value: unknown,
   identity: DurableRecoveryIdentity,
@@ -789,8 +1069,8 @@ function isStoredCoreState(
   const commands = value.commands;
   const events = value.committedEvents;
   if (
-    (value.schema !== coreStateSchema &&
-      value.schema !== transitionCoreStateSchema) ||
+    (value.schema !== coreStateSchema && value.schema !== legacyCoreStateSchema &&
+      value.schema !== transitionCoreStateSchema && value.schema !== stagedCoreStateSchema) ||
     canonicalJson(value.identity) !== canonicalJson(identity) ||
     (value.checkpointEventPolicy !== undefined && value.checkpointEventPolicy !== "control-v1") ||
     !isRecord(value.tickets) ||
@@ -806,6 +1086,17 @@ function isStoredCoreState(
     !isRecord(value.commandDeliveryCounts)
   ) {
     return false;
+  }
+  if (!validStagedRunAttachment(value as unknown as StoredCoreState)) return false;
+  if (value.bootstrapHistory !== undefined) {
+    const history = value.bootstrapHistory;
+    if (!isRecord(history)) return false;
+    const origin = history.originIdentity;
+    if (history.schema !== "paperclip.runner.bootstrap-history.v1" || !isRecord(origin)
+      || !["runnerInstanceId", "environmentLeaseId", "runId", "normalizedSessionId", "turnId", "itemId"]
+        .every(key => typeof origin[key] === "string" && stableIdPattern.test(origin[key]))
+      || !Number.isSafeInteger(history.credentialsIssued) || (history.credentialsIssued as number) < 0
+      || typeof history.adopted !== "boolean") return false;
   }
   if (!validStoredWarmTransition(value as unknown as StoredCoreState))
     return false;
@@ -1238,6 +1529,7 @@ function initialCoreState(identity: DurableRecoveryIdentity): StoredCoreState {
   return {
     schema: coreStateSchema,
     identity,
+    bootstrapHistory: { schema: "paperclip.runner.bootstrap-history.v1", originIdentity: structuredClone(identity), credentialsIssued: 0, adopted: false },
     runAttachTemplate: null,
     tickets: {},
     leases: {},
@@ -1518,6 +1810,18 @@ class DurableCoreStore {
   }
 }
 
+/** Why an authenticated runner connection lost its lease authority. */
+export interface DurablePrpConnectionLeaseFailure {
+  readonly code: "connection_lease_expired";
+  readonly leaseId: string;
+  readonly expiresAtUnixMs: number;
+  readonly observedAtUnixMs: number;
+}
+
+type SerializedFrame =
+  | { readonly raw: unknown }
+  | { readonly decrypted: Record<string, unknown> };
+
 /** Reason supplied when a transport-neutral PRP peer closes. */
 export interface TransportCloseReason {
   readonly code?: number;
@@ -1694,6 +1998,7 @@ class AuthorityConnection {
   readonly wire: PrpWireConnection;
   #closed = false;
   #onClose: () => void;
+  #onJson: (value: unknown) => void;
 
   constructor(input: {
     wire: PrpWireConnection;
@@ -1702,8 +2007,12 @@ class AuthorityConnection {
   }) {
     this.wire = input.wire;
     this.#onClose = input.onClose;
-    this.wire.onJson(input.onJson);
+    this.#onJson = input.onJson;
+  }
+
+  start(): void {
     this.wire.onClose(() => this.#markClosed());
+    if (!this.#closed) this.wire.onJson(this.#onJson);
   }
 
   sendJson(value: unknown): void {
@@ -1732,6 +2041,7 @@ class AuthorityConnection {
 /** Authenticated, replay-safe PRP transport authority. Business operations are caller supplied. */
 export class DurablePrpControlPlane {
   #identity: DurableRecoveryIdentity;
+  #stagedTargetCheckpointPublished: string | null = null;
   readonly #store: DurableCoreStore;
   #expectedRunnerVersion: string;
   #expectedRunnerDigest: string;
@@ -1742,7 +2052,12 @@ export class DurablePrpControlPlane {
   // next authentication. Diagnostic only: it never gates authority.
   #runnerDisconnectedAt: number | null = null;
   #connectionProcessing = new Map<AuthorityConnection, Promise<void>>();
+  #connectionLeaseFailure: DurablePrpConnectionLeaseFailure | null = null;
   #pendingSemanticCalls = new Set<string>();
+  /** Result command ids whose callback this instance dispatched live and has
+   * not journaled a result for. A queued result removes its id, so only
+   * in-flight and failed dispatches remain. */
+  #liveDispatchedSemanticCalls = new Set<string>();
   #semanticCallbacksRetired = false;
   #semanticResultPersistenceFailed = false;
   #semanticResultFailures: Array<{
@@ -1752,12 +2067,17 @@ export class DurablePrpControlPlane {
     code: string;
   }> = [];
   #port: number | null = null;
+  #semanticInputMode: "dispatch" | "retain_only";
+  #semanticInputSourceRunId: string | null;
+  readonly #authorityRunId: () => string | undefined;
   #onSemanticToolInput?: DurablePrpControlPlaneOptions["onSemanticToolInput"];
   #onCommittedEvent?: DurablePrpControlPlaneOptions["onCommittedEvent"];
   #recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
   #beforeAuthenticatedConnection?: DurablePrpControlPlaneOptions["beforeAuthenticatedConnection"];
   #onProtocolIntegrityError?: DurablePrpControlPlaneOptions["onProtocolIntegrityError"];
+  #onAuthenticatedConnection?: DurablePrpControlPlaneOptions["onAuthenticatedConnection"];
   #protocolIntegrityError: NativeSessionProtocolIntegrityError | null = null;
+  #eventDeliveryStall: { runId: string; ackedSourceSeq: number; since: number; failures: number } | null = null;
   #connectionLeaseTtlMs: number;
   #persistCheckpoint: ((checkpoint: DurablePrpCheckpoint) => Promise<void>) | null = null;
   #persistedRevision = -1;
@@ -1806,11 +2126,16 @@ export class DurablePrpControlPlane {
         "Warm run transition requires its exact approved runner artifact.",
       );
     }
+    this.#authorityRunId = () => options.authorityRunId;
+    this.#semanticInputMode = options.authorityRunId !== undefined && options.authorityRunId !== options.identity.runId
+      ? "retain_only" : options.semanticInputMode ?? "dispatch";
+    this.#semanticInputSourceRunId = this.#semanticInputMode === "retain_only" ? options.identity.runId : null;
     this.#onSemanticToolInput = options.onSemanticToolInput;
     this.#onCommittedEvent = options.onCommittedEvent;
     this.#recoverSemanticToolInput = options.recoverSemanticToolInput;
     this.#beforeAuthenticatedConnection = options.beforeAuthenticatedConnection;
     this.#onProtocolIntegrityError = options.onProtocolIntegrityError;
+    this.#onAuthenticatedConnection = options.onAuthenticatedConnection;
     this.#connectionLeaseTtlMs = options.connectionLeaseTtlMs ?? 60_000;
   }
 
@@ -1828,7 +2153,12 @@ export class DurablePrpControlPlane {
       cached.set(part, prior?.record === record ? prior : { record, command: JSON.parse(record) });
     }
     this.#publicationCommands = cached;
-    return { ...header.state, ...cursor, commands: [...cached.values()].map(value => value.command),
+    const descriptor = header.state.stagedRunAttachment;
+    const workingStage = this.#store.state.stagedRunAttachment;
+    const staged = descriptor?.commandId === null ? { ...descriptor,
+      runAttachTemplate: workingStage?.templateDigest === descriptor.templateDigest && workingStage.runAttachTemplate
+        ? workingStage.runAttachTemplate : JSON.parse(snapshot.records.get("staged-attachment-template")!) as Record<string, unknown> } : descriptor;
+    return { ...header.state, ...(staged ? { stagedRunAttachment: staged } : {}), ...cursor, commands: [...cached.values()].map(value => value.command),
       // Event records are immutable after insertion. Retain their array, not
       // another deep copy of the streaming payload window.
       committedEvents: this.#store.state.committedEvents };
@@ -1919,10 +2249,15 @@ export class DurablePrpControlPlane {
     }
     const checkpoint = this.flushCheckpoint();
     const frame = structuredClone(value);
+    let checkpointFailure: unknown = null;
     const sending = (this.#sendQueues.get(connection) ?? Promise.resolve())
-      .then(() => checkpoint)
+      .then(() => checkpoint.catch(error => { checkpointFailure = error ?? new Error("checkpoint_failed"); throw error; }))
       .then(() => connection.sendJson(frame))
-      .catch(() => connection.close());
+      .catch(() => {
+        if (checkpointFailure !== null && this.#protocolIntegrityError === null) {
+          this.#eventCommitFailed(connection, `checkpoint_flush_failed:${safeErrorCauseCode(checkpointFailure)}`);
+        } else connection.close();
+      });
     this.#sendQueues.set(connection, sending);
     void sending.finally(() => {
       if (this.#sendQueues.get(connection) === sending) this.#sendQueues.delete(connection);
@@ -1951,10 +2286,43 @@ export class DurablePrpControlPlane {
     );
   }
 
-  async recoverPendingSemanticInputs(): Promise<void> {
-    if (!this.#recoverSemanticToolInput) return;
+  #retainsSourceInputs(): boolean {
+    const owner = this.#authorityRunId();
+    return this.#semanticInputMode === "retain_only" || (owner !== undefined && owner !== this.#identity.runId);
+  }
+
+  enableSemanticInputDispatch(identity: DurableRecoveryIdentity): void {
+    if ((this.#authorityRunId() !== undefined && this.#authorityRunId() !== identity.runId)
+      || canonicalJson(this.#identity) !== canonicalJson(identity) || this.#store.state.warmTransition) {
+      throw new Error("native_runner_source_attachment_pending");
+    }
+    if (this.#semanticInputMode === "dispatch") return;
+    if (this.#identity.runId === this.#semanticInputSourceRunId
+      || this.activeRunnerConnectionCount() !== 1 || !this.semanticToolResultsSettled()) {
+      throw new Error("native_runner_source_attachment_pending");
+    }
+    this.#semanticInputMode = "dispatch";
+    this.#semanticInputSourceRunId = null;
+  }
+
+  #semanticRecoveryPass: Promise<void> | null = null;
+
+  recoverPendingSemanticInputs(): Promise<void> {
+    const pass = (this.#semanticRecoveryPass ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => this.#recoverPendingSemanticInputsOnce());
+    this.#semanticRecoveryPass = pass;
+    void pass.finally(() => {
+      if (this.#semanticRecoveryPass === pass) this.#semanticRecoveryPass = null;
+    }).catch(() => undefined);
+    return pass;
+  }
+
+  async #recoverPendingSemanticInputsOnce(): Promise<void> {
+    if (this.#retainsSourceInputs() || !this.#recoverSemanticToolInput) return;
     const identity = this.#identity;
     for (const saved of [...this.#store.state.committedEvents]) {
+      if (this.#retainsSourceInputs() || this.#identity !== identity || this.#semanticCallbacksRetired) return;
       if (!unsettledSemanticInput(saved, this.#store.state)) continue;
       const event = saved.envelope.payload as PrpEvent;
       const semantic = (event.payload as Record<string, unknown>).semantic_tool as Record<string, unknown>;
@@ -1968,8 +2336,10 @@ export class DurablePrpControlPlane {
           sourceEventId: event.sourceEventId, sourceEventType: event.eventType,
           correlation: { runId: identity.runId, normalizedSessionId: identity.normalizedSessionId,
             turnId: identity.turnId, itemId: event.itemId ?? identity.itemId } };
-        const outcome = await this.#recoverSemanticToolInput(call);
-        if (this.#identity !== identity || this.#semanticCallbacksRetired) return;
+        const admission: SemanticInputAdmission = this.#liveDispatchedSemanticCalls.has(commandId)
+          ? "this_controller" : "earlier_controller";
+        const outcome = await this.#recoverSemanticToolInput({ ...call, admission });
+        if (this.#identity !== identity || this.#semanticCallbacksRetired || this.#retainsSourceInputs()) return;
         if (!outcome || this.#getCommand(commandId)) continue;
         const { input, ...metadata } = call;
         this.queueCommand("semantic_tool.result", { ...metadata, inputDigest: canonicalDigest(input),
@@ -2203,6 +2573,10 @@ export class DurablePrpControlPlane {
     ) {
       throw new Error("Durable PRP run identity rotation is invalid.");
     }
+    if (this.#authorityRunId() !== undefined && this.#authorityRunId() !== this.#identity.runId) {
+      this.#semanticInputMode = "retain_only";
+      this.#semanticInputSourceRunId ??= this.#identity.runId;
+    }
     this.disconnectActiveRunner();
     const leases = Object.fromEntries(
       Object.entries(this.#store.state.leases).map(([key, lease]) => [
@@ -2211,6 +2585,8 @@ export class DurablePrpControlPlane {
       ]),
     );
     Object.assign(this.#store.state, initialCoreState(identity), {
+      bootstrapHistory: this.#store.state.bootstrapHistory
+        ? { ...structuredClone(this.#store.state.bootstrapHistory), adopted: true } : undefined,
       leases,
       runAttachTemplate:
         runAttachTemplate === undefined
@@ -2267,6 +2643,14 @@ export class DurablePrpControlPlane {
     this.#store.save();
   }
 
+  unclaimedBootstrapCheckpoint() {
+    if (!isUnclaimedBootstrapState(this.#store.state, this.#identity)) return null;
+    return inspectUnclaimedBootstrapCheckpoint(
+      captureCheckpoint(this.#store.state, this.#expectedRunnerVersion, this.#expectedRunnerDigest).records,
+      this.#identity,
+    );
+  }
+
   issueBootstrapTicket(ttlMs = 5_000): string {
     this.#store.assertWritable();
     if (this.#store.state.warmTransition) {
@@ -2293,8 +2677,26 @@ export class DurablePrpControlPlane {
       usedAt: null,
     };
     this.#store.state.freshBootstraps += 1;
+    if (this.#store.state.bootstrapHistory) this.#store.state.bootstrapHistory.credentialsIssued += 1;
     this.#store.save();
     return ticket;
+  }
+
+  /** Import exact durable handoff evidence for a caller-verified surviving participant; issues no credential. */
+  prepareWarmTransitionAdoption(input: { transitionId: string; runnerState: Record<string, unknown> }): void {
+    this.#store.assertWritable();
+    const pending = input.runnerState.warmTransition;
+    const proof = warmTransitionRecoveryProof({ controlPlaneState: this.#store.state, runnerState: input.runnerState,
+      expectedNewIdentity: (isRecord(pending) && isRecord(pending.receipt) ? pending.receipt.newIdentity : null) as DurableRecoveryIdentity,
+      expectedRunnerVersion: this.#expectedRunnerVersion, expectedRunnerDigest: this.#expectedRunnerDigest });
+    if (!proof || proof.transition.receipt.transitionId !== input.transitionId || !this.#store.state.stagedRunAttachment) {
+      throw new Error("Warm transition adoption snapshot proof is not authorized.");
+    }
+    if (this.#store.state.warmTransition && canonicalJson(this.#store.state.warmTransition) === canonicalJson(proof.transition)) return;
+    const candidate = structuredClone(this.#store.state);
+    candidate.schema = stagedCoreStateSchema;
+    candidate.warmTransition = structuredClone(proof.transition);
+    this.#store.commit(candidate);
   }
 
   /** Caller-owned recovery admission is required; a receipt is not a credential. */
@@ -2335,7 +2737,7 @@ export class DurablePrpControlPlane {
       original.expiresAtUnixMs,
     );
     const candidate = structuredClone(this.#store.state);
-    candidate.schema = transitionCoreStateSchema;
+    candidate.schema = candidate.stagedRunAttachment ? stagedCoreStateSchema : transitionCoreStateSchema;
     candidate.warmTransition = structuredClone(transition);
     candidate.tickets[material.credentialId] = {
       recordId: `bootstrap_ticket_${randomUUID()}`,
@@ -2350,8 +2752,42 @@ export class DurablePrpControlPlane {
       warmTransitionId: transition.receipt.transitionId,
     };
     candidate.freshBootstraps += 1;
+    if (candidate.bootstrapHistory) {
+      candidate.bootstrapHistory.credentialsIssued += 1;
+      candidate.bootstrapHistory.adopted = true;
+    }
     this.#store.commit(candidate);
     return ticket;
+  }
+
+  /** Caller confirms its existing session-checkpoint transaction committed. No journal write. */
+  markStagedTargetCheckpointPublished(identity: DurableRecoveryIdentity): boolean {
+    if (!stagedTargetActivated(this.#store.state) || canonicalJson(identity) !== canonicalJson(this.#store.state.identity)) return false;
+    this.#stagedTargetCheckpointPublished = canonicalJson(identity);
+    return true;
+  }
+
+  /** Durable intent precedes source restoration; it is never a dispatched command. */
+  stageRunAttachment(targetIdentity: DurableRecoveryIdentity, runAttachTemplate: Record<string, unknown>): void {
+    this.#store.assertWritable();
+    const existing = this.#store.state.stagedRunAttachment;
+    if (existing && !(stagedTargetActivated(this.#store.state)
+      && this.#stagedTargetCheckpointPublished === canonicalJson(this.#store.state.identity)
+      && targetIdentity.runId !== existing.targetIdentity.runId)) {
+      if (!validStagedRunAttachment(this.#store.state)
+        || canonicalJson(existing.targetIdentity) !== canonicalJson(targetIdentity)
+        || canonicalJson(stagedAttachmentTemplate(this.#store.state)) !== canonicalJson(runAttachTemplate)) {
+        throw new Error("Staged run attachment conflicts with its durable intent.");
+      }
+      return;
+    }
+    const candidate = structuredClone(this.#store.state);
+    candidate.schema = stagedCoreStateSchema;
+    candidate.stagedRunAttachment = { sourceIdentity: structuredClone(candidate.identity),
+      targetIdentity: structuredClone(targetIdentity), runAttachTemplate: structuredClone(runAttachTemplate),
+      templateDigest: `sha256:${canonicalDigest(runAttachTemplate)}`, commandId: null };
+    if (!validStagedRunAttachment(candidate)) throw new Error("Staged run attachment binding is invalid.");
+    this.#store.commit(candidate);
   }
 
   queueCommand(
@@ -2361,6 +2797,32 @@ export class DurablePrpControlPlane {
     deliverImmediately = false,
   ): DurableRecoveryCoreCommand {
     this.#store.assertWritable();
+    const authorityRunId = this.#authorityRunId();
+    const retainedSource = this.#semanticInputSourceRunId ?? this.#identity.runId;
+    const prior = commandId ? this.#getCommand(commandId) : undefined;
+    if (authorityRunId !== undefined && retainedSource !== authorityRunId
+      && !isRunnerRecoveryMaintenanceCommand(type)
+      && !(type === "run.attach" && isRecord(payload.paperclipNextAuthority)
+        && isRecord(payload.paperclipNextAuthority.identity)
+        && payload.paperclipNextAuthority.identity.runId === authorityRunId)
+      && !(prior && prior.status !== "pending" && prior.type === type && canonicalJson(prior.payload) === canonicalJson(payload))) {
+      throw new Error("native_runner_source_attachment_pending");
+    }
+    const staged = this.#store.state.stagedRunAttachment;
+    const retireStaged = stagedTargetActivated(this.#store.state) && (type === "turn.start"
+      || (this.#stagedTargetCheckpointPublished === canonicalJson(this.#store.state.identity)
+        && !["runner.drain", "session.snapshot", "turn.stop", "runner.suspend", "session.close"].includes(type)));
+    if (staged && !retireStaged) {
+      if (type === "run.attach") {
+        const { paperclipNextAuthority, ...template } = payload;
+        if (!isRecord(paperclipNextAuthority)
+          || canonicalJson(paperclipNextAuthority.identity) !== canonicalJson(staged.targetIdentity)
+          || `sha256:${canonicalDigest(template)}` !== staged.templateDigest
+          || (staged.commandId !== null && staged.commandId !== commandId)) throw new Error("Staged run attachment command conflicts.");
+      } else if (!stagedTargetActivated(this.#store.state) && !["runner.drain", "session.open", "session.snapshot", "turn.stop", "runner.suspend", "session.close", "semantic_tool.result"].includes(type)) {
+        throw new Error("Staged run attachment permits recovery maintenance only.");
+      }
+    }
     const transition = this.#store.state.warmTransition;
     if (transition && transition.phase !== "activated") {
       if (
@@ -2435,6 +2897,16 @@ export class DurablePrpControlPlane {
     if (Buffer.byteLength(JSON.stringify(command)) > maxCommandBytes)
       throw new CommandJournalLimitError("command_payload_too_large");
     this.#store.state.commands.push(command);
+    if (staged && !retireStaged && type === "run.attach") {
+      const { runAttachTemplate: _template, ...descriptor } = staged;
+      this.#store.state.stagedRunAttachment = { ...descriptor, commandId: command.commandId };
+    } else if (retireStaged) {
+      // Native runtime persists the recovered session before its first turn.
+      // Read/goal controls during opening must not retire startup evidence.
+      delete this.#store.state.stagedRunAttachment;
+      this.#store.state.schema = coreStateSchema;
+      this.#stagedTargetCheckpointPublished = null;
+    }
     this.#store.save();
     void this.flushCheckpoint().catch(() => undefined);
     if (deliverImmediately) {
@@ -2516,11 +2988,40 @@ export class DurablePrpControlPlane {
   attachWireConnection(wire: PrpWireConnection): PrpWireAttachment {
     let connection!: AuthorityConnection;
     let processing = Promise.resolve();
+    // Frames received before the secure channel existed (or behind such a
+    // frame) are decrypted in order by the serialized chain. Once none are
+    // pending, frames are decrypted on arrival so that lease renewal can be
+    // answered without waiting for an earlier event's business commit.
+    let undecryptedFrames = 0;
     connection = new AuthorityConnection({
       wire,
       onJson: (value) => {
+        let frame: SerializedFrame;
+        if (connection.secureChannel !== null && undecryptedFrames === 0) {
+          const decrypted = this.#decryptOnArrival(connection, value);
+          if (decrypted === null) return;
+          if (decrypted.kind === "lease_renew" || decrypted.kind === "pong") {
+            // Lease renewal is liveness, not a state-changing frame. It must
+            // never queue behind a slow event commit (a long silent tool call
+            // otherwise lets the runner's lease lapse). It still commits the
+            // renewed expiry durably before its reply, and its admission is
+            // checked against persisted authority exactly as before.
+            try {
+              this.#handleDecrypted(connection, decrypted);
+            } catch {
+              connection.close();
+            }
+            return;
+          }
+          frame = { decrypted };
+        } else {
+          undecryptedFrames += 1;
+          frame = { raw: value };
+        }
         processing = processing
-          .then(() => this.#handleJson(connection, value))
+          .then(() => "raw" in frame
+            ? this.#handleJson(connection, frame.raw).finally(() => { undecryptedFrames -= 1; })
+            : this.#handleDecryptedFrame(connection, frame.decrypted))
           .catch(() => connection.close());
         const tail = processing;
         this.#connectionProcessing.set(connection, tail);
@@ -2531,12 +3032,16 @@ export class DurablePrpControlPlane {
         void tail.then(release, release);
       },
       onClose: () => {
+        this.#recordLeaseFailureIfLapsed(connection);
         this.#connections.delete(connection);
         if (connection.secureChannel !== null && this.activeRunnerConnectionCount() === 0)
           this.#runnerDisconnectedAt ??= Date.now();
       },
     });
     this.#connections.add(connection);
+    // A wire can synchronously deliver buffered data or close on subscription.
+    // Both callbacks must see the registered connection and its exact identity.
+    connection.start();
     return {
       isAuthenticated: () => connection.secureChannel !== null,
     };
@@ -2559,6 +3064,43 @@ export class DurablePrpControlPlane {
       connection.close();
       return;
     }
+    await this.#handleDecryptedFrame(connection, envelope);
+  }
+
+  /** Decrypt one secure frame in arrival order; null when it closed the connection. */
+  #decryptOnArrival(
+    connection: AuthorityConnection,
+    wire: unknown,
+  ): Record<string, unknown> | null {
+    try {
+      this.#store.assertWritable();
+      return decryptSecureJson(connection.secureChannel!, wire);
+    } catch {
+      try {
+        this.#store.state.malformedFrames += 1;
+        this.#store.save();
+      } finally {
+        connection.close();
+      }
+      return null;
+    }
+  }
+
+  /** Handle one decrypted renewal or pong immediately, outside the frame chain. */
+  #handleDecrypted(
+    connection: AuthorityConnection,
+    envelope: Record<string, unknown>,
+  ): void {
+    this.#store.assertWritable();
+    if (!this.#admitEnvelopeVersion(connection, envelope)) return;
+    if (!this.#admitAuthenticatedFrame(connection)) return;
+    if (envelope.kind === "lease_renew") this.#renewLease(connection, envelope);
+  }
+
+  #admitEnvelopeVersion(
+    connection: AuthorityConnection,
+    envelope: Record<string, unknown>,
+  ): boolean {
     const envelopeVersion = envelope.version;
     const expectedVersion =
       connection.lease?.protocolVersion ??
@@ -2573,8 +3115,64 @@ export class DurablePrpControlPlane {
         : envelopeVersion !== expectedVersion)
     ) {
       connection.close();
-      return;
+      return false;
     }
+    return true;
+  }
+
+  /**
+   * Admit every post-handshake frame against persisted authority before
+   * dispatch, including lease_renew. Renewal cannot revive a revoked or
+   * expired credential or bypass changes to its persisted binding. An expired
+   * lease is recorded so the owner can report why the runner left.
+   */
+  #admitAuthenticatedFrame(connection: AuthorityConnection): boolean {
+    if (
+      connection.secureChannel === null ||
+      connection.lease === null ||
+      canonicalJson(this.#store.state.leases[connection.lease.credentialId]) !==
+        canonicalJson(connection.lease) ||
+      connection.lease.revokedAt !== null ||
+      connection.lease.expiresAtUnixMs <= Date.now()
+    ) {
+      this.#recordLeaseFailureIfLapsed(connection);
+      connection.close();
+      return false;
+    }
+    return true;
+  }
+
+  #recordLeaseFailureIfLapsed(connection: AuthorityConnection): void {
+    const lease = connection.lease;
+    if (lease === null || connection.secureChannel === null) return;
+    const now = Date.now();
+    // Only expiry is reported. A revoked credential is the expected outcome of
+    // a warm handoff to a replacement runner, not a lost lease.
+    if (lease.expiresAtUnixMs > now) return;
+    this.#connectionLeaseFailure = {
+      code: "connection_lease_expired",
+      leaseId: lease.leaseId,
+      expiresAtUnixMs: lease.expiresAtUnixMs,
+      observedAtUnixMs: now,
+    };
+  }
+
+  /**
+   * Why the most recent authenticated runner connection lost its authority,
+   * or null while the current connection's lease is valid. A runner whose
+   * lease lapses exits without another authenticated frame, so the socket
+   * close alone would otherwise look like an ordinary transport loss.
+   */
+  get connectionLeaseFailure(): DurablePrpConnectionLeaseFailure | null {
+    return this.#connectionLeaseFailure === null ? null : { ...this.#connectionLeaseFailure };
+  }
+
+  async #handleDecryptedFrame(
+    connection: AuthorityConnection,
+    envelope: Record<string, unknown>,
+  ): Promise<void> {
+    this.#store.assertWritable();
+    if (!this.#admitEnvelopeVersion(connection, envelope)) return;
     const kind = envelope.kind;
     if (connection.secureChannel === null && kind === "auth_hello") {
       this.#authHello(connection, envelope);
@@ -2584,20 +3182,9 @@ export class DurablePrpControlPlane {
       await this.#authResponse(connection, envelope);
       return;
     }
-    // Admit every post-handshake frame against persisted authority before
-    // dispatch, including lease_renew. Renewal cannot revive a revoked or
-    // expired credential or bypass changes to its persisted binding.
-    if (
-      connection.secureChannel === null ||
-      connection.lease === null ||
-      canonicalJson(this.#store.state.leases[connection.lease.credentialId]) !==
-        canonicalJson(connection.lease) ||
-      connection.lease.revokedAt !== null ||
-      connection.lease.expiresAtUnixMs <= Date.now()
-    ) {
-      connection.close();
-      return;
-    }
+    if (!this.#admitAuthenticatedFrame(connection)) return;
+    // After admission the lease is non-null; keep the narrowed reference.
+    if (connection.lease === null) return;
     if (kind === "lease_renew") {
       this.#renewLease(connection, envelope);
       return;
@@ -2648,7 +3235,7 @@ export class DurablePrpControlPlane {
       }
       if (transition) {
         const candidate = structuredClone(this.#store.state);
-        candidate.schema = coreStateSchema;
+        candidate.schema = candidate.stagedRunAttachment ? stagedCoreStateSchema : coreStateSchema;
         candidate.leases[transition.credentialId]!.identity = structuredClone(
           receipt.newIdentity,
         );
@@ -2709,15 +3296,21 @@ export class DurablePrpControlPlane {
     // Repeating a request after a lost reply replays the persisted expiry.
     // It never extends a credential twice for the same observed generation.
     if (expectedExpiry === lease.expiresAtUnixMs) {
-      const candidate = structuredClone(this.#store.state);
-      const renewed = candidate.leases[lease.credentialId]!;
-      renewed.expiresAtUnixMs = Math.max(
+      const expiresAtUnixMs = Math.max(
         lease.expiresAtUnixMs,
         Date.now() + this.#connectionLeaseTtlMs,
       );
-      renewed.expiresAt = new Date(renewed.expiresAtUnixMs).toISOString();
-      candidate.lastLeaseExpiresAt = renewed.expiresAt;
-      this.#store.commit(candidate);
+      const renewed = {
+        ...structuredClone(lease),
+        expiresAtUnixMs,
+        expiresAt: new Date(expiresAtUnixMs).toISOString(),
+      };
+      // Renewal runs outside the frame chain, so an event's staged write can
+      // be in flight. save() absorbs that admitted event into this write; an
+      // explicit commit() would invalidate it and close a healthy connection.
+      this.#store.state.leases[lease.credentialId] = renewed;
+      this.#store.state.lastLeaseExpiresAt = renewed.expiresAt;
+      this.#store.save();
       connection.lease = this.#store.state.leases[lease.credentialId]!;
     }
     this.#sendJson(connection,
@@ -3176,8 +3769,11 @@ export class DurablePrpControlPlane {
       }
       if (transition.phase === "prepared") {
         const candidate = initialCoreState(transition.receipt.newIdentity);
+        candidate.bootstrapHistory = this.#store.state.bootstrapHistory
+          ? { ...structuredClone(this.#store.state.bootstrapHistory), adopted: true } : undefined;
+        candidate.stagedRunAttachment = structuredClone(this.#store.state.stagedRunAttachment);
         candidate.preparedLaunchConfigurations = structuredClone(this.#store.state.preparedLaunchConfigurations);
-        candidate.schema = transitionCoreStateSchema;
+        candidate.schema = candidate.stagedRunAttachment ? stagedCoreStateSchema : transitionCoreStateSchema;
         candidate.warmTransition = {
           ...structuredClone(transition),
           phase: "activated",
@@ -3240,6 +3836,8 @@ export class DurablePrpControlPlane {
     }
 
     this.#store.state.connectionCount += 1;
+    try { this.#onAuthenticatedConnection?.(); } catch { /* Diagnostics never change admission. */ }
+    this.#connectionLeaseFailure = null;
     this.#store.state.lastLeaseId = lease.leaseId;
     this.#store.state.lastLeaseExpiresAt = lease.expiresAt;
 
@@ -3253,7 +3851,12 @@ export class DurablePrpControlPlane {
       this.#store.state.commandDeliveryCounts[command.commandId] =
         (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
     }
-    this.#store.save();
+    try {
+      this.#store.save();
+    } catch (error) {
+      this.#failEventCommit(connection, `journal_write_failed:${safeErrorCauseCode(error)}`);
+      return;
+    }
     this.#sendJson(connection, {
       protocol,
       version: lease.protocolVersion,
@@ -3449,7 +4052,8 @@ export class DurablePrpControlPlane {
       this.#store.state.duplicateCommandResults += 1;
       this.#store.save();
       this.#ackTerminalCommandResult(connection, command);
-      if (!this.#isTerminalLifecycleCommand(command)) {
+      this.#releaseServingLifecycle(connection, command);
+      if (!this.#isTerminalLifecycleCommand(command) || connection.terminalLifecycleCommandId === null) {
         this.#sendNextCommand(connection);
       }
       return;
@@ -3478,7 +4082,7 @@ export class DurablePrpControlPlane {
       )!;
       completed.status = "completed";
       completed.result = structuredClone(result);
-      candidate.schema = transitionCoreStateSchema;
+      candidate.schema = candidate.stagedRunAttachment ? stagedCoreStateSchema : transitionCoreStateSchema;
       candidate.warmTransition = {
         receipt,
         phase: "prepared",
@@ -3490,12 +4094,37 @@ export class DurablePrpControlPlane {
       this.#ackWarmTransition(connection, receipt);
       return;
     }
+    const turnStart = command.type === "turn.start";
+    if (turnStart) crashPoint("runner.turn_start.after_runner_accept_before_controller_checkpoint");
     command.status = status;
     command.result = structuredClone(result);
     this.#store.save();
+    if (turnStart) crashPoint("runner.turn_start.after_controller_journal_before_db_checkpoint");
     this.#ackTerminalCommandResult(connection, command);
-    if (!this.#isTerminalLifecycleCommand(command)) {
+    this.#releaseServingLifecycle(connection, command);
+    if (!this.#isTerminalLifecycleCommand(command) || connection.terminalLifecycleCommandId === null) {
       this.#sendNextCommand(connection);
+    }
+  }
+
+  /**
+   * A rejected runner.suspend changes no provider state, and the runner keeps
+   * serving this connection. Lift the terminal-lifecycle fence it installed
+   * so the controller's next command (a fresh suspend) can be delivered.
+   * Completed suspensions and every shutdown keep the fence. So does an
+   * indeterminate suspension: the Runner treats it as terminal and exits.
+   */
+  #releaseServingLifecycle(
+    connection: AuthorityConnection,
+    command: DurableRecoveryCoreCommand,
+  ): void {
+    if (
+      command.type === "runner.suspend" &&
+      (command.status === "failed" || command.status === "rejected") &&
+      !isIndeterminateCommandResult(command) &&
+      connection.terminalLifecycleCommandId === command.commandId
+    ) {
+      connection.terminalLifecycleCommandId = null;
     }
   }
 
@@ -3541,10 +4170,35 @@ export class DurablePrpControlPlane {
           commandId: command.commandId,
           commandType: command.type,
           controllerSeq: command.controllerSeq,
-          status: command.status,
+          // A Runner journals a command it may have started before dying as
+          // `indeterminate` and sends it as `failed`. Runners compare this
+          // acknowledgement with their journal, so name that journal status;
+          // current Runners accept either spelling.
+          status: isIndeterminateCommandResult(command) ? "indeterminate" : command.status,
         },
       ),
     );
+  }
+
+  #eventCommitFailed(connection: AuthorityConnection, cause: string, sourceSeq?: number, now = Date.now()): void {
+    const acked = this.#store.state.ackedSourceSeq;
+    const runId = this.#identity.runId;
+    const stall = this.#eventDeliveryStall;
+    if (stall === null || stall.ackedSourceSeq !== acked || stall.runId !== runId) {
+      this.#eventDeliveryStall = { runId, ackedSourceSeq: acked, since: now, failures: 1 };
+    } else {
+      stall.failures += 1;
+      if (stall.failures >= EVENT_DELIVERY_STALL_FAILURES && now - stall.since >= EVENT_DELIVERY_STALL_MS) {
+        this.#failEventCommit(connection, cause, sourceSeq);
+        return;
+      }
+    }
+    connection.close();
+  }
+
+  #failEventCommit(connection: AuthorityConnection, cause: string, sourceSeq?: number): void {
+    this.#failProtocolIntegrity(connection, new NativeSessionProtocolIntegrityError("runner_event_commit_stalled",
+      `${cause} at source seq ${sourceSeq ?? this.#store.state.ackedSourceSeq + 1}`));
   }
 
   #failProtocolIntegrity(
@@ -3587,7 +4241,7 @@ export class DurablePrpControlPlane {
     }
     const validated = validatePrpEvent(envelope.payload);
     if (!validated.ok) {
-      connection.close();
+      this.#eventCommitFailed(connection, `event_schema_invalid:${eventSchemaIssuePaths(validated.issues)}`);
       return;
     }
     const event = validated.event;
@@ -3617,7 +4271,7 @@ export class DurablePrpControlPlane {
       eventType === "semantic_tool.input" || eventType === "mcp_app.tool_input";
     if (
       isSemanticInput &&
-      (this.#onSemanticToolInput === undefined ||
+      ((this.#onSemanticToolInput === undefined && !this.#retainsSourceInputs()) ||
         semantic?.phase !== "input" ||
         typeof semantic.callId !== "string" ||
         typeof semantic.operationId !== "string" ||
@@ -3641,7 +4295,7 @@ export class DurablePrpControlPlane {
         ? sourceSeq !== this.#store.state.ackedSourceSeq + 1
         : sourceSeq !== existing.sourceSeq
     ) {
-      connection.close();
+      this.#eventCommitFailed(connection, "event_sequence_mismatch", sourceSeq);
       return;
     }
     if (
@@ -3700,7 +4354,7 @@ export class DurablePrpControlPlane {
       if (error instanceof NativeSessionProtocolIntegrityError) {
         this.#failProtocolIntegrity(connection, error);
       } else {
-        connection.close();
+        this.#eventCommitFailed(connection, safeErrorCauseCode(error), sourceSeq);
       }
       return;
     }
@@ -3747,17 +4401,32 @@ export class DurablePrpControlPlane {
       // turn before readers react or a replacement owner adopts their cursor.
       const candidate = buildCandidate(this.#store.state);
       if (candidate === null) {
-        connection.close();
+        this.#eventCommitFailed(connection, "journal_sequence_not_contiguous", sourceSeq);
         return;
       }
-      this.#store.commit(candidate, !isStreamingEvent(event));
-    } else if (!await this.#store.commitEvent(buildCandidate, isCurrentOwner, !isStreamingEvent(event))) {
-      if (isCurrentOwner()) connection.close();
-      return;
+      try {
+        this.#store.commit(candidate, !isStreamingEvent(event));
+      } catch (error) {
+        this.#failEventCommit(connection, `journal_write_failed:${safeErrorCauseCode(error)}`, sourceSeq);
+        return;
+      }
+    } else {
+      let committed: boolean;
+      try {
+        committed = await this.#store.commitEvent(buildCandidate, isCurrentOwner, !isStreamingEvent(event));
+      } catch (error) {
+        if (isCurrentOwner()) this.#failEventCommit(connection, `journal_write_failed:${safeErrorCauseCode(error)}`, sourceSeq);
+        else connection.close();
+        return;
+      }
+      if (!committed) {
+        if (isCurrentOwner()) this.#eventCommitFailed(connection, "journal_commit_refused", sourceSeq);
+        return;
+      }
     }
     if (!isCurrentOwner()) return;
 
-    const liveCall = isSemanticInput && this.#onSemanticToolInput && semantic !== undefined
+    const liveCall = !this.#retainsSourceInputs() && isSemanticInput && this.#onSemanticToolInput && semantic !== undefined
       && typeof semantic.callId === "string" && typeof semantic.operationId === "string"
       ? { callId: semantic.callId, operationId: semantic.operationId, input: semantic.input,
           sourceEventId, sourceEventType: eventType,
@@ -3770,12 +4439,22 @@ export class DurablePrpControlPlane {
       && !this.#getCommand(liveCommandId) && !this.#pendingSemanticCalls.has(liveCommandId);
     // Reserve the original callback before exposing its checkpoint wait to
     // recovery. A missing saved outcome must never suppress first dispatch.
-    if (ownsLiveDispatch) this.#pendingSemanticCalls.add(liveCommandId!);
+    if (ownsLiveDispatch) {
+      this.#pendingSemanticCalls.add(liveCommandId!);
+      this.#liveDispatchedSemanticCalls.add(liveCommandId!);
+    }
     let dispatched = false;
     try {
-      await this.flushCheckpoint();
+      try {
+        await this.flushCheckpoint();
+      } catch (error) {
+        if (this.#eventOwner === connection && this.#identity === identity) {
+          this.#eventCommitFailed(connection, `checkpoint_flush_failed:${safeErrorCauseCode(error)}`, sourceSeq);
+        }
+        return;
+      }
       if (this.#eventOwner !== connection || this.#identity !== identity) return;
-      if (ownsLiveDispatch && liveCall && liveCommandId && this.#onSemanticToolInput && !this.#getCommand(liveCommandId)) {
+      if (!this.#retainsSourceInputs() && ownsLiveDispatch && liveCall && liveCommandId && this.#onSemanticToolInput && !this.#getCommand(liveCommandId)) {
         const call = liveCall;
         const commandId = liveCommandId;
         const recordFailure = (stage: "persist_result" | "dispatch", error: unknown) => {
@@ -3803,6 +4482,8 @@ export class DurablePrpControlPlane {
               commandId,
               true,
             );
+            // Its journaled result settles it; recovery never asks again.
+            this.#liveDispatchedSemanticCalls.delete(commandId);
           } catch (error) {
             // A result that cannot fit the bounded durable journal cannot be
             // acknowledged as a usable tool response. Force a reconnect so
@@ -3810,6 +4491,7 @@ export class DurablePrpControlPlane {
             recordFailure("persist_result", error);
           }
         };
+        crashPoint("runner.semantic_tool.after_input_before_dispatch");
         const outcome = this.#onSemanticToolInput(call);
         dispatched = true;
         void outcome
@@ -3885,6 +4567,7 @@ const runnerExplicitProviderEnvironmentKeys = [
   "CODEX_API_KEY",
   "PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET",
   "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET",
+  "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET",
   "XAI_API_KEY",
   "AWS_REGION",
   "AWS_DEFAULT_REGION",
@@ -3897,6 +4580,12 @@ const runnerExplicitProviderEnvironmentKeys = [
   "PAPERCLIP_OPENCODE_PERMISSION_MODE",
   "PAPERCLIP_OPENCODE_RUNTIME_DIR",
   "PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS",
+  "PAPERCLIP_CURSOR_CLOUD_CONFIG_PATH",
+  "PAPERCLIP_CURSOR_CLOUD_ARTIFACT_ROOT",
+  "PAPERCLIP_CURSOR_CLOUD_RELAY_SOCKET_PATH",
+  "PAPERCLIP_CURSOR_CLOUD_RELAY_TOKEN",
+  "PAPERCLIP_CURSOR_CLOUD_RELAY_URL",
+  "PAPERCLIP_CURSOR_CLOUD_RELAY_EXPIRES_AT",
   "PAPERCLIP_RUNNER_INSTANCE_ID",
   "PAPERCLIP_RUN_ID",
   "PAPERCLIP_NORMALIZED_SESSION_ID",
@@ -3908,6 +4597,7 @@ const runnerExplicitProviderEnvironmentKeys = [
   "PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH",
   "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
   "PAPERCLIP_RUNNER_HOME_MODE",
+  "PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME",
   "ACPX_CLAUDE_INCLUDE_USER_SETTINGS",
   "CLAUDE_CONFIG_DIR",
   "XDG_CONFIG_HOME",
@@ -3986,11 +4676,15 @@ export function spawnRunner(options: {
   runnerVersion: string;
   runnerDigest: string;
   acpxLaunchProfile?: {
+    candidateAdmission?: import("../drivers/acpx/candidate-admission.js").AcpxCandidateStartupAdmission;
     authorityDigest: string;
     command: string;
     commandSha256: string;
     sidecarScript: string;
     sidecarScriptSha256: string;
+  };
+  cursorCloudLaunchProfile?: {
+    command: string; commandSha256: string; proxyScript: string; proxyScriptSha256: string;
   };
   opencodeLaunchProfile?: {
     command: string;
@@ -4004,6 +4698,23 @@ export function spawnRunner(options: {
   processLauncher?: (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle;
   diagnosticsDirectory?: string;
 }): RunnerProcessHandle {
+  for (const value of [options.maxRuntimeMs, options.maxLifetimeMs]) {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw new Error("runner_process_lifetime_invalid");
+  }
+  const launchedAt = Date.now();
+  const candidateExpiresAt = options.acpxLaunchProfile?.candidateAdmission?.expiresAt;
+  const lifetimeDeadlines = [
+    ...(options.maxLifetimeMs && options.maxLifetimeMs > 0 ? [launchedAt + options.maxLifetimeMs] : []),
+    ...(candidateExpiresAt === undefined ? [] : [candidateExpiresAt]),
+  ];
+  const lifetimeDeadline = lifetimeDeadlines.length ? Math.min(...lifetimeDeadlines) : undefined;
+  if (lifetimeDeadline !== undefined && lifetimeDeadline <= launchedAt) throw new Error("runner_process_lifetime_expired");
+  const runtimeBounds = [
+    ...(options.maxRuntimeMs && options.maxRuntimeMs > 0 ? [options.maxRuntimeMs] : []),
+    ...(lifetimeDeadline === undefined ? [] : [lifetimeDeadline - launchedAt]),
+  ];
+  const maxRuntimeMs = runtimeBounds.length ? Math.min(...runtimeBounds)
+    : options.maxRuntimeMs ?? (options.maxLifetimeMs === undefined ? undefined : 0);
   const connection =
     options.connection ??
     (options.connectUrl
@@ -4061,8 +4772,15 @@ export function spawnRunner(options: {
           options.acpxLaunchProfile.sidecarScript,
           "--acpx-sidecar-script-sha256",
           options.acpxLaunchProfile.sidecarScriptSha256,
+          ...(options.acpxLaunchProfile.candidateAdmission ? ["--acpx-candidate-admission-json", JSON.stringify(options.acpxLaunchProfile.candidateAdmission)] : []),
         ]
       : []),
+    ...(options.cursorCloudLaunchProfile ? [
+      "--cursor-cloud-proxy-command", options.cursorCloudLaunchProfile.command,
+      "--cursor-cloud-proxy-command-sha256", options.cursorCloudLaunchProfile.commandSha256,
+      "--cursor-cloud-proxy-script", options.cursorCloudLaunchProfile.proxyScript,
+      "--cursor-cloud-proxy-script-sha256", options.cursorCloudLaunchProfile.proxyScriptSha256,
+    ] : []),
     ...(options.opencodeLaunchProfile
       ? [
           "--opencode-proxy-command",
@@ -4090,11 +4808,9 @@ export function spawnRunner(options: {
     "--reconnect-delay-ms",
     "250",
   ];
-  if (options.maxLifetimeMs !== undefined) {
-    args.push("--max-lifetime-ms", String(options.maxLifetimeMs));
-  } else if (options.maxRuntimeMs !== undefined) {
-    args.push("--max-runtime-ms", String(options.maxRuntimeMs));
-  }
+  // The daemon enforces its total process deadline through max-runtime-ms.
+  // Keep the same bounded value in structured launches for external owners.
+  if (maxRuntimeMs !== undefined) args.push("--max-runtime-ms", String(maxRuntimeMs));
   if (options.reconnectGraceMs !== undefined) {
     args.push("--reconnect-grace-ms", String(options.reconnectGraceMs));
   }
@@ -4121,7 +4837,9 @@ export function spawnRunner(options: {
       if (handle.isExitConfirmed?.() === false) {
         throw new Error("runner_process_termination_unconfirmed");
       }
-      return spawnRunner({ ...options, ticket });
+      if (lifetimeDeadline !== undefined && lifetimeDeadline <= Date.now()) throw new Error("runner_process_lifetime_expired");
+      return spawnRunner({ ...options, ticket,
+        ...(lifetimeDeadline === undefined ? {} : { maxLifetimeMs: lifetimeDeadline - Date.now() }) });
     },
   });
   if (options.processLauncher !== undefined) {
@@ -4131,9 +4849,9 @@ export function spawnRunner(options: {
           identity: options.identity, ticket: options.ticket, connection, stateDirectory: options.stateDirectory,
           runnerVersion: options.runnerVersion, runnerDigest: options.runnerDigest,
           maxOutboxBytes: options.maxOutboxBytes, p0ReserveBytes: options.p0ReserveBytes,
-          maxRuntimeMs: options.maxRuntimeMs, maxLifetimeMs: options.maxLifetimeMs,
+          maxRuntimeMs, maxLifetimeMs: lifetimeDeadline === undefined ? options.maxLifetimeMs : maxRuntimeMs,
           reconnectGraceMs: options.reconnectGraceMs, lifecyclePolicy: options.lifecyclePolicy,
-          acpxLaunchProfile: options.acpxLaunchProfile, opencodeLaunchProfile: options.opencodeLaunchProfile,
+          acpxLaunchProfile: options.acpxLaunchProfile, opencodeLaunchProfile: options.opencodeLaunchProfile, cursorCloudLaunchProfile: options.cursorCloudLaunchProfile,
           diagnosticsDirectory: options.diagnosticsDirectory,
         },
       }),

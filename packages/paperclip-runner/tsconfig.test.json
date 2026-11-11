@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "noEmit": true,
+    "rootDir": ".."
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": [
+    "src/browser/**",
+    "src/devtools/**",
+    "src/issue-thread/**",
+    "src/react/**",
+    "src/scenarios/**",
+    "src/standalone/**"
+  ]
+}

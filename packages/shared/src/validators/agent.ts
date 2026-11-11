@@ -11,6 +11,7 @@ import { envConfigSchema } from "./secret.js";
 import { trustAuthorizationPolicySchema, trustPresetSchema } from "./trust-policy.js";
 import { agentDesiredSkillSelectionSchema } from "./adapter-skills.js";
 import { objectWithoutDefaults } from "./partial.js";
+import { agentInteractionPermissionsSchema } from "../agent-interaction-permissions.js";
 
 export const agentPermissionsSchema = z.object({
   // No schema default: the server derives the default (enabled unless the
@@ -19,6 +20,7 @@ export const agentPermissionsSchema = z.object({
   canCreateSkills: z.boolean().optional().default(true),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
+  interactions: agentInteractionPermissionsSchema.optional(),
 }).catchall(z.unknown());
 
 export const agentInstructionsBundleModeSchema = z.enum(["managed", "external"]);
@@ -28,6 +30,7 @@ export const updateAgentInstructionsBundleSchema = z.object({
   rootPath: z.string().trim().min(1).nullable().optional(),
   entryFile: z.string().trim().min(1).optional(),
   clearLegacyPromptTemplate: z.boolean().optional().default(false),
+  requireExistingEntry: z.boolean().optional(),
 });
 
 export type UpdateAgentInstructionsBundle = z.infer<typeof updateAgentInstructionsBundleSchema>;
@@ -174,6 +177,7 @@ export const updateAgentSchema = objectWithoutDefaults(
     permissions: z.never().optional(),
     runtimeSettings: agentRuntimeSettingsPatchSchema.optional(),
     replaceAdapterConfig: z.boolean().optional(),
+    expectedConfigurationRevision: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     status: z.enum(["paused", "idle", "terminated"]).optional(),
     spentMonthlyCents: z.never().optional(),
   });
@@ -318,6 +322,7 @@ export const updateAgentPermissionsSchema = z.object({
   canAssignTasks: z.boolean(),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
+  interactions: z.never({ error: "Use /api/agents/:id/interaction-permissions to change interaction permissions" }).optional(),
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;

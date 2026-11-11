@@ -30,6 +30,7 @@ function createFakeDb(options: {
   settingsRow?: Record<string, unknown> | null;
   selectThrows?: boolean;
   beforeWrite?: (table: unknown) => Promise<void>;
+  beforeRead?: (table: unknown) => Promise<void>;
   unchangedMembership?: boolean;
 } = {}) {
   const settingsRow =
@@ -46,7 +47,7 @@ function createFakeDb(options: {
       : options.settingsRow;
   const insertedTables: unknown[] = [];
   const deletedTables: unknown[] = [];
-  const selectWheres: Array<{ table: unknown; condition: unknown }> = [];
+  const selectWheres: Array<{ table: unknown; condition: unknown; locked?: boolean }> = [];
   function writeChain(table: unknown) {
     let values: unknown;
     const chain: Record<string, unknown> = {};
@@ -63,6 +64,7 @@ function createFakeDb(options: {
     return chain;
   }
   const db = {
+    transaction: async (work: (tx: Db) => Promise<unknown>) => work(db),
     insert: (table: unknown) => {
       insertedTables.push(table);
       return writeChain(table);
@@ -74,22 +76,36 @@ function createFakeDb(options: {
     select: () => {
       return {
         from: (table: unknown) => ({
+          // Pending Muse bindings use a joined read; this fixture has none.
+          innerJoin() { return this; },
           where: (condition: unknown) => {
-            // Role-default grant seeding reads existing grants first; keep that
-            // read working so selectThrows exercises only the degradable reads.
-            if (options.selectThrows && table !== principalPermissionGrants) {
+            // Only settings lookup is degradable. Membership locking and
+            // permission seeding must still work in the fail-closed flag test.
+            if (options.selectThrows && table === instanceSettings) {
               throw new Error("select unavailable");
             }
-            selectWheres.push({ table, condition });
+            const selected: (typeof selectWheres)[number] = { table, condition };
+            selectWheres.push(selected);
             const rows =
               table === instanceSettings && settingsRow
                 ? [settingsRow]
                 : table === companyMemberships
                   ? (options.membershipQueryRows ?? [])
                   : [];
-            return {
-              then: (resolve: (v: unknown) => unknown) => Promise.resolve(rows).then(resolve),
+            let locked = false;
+            const result = {
+              orderBy: () => ({ limit: () => result }),
+              for: () => { locked = true; selected.locked = true; return result; },
+              then: (resolve: (v: unknown) => unknown, reject?: (error: unknown) => unknown) => {
+                // The optional cross-company read can fail independently of
+                // the primary membership transaction, which must succeed.
+                const query = options.selectThrows && table === companyMemberships && !locked
+                  ? Promise.reject(new Error("select unavailable"))
+                  : Promise.resolve(rows);
+                return Promise.resolve().then(() => options.beforeRead?.(table)).then(() => query).then(resolve, reject);
+              },
             };
+            return result;
           },
         }),
       };
@@ -168,6 +184,26 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(actor!.source).toBe("cloud_tenant");
   });
 
+  it("settles its concurrent reads before a failed purge leaves authentication", async () => {
+    let settingsReadStarted = false;
+    let settingsReadSettled = false;
+    const { db } = createFakeDb({
+      beforeWrite: async (table) => {
+        if (table === instanceUserRoles) throw new Error("purge failed");
+      },
+      beforeRead: async (table) => {
+        if (table !== instanceSettings) return;
+        settingsReadStarted = true;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        settingsReadSettled = true;
+      },
+    });
+    await expect(resolveCloudTenantActor(db, fakeReq(VALID_HEADERS))).rejects.toThrow("purge failed");
+    // No started read may still be running once the error surfaces.
+    expect(settingsReadStarted).toBe(true);
+    expect(settingsReadSettled).toBe(true);
+  });
+
   it("purges stale instance_admin rows left by pre-hardening deployments", async () => {
     const { db, deletedTables } = createFakeDb();
     const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
@@ -183,7 +219,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(insertedTables).toContain(companyMemberships);
   });
 
-  it.each(["/api/health", "/api/instance/task-drain"])("counts unfinished authentication on exempt %s requests", async (path) => {
+  it.each(["/api/health", "/api/instance/task-drain", "/api/instance/task-drain/status"])("counts unfinished authentication on exempt %s requests", async (path) => {
     let enterWrite!: () => void, finishWrite!: () => void;
     const entered = new Promise<void>(resolve => { enterWrite = resolve; });
     const pending = new Promise<void>(resolve => { finishWrite = resolve; });
@@ -199,8 +235,9 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
       res.json(await readIdleSleepSafety(emptyDb, () => ({ ...hold, draining: true, activeRuns: 0, pendingWakes: 0 }),
         Date.now, hold.ownerId, async () => "none"));
     });
+    server.post("/api/instance/task-drain/status", (_req, res) => res.sendStatus(204));
     trackIdleRequestHandlers(server);
-    const accepted = request(server).get(path).set(VALID_HEADERS).then(response => response);
+    const accepted = (path.endsWith("/status") ? request(server).post(path) : request(server).get(path)).set(VALID_HEADERS).then(response => response);
     try {
       await entered;
       expect(idleWorkSnapshot().active).toBeGreaterThan(0);
@@ -258,7 +295,8 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(insertedTables.filter(table => table === companyMemberships)).toHaveLength(1);
     expect(deletedTables.filter(table => table === instanceUserRoles)).toHaveLength(20);
     expect(selectWheres.filter(entry => entry.table === instanceSettings)).toHaveLength(20);
-    expect(selectWheres.filter(entry => entry.table === companyMemberships)).toHaveLength(20);
+    expect(selectWheres.filter(entry => entry.table === companyMemberships && !entry.locked)).toHaveLength(20);
+    expect(selectWheres.filter(entry => entry.table === companyMemberships && entry.locked)).toHaveLength(1);
     expect(actors.every(actor => actor?.memberships?.[0]?.membershipRole === "owner")).toBe(true);
   });
 
@@ -461,11 +499,16 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
       const { db, selectWheres } = createFakeDb();
       await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
       const membershipSelects = selectWheres.filter((entry) => entry.table === companyMemberships);
-      expect(membershipSelects).toHaveLength(1);
-      // Rows for other users and rows in any non-active status are excluded
-      // by the query itself: the filter binds exactly this user id and the
-      // "active" status — the same condition the session path applies.
-      expect(membershipSelects[0]!.condition).toEqual(
+      expect(membershipSelects).toHaveLength(2);
+      // One read locks the primary membership before its upsert; the other,
+      // which runs concurrently, loads the user's active memberships for
+      // request authorization. Rows for other users and rows in any
+      // non-active status are excluded by the query itself: the filter binds
+      // exactly this user id and the "active" status — the same condition
+      // the session path applies.
+      const authorizationReads = membershipSelects.filter((entry) => !entry.locked);
+      expect(authorizationReads).toHaveLength(1);
+      expect(authorizationReads[0]!.condition).toEqual(
         and(
           eq(companyMemberships.principalType, "user"),
           eq(companyMemberships.principalId, "user-123"),

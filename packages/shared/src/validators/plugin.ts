@@ -181,6 +181,7 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   requiresAgent: z.boolean().optional(),
   supportsTasks: z.boolean().optional(),
   freshWorkspaceVersion: z.literal(1).optional(),
+  creationOperationVersion: z.literal(1).optional(),
   warmTaskVersion: z.literal(1).optional(),
   driverKey: z.string().min(1).regex(
     /^[a-z0-9][a-z0-9._-]*$/,
@@ -384,20 +385,29 @@ export type PluginManagedSkillDeclarationInput = z.infer<typeof pluginManagedSki
  *
  * @see PLUGIN_SPEC.md §19 — UI Extension Model
  */
+const runtimeActivityIdentifierSchema = z.string().min(1)
+  .refine(value => Array.from(value).length <= 160, "Activity identifiers must contain at most 160 code points")
+  .regex(/^[^\u0000-\u001f\u007f]+$/);
+
 export const pluginUiSlotDeclarationSchema = z.object({
   type: z.enum(PLUGIN_UI_SLOT_TYPES),
   id: z.string().min(1),
   displayName: z.string().min(1),
   exportName: z.string().min(1),
   entityTypes: z.array(z.enum(PLUGIN_UI_SLOT_ENTITY_TYPES)).optional(),
+  agentEnvironmentDriver: z.string().min(1).optional(),
   taskSidePanel: z.object({
     availabilityPath: z.string().regex(/^\/(?:[a-zA-Z0-9_-]+\/)*:entityId(?:\/[a-zA-Z0-9_-]+)*$/),
+    activation: z.object({ namespace: runtimeActivityIdentifierSchema, activityKey: runtimeActivityIdentifierSchema }).strict().optional(),
   }).strict().optional(),
   routePath: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, {
     message: "routePath must be a lowercase single-segment slug (letters, numbers, hyphens)",
   }).optional(),
   order: z.number().int().optional(),
 }).superRefine((value, ctx) => {
+  if (value.agentEnvironmentDriver && (value.type !== "detailTab" || value.entityTypes?.length !== 1 || value.entityTypes[0] !== "agent")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "agentEnvironmentDriver requires an agent-only detailTab", path: ["agentEnvironmentDriver"] });
+  }
   if (value.taskSidePanel && (value.type !== "detailTab" || !value.entityTypes?.includes("agent"))) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "taskSidePanel requires an agent detailTab", path: ["taskSidePanel"] });
   }
@@ -802,6 +812,8 @@ export const pluginManifestV1Schema = z.object({
   agentLifecycle: z.literal(true).optional(),
   workspaceProvider: z.object({
     finalizationVersion: z.literal(1).optional(),
+    supportsMergeAncestry: z.boolean().optional(),
+    recoveryPullRequestVersion: z.literal(1).optional(),
     freshWorkspaceVersion: z.literal(1).optional(),
     modes: z.array(z.enum(["shared_workspace", "isolated_workspace", "operator_branch"])).min(1).max(3),
     strategies: z.array(z.enum(["project_primary", "git_worktree"])).min(1).max(2),

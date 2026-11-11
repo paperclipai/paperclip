@@ -54,7 +54,7 @@ export async function qualifyRunnerEnvironment(input: {
     || typeof probe.details.leaseId !== "string" || !probe.details.leaseId) {
     throw new Error(typeof probe.details?.platformQualificationDiagnostic === "string"
       ? probe.details.platformQualificationDiagnostic
-      : probe.summary || "The environment's platform qualification could not be confirmed. Retry the connection probe or select Legacy runner in Advanced.");
+      : probe.summary || "The environment's platform qualification could not be confirmed. Retry the connection probe.");
   }
   adapters = await input.readAdapters();
   if (!input.isCurrent()) return undefined;

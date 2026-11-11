@@ -1,3 +1,5 @@
+import { isLegacyWorkspaceMigration } from "./legacy-workspace-migration.js";
+import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
@@ -7,7 +9,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { runnerMatrix } from "./catalog.js";
 import { assertInstalledCliSelection, installedCliKeys, probeInstalledCodexStartup, verifyInstalledCli } from "./installed-cli.js";
 import { buildPaperclipServerEnvironment, buildRunnerE2EProcessEnvironment } from "./harness-env.js";
-const cells = runnerMatrix.filter(e => e.profile.id === "runner-acpx-pi");
+const cells = runnerMatrix.filter(e => !isRollingWebDeployment(e) && !isLegacyWorkspaceMigration(e) && e.profile.id === "runner-acpx-pi"
+  // The explicit reliability facade cell is not an installed-CLI Pi qualification case.
+  && e.task.explicitGroup === undefined);
 const roots: string[] = [];
 // pnpm's source test wrapper sets NODE_PATH; the disposable public-install fixture must start closed.
 beforeEach(() => { vi.stubEnv("NODE_PATH", undefined); vi.stubEnv("NODE_OPTIONS", undefined); });
@@ -32,7 +36,7 @@ it("admits all26 current Pi cases through pinned installed public CLI/server wit
 });
 it("admits existing Codex onboarding, useful-file revision and restart journeys without broadening other cells", async () => {
   const { env, server } = await fixture();
-  for (const id of ["first-task.runner-codex.local.task-card-accept", "everyday-workflows.runner-codex.local.build-revise", "agent-chat.runner-codex.local.continuity-restart", "everyday-workflows.runner-codex.daytona.recover-controller"]) {
+  for (const id of ["first-task.runner-codex.local.task-card-accept", "everyday-workflows.runner-codex.local.build-revise", "agent-chat.runner-codex.local.continuity-restart", "everyday-workflows.runner-codex.daytona.recover-controller", "daytona-restart-continuity.runner-codex.daytona.recover-controller"]) {
     const cell = runnerMatrix.find(e => e.id === id)!;
     expect(cell).toBeDefined();
     expect(await verifyInstalledCli(env, [cell])).toMatchObject({ serverRoot: server, defaultRuntimeResolution: true, qualificationOverride: false });
@@ -46,7 +50,7 @@ it("admits existing Codex onboarding, useful-file revision and restart journeys 
 });
 it("admits only the 20 agreed Copilot cells through normal installed resolution with no qualification override", async () => {
   const { env, server } = await fixture();
-  const selected = runnerMatrix.filter(e => e.profile.id === "runner-acpx-copilot");
+  const selected = runnerMatrix.filter(e => !isRollingWebDeployment(e) && !isLegacyWorkspaceMigration(e) && e.profile.id === "runner-acpx-copilot");
   expect(selected).toHaveLength(20);
   expect(selected.filter(e => e.environment.id === "local")).toHaveLength(10);
   expect(selected.filter(e => e.environment.id === "daytona")).toHaveLength(10);
@@ -156,7 +160,7 @@ async function startupFixture(mode: "normal" | "wrong-model" | "ambient-codex" |
       constructor(options){this.options=options;}
       async openSession(){state.calls.push("open");save();
         ${mode === "startup-and-cleanup-failed" ? 'throw new Error("fixture original provider startup failure");' : ''}
-        const model=${JSON.stringify(mode === "wrong-model" ? "wrong-model" : "gpt-5.6-sol")};
+        const model=${JSON.stringify(mode === "wrong-model" ? "wrong-model" : "gpt-6.1-sol")};
         return {ids:()=>({driverSessionId:"PRIVATE-DRIVER-ID",providerSessionId:"PRIVATE-PROVIDER-ID"}),
           events:()=>({async *[Symbol.asyncIterator](){yield {eventType:"session.started",payload:{context:{model,sandbox:{permissionProfile:{id:"paperclip-runner-workspace-read-only"}}}}};}}),
           startTurn(){state.calls.push("FORBIDDEN-TURN");save();throw new Error("No provider turn is permitted");},

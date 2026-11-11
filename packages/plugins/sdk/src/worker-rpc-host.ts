@@ -6,6 +6,13 @@ import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/s
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 import { environmentCreationCleanupErrorData } from "./environment-creation-cleanup.js";
 import { environmentSyncErrorData, withEnvironmentSyncErrorCapture } from "./environment-sync-error.js";
+import { environmentRunnerIngressErrorData } from "./environment-runner-ingress-error.js";
+import { environmentStopErrorData } from "./environment-stop-error.js";
+import { environmentResumeErrorData } from "./environment-resume-error.js";
+import { environmentAcquireErrorData } from "./environment-acquire-error.js";
+import { environmentTaskErrorCodeData, environmentTaskErrorData } from "./environment-task-error.js";
+import { workspaceOperationErrorData } from "./workspace-operation-error.js";
+import { createInvocationTracer } from "./invocation-tracer.js";
 import { createPluginIdleDrain } from "./idle-drain.js";
 /**
  * Worker-side RPC host — runs inside the child process spawned by the host.
@@ -114,6 +121,7 @@ import type {
   PluginEnvironmentDeleteTemplateParams,
   PluginLoginPtyOpenParams,
   PluginLoginPtyInputParams,
+  PluginLoginPtyReadCredentialParams,
   PluginLoginPtyStopParams,
   PluginLoginPtyCloseParams,
   PluginDuplexChannelOpenParams,
@@ -353,6 +361,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   let configCompanyId: string | null = null;
   let databaseNamespace: string | null = null;
   const invocationContextStorage = new AsyncLocalStorage<PluginInvocationContext>();
+  const canRecordSpans = () => Boolean(invocationContextStorage.getStore()?.traceparent)
+    && (manifest?.capabilities.includes("environment.drivers.register") === true
+      || manifest?.capabilities.includes("workspaces.manage") === true);
+  const invocationTracer = createInvocationTracer(
+    canRecordSpans,
+    span => { void callHostRaw("span.record", span).catch(() => undefined); },
+  );
+  const { withSpan } = invocationTracer;
 
   // Plugin handler registrations (populated during setup())
   const eventHandlers: EventRegistration[] = [];
@@ -392,7 +408,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   /**
    * Send a typed JSON-RPC request to the host and await the response.
    */
-  function callHost<M extends WorkerToHostMethodName>(
+  function callHost<M extends WorkerToHostMethodName>(method: M, params: WorkerToHostMethods[M][0], timeoutMs?: number): Promise<WorkerToHostMethods[M][1]> {
+    const operation = method === "agents.getRuntimeIdentity" || method === "agents.getRuntime" ? "identity.read"
+      : method === "config.get" ? "config.read" : method === "entities.list" ? "progress.read"
+      : method === "entities.upsert" ? "progress.write" : undefined;
+    return operation ? withSpan(`plugin.host.${operation}`, () => callHostRaw(method, params, timeoutMs))
+      : callHostRaw(method, params, timeoutMs);
+  }
+
+  function callHostRaw<M extends WorkerToHostMethodName>(
     method: M,
     params: WorkerToHostMethods[M][0],
     timeoutMs?: number,
@@ -736,6 +760,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
         async getInstanceSecrets(projectId, companyId) {
           return callHost("projects.getInstanceSecrets", { projectId, companyId });
+        },
+        async readSnapshots(projectIds, companyId, entityType) {
+          try {
+            return await callHost("projects.readSnapshots", { projectIds, companyId, entityType });
+          } catch (error) {
+            if (error instanceof JsonRpcCallError && error.code === JSONRPC_ERROR_CODES.METHOD_NOT_FOUND) return null;
+            throw error;
+          }
         },
 
         async listWorkspaces(projectId: string, companyId: string) {
@@ -1528,21 +1560,27 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       tracer: {
+        withSpan,
+        now: invocationTracer.now,
+        isRecording: invocationTracer.isRecording,
+        recordSpan: invocationTracer.recordSpan,
         startSpan(
           name: string,
           options?: { attributes?: Record<string, string | number | boolean> },
         ) {
           // Read the active host trace context from the per-call invocation
-          // channel. A `traceparent` means a host span is active, so this span
-          // may record. No `traceparent` means tracing is off: the span is a
-          // no-op, so a lifecycle hook can always wrap work in a span.
-          const hasTraceContext = Boolean(invocationContextStorage.getStore()?.traceparent);
+          // channel. Only providers permitted to record receipts collect spans;
+          // other plugins and tracing-off invocations keep no-op behavior.
+          const recordSpan = invocationTracer.captureRecorder();
+          const spanInvocation = invocationContextStorage.getStore();
+          const hasTraceContext = canRecordSpans();
           const attributes: Record<string, string | number | boolean> = {
             ...(options?.attributes ?? {}),
           };
           // Capture the real start time once when the span opens. The host uses
           // it as the span start time, so the span shows its true native width.
-          const startTimeMs = Date.now();
+          const spanNow = invocationTracer.clock();
+          const startTimeMs = spanNow();
           let status: { code: number; message?: string } | undefined;
           let ended = false;
           return {
@@ -1555,21 +1593,22 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             end(): void {
               if (ended) return;
               ended = true;
-              if (!hasTraceContext) return;
+              if (!hasTraceContext || invocationContextStorage.getStore()?.id !== spanInvocation?.id) return;
               // Capture the real end time once at the first end call. The host
               // uses the pair to record the span with its true wall-clock width.
-              const endTimeMs = Date.now();
+              const endTimeMs = spanNow();
               // Send the finished span to the host once. The host re-clamps the
               // name and the attributes, mints the parentage from its own
               // invocation record, and records the span through the real tracer.
               // Fire-and-forget: a span must never block or fail plugin work.
-              void callHost("span.record", {
+              const receipt = {
                 name,
                 attributes,
                 ...(status ? { status } : {}),
                 startTimeMs,
                 endTimeMs,
-              }).catch(() => undefined);
+              };
+              if (!recordSpan(receipt)) void callHost("span.record", receipt).catch(() => undefined);
             },
           };
         },
@@ -1602,13 +1641,16 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       if (method !== "prepareIdleSleep" && method !== "releaseIdleSleep" && method !== "shutdown") {
         done = idleDrain.begin();
       }
-      const invoke = () => dispatchMethod(method, params);
+      const invoke = () => withSpan("plugin.worker", () => dispatchMethod(method, params));
       const result = request.paperclipInvocation
         ? await invocationContextStorage.run(request.paperclipInvocation, invoke)
         : await invoke();
       sendMessage(createSuccessResponse(id, result ?? null));
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
+      const input = params as Partial<PluginEnvironmentTaskParams> | undefined;
+      const taskError = method === "environmentTask" && input?.operation?.kind === "submit" && input.operation.resumeFrom
+        ? environmentTaskErrorData(err) : undefined;
+      const errorMessage = taskError ? "Plugin Runner source state unavailable" : err instanceof Error ? err.message : String(err);
       // Propagate specific error codes from handler errors (e.g.
       // METHOD_NOT_FOUND, METHOD_NOT_IMPLEMENTED) — fall back to
       // WORKER_ERROR for untyped exceptions.
@@ -1618,9 +1660,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           : PLUGIN_RPC_ERROR_CODES.WORKER_ERROR;
 
       sendMessage(createErrorResponse(id, errorCode, errorMessage,
-        method === "environmentAcquireLease" || method === "environmentDestroyLease"
-          ? environmentCreationCleanupErrorData(err, method === "environmentAcquireLease")
-          : method === "environmentSyncOut" ? environmentSyncErrorData(err) : undefined));
+        method === "environmentAcquireLease" ? environmentAcquireErrorData(err)
+          : method === "environmentDestroyLease" ? environmentCreationCleanupErrorData(err)
+          : method === "environmentSyncOut" ? environmentSyncErrorData(err)
+          : method === "environmentRunnerIngressEndpoint" ? environmentRunnerIngressErrorData(err)
+          : method === "environmentStopLease" ? environmentStopErrorData(err)
+          : method === "environmentResumeLease" ? environmentResumeErrorData(err)
+          : method === "environmentTask" ? taskError ?? environmentTaskErrorCodeData(err)
+          : method === "workspaceOperation" ? workspaceOperationErrorData(err) : undefined));
     } finally {
       done?.();
     }
@@ -1769,6 +1816,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       case "loginPtyInput":
         return handleLoginPtyInput(params as PluginLoginPtyInputParams);
 
+      case "loginPtyReadCredential":
+        return handleLoginPtyReadCredential(params as PluginLoginPtyReadCredentialParams);
+
       case "loginPtyStop":
         return handleLoginPtyStop(params as PluginLoginPtyStopParams);
 
@@ -1854,6 +1904,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onEnvironmentDeleteTemplate) supportedMethods.push("environmentDeleteTemplate");
     if (plugin.definition.onLoginPtyOpen) supportedMethods.push("loginPtyOpen");
     if (plugin.definition.onLoginPtyInput) supportedMethods.push("loginPtyInput");
+    if (plugin.definition.onLoginPtyReadCredential) supportedMethods.push("loginPtyReadCredential");
     if (plugin.definition.onLoginPtyStop) supportedMethods.push("loginPtyStop");
     if (plugin.definition.onLoginPtyClose) supportedMethods.push("loginPtyClose");
     if (plugin.definition.onDuplexChannelOpen) supportedMethods.push("duplexChannelOpen");
@@ -2229,6 +2280,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       throw methodNotImplemented("loginPtyInput");
     }
     return plugin.definition.onLoginPtyInput(params);
+  }
+
+  async function handleLoginPtyReadCredential(params: PluginLoginPtyReadCredentialParams) {
+    if (!plugin.definition.onLoginPtyReadCredential) throw methodNotImplemented("loginPtyReadCredential");
+    return plugin.definition.onLoginPtyReadCredential(params);
   }
 
   async function handleLoginPtyStop(params: PluginLoginPtyStopParams) {

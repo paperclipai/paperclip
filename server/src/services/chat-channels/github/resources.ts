@@ -201,11 +201,12 @@ export async function reconcileGitHubRepositoryCoordinates(tx: DbTransaction, en
 type GitHubResourceOptions = {
   endpointRecord: (endpointId: string) => Promise<{ endpoint: EndpointRow } | null>;
   upsertProviderResourceRow: (tx: DbTransaction, endpoint: EndpointRow, item: ChatProviderResourceInventoryItem) => Promise<{ id: string } | null>;
+  restoreResourceConversations: (tx: DbTransaction, endpoint: EndpointRow, resourceId: string) => Promise<void>;
   updateResourceSelection: (endpointId: string, updates: Array<{ id: string; enabled: boolean }>, actorUserId?: string | null, options?: { allGitHubRepositoriesEnabled?: boolean }) => Promise<void>;
 };
 
 export function createGitHubResources(db: Db, options: GitHubResourceOptions) {
-  const { endpointRecord, upsertProviderResourceRow, updateResourceSelection } = options;
+  const { endpointRecord, upsertProviderResourceRow, restoreResourceConversations, updateResourceSelection } = options;
   async function reconcileGitHubWebhookRepository(
     endpoint: EndpointRow,
     payload: unknown,
@@ -220,17 +221,7 @@ export function createGitHubResources(db: Db, options: GitHubResourceOptions) {
       // A correctly signed repository callback is current provider proof. Keep
       // Paperclip's enabled choice, and reopen only conversations previously
       // quarantined for provider availability loss.
-      await tx
-        .update(chatConversations)
-        .set({ state: "active", updatedAt: new Date() })
-        .where(
-          and(
-            eq(chatConversations.companyId, endpoint.companyId),
-            eq(chatConversations.endpointId, endpoint.id),
-            eq(chatConversations.resourceId, resource.id),
-            eq(chatConversations.state, "unavailable"),
-          ),
-        );
+      await restoreResourceConversations(tx, endpoint, resource.id);
       await credentialLease.assertOwned(tx);
     });
   }

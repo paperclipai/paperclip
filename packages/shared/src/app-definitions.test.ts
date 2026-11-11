@@ -717,6 +717,15 @@ describe("AppDefinition catalog", () => {
         discoveryUrl: "https://mcp.sentry.dev/.well-known/oauth-protected-resource/mcp",
       },
     });
+    // A user auth token does not expire with the 30-day browser grant. The
+    // hosted server reserves `Bearer` for its own OAuth tokens.
+    expect(APP_DEFINITIONS.find((app) => app.slug === "sentry")?.methods[1]).toMatchObject({
+      key: "mcp-user-token",
+      transport: "mcp_remote",
+      auth: "api_key",
+      defaults: { serverUrl: "https://mcp.sentry.dev/mcp" },
+      keyPlacement: { location: "header", name: "Authorization", prefix: "Sentry-Bearer " },
+    });
     expect(method("zapier")).toMatchObject({
       key: "generated-url",
       auth: "none",

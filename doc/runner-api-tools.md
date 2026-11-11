@@ -54,6 +54,28 @@ exactly one authorized `artifactId` or task-workspace `path`, and an optional
 multipart `field`. No arbitrary URL, headers, authentication, or remote file URL
 can be supplied. Routes still validate payloads and enforce permissions.
 
+For lossless input to a local helper, set `saveResponse: true` on an authorized
+non-sensitive GET. This saves the complete response bytes as an immutable artifact
+even below the inline threshold. A zero-byte successful response instead returns
+`empty: true`, `byteSize: 0` and `data: null`, without an asset or storage
+reservation. JSON empty results such as `[]` are nonempty bytes and export normally.
+Artifact receipts contain `artifactId`, `byteSize` and `sha256`. For artifacts up
+to 10 MiB, pass those exact values to `download_artifact` with a workspace-relative
+destination. Larger text snapshots (up to the 1 GiB capture limit) remain readable
+through `GET /api/assets/{assetId}/content` with `responseText`; follow
+`nextOffsetBytes` until null. They cannot be installed with `download_artifact`;
+narrow or paginate the source query for local helper input. Pass downloaded files
+to the helper instead of recreating JSON in model output. Pagination metadata remains in the receipt; each
+artifact contains one complete HTTP response, not all pages of a list. Continue
+list pagination explicitly. The file remains untrusted data.
+
+`saveResponse` cannot be combined with `responseText`, and is rejected before
+dispatch for mutations and sensitive endpoints. Denied or partial HTTP responses
+are not exported. Failed response receipts include the full `byteSize` and a
+`truncated` flag when their inline diagnostic body is incomplete. It uses the same capture limits, storage admission, actor access
+and integrity validation as automatic large-response artifacts. The original
+request runs once. Default inline behavior is unchanged when the option is absent.
+
 Requests have a 16 KiB URL limit and 10 MiB request/upload limit. **New response
 captures are limited to 1 GiB of decoded bytes.** This is separate from the 24 KiB
 inline/page limit. The receiver rejects an oversized Content-Length before
@@ -74,7 +96,7 @@ assets; text previews are limited to 2,000 bytes.
 Large captures reserve 1 GiB against a **durable 4 GiB per-run capture budget**
 before creating a file. A completed capture settles to its actual byte count;
 failed/interrupted captures retain the full reservation to bound retry loops.
-A process restart does not reset that budget. Small inline responses and reads
+A process restart does not reset that budget. Small inline responses without explicit export and reads
 of existing assets need no reservation. Concurrent large captures are limited
 to **two per company and four per server process**, including the storage upload
 and temporary-file cleanup. Budget exhaustion returns `api_response_capture_limit`;
@@ -135,6 +157,92 @@ asset for every page. Other GET routes are fetched once in full to create the
 snapshot, so use the returned asset for subsequent pages. S3 uses streamed
 multipart uploads for large snapshots. Asset sizes are stored as PostgreSQL
 `bigint`, preserving the existing numeric API shape.
+
+### Verified artifact installation
+
+Native standard-mode runs can use `download_artifact` to install an authorized
+saved API artifact into the admitted execution workspace. Pass `artifactId`, a
+workspace-relative `destination`, and the exact saved `byteSize` and `sha256`.
+The parent directory must already exist. The transfer is bounded to 10 MiB;
+larger snapshots remain readable through the existing paged content API.
+
+The controller reuses asset content authorization (including company, capture
+owner and responsible-user restrictions), checks the complete stored bytes, then
+uses the lease-owned command runner for remote execution. The execution host
+checks size and SHA-256 on a private staging file before atomic create-only
+publication. Linux directory descriptors reject parent/destination symlinks and
+traversal. Existing different files are never overwritten; an identical retry
+verifies the existing file. A lost promotion acknowledgement is an unknown outcome:
+the native recovery path rechecks current authority and verifies the destination
+against the same size and hash without installing again. Missing or conflicting
+destinations return tool errors. An explicit identical retry remains safe. Interrupted staging can
+leave a reserved scratch file if cleanup cannot reach the provider, but never a
+completed destination. File synchronization after the turn remains owned by the
+normal workspace lifecycle.
+
+Current support is Linux local execution and remote native command-runner
+transports (including Daytona and SSH). Plugin-owned tasks without an installer,
+Dot, Muse, Grok and nonstandard work modes do not advertise this capability.
+The API-tool rollout policy can disable it. Every attempt rechecks live task/run
+and content authority before storage reads and promotion, and writes content-free
+`runner.artifact_install` audit records. No API credentials enter the execution
+command. Stored content remains untrusted: installation does not promote source
+trust, execute artifact instructions, or provide an alternative for content that
+screening denied. Existing API paging, upload and deliverable tools keep their
+current contracts.
+
+The synthetic regression in
+`server/src/services/native-runtime/artifact-transfer.integration.test.ts` verifies
+388131 Unicode/escape-containing bytes and independent downstream hashing with
+real PostgreSQL and filesystem operations. Filesystem fault tests exercise the
+actual command with simulated provider transport; they do not establish a live
+Daytona RPC or deployed recovery.
+
+
+### Image generation for OpenAI API-key Codex agents
+
+Codex shows its built-in `image_gen` tool only when it signs in with ChatGPT.
+A Codex agent that uses an OpenAI API key does not get that tool. The runner
+also keeps the provider key out of the agent's shell, so the imagegen skill's
+`scripts/image_gen.py` fallback cannot run.
+
+For these agents, the controller advertises `generate_image`. The tool is
+advertised only when all of these conditions are true:
+
+- The run is a native Codex standard-mode run.
+- The run was admitted on an OpenAI `api_key` connection with no custom routing.
+- The run has a workspace.
+
+Dot, Muse, Grok, native reviews and plugin-owned tasks do not get the tool.
+
+The server reads the key from that same connection on each call. It sends the
+key only to `https://api.openai.com/v1/images/generations` (model
+`gpt-image-2`). The key never enters the provider process, the execution
+command or the tool result.
+
+Every call does these checks again before any spend:
+
+- The live run, task and budget authority.
+- `issue:mutate` permission.
+- The connection grant, audience and agent installation.
+
+A budget hard-stop that pauses the agent refuses the call before OpenAI is
+contacted.
+
+The PNG is saved as a new, create-only file in the workspace root:
+
+- Local hosts use symlink-confined opens.
+- Remote targets use the same installer as `download_artifact`.
+
+The result returns the relative path, the size and the SHA-256.
+
+Each generated image records one `cost_events` row (`metered_api`,
+`costStatus: "estimated"`) from a reviewed `gpt-image-2` rate card. The row is
+recorded even when saving the image fails. Each call also writes
+content-free `runner.image_generate` audit records.
+
+A per-call receipt in the run result makes a retried or recovered call replay
+the first result instead of paying again.
 
 ### Media files and upload limits
 

@@ -1,4 +1,7 @@
-import { conversationEventCondition } from "./conversation-events.js";
+import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
+import { preservedAccountRuntimeState } from "../agent-provider-rate-limits.js";
+import { readRuntimeAccountingTotals } from "../runtime-accounting-totals.js";
+import { conversationEventCondition, conversationEventColumns } from "./conversation-events.js";
 import { deriveTaskKey } from "./run-preparation.js";
 import { retryIdempotentDatabaseOperation } from "../../database-retry.js";
 import { isConversation } from "../agent-conversations.js";
@@ -25,6 +28,7 @@ import {
   agentTaskSessions,
   heartbeatRunEvents,
   heartbeatRuns,
+  workspaceRestoreFailureCodesSql,
   issues,
 } from "@paperclipai/db";
 import { notFound } from "../../errors.js";
@@ -53,6 +57,7 @@ import {
 import { isUuidLike } from "@paperclipai/shared";
 import { HEARTBEAT_RUN_LIST_DEFAULT_LIMIT, HEARTBEAT_RUN_LIST_MAX_LIMIT } from "@paperclipai/shared";
 import { isUnsafeSessionWorkspaceCwd } from "../session-workspace-cwd.js";
+import { presentStorageFailureMessage } from "../../storage/storage-unavailable.js";
 
 export const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON =
   "execution_review_participant_recovery";
@@ -237,7 +242,7 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
         'workspaceRestoreRecovery', case when ${heartbeatRuns.resultJson} #>> '{workspaceRestoreRecovery,schema}' = 'paperclip.workspace-restore-recovery.v1'
           then jsonb_build_object('schema', 'paperclip.workspace-restore-recovery.v1') end,
         'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
-          in ('restore_permission_denied', 'restore_lock_timeout', 'restore_unsafe_archive', 'restore_failed')
+          in (${workspaceRestoreFailureCodesSql})
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
         'cancellation', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'cancellation') = 'object'
           then jsonb_strip_nulls(jsonb_build_object(
@@ -316,10 +321,14 @@ const heartbeatRunExecutionEvidenceColumn = sql<Record<string, unknown> | null>`
     'timeoutSource', ${heartbeatRuns.resultJson} -> 'timeoutSource',
     'workspaceRestoreFailure', ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure',
     'workspaceRestoreRecovery', ${heartbeatRuns.resultJson} -> 'workspaceRestoreRecovery',
+    'executionRecovery', jsonb_build_object(
+      'kind', ${heartbeatRuns.resultJson} #> '{executionRecovery,kind}',
+      'providerWorkStarted', ${heartbeatRuns.resultJson} #> '{executionRecovery,providerWorkStarted}'),
     'executionCancellation', ${heartbeatRuns.resultJson} -> 'executionCancellation',
     'nativeCancellation', ${heartbeatRuns.resultJson} -> 'nativeCancellation',
     'cancelledByActorType', ${heartbeatRuns.resultJson} -> 'cancelledByActorType',
     'cancelledByUserId', ${heartbeatRuns.resultJson} -> 'cancelledByUserId',
+    'reassignmentStopRequested', ${heartbeatRuns.resultJson} -> 'reassignmentStopRequested',
     'conversationContinuation', ${heartbeatRuns.resultJson} -> 'conversationContinuation',
     'cancellation', ${heartbeatRuns.resultJson} -> 'cancellation',
     'acpToolInventoryComplete', ${heartbeatRuns.resultJson} -> 'acpToolInventoryComplete',
@@ -353,6 +362,9 @@ const heartbeatRunLogAccessColumns = {
   ...heartbeatRunReadAccessColumns,
   logStore: heartbeatRuns.logStore,
   logRef: heartbeatRuns.logRef,
+  runtimeMode: heartbeatRuns.runtimeMode,
+  status: heartbeatRuns.status,
+  logBytes: heartbeatRuns.logBytes,
 } as const;
 
 const heartbeatRunIssueControlColumns = {
@@ -361,7 +373,10 @@ const heartbeatRunIssueControlColumns = {
   runtimeModeResolvedAt: heartbeatRuns.runtimeModeResolvedAt,
   startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
   contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
-    then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId') else null end`,
+    then jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId')
+      || case when ${heartbeatRuns.contextSnapshot} ? 'firstTurnQueuedInput'
+        then jsonb_build_object('firstTurnQueuedInput', ${heartbeatRuns.contextSnapshot}->'firstTurnQueuedInput') else '{}'::jsonb end
+    else null end`,
   runnerProfileJson: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object'
     then jsonb_build_object('adapterDispatch', jsonb_build_object('adapterType', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->'adapterType'))
     else null end`,
@@ -1139,6 +1154,7 @@ export function createHeartbeatRunState(db: Db) {
       finishedAt: heartbeatRuns.finishedAt,
       errorCode: heartbeatRuns.errorCode,
       error: safeForLegacyEncoding ? heartbeatRunSqlAsciiSafeColumns.error : heartbeatRuns.error,
+      issueId: heartbeatRuns.issueId,
       nativeIssueId: heartbeatRuns.nativeIssueId,
       nativeSessionId: heartbeatRuns.nativeSessionId,
       processPid: heartbeatRuns.processPid,
@@ -1173,7 +1189,8 @@ export function createHeartbeatRunState(db: Db) {
       id: heartbeatRuns.id, status: heartbeatRuns.status,
       error: safeForLegacyEncoding ? heartbeatRunSqlAsciiSafeColumns.error : heartbeatRuns.error,
       runnerProfileJson: sql<Record<string, unknown> | null>`case when ${heartbeatRuns.runnerProfileJson} is null then null
-        else jsonb_build_object('nativeWorkspaceSync', ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync') end`,
+        else jsonb_build_object('nativeWorkspaceSync', ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync',
+          'nativeResourceDisposition', ${heartbeatRuns.runnerProfileJson}->'nativeResourceDisposition') end`,
       resultJson: sql<Record<string, unknown> | null>`case when ${heartbeatRuns.resultJson} is null then null
         else jsonb_build_object('workspaceExportRetry', ${heartbeatRuns.resultJson}->'workspaceExportRetry') end`,
       contextSnapshot: sql<Record<string, unknown> | null>`case when ${heartbeatRuns.contextSnapshot} is null then null
@@ -1723,6 +1740,9 @@ export function createHeartbeatRunState(db: Db) {
           if (run?.status === "cancelled" || run?.contextSnapshot?.conversationSessionGeneration !== issue.conversationSessionGeneration) return 0;
         }
       }
+      const goals = await tx.select({ id: agentTaskSessions.id }).from(agentTaskSessions)
+        .where(and(...conditions, sql`${agentTaskSessions.goalStatus} is not null`, sql`${agentTaskSessions.goalStatus} <> 'complete'`)).limit(1);
+      if (goals.length) await notifyExternalConversationSettlement(tx, { companyId });
       return tx.delete(agentTaskSessions).where(and(...conditions)).returning().then((rows) => rows.length);
     });
   }
@@ -1849,6 +1869,8 @@ export function createHeartbeatRunState(db: Db) {
 
         return {
           ...rest,
+          // Saved runs from earlier releases may promise a storage retry no wait owns.
+          ...("error" in rest ? { error: presentStorageFailureMessage(rest) ?? null } : {}),
           contextSnapshot: summarizeHeartbeatRunContextSnapshot({
             issueId: contextIssueId,
             taskId: contextTaskId,
@@ -1894,6 +1916,7 @@ export function createHeartbeatRunState(db: Db) {
         .then((rows) => rows[0] ?? null);
       return {
         ...ensured,
+        ...await readRuntimeAccountingTotals(db, agent.companyId, agentId),
         sessionDisplayId:
           latestTaskSession?.sessionDisplayId ?? ensured.sessionId,
         sessionParamsJson: latestTaskSession?.sessionParamsJson ?? null,
@@ -1925,7 +1948,7 @@ export function createHeartbeatRunState(db: Db) {
     ) => {
       const agent = await getAgent(agentId);
       if (!agent) throw notFound("Agent not found");
-      await ensureRuntimeState(agent);
+      const runtimeBefore = await ensureRuntimeState(agent);
       const taskKey = readNonEmptyString(opts?.taskKey);
       const clearedTaskSessions = await clearTaskSessions(
         agent.companyId,
@@ -1944,7 +1967,8 @@ export function createHeartbeatRunState(db: Db) {
         updatedAt: new Date(),
       };
       if (!taskKey) {
-        runtimePatch.stateJson = {};
+        // Provider rate limits describe the account, not the session.
+        runtimePatch.stateJson = preservedAccountRuntimeState(runtimeBefore.stateJson);
       }
 
       const updated = await db
@@ -1965,7 +1989,7 @@ export function createHeartbeatRunState(db: Db) {
 
     listEvents: (runId: string, afterSeq = 0, limit = 200, conversationOnly = false) =>
       db
-        .select()
+        .select(conversationOnly ? conversationEventColumns(runId) : getTableColumns(heartbeatRunEvents))
         .from(heartbeatRunEvents)
         .where(
           and(

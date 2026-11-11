@@ -9,12 +9,27 @@ import {
 } from "./wake-context.js";
 
 describe("wake context", () => {
+  it.each(["workspace_busy", "ai_connection_busy", "ai_connection_pool_wait"])(
+    "keeps a bounded response classified through a %s resource wait", retryReason => {
+      const context = { interactionId: "response", interactionStatus: "answered", mutation: "interaction",
+        dependencyBlockedInteraction: true, wakeReason: `${retryReason}_retry`, retryReason };
+      expect(isResolvedInteractionContinuationWakeContext(context)).toBe(true);
+      expect(isResolvedInteractionContinuationWakeContext({ ...context, dependencyBlockedInteraction: false })).toBe(false);
+      expect(isResolvedInteractionContinuationWakeContext({ ...context, mutation: undefined })).toBe(false);
+    });
   it("recognizes a retired available connection without accepting ordinary expiry", () => {
     const context = { interactionId: "connection", interactionStatus: "expired", interactionKind: "connection_intent",
       connectionIntentResolution: "existing_connection", mutation: "interaction", wakeReason: "issue_commented" };
     expect(isResolvedInteractionContinuationWakeContext(context)).toBe(true);
     expect(isResolvedInteractionContinuationWakeContext({ ...context, interactionKind: "request_confirmation" })).toBe(false);
     expect(isResolvedInteractionContinuationWakeContext({ ...context, connectionIntentResolution: undefined })).toBe(false);
+  });
+  it("keeps a resolved interaction continuation through a Runner update wait", () => {
+    const context = { interactionId: "interaction-1", interactionStatus: "answered", mutation: "interaction", retryReason: "runner_revision_wait", wakeReason: "runner_revision_retry" };
+    expect(isResolvedInteractionContinuationWakeContext(context)).toBe(true);
+    expect(isResolvedInteractionContinuationWakeContext({ ...context, mutation: undefined })).toBe(false);
+    expect(isResolvedInteractionContinuationWakeContext({ ...context, interactionStatus: "pending" })).toBe(false);
+    expect(isResolvedInteractionContinuationWakeContext({ ...context, retryReason: "transient_failure" })).toBe(false);
   });
   it("requires the subscription-specific non-assignee receipt for a subscription wait", () => {
     expect(isNonAssigneeWorkspaceBusyRetry("ai_connection_busy", {

@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 
 use crate::acpx_event_payload::{
-    decode_acpx_event, AcpxEventPayload, AcpxRuntimeEventKind, AcpxTurnStatus,
+    admit_acpx_event_payload_size, decode_acpx_event, AcpxEventPayload, AcpxRuntimeEventKind,
+    AcpxTurnStatus,
 };
 use crate::acpx_event_scope::AcpxEventScope;
 use crate::acpx_sidecar_transport::AcpxSidecarEvent;
@@ -109,8 +110,8 @@ pub struct AcpxProviderState {
     plan_revision: u64,
     assistant_text: String,
     assistant_message_id: Option<String>,
-    pi_assistant_message: Option<String>,
-    pi_assistant_message_ids: BTreeSet<String>,
+    native_assistant_message: Option<String>,
+    native_assistant_message_ids: BTreeSet<String>,
     pending_tools: BTreeMap<String, AcpxPendingTool>,
     pending_tool_input_bytes: usize,
     pending_permissions: BTreeMap<String, (usize, Value)>,
@@ -118,7 +119,12 @@ pub struct AcpxProviderState {
     pending_runtime_request_bytes: usize,
     semantic_result: Option<AcpxSemanticResult>,
     attempted_turn_controls: BTreeSet<String>,
+    history_event_diagnostics: u32,
 }
+
+/// History diagnostics recorded per provider state before later ones are
+/// dropped silently. History never fails the current turn either way.
+const MAX_HISTORY_EVENT_DIAGNOSTICS: u32 = 32;
 
 impl AcpxProviderState {
     pub fn new(run_id: impl Into<String>) -> Result<Self, LocalRunnerError> {
@@ -128,8 +134,8 @@ impl AcpxProviderState {
             plan_revision: 0,
             assistant_text: String::new(),
             assistant_message_id: None,
-            pi_assistant_message: None,
-            pi_assistant_message_ids: BTreeSet::new(),
+            native_assistant_message: None,
+            native_assistant_message_ids: BTreeSet::new(),
             pending_tools: BTreeMap::new(),
             pending_tool_input_bytes: 0,
             pending_permissions: BTreeMap::new(),
@@ -137,6 +143,7 @@ impl AcpxProviderState {
             pending_runtime_request_bytes: 0,
             semantic_result: None,
             attempted_turn_controls: BTreeSet::new(),
+            history_event_diagnostics: 0,
         })
     }
 
@@ -146,10 +153,6 @@ impl AcpxProviderState {
 
     pub fn active_turn_id(&self) -> Option<&str> {
         self.scope.active_turn_id()
-    }
-
-    pub(crate) fn has_settled_turns(&self) -> bool {
-        self.scope.has_settled_turns()
     }
 
     pub(crate) fn validate_new_turn_identity(&self, turn_id: &str) -> Result<(), LocalRunnerError> {
@@ -222,8 +225,8 @@ impl AcpxProviderState {
         self.plan_revision = 0;
         self.assistant_text.clear();
         self.assistant_message_id = None;
-        self.pi_assistant_message = None;
-        self.pi_assistant_message_ids.clear();
+        self.native_assistant_message = None;
+        self.native_assistant_message_ids.clear();
         self.semantic_result = None;
         self.attempted_turn_controls.clear();
         Ok(())
@@ -233,6 +236,25 @@ impl AcpxProviderState {
         &mut self,
         event: &AcpxSidecarEvent,
     ) -> Result<Vec<AcpxProviderStateEvent>, LocalRunnerError> {
+        if self.scope.names_settled_turn(event) {
+            // History still passes payload admission like any other event.
+            admit_acpx_event_payload_size(event)?;
+            // A late event for a settled turn (for example a sidecar that
+            // reports the previous turn after the next one started) is
+            // history. Record it; never fail the current turn.
+            self.history_event_diagnostics = self.history_event_diagnostics.saturating_add(1);
+            if self.history_event_diagnostics > MAX_HISTORY_EVENT_DIAGNOSTICS {
+                return Ok(Vec::new());
+            }
+            return Ok(vec![AcpxProviderStateEvent::Diagnostic {
+                code: "stale_generation_event".to_owned(),
+                message: format!(
+                    "recorded a {:?} event for settled turn {} as history",
+                    event.event_type,
+                    event.turn_id.as_deref().unwrap_or_default()
+                ),
+            }]);
+        }
         let payload = decode_acpx_event(&self.scope, event)?;
         match payload {
             AcpxEventPayload::RichActivity {
@@ -371,9 +393,9 @@ impl AcpxProviderState {
                 }])
             }
             AcpxEventPayload::TurnTerminal { status, error } => {
-                if status == AcpxTurnStatus::Completed && self.pi_assistant_message.is_some() {
+                if status == AcpxTurnStatus::Completed && self.native_assistant_message.is_some() {
                     return Err(LocalRunnerError::invalid(
-                        "Pi assistant message ended without its native boundary",
+                        "ACP assistant message ended without its native boundary",
                     ));
                 }
                 let turn_id = event
@@ -394,8 +416,8 @@ impl AcpxProviderState {
                     self.assistant_text.clear();
                 }
                 self.assistant_message_id = None;
-                self.pi_assistant_message = None;
-                self.pi_assistant_message_ids.clear();
+                self.native_assistant_message = None;
+                self.native_assistant_message_ids.clear();
                 events.push(AcpxProviderStateEvent::TurnTerminal {
                     turn_id,
                     status,
@@ -518,6 +540,10 @@ impl AcpxProviderState {
         };
         if kind == AcpxRuntimeEventKind::TextDelta
             && payload.get("piMessageHistory").and_then(Value::as_bool) != Some(true)
+            && payload
+                .get("assistantMessageHistory")
+                .and_then(Value::as_bool)
+                != Some(true)
         {
             let provider_message_id = payload
                 .get("messageId")
@@ -534,55 +560,67 @@ impl AcpxProviderState {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             let mut native_boundary_clears = false;
-            if let Some(boundary) = payload.get("piMessageBoundary") {
+            if payload.get("assistantMessageBoundary").is_some()
+                && payload.get("piMessageBoundary").is_some()
+            {
+                return Err(LocalRunnerError::invalid(
+                    "ACP assistant boundary has ambiguous representations",
+                ));
+            }
+            if let Some(boundary) = payload
+                .get("assistantMessageBoundary")
+                .or_else(|| payload.get("piMessageBoundary"))
+            {
                 let phase = boundary.get("phase").and_then(Value::as_str);
                 let reason = boundary.get("stopReason").and_then(Value::as_str);
                 if !raw_text.is_empty() || provider_message_id.is_none() {
                     return Err(LocalRunnerError::invalid(
-                        "Pi assistant boundary contains invalid content or identity",
+                        "ACP assistant boundary contains invalid content or identity",
                     ));
                 }
                 match phase {
-                    Some("start") if self.pi_assistant_message.is_none() && reason.is_none() => {
-                        if self.pi_assistant_message_ids.len() >= 4096
+                    Some("start")
+                        if self.native_assistant_message.is_none() && reason.is_none() =>
+                    {
+                        if self.native_assistant_message_ids.len() >= 4096
                             || !self
-                                .pi_assistant_message_ids
+                                .native_assistant_message_ids
                                 .insert(provider_message_id.clone().unwrap())
                         {
                             return Err(LocalRunnerError::invalid(
-                                "Pi assistant identity is duplicated or exceeds its bound",
+                                "ACP assistant identity is duplicated or exceeds its bound",
                             ));
                         }
-                        self.pi_assistant_message = provider_message_id.clone();
+                        self.native_assistant_message = provider_message_id.clone();
                         native_boundary_clears = true;
                     }
                     Some("end")
-                        if self.pi_assistant_message.is_some()
-                            && self.pi_assistant_message == provider_message_id =>
+                        if self.native_assistant_message.is_some()
+                            && self.native_assistant_message == provider_message_id =>
                     {
                         if !matches!(
                             reason,
                             Some("stop" | "length" | "toolUse" | "error" | "aborted")
                         ) {
                             return Err(LocalRunnerError::invalid(
-                                "Pi assistant stop reason is invalid",
+                                "ACP assistant stop reason is invalid",
                             ));
                         }
-                        self.pi_assistant_message = None;
+                        self.native_assistant_message = None;
                         native_boundary_clears = !matches!(reason, Some("stop" | "length"));
                     }
                     _ => {
                         return Err(LocalRunnerError::invalid(
-                            "Pi assistant boundaries are out of order",
+                            "ACP assistant boundaries are out of order",
                         ))
                     }
                 }
-            } else if !self.pi_assistant_message_ids.is_empty()
-                && (self.pi_assistant_message.is_none()
-                    || self.pi_assistant_message != provider_message_id)
+            } else if !self.native_assistant_message_ids.is_empty()
+                && (self.native_assistant_message.is_none()
+                    || self.native_assistant_message != provider_message_id)
             {
                 return Err(LocalRunnerError::invalid(
-                    "Pi assistant delta has no matching native message",
+                    "ACP assistant delta has no matching native message",
                 ));
             }
             // ACP can produce more than one assistant message in a turn. All

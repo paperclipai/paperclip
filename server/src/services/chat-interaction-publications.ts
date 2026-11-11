@@ -1,3 +1,4 @@
+import { notifyChatContinuationWork } from "./chat-continuation-notifications.js";
 import { chatInteractionForm } from "./chat-interaction-forms.js";
 import { slackInteractionRequiresBoard } from "./chat-channels/slack/cards.js";
 import { answeredChatQuestionBody, chatInteractionPresentation } from "./chat-interaction-presentation.js";
@@ -252,6 +253,9 @@ export async function enqueueIssueInteractionChatPublications(
   interaction: IssueThreadInteraction,
 ) {
   if (interaction.status !== "pending") return [];
+  if (interaction.kind === "request_confirmation"
+    && interaction.payload.target?.type === "custom"
+    && interaction.payload.target.key === "native_completion_review") return [];
   // An endpoint is one immutable provider bot identity. Never externalize a
   // user/system-authored interaction, or let one agent speak through another
   // agent's endpoint. If the interaction names a source run, verify that run's
@@ -710,51 +714,54 @@ export async function enqueueTerminalIssueInteractionChatPublications(
         interaction.resolvedByAgentId === issue.assigneeAgentId
       )
     ) {
-      await db
-        .insert(chatActions)
-        .values({
-          companyId: interaction.companyId,
-          endpointId: wakeBinding.endpointId,
-          conversationId: wakeBinding.conversationId,
-          kind: "interaction_wakeup",
-          providerActionId: `interaction_wakeup:${interaction.id}`,
-          payload: {
-            version: 1,
-            interactionId: interaction.id,
-            interactionKind: interaction.kind,
-            interactionStatus: interaction.status,
-            issueId: interaction.issueId,
-            agentId: issue.assigneeAgentId,
-            sourceCommentId: interaction.sourceCommentId ?? null,
-            sourceRunId: interaction.sourceRunId ?? null,
-            requestedByActorType,
-            requestedByActorId,
-            ...(planTarget
-              ? {
-                  planReviewInteraction: {
-                    id: interaction.id,
-                    kind: interaction.kind,
-                    status: interaction.status,
-                    target: planTarget,
-                    acceptedTargetRevision:
-                      interaction.status === "accepted" ? planTarget : null,
-                    result: interaction.result,
-                  },
-                }
-              : {}),
-            ...(interaction.status === "accepted" && planTarget
-              ? {
-                  forceFreshSession: true,
-                  workspaceRefreshReason: "accepted_plan_confirmation",
-                }
-              : {}),
-            ...(interaction.resolvedByUserId
-              ? { requestedByUserId: interaction.resolvedByUserId }
-              : {}),
-          },
-          status: "issued",
-        })
-        .onConflictDoNothing();
+      await db.transaction(async tx => {
+        await notifyChatContinuationWork(tx, { companyId: interaction.companyId, issueId: interaction.issueId });
+        await tx
+          .insert(chatActions)
+          .values({
+            companyId: interaction.companyId,
+            endpointId: wakeBinding.endpointId,
+            conversationId: wakeBinding.conversationId,
+            kind: "interaction_wakeup",
+            providerActionId: `interaction_wakeup:${interaction.id}`,
+            payload: {
+              version: 1,
+              interactionId: interaction.id,
+              interactionKind: interaction.kind,
+              interactionStatus: interaction.status,
+              issueId: interaction.issueId,
+              agentId: issue.assigneeAgentId,
+              sourceCommentId: interaction.sourceCommentId ?? null,
+              sourceRunId: interaction.sourceRunId ?? null,
+              requestedByActorType,
+              requestedByActorId,
+              ...(planTarget
+                ? {
+                    planReviewInteraction: {
+                      id: interaction.id,
+                      kind: interaction.kind,
+                      status: interaction.status,
+                      target: planTarget,
+                      acceptedTargetRevision:
+                        interaction.status === "accepted" ? planTarget : null,
+                      result: interaction.result,
+                    },
+                  }
+                : {}),
+              ...(interaction.status === "accepted" && planTarget
+                ? {
+                    forceFreshSession: true,
+                    workspaceRefreshReason: "accepted_plan_confirmation",
+                  }
+                : {}),
+              ...(interaction.resolvedByUserId
+                ? { requestedByUserId: interaction.resolvedByUserId }
+                : {}),
+            },
+            status: "issued",
+          })
+          .onConflictDoNothing();
+      });
     }
   }
 

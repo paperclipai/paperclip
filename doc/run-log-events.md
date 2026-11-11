@@ -5,6 +5,21 @@ Run-log events write to the `heartbeat_run_events` table
 Paperclip Telemetry events, and they are not OpenTelemetry exports. A run-log
 event needs no operator endpoint.
 
+## ACPX sidecar shutdown
+
+The ACPX sidecar emits `runtime.diagnostic` with code
+`sidecar_shutdown_requested` once at the first local shutdown request, before
+waiters are removed. Its JSON message records the local reason, pending tool,
+input and permission counts, completion-normalization count, and at most 16
+oldest pending tools. Each tool sample contains elapsed milliseconds and a
+SHA-256 call ID. Hash the corresponding `runtime.tool_called` call ID to match
+it. Arguments, results, operation names and raw call IDs are excluded.
+The existing diagnostic path also writes this message to sidecar stderr.
+A controller that has already stopped may not ingest the frame. Stdin EOF
+identifies a closed controller pipe, not the upstream reason for that closure.
+This is local run evidence; no first-party Telemetry event or OpenTelemetry
+span is added. Retry, cancellation and authorization behavior stay unchanged.
+
 ## Startup reuse evidence
 
 `run.startup.reuse` uses schema `paperclip.startup-reuse.v1`. Each receipt names
@@ -64,19 +79,68 @@ instance run log and add no first-party Telemetry or OpenTelemetry export.
 
 ## Provider-pack preparation timing
 
+Every `run.performance.span` payload also carries `wallStartedAtMs`, the span's own
+start time in epoch milliseconds (since 2026-11-09). Span rows can be written late
+through deferred diagnostics, so readers take a span's start from this field (or
+from the trace start plus `startOffsetMs`), never from the row's write time.
+The preparation spans of a native run (`heartbeat.queue`, `heartbeat.prepare_*`,
+`environment.*`) are always written this way: in the order they ended, while the
+provider starts, and before the run's trace finishes. They can appear after the
+first Runner events of the run.
+
 `run.performance.span` also records `task.time_to_first_token` once per native
 dispatch at the first newly committed deliverable text: assistant or reasoning
 `item.delta`/`item.completed`, a redaction tail released at completion, or an
 accepted run-result summary. Its
-`durationMs` starts at the native run trace's historical start (accepted ingress,
-otherwise queued run creation, or dispatch when history is absent) and ends at Core
-commit callback. `startOffsetMs` is zero, and `eventKind` is `agentMessage` or
-`reasoning`. It includes preparation and startup, but excludes browser
+`durationMs` starts at the earliest accepted input. The accepted comment or
+answered question is the start only when its span is the earliest preparation span.
+A comment coalesced into an already-queued run starts after run creation, so that
+run uses queued run creation. The durable wake request's `requested_at` replaces
+the start when it is earlier (deferred, coalesced and retried wakes). Without
+preparation history, the start is dispatch and the anchor is `run_created`. It ends at Core commit callback. `anchor` names the start:
+`comment`, `question_response`, `wake_request` or `run_created`. `startOffsetMs` is
+zero, or negative when a wake request precedes the run trace. `eventKind` is
+`agentMessage` or `reasoning`. The wake request time is read after the first text,
+in detached diagnostic work bounded to 2 s (a
+transaction-local `statement_timeout`, so PostgreSQL cancels a stalled read), so the measurement adds no wait before
+`turn.start` and never delays event delivery. The span can appear after later
+run-log rows; the trace settles it before `task.provider_session.measured`. It includes preparation and startup, but excludes browser
 delivery/rendering. This measures text availability, not an exact model token.
 Empty text, item starts, tools, usage, result proposals, and duplicate replay do
 not qualify. No deliverable text means no timing sample. A recovered dispatch can
 record newly committed output from the original start; it does not reproduce
 earlier output timing. The event contains no text or provider identifiers.
+
+## Speed budget breaches
+
+`run.performance.budget_exceeded` (schema `paperclip.run-performance-budget.v1`,
+level `warn`) records one native run that exceeded its p95 speed budget. The
+budgets come from the Phase 0 local baseline and are listed in
+`doc/plans/2026-11-07-durable-ownership-and-reconciliation.md` ("Speed budgets").
+`metric` is `time_to_first_activity` (`task.time_to_first_agent_activity`:
+the first text delta, tool-call start or reasoning item; named `ttft` and
+judged on `task.time_to_first_token` before 2026-11-08), `agent_boot` (end of
+`heartbeat.queue` to the end of `runner.turn.submit` or `runner.session.resume`)
+or `restart_recovery_control_plane` (startup recovery `ready` to the start of the
+provider's saved-session load, `provider.session.load`, or to the recovered run's
+first provider event when nothing reloads). That is Paperclip's own share of a
+recovery: claim, prepare, runtime stage and runner launch. The full recovery
+(`ready` to the first provider event) and the provider's session load grow with
+session size and with how many sessions resume at once, so they are reported in
+the payload as `restartTotalMs` and `providerLoadMs` and are not judged; events
+written before 2026-11-09 judged the full latency as `restart_recovery`.
+The payload names `adapter` (`codex`, `claude` or `opencode`),
+`environment` (`local`), `startKind` (`cold`, `warm` or `unknown`; an unknown
+start uses the looser budget), `measuredMs`, `budgetP50Ms`, `budgetP95Ms`,
+`percentile` (`p95`), `baseline`, and, for restart recovery, `disposition`.
+For `time_to_first_activity`, `measuredMs` counts from run creation: when the input waited for its
+run to exist (for example a comment posted while the previous turn was still
+running), that wait is excluded from the judgment and reported as `inputWaitMs`.
+Each metric is checked at most once per dispatch. A restart-recovery dispatch is
+judged only on `restart_recovery_control_plane`, because its first activity and boot span the outage. Time to first text (`task.time_to_first_token`) is reported without a budget. Remote runs and other adapters have
+no budget yet. The event is written in detached diagnostic work after the
+measurement, so it adds no wait before `turn.start`. It is a run-log row only
+and never goes to Telemetry.
 
 The existing `run.performance.span` event also records `provider_pack.select`,
 `provider_pack.discover`, `provider_pack.verify`, `provider_pack.verify_preinstalled`,
@@ -90,7 +154,79 @@ and `harness_state.launch_material` for remote state inspection and fresh launch
 material. These events retain the existing schema and carry no paths or exception strings.
 They also become native Observability spans only with an operator OTLP endpoint.
 
+## Local runner startup sub-steps
+
+`run.performance.span` splits a local Runner startup (`runner.session.bootstrap` or
+`runner.session.resume`) into three sequential children of `runner.session.startup`:
+
+- `runner.runtime.stage`: controller-side launch preparation before the Runner
+  process exists (runtime context, provider home, launch profiles; on resume, the
+  durable-state checks and authority rotation as well).
+- `runner.process.launch`: from spawning `paperclip-runnerd` until its first
+  authenticated connection to the PRP control plane. An exact adoption of a live
+  Runner records no launch, so this span keeps meaning a fresh Runner process
+  (see startup reuse above).
+- `provider.session.load`: from that authentication until the provider session
+  identity is confirmed. It covers `run.prepare` and `session.open`, or on resume
+  the `run.attach` that restores the provider and the recovery probe.
+
+Each carries `mode` (`bootstrap` or `resume`), `target: "local"`, and `outcome`
+(`failed` when startup fails inside the step). The Runner transport reports each
+milestone synchronously; the controller writes the row as deferred diagnostic
+work, so the run-log write never delays `turn.start`. Remote launchers keep their
+own `runner.runtime.stage` and `runner.process.launch` spans. These rows stay in
+the instance run log; with an operator OTLP endpoint they are also Observability
+spans. They are not Telemetry.
+
 ## Native PRP Run-Log Events
+
+Provider startup command failures and failed provider turns can carry a
+`providerFailure` cause with schema `paperclip.provider-failure.v1`. The cause
+retains a normalized category, a bounded and redacted provider explanation, the
+startup/turn phase, and available status, code, request ID, or retry time. Provider
+adapters extract these fields; arbitrary exception objects, request bodies,
+headers, environment variables, and stacks are excluded. Unknown categories retain
+their explanation. The cause stays in company-scoped run records and the run log;
+it is not added to first-party Telemetry, Observability attributes, or Sentry
+failure reports. The reportable run error keeps its existing generic text, except
+that an ACPX startup rejection keeps Runner's closed rejection text and its
+classification. Startup receipts retain the cause across controller restart before
+any provider turn exists.
+
+When a failed ACPX control closes the session before polling, the resulting
+`turn.failed` event retains that control's closed-code error. A later closed-session
+check does not replace it, and a closed code does not infer a provider explanation.
+The terminal still reports `recoverable: false` and no observed provider terminal;
+it does not prove termination or authorize replay.
+
+Every ACPX session ensure rejection carries a startup cause. When the provider
+returned no ACP error, the cause keeps the rejection's own redacted message with
+category `unknown`. A provider can type the failure with ACP's
+authentication-required code, or with a known error type or `errorKind` in the ACP
+error data. The cause then uses that category, and the rejection classification is
+`provider_<category>`, such as `provider_quota_exhausted`, instead of
+`session_ensure_failed`.
+
+Completed OpenCode builtin `bash` parts preserve the numeric process exit from
+`state.metadata.exit` in `tool.execution.completed.payload.exitCode`. The tool
+status stays `completed` even when the command exits with a nonzero code. This
+status describes completion of the tool call, not success of the command or the
+native run. Metadata adds an exit only when it is an integer. Conflicting supplied
+legacy exits stay unknown. Existing numeric `state.exit` values remain supported;
+metadata on other tools cannot add process-exit proof.
+
+An edit tool call can carry `fileChanges` on its `tool.execution.*` payload.
+Each entry names one workspace-relative `path`, its `operation` (`create`,
+`modify`, `delete` or `rename`), `previousPath`, `additions`, `deletions`, a
+unified `diff` and `diffTruncated`. The runner drops paths outside the working
+directory, redacts secrets in each patch, and bounds a patch to 32 KiB and one
+call to 32 files. Counts cover the whole patch even when the patch is shortened.
+Codex `fileChange` items produce these rows. Claude Edit and Write calls produce
+them from the ACP `diff` content. Codex `turn/diff/updated` also records the
+whole-turn diff as `workspace.change.updated` (`paperclip.workspace.diff.v1`).
+The task chat shows each patch under its edit row. It ends the turn with the
+change set, or with one built from the edit rows when the harness reports no
+whole-turn diff.
 
 `auth.credentials.updated` is a runner-produced PRP event for a change to a
 supported credential store, including account identity changes and later token
@@ -111,8 +247,18 @@ that restores a released task execution binding. The claim locks the task,
 coordinator, and original run in that order. It preserves the assignee and checks
 current execution/checkout owners, other live work, dependencies, pause holds,
 and stop/successor records before restoring the binding. Attachment authorization
-keeps its existing requirement for that exact binding. Skipped retry candidates
-wait 30 seconds before recheck so they cannot fill every bounded claim batch.
+keeps its existing requirement for that exact binding. Remote retry claims also
+require the exact saved controller authority and reject a newer task run. The
+event does not prove that a remote provider survived or permit provider replay.
+Skipped local retry candidates wait 30 seconds before recheck. Remote admission
+holds use the existing bounded system-recovery backoff independently of provider
+attempts. Permanent ineligibility or policy exhaustion records the terminal
+automatic recovery disposition and board action without releasing the retained
+execution binding, provider, or checkpoint. These settled holds schedule no
+further retry. Repeated blocked visits record only a changed hold reason.
+The same durable hold prevents background stale-lock cleanup and queue release
+from clearing either task binding until the remote termination receipt contract
+is satisfied. A terminal heartbeat status is not a provider-stop receipt.
 Undated retries sort first. A failed candidate cannot discard earlier committed
 claims. Queued waiters do not block the original execution owner from recovery;
 they still wait for that owner to settle before normal queue promotion.
@@ -176,6 +322,28 @@ Paperclip Telemetry export, and legacy adapters do not use this writer.
 
 ## Semantic Settlement Diagnostics and Retry Logs
 
+When native tool arguments fail their authorized JSON Schema, the runner records
+`harness.diagnostic` with code `semantic_tool_denied` and `paperclipExecuted: false`.
+Its optional `inputSchemaGuidance` retains the same safe repair guidance sent to
+the provider: at most three authorized schema locations within 512 bytes.
+It includes no rejected arguments, submitted values, or unknown input keys.
+The rejected call does not create a semantic input event or execution receipt.
+Validated runner diagnostics retain this scalar metadata even when the operation
+is an API or case tool. API request and response bodies keep their existing redaction.
+
+If a declared native completion tool is rejected and the turn ends without an
+accepted replacement report, the runner emits `session.failed` with code
+`semantic_completion_rejected` and `recoverable: false` before the provider's
+original turn terminal. It emits no successful result proposal or human review
+request. Core uses its existing permanent native failure path and does not start
+a missing-result recovery turn. This failure also precedes terminal goal updates;
+Core records the original turn terminal before rejecting goal success or further
+goal continuation. Recoverable goal failures retain their existing behavior.
+The rejection survives same-turn restoration;
+a new turn or run binding clears it. A later accepted completion report keeps
+its normal authority, and ordinary turns with no completion-tool attempt keep
+their existing fallback.
+
 Before interrupting a Codex turn, the runner durably records a
 `harness.diagnostic` event with code `provider_interrupt_requested`, the stop
 reason, provider turn ID, and pending tool call IDs. A harmless identical result
@@ -233,8 +401,13 @@ create a task warning, recovery action, Telemetry event, or OpenTelemetry export
 
 ## Native Restart Recovery Run-Log Event
 
-Paperclip writes a `native.recovery.transition` event for every native restart
-classification and for graceful restart suspension. This immutable run-log
+Paperclip writes a `native.recovery.transition` event for native restart
+classifications and for graceful restart suspension. A blocked remote retry
+records a changed hold reason once; repeated visits with the same hold reason,
+an existing future deadline, or a live lease do not append another transition.
+Exhausting the automatic admission policy records its terminal disposition even
+when the underlying hold reason remains the same.
+This immutable run-log
 record lets operators reconstruct recovery decisions without exporting data to
 Paperclip Telemetry or OpenTelemetry.
 
@@ -257,19 +430,61 @@ execution coordinator opens. Unavailable probes are retried within a shared
 an unreadable identity from a confirmed missing process and contains no command
 output or credentials. Saved-state read failures use `state_read_failed`; malformed
 saved JSON uses `state_invalid`. It does not itself authorize replacement or cleanup.
+For `process_not_running`, the event also records `runnerLifecycle` and
+`runnerSettled` from the exited runner's saved state. `runnerLifecycle` is a known
+runner lifecycle, `other` for an unknown value, or `unavailable` when the state has
+none. `runnerSettled` is true only when the outbox is empty and no terminal delivery,
+provider cleanup or warm transition is pending. These fields explain how the runner
+stopped. The event is not recorded when a scheduled retry resumes a runner that
+exited after a settled suspension; see `doc/execution-semantics.md`.
 
 For a prepared remote workspace interrupted before its first executor claim,
 that ledger records `remote_execution_never_claimed` with a
 `bootstrap_incomplete` disposition. The provider attempt remains zero during
 classification; the executor increments it before starting provider work.
+A claimed remote bootstrap (the sandbox runner was launched and may have
+connected) records `remote_bootstrap_proven_incomplete` with the same
+disposition. Recovery admits it only after the previous controller lease has
+expired and the Postgres controller checkpoint holds just `run.prepare` and an
+unfinished `session.open`, with no committed or acknowledged event. The
+executor restores that checkpoint and checks the same proof before it
+bootstraps again. After three provider attempts it records
+`execution_recovery_budget_exhausted` instead.
+A claimed remote run whose previous controller is gone, with no
+`native.process_start_requested`, process identity, adapter invocation,
+runner-sourced event or controller checkpoint, records
+`remote_runner_never_launched` with the same disposition and budget. The
+executor records `native.process_start_requested` before a backend may spawn a
+runner, so its absence (with no checkpoint) proves nothing reached a runner.
+A remote run that a graceful drain suspended just after its runner opened the
+provider session records `remote_session_opened_without_turn` with the same
+disposition. Its Postgres controller record must hold only `run.prepare` and
+`session.open`, with every committed event a session-open event and no event
+missing. Before that same-run bootstrap relaunches in the reused sandbox, the
+executor stops the interrupted runner it can verify there, so the new runner
+does not fail with `runner_ingress_bind_conflict`.
+The same rule covers a remote run that its executor already settled as a
+same-run `bootstrap_retry` (for example when a shutdown closed the local
+runtime listener during startup) and that is due when the server restarts.
 
-For a local Codex turn lost while runnerd was stopped, the canonical `turn.failed`
+For a local Codex, OpenCode, or ACPX turn lost while runnerd was stopped, the canonical `turn.failed`
 event retains `error.code: "provider_turn_lost_on_restore"` and
 `error.recoverable: true`. It records the interrupted turn, not a final task
 outcome. There is no synthesized result for that interruption. An admitted
 same-session continuation emits its own `turn.submitted`, accepted turn ID, and
 terminal events; only the final outcome closes the run. Reconstructed thread
 history retains the original error so reconciliation and live delivery agree.
+An ACPX session records this only after the original provider lifetime loses
+its fence quorum and the same conversation is restored. Otherwise its
+`turn.failed` carries `error.code: "acpx_active_turn_recovery_closed"` with
+`error.recoverable: false`, and the run closes with an honest restart message.
+After an ACPX restore, the controller can still deliver results for semantic
+calls of the lost turn. Runnerd acknowledges each one as `retired` without
+sending it to the restored provider, so the calls settle and live semantic
+dispatch resumes for the continuation. A restored ACPX provider is a new process
+whose MCP request ids restart, so its semantic `callId` values carry a
+per-process prefix (`r<hex>:<id>`). They never reuse an earlier call's id in
+the same run.
 
 ## Native Local Process Stop Evidence
 
@@ -278,6 +493,15 @@ clears a local run's process identity, after it verifies that its PID and proces
 group are absent. The payload contains only those process IDs. Remote process
 IDs are never checked against the control-plane host.
 
+A crash can land after `native.process_start_requested` and before the runner's
+process identity is recorded. Continuation admission then writes
+`native.local_process_stopped` with null process IDs and
+`basis: "unidentified_runner_absent"`. It does this only on the host named in
+the launch event's `hostname` payload, after it checks two things. First, no
+process carries the run's `--run-id` runner argument. Second, no
+saved runner control-plane state (canonical or quarantined) belongs to the run;
+a provider starts only after its runner connects and writes that state.
+
 The server writes `native.process_start_requested` before a backend can spawn,
 and `native.process_identity_recorded` when it stores a new native process
 identity. Either invalidates an earlier local stop receipt, including a crash
@@ -285,6 +509,25 @@ before the new PID callback. Continuation admission accepts only the latest
 server-authored event among these three types; provider
 source events cannot supply stop authority. These records stay in the local run
 log and do not add Telemetry or OpenTelemetry data.
+
+The server writes `native.prior_owner_fence_refused` when its runner-state
+check refuses a run before any launch, because the conversation's saved runner
+state belongs to an earlier run that cannot be proven finished. The payload
+holds only the closed refusal `reason` (for example
+`prior_owner_terminal_state_indeterminate`). Continuation admission reads it,
+with no launch, identity, `adapter.invoke` or runner-sourced event, as proof
+that the failed run never had a runner, so Retry and new input need no stop
+record for it.
+
+Explicit continuation writes `native.stopped_conversation_verified` after it
+verifies the retained worker and provider processes stopped. Its payload binds
+the requesting `runId`, retained `ownerRunId`, native session, runner instance,
+process IDs, retained-state fingerprint, successor run, Retry receipt, and local
+workspace identity. The owner can be a preceding terminal
+run when the requesting attempt failed before launch with the same process
+identity. The server checks host-bound process birth and independent provider
+receipts before retiring cleanup ownership. The event does not settle uncertain
+actions or authorize replay of the old session.
 
 ## Verified Local Codex Replacement Evidence
 
@@ -399,6 +642,78 @@ settlement record. The record does not imply exactly-once emission across
 controller recovery, and failure to write it is logged without changing the
 already-settled outcome.
 
+## Storage outage waits
+
+A run waits out a file-storage outage on its critical path: when it starts its
+run log, restores its saved workspace, or saves it. While it waits, the run's live
+status says so, with phase `waiting_for_storage`, for example "Waiting for file
+storage before starting the run log (45s so far)". That status lives in server
+memory and on the live-event stream only. It writes nothing to the run row or
+the run log during the wait.
+
+When the wait ends, the controller writes one record with `eventType:
+"lifecycle"`, `stream: "system"`, and `level: "warn"`. Its message is "Waited Ns
+for file storage before <step>." or, when storage stayed unavailable, "Waited Ns
+for file storage before <step>; it was still unavailable." Its payload holds
+`reason: "storage_outage_wait"`, `purpose` (the step), `waitedMs`, and
+`recovered`. The record stays in the instance run log.
+
+When the outage outlasts that wait, the run fails. Only a run recorded with
+`errorCode: "storage_unavailable"` gets a storage wait: a bounded retry
+(`retryReason: "storage_unavailable_wait"`) that starts again after storage is
+back. Its error says "Paperclip will retry automatically when storage is back"
+only while that retry is scheduled. When the retry budget is spent, the error
+says so and asks for Retry. When no storage wait follows, the error says
+"Paperclip is not retrying it automatically. Retry or send a message to
+continue." That happens when a native recovery already holds the run under
+another code (for example `native_continuation_requires_reconciliation`, where
+its files are kept and its unfinished turn is not replayed), or when the retry
+is refused or cannot be written. A run saved by an earlier release with the
+retry promise under another code reads with the same Retry text, with no
+migration.
+
+## Durable storage timing
+
+A saved remote workspace is one encrypted archive in durable object storage.
+Restoring it before a turn, and saving it after one, runs these steps as named
+run phases:
+
+| Phase | Step |
+| --- | --- |
+| `storage.snapshot.download` | Get the encrypted archive from storage and hash it while it streams. |
+| `storage.snapshot.decrypt` | Decrypt the archive to private scratch. |
+| `storage.snapshot.verify_plaintext` | Hash the decrypted archive against its sealed digest. |
+| `storage.snapshot.publish` | Copy the verified archive to its destination. |
+| `workspace.snapshot.sandbox_restore` | Upload and unpack the archive in the sandbox. |
+| `workspace.snapshot.sandbox_upload` | Inside `sandbox_restore`: copy the archive into the sandbox. |
+| `workspace.snapshot.sandbox_extract` | Inside `sandbox_restore`: verify and unpack the archive, then publish the restored folder. |
+| `storage.snapshot.prior_attempts` | Check whether an earlier upload attempt already landed. |
+| `storage.snapshot.encrypt` | Hash and encrypt the archive in one pass. |
+| `storage.snapshot.digest` | Hash the encrypted file that is uploaded. |
+| `storage.snapshot.put` | Upload the encrypted archive (multipart above 16 MiB). |
+| `storage.snapshot.verify` | Confirm the stored object (its size when the backend checked every part, otherwise a full read-back). |
+
+A restore runs inside run preparation, so each of its steps of 50 ms or more is
+a `run.performance.span` row of the run. A save runs after the turn. Its step
+durations are recorded on its `remote_workspace_snapshot` workspace operation,
+in `metadata.saveTiming.storage`:
+- `priorAttemptCheckMs`, `encryptMs`, `digestMs`, `putMs` and `verifyMs`;
+- `bytes`;
+- `requests`, the storage requests the save sent. These are `requests`,
+  `attempts` (SDK attempts across them), `failedRequests`, `retryDelayMs` (SDK
+  waits between its own retries), `parts`, `throttled` (part sends the backend
+  rate-limited with 503, 429 or SlowDown) and `backoffMs` (the uploader's waits
+  before resending a part).
+
+A restore also records its step durations, `bytes` and `requests` on its
+`remote_workspace_restore` workspace operation, in `metadata.restoreTiming`
+(schema `paperclip.remote-workspace-restore-timing.v1`). A save that reuses an
+earlier upload still reads it back; that read-back is counted in `verifyMs`.
+A throttled part send counts in `throttled` even when it ends the retries,
+and a multipart abort sent during cleanup counts in `requests`.
+
+These are counts and durations only: no object keys, paths or provider text.
+
 ## System notices and final replies
 
 Automatic comments with a stored `system_notice` presentation, including
@@ -434,6 +749,16 @@ byte budgets, including truncation markers. `retrievalTruncated` directs callers
 to the full adapter-bounded text in the run error or transcript. Other provider
 metadata and action payloads are not copied.
 
+When an ACP request fails with a JSON-RPC error, the engine also keeps the
+provider explanation. It reads a string `data`, or the string `data.details`, or
+the string `data.message`, in that order. It adds the explanation on a new line
+after the error message unless the message already contains it. The combined
+text passes through the same redaction and the 4,096-character title bound
+before it becomes the run error, the summary, and the `acpx.error` `message`.
+A numeric JSON-RPC error code appears as the optional integer `rpcCode` in
+`errorMeta` and in the `acpx.error` record. Errors without these fields keep
+their existing message and omit `rpcCode`.
+
 Recovery still uses the typed failure category and the adapter's existing
 classifier. Provider warnings do not become failures, and timeouts or lost
 control channels keep their authoritative failure messages. These diagnostics
@@ -455,7 +780,9 @@ Cancelled runs retain `resultJson.cancellation`: a closed `source` label
 the initiator, reason, and recording time. Recorded stop intent survives adapter
 completion. `controller_lease` means the host stopped its own legacy adapter
 after it lost the durable controller lease; the reason names a closed cause
-(`renewal_rejected`, `renewal_deadline`, or `renewal_error`).
+(`renewal_rejected`, `renewal_deadline`, or `renewal_error`). The watchdog
+retries a failed renewal until the lease deadline, so `renewal_error` means the
+attempts still failed with an error when the deadline passed.
 A lease lost during run setup (for example a rejected renewal while preparing
 the workspace) settles the run `failed` with error code `controller_lease_lost`,
 the same `controller_lease` cancellation evidence, and
@@ -469,11 +796,14 @@ initiator IDs or reason text.
 A lease loss also records `resultJson.controllerLeaseLoss`, including a loss
 during setup that fails the run before adapter dispatch. It holds the closed
 cause and the watchdog timings in milliseconds: `sinceRenewalMs` (since the
-last successful renewal), `renewalPendingMs` (age of a renewal query still in
-flight, or `null`), `deadlineLateMs` (how late the deadline callback ran, for
-`renewal_deadline` only), and `renewalCount`. A long `renewalPendingMs` points
-at a stalled database query; a long `deadlineLateMs` points at a blocked event
-loop. Failure reports carry these bounded numbers and the cause label only.
+last successful renewal), `renewalPendingMs` (age of a renewal operation still
+in progress, including its retries and retry waits, or `null`), `deadlineLateMs`
+(how late the deadline callback ran, when the lease deadline ended the run,
+otherwise `null`), and `renewalCount`. A long `renewalPendingMs` can mean a
+stalled database query or repeated failed attempts with retry waits; the cause
+label tells them apart (`renewal_deadline` or `renewal_error`). A long
+`deadlineLateMs` points at a blocked event loop. Failure reports carry these
+bounded numbers and the cause label only.
 Historical ambiguous cancellations stay `unknown` and do not authorize replay.
 
 Provider tool-definition validation failures use
@@ -490,6 +820,32 @@ method and expected/received thread and turn identifiers. Account updates, skill
 changes, and unrelated thread information do not create a provider notice in
 chat. Chat also omits the matching notice stored by older runners. Real provider
 warnings and errors remain visible.
+
+Provider rate-limit windows use `provider.notice.recorded` with category
+`provider.rate_limits` and scope `account`. Codex sends them as
+`account/rateLimits/updated`. Claude sends them as `usage_update` metadata
+(`_claude/rateLimit`) when it uses a subscription sign-in. The runner merges
+sparse Codex updates and records a notice only when the windows change. The
+notice has one `rateLimits` detail: a JSON snapshot with schema
+`paperclip.provider.rate_limits.v1` (windows with used percent and reset time,
+credits, and the reached window). Chat does not show the notice. The server
+keeps the latest snapshot in the agent's runtime state under
+`providerRateLimits`, and the task properties pane shows it as the assignee's
+**Usage limit**. The snapshot is display data. It does not hold or start work;
+the provider-limit wait reads typed run failures.
+
+Harness status notices use `provider.notice.recorded` with a status category.
+Codex `error` notifications read `error.message`. A notification with
+`willRetry: true` becomes a recoverable `provider_retry` notice. A final error
+keeps category `error`. The `CodexErrorInfo` kind, the HTTP status, and the
+reconnect attempt count become notice details. Claude compaction, model
+fallback, and SDK informational banners arrive as ACP message text without a
+message identity. The ACPX layer records them as `context_compaction`,
+`model_fallback`, or `provider_informational` notices instead of answer text.
+Compaction start and end share one notice identity and carry a `Phase` detail.
+The task chat shows these notices as inline status chips. A retry chip fades
+after later provider work. A final provider error shows the real provider
+message. Generic warnings stay out of chat as before.
 
 Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
 
@@ -624,3 +980,100 @@ write the warning must not replace the provider outcome or stop lease release.
 cannot apply company export settings. Its payload contains only a closed reason
 and the settings revision. It carries no endpoint, credential, secret reference
 or resolver error. Recording the diagnostic never contacts a destination.
+
+## Runtime activity
+
+`runtime.activity.recorded` is a P1 Runner PRP event with a closed
+`{ namespace, activityKey }` payload. `namespace` groups a producer's activity
+types under a stable name. `activityKey` identifies an activity within that group.
+Consumers use the pair to select a response to activity in the current run.
+
+For example, `{ namespace: "example.computer", activityKey: "desktop.used" }`
+records successful desktop use. Core can map that activity to a Desktop viewer
+for the task's running agent. The authenticated event envelope supplies the run,
+session, source sequence and emission time. Core resolves the company, task and
+agent through the run's existing authorization checks.
+
+Both activity identifiers contain 1–160 Unicode code points and exclude C0
+controls and DEL. Callers cannot supply run, task or agent identity in this payload.
+
+The ordinary authenticated Runner event is the durable record. Normal source-event
+acknowledgement and replay deduplicate delivery. Existing run-read authorization
+and secret redaction apply to saved and live events. Recording reported activity
+is not independent proof that it happened and grants no resource permission.
+
+The native transport forwards runtime activity as a run-scoped fact. It retains
+the authenticated run identity across warm session attachment. Provider messages
+cannot impersonate this transport-owned notification.
+New-run activity waits for warm attachment to finish. A failed attachment does
+not retarget queued activity to the previous run.
+
+Runner accepts local activity records only with an opaque context
+captured before the operation. Warm run attachment and process recovery rotate
+that authority. Runner supplies the run identity from its active authenticated
+binding. Optional hint failure does not fail the underlying operation. No output
+text is scanned and no synthetic receipt is written.
+
+`GET /api/heartbeat-runs/:runId/events?view=plugin-panels` reads these events and
+returns only installed agent task-panel contributions under normal run-read and
+telemetry-read authorization. Ordinary PRP reads/live delivery retain run-secret
+and current-user redaction. The task page uses one history read on mount/reconnect
+and the existing live transcript stream, then makes a bounded plugin readiness
+check. No panel discovery timer scans runs or provider state while connected.
+
+## Post-result failure diagnostics
+
+`native.post_result_failure` records `stage: post_result_execution`, a closed
+`category` (`io_not_found`, `io_permission_denied`, `io_failure`, or
+`execution_failure`), and `resultAlreadyAccepted: true`. It requires an accepted
+selected result and exact current, unexpired controller authority. A busy diagnostic
+row lock is skipped. Reporting is best effort under the existing 60-second control
+bound; the sink can finish later and emit a late event. The `native_session_lease_lost`
+control classification stays unchanged. The labels grant no recovery, result,
+Stop, provider-work or payment authority and do not establish a hosted failure cause.
+
+## Payload storage
+
+Structured events in this guide remain in `heartbeat_run_events`. When the
+instance's existing file storage uses S3, new stdout/stderr NDJSON logs use the
+same stack bucket and configured prefix under `run-logs/`, with existing run
+references in Postgres. Local-disk instances remain local. Raw provider
+traces have their own restricted, encrypted object path. See
+[run evidence storage](run-evidence-storage.md) for batching, durability,
+configuration, migration, retention, and qualification boundaries.
+
+### Event commit stall diagnostics
+
+A Runner event commit stall records the first safe error code in the error and
+up to three nested `cause` objects. This retains database and transport codes
+when an adapter wraps the original error. Each code has the existing 80-character
+identifier limit. If no safe code exists, the diagnostic uses the outer error's
+safe name. It never copies exception messages, SQL, or query arguments. Cyclic or
+long cause chains stop at the same four-object limit.
+
+This only improves the recorded cause. Event acknowledgement, replay integrity,
+the bounded stall policy, and operator recovery requirements stay unchanged.
+
+A later successful continuation does not establish the cause of an earlier
+failure that recorded only `Error`.
+
+### Failure cause of generic run failures
+
+A run that fails with a generic code (`adapter_failed`, `setup_failed`) keeps
+that code, because callers compare against it, and records
+`resultJson.failureCause`: one identifier of at most 80 characters
+(`[A-Za-z0-9_.:-]`). For a thrown error it is the provider's HTTP status
+(`provider_http_429`) or category, else the first safe code in the error and up
+to three nested `cause` objects (`40001`, `ECONNRESET`, the same extraction as
+the Runner's event commit stall diagnostics), else the error's class name. For
+an adapter result without a code it is the error family, `signal_<name>`,
+`process_cancellation_failed`, `exit_code_<n>` or `adapter_reported_error`. It
+never copies message text. The server's failure log line carries the same
+cause, and the board's run list shows it, for example "adapter failed (40001)".
+Older rows have no cause and read as before.
+
+Run error text keeps SQL statements off the board: a Drizzle `Failed query:`
+statement and its parameters, or unwrapped statement text with `$n`
+placeholders, is replaced with "Database query failed (<cause>)". The wrapper
+text before the statement is kept.
+

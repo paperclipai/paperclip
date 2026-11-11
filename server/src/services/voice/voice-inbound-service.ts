@@ -1,9 +1,10 @@
+import { voiceInboundRetention } from "./voice-inbound-retention.js";
 import { voiceInboundCleanup } from "./voice-inbound-cleanup.js";
 import { notifyVoiceInbound } from "./voice-inbound-notifications.js";
 import { notifyVoiceChange } from "./voice-recovery-notifications.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, createHmac, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, lte, isNull, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { chatEndpointResources, chatConversations, chatActions, chatEndpoints, chatVoiceInboundCalls, chatVoicePhoneLines, chatVoiceReports, chatVoiceSessions, activityLog, type Db } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET, LOW_TRUST_REVIEW_PRESET_VERSION, LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION } from "@paperclipai/shared";
@@ -122,8 +123,9 @@ export function voiceInboundService(db: Db, options: {
         if (prior) return prior;
         const recent = await tx.select({state: chatVoiceInboundCalls.state, expiresAt: chatVoiceInboundCalls.expiresAt}).from(chatVoiceInboundCalls).where(and(eq(chatVoiceInboundCalls.companyId, row.companyId), eq(chatVoiceInboundCalls.endpointId, row.id), gte(chatVoiceInboundCalls.createdAt, new Date(Date.now() - 3_600_000)))).limit(60);
         if (recent.length >= 60 || recent.filter(call => ["guest_intake", "awaiting_approval", "approving"].includes(call.state) && call.expiresAt.getTime() > Date.now()).length >= 10) throw conflict("This phone line has reached its incoming call limit. Try again later.");
-        await notifyVoiceInbound(tx, { kind: "endpoint", id: row.id });
-        const [admission] = await tx.insert(chatVoiceInboundCalls).values({companyId: row.companyId, endpointId: row.id, providerSessionId, providerAccountId: event.organization_id, state: line.guestIntake ? "guest_intake" : "awaiting_approval", approvalCode: String(randomInt(100000, 1000000)), generation: context.generation, credentialFingerprint: context.fingerprint, toolTokenHash: voiceTokenHash(capability), requestFingerprint: fingerprint, callerAuthority: line.guestIntake ? "guest_intake" : null, expiresAt: new Date(Date.now() + (line.guestIntake ? 600_000 : 120_000))}).onConflictDoNothing().returning();
+        const admissionId = randomUUID();
+        await notifyVoiceInbound(tx, { kind: "admission", id: admissionId });
+        const [admission] = await tx.insert(chatVoiceInboundCalls).values({id: admissionId, companyId: row.companyId, endpointId: row.id, providerSessionId, providerAccountId: event.organization_id, state: line.guestIntake ? "guest_intake" : "awaiting_approval", approvalCode: String(randomInt(100000, 1000000)), generation: context.generation, credentialFingerprint: context.fingerprint, toolTokenHash: voiceTokenHash(capability), requestFingerprint: fingerprint, callerAuthority: line.guestIntake ? "guest_intake" : null, expiresAt: new Date(Date.now() + (line.guestIntake ? 600_000 : 120_000))}).onConflictDoNothing().returning();
         return admission;
       });
       if (!existing || existing.requestFingerprint !== fingerprint || existing.toolTokenHash !== voiceTokenHash(capability) || !["awaiting_approval", "guest_intake"].includes(existing.state) || existing.expiresAt.getTime() <= Date.now()) throw forbidden("Incoming call is no longer pending");
@@ -283,15 +285,13 @@ export function voiceInboundService(db: Db, options: {
     if ((await client.inspectSession(call.providerSessionId)).endedAt) return true;
     return (await client.endSession(call.providerSessionId)).confirmed;
   });
-  async function pruneHistory() {
-    // Retention cannot erase an unconfirmed physical cleanup obligation.
-    await db.delete(chatVoiceInboundCalls).where(and(isNull(chatVoiceInboundCalls.sessionId), isNull(chatVoiceInboundCalls.intakeIssueId), isNotNull(chatVoiceInboundCalls.cleanupConfirmedAt), inArray(chatVoiceInboundCalls.state, ["denied", "expired", "ended"]), lte(chatVoiceInboundCalls.expiresAt, new Date(Date.now() - 7 * 86_400_000)), lte(chatVoiceInboundCalls.updatedAt, new Date(Date.now() - 7 * 86_400_000))));
-  }
-  /** Explicit one-shot compatibility path. Recurring maintenance only owns retention. */
+  const retention = voiceInboundRetention(db);
+  const pruneHistory = retention.prune;
+  /** Explicit one-shot compatibility path; never used by periodic maintenance. */
   async function reconcile(limit: number) {
     const rows = (await cleanup.load()).filter(row => row.dueAt <= Date.now()).sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id)).slice(0, limit);
     for (const row of rows) await cleanup.check(row.id).catch(error => logger.warn({ err: error, callId: row.id }, "Incoming call cleanup remains pending"));
     await pruneHistory();
   }
-  return {configuration, saveConfiguration, lifecycle, pendingTool, list, decide, reconcile, pruneHistory, registerCleanupWork: cleanup.register, authorizeGuest, history};
+  return {configuration, saveConfiguration, lifecycle, pendingTool, list, decide, reconcile, pruneHistory, registerCleanupWork: cleanup.register, registerRetentionWork: retention.register, authorizeGuest, history};
 }

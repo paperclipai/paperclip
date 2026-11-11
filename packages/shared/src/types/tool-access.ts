@@ -266,6 +266,9 @@ export interface ConnectionGrant {
       appSlug?: string;
       accessRevision?: string;
       lastAccessRefreshAt?: string;
+      /** Unsettled Cloud binding changes; retained until the exact revision is delivered. */
+      bindingSync?: { id: string; removeInstallationIds: string[] };
+      continuityRetry?: { at: string; attempts: number; revision: string };
       lastWebhookAt?: string;
       webhookHealth?: "pending" | "healthy" | "unhealthy";
     };
@@ -751,6 +754,8 @@ export interface ToolMcpGatewayToken {
   createdByUserId: string | null;
   /** Agent client delegation. Null with an issuing agent identifies an unbound legacy client. */
   responsibleUserId?: string | null;
+  /** True for an agent-created client token whose value has not yet been revealed to its responsible person. */
+  pendingReveal?: boolean;
   createdAt: Date | string;
   updatedAt: Date | string;
 }
@@ -780,6 +785,12 @@ export interface ToolProfileSummary {
   assignmentCount: number;
   appliesToAgentCount: number;
   isCompanyDefault: boolean;
+}
+
+/** Saved configuration only; no effective-access summary or pending-review calculation. */
+export interface ToolProfileConfiguration extends Omit<ToolProfile, "newToolsPendingCount"> {
+  entries: ToolProfileEntry[];
+  bindings: ToolProfileBinding[];
 }
 
 export interface ToolProfileWithDetails extends ToolProfile {
@@ -1009,6 +1020,11 @@ export interface ToolAppAttentionItem {
   newToolsPendingReviewCount: number;
   newToolsPendingProfiles: ToolAppAttentionProfileNewTools[];
   reasons: ToolAppAttentionReason[];
+}
+
+export interface ToolConnectionReviewCounts {
+  pendingActionRequestCount: number;
+  quarantinedCatalogEntryCount: number;
 }
 
 export interface ToolAppsAttentionResponse {

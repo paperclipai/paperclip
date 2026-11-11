@@ -37,6 +37,7 @@ import {
   type AdapterExecutionTarget,
   type AdapterExecutionTargetPaperclipBridgeHandle,
   type AdapterExecutionTargetProcessSessionBridgeHandle,
+  type AdapterExecutionTargetProcessSessionTerminalEvidence,
   type AdapterExecutionTargetTimeoutResolution,
   type AdapterManagedRuntimeAsset,
   type PreparedAdapterExecutionTargetRuntime,
@@ -50,9 +51,12 @@ import {
   classifyToolDefinitionFailure,
   formatTerminalSessionFailure,
   sanitizeTerminalSessionFailure,
+  typedSessionFailureClientCapabilities,
+  typedTerminalTurnResult,
   type AcpxTerminalSessionFailure,
   type AcpxTerminalSessionFailureDiagnostic,
 } from "./terminal-session-failure.js";
+import { assertNoHostAcpxAuthEnvironment, splitWindowsAgentCommand, stockAcpRuntimeOptions, type AcpxAgentSpawnHooks } from "./stock-runtime-options.js";
 export type { AcpxTerminalSessionFailure } from "./terminal-session-failure.js";
 import type { WorkspaceRestoreFailureCode, WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
 import type { WorkspaceRestoreDiagnostic } from "../workspace-restore-diagnostics.js";
@@ -210,12 +214,12 @@ function flushChildStderr(state: ChildStderrState) {
   state.pendingLiveLine = "";
 }
 
-type PaperclipAcpRuntimeOptions = AcpRuntimeOptions & {
+type PaperclipAcpRuntimeOptions = AcpRuntimeOptions & AcpxAgentSpawnHooks & {
   onAgentSpawn?: (meta: AcpxAgentProcessIdentity) => Promise<void>;
   // Return the current-run parent-context token. It is the `task.run` token
   // during startup and after the turn, and the `agent.turn` token during the
   // turn. A detached exec reads this getter to parent to the live run span. The
-  // real `createAcpRuntime` ignores this optional field.
+  // real runtime factory drops this field before creating the ACPX runtime.
   getRuntimeParentContext?: () => StartupSpanContext | undefined;
 };
 
@@ -2655,11 +2659,16 @@ async function buildRuntime(input: {
   }
   // The relay runs on the host with the sanitized remote launch environment.
   // Its /usr/bin/env node shebang cannot rely on that environment's PATH.
-  const overrideCommand = processSessionBridge?.agentCommand
-    ? [process.execPath, processSessionBridge.agentCommand]
-      .map((part) => JSON.stringify(part.replaceAll("\\", "/"))).join(" ")
+  const relayArgv = processSessionBridge?.agentCommand
+    ? [process.execPath, processSessionBridge.agentCommand].map((part) => part.replaceAll("\\", "/"))
+    : null;
+  const overrideCommand = relayArgv
+    ? relayArgv.map((part) => JSON.stringify(part)).join(" ")
     : agentCommand;
-  const overrides = overrideCommand ? { [acpxAgent]: overrideCommand } : undefined;
+  // ACPX launches only argv arrays on Windows; keep POSIX command identities unchanged.
+  const overrides = overrideCommand
+    ? { [acpxAgent]: process.platform === "win32" ? relayArgv ?? splitWindowsAgentCommand(overrideCommand) : overrideCommand }
+    : undefined;
   const agentRegistry = createAgentRegistry({ overrides });
   const loggedEnv = buildInvocationEnvForLogs(env, {
     runtimeEnv,
@@ -3319,6 +3328,28 @@ function isPendingAcpTool(tool: { status?: string }): boolean {
 }
 
 /**
+ * How the sandbox agent process session ended, when the bridge saw it end.
+ * Separates a process that exited or was killed from a host proxy that closed
+ * by itself. Unknown exit codes and signals are left out.
+ */
+export function summarizeAcpProcessTerminal(
+  evidence: AdapterExecutionTargetProcessSessionTerminalEvidence | null | undefined,
+): {
+  acpProcessTerminalSource?: AdapterExecutionTargetProcessSessionTerminalEvidence["source"];
+  acpProcessTerminalOutcome?: AdapterExecutionTargetProcessSessionTerminalEvidence["outcome"];
+  acpProcessTerminalExitCode?: number;
+  acpProcessTerminalSignal?: string;
+} {
+  if (!evidence) return {};
+  return {
+    acpProcessTerminalSource: evidence.source,
+    acpProcessTerminalOutcome: evidence.outcome,
+    ...(typeof evidence.exitCode === "number" ? { acpProcessTerminalExitCode: evidence.exitCode } : {}),
+    ...(evidence.signal !== "unknown" ? { acpProcessTerminalSignal: evidence.signal } : {}),
+  };
+}
+
+/**
  * Activity as of the moment the turn's stop fired, for a stopped turn only.
  * Separates a turn that went silent long before its deadline from one that
  * was still working. Reports only ages and closed ACP tool-kind labels.
@@ -3623,9 +3654,22 @@ async function emitAcpxFailure(input: {
   childStderrTail: string | null;
 }> {
   const { ctx, prepared, err, phase, messageOverride, suppressChildStderrTail } = input;
+  const requestError = parseObject(err);
+  const data = parseObject(requestError.data);
+  const detail = typeof requestError.data === "string"
+    ? requestError.data
+    : asString(data.details, asString(data.message, ""));
   const rawMessage = err instanceof Error ? err.message : String(err);
-  const message = messageOverride ?? rawMessage;
+  const message = messageOverride ?? (detail
+    ? sanitizeTerminalSessionFailure({
+      category: "unknown",
+      title: rawMessage.includes(detail) ? rawMessage : `${rawMessage}\n${detail}`,
+    }, prepared.env, ctx.authToken, parseObject(ctx.config.env)).title ?? "ACP request failed."
+    : rawMessage);
   const classified = classifyError(err, phase);
+  if (typeof requestError.code === "number" && Number.isSafeInteger(requestError.code)) {
+    classified.errorMeta = { ...classified.errorMeta, rpcCode: requestError.code };
+  }
   const childStderrTail = suppressChildStderrTail
     ? null
     : await readChildStderrTail({ logPath: prepared.childStderrLogPath });
@@ -4031,7 +4075,12 @@ function openTurnSpan(
 }
 
 export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
-  const createRuntime = deps.createRuntime ?? createAcpRuntime;
+  const createRuntime = deps.createRuntime
+    ?? ((options: PaperclipAcpRuntimeOptions) => {
+      assertNoHostAcpxAuthEnvironment();
+      const { getRuntimeParentContext: _parentContext, ...acpx } = stockAcpRuntimeOptions(options);
+      return createAcpRuntime(acpx);
+    });
   const now = deps.now ?? (() => Date.now());
   const duplexLossCancelDeadlineMs = deps.duplexLossCancelDeadlineMs ?? ACPX_DUPLEX_LOSS_CANCEL_DEADLINE_MS;
   const stalledToolCheckIntervalMs = deps.stalledToolCheckIntervalMs ?? ACPX_STALLED_TOOL_CHECK_INTERVAL_MS;
@@ -4315,6 +4364,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // `endSession` step can cancel a running turn before it closes the runtime
       // (the cancel-before-close order). The turn wrapper assigns it in `turnStart`.
       let activeTurn: AcpRuntimeTurn | null = null;
+      // Receives this turn's typed AIR failure, read from its prompt response `_meta`.
+      let activeTurnFailureHandler: (failure: AcpxTerminalSessionFailure) => void = () => {};
       let terminalFailureClassification: AcpxTerminalFailureClassification | null = null;
       let terminalSessionFailure: AcpxTerminalSessionFailureDiagnostic | null = null;
       // How the settlement `endSession` step must release the runtime for the path
@@ -4462,6 +4513,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // target mutable so a later agent respawn records identity on the current
         // heartbeat instead of the run that originally created the runtime.
         processIdentitySink.current = ctx.onSpawn;
+        processIdentitySink.launchEnvironment = prepared.env;
         // The process-session bridge starts its provider inside the sandbox.
         // ACPX observes only the host relay on that lane, so neither its spawn
         // callback nor a cached relay establishes physical provider reuse.
@@ -4477,6 +4529,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // Resume with this run's launch environment; keep it out of the saved
         // conversation record without mutating the live runtime's options.
         const runtimeStore = createEphemeralSessionEnvironmentStore(persistedRuntimeStore, prepared.env);
+        const launchSink = processIdentitySink;
         const runtimeOptions: PaperclipAcpRuntimeOptions = {
           cwd: prepared.cwd,
           // Host-only spawn cwd for the relay proxy on the remote process-session
@@ -4497,8 +4550,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           verbose: prepared.acpxAgent === "claude",
           // The engine passes a complete, sanitized launch environment. ACPX
           // must not merge the Paperclip server's ambient environment back in
-          // when it spawns the provider child.
-          inheritProcessEnv: false,
+          // when it spawns the provider child, so the spawn uses exactly it.
+          agentEnvironment: () => launchSink.launchEnvironment ?? {},
+          // ACPX enables Grok's API-key login only when the agent would inherit
+          // XAI_API_KEY; the server's own key must never qualify.
+          agentProcessEnvBlock: ["XAI_API_KEY"],
+          // ACP agents that support it report terminal failures as typed AIR metadata.
+          clientCapabilities: typedSessionFailureClientCapabilities(),
           // Observe permission requests without deciding them: returning
           // undefined leaves the decision to ACPX's permission-mode resolver.
           onPermissionRequest: async (request) => {
@@ -4770,7 +4828,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ...referencedProjectStagingFailuresField,
             model: prepared.requestedModel || null,
             clearSession,
-            resultJson: { phase: "ensure_session" },
+            resultJson: {
+              phase: "ensure_session",
+              ...summarizeAcpProcessTerminal(prepared.processSessionBridge?.readTerminalEvidence?.()),
+            },
             summary: message,
           };
           return settleFor("handshake", err);
@@ -4800,7 +4861,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ...billingFields,
             ...referencedProjectStagingFailuresField,
             model: prepared.requestedModel || null,
-            resultJson: { phase: "ensure_session" },
+            resultJson: {
+              phase: "ensure_session",
+              ...summarizeAcpProcessTerminal(prepared.processSessionBridge?.readTerminalEvidence?.()),
+            },
             summary: "ACPX did not return a runtime session handle.",
           };
           return settleFor(
@@ -4840,7 +4904,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           ...referencedProjectStagingFailuresField,
           model: prepared.requestedModel || null,
           clearSession,
-          resultJson: { phase: "create_runtime" },
+          resultJson: {
+            phase: "create_runtime",
+            ...summarizeAcpProcessTerminal(prepared.processSessionBridge?.readTerminalEvidence?.()),
+          },
           summary: message,
         };
         return settleFor("runtime_create", err);
@@ -4897,6 +4964,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             requestedModel: prepared.requestedModel || null,
             requestedThinkingEffort: prepared.requestedThinkingEffort || null,
             fastMode: prepared.fastMode,
+            ...summarizeAcpProcessTerminal(prepared.processSessionBridge?.readTerminalEvidence?.()),
           },
           summary: message,
         };
@@ -5041,6 +5109,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // After entering startTurn, a thrown error cannot prove the provider
         // received no work. Only failures before this boundary are free to settle.
         turnDispatchAttempted = true;
+        // Diagnostics are retained even when an adapter has no recovery
+        // classifier. Redact before bounding so partial secrets cannot leak.
+        activeTurnFailureHandler = (failure: AcpxTerminalSessionFailure) => {
+          terminalFailureClassification = classifyToolDefinitionFailure(failure)
+            ?? deps.classifyTerminalSessionFailure?.(failure, new Date(now())) ?? null;
+          terminalSessionFailure = sanitizeTerminalSessionFailure(
+            failure, prepared.env, ctx.authToken, parseObject(ctx.config.env),
+          );
+        };
         const turn = runtime.startTurn({
           handle: sessionHandle,
           text: runPrompt,
@@ -5048,16 +5125,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           requestId: ctx.runId,
           timeoutMs: startTimeoutMs,
           signal,
-          // The callback belongs to this turn, including when a runtime is reused.
-          // Diagnostics are retained even when an adapter has no recovery
-          // classifier. Redact before bounding so partial secrets cannot leak.
-          onTerminalSessionFailure: (failure: AcpxTerminalSessionFailure) => {
-            terminalFailureClassification = classifyToolDefinitionFailure(failure)
-              ?? deps.classifyTerminalSessionFailure?.(failure, new Date(now())) ?? null;
-            terminalSessionFailure = sanitizeTerminalSessionFailure(
-              failure, prepared.env, ctx.authToken, parseObject(ctx.config.env),
-            );
-          },
         });
         activeTurn = turn;
         // A latched sandbox duplex-channel loss otherwise has no way to reach
@@ -5251,7 +5318,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // `turn.result` settles only when the agent's provider process
         // returns or rejects; a latched loss that armed the deadline after
         // the event drain already ended must still bound this wait.
-        return await Promise.race([turn.result, lossDeadline.then(cancelDeadlineTerminal)]);
+        // The typed-failure handler belongs to this turn, including when a runtime is reused.
+        const onTerminalSessionFailure = activeTurnFailureHandler;
+        const result = turn.result.then((settled) => typedTerminalTurnResult(settled, onTerminalSessionFailure));
+        return await Promise.race([result, lossDeadline.then(cancelDeadlineTerminal)]);
       };
       const stepTurnFinalize = async (
         input: TurnFinalizeInput<AcpRuntimeTurnResult>,
@@ -5269,6 +5339,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           acpPendingToolCount: pendingTools.length,
           acpToolInventoryComplete: !incompleteToolInventory,
           ...summarizeAcpStopActivity(turnStopRequestedAt, lastRuntimeEventBeforeStopAt, pendingToolsAtStop ?? pendingTools),
+          ...summarizeAcpProcessTerminal(prepared.processSessionBridge?.readTerminalEvidence?.()),
         };
         if (input.kind === "terminal") {
         const terminal = input.terminal;

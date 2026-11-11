@@ -383,7 +383,7 @@ export function createChatCredentials(db: Db, options: ChatCredentialsOptions) {
           .set({ credentialSecretRefs: refs, updatedAt: new Date() })
           .where(eq(toolConnections.id, endpoint.connectionId));
         if (changedFields.length) {
-          await notifyChatEndpointWork(tx, endpoint.connectionId);
+          await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
           const [currentEndpoint] = await tx.select({ setup: chatEndpoints.setup }).from(chatEndpoints)
             .where(and(eq(chatEndpoints.id, endpoint.id), eq(chatEndpoints.companyId, endpoint.companyId))).for("update");
           if (!currentEndpoint) throw notFound("Chat endpoint not found");

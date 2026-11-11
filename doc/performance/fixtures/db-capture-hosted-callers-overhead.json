@@ -1,0 +1,1305 @@
+[
+  {
+    "kind": "host",
+    "node": "v24.22.2",
+    "execPath": "<pinned Node v24.22.2 executable; exact local path retained with original evidence>",
+    "base": "09162fe893b464dd2ccdafd14bd3ef1611202a86",
+    "logicalCpus": 18,
+    "loadavg": [
+      7.125,
+      6.66455078125,
+      6.1240234375
+    ],
+    "count": 1000,
+    "boundary": "serial instrumented fake-driver process; real bundled Drizzle/capture; no network, database, output flush or assertions in timing",
+    "candidateCaptureSha256": "bdc3fceee77bf5cf6dcc2784de6cdf9631c3446e300f1c3b194312c203eba1dd"
+  },
+  {
+    "kind": "sample",
+    "round": 0,
+    "variant": "current",
+    "mode": "disabled",
+    "count": 1000,
+    "cpuUsPerQuery": 11.767,
+    "wallUsPerQuery": 8.897500000000008,
+    "calls": 1000,
+    "entries": []
+  },
+  {
+    "kind": "sample",
+    "round": 0,
+    "variant": "candidate",
+    "mode": "disabled",
+    "count": 1000,
+    "cpuUsPerQuery": 12.59,
+    "wallUsPerQuery": 8.665041000000002,
+    "calls": 1000,
+    "entries": []
+  },
+  {
+    "kind": "sample",
+    "round": 0,
+    "variant": "current",
+    "mode": "unowned",
+    "count": 1000,
+    "cpuUsPerQuery": 21.548,
+    "wallUsPerQuery": 16.43412499999999,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "unattributed",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 0,
+    "variant": "candidate",
+    "mode": "unowned",
+    "count": 1000,
+    "cpuUsPerQuery": 24.97,
+    "wallUsPerQuery": 16.37704099999999,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "unattributed",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9471:13"
+        ]
+      },
+      {
+        "owner": "unattributed",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9468:13"
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 0,
+    "variant": "current",
+    "mode": "http.request",
+    "count": 1000,
+    "cpuUsPerQuery": 15.461,
+    "wallUsPerQuery": 10.909791999999982,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "http.request",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 0,
+    "variant": "candidate",
+    "mode": "http.request",
+    "count": 1000,
+    "cpuUsPerQuery": 20.058,
+    "wallUsPerQuery": 15.985584000000017,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "http.request",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9471:13"
+        ]
+      },
+      {
+        "owner": "http.request",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9468:13"
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 0,
+    "variant": "current",
+    "mode": "response.presentation",
+    "count": 1000,
+    "cpuUsPerQuery": 11.039,
+    "wallUsPerQuery": 10.400749999999988,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "response.presentation",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 0,
+    "variant": "candidate",
+    "mode": "response.presentation",
+    "count": 1000,
+    "cpuUsPerQuery": 12.913,
+    "wallUsPerQuery": 10.773500000000013,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "response.presentation",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 1,
+    "variant": "candidate",
+    "mode": "disabled",
+    "count": 1000,
+    "cpuUsPerQuery": 9.934,
+    "wallUsPerQuery": 8.25970799999999,
+    "calls": 1000,
+    "entries": []
+  },
+  {
+    "kind": "sample",
+    "round": 1,
+    "variant": "current",
+    "mode": "disabled",
+    "count": 1000,
+    "cpuUsPerQuery": 16.865,
+    "wallUsPerQuery": 8.917332999999983,
+    "calls": 1000,
+    "entries": []
+  },
+  {
+    "kind": "sample",
+    "round": 1,
+    "variant": "candidate",
+    "mode": "unowned",
+    "count": 1000,
+    "cpuUsPerQuery": 16.868,
+    "wallUsPerQuery": 15.450959000000012,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "unattributed",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9471:13"
+        ]
+      },
+      {
+        "owner": "unattributed",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9468:13"
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 1,
+    "variant": "current",
+    "mode": "unowned",
+    "count": 1000,
+    "cpuUsPerQuery": 21.675,
+    "wallUsPerQuery": 16.195375000000013,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "unattributed",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 1,
+    "variant": "candidate",
+    "mode": "http.request",
+    "count": 1000,
+    "cpuUsPerQuery": 19.058,
+    "wallUsPerQuery": 15.357625000000041,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "http.request",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9471:13"
+        ]
+      },
+      {
+        "owner": "http.request",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9468:13"
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 1,
+    "variant": "current",
+    "mode": "http.request",
+    "count": 1000,
+    "cpuUsPerQuery": 15.661,
+    "wallUsPerQuery": 10.571124999999995,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "http.request",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 1,
+    "variant": "candidate",
+    "mode": "response.presentation",
+    "count": 1000,
+    "cpuUsPerQuery": 16.804,
+    "wallUsPerQuery": 10.809834000000025,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "response.presentation",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 1,
+    "variant": "current",
+    "mode": "response.presentation",
+    "count": 1000,
+    "cpuUsPerQuery": 10.704,
+    "wallUsPerQuery": 10.500125000000025,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "response.presentation",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 2,
+    "variant": "current",
+    "mode": "disabled",
+    "count": 1000,
+    "cpuUsPerQuery": 25.037,
+    "wallUsPerQuery": 8.543166999999983,
+    "calls": 1000,
+    "entries": []
+  },
+  {
+    "kind": "sample",
+    "round": 2,
+    "variant": "candidate",
+    "mode": "disabled",
+    "count": 1000,
+    "cpuUsPerQuery": 31.978,
+    "wallUsPerQuery": 8.642375000000014,
+    "calls": 1000,
+    "entries": []
+  },
+  {
+    "kind": "sample",
+    "round": 2,
+    "variant": "current",
+    "mode": "unowned",
+    "count": 1000,
+    "cpuUsPerQuery": 28.522,
+    "wallUsPerQuery": 15.685416000000032,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "unattributed",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 2,
+    "variant": "candidate",
+    "mode": "unowned",
+    "count": 1000,
+    "cpuUsPerQuery": 21.865,
+    "wallUsPerQuery": 16.07820799999996,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "unattributed",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9471:13"
+        ]
+      },
+      {
+        "owner": "unattributed",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9468:13"
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 2,
+    "variant": "current",
+    "mode": "http.request",
+    "count": 1000,
+    "cpuUsPerQuery": 17.897,
+    "wallUsPerQuery": 10.527792000000034,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "http.request",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 2,
+    "variant": "candidate",
+    "mode": "http.request",
+    "count": 1000,
+    "cpuUsPerQuery": 17.662,
+    "wallUsPerQuery": 15.169457999999961,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "http.request",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9471:13"
+        ]
+      },
+      {
+        "owner": "http.request",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9468:13"
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 2,
+    "variant": "current",
+    "mode": "response.presentation",
+    "count": 1000,
+    "cpuUsPerQuery": 10.148,
+    "wallUsPerQuery": 9.870416999999977,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "response.presentation",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 2,
+    "variant": "candidate",
+    "mode": "response.presentation",
+    "count": 1000,
+    "cpuUsPerQuery": 10.126,
+    "wallUsPerQuery": 9.869708000000003,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "response.presentation",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 3,
+    "variant": "candidate",
+    "mode": "disabled",
+    "count": 1000,
+    "cpuUsPerQuery": 8.294,
+    "wallUsPerQuery": 8.219832999999996,
+    "calls": 1000,
+    "entries": []
+  },
+  {
+    "kind": "sample",
+    "round": 3,
+    "variant": "current",
+    "mode": "disabled",
+    "count": 1000,
+    "cpuUsPerQuery": 7.687,
+    "wallUsPerQuery": 7.63733400000001,
+    "calls": 1000,
+    "entries": []
+  },
+  {
+    "kind": "sample",
+    "round": 3,
+    "variant": "candidate",
+    "mode": "unowned",
+    "count": 1000,
+    "cpuUsPerQuery": 33.807,
+    "wallUsPerQuery": 15.641625000000033,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "unattributed",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9471:13"
+        ]
+      },
+      {
+        "owner": "unattributed",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9468:13"
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 3,
+    "variant": "current",
+    "mode": "unowned",
+    "count": 1000,
+    "cpuUsPerQuery": 32.634,
+    "wallUsPerQuery": 15.841042000000016,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "unattributed",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 3,
+    "variant": "candidate",
+    "mode": "http.request",
+    "count": 1000,
+    "cpuUsPerQuery": 15.08,
+    "wallUsPerQuery": 14.588625000000036,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "http.request",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9471:13"
+        ]
+      },
+      {
+        "owner": "http.request",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9468:13"
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 3,
+    "variant": "current",
+    "mode": "http.request",
+    "count": 1000,
+    "cpuUsPerQuery": 10.075,
+    "wallUsPerQuery": 9.658459000000109,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "http.request",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 3,
+    "variant": "candidate",
+    "mode": "response.presentation",
+    "count": 1000,
+    "cpuUsPerQuery": 9.884,
+    "wallUsPerQuery": 9.682833999999957,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "response.presentation",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 3,
+    "variant": "current",
+    "mode": "response.presentation",
+    "count": 1000,
+    "cpuUsPerQuery": 9.656,
+    "wallUsPerQuery": 9.543583000000014,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "response.presentation",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 4,
+    "variant": "current",
+    "mode": "disabled",
+    "count": 1000,
+    "cpuUsPerQuery": 10.043,
+    "wallUsPerQuery": 7.930874999999901,
+    "calls": 1000,
+    "entries": []
+  },
+  {
+    "kind": "sample",
+    "round": 4,
+    "variant": "candidate",
+    "mode": "disabled",
+    "count": 1000,
+    "cpuUsPerQuery": 9.838,
+    "wallUsPerQuery": 7.896916000000033,
+    "calls": 1000,
+    "entries": []
+  },
+  {
+    "kind": "sample",
+    "round": 4,
+    "variant": "current",
+    "mode": "unowned",
+    "count": 1000,
+    "cpuUsPerQuery": 14.754,
+    "wallUsPerQuery": 14.633041999999932,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "unattributed",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 4,
+    "variant": "candidate",
+    "mode": "unowned",
+    "count": 1000,
+    "cpuUsPerQuery": 14.563,
+    "wallUsPerQuery": 14.370415999999977,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "unattributed",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9471:13"
+        ]
+      },
+      {
+        "owner": "unattributed",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9468:13"
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 4,
+    "variant": "current",
+    "mode": "http.request",
+    "count": 1000,
+    "cpuUsPerQuery": 9.734,
+    "wallUsPerQuery": 9.531333000000016,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "http.request",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 4,
+    "variant": "candidate",
+    "mode": "http.request",
+    "count": 1000,
+    "cpuUsPerQuery": 15.634,
+    "wallUsPerQuery": 14.889666000000034,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "http.request",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9471:13"
+        ]
+      },
+      {
+        "owner": "http.request",
+        "calls": 500,
+        "callers": [
+          "dist-runtime/server.mjs:9468:13"
+        ]
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 4,
+    "variant": "current",
+    "mode": "response.presentation",
+    "count": 1000,
+    "cpuUsPerQuery": 11.078,
+    "wallUsPerQuery": 9.57454199999995,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "response.presentation",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "sample",
+    "round": 4,
+    "variant": "candidate",
+    "mode": "response.presentation",
+    "count": 1000,
+    "cpuUsPerQuery": 12.323,
+    "wallUsPerQuery": 10.757791999999993,
+    "calls": 1000,
+    "entries": [
+      {
+        "owner": "response.presentation",
+        "calls": 1000,
+        "callers": []
+      }
+    ]
+  },
+  {
+    "kind": "proof",
+    "node": "v24.22.2",
+    "cases": [
+      {
+        "mode": "disabled",
+        "driverCalls": 9,
+        "stacks": 0,
+        "events": []
+      },
+      {
+        "mode": "future",
+        "driverCalls": 9,
+        "stacks": 0,
+        "events": [
+          {
+            "event": "paperclip.db_response_capture.summary.v2",
+            "captureId": "43e805c3-8e65-4795-921a-8c9decf686e9",
+            "windowStart": "1970-01-01T00:00:00.999Z",
+            "windowEnd": "1970-01-01T00:00:02.000Z",
+            "closedAt": "1970-01-01T00:00:00.998Z",
+            "startedQueries": 0,
+            "completedQueries": 0,
+            "inFlightAtEnd": 0,
+            "groups": 0,
+            "groupPageSize": 128,
+            "groupPages": 0,
+            "overflowCalls": 0,
+            "rows": 0,
+            "sampledResults": 0,
+            "sampledValueBytes": 0,
+            "sizingWallMs": 0,
+            "sampleEvery": 16,
+            "sampling": "first-and-every-16th-successful-result-per-group",
+            "maxSampleCells": 256,
+            "maxSampleStringLength": 16384,
+            "maxSampleStringUnits": 65536,
+            "maxSampleBytes": 65536,
+            "rowValuesLogged": false,
+            "sqlOrParametersLogged": false,
+            "wireBytesMeasured": false,
+            "measurementBoundary": "postgres-js results before Drizzle column decoding",
+            "wallTimeBoundary": "first query consumption to driver result; includes queue, database, network and event-loop waits; not CPU",
+            "byteMeasurement": "sampled primitive values only; complex/oversized/budget-exceeding values unmeasured; no extrapolation",
+            "relationalQueriesMeasured": true,
+            "unsafeDriverQueriesMeasured": true,
+            "taggedDriverQueriesMeasured": false,
+            "streamingQueriesMeasured": false
+          }
+        ]
+      },
+      {
+        "mode": "expired",
+        "driverCalls": 9,
+        "stacks": 0,
+        "events": [
+          {
+            "event": "paperclip.db_response_capture.summary.v2",
+            "captureId": "37b60d6c-60d7-4470-951f-5c816d03ac85",
+            "windowStart": "1970-01-01T00:00:00.999Z",
+            "windowEnd": "1970-01-01T00:00:02.000Z",
+            "closedAt": "1970-01-01T00:00:02.000Z",
+            "startedQueries": 0,
+            "completedQueries": 0,
+            "inFlightAtEnd": 0,
+            "groups": 0,
+            "groupPageSize": 128,
+            "groupPages": 0,
+            "overflowCalls": 0,
+            "rows": 0,
+            "sampledResults": 0,
+            "sampledValueBytes": 0,
+            "sizingWallMs": 0,
+            "sampleEvery": 16,
+            "sampling": "first-and-every-16th-successful-result-per-group",
+            "maxSampleCells": 256,
+            "maxSampleStringLength": 16384,
+            "maxSampleStringUnits": 65536,
+            "maxSampleBytes": 65536,
+            "rowValuesLogged": false,
+            "sqlOrParametersLogged": false,
+            "wireBytesMeasured": false,
+            "measurementBoundary": "postgres-js results before Drizzle column decoding",
+            "wallTimeBoundary": "first query consumption to driver result; includes queue, database, network and event-loop waits; not CPU",
+            "byteMeasurement": "sampled primitive values only; complex/oversized/budget-exceeding values unmeasured; no extrapolation",
+            "relationalQueriesMeasured": true,
+            "unsafeDriverQueriesMeasured": true,
+            "taggedDriverQueriesMeasured": false,
+            "streamingQueriesMeasured": false
+          }
+        ]
+      },
+      {
+        "mode": "unowned",
+        "driverCalls": 9,
+        "stacks": 9,
+        "events": [
+          {
+            "event": "paperclip.db_response_capture.entry.v2",
+            "captureId": "d44c771a-f15b-4371-9106-83b83676c077",
+            "groupIndex": 0,
+            "groupPage": 0,
+            "operation": "select",
+            "table": "diagnostic_fixture",
+            "callers": [
+              "dist-runtime/server.mjs:9468:13"
+            ],
+            "owner": "unattributed",
+            "calls": 3,
+            "rows": 0,
+            "queryErrors": 0,
+            "totalWallMs": 0.006083000000103311,
+            "maxWallMs": 0.003958000000011452,
+            "sampledResults": 1,
+            "sampledRows": 0,
+            "sampledValueBytes": 0,
+            "maxSampledValueBytes": 0,
+            "measuredValues": 0,
+            "unmeasuredValues": 0,
+            "incompleteSamples": 0,
+            "sizingWallMs": 0.00037500000007639755
+          },
+          {
+            "event": "paperclip.db_response_capture.entry.v2",
+            "captureId": "d44c771a-f15b-4371-9106-83b83676c077",
+            "groupIndex": 1,
+            "groupPage": 0,
+            "operation": "select",
+            "table": "diagnostic_fixture",
+            "callers": [
+              "dist-runtime/server.mjs:9471:13"
+            ],
+            "owner": "unattributed",
+            "calls": 2,
+            "rows": 0,
+            "queryErrors": 0,
+            "totalWallMs": 0.001958000000058746,
+            "maxWallMs": 0.001082999999994172,
+            "sampledResults": 1,
+            "sampledRows": 0,
+            "sampledValueBytes": 0,
+            "maxSampledValueBytes": 0,
+            "measuredValues": 0,
+            "unmeasuredValues": 0,
+            "incompleteSamples": 0,
+            "sizingWallMs": 0.00012500000002546585
+          },
+          {
+            "event": "paperclip.db_response_capture.entry.v2",
+            "captureId": "d44c771a-f15b-4371-9106-83b83676c077",
+            "groupIndex": 2,
+            "groupPage": 0,
+            "operation": "select",
+            "table": "diagnostic_fixture",
+            "callers": [
+              "dist-runtime/server.mjs:9474:13"
+            ],
+            "owner": "unattributed",
+            "calls": 1,
+            "rows": 0,
+            "queryErrors": 0,
+            "totalWallMs": 0.0009159999999610591,
+            "maxWallMs": 0.0009159999999610591,
+            "sampledResults": 1,
+            "sampledRows": 0,
+            "sampledValueBytes": 0,
+            "maxSampledValueBytes": 0,
+            "measuredValues": 0,
+            "unmeasuredValues": 0,
+            "incompleteSamples": 0,
+            "sizingWallMs": 8.300000001781882e-05
+          },
+          {
+            "event": "paperclip.db_response_capture.entry.v2",
+            "captureId": "d44c771a-f15b-4371-9106-83b83676c077",
+            "groupIndex": 3,
+            "groupPage": 0,
+            "operation": "execute",
+            "table": "other",
+            "callers": [
+              "dist-runtime/server.mjs:9477:13"
+            ],
+            "owner": "unattributed",
+            "calls": 1,
+            "rows": 0,
+            "queryErrors": 0,
+            "totalWallMs": 0.001040999999986525,
+            "maxWallMs": 0.001040999999986525,
+            "sampledResults": 1,
+            "sampledRows": 0,
+            "sampledValueBytes": 0,
+            "maxSampledValueBytes": 0,
+            "measuredValues": 0,
+            "unmeasuredValues": 0,
+            "incompleteSamples": 0,
+            "sizingWallMs": 4.100000001017179e-05
+          },
+          {
+            "event": "paperclip.db_response_capture.entry.v2",
+            "captureId": "d44c771a-f15b-4371-9106-83b83676c077",
+            "groupIndex": 4,
+            "groupPage": 0,
+            "operation": "select",
+            "table": "other",
+            "callers": [],
+            "owner": "unattributed",
+            "calls": 1,
+            "rows": 0,
+            "queryErrors": 0,
+            "totalWallMs": 0.0012500000000272848,
+            "maxWallMs": 0.0012500000000272848,
+            "sampledResults": 1,
+            "sampledRows": 0,
+            "sampledValueBytes": 0,
+            "maxSampledValueBytes": 0,
+            "measuredValues": 0,
+            "unmeasuredValues": 0,
+            "incompleteSamples": 0,
+            "sizingWallMs": 4.099999989648495e-05
+          },
+          {
+            "event": "paperclip.db_response_capture.entry.v2",
+            "captureId": "d44c771a-f15b-4371-9106-83b83676c077",
+            "groupIndex": 5,
+            "groupPage": 0,
+            "operation": "select",
+            "table": "diagnostic_fixture",
+            "callers": [],
+            "owner": "unattributed",
+            "calls": 1,
+            "rows": 0,
+            "queryErrors": 0,
+            "totalWallMs": 0.0011660000000119908,
+            "maxWallMs": 0.0011660000000119908,
+            "sampledResults": 1,
+            "sampledRows": 0,
+            "sampledValueBytes": 0,
+            "maxSampledValueBytes": 0,
+            "measuredValues": 0,
+            "unmeasuredValues": 0,
+            "incompleteSamples": 0,
+            "sizingWallMs": 8.300000001781882e-05
+          },
+          {
+            "event": "paperclip.db_response_capture.summary.v2",
+            "captureId": "d44c771a-f15b-4371-9106-83b83676c077",
+            "windowStart": "1970-01-01T00:00:00.999Z",
+            "windowEnd": "1970-01-01T00:00:02.000Z",
+            "closedAt": "1970-01-01T00:00:01.000Z",
+            "startedQueries": 9,
+            "completedQueries": 9,
+            "inFlightAtEnd": 0,
+            "groups": 6,
+            "groupPageSize": 128,
+            "groupPages": 1,
+            "overflowCalls": 0,
+            "rows": 0,
+            "sampledResults": 6,
+            "sampledValueBytes": 0,
+            "sizingWallMs": 0.0007480000000441578,
+            "sampleEvery": 16,
+            "sampling": "first-and-every-16th-successful-result-per-group",
+            "maxSampleCells": 256,
+            "maxSampleStringLength": 16384,
+            "maxSampleStringUnits": 65536,
+            "maxSampleBytes": 65536,
+            "rowValuesLogged": false,
+            "sqlOrParametersLogged": false,
+            "wireBytesMeasured": false,
+            "measurementBoundary": "postgres-js results before Drizzle column decoding",
+            "wallTimeBoundary": "first query consumption to driver result; includes queue, database, network and event-loop waits; not CPU",
+            "byteMeasurement": "sampled primitive values only; complex/oversized/budget-exceeding values unmeasured; no extrapolation",
+            "relationalQueriesMeasured": true,
+            "unsafeDriverQueriesMeasured": true,
+            "taggedDriverQueriesMeasured": false,
+            "streamingQueriesMeasured": false
+          }
+        ]
+      },
+      {
+        "mode": "http.request",
+        "driverCalls": 9,
+        "stacks": 9,
+        "events": [
+          {
+            "event": "paperclip.db_response_capture.entry.v2",
+            "captureId": "8881cd9d-06cc-4817-a71c-cc14bdbe74c6",
+            "groupIndex": 0,
+            "groupPage": 0,
+            "operation": "select",
+            "table": "diagnostic_fixture",
+            "callers": [
+              "dist-runtime/server.mjs:9468:13"
+            ],
+            "owner": "http.request",
+            "calls": 3,
+            "rows": 0,
+            "queryErrors": 0,
+            "totalWallMs": 0.0028340000000071086,
+            "maxWallMs": 0.0010419999999840002,
+            "sampledResults": 1,
+            "sampledRows": 0,
+            "sampledValueBytes": 0,
+            "maxSampledValueBytes": 0,
+            "measuredValues": 0,
+            "unmeasuredValues": 0,
+            "incompleteSamples": 0,
+            "sizingWallMs": 4.200000000764703e-05
+          },
+          {
+            "event": "paperclip.db_response_capture.entry.v2",
+            "captureId": "8881cd9d-06cc-4817-a71c-cc14bdbe74c6",
+            "groupIndex": 1,
+            "groupPage": 0,
+            "operation": "select",
+            "table": "diagnostic_fixture",
+            "callers": [
+              "dist-runtime/server.mjs:9471:13"
+            ],
+            "owner": "http.request",
+            "calls": 2,
+            "rows": 0,
+            "queryErrors": 0,
+            "totalWallMs": 0.0017080000000078144,
+            "maxWallMs": 0.0008750000000645741,
+            "sampledResults": 1,
+            "sampledRows": 0,
+            "sampledValueBytes": 0,
+            "maxSampledValueBytes": 0,
+            "measuredValues": 0,
+            "unmeasuredValues": 0,
+            "incompleteSamples": 0,
+            "sizingWallMs": 4.200000000764703e-05
+          },
+          {
+            "event": "paperclip.db_response_capture.entry.v2",
+            "captureId": "8881cd9d-06cc-4817-a71c-cc14bdbe74c6",
+            "groupIndex": 2,
+            "groupPage": 0,
+            "operation": "select",
+            "table": "diagnostic_fixture",
+            "callers": [
+              "dist-runtime/server.mjs:9474:13"
+            ],
+            "owner": "http.request",
+            "calls": 1,
+            "rows": 0,
+            "queryErrors": 0,
+            "totalWallMs": 0.0008749999999508873,
+            "maxWallMs": 0.0008749999999508873,
+            "sampledResults": 1,
+            "sampledRows": 0,
+            "sampledValueBytes": 0,
+            "maxSampledValueBytes": 0,
+            "measuredValues": 0,
+            "unmeasuredValues": 0,
+            "incompleteSamples": 0,
+            "sizingWallMs": 4.200000000764703e-05
+          },
+          {
+            "event": "paperclip.db_response_capture.entry.v2",
+            "captureId": "8881cd9d-06cc-4817-a71c-cc14bdbe74c6",
+            "groupIndex": 3,
+            "groupPage": 0,
+            "operation": "execute",
+            "table": "other",
+            "callers": [
+              "dist-runtime/server.mjs:9477:13"
+            ],
+            "owner": "http.request",
+            "calls": 1,
+            "rows": 0,
+            "queryErrors": 0,
+            "totalWallMs": 0.001082999999994172,
+            "maxWallMs": 0.001082999999994172,
+            "sampledResults": 1,
+            "sampledRows": 0,
+            "sampledValueBytes": 0,
+            "maxSampledValueBytes": 0,
+            "measuredValues": 0,
+            "unmeasuredValues": 0,
+            "incompleteSamples": 0,
+            "sizingWallMs": 4.200000000764703e-05
+          },
+          {
+            "event": "paperclip.db_response_capture.entry.v2",
+            "captureId": "8881cd9d-06cc-4817-a71c-cc14bdbe74c6",
+            "groupIndex": 4,
+            "groupPage": 0,
+            "operation": "select",
+            "table": "other",
+            "callers": [],
+            "owner": "http.request",
+            "calls": 1,
+            "rows": 0,
+            "queryErrors": 0,
+            "totalWallMs": 0.0009579999999687061,
+            "maxWallMs": 0.0009579999999687061,
+            "sampledResults": 1,
+            "sampledRows": 0,
+            "sampledValueBytes": 0,
+            "maxSampledValueBytes": 0,
+            "measuredValues": 0,
+            "unmeasuredValues": 0,
+            "incompleteSamples": 0,
+            "sizingWallMs": 4.100000001017179e-05
+          },
+          {
+            "event": "paperclip.db_response_capture.entry.v2",
+            "captureId": "8881cd9d-06cc-4817-a71c-cc14bdbe74c6",
+            "groupIndex": 5,
+            "groupPage": 0,
+            "operation": "select",
+            "table": "diagnostic_fixture",
+            "callers": [],
+            "owner": "http.request",
+            "calls": 1,
+            "rows": 0,
+            "queryErrors": 0,
+            "totalWallMs": 0.0009580000000823929,
+            "maxWallMs": 0.0009580000000823929,
+            "sampledResults": 1,
+            "sampledRows": 0,
+            "sampledValueBytes": 0,
+            "maxSampledValueBytes": 0,
+            "measuredValues": 0,
+            "unmeasuredValues": 0,
+            "incompleteSamples": 0,
+            "sizingWallMs": 4.200000000764703e-05
+          },
+          {
+            "event": "paperclip.db_response_capture.summary.v2",
+            "captureId": "8881cd9d-06cc-4817-a71c-cc14bdbe74c6",
+            "windowStart": "1970-01-01T00:00:00.999Z",
+            "windowEnd": "1970-01-01T00:00:02.000Z",
+            "closedAt": "1970-01-01T00:00:01.000Z",
+            "startedQueries": 9,
+            "completedQueries": 9,
+            "inFlightAtEnd": 0,
+            "groups": 6,
+            "groupPageSize": 128,
+            "groupPages": 1,
+            "overflowCalls": 0,
+            "rows": 0,
+            "sampledResults": 6,
+            "sampledValueBytes": 0,
+            "sizingWallMs": 0.00025100000004840695,
+            "sampleEvery": 16,
+            "sampling": "first-and-every-16th-successful-result-per-group",
+            "maxSampleCells": 256,
+            "maxSampleStringLength": 16384,
+            "maxSampleStringUnits": 65536,
+            "maxSampleBytes": 65536,
+            "rowValuesLogged": false,
+            "sqlOrParametersLogged": false,
+            "wireBytesMeasured": false,
+            "measurementBoundary": "postgres-js results before Drizzle column decoding",
+            "wallTimeBoundary": "first query consumption to driver result; includes queue, database, network and event-loop waits; not CPU",
+            "byteMeasurement": "sampled primitive values only; complex/oversized/budget-exceeding values unmeasured; no extrapolation",
+            "relationalQueriesMeasured": true,
+            "unsafeDriverQueriesMeasured": true,
+            "taggedDriverQueriesMeasured": false,
+            "streamingQueriesMeasured": false
+          }
+        ]
+      },
+      {
+        "mode": "response.presentation",
+        "driverCalls": 9,
+        "stacks": 0,
+        "events": [
+          {
+            "event": "paperclip.db_response_capture.entry.v2",
+            "captureId": "0c37a43d-ab5c-4321-85e3-66ebab9938f0",
+            "groupIndex": 0,
+            "groupPage": 0,
+            "operation": "select",
+            "table": "diagnostic_fixture",
+            "callers": [],
+            "owner": "response.presentation",
+            "calls": 7,
+            "rows": 0,
+            "queryErrors": 0,
+            "totalWallMs": 0.00462599999991653,
+            "maxWallMs": 0.0008329999999432403,
+            "sampledResults": 1,
+            "sampledRows": 0,
+            "sampledValueBytes": 0,
+            "maxSampledValueBytes": 0,
+            "measuredValues": 0,
+            "unmeasuredValues": 0,
+            "incompleteSamples": 0,
+            "sizingWallMs": 8.300000001781882e-05
+          },
+          {
+            "event": "paperclip.db_response_capture.entry.v2",
+            "captureId": "0c37a43d-ab5c-4321-85e3-66ebab9938f0",
+            "groupIndex": 1,
+            "groupPage": 0,
+            "operation": "execute",
+            "table": "other",
+            "callers": [],
+            "owner": "response.presentation",
+            "calls": 1,
+            "rows": 0,
+            "queryErrors": 0,
+            "totalWallMs": 0.0006250000000136424,
+            "maxWallMs": 0.0006250000000136424,
+            "sampledResults": 1,
+            "sampledRows": 0,
+            "sampledValueBytes": 0,
+            "maxSampledValueBytes": 0,
+            "measuredValues": 0,
+            "unmeasuredValues": 0,
+            "incompleteSamples": 0,
+            "sizingWallMs": 8.300000001781882e-05
+          },
+          {
+            "event": "paperclip.db_response_capture.entry.v2",
+            "captureId": "0c37a43d-ab5c-4321-85e3-66ebab9938f0",
+            "groupIndex": 2,
+            "groupPage": 0,
+            "operation": "select",
+            "table": "other",
+            "callers": [],
+            "owner": "response.presentation",
+            "calls": 1,
+            "rows": 0,
+            "queryErrors": 0,
+            "totalWallMs": 0.0005830000000059954,
+            "maxWallMs": 0.0005830000000059954,
+            "sampledResults": 1,
+            "sampledRows": 0,
+            "sampledValueBytes": 0,
+            "maxSampledValueBytes": 0,
+            "measuredValues": 0,
+            "unmeasuredValues": 0,
+            "incompleteSamples": 0,
+            "sizingWallMs": 8.299999990413198e-05
+          },
+          {
+            "event": "paperclip.db_response_capture.summary.v2",
+            "captureId": "0c37a43d-ab5c-4321-85e3-66ebab9938f0",
+            "windowStart": "1970-01-01T00:00:00.999Z",
+            "windowEnd": "1970-01-01T00:00:02.000Z",
+            "closedAt": "1970-01-01T00:00:01.000Z",
+            "startedQueries": 9,
+            "completedQueries": 9,
+            "inFlightAtEnd": 0,
+            "groups": 3,
+            "groupPageSize": 128,
+            "groupPages": 1,
+            "overflowCalls": 0,
+            "rows": 0,
+            "sampledResults": 3,
+            "sampledValueBytes": 0,
+            "sizingWallMs": 0.0002489999999397696,
+            "sampleEvery": 16,
+            "sampling": "first-and-every-16th-successful-result-per-group",
+            "maxSampleCells": 256,
+            "maxSampleStringLength": 16384,
+            "maxSampleStringUnits": 65536,
+            "maxSampleBytes": 65536,
+            "rowValuesLogged": false,
+            "sqlOrParametersLogged": false,
+            "wireBytesMeasured": false,
+            "measurementBoundary": "postgres-js results before Drizzle column decoding",
+            "wallTimeBoundary": "first query consumption to driver result; includes queue, database, network and event-loop waits; not CPU",
+            "byteMeasurement": "sampled primitive values only; complex/oversized/budget-exceeding values unmeasured; no extrapolation",
+            "relationalQueriesMeasured": true,
+            "unsafeDriverQueriesMeasured": true,
+            "taggedDriverQueriesMeasured": false,
+            "streamingQueriesMeasured": false
+          }
+        ]
+      }
+    ]
+  }
+]

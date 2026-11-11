@@ -1,3 +1,5 @@
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
+import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { projectGitAuthorizationService } from "./project-git-authorization.js";
 import { createLiveEventDelivery } from "../realtime/live-event-delivery.js";
 import { createLiveRunEventRedactor } from "./live-run-event-redaction.js";
@@ -93,6 +95,7 @@ import {
 } from "./authorization.js";
 import { redactEventPayload, sanitizeRecord } from "../redaction.js";
 import type { WorkerHostCallContext } from "@paperclipai/plugin-sdk";
+import { WORKSPACE_OPERATION_FAILURE_REASONS } from "@paperclipai/plugin-sdk";
 import {
   normalizeProviderFamily,
   SANDBOX_STARTUP_SPAN_ATTRS,
@@ -537,6 +540,13 @@ const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set([
   "postUploadCommand",
   "session.open",
   "session.close",
+  "lease.wait_for_teardown", "lease.lookup", "lease.refresh", "lease.channel_cleanup",
+  "lease.start", "lease.recover", "lease.wait_transition", "lease.force_stop", "lease.verify", "lease.workspace", "lease.sentinel",
+  "lease.shell", "lease.create", "lease.expiry", "lease.cleanup",
+  "plugin.worker", "plugin.host.identity.read", "plugin.host.config.read", "plugin.host.progress.read", "plugin.host.progress.write",
+  "plugin.workspace.prepare", "plugin.workspace.failure", "plugin.storage.queue", "plugin.storage.execute",
+  "plugin.runtime.queue", "plugin.runtime.prepare", "plugin.runtime.reconcile", "plugin.runtime.verify",
+  "plugin.remote.request", "plugin.remote.operation", "plugin.remote.lifecycle",
 ]);
 
 /** Clamp the span name to a closed, namespaced set. A known name maps to
@@ -547,7 +557,7 @@ const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set([
  * `provider` family attribute on the span instead of this literal. */
 function clampProviderSpanName(raw: unknown): string {
   const name = typeof raw === "string" && KNOWN_PROVIDER_SPAN_NAMES.has(raw) ? raw : "other";
-  return `sandbox.daytona.${name}`;
+  return name.startsWith("plugin.") ? name : `sandbox.daytona.${name}`;
 }
 
 /** The closed allowlist of attribute keys a provider span may carry. The host
@@ -560,13 +570,19 @@ const PROVIDER_SPAN_ATTR_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   SPAN_ATTRS.transferWallMs,
   SPAN_ATTRS.transferGuardCount,
   SPAN_ATTRS.transferDirection,
+  SPAN_ATTRS.state,
+  "plugin.operation", "plugin.reused", "plugin.item_count", "plugin.bytes", "plugin.call_count", "plugin.failure_reason",
 ]);
+
+/** The closed value set for `plugin.failure_reason`: a workspace operation failure reason, or `unknown`. */
+const KNOWN_PLUGIN_FAILURE_REASONS: ReadonlySet<string> = new Set<string>([...WORKSPACE_OPERATION_FAILURE_REASONS, "unknown"]);
 
 /** The subset of allowed keys that carry a finite number. */
 const PROVIDER_SPAN_NUMERIC_ATTRS: ReadonlySet<string> = new Set<string>([
   SPAN_ATTRS.packWallMs,
   SPAN_ATTRS.transferWallMs,
   SPAN_ATTRS.transferGuardCount,
+  "plugin.item_count", "plugin.bytes", "plugin.call_count",
 ]);
 
 /** The closed value set for the `outcome` attribute. */
@@ -574,6 +590,12 @@ const KNOWN_SPAN_OUTCOMES: ReadonlySet<string> = new Set(["ok", "skipped", "fail
 
 /** The closed value set for the `transfer.direction` attribute. */
 const KNOWN_TRANSFER_DIRECTIONS: ReadonlySet<string> = new Set(["inbound", "outbound"]);
+
+// Settled states plus the transitions a start waits out; anything else is dropped.
+const PROVIDER_STARTUP_STATES: ReadonlySet<string> = new Set([
+  "started", "stopped", "archived", "error", "other",
+  "starting", "stopping", "restoring", "archiving", "resizing",
+]);
 
 /**
  * Re-clamp the worker-sent attributes at the trust boundary. Drop every key that
@@ -589,6 +611,19 @@ export function clampProviderSpanAttributes(
   if (!raw) return clamped;
   for (const [key, value] of Object.entries(raw)) {
     if (!PROVIDER_SPAN_ATTR_ALLOWLIST.has(key)) continue;
+    if (key === SPAN_ATTRS.state) {
+      if (typeof value === "string" && PROVIDER_STARTUP_STATES.has(value)) clamped[key] = value;
+      continue;
+    }
+    if (key === "plugin.operation") {
+      if (typeof value === "string" && ["request", "queue.wait", "launch.wait", "mount.refresh", "guest.setup", "process.execute", "script.workspace", "script.git", "script.settings", "script.publication", "cleanup", "process.start", "hello", "checkpoint.load"].includes(value)) clamped[key] = value;
+      continue;
+    }
+    if (key === "plugin.reused") { if (typeof value === "boolean") clamped[key] = value; continue; }
+    if (key === "plugin.failure_reason") {
+      if (typeof value === "string" && KNOWN_PLUGIN_FAILURE_REASONS.has(value)) clamped[key] = value;
+      continue;
+    }
     if (key === SPAN_ATTRS.provider) {
       clamped[key] = normalizeProviderFamily(typeof value === "string" ? value : undefined);
       continue;
@@ -602,7 +637,7 @@ export function clampProviderSpanAttributes(
       continue;
     }
     if (PROVIDER_SPAN_NUMERIC_ATTRS.has(key)) {
-      if (typeof value === "number" && Number.isFinite(value)) clamped[key] = value;
+      if (typeof value === "number" && Number.isFinite(value) && (!key.startsWith("plugin.") || value >= 0 && value <= 1e12)) clamped[key] = value;
       continue;
     }
   }
@@ -664,12 +699,14 @@ const MAX_PROVIDER_SPAN_END_SKEW_MS = 60 * 1000; // 1 minute
 function validateProviderSpanTimes(
   startTimeMs: unknown,
   endTimeMs: unknown,
+  maxDurationMs = MAX_PROVIDER_SPAN_DURATION_MS,
+  maxAgeMs = MAX_PROVIDER_SPAN_START_AGE_MS,
 ): { startTimeMs: number; endTimeMs: number } | undefined {
   if (typeof startTimeMs !== "number" || !Number.isFinite(startTimeMs)) return undefined;
   if (typeof endTimeMs !== "number" || !Number.isFinite(endTimeMs)) return undefined;
   if (startTimeMs > endTimeMs) return undefined;
-  if (endTimeMs - startTimeMs > MAX_PROVIDER_SPAN_DURATION_MS) return undefined;
-  if (Date.now() - startTimeMs > MAX_PROVIDER_SPAN_START_AGE_MS) return undefined;
+  if (endTimeMs - startTimeMs > maxDurationMs) return undefined;
+  if (Date.now() - startTimeMs > maxAgeMs) return undefined;
   if (endTimeMs - Date.now() > MAX_PROVIDER_SPAN_END_SKEW_MS) return undefined;
   return { startTimeMs, endTimeMs };
 }
@@ -691,20 +728,40 @@ export function recordWorkerProviderSpan(
     status?: { code?: unknown; message?: unknown };
     startTimeMs?: unknown;
     endTimeMs?: unknown;
+    children?: unknown;
+    relationship?: unknown;
   },
   context: WorkerHostCallContext | undefined,
 ): void {
   const parent = parseTraceparent(context?.traceparent);
   if (!parent) return; // reject a missing or malformed traceparent
-  const times = validateProviderSpanTimes(params.startTimeMs, params.endTimeMs);
-  const status = clampSpanStatus(params.status);
-  recordProviderPluginSpan({
-    name: clampProviderSpanName(params.name),
-    parent,
-    attributes: clampProviderSpanAttributes(params.attributes),
-    ...(status ? { status } : {}),
-    ...(times ? { startTimeMs: times.startTimeMs, endTimeMs: times.endTimeMs } : {}),
-  });
+  const budget = context?.providerSpanBudget ?? {remaining:256};
+  const longInvocation = params.name === "plugin.worker";
+  const invocationLimitMs = 24 * 60 * 60 * 1000;
+  const visit = (params: { name: string; attributes?: Record<string, unknown>; status?: { code?: unknown }; startTimeMs?: unknown; endTimeMs?: unknown; children?: unknown; relationship?: unknown }, parent: ParsedTraceparent, depth: number, enclosing?: { startTimeMs: number; endTimeMs: number }) => {
+    if (depth > 12 || budget.remaining-- <= 0) return;
+    const times = validateProviderSpanTimes(params.startTimeMs, params.endTimeMs,
+      depth === 0 && longInvocation ? invocationLimitMs : MAX_PROVIDER_SPAN_DURATION_MS,
+      longInvocation ? invocationLimitMs : MAX_PROVIDER_SPAN_START_AGE_MS);
+    const linked = params.relationship === "linked" && params.name === "plugin.remote.lifecycle";
+    if (params.relationship !== undefined && !linked) return;
+    if (linked && (!times || Date.now() - times.startTimeMs > MAX_PROVIDER_SPAN_DURATION_MS)) return;
+    if (enclosing && (!times || (!linked && times.startTimeMs < enclosing.startTimeMs) || times.endTimeMs > enclosing.endTimeMs)) return;
+    const status = clampSpanStatus(params.status);
+    const childParent = recordProviderPluginSpan({
+      name: clampProviderSpanName(params.name),
+      parent,
+      ...(linked ? { linked: true } : {}),
+      attributes: clampProviderSpanAttributes(params.attributes),
+      ...(status ? { status } : {}),
+      ...(times ? { startTimeMs: times.startTimeMs, endTimeMs: times.endTimeMs } : {}),
+    });
+    if (childParent && times && Array.isArray(params.children)) for (const child of params.children.slice(0, 256)) {
+      if (budget.remaining <= 0) break;
+      if (child && typeof child === "object" && typeof child.name === "string") visit(child, childParent, depth + 1, times);
+    }
+  };
+  try { visit(params, parent, 0); } catch {}
 }
 
 export function buildHostServices(
@@ -1697,7 +1754,7 @@ export function buildHostServices(
         return registry.upsertEntity(pluginId, params as any) as any;
       },
       async list(params) {
-        return registry.listEntities(pluginId, params as any) as any;
+        return registry.listEntities(pluginId, params) as any;
       },
     },
 
@@ -3054,6 +3111,9 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const agent = await agents.getById(params.agentId);
         requireInCompany("Agent", agent, companyId);
+        const origin = currentPluginInteractionOrigin();
+        await assertAgentInteraction(db, { companyId, actorAgentId: origin?.agentId,
+          operation: "assign", targetAgentId: params.agentId, texts: params.prompt ? [params.prompt] : [] });
         const run = await heartbeat.wakeup(params.agentId, {
           source: "automation",
           triggerDetail: "system",
@@ -3067,8 +3127,8 @@ export function buildHostServices(
               pluginKey,
             },
           },
-          requestedByActorType: "system",
-          requestedByActorId: pluginId,
+          requestedByActorType: origin ? "agent" : "system",
+          requestedByActorId: origin?.agentId ?? pluginId,
         });
         if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
         return { runId: run.id };
@@ -3348,15 +3408,14 @@ export function buildHostServices(
         const policy = params.policy ? sanitizeRecord(params.policy) : null;
         if (params.resourceType === "agent") {
           const agent = requireInCompany("Agent", await agents.getById(params.resourceId), companyId);
-          const permissions = agent.permissions && typeof agent.permissions === "object"
-            ? { ...(agent.permissions as Record<string, unknown>) }
-            : {};
-          if (policy) permissions.authorizationPolicy = policy;
-          else delete permissions.authorizationPolicy;
-          await db
-            .update(agentsTable)
-            .set({ permissions, updatedAt: new Date() })
-            .where(eq(agentsTable.id, agent.id));
+          await db.transaction(async tx => {
+            await assertAgentInteraction(tx, { companyId, operation: "configure", targetAgentId: agent.id, lock: "update" });
+            await tx.update(agentsTable)
+              .set({ permissions: policy
+                ? sql`jsonb_set(${agentsTable.permissions}, '{authorizationPolicy}', ${JSON.stringify(policy)}::jsonb)`
+                : sql`${agentsTable.permissions} - 'authorizationPolicy'`, updatedAt: new Date() })
+              .where(eq(agentsTable.id, agent.id));
+          });
         } else if (params.resourceType === "project") {
           const project = requireInCompany("Project", await projects.getById(params.resourceId), companyId);
           const executionWorkspacePolicy = project.executionWorkspacePolicy && typeof project.executionWorkspacePolicy === "object"
@@ -3369,16 +3428,18 @@ export function buildHostServices(
             .set({ executionWorkspacePolicy, updatedAt: new Date() })
             .where(eq(projectsTable.id, project.id));
         } else if (params.resourceType === "issue") {
-          const issue = requireInCompany("Issue", await issues.getById(params.resourceId), companyId);
-          const executionPolicy = issue.executionPolicy && typeof issue.executionPolicy === "object"
-            ? { ...(issue.executionPolicy as Record<string, unknown>) }
-            : {};
-          if (policy) executionPolicy.authorizationPolicy = policy;
-          else delete executionPolicy.authorizationPolicy;
-          await db
-            .update(issuesTable)
-            .set({ executionPolicy, updatedAt: new Date() })
-            .where(eq(issuesTable.id, issue.id));
+          await db.transaction(async tx => {
+            const [locked] = await tx.select().from(issuesTable).where(and(
+              eq(issuesTable.id, params.resourceId), eq(issuesTable.companyId, companyId))).for("update");
+            const issue = requireInCompany("Issue", locked ?? null, companyId);
+            await assertAgentInteraction(tx, { companyId, operation: "edit", issueId: issue.id, lock: true });
+            const executionPolicy = issue.executionPolicy && typeof issue.executionPolicy === "object"
+              ? { ...(issue.executionPolicy as Record<string, unknown>) } : {};
+            if (policy) executionPolicy.authorizationPolicy = policy;
+            else delete executionPolicy.authorizationPolicy;
+            await tx.update(issuesTable).set({ executionPolicy, updatedAt: new Date() })
+              .where(and(eq(issuesTable.id, issue.id), eq(issuesTable.companyId, companyId)));
+          });
         } else {
           const company = await companies.getById(params.resourceId);
           if (!company || company.id !== companyId) throw new Error("Company not found");

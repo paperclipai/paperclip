@@ -10,6 +10,10 @@ import { legacyExecutionNeedsReconciliation } from "../legacy-execution-recovery
 import { isConfigurationIncompleteFailedRun } from "../../modules/wake-queue/domain/values.js";
 
 describe("classifyAdapterFailureForRecovery", () => {
+  it("does not retry a permanently refused agent interaction delivery", () => {
+    expect(classifyContinuationFailure({ errorCode: "agent_interaction_delivery_denied", resultJson: null } as never))
+      .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
   it("does not automatically replay a project access denial", () => {
     expect(classifyContinuationFailure({ errorCode: "project_access_denied", resultJson: null } as never))
       .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
@@ -43,6 +47,23 @@ describe("classifyAdapterFailureForRecovery", () => {
     const run = { errorCode, ...classification };
     expect(isAiAuthenticationBlocked(run)).toBe(false);
     expect(classifyContinuationFailure(run as never).kind).toBe("default");
+  });
+
+  it.each([
+    ["a provider quota", "model is at capacity", { kind: "provider_quota" }],
+    ["a configuration blocker", "missing credentials", { kind: "configuration_incomplete" }],
+  ])("classifies a refused exact resume from its refusal, not an earlier %s", (_name, earlier, own) => {
+    const refusal = "Plugin Runner retained session is not authorized";
+    const refused = {
+      errorCode: "adapter_failed",
+      error: `native_session_interrupted: ${earlier}; exact checkpoint resume refused: ${refusal}`,
+      resultJson: { nativeExactResumeRefusal: { originalFailureCode: "native_session_interrupted",
+        originalMessage: earlier, interruptedAttempt: 1, refusal } },
+    };
+    expect(classifyAdapterFailureForRecovery(refused)).toBeNull();
+    // The same text as the run's own failure still chooses that recovery.
+    expect(classifyAdapterFailureForRecovery({ errorCode: "adapter_failed", error: earlier, resultJson: null }))
+      .toMatchObject(own);
   });
 
   it("uses a typed ACP quota reset without needing the provider's original message", () => {
@@ -88,6 +109,17 @@ describe("classifyAdapterFailureForRecovery", () => {
       retryAt: new Date("2026-07-15T21:30:00.000Z"),
       parsedResetTime: true,
     });
+  });
+
+  it("releases the wait when an unchanged weekly-limit failure is reread after its calendar reset", () => {
+    // Read two days after "resets Nov 12": the wait is over, not a year away.
+    const now = new Date("2026-11-14T10:00:00.000Z");
+    const classification = classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "You've hit your weekly limit · resets Nov 12, 6pm (UTC)",
+      resultJson: null,
+    }, now);
+    expect(classification).toEqual({ kind: "provider_quota", retryAt: now, parsedResetTime: true });
   });
 
   it("uses the default recovery backoff when quota reset time is absent", () => {

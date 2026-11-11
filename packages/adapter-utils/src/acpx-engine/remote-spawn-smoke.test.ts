@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import type { AcpRuntimeOptions } from "acpx/runtime";
 import { createAcpRuntime, createAgentRegistry, createRuntimeStore } from "acpx/runtime";
+import { stockAcpRuntimeOptions, type AcpxAgentSpawnHooks } from "./stock-runtime-options.js";
 
 // Load-bearing repro for the remote-ACP "process session" lane host-spawn bug.
 //
@@ -21,7 +22,7 @@ import { createAcpRuntime, createAgentRegistry, createRuntimeStore } from "acpx/
 // either materializing `remoteCwd` on the host (masking the host-spawn ENOENT)
 // or failing earlier at a different phase. So we split the proof at its two real
 // seams: (1) here — the acpx runtime's REAL host `spawn()` honoring
-// `spawnCwd ?? cwd` (real `createAcpRuntime`, real libuv `chdir`); and (2) the
+// `spawnCwd` through stock `spawnAgent` (real `createAcpRuntime`, real libuv `chdir`); and (2) the
 // engine → `runtimeOptions` threading (`execute.test.ts`, which asserts the
 // engine sets `spawnCwd` host-valid on the remote lane and `undefined`
 // elsewhere, with the advertised `session/new` cwd staying `remoteCwd`).
@@ -34,10 +35,7 @@ const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
 const fixturePath = path.join(repoRoot, "scripts", "mcp-fixtures", "servers", "acp-cwd-report-agent.mjs");
 const tempRoots: string[] = [];
 
-type PatchedAcpRuntimeOptions = AcpRuntimeOptions & {
-  onAgentSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
-  spawnCwd?: string;
-};
+type PatchedAcpRuntimeOptions = AcpRuntimeOptions & AcpxAgentSpawnHooks;
 
 type PatchedEnsureSessionOptions = Parameters<ReturnType<typeof createAcpRuntime>["ensureSession"]>[0];
 
@@ -54,8 +52,8 @@ async function makeTempDir(prefix: string): Promise<string> {
 /**
  * Drive a REAL acpx runtime through `ensureSession`, which performs the real
  * host `spawn()` (and its libuv `chdir`). `cwd` is the advertised session cwd;
- * `spawnCwd`, when set, is the host-only spawn cwd the acpx patch consumes as
- * `spawnCwd ?? cwd`.
+ * `spawnCwd`, when set, is the host-only spawn cwd the engine applies through
+ * stock `spawnAgent`.
  */
 async function ensureRealAcpSession(input: {
   cwd: string;
@@ -67,8 +65,8 @@ async function ensureRealAcpSession(input: {
   const agentCommand = `${JSON.stringify(process.execPath.replaceAll("\\", "/"))} ${JSON.stringify(fixturePath.replaceAll("\\", "/"))}`;
   const runtimeOptions: PatchedAcpRuntimeOptions = {
     cwd: input.cwd,
-    // `spawnCwd` is the host-only knob added by patches/acpx@0.12.0.patch; when
-    // unset acpx falls back to `cwd`, so every non-proxy lane is byte-identical.
+    // `spawnCwd` is the engine's host-only knob, applied through stock
+    // `spawnAgent`; when unset acpx uses `cwd`, so non-proxy lanes are unchanged.
     ...(input.spawnCwd ? { spawnCwd: input.spawnCwd } : {}),
     sessionStore: createRuntimeStore({ stateDir: path.join(stateRoot, "state") }),
     agentRegistry: createAgentRegistry({ overrides: { custom: agentCommand } }),
@@ -77,7 +75,7 @@ async function ensureRealAcpSession(input: {
     onAgentStderr: (chunk: string) => stderrChunks.push(chunk),
     onAgentSpawn: input.onAgentSpawn,
   };
-  const runtime = createAcpRuntime(runtimeOptions);
+  const runtime = createAcpRuntime(stockAcpRuntimeOptions(runtimeOptions));
 
   try {
     const sessionInput: PatchedEnsureSessionOptions = {

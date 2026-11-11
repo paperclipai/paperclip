@@ -2,6 +2,8 @@ import * as connectorRuntime from "../connector-runtime.js";
 import * as cloudIdentity from "../cloud-runtime-identity.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import { createPaperclipHttpServer } from "../../http/server.js";
 import { LOW_TRUST_REVIEW_PRESET, upsertIssueDocumentSchema } from "@paperclipai/shared";
 import { and, eq, inArray } from "drizzle-orm";
 import {
@@ -17,9 +19,12 @@ import {
   issueApprovals,
   issueComments,
   issueThreadInteractions,
+  issueWatchdogs,
   issues,
+  projectWorkspaces,
+  projects,
 } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../run-identity.js";
 import { documentService } from "../documents.js";
@@ -32,6 +37,7 @@ import { CURRENT_WAKE_COMMENTS_BINDING_SCHEMA, READ_CURRENT_WAKE_COMMENTS_TOOL_N
 import { NativeChatAttachmentReadScope, READ_CHAT_ATTACHMENT_TOOL_NAME } from "./chat-attachment-read.js";
 import { buildLowTrustSourceTrust, buildPromotedSourceTrust, LOW_TRUST_QUARANTINED_BODY } from "../source-trust.js";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG, runnerCodexDynamicToolsFit } from "../../vendor/paperclip-runner/index.js";
+import { resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
 
 describe("PaperclipRunnerToolAuthority", () => {
   const credentialDocumentBody = "Use a secret manager for credential handling.\nAuthorization: Bearer intentional-document-credential";
@@ -101,6 +107,46 @@ describe("PaperclipRunnerToolAuthority", () => {
     await temporary?.cleanup();
   });
 
+  it("routes call_api through the private controller instead of the public callback origin", async () => {
+    const privateRequests: Array<{ path: string | undefined; authenticated: boolean }> = [];
+    const callbackRequests: string[] = [];
+    const controller = createPaperclipHttpServer((request, response) => {
+      privateRequests.push({ path: request.url, authenticated: /^Bearer /.test(request.headers.authorization ?? "") });
+      response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ workProducts: [] }));
+    }, { apiUrl: "https://advertised.example.test" });
+    const callback = createServer((request, response) => {
+      callbackRequests.push(request.url ?? "");
+      response.writeHead(404).end();
+    });
+    await Promise.all([controller, callback].map(server => new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve))));
+    try {
+      const controllerAddress = controller.address();
+      const callbackAddress = callback.address();
+      if (!controllerAddress || typeof controllerAddress === "string" || !callbackAddress || typeof callbackAddress === "string") throw new Error("Expected owned TCP listeners");
+      vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "private-controller-test-secret");
+      vi.stubEnv("PAPERCLIP_RUNNER_API_TOOLS_ENABLED", "true");
+      vi.stubEnv("PAPERCLIP_API_URL", `http://127.0.0.1:${callbackAddress.port}`);
+      vi.stubEnv("PAPERCLIP_AUTH_PUBLIC_BASE_URL", "https://callback-only.example.test");
+      vi.stubEnv("PAPERCLIP_LISTEN_HOST", "127.0.0.1");
+      vi.stubEnv("PAPERCLIP_LISTEN_PORT", String(controllerAddress.port));
+      vi.stubEnv("PORT", "3100");
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId,
+        apiUrl: resolveLocalRuntimeApiUrl() });
+      const result = await authority.execute({ tool: "call_api", callId: "private-controller-read", arguments: {
+        operationId: "GET /api/issues/{id}/work-products", pathParams: { id: issueId },
+      } });
+      expect(result).toMatchObject({ ok: true, status: 200 });
+      expect(privateRequests).toEqual([{ path: `/api/issues/${issueId}/work-products`, authenticated: true }]);
+      expect(callbackRequests).toEqual([]);
+      expect(process.env.PAPERCLIP_API_URL).toBe(`http://127.0.0.1:${callbackAddress.port}`);
+    } finally {
+      await Promise.all([controller, callback].map(server => new Promise<void>((resolve, reject) => {
+        server.closeAllConnections();
+        server.close(error => error ? reject(error) : resolve());
+      })));
+    }
+  });
+
   it("registers pinned connector definitions without discovery and rejects revoked assignments at use", async () => {
     const connectorAssignments = connectorRuntime.connectorToolDefinitionsForSkills(new Set([
       "paperclipai/paperclip/slack", "paperclipai/paperclip/browser-use-cloud", "custom/agentmail",
@@ -113,6 +159,34 @@ describe("PaperclipRunnerToolAuthority", () => {
       .rejects.toThrow("This connector is no longer assigned or authorized");
   });
 
+  it("names a missing agent id and its closest real agent instead of a bare code (restart chaos t06)", async () => {
+    const claudeId = "0cb62ac2-742d-442c-abb4-edfcc60defe4";
+    await db.insert(agents).values({ id: claudeId, companyId, name: "Chaos claude", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "claude" }, runtimeConfig: {}, status: "active" });
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    const spliced = "0cb62ac2-742d-442c-acc9-d21dd936e716";
+    for (const call of [
+      { tool: "create_task", callId: "t06-spliced-assignee", arguments: { idempotencyKey: "t06-spliced", title: "Part 2", assigneeActorId: spliced } },
+      { tool: "get_agent", callId: "t06-spliced-read", arguments: { actorId: spliced } },
+    ]) {
+      const error = await authority.execute(call).then(() => null, (failure: Error) => failure);
+      expect(error?.message).toMatch(/^paperclip_runner_agent_not_found: /);
+      expect(error?.message).toContain(spliced);
+      expect(error?.message).toContain(`Chaos claude (${claudeId})`);
+      expect(error?.message).toContain("list_agents");
+    }
+    const recovered = await authority.recover({ tool: "get_agent", callId: "t06-spliced-recovered", arguments: { actorId: spliced } });
+    expect(recovered).toMatchObject({ isError: true });
+    const text = JSON.stringify(recovered);
+    expect(text).toContain("paperclip_runner_agent_not_found: ");
+    expect(text).toContain(`Chaos claude (${claudeId})`);
+    expect(text).toContain("list_agents");
+    const created = await db.select({ id: issues.id }).from(issues).where(eq(issues.originId,
+      `paperclip-runner:create-task:${issueId}:t06-spliced`));
+    expect(created).toEqual([]);
+    await db.delete(agents).where(eq(agents.id, claudeId));
+  });
+
   it("advertises only real bindings and reads the bound task", async () => {
     const authority = new PaperclipRunnerToolAuthority(db, {
       companyId,
@@ -120,9 +194,10 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(50);
+    expect(authority.definitions()).toHaveLength(53);
     expect(authority.definitions().map(tool => tool.name)).toEqual(expect.arrayContaining([
       "get_workspace", "list_workspaces", "select_workspace", "prepare_repository",
+      "search_skills", "load_skill",
     ]));
     const questions = authority.definitions().find(tool => tool.name === "request_human_input")!;
     expect(questions.description).toContain("ask only the next unanswered question");
@@ -248,7 +323,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     }).where(eq(heartbeatRuns.id, runId));
     const [expanded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     const observed = createDb(temporary!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns, issues, agents, companies }, capture);
     try {
       const reader = new PaperclipRunnerToolAuthority(observed, binding);
@@ -291,7 +366,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     await db.update(heartbeatRuns).set({ contextSnapshot: context }).where(eq(heartbeatRuns.id, runId));
     const [expanded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     const observed = createDb(temporary!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns, issues, agents, companies }, capture);
     try {
       const reader = new PaperclipRunnerToolAuthority(observed, binding);
@@ -451,6 +526,41 @@ describe("PaperclipRunnerToolAuthority", () => {
       await db.update(heartbeatRuns).set({ contextSnapshot: originalRun!.contextSnapshot }).where(eq(heartbeatRuns.id, runId));
       await db.update(issues).set({ executionPolicy: originalIssue!.executionPolicy }).where(eq(issues.id, issueId));
       await db.delete(issueComments).where(inArray(issueComments.id, commentIds));
+    }
+  });
+
+  it("paginates complete native task inventories beyond one hundred results", async () => {
+    const ids = Array.from({ length: 205 }, () => randomUUID()).sort();
+    const foreignCompanyId = randomUUID();
+    const foreignId = randomUUID();
+    await db.insert(companies).values({ id: foreignCompanyId, name: "Foreign inventory", issuePrefix: "FINV" });
+    await db.insert(issues).values({ id: foreignId, companyId: foreignCompanyId, title: "synthetic-inventory-key foreign canary", status: "done" });
+    await db.insert(issues).values(ids.map((id, index) => ({
+      id, companyId, title: `Inventory pagination ${index}`,
+      description: "synthetic-inventory-key", status: index < 200 ? "done" : "blocked",
+    })));
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    const search = (arguments_: Record<string, unknown>) => authority.execute({
+      tool: "search_tasks", callId: randomUUID(), arguments: { query: "synthetic-inventory-key", ...arguments_ },
+    }) as Promise<{ tasks: Array<{ id: string }>; limit: number; returnedCount: number; hasMore: boolean; nextCursor: string | null }>;
+    try {
+      const first = await search({ limit: 200 });
+      expect(first.tasks).toHaveLength(200);
+      expect(JSON.stringify(first)).not.toContain(foreignId);
+      expect(first).toMatchObject({ limit: 200, returnedCount: 200, hasMore: true, nextCursor: ids[199] });
+      expect(first.tasks.map(task => task.id)).toEqual(ids.slice(0, 200));
+      const last = await search({ limit: 200, cursor: first.nextCursor });
+      expect(last.tasks.map(task => task.id)).toEqual(ids.slice(200));
+      expect(last).toMatchObject({ limit: 200, returnedCount: 5, hasMore: false, nextCursor: null });
+      expect(new Set([...first.tasks, ...last.tasks].map(task => task.id)).size).toBe(205);
+      expect(await search({ cursor: ids[204] })).toMatchObject({ tasks: [], limit: 50, returnedCount: 0, hasMore: false, nextCursor: null });
+      expect(await search({ statuses: ["blocked"], limit: 200 })).toMatchObject({ tasks: ids.slice(200).map(id => ({ id })), returnedCount: 5, hasMore: false });
+      expect(await search({})).toMatchObject({ limit: 50, returnedCount: 50, hasMore: true });
+      expect((await search({ limit: 200, cursor: ids[199]!.toUpperCase() })).tasks.map(task => task.id)).toEqual(ids.slice(200));
+      await expect(search({ cursor: "invalid" })).rejects.toThrow("paperclip_runner_tool_input_invalid");
+    } finally {
+      await db.delete(issues).where(inArray(issues.id, [...ids, foreignId]));
+      await db.delete(companies).where(eq(companies.id, foreignCompanyId));
     }
   });
 
@@ -1204,6 +1314,72 @@ describe("PaperclipRunnerToolAuthority", () => {
     ).rejects.toThrow("paperclip_runner_tool_idempotency_conflict");
   });
 
+  it("settles a write_document a restart orphaned from its transactional receipt, applying it at most once", async () => {
+    // A restart can cut a write_document callback after the runner journaled
+    // its input but before any result was saved. The revision and its receipt
+    // commit in one transaction, so recovery can prove which side it is on.
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    const notApplied = {
+      tool: "write_document",
+      callId: "orphaned-write-not-applied",
+      arguments: { idempotencyKey: "orphaned-write-not-applied", key: "orphan-brief", title: "Brief",
+        body: "Recovered once.", baseRevisionId: null, changeSummary: "Initial brief" },
+    };
+    // No receipt: the write provably never applied. Recovery applies it once.
+    const recovered = await authority.recover(notApplied);
+    expect(recovered).toMatchObject({ result: { disposition: "applied", created: true, document: { key: "orphan-brief" } } });
+    expect(recovered?.isError).not.toBe(true);
+    const applied = await documentService(db).getIssueDocumentByKey(issueId, "orphan-brief");
+    expect(applied).toMatchObject({ body: "Recovered once.", latestRevisionNumber: 1 });
+    // A second recovery, and the original callback arriving late, both replay
+    // the receipt instead of writing again.
+    expect(await authority.recover(notApplied)).toEqual(recovered);
+    expect(await authority.execute(notApplied)).toEqual(recovered!.result);
+    expect(await documentService(db).getIssueDocumentByKey(issueId, "orphan-brief"))
+      .toMatchObject({ latestRevisionNumber: 1 });
+
+    // Receipt present: the write applied before the restart. Recovery returns
+    // the saved result and writes nothing.
+    const update = {
+      tool: "write_document",
+      callId: "orphaned-write-applied",
+      arguments: { idempotencyKey: "orphaned-write-applied", key: "orphan-brief", title: "Brief",
+        body: "Second revision.", baseRevisionId: applied!.latestRevisionId, changeSummary: "Update" },
+    };
+    const original = await authority.execute(update);
+    expect(await authority.recover(update)).toEqual({ result: original });
+    expect(await documentService(db).getIssueDocumentByKey(issueId, "orphan-brief"))
+      .toMatchObject({ body: "Second revision.", latestRevisionNumber: 2 });
+
+    // A write whose base moved on cannot apply. Recovery reports the definite
+    // conflict as a tool error and changes nothing.
+    const stale = {
+      tool: "write_document",
+      callId: "orphaned-write-stale",
+      arguments: { idempotencyKey: "orphaned-write-stale", key: "orphan-brief", title: "Brief",
+        body: "Stale.", baseRevisionId: applied!.latestRevisionId, changeSummary: "Stale" },
+    };
+    // A task switched to ask mode refuses a write that never applied, while
+    // a write that did apply still replays its receipt.
+    await db.update(issues).set({ workMode: "ask" }).where(eq(issues.id, issueId));
+    try {
+      const askMode = await authority.recover({ ...notApplied, callId: "orphaned-write-ask",
+        arguments: { ...notApplied.arguments, idempotencyKey: "orphaned-write-ask", key: "orphan-ask" } });
+      expect(JSON.stringify(askMode)).toContain("paperclip_runner_tool_mode_denied");
+      expect(askMode).toMatchObject({ isError: true });
+      expect(await documentService(db).getIssueDocumentByKey(issueId, "orphan-ask")).toBeNull();
+      expect(await authority.recover(update)).toEqual({ result: original });
+    } finally {
+      await db.update(issues).set({ workMode: "standard" }).where(eq(issues.id, issueId));
+    }
+
+    const conflict = await authority.recover(stale);
+    expect(conflict).toMatchObject({ isError: true, result: { success: false } });
+    expect(JSON.stringify(conflict)).toContain("Document was updated by someone else");
+    expect(await documentService(db).getIssueDocumentByKey(issueId, "orphan-brief"))
+      .toMatchObject({ body: "Second revision.", latestRevisionNumber: 2 });
+  });
+
   it("returns the exact accepted plan revision in task context", async () => {
     const plan = await documentService(db).getIssueDocumentByKey(
       issueId,
@@ -1299,6 +1475,130 @@ describe("PaperclipRunnerToolAuthority", () => {
         markdown: credentialDocumentBody,
       },
     });
+  });
+
+  it("places create_task beside a child task, except for watchdog-scoped runs", async () => {
+    const rootId = randomUUID();
+    await db.insert(issues).values({ id: rootId, companyId, title: "Depth root", status: "todo", workMode: "standard" });
+    async function childRun(watchdog: boolean, watchdogStatus = "active") {
+      const childId = randomUUID();
+      const childRunId = randomUUID();
+      await db.insert(issues).values({
+        id: childId, companyId, parentId: rootId, title: `Depth child ${watchdog ? "watchdog" : "ordinary"}`,
+        status: "in_progress", workMode: "standard", assigneeAgentId: agentId,
+      });
+      await db.insert(heartbeatRuns).values({
+        id: childRunId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: childId,
+        invocationSource: "assignment", triggerDetail: "system",
+        contextSnapshot: watchdog ? { issueId: childId, taskWatchdog: { watchedIssueId: childId } } : { issueId: childId },
+      });
+      await db.update(issues).set({ executionRunId: childRunId }).where(eq(issues.id, childId));
+      if (watchdog) await db.insert(issueWatchdogs).values({ companyId, issueId: childId, watchdogAgentId: agentId, status: watchdogStatus });
+      const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId: childId, runId: childRunId, workMode: "standard" });
+      const created = await authority.execute({
+        tool: "create_task",
+        callId: `depth-${childId}`,
+        arguments: { idempotencyKey: `depth-${childId}`, title: "Follow-up from the child", status: "backlog" },
+      }) as { task: { id: string; parentId: string | null } };
+      const [row] = await db.select({ originIssueId: issues.originIssueId }).from(issues).where(eq(issues.id, created.task.id));
+      return { childId, parentId: created.task.parentId, originIssueId: row?.originIssueId };
+    }
+
+    const ordinary = await childRun(false);
+    expect(ordinary).toMatchObject({ parentId: rootId, originIssueId: ordinary.childId });
+    const watchdog = await childRun(true);
+    expect(watchdog).toMatchObject({ parentId: watchdog.childId, originIssueId: watchdog.childId });
+    // A disabled watchdog no longer earns the exception.
+    const disabled = await childRun(true, "disabled");
+    expect(disabled).toMatchObject({ parentId: rootId, originIssueId: disabled.childId });
+    // An active watchdog may not name a parent outside its watched subtree.
+    const outsideId = randomUUID();
+    await db.insert(issues).values({ id: outsideId, companyId, title: "Outside the watched subtree", status: "todo", workMode: "standard" });
+    const [watchdogRun] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.nativeIssueId, watchdog.childId));
+    const scoped = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId: watchdog.childId, runId: watchdogRun!.id, workMode: "standard" });
+    await expect(scoped.execute({
+      tool: "create_task", callId: "watchdog-outside",
+      arguments: { idempotencyKey: "watchdog-outside", title: "Elsewhere", status: "backlog", parentTaskId: outsideId },
+    })).rejects.toThrow(/watched issue subtree/);
+  });
+
+  it("authorizes the placed parent: a hidden root rejects a named child parent and makes the default standalone", async () => {
+    const hiddenRootId = randomUUID();
+    const openChildId = randomUUID();
+    const projectId = randomUUID();
+    const featureWorkspaceId = randomUUID();
+    await db.insert(projects).values({ id: projectId, companyId, name: "Depth workspace project" });
+    await db.insert(projectWorkspaces).values([
+      { companyId, projectId, name: "Default checkout", isPrimary: true },
+      { id: featureWorkspaceId, companyId, projectId, name: "Feature checkout" },
+    ]);
+    await db.insert(issues).values({
+      id: hiddenRootId, companyId, title: "Private root", status: "todo", workMode: "standard",
+      visibility: "private", privacyRootIssueId: hiddenRootId, responsibleUserId: "someone-else",
+    });
+    await db.insert(issues).values({
+      id: openChildId, companyId, parentId: hiddenRootId, title: "Open child", status: "in_progress",
+      workMode: "standard", assigneeAgentId: agentId, projectId, projectWorkspaceId: featureWorkspaceId,
+    });
+    const named = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId, workMode: "standard" });
+    await expect(named.execute({
+      tool: "create_task", callId: "hidden-root-named",
+      arguments: { idempotencyKey: "hidden-root-named", title: "Under the open child", status: "backlog", parentTaskId: openChildId },
+    })).rejects.toThrow();
+
+    const childRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: childRunId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: openChildId,
+      invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId: openChildId },
+    });
+    await db.update(issues).set({ executionRunId: childRunId }).where(eq(issues.id, openChildId));
+    const fromChild = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId: openChildId, runId: childRunId, workMode: "standard" });
+    const created = await fromChild.execute({
+      tool: "create_task", callId: "hidden-root-default",
+      arguments: { idempotencyKey: "hidden-root-default", title: "Default follow-up", status: "backlog" },
+    }) as { task: { id: string; parentId: string | null } };
+    expect(created.task.parentId).toBeNull();
+    const [row] = await db.select({ originIssueId: issues.originIssueId, projectWorkspaceId: issues.projectWorkspaceId })
+      .from(issues).where(eq(issues.id, created.task.id));
+    expect(row?.originIssueId).toBe(openChildId);
+    // Dropping the structural parent keeps the requester's workspace.
+    expect(row?.projectWorkspaceId).toBe(featureWorkspaceId);
+  });
+
+  it("lets a conversation create a top-level task and subtasks with parentTaskId", async () => {
+    const conversationId = randomUUID();
+    const conversationRunId = randomUUID();
+    await db.insert(issues).values({
+      id: conversationId, companyId, title: "Chat with runner agent", status: "in_progress", workMode: "standard",
+      assigneeAgentId: agentId, conversationAgentId: agentId, conversationUserId: "chat-user", conversationState: "active",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: conversationRunId, companyId, agentId, status: "running", runtimeMode: "native", nativeIssueId: conversationId,
+      invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId: conversationId },
+    });
+    await db.update(issues).set({ executionRunId: conversationRunId }).where(eq(issues.id, conversationId));
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId, agentId, issueId: conversationId, runId: conversationRunId, workMode: "standard",
+    });
+    const create = async (key: string, args: Record<string, unknown>) => await authority.execute({
+      tool: "create_task", callId: key, arguments: { idempotencyKey: key, status: "backlog", ...args },
+    }) as { task: { id: string; parentId: string | null } };
+
+    const parent = await create("chat-parent", { title: "Referral launch" });
+    expect(parent.task.parentId).toBeNull();
+    const subtask = await create("chat-subtask", { title: "Landing page", parentTaskId: parent.task.id });
+    expect(subtask.task.parentId).toBe(parent.task.id);
+    const [row] = await db.select({ originIssueId: issues.originIssueId }).from(issues).where(eq(issues.id, subtask.task.id));
+    // Provenance names the chat whose run created it; the parent is structure.
+    expect(row?.originIssueId).toBe(conversationId);
+
+    // A child of a child is placed beside it.
+    const deeper = await create("chat-deeper", { title: "Landing copy", parentTaskId: subtask.task.id });
+    expect(deeper.task.parentId).toBe(parent.task.id);
+
+    await expect(create("chat-under-conversation", { title: "Under the chat", parentTaskId: conversationId }))
+      .rejects.toThrow(/conversation cannot be a parent/i);
   });
 
   it("creates ordinary children, preserves blockers, and deduplicates across runs", async () => {
@@ -1676,5 +1976,29 @@ describe("PaperclipRunnerToolAuthority", () => {
         arguments: {},
       }),
     ).rejects.toThrow("paperclip_runner_tool_binding_not_authorized");
+  });
+});
+
+describe("deliverable tool location guidance", () => {
+  const binding = { companyId: "company", agentId: "agent", issueId: "issue", runId: "run", workspaceRoot: "/task-workspace", apiToolsEnabled: false };
+  const db = new Proxy({} as ConstructorParameters<typeof PaperclipRunnerToolAuthority>[0], {
+    get() { throw new Error("Tool definitions must not query the database"); },
+  });
+  it.each(["local", "remote"] as const)("directs %s workspace-only deliverables to the task cwd", (executionTargetKind) => {
+    const authority = new PaperclipRunnerToolAuthority(db, { ...binding, executionTargetKind,
+      ...(executionTargetKind === "remote" ? { readRemoteWorkspaceFile: async () => Buffer.alloc(0) } : {}),
+    });
+    const tool = authority.definitions().find(tool => tool.name === "register_deliverable")!;
+    const description = (tool.inputSchema as { properties: { contentRef: { description: string } } }).properties.contentRef.description;
+    expect(description).toContain("get_workspace.cwd");
+    expect(description).toContain("AGENT_HOME");
+    expect(description).toContain("Create or copy");
+  });
+  it("preserves the granted-location reader contract", () => {
+    const authority = new PaperclipRunnerToolAuthority(db, { ...binding, executionTargetKind: "remote", readRemoteTaskFile: async () => Buffer.alloc(0) });
+    const tool = authority.definitions().find(tool => tool.name === "register_deliverable")!;
+    const description = (tool.inputSchema as { properties: { contentRef: { description: string } } }).properties.contentRef.description;
+    expect(description).toContain("absolute within a location granted to this task");
+    expect(description).toContain("including its agent home");
   });
 });

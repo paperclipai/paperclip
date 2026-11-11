@@ -1,16 +1,31 @@
 // @vitest-environment jsdom
 
-import { act, useEffect, type ReactNode } from "react";
+import { act, useEffect, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BreadcrumbProvider, useBreadcrumbs } from "../context/BreadcrumbContext";
 import { BreadcrumbBar } from "./BreadcrumbBar";
+import { CoordinatorAgentSwitcher } from "./CoordinatorAgentSwitcher";
+import type { Agent } from "@paperclipai/shared";
 
 const viewport = vi.hoisted(() => ({ isMobile: false }));
+const navigate = vi.hoisted(() => vi.fn());
+const chatAgents = vi.hoisted(() => [
+  { id: "first", name: "CodexCoder", role: "engineer", status: "idle" },
+  { id: "second", name: "Designer", role: "designer", status: "idle" },
+]);
+
+vi.mock("@/hooks/useAgentChatNavigation", () => ({
+  useAgentChatNavigation: () => ({
+    agents: { data: chatAgents, isPending: false, error: null },
+    chats: { data: [] },
+  }),
+}));
 
 vi.mock("@/lib/router", () => ({
-  Link: ({ children, className, to }: { children: ReactNode; className?: string; to: string }) => (
-    <a className={className} href={to}>{children}</a>
+  useNavigate: () => navigate,
+  Link: ({ children, to, ...props }: ComponentProps<"a"> & { to: string }) => (
+    <a {...props} href={to}>{children}</a>
   ),
 }));
 
@@ -47,12 +62,16 @@ function TaskBreadcrumbs({
   taskDetailLayout = false,
   identifier = "PAP-16679",
   sourceHref = "/issues",
+  parentTitle,
+  title = "Hire your first engineer and create a hiring plan",
 }: {
   onOpen?: () => void;
   panelControl?: { open: boolean; onToggle: () => void };
   taskDetailLayout?: boolean;
   identifier?: string;
   sourceHref?: string;
+  parentTitle?: string;
+  title?: string;
 }) {
   const {
     setBreadcrumbs,
@@ -63,8 +82,9 @@ function TaskBreadcrumbs({
   useEffect(() => {
     setBreadcrumbs([
       { label: "Tasks", href: sourceHref },
+      ...(parentTitle ? [{ label: parentTitle, href: "/issues/PAP-120" }] : []),
       {
-        label: "Hire your first engineer and create a hiring plan",
+        label: title,
         identifier,
         leading: "status",
       },
@@ -89,6 +109,8 @@ function TaskBreadcrumbs({
     setBreadcrumbToolbar,
     setBreadcrumbs,
     sourceHref,
+    parentTitle,
+    title,
   ]);
 
   return <BreadcrumbBar taskDetailLayout={taskDetailLayout} />;
@@ -103,6 +125,8 @@ describe("BreadcrumbBar", () => {
 
   beforeEach(() => {
     viewport.isMobile = false;
+    navigate.mockClear();
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -111,6 +135,69 @@ describe("BreadcrumbBar", () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  it("uses the standard section heading for Chat while retaining the properties toggle", async () => {
+    const toggle = vi.fn();
+    function ChatHeader() {
+      const { setBreadcrumbs, setBreadcrumbPanelControl } = useBreadcrumbs();
+      useEffect(() => {
+        setBreadcrumbs([{ label: "Chat" }]);
+        setBreadcrumbPanelControl({ open: false, onToggle: toggle });
+      }, [setBreadcrumbs, setBreadcrumbPanelControl]);
+      return <BreadcrumbBar showPropertiesToggle />;
+    }
+    await act(async () => root.render(<BreadcrumbProvider><ChatHeader /></BreadcrumbProvider>));
+    expect(container.querySelector("h1")?.textContent).toBe("Chat");
+    expect(container.querySelector("h1")?.className).toContain("uppercase");
+    expect(container.querySelector('[aria-label^="Switch agent"]')).toBeNull();
+    expect(container.querySelector('[aria-label^="Pin "]')).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Show properties"]')!.click());
+    expect(toggle).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { mobile: false, taskDetailLayout: true },
+    { mobile: true, taskDetailLayout: true },
+    { mobile: false, taskDetailLayout: false },
+    { mobile: true, taskDetailLayout: false },
+  ])("opens the agent picker from the avatar, name and caret (mobile=$mobile, task=$taskDetailLayout)", async ({ mobile, taskDetailLayout }) => {
+    viewport.isMobile = mobile;
+    const agent = chatAgents[0] as Agent;
+    function AgentBreadcrumb() {
+      const { setBreadcrumbs } = useBreadcrumbs();
+      useEffect(() => {
+        setBreadcrumbs([{
+          label: agent.name,
+          control: <CoordinatorAgentSwitcher agent={agent} />,
+          controlKey: agent.id,
+        }]);
+      }, [setBreadcrumbs]);
+      return <BreadcrumbBar taskDetailLayout={taskDetailLayout} />;
+    }
+    await act(async () => root.render(<BreadcrumbProvider><AgentBreadcrumb /></BreadcrumbProvider>));
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="Switch agent. Currently CodexCoder"]')!;
+    expect(button).not.toBeNull();
+    expect(button.getAttribute("aria-current")).toBe("page");
+    expect(button.closest('[aria-disabled="true"]')).toBeNull();
+    expect(button.querySelector("button, a")).toBeNull();
+    expect(document.title).toBe("CodexCoder • Paperclip");
+    for (const selector of ['[data-slot="agent-avatar"]', "[data-agent-name]", "svg"]) {
+      const target = button.querySelector<HTMLElement>(selector);
+      expect(target).not.toBeNull();
+      await act(async () => { button.focus(); target!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+      expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Chat with an agent");
+      expect(button.getAttribute("aria-expanded")).toBe("true");
+      await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      await vi.waitFor(() => expect(document.activeElement).toBe(button));
+    }
+    await act(async () => button.click());
+    const next = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent?.includes("Designer"))!;
+    await act(async () => next.click());
+    expect(navigate).toHaveBeenCalledWith("/chats/designer");
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
   it("keeps a single task breadcrumb compact with adjacent identity and settings action", async () => {
@@ -154,7 +241,8 @@ describe("BreadcrumbBar", () => {
     expect(container.querySelector('a[href="/TES/issues"]')).toBeNull();
     const identifier = container.querySelector('[data-slot="task-title-identifier"]');
     expect(identifier?.textContent).toBe("TES-3");
-    expect(identifier?.previousElementSibling?.textContent).toBe("Hire your first engineer and create a hiring plan");
+    expect(identifier?.previousElementSibling?.textContent).toBe("Hire your first engineer and create a hiring pl…");
+    expect(identifier?.previousElementSibling?.getAttribute("title")).toBe("Hire your first engineer and create a hiring plan");
     expect(identifier?.previousElementSibling?.className).toContain("truncate");
     expect(container.querySelector('button[aria-label="Open sidebar"]')).not.toBeNull();
   });
@@ -179,6 +267,39 @@ describe("BreadcrumbBar", () => {
     expect(onOpen).toHaveBeenCalledOnce();
   });
 
+  it.each([false, true])("keeps the parent linked beside the current task (mobile=%s)", async (mobile) => {
+    viewport.isMobile = mobile;
+    await act(async () => root.render(
+      <BreadcrumbProvider><TaskBreadcrumbs taskDetailLayout parentTitle="Prepare the engineering team" /></BreadcrumbProvider>,
+    ));
+    const parent = container.querySelector<HTMLAnchorElement>('a[href="/issues/PAP-120"]');
+    expect(parent?.textContent).toBe("Prepare the engineering team");
+    expect(parent?.querySelector('[data-slot="task-title-identifier"]')).toBeNull();
+    expect(parent?.getAttribute("aria-label")).toBe("Prepare the engineering team");
+    expect(container.querySelector('[aria-current="page"]')?.textContent).toContain("PAP-16679");
+    if (mobile) {
+      expect(container.querySelector('a[href="/issues"]')).toBeNull();
+      expect(parent?.textContent).not.toContain("PAP-120");
+    }
+  });
+
+  it.each([false, true])("caps each task breadcrumb at 48 characters and preserves full names (mobile=%s)", async (mobile) => {
+    viewport.isMobile = mobile;
+    const parentTitle = "Plan the engineering team and hiring process for the next product launch";
+    const title = "🚀".repeat(60);
+    await act(async () => root.render(
+      <BreadcrumbProvider><TaskBreadcrumbs taskDetailLayout parentTitle={parentTitle} title={title} /></BreadcrumbProvider>,
+    ));
+    const parent = container.querySelector<HTMLAnchorElement>('a[href="/issues/PAP-120"]');
+    const page = container.querySelector('[aria-current="page"]');
+    expect(parent?.textContent).toContain(`${Array.from(parentTitle).slice(0, 47).join("")}…`);
+    expect(parent?.title).toBe(parentTitle);
+    const label = page?.querySelector('[title]');
+    expect(label?.textContent).toBe(`${"🚀".repeat(47)}…`);
+    expect(label?.getAttribute("title")).toBe(title);
+    expect(page?.getAttribute("aria-label")).toContain(title);
+  });
+
   it("appends the task identifier to the task title in the task-detail header", async () => {
     await act(async () => {
       root.render(
@@ -196,7 +317,7 @@ describe("BreadcrumbBar", () => {
     expect(identifier?.closest(".relative")?.className).toContain("h-(--sz-60px)");
 
     const title = Array.from(container.querySelectorAll("span"))
-      .find((element) => element.textContent === "Hire your first engineer and create a hiring plan");
+      .find((element) => element.getAttribute("title") === "Hire your first engineer and create a hiring plan");
     const tasksLink = container.querySelector<HTMLAnchorElement>('a[href="/issues"]');
     const header = tasksLink?.closest(".relative");
     expect(header?.classList).toContain("px-4");

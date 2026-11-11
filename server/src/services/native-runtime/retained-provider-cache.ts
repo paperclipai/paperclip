@@ -1,0 +1,264 @@
+import { and, asc, eq, sql } from "drizzle-orm";
+import { heartbeatRuns, nativeRunFinalizations, withDedicatedDbConnection, workspaceOperations, type Db } from "@paperclipai/db";
+import { z } from "zod";
+import type { RemoteWorkspaceTarget } from "../remote-workspace-transport.js";
+
+const schema = "paperclip.native-provider-cache-reclaim.v1";
+const prepareSchema = "paperclip.native-provider-cache-prepare.v1";
+const inventorySchema = "paperclip.native-provider-cache-inventory.v1";
+const preparePhase = "native_provider_cache_reclaim_prepare";
+const digestPattern = /^sha256:[a-f0-9]{64}$/;
+const uuidPattern = /^[a-f0-9-]{36}$/;
+const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value)
+  ? value as Record<string, unknown> : {};
+const numericIdentity = z.string().regex(/^\d{1,24}$/);
+const identity = z.object({ dev: numericIdentity, ino: numericIdentity, generation: z.string().regex(/^[bc]:\d{1,24}$/) });
+const inventoryCodec = z.object({ schema: z.literal(inventorySchema), sourceRunId: z.string().regex(uuidPattern),
+  manifestDigest: z.string().regex(digestPattern), manifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  root: identity, pack: identity, manifest: identity, sessions: identity,
+  targets: z.array(identity.extend({ name: z.enum(["node_modules", "provider-assets"]) })).max(2),
+  availableBytesBefore: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
+});
+type Inventory = z.infer<typeof inventoryCodec>;
+const stagedCodec = z.array(z.object({ name: z.enum(["node_modules", "provider-assets"]),
+  cache: identity, marker: identity, markerSha256: z.string().regex(/^[a-f0-9]{64}$/) })).max(2);
+type Staged = z.infer<typeof stagedCodec>;
+
+function verifiedCacheDigest(run: typeof heartbeatRuns.$inferSelect, workspaceId: string, target: RemoteWorkspaceTarget): string | null {
+  const profile = record(run.runnerProfileJson), state = record(profile.nativeProviderPackAdmissionState);
+  const admission = record(profile.nativeProviderPackAdmission), workspace = record(profile.remoteWorkspace);
+  if (!uuidPattern.test(target.leaseId ?? "") || state.schema !== "paperclip.native-provider-pack-admission-state.v1" || state.state !== "verified"
+    || typeof state.admissionEpoch !== "string" || !uuidPattern.test(state.admissionEpoch)
+    || admission.schema !== "paperclip.native-provider-pack-admission.v1" || admission.stage !== "session_admitted"
+    || admission.authority !== "core_verified_selection" || admission.runId !== run.id
+    || admission.companyId !== run.companyId || admission.agentId !== run.agentId
+    || workspace.workspaceId !== workspaceId || workspace.remoteCwd !== target.remoteCwd || workspace.leaseId !== target.leaseId
+    || typeof admission.providerPackDigest !== "string" || !digestPattern.test(admission.providerPackDigest)) return null;
+  return admission.providerPackDigest;
+}
+
+const reclaimScript = String.raw`
+const fs=require('node:fs/promises'),path=require('node:path'),crypto=require('node:crypto'),{constants}=require('node:fs');
+(async()=>{
+ const [mode,root,source,expected,raw]=process.argv.slice(1),schema='paperclip.native-provider-cache-reclaim.v1';
+ if(!['inventory','stage','reclaim'].includes(mode)||!path.isAbsolute(root)||!/^[a-f0-9-]{36}$/.test(source)
+   ||!/^sha256:[a-f0-9]{64}$/.test(expected)||await fs.realpath(root)!==root)throw Error('invalid_binding');
+ const runtime=path.join(root,'.paperclip-runtime'),runner=path.join(runtime,'paperclip-runner'),pack=path.join(runner,'provider-pack');
+ const sessions=path.join(runner,'sessions'),file=path.join(pack,'provider-pack.json');
+ const stat=async p=>fs.lstat(p,{bigint:true}).catch(e=>{if(e.code==='ENOENT')return null;throw e;});
+ const directory=async p=>{const x=await fs.lstat(p,{bigint:true});if(!x.isDirectory()||x.isSymbolicLink()||await fs.realpath(p)!==p)throw Error('unsafe_directory');return x;};
+ const identity=x=>({dev:String(x.dev),ino:String(x.ino),generation:(x.birthtimeNs>0n?'b:'+x.birthtimeNs:'c:'+x.ctimeNs)});
+ const same=(a,b,generation=true)=>a&&b&&['dev','ino',...(generation?['generation']:[])].every(k=>a[k]===b[k]);
+ const rootIdentity=identity(await directory(root));await directory(runtime);await directory(runner);
+ const packIdentity=identity(await directory(pack)),sessionIdentity=identity(await directory(sessions)),m=await stat(file);
+ if(!m||!m.isFile()||m.isSymbolicLink()||m.nlink!==1n||m.size>524288n)throw Error('unsafe_manifest');
+ const bytes=await fs.readFile(file),manifest=JSON.parse(bytes),manifestIdentity=identity(m);
+ const canonical=v=>Array.isArray(v)?'['+v.map(canonical).join(',')+']':v&&typeof v==='object'?'{'+Object.entries(v).sort(([a],[b])=>a.localeCompare(b)).map(([k,x])=>JSON.stringify(k)+':'+canonical(x)).join(',')+'}':JSON.stringify(v);
+ const manifestSha256=crypto.createHash('sha256').update(bytes).digest('hex');
+ if(manifest.schema!=='paperclip-runner/remote-provider-pack/v1'||manifest.digest!==expected
+   ||expected!=='sha256:'+crypto.createHash('sha256').update(canonical(manifest.payload)).digest('hex'))throw Error('manifest_changed');
+ const available=async()=>{try{const capacity=await fs.statfs(root),bytes=capacity.bavail*capacity.bsize;
+  return Number.isSafeInteger(bytes)?Math.max(0,bytes):null;}catch{return null;}};
+ const availableBytesBefore=await available();
+ if(mode==='inventory'){
+  const targets=[];
+  for(const name of ['node_modules','provider-assets']){const p=path.join(pack,name),x=await stat(p);if(!x)continue;
+   if(!x.isDirectory()||x.isSymbolicLink()||await fs.realpath(p)!==p)throw Error('unsafe_cache_directory');targets.push({name,...identity(x)});}
+  console.log(JSON.stringify({schema:'paperclip.native-provider-cache-inventory.v1',sourceRunId:source,manifestDigest:expected,
+   manifestSha256,root:rootIdentity,pack:packIdentity,manifest:manifestIdentity,sessions:sessionIdentity,
+   targets,availableBytesBefore}));return;
+ }
+ const request=JSON.parse(raw),plan=request.inventory;
+ if(!/^[a-f0-9-]{36}$/.test(request.preparationOperationId)||plan?.schema!=='paperclip.native-provider-cache-inventory.v1'
+   ||plan.sourceRunId!==source||plan.manifestDigest!==expected||plan.manifestSha256!==manifestSha256
+   ||!same(plan.root,rootIdentity)||!same(plan.pack,packIdentity,false)||!same(plan.manifest,manifestIdentity)||!same(plan.sessions,sessionIdentity)
+   ||!Array.isArray(plan.targets)||plan.targets.length>2||new Set(plan.targets.map(x=>x.name)).size!==plan.targets.length)throw Error('plan_changed');
+ const markerName='.paperclip-reclaim-'+request.preparationOperationId+'.json';
+ const stagedPath=item=>path.join(pack,item.name+'.paperclip-reclaim-'+request.preparationOperationId);
+ const markerText=item=>JSON.stringify({preparationOperationId:request.preparationOperationId,source,expected,item});
+ const markerState=async(p,item,partial=false)=>{const x=await stat(p);
+  if(!x||!x.isFile()||x.isSymbolicLink()||x.nlink!==1n||x.size>4096n)throw Error('marker_changed');
+  const bytes=await fs.readFile(p),text=bytes.toString();
+  if(text!==markerText(item)&&!(partial&&markerText(item).startsWith(text)))throw Error('marker_changed');
+  return {identity:identity(x),sha256:crypto.createHash('sha256').update(bytes).digest('hex')};};
+ let freed=0n,visited=0;
+ const markerSpaceAvailable=async()=>{const bytes=await available();return bytes===null?freed>=262144n:bytes>=262144;};
+ const releaseBlocks=async root=>{
+  const visit=async dir=>{await directory(dir);for await(const entry of await fs.opendir(dir)){
+   if(++visited>8192||await markerSpaceAvailable())return;
+   if(entry.name===markerName)continue;
+   const p=path.join(dir,entry.name),x=await stat(p);if(!x||x.isSymbolicLink())continue;
+   if(x.isDirectory()){await visit(p);continue;}
+   if(!x.isFile()||x.nlink!==1n||x.size===0n||!(x.mode&0o222n))continue;
+   let handle;
+   try{handle=await fs.open(p,constants.O_RDWR|constants.O_NOFOLLOW);
+    const opened=await handle.stat({bigint:true});if(!same(identity(x),identity(opened))||opened.nlink!==1n)throw Error('cache_changed');
+    await handle.truncate(0);freed+=opened.blocks*512n;
+   }catch(error){if(!['EACCES','EPERM','EROFS'].includes(error.code))throw error;}finally{await handle?.close();}
+  }};await visit(root);};
+ const fallback=plan.targets.filter(item=>item.generation.startsWith('c:'));
+ for(const item of plan.targets){
+  if(!['node_modules','provider-assets'].includes(item.name))throw Error('plan_changed');
+  const p=path.join(pack,item.name),current=await stat(p);
+  if(item.generation.startsWith('c:')){
+   const staged=await stat(stagedPath(item));if(current&&staged)throw Error('cache_changed');
+   if(staged){await directory(stagedPath(item));if(!same(item,identity(staged),false))throw Error('cache_changed');
+    await markerState(path.join(stagedPath(item),markerName),item);}
+   else if(current){await directory(p);const marker=await stat(path.join(p,markerName));
+    if(!same(item,identity(current),!marker))throw Error('cache_changed');
+    if(marker)await markerState(path.join(p,markerName),item,true);}
+  }else if(current&&(!current.isDirectory()||current.isSymbolicLink()||await fs.realpath(p)!==p||!same(item,identity(current))))throw Error('cache_changed');
+ }
+ if(mode==='stage'){
+  const staged=[];
+  for(const item of plan.targets){if(await markerSpaceAvailable())break;
+   const p=path.join(pack,item.name);
+   if(await stat(p))await releaseBlocks(p);
+   else if(item.generation.startsWith('c:')&&await stat(stagedPath(item)))await releaseBlocks(stagedPath(item));
+  }
+  for(const item of fallback){const p=path.join(pack,item.name),dest=stagedPath(item),current=await stat(p);
+   if(current){const marker=path.join(p,markerName),existing=await stat(marker);
+    if(!existing||((await fs.readFile(marker)).toString()!==markerText(item))){
+     const handle=await fs.open(marker,constants.O_WRONLY|constants.O_NOFOLLOW|(existing?0:constants.O_CREAT|constants.O_EXCL),0o600);
+     try{if(existing&&!same(identity(existing),identity(await handle.stat({bigint:true}))))throw Error('marker_changed');
+      await handle.writeFile(markerText(item));await handle.sync();}finally{await handle.close();}
+    }
+    await fs.rename(p,dest);
+   }
+   const cache=await stat(dest);if(!cache)continue;
+   await directory(dest);if(!same(item,identity(cache),false))throw Error('cache_changed');
+   const marker=await markerState(path.join(dest,markerName),item);
+   staged.push({name:item.name,cache:identity(cache),marker:marker.identity,markerSha256:marker.sha256});
+  }
+  console.log(JSON.stringify({preparationOperationId:request.preparationOperationId,staged}));return;
+ }
+ if(!Array.isArray(request.staged)||request.staged.length>2||new Set(request.staged.map(x=>x.name)).size!==request.staged.length)throw Error('plan_changed');
+ for(const item of fallback){const witness=request.staged.find(x=>x.name===item.name),dest=stagedPath(item),current=await stat(dest);
+  if(await stat(path.join(pack,item.name)))throw Error('cache_changed');
+  if(!witness&&!current)continue;
+  if(!witness||!current||!same(witness.cache,identity(current),false)||!same(item,identity(current),false))throw Error('cache_changed');
+  const marker=await markerState(path.join(dest,markerName),item);
+  if(!same(witness.marker,marker.identity)||witness.markerSha256!==marker.sha256)throw Error('marker_changed');
+ }
+ let changed=false;
+ for(const item of plan.targets){
+  if(item.generation.startsWith('c:')){const p=stagedPath(item);if(!await stat(p))continue;
+   for await(const entry of await fs.opendir(p)){if(entry.name!==markerName)await fs.rm(path.join(p,entry.name),{recursive:true,force:false});}
+   changed=true;continue;}
+  const p=path.join(pack,item.name),current=await stat(p);if(!current)continue;
+  if(!current.isDirectory()||current.isSymbolicLink()||!same(item,identity(current)))throw Error('cache_changed');
+  await fs.rm(p,{recursive:true,force:false});changed=true;}
+ if(!same(plan.sessions,identity(await directory(sessions))))throw Error('sessions_changed');
+ console.log(JSON.stringify({schema,sourceRunId:source,manifestDigest:expected,
+  preparationOperationId:request.preparationOperationId,status:'evicted',changed,sessionDirectoryPreserved:true,
+  availableBytesBefore,availableBytesAfter:await available()}));
+})().catch(()=>{process.stderr.write('native_provider_cache_reclaim_unconfirmed');process.exitCode=1;});`;
+
+function readInventory(value: unknown, runId: string, expected: string): Inventory {
+  const parsed = inventoryCodec.parse(value);
+  if (parsed.sourceRunId !== runId || parsed.manifestDigest !== expected
+    || new Set(parsed.targets.map(target => target.name)).size !== parsed.targets.length)
+    throw new Error("native_provider_cache_reclaim_unconfirmed");
+  return parsed;
+}
+
+export type NativeProviderCacheReclaim = { changed: boolean; confirmed: boolean };
+
+export async function reclaimInactiveNativeProviderCache(input: {
+  db: Db; companyId: string; issueId: string; runId: string; workspaceId: string;
+  target: RemoteWorkspaceTarget; assertOwned: () => Promise<void>;
+}): Promise<NativeProviderCacheReclaim> {
+  const nothing = { changed: false, confirmed: true } as const;
+  await input.assertOwned();
+  const [source] = await input.db.select({ run: heartbeatRuns, coordinator: nativeRunFinalizations })
+    .from(heartbeatRuns).innerJoin(nativeRunFinalizations, and(eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
+      eq(nativeRunFinalizations.runId, heartbeatRuns.id)))
+    .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
+      eq(nativeRunFinalizations.issueId, input.issueId))).limit(1);
+  if (!source || source.run.status !== "failed" || source.run.runtimeMode !== "native"
+    || (source.run.nativeIssueId ?? source.run.issueId ?? source.run.contextSnapshot?.issueId) !== input.issueId
+    || source.coordinator.phase !== "terminal_failure" || source.coordinator.leaseOwner !== null
+    || record(source.coordinator.failureDetail).recoverable === true) return nothing;
+  const expected = verifiedCacheDigest(source.run, input.workspaceId, input.target);
+  if (!expected) return nothing;
+  const scope = and(eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.issueId, input.issueId),
+    eq(workspaceOperations.heartbeatRunId, input.runId), eq(workspaceOperations.executionWorkspaceId, input.workspaceId));
+  const execute = async (mode: "inventory" | "stage" | "reclaim",
+    preparation?: { preparationOperationId: string; inventory: Inventory; staged?: Staged }) => {
+    await input.assertOwned();
+    const response = await input.target.runner!.execute({ command: "node", args: ["-e", reclaimScript,
+      mode, input.target.remoteCwd, input.runId, expected, JSON.stringify(preparation ?? null)],
+      cwd: input.target.remoteCwd, bypassSession: true, env: { NODE_OPTIONS: "", NODE_PATH: "" }, timeoutMs: 45_000 });
+    await input.assertOwned();
+    if (response.exitCode !== 0 || response.timedOut || Buffer.byteLength(response.stdout) > 16_384)
+      throw new Error("native_provider_cache_reclaim_unconfirmed");
+    return record(JSON.parse(response.stdout));
+  };
+  const startedAt = new Date();
+  let confirmed = false, changed = false, preparationOperationId: string | null = null;
+  let metadata: Record<string, unknown> = { schema, manifestDigest: expected, outcome: "unconfirmed" };
+  try {
+    let [prepared] = await input.db.select().from(workspaceOperations)
+      .where(and(scope, eq(workspaceOperations.phase, preparePhase), eq(workspaceOperations.status, "succeeded")))
+      .orderBy(asc(workspaceOperations.startedAt), asc(workspaceOperations.id)).limit(1);
+    if (!prepared) {
+      const inventory = readInventory(await execute("inventory"), input.runId, expected);
+      if (!inventory.targets.length) return nothing;
+      await input.assertOwned();
+      [prepared] = await withDedicatedDbConnection(input.db, journal => journal.transaction(async tx => {
+        await tx.execute(sql`select set_config('statement_timeout', '10000', true), set_config('lock_timeout', '2000', true)`);
+        return tx.insert(workspaceOperations).values({ companyId: input.companyId, issueId: input.issueId,
+          heartbeatRunId: input.runId, executionWorkspaceId: input.workspaceId, phase: preparePhase,
+          status: "succeeded", startedAt, finishedAt: new Date(),
+          metadata: { schema: prepareSchema, intentOnly: true, leaseId: input.target.leaseId,
+            remoteCwd: input.target.remoteCwd, inventory },
+        }).returning();
+      }));
+    }
+    if (!prepared || prepared.metadata?.schema !== prepareSchema || prepared.metadata.intentOnly !== true
+      || prepared.metadata.leaseId !== input.target.leaseId || prepared.metadata.remoteCwd !== input.target.remoteCwd)
+      throw new Error("native_provider_cache_reclaim_unconfirmed");
+    const inventory = readInventory(prepared.metadata.inventory, input.runId, expected);
+    preparationOperationId = prepared.id;
+    metadata = { ...metadata, preparationOperationId };
+    const [completed] = await input.db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(scope,
+      eq(workspaceOperations.phase, "native_provider_cache_reclaim"), eq(workspaceOperations.status, "succeeded"),
+      sql`${workspaceOperations.metadata}->>'preparationOperationId' = ${preparationOperationId}`,
+      sql`${workspaceOperations.metadata}->>'outcome' = 'evicted'`)).limit(1);
+    if (completed) return nothing;
+    let staged: Staged = [];
+    if (inventory.targets.some(target => target.generation.startsWith("c:"))) {
+      if (prepared.metadata.staged === undefined) {
+        const response = await execute("stage", { preparationOperationId, inventory });
+        if (response.preparationOperationId !== preparationOperationId) throw new Error("native_provider_cache_reclaim_unconfirmed");
+        staged = stagedCodec.parse(response.staged);
+        if (new Set(staged.map(item => item.name)).size !== staged.length || staged.some(item => !inventory.targets.some(target =>
+          target.name === item.name && target.generation.startsWith("c:") && target.dev === item.cache.dev && target.ino === item.cache.ino)))
+          throw new Error("native_provider_cache_reclaim_unconfirmed");
+        await input.assertOwned();
+        [prepared] = await withDedicatedDbConnection(input.db, journal => journal.transaction(async tx => {
+          await tx.execute(sql`select set_config('statement_timeout', '10000', true), set_config('lock_timeout', '2000', true)`);
+          return tx.update(workspaceOperations).set({ metadata: { ...prepared.metadata, staged } })
+            .where(and(scope, eq(workspaceOperations.id, preparationOperationId!))).returning();
+        }));
+        if (!prepared) throw new Error("native_provider_cache_reclaim_unconfirmed");
+      }
+      staged = stagedCodec.parse(prepared.metadata?.staged);
+    }
+    const receipt = await execute("reclaim", { preparationOperationId, inventory, staged });
+    if (receipt.schema !== schema || receipt.sourceRunId !== input.runId || receipt.manifestDigest !== expected
+      || receipt.preparationOperationId !== preparationOperationId || receipt.status !== "evicted"
+      || typeof receipt.changed !== "boolean" || receipt.sessionDirectoryPreserved !== true)
+      throw new Error("native_provider_cache_reclaim_unconfirmed");
+    metadata = { schema, manifestDigest: expected, preparationOperationId, outcome: receipt.status, changed: receipt.changed,
+      sessionDirectoryPreserved: true,
+      availableBytesBefore: typeof receipt.availableBytesBefore === "number" ? receipt.availableBytesBefore : null,
+      availableBytesAfter: typeof receipt.availableBytesAfter === "number" ? receipt.availableBytesAfter : null };
+    confirmed = true;
+    changed = receipt.changed;
+  } catch {}
+  await input.db.insert(workspaceOperations).values({ companyId: input.companyId, issueId: input.issueId,
+    heartbeatRunId: input.runId, executionWorkspaceId: input.workspaceId, phase: "native_provider_cache_reclaim",
+    status: confirmed ? "succeeded" : "failed", startedAt, finishedAt: new Date(), metadata });
+  return { changed, confirmed };
+}

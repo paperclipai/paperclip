@@ -18,7 +18,7 @@ import {
 
 describe("agent detail tabs", () => {
   it("exposes Secrets as its own route-backed tab", () => {
-    expect(AGENT_DETAIL_TABS.map((tab) => tab.label)).toContain("Secrets");
+    expect(AGENT_DETAIL_TABS.map((tab) => tab.label)).toContain("Secrets & variables");
     expect(parseAgentDetailView("secrets")).toBe("secrets");
   });
 

@@ -8,6 +8,7 @@ import type {
   ToolConnection,
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import {
   connectedConnectionIntentInteraction,
   issueThreadInteractionFixtureMeta,
@@ -82,6 +83,7 @@ vi.mock("@/components/ai-connections/AiProviderSetup", () => ({
 vi.mock("./ConnectionSetupFlow", () => ({
   ConnectionSetupFlow: (props: {
     requestedAgentId?: string;
+    requiredAgentId?: string;
     existingConnections?: ToolConnection[];
     onUseExisting?: (id: string) => Promise<void>;
     onComplete?: (completion: { connectionId: string } | { resolvedByCallback: true }) => void;
@@ -90,6 +92,7 @@ vi.mock("./ConnectionSetupFlow", () => ({
   }) => (
     <div data-testid="shared-connection-setup">
       <span data-testid="requested-agent">{props.requestedAgentId}</span>
+      <span data-testid="required-agent">{props.requiredAgentId}</span>
       <span data-testid="existing-count">
         {props.existingConnections?.length ?? 0}
       </span>
@@ -317,7 +320,7 @@ describe("ConnectionIntentInteractionBody dialog behavior", () => {
     expect(completeMock).not.toHaveBeenCalled();
   });
 
-  it("shows loading, then passes existing choices and the locked requesting agent to the shared flow", async () => {
+  it("passes existing choices and requires the requester without locking tool setup to that agent", async () => {
     let resolveSetup!: (value: unknown) => void;
     setupOptionsMock.mockReturnValue(
       new Promise((resolve) => {
@@ -342,7 +345,10 @@ describe("ConnectionIntentInteractionBody dialog behavior", () => {
 
     expect(
       document.querySelector('[data-testid="requested-agent"]')?.textContent,
-    ).toBe("agent-requesting");
+    ).toBe("");
+    expect(document.querySelector('[data-testid="required-agent"]')?.textContent).toBe("agent-requesting");
+    expect(document.body.textContent).toContain("New connections default to all agents");
+    expect(document.body.textContent).not.toContain("Access is added only for this agent");
     expect(
       document.querySelector('[data-testid="existing-count"]')?.textContent,
     ).toBe("2");
@@ -351,25 +357,50 @@ describe("ConnectionIntentInteractionBody dialog behavior", () => {
     expect(button("Connect new")).toBeDefined();
   });
 
-  it("keeps a load failure open and recovers through the query retry", async () => {
-    setupOptionsMock.mockRejectedValueOnce(new Error("setup unavailable"));
+  it("keeps a load failure open with readable copy and recovers through the query retry", async () => {
+    setupOptionsMock.mockRejectedValueOnce(new ApiError("Request failed: 500", 500, { error: "internal_error" }));
     renderBody();
     await act(() => button("Connect / Use existing")?.click());
     await flush();
 
-    expect(document.body.textContent).toContain(
-      "Couldn’t load connection setup",
-    );
-    expect(document.body.textContent).toContain("setup unavailable");
+    expect(document.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("Couldn't load connection setup");
+    expect(document.body.textContent).not.toContain("internal_error");
+    expect(document.body.textContent).not.toContain("Request failed: 500");
     setupOptionsMock.mockResolvedValueOnce({
       requestedAgentId: "agent-requesting",
       existingConnections: [],
     });
-    await act(() => button("Try again")?.click());
+    await act(() => button("Retry")?.click());
     await flush();
     expect(
       document.querySelector('[data-testid="shared-connection-setup"]'),
     ).not.toBeNull();
+    expect(document.querySelector('[data-query-view="error"]')).toBeNull();
+  });
+
+  it("keeps loaded setup options usable when a refetch fails during an outage", async () => {
+    renderBody();
+    await act(() => button("Connect / Use existing")?.click());
+    await flush();
+    expect(
+      document.querySelector('[data-testid="shared-connection-setup"]'),
+    ).not.toBeNull();
+
+    setupOptionsMock.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+    await flush();
+
+    expect(
+      document.querySelector('[data-testid="shared-connection-setup"]'),
+    ).not.toBeNull();
+    expect(document.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(document.body.textContent).not.toContain("Paperclip is restarting.");
+    expect(document.body.textContent).not.toContain("Couldn't load connection setup");
   });
 
   it("completes an existing connection, closes, restores focus, and invalidates each task query once", async () => {
