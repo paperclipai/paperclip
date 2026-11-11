@@ -11731,7 +11731,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const allowed = isDM || isReply;
     expect(wakeup).toHaveBeenCalledTimes(allowed ? 2 : 1);
     expect(await readChatConversationsByEndpointId(endpoint.id)).toHaveLength(1);
-    expect((await readChatDeliveriesById(delivery.id))[0].state).toBe(allowed ? "processed" : "filtered");
+    const [result] = await readChatDeliveriesById(delivery.id);
+    expect(result.state).toBe(allowed ? "processed" : "filtered");
+    if (!allowed) {
+      expect(result.redactedError).toBe("Message did not @mention the bot");
+      expect(result.normalizedEvent).toMatchObject({ filtering: { contentRetained: false } });
+      expect(result.normalizedEvent).not.toHaveProperty("message.text");
+    }
   });
 
   it("snapshots channel workspace defaults on new tasks and preserves them on replies", async () => {
