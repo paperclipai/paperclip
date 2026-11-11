@@ -380,14 +380,15 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
                   reconcileOperationPhase: "workspace_finalize",
                   recorder: workspaceOperationRecorder,
                 });
-                if (
-                  coherence.branchName &&
-                  coherence.branchName !==
-                    branchInspection.workspaceRecord.branchName
-                ) {
-                  repairedExpectedBranchName = coherence.branchName;
-                  executionWorkspace.branchName = coherence.branchName;
+                if (coherence.branchName) {
                   executionWorkspace.warnings.push(...coherence.warnings);
+                  if (
+                    coherence.branchName !==
+                    branchInspection.workspaceRecord.branchName
+                  ) {
+                    repairedExpectedBranchName = coherence.branchName;
+                    executionWorkspace.branchName = coherence.branchName;
+                  }
                 }
               } catch (repairErr) {
                 const workspaceValidationFailure =

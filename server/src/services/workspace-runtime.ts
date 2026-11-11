@@ -1464,6 +1464,22 @@ function explainGitWorktreeBranchIncoherence(input: {
   return `Paperclip could not determine whether the checked-out branch "${actualBranch}" is forward of the recorded branch "${input.expectedBranchName}".`;
 }
 
+async function isBranchCheckedOutInAnotherWorktree(input: {
+  repoRoot: string;
+  worktreePath: string;
+  branchName: string;
+}): Promise<boolean | null> {
+  const raw = await runGit(["worktree", "list", "--porcelain"], input.repoRoot).catch(() => null);
+  if (!raw) return null;
+  const expectedRef = `refs/heads/${input.branchName}`;
+  const ownPath = await resolvePathForWorktreeComparison(input.worktreePath);
+  for (const entry of parseGitWorktreeListPorcelain(raw)) {
+    if (entry.branch !== expectedRef) continue;
+    if (await resolvePathForWorktreeComparison(entry.worktree) !== ownPath) return true;
+  }
+  return false;
+}
+
 async function inspectGitWorktreeBranchIncoherence(input: {
   db?: Db | null;
   repoRoot: string;
@@ -2191,6 +2207,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
   heartbeatRunId?: string | null;
   enableWorkspaceBranchReconcileForward?: boolean;
   enableWorkspaceDirtyQuarantineRepair?: boolean;
+  enableWorkspaceCleanRestore?: boolean;
   persistForwardReconcile?: boolean;
   reconcileOperationPhase?: "worktree_prepare" | "workspace_finalize";
   recorder?: WorkspaceOperationRecorder | null;
@@ -2364,6 +2381,32 @@ export async function ensureGitWorktreeBranchCoherent(input: {
     };
   }
 
+  if (
+    !evidence.safeRepair.eligible &&
+    (input.enableWorkspaceCleanRestore ?? input.enableWorkspaceDirtyQuarantineRepair === true) &&
+    evidence.cleanliness === "clean" &&
+    !evidence.inProgressOperation &&
+    evidence.provenance.registeredPathFound &&
+    evidence.provenance.registeredBranchMatchesHead &&
+    evidence.provenance.expectedBranchExists &&
+    !evidence.contention
+  ) {
+    const displacedHeadAnchoredByLocalBranch =
+      evidence.provenance.actualBranchExists === true;
+    const recordedBranchCheckedOutElsewhere = displacedHeadAnchoredByLocalBranch
+      ? await isBranchCheckedOutInAnotherWorktree({
+          repoRoot: input.repoRoot,
+          worktreePath: input.worktreePath,
+          branchName: expectedBranchName,
+        })
+      : null;
+    if (displacedHeadAnchoredByLocalBranch && recordedBranchCheckedOutElsewhere === false) {
+      evidence.safeRepair.eligible = true;
+      evidence.safeRepair.reason =
+        "clean worktree drifted from the recorded branch while the current HEAD is anchored by an existing local branch";
+    }
+  }
+
   if (!evidence.safeRepair.eligible) {
     throw branchIncoherenceValidationFailure(evidence);
   }
@@ -2440,8 +2483,8 @@ export async function ensureGitWorktreeBranchCoherent(input: {
 
   try {
     await recordGitOperation(input.recorder, {
-      phase: "worktree_prepare",
-      args: ["checkout", expectedBranchName],
+      phase: input.reconcileOperationPhase ?? "worktree_prepare",
+      args: ["checkout", "--no-overwrite-ignore", expectedBranchName],
       cwd: input.worktreePath,
       metadata: {
         repoRoot: input.repoRoot,
@@ -2454,7 +2497,7 @@ export async function ensureGitWorktreeBranchCoherent(input: {
         executionWorkspaceId: evidence.executionWorkspaceId,
       },
       successMessage: `Repaired clean git worktree branch mismatch at ${input.worktreePath}: checked out ${expectedBranchName}\n`,
-      failureLabel: `git checkout ${expectedBranchName}`,
+      failureLabel: `git checkout --no-overwrite-ignore ${expectedBranchName}`,
     });
   } catch (error) {
     evidence.safeRepair.succeeded = false;
