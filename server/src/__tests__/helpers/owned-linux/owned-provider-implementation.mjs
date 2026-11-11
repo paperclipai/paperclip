@@ -59,10 +59,16 @@ export function createOwnedLinuxProvider(config) {
     const resource = await find(params);
     if (resource.status !== "active") throw new Error("owned_execution_resource_inactive");
     const requestId=randomUUID();
+    // The normal SDK may supply its longer run budget. This owned relay has a
+    // stricter 90s ceiling: shorten positive integer budgets before transport;
+    // retain rejection of invalid, zero, negative and fractional requests.
+    const requestedTimeoutMs = params.timeoutMs ?? 90000;
+    const timeoutMs = Number.isSafeInteger(requestedTimeoutMs) && requestedTimeoutMs > 90000
+      ? 90000 : requestedTimeoutMs;
     const response = await resources.cli(["exec", "-i", resource.containerId, "/usr/bin/node", "/qualification/linux-command-relay.mjs", "/descriptor/resource.json"],
       JSON.stringify({ ...resource, providerLeaseId: resource.id, requestId, command: params.command, args: params.args ?? [],
-        cwd: params.cwd ?? resource.root, env: params.env ?? {}, stdin: params.stdin, timeoutMs: params.timeoutMs ?? 90000 }),
-      Math.min(params.timeoutMs ?? 90000, 90000) + 1000);
+        cwd: params.cwd ?? resource.root, env: params.env ?? {}, stdin: params.stdin, timeoutMs }),
+      Math.min(timeoutMs, 90000) + 1000);
     let value;
     try { value = JSON.parse(response.stdout); }
     catch { resources.unknown.push({ resourceId: resource.id, kind: "command_reply_invalid" }); throw new Error("owned_command_reply_invalid"); }
