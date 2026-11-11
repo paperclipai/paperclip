@@ -557,6 +557,10 @@ export interface HarnessSessionRecoveryResult {
   reason?: string;
   /** Closed runner class of a deterministic recovery failure. */
   failureClass?: RunnerRecoveryFailureClass;
+  /** Set only with PROVIDER_STATE_INCOMPATIBLE: the Runner proved it holds no
+   * saved state for this session (NativeRunnerResumeStateUnavailableError) and
+   * the checkpoint had no turn or runtime request in flight. */
+  resumeStateUnavailable?: true;
 }
 
 /** Reads the closed class of an authenticated runner command failure, or of a
