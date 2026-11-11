@@ -409,11 +409,11 @@ export async function admitExplicitNativeContinuation(input: {
       // it already has, never a new agent turn. Saved files can be verified
       // before their recovery attempt settles, so wait for that attempt too.
       // The wait ends when preserved-result finalization coalesces this intent
-      // (resumeTaskRetry or the recovery sweep). A settled recovery whose
-      // records do not prove that result keeps today's turn.
+      // (resumeTaskRetry or the recovery sweep). Records that do not prove an
+      // applicable result (Stop, newer run, other owner) keep today's turn.
       if (repairedTerminal && taskRetry?.sourceRunId === run.id && taskRetry.strategy === "evaluate"
-        && (["scheduled", "running", "awaiting_evidence"].includes(recovery?.state ?? "")
-          || await canResumePreservedResultFinalization(db, companyId, run.id)))
+        && await canResumePreservedResultFinalization(db, companyId, run.id,
+          ["scheduled", "running", "awaiting_evidence"].includes(recovery?.state ?? "") ? "pending" : "ready"))
         return blocked("finalizing_saved_result", "Paperclip is finishing the saved result.");
       if (completedResult && !repairedTerminal && !(freshIntent && snapshotSettled)) {
         // Nothing finishes the saved result while a stopped copyback owner is

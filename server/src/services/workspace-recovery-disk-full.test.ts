@@ -153,6 +153,20 @@ describe("saved-work recovery on a full sandbox disk", () => {
     await expectSavedResultApplied(f, receipt.requestId, runsBefore);
   }, 60_000);
 
+  it("does not hold a Retry for a settling hold when the run records an operator Stop", async () => {
+    const f = await diskFullHold();
+    const source = await run(f.runId);
+    await db.update(heartbeatRuns).set({ resultJson: { ...source.resultJson, cancelledByUserId: "local-board" } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const runsBefore = await f.runIds();
+    f.disk.full = false;
+    const receipt = await f.retry();
+    await recoverRetainedWorkspace(f.input);
+    await heartbeatService(db).resumeTaskRetry(f.companyId, receipt.requestId);
+    expect((await f.runIds()).filter(id => !runsBefore.includes(id))).toHaveLength(1);
+    expect(await coordinator(f.runId)).toMatchObject({ phase: "terminal_failure", recoveryHistory: [] });
+  }, 60_000);
+
   it("keeps the named full-disk rest and a working Retry when the disk is still full", async () => {
     const f = await diskFullHold();
     const runsBefore = await f.runIds();
