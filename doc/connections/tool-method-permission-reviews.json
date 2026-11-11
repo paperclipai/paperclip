@@ -2289,6 +2289,20 @@
       "liveProof": "not-run"
     },
     {
+      "app": "typesafe",
+      "method": "api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "read",
+      "supportedActions": "None: typed questions answered by the Jev model (usage is billed to the TypeSafe account).",
+      "evidence": [
+        "https://docs.typesafe.ai/introduction/quickstart"
+      ],
+      "reviewedAt": "2026-10-18",
+      "liveProof": "not-run"
+    },
+    {
       "app": "webflow",
       "method": "mcp-oauth",
       "auth": "oauth",

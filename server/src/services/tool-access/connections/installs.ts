@@ -10,6 +10,7 @@ import { toolAccessAuditEvents, toolConnectionInstalls, toolConnections, toolPro
 import type { ToolConnection, ToolConnectionInstall, ToolConnectionInstallSnapshot, PutToolConnectionInstalls } from "@paperclipai/shared";
 import { unprocessable } from "../../../errors.js";
 import { logActivity } from "../../activity-log.js";
+import { isTypesafeConnection } from "../../typesafe-api.js";
 
 type InstallDependencies = {
   now: () => Date;
@@ -67,17 +68,18 @@ export function createConnectionInstalls(db: Db, { now, getConnectionRow, assert
     // it grants. The app wizard's catalog-entry includes are the authority for
     // action selection, so remove the legacy connection-wide include that used
     // to silently turn every installed action on.
-    await dbClient
-      .delete(toolProfileEntries)
-      .where(
-        and(
-          eq(toolProfileEntries.companyId, connection.companyId),
-          eq(toolProfileEntries.profileId, profile.id),
-          eq(toolProfileEntries.selectorType, "connection"),
-          eq(toolProfileEntries.effect, "include"),
-          eq(toolProfileEntries.connectionId, connection.id),
-        ),
-      );
+    if (!isTypesafeConnection(connection))
+      await dbClient
+        .delete(toolProfileEntries)
+        .where(
+          and(
+            eq(toolProfileEntries.companyId, connection.companyId),
+            eq(toolProfileEntries.profileId, profile.id),
+            eq(toolProfileEntries.selectorType, "connection"),
+            eq(toolProfileEntries.effect, "include"),
+            eq(toolProfileEntries.connectionId, connection.id),
+          ),
+        );
     return profile;
   }
 

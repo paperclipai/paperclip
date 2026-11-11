@@ -48,6 +48,7 @@ export type SecretSensitiveRouteFamily =
   | "muse"
   | "mcp_files"
   | "agent_commentary"
+  | "typesafe_ask"
   | "agent_observability"
   | "mcp_runner"
   | "agent_avatar"
@@ -67,11 +68,11 @@ const SECRET_SENSITIVE_HTTP_PATHS: ReadonlyArray<readonly [SecretSensitiveRouteF
 const SECRET_SENSITIVE_HTTP_METHODS = new Set(["POST", "PUT", "PATCH"]);
 
 /** Free-form agent feedback must never be copied into HTTP diagnostics. */
-export function isPrivateAgentCommentaryHttpRequest(url: string | undefined): boolean {
+export function isPrivateAgentContentHttpRequest(url: string | undefined): boolean {
   if (!url) return false;
   // Express routes are case-insensitive and also accept absolute-form URLs.
   const pathname = normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
-  return /^\/api\/companies\/[^/]+\/agent-commentary(?:\/|$)/i.test(pathname);
+  return /^\/api\/companies\/[^/]+\/(?:agent-commentary|typesafe\/ask)(?:\/|$)/i.test(pathname);
 }
 
 /** Destination credentials stay private even on malformed settings requests. */
@@ -157,7 +158,8 @@ export function secretSensitiveRouteFamily(
   if (isPrivateMuseHttpRequest(url)) return "muse";
   if (isPrivateDotPrincipalHttpRequest(url)) return "mcp_runner";
   if (url && normalizePath(url).startsWith("/mcp/files/")) return "mcp_files";
-  if (isPrivateAgentCommentaryHttpRequest(url)) return "agent_commentary";
+  if (isPrivateAgentContentHttpRequest(url))
+    return /\/agent-commentary(?:\/|$)/i.test(normalizePath(url ?? "")) ? "agent_commentary" : "typesafe_ask";
   // Custom OTLP header values are arbitrary credentials, including on rejected
   // methods or malformed subpaths. Named-field redaction cannot identify them.
   if (isPrivateAgentObservabilityHttpRequest(url)) return "agent_observability";

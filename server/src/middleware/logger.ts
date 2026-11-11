@@ -6,7 +6,7 @@ import { HTTP_LOG_REDACT_PATHS } from "./http-log-redaction.js";
 import {
   isPrivateWebhookHttpRequest,
   isSecretSensitiveHttpRequest,
-  isPrivateAgentCommentaryHttpRequest,
+  isPrivateAgentContentHttpRequest,
   isPrivateAgentObservabilityHttpRequest,
   isPrivateMuseHttpRequest,
   isPrivateDotPrincipalHttpRequest,
@@ -101,7 +101,7 @@ export function createHttpLogger(baseLogger: Logger) {
         }
         if(isPrivateDotPrincipalHttpRequest(typeof req.url === "string" ? req.url : undefined))return {id:req.id,method:req.method,url:"/mcp/runner/oauth/cloud-principal"};
         if(isPrivateMuseHttpRequest(typeof req.url === "string" ? req.url : undefined))return {id:req.id,method:req.method,url:"/api/muse/:protocol"};
-        if (isPrivateAgentCommentaryHttpRequest(typeof req.url === "string" ? req.url : undefined)) {
+        if (isPrivateAgentContentHttpRequest(typeof req.url === "string" ? req.url : undefined)) {
           return { id: req.id, method: req.method, url: stripSecretBearingUrlParts(req.url as string) };
         }
         if (
@@ -146,7 +146,7 @@ export function createHttpLogger(baseLogger: Logger) {
       ) {
         // A provider error may also be reflected in response headers. Keep the
         // same content-free contract on both sides of a webhook request.
-        return res.raw?.req && (isPrivateWebhook(res.raw.req) || isPrivateMuseHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateDotPrincipalHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(res.raw.req)))
+        return res.raw?.req && (isPrivateWebhook(res.raw.req) || isPrivateMuseHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateDotPrincipalHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateAgentContentHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(res.raw.req)))
           ? { statusCode: res.statusCode }
           : res;
       },
@@ -185,8 +185,8 @@ export function createHttpLogger(baseLogger: Logger) {
       }
       if(isPrivateDotPrincipalHttpRequest(requestClassificationUrl(req)))return {...value,err:{type:"Error",message:"Dot principal request failed"}};
       if (isPrivateMuseHttpRequest(requestClassificationUrl(req)))return {...value,err:{type:"Error",message:"External agent request failed"}};
-      if (isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(req))) {
-        return { ...value, err: { type: "Error", message: "Feedback request failed" } };
+      if (isPrivateAgentContentHttpRequest(requestClassificationUrl(req))) {
+        return { ...value, err: { type: "Error", message: "Private agent request failed" } };
       }
       // pino-http serializes res.err independently of customProps/errorContext.
       // Do not rely on a particular error handler having sanitized an SDK Error.
@@ -203,7 +203,7 @@ export function createHttpLogger(baseLogger: Logger) {
         if (/^\/mcp\/(?:oauth|paperclip)(?:\/|$)/.test(requestClassificationUrl(req) ?? "")) {
           return { reqBody: "[REDACTED]", ...(ctx ? { errorContext: { name: "Error" } } : {}) };
         }
-        if (isPrivateWebhook(req) || isPrivateMuseHttpRequest(requestClassificationUrl(req)) || isPrivateDotPrincipalHttpRequest(requestClassificationUrl(req)) || isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(req)) || isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req))) {
+        if (isPrivateWebhook(req) || isPrivateMuseHttpRequest(requestClassificationUrl(req)) || isPrivateDotPrincipalHttpRequest(requestClassificationUrl(req)) || isPrivateAgentContentHttpRequest(requestClassificationUrl(req)) || isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(req))) {
           // Omit, rather than recursively redact, the entire provider payload.
           // This applies equally before/after parsing and with/without context.
           return {

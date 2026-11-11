@@ -135,6 +135,7 @@ import {
   splitRemoteUrlCredential,
 } from "./remote-url-credentials.js";
 import { secretService } from "./secrets.js";
+import { TYPESAFE_GALLERY_KEY, isTypesafeConnection } from "./typesafe-api.js";
 import { connectionCredentialConfigPath as credentialRefConfigPath, validateConnectionGrantSecretOwnership, writeConnectionCredential } from "./connection-credentials.js";
 
 import type { ConfigureRailwaySsh, RailwaySshSetup } from "@paperclipai/shared";
@@ -171,6 +172,7 @@ type ToolAccessServiceOptions = {
   paperclipIdGmailConnector?: PaperclipCloudConnector | null;
   /** Test seam for Vercel Connect without live vendor traffic. */
   vercelConnectClient?: VercelConnectClient | null;
+  typesafeFetch?: typeof fetch;
 };
 
 const GOOGLE_SHEETS_SPREADSHEET_SCHEMA = {
@@ -802,7 +804,7 @@ export function toolAccessService(
   const { ensureRuntimeSlot } = runtimeSlots;
   const defaultCatalogAccess = createCatalogDefaultAccess(db);
   const { enableCatalogEntriesByDefault, upsertAskFirstPolicies } = defaultCatalogAccess;
-  const catalogDiscovery = createToolCatalogDiscovery(db, { now, audit, secrets, credentials: credentialAccess, vercel: vercelCredentials, vercelConnect, setupPolicy, requestRemoteHttpEndpoint, resolveOAuthGrantSecret, discoverOAuthEndpoints, localTools });
+  const catalogDiscovery = createToolCatalogDiscovery(db, { now, audit, secrets, typesafeFetch: options.typesafeFetch, credentials: credentialAccess, vercel: vercelCredentials, vercelConnect, setupPolicy, requestRemoteHttpEndpoint, resolveOAuthGrantSecret, discoverOAuthEndpoints, localTools });
   const connectionHealth = createConnectionHealth(db, { now, audit, getConnectionRow, discovery: catalogDiscovery, setupPolicy, resolveCredentialHeaders, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId });
   const { updateConnectionHealth, checkConnectionHealth, sweepConnectionHealth } = connectionHealth;
   const refreshCatalog = createToolCatalogPublication(db, { now, audit, getConnectionRow, discoverTools: catalogDiscovery.discoverTools, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault });
@@ -2887,6 +2889,23 @@ export function toolAccessService(
         // later fails: another retry may already be using the committed grant.
         personalPublicSetupEstablished = true;
       }
+      if (galleryEntry?.slug === TYPESAFE_GALLERY_KEY) {
+        const [application] = await db
+          .select()
+          .from(toolApplications)
+          .where(eq(toolApplications.id, applicationRow.id));
+        return {
+          connectionId: health.connection.id,
+          application: toApplication(application),
+          connection: health.connection,
+          catalog: [],
+          actions: { readOnly: [], canMakeChanges: [] },
+          suggestedDefaults: recommendedDefaultsForApp(
+            galleryEntry,
+            method?.key,
+          ),
+        };
+      }
       const restoreDraftDefaults = Boolean(revivedConnectionPrevious);
       const refreshOptions = {
         enableAllByDefault: restoreDraftDefaults && !remoteMcpConnector,
@@ -3246,6 +3265,13 @@ export function toolAccessService(
         applicationId: connection.applicationId,
       }),
     );
+    if (isTypesafeConnection(connection))
+      entries.push({
+        selectorType: "connection",
+        effect: "include",
+        connectionId: connection.id,
+        applicationId: connection.applicationId,
+      });
     const profileKey = `app:${connection.id}`;
     const bindingInputs: CreateToolProfileBindingForProfile[] =
       input.access === "all_agents"
@@ -3341,13 +3367,24 @@ export function toolAccessService(
             .select()
             .from(toolProfileEntries)
             .where(eq(toolProfileEntries.profileId, existingProfile.id));
+          const defaults = entries.splice(0, entries.length);
+          entries.push(
+            ...defaults.filter(
+              (entry) =>
+                entry.catalogEntryId ||
+                !priorEntries.some(
+                  (prior) =>
+                    !prior.catalogEntryId &&
+                    entry.selectorType === prior.selectorType &&
+                    entry.connectionId === prior.connectionId &&
+                    (entry.toolName ?? null) === prior.toolName,
+                ),
+            ),
+          );
           for (const prior of priorEntries)
             if (
-              !entries.some(
-                (entry) =>
-                  entry.catalogEntryId &&
-                  entry.catalogEntryId === prior.catalogEntryId,
-              )
+              !prior.catalogEntryId ||
+              !entries.some((entry) => entry.catalogEntryId === prior.catalogEntryId)
             )
               entries.push({
                 selectorType: prior.selectorType,
@@ -3563,6 +3600,39 @@ export function toolAccessService(
         .update(toolApplications)
         .set({ status: "active", updatedAt: new Date() })
         .where(eq(toolApplications.id, connection.applicationId));
+      if (isTypesafeConnection(connection)) {
+        const installTargets =
+          input.access === "all_agents"
+            ? [{ targetType: "company" as const, targetId: companyId }]
+            : [...new Set(input.access.agentIds)].map((agentId) => ({
+                targetType: "agent" as const,
+                targetId: agentId,
+              }));
+        if (!input.preserveExistingAccess)
+          await tx
+            .delete(toolConnectionInstalls)
+            .where(
+              and(
+                eq(toolConnectionInstalls.companyId, companyId),
+                eq(toolConnectionInstalls.connectionId, connection.id),
+              ),
+            );
+        if (installTargets.length > 0)
+          await tx
+            .insert(toolConnectionInstalls)
+            .values(
+              installTargets.map((target) => ({
+                ...target,
+                companyId,
+                connectionId: connection.id,
+                createdByAgentId:
+                  actor?.actorType === "agent" ? (actor.actorId ?? null) : null,
+                createdByUserId:
+                  actor?.actorType === "user" ? (actor.actorId ?? null) : null,
+              })),
+            )
+            .onConflictDoNothing();
+      }
 
       return { profileId, profileBindings, policies, updatedConnection };
     });

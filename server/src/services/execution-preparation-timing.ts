@@ -97,7 +97,7 @@ export type ExecutionPhase =
   | "workspace_sync.overlay_copy" | "workspace_sync.overlay_archive" | "workspace_sync.deleted_manifest"
   | "workspace_sync.seed_extract" | "workspace_sync.seed_snapshot" | "workspace_sync.seed_cleanup"
   | "workspace_sync.inbound_barrier" | "workspace_sync.transfer" | "workspace_sync.progress"
-  | "connectors.browser_use.resolve" | "connectors.speko.resolve" | "connectors.slack.resolve" | "connectors.agentmail.resolve"
+  | "connectors.browser_use.resolve" | "connectors.speko.resolve" | "connectors.slack.resolve" | "connectors.agentmail.resolve" | "connectors.typesafe.resolve"
   | "connectors.browser_use.connection" | "connectors.browser_use.catalog" | "connectors.browser_use.grant"
   | "connectors.discovery.scheduled" | "connectors.discovery.queue" | "connectors.discovery.build" | "connectors.discovery.agent"
   | "connectors.discovery.connections" | "connectors.discovery.github" | "connectors.discovery.slack" | "connectors.discovery.speko"

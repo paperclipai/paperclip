@@ -2,6 +2,7 @@ import type { ToolConnectionHealthStatus } from "@paperclipai/shared";
 import { HttpError, unprocessable } from "../../../errors.js";
 import { mcpConnectionFailureReason, retainMcpConnectionFailure } from "../../mcp-connection-failure.js";
 import type { ActorInfo } from "../types.js";
+import { TypesafeApiError } from "../../typesafe-api.js";
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
@@ -33,6 +34,7 @@ export function healthFailureHttpStatus(failure: {
   if (failure.code === "user_authorization_required") return 422;
   if (failure.code === "github_installation_required") return 422;
   if (failure.code === "composio_broker_retired") return 422;
+  if (failure.code === "typesafe_api_key_rejected") return 422;
   if (failure.code === "tool_connection_transport_unsupported") return 422;
   if (failure.code === "cognee_access_unverified" || failure.code === "memory_api_key_rejected") return 422;
   if (failure.code.endsWith("_endpoint_rejected")) return 422;
@@ -51,6 +53,14 @@ export function sanitizeHttpFailure(error: unknown): {
   message: string;
   code: string;
 } {
+  if (error instanceof TypesafeApiError) {
+    const rejected = error.code === "typesafe_api_key_rejected";
+    return {
+      status: "error",
+      message: rejected ? "TypeSafe rejected the API key." : error.message,
+      code: rejected ? error.code : "typesafe_request_failed",
+    };
+  }
   if (error instanceof HttpError) {
     const code = asRecord(error.details).code;
     if (code === "cognee_access_unverified" || code === "memory_api_key_rejected") {

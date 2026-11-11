@@ -123,6 +123,11 @@ vi.mock("../services/instance-settings.js", async (importOriginal) => ({
   instanceSettingsService: () => mockInstanceSettingsService,
 }));
 
+vi.mock("../services/connectors/typesafe.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../services/connectors/typesafe.js")>()),
+  assignedTypesafeConnections: vi.fn(async () => []),
+}));
+
 vi.mock("../adapters/index.js", () => ({
   findServerAdapter: vi.fn(() => mockAdapter),
   findActiveServerAdapter: vi.fn((adapterType: string) => adapterType === "paperclip_runner"
