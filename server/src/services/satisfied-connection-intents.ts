@@ -11,6 +11,7 @@ import { chatCredentialRotationId, connectionIntentService } from "./connection-
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { logger } from "../middleware/logger.js";
 import { createToolGatewayService } from "./tool-gateway.js";
+import { TYPESAFE_GALLERY_KEY } from "./typesafe-api.js";
 
 type Task = Pick<typeof issues.$inferSelect, "id" | "companyId" | "projectId" | "status" | "assigneeAgentId" | "assigneeUserId">;
 type Intent = Pick<typeof issueThreadInteractions.$inferSelect, "id" | "companyId" | "issueId" | "kind" | "status" | "payload" | "addresseeUserId"> & Partial<Pick<typeof issueThreadInteractions.$inferSelect, "sourceRunId">>;
@@ -79,6 +80,7 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
   const connection = await connectionIntentService(db).usableConnectionForAgent({ companyId: task.companyId,
     agentId: payload.requestingAgentId, responsibleUserId: intent.addresseeUserId, serviceSlug: payload.serviceSlug, issueId: task.id });
   if (!connection) return null;
+  if (payload.serviceSlug === TYPESAFE_GALLERY_KEY) return connection;
   // Use the gateway's exact descriptors and listing policy, including task,
   // project and routine context. Per-invocation approvals remain enforced.
   const access = await createToolGatewayService(db).summarizeConnectionAccessForAgent({

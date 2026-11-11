@@ -35,6 +35,7 @@ import {
 import type { RuntimeToolsTokenClaims } from "../runtime-tools-token.js";
 import { wakeConnectionIntentAfterResolution } from "../routes/connection-intents.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
+import { findSatisfiedToolConnection } from "../services/satisfied-connection-intents.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { materializeNativeInteractionResponses } from "../services/native-runtime/native-interaction-bridge.js";
@@ -807,6 +808,38 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     } finally {
       await db.delete(toolPolicies).where(and(eq(toolPolicies.companyId, companyId), eq(toolPolicies.name, "No TypeSafe")));
     }
+  });
+
+  it("retires a pending TypeSafe request when TypeSafe is connected separately in Apps", async () => {
+    const companyId = claims.company_id;
+    const [agent] = await db.insert(agents).values({
+      companyId, name: "TypeSafe waiter", role: "researcher", status: "active",
+      adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    }).returning();
+    const [goal] = await db.insert(goals).values({ companyId, title: "Score leads", level: "task", status: "active" }).returning();
+    const [issue] = await db.insert(issues).values({
+      companyId, goalId: goal!.id, title: "Score leads", status: "in_progress", priority: "medium", assigneeAgentId: agent!.id,
+    }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent!.id, status: "running", responsibleUserId: "responsible-user", contextSnapshot: { issueId: issue!.id },
+    }).returning();
+    const request = await connectionIntentService(db).request({ ...claims, sub: agent!.id, run_id: run!.id }, "typesafe");
+
+    const typesafeFetch = vi.fn(async () => new Response(JSON.stringify({ models: [{ name: "jev-latest" }] }), {
+      status: 200, headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch;
+    const access = toolAccessService(db, { typesafeFetch });
+    const actor = { actorType: "user" as const, actorId: "responsible-user" };
+    const { connectionId } = await access.connectGalleryApp(companyId, {
+      galleryKey: "typesafe", connectionMethodKey: "api-key", name: `TypeSafe ${randomUUID().slice(0, 8)}`,
+      credentialValues: { "credentials.apiKey": "ts-separate-key" },
+    }, actor);
+    await access.finishGalleryAppConnection(companyId, connectionId, {
+      enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: { agentIds: [agent!.id] },
+    }, actor);
+
+    const [intent] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, request.interactionId!));
+    await expect(findSatisfiedToolConnection(db, issue!, intent!, run!.id)).resolves.toMatchObject({ id: connectionId });
   });
 
   it("native authority discovers and requests services on an empty tool snapshot", async () => {
