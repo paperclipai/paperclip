@@ -3,15 +3,15 @@ import { createRequire } from "node:module";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { expect, it } from "vitest";
 import { admitCursorInstructions, createCursorInstructionAdmission, cursorInstructionBinding } from "./cursor-instructions.js";
 import { prepareAcpxRuntimeSandbox } from "./runtime-sandbox.js";
 import { createAcpxRecoveryBinding } from "./recovery-identity.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
+import { acpxInternals } from "../../../test/support/acpx-bundle-internals.mjs";
 
 const root = dirname(createRequire(import.meta.url).resolve("acpx/package.json"));
-const { k: AcpClient } = await import(pathToFileURL(join(root, "dist/live-checkpoint-BSIrfgVo.js")).href);
+const { AcpClient } = await acpxInternals(["AcpClient"], root);
 const content = "Paperclip governance\nCustom entry: résumé\nAGENT_HOME=/registered/agent";
 const binding = cursorInstructionBinding(content);
 const ack = { schema: "paperclip.cursor.instructions.v1", digest: binding.digest, byteLength: binding.byteLength };
@@ -155,7 +155,7 @@ it.each(["valid", "missing", "wrong", "unsupported"])("fresh runtime manager adm
     expect(children.length).toBe(before); // The exact original cold-reopen gap.
     expect(second.admission.assertReady).toThrow(/did not acknowledge/);
     const admit = admitCursorInstructions(second.admission, { providerSpawned: false,
-      load: () => second!.runtime.setConfigOption({ handle: secondHandle!, key: "model", value: "fixture" }),
+      load: async () => { await second!.runtime.setConfigOption({ handle: secondHandle!, key: "model", value: "fixture" }); },
       refreshCommand: async () => { renewed++; },
     });
     if (mode === "valid") {
@@ -165,7 +165,8 @@ it.each(["valid", "missing", "wrong", "unsupported"])("fresh runtime manager adm
       const drain = (async () => { for await (const _event of turn.events) { /* drain */ } })();
       expect((await turn.result).status).toBe("completed"); await drain;
       const methods = writes.filter(row => row.phase === "second").map(row => row.method);
-      expect(methods).toEqual(["initialize", "session/load", "session/set_config_option", "initialize", "session/load", "session/prompt"]);
+      // The turn's own load replays the saved model before the prompt.
+      expect(methods).toEqual(["initialize", "session/load", "session/set_config_option", "initialize", "session/load", "session/set_config_option", "session/prompt"]);
     } else {
       await expect(admit).rejects.toThrow(mode === "unsupported" ? /Unsupported exact model/ : /Cursor instruction admission failed/);
       expect(renewed).toBe(0); expect(writes.some(row => row.phase === "second" && row.method === "session/prompt")).toBe(false);
