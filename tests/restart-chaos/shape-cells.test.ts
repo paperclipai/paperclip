@@ -219,6 +219,10 @@ describe("K15 staging deploy shape", () => {
     expect(wave(["--env", "daytona", "--daytona-image", image, "--storage", "s3", "--ephemeral-server", "--faults", "K15", "--k15-fresh-home"]))
       .toMatchObject({ ephemeralServer: true, storage: "s3", k15FreshHome: true });
     expect(wave(["--env", "daytona", "--daytona-image", image])).not.toHaveProperty("ephemeralServer");
+    expect(wave(["--env", "daytona", "--daytona-image", image, "--faults", "K15", "--k15-fresh-home"]))
+      .toMatchObject({ ephemeralServer: true, storage: "s3", k15FreshHome: true });
+    expect(() => wave(["--env", "daytona", "--daytona-image", image, "--storage", "local", "--faults", "K15", "--k15-fresh-home"]))
+      .toThrow("--k15-fresh-home");
     expect(() => wave(["--env", "daytona", "--daytona-image", image, "--ephemeral-server"])).toThrow("--storage s3");
     expect(() => wave(["--env", "local", "--storage", "s3", "--ephemeral-server"])).toThrow("--env daytona");
   });

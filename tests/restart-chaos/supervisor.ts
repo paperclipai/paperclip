@@ -278,14 +278,15 @@ export class ChaosSupervisor {
       PAPERCLIP_IN_WORKTREE: "false",
       ...waveServerUrlEnvironment(this.port),
       ...extraEnvironment,
-      ...(this.ephemeralServer ? await this.ephemeralServerEnvironment(extraEnvironment) : {}),
       // K15: the generation's emulated host name and Railway deployment identity; the volume is the instance home.
       ...(this.redeploy ? redeployEnvironment(this.redeploy.identity, this.deployShape.freshHome ? null : home) : {}),
     };
-    const environment = buildPaperclipServerEnvironment(source, overrides);
+    const ephemeral = this.ephemeralServer ? await this.ephemeralServerEnvironment(extraEnvironment) : null;
+    const environment = buildPaperclipServerEnvironment(source, { ...overrides, ...ephemeral });
     const workspaceStorage = extraEnvironment.PAPERCLIP_STORAGE_PROVIDER === "s3"
       ? Object.fromEntries(Object.entries(extraEnvironment).filter(([key]) => key.startsWith("PAPERCLIP_STORAGE_"))) : undefined;
-    assertIsolatedServerEnvironment(environment, { temporaryRoot, paperclipHome: home, configPath, ...(workspaceStorage ? { workspaceStorage } : {}) });
+    assertIsolatedServerEnvironment(environment, { temporaryRoot, paperclipHome: home, configPath, ...(workspaceStorage ? { workspaceStorage } : {}),
+      ...(ephemeral ? { generatedSecretsMasterKey: ephemeral.PAPERCLIP_SECRETS_MASTER_KEY } : {}) });
     this.environment = Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined));
     await prepareSourceServerDependencies(root, this.environment, false);
   }
@@ -294,6 +295,7 @@ export class ChaosSupervisor {
     if (extraEnvironment.PAPERCLIP_STORAGE_PROVIDER !== "s3") throw new Error("--ephemeral-server needs the wave's object store (--storage s3)");
     const config = JSON.parse(await readFile(this.paths.configPath, "utf8")) as { secrets?: { localEncrypted?: { keyFilePath?: string } } };
     const keyFile = String(config.secrets?.localEncrypted?.keyFilePath ?? path.join(path.dirname(this.paths.configPath), "secrets", "master.key"));
+    if (!path.resolve(keyFile).startsWith(`${path.resolve(this.paths.temporaryRoot)}${path.sep}`)) throw new Error("--ephemeral-server: the wave's master key file escapes its temporary root");
     let masterKey = await readFile(keyFile, "utf8").then(value => value.trim(), () => "");
     if (!masterKey) {
       masterKey = randomBytes(32).toString("base64");

@@ -322,7 +322,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   }
   applyJourneyOptions(options, { matrix: values.matrix === true, serverFrom: values["server-from"], tasksGiven: values.tasks !== undefined,
     triggersGiven: values.triggers !== undefined });
-  const storage = values.storage ?? "local";
+  const storage = values.storage ?? (values["k15-fresh-home"] ? "s3" : "local");
   const workspaceRepo = values["workspace-repo"];
   if (options.workloads.includes("R1") !== (workspaceRepo !== undefined)) {
     throw new Error("R1 (code change in a cloned repository) and --workspace-repo <git repository> go together: pass both or neither");
@@ -375,10 +375,11 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (values["db-pressure"] !== undefined) options.dbPressure = integer(values["db-pressure"], "db-pressure", 0, 1, 8);
   if (storage !== "local" && storage !== "s3") throw new Error("--storage must be local or s3");
   if (storage === "s3") options.storage = "s3";
-  if (values["ephemeral-server"]) {
-    if (storage !== "s3") throw new Error("--ephemeral-server runs volume-free and needs shared object storage: pass --storage s3");
-    if (env !== "daytona") throw new Error("--ephemeral-server runs only with --env daytona: a local workspace blocks a volume-free server");
-    if (options.faults.includes("K14")) throw new Error("--ephemeral-server does not combine with K14 (--upgrade-from)");
+  if (values["ephemeral-server"] || options.k15FreshHome) {
+    const flag = values["ephemeral-server"] ? "--ephemeral-server" : "--k15-fresh-home (a volume-free deploy)";
+    if (storage !== "s3") throw new Error(`${flag} runs volume-free and needs shared object storage: pass --storage s3`);
+    if (env !== "daytona") throw new Error(`${flag} runs only with --env daytona: a local workspace blocks a volume-free server`);
+    if (options.faults.includes("K14")) throw new Error(`${flag} does not combine with K14 (--upgrade-from)`);
     options.ephemeralServer = true;
   }
   if (values["storage-faults"] !== undefined) {

@@ -433,8 +433,11 @@ cleanup take the per-agent Postgres operation lock. Every other wave runs the vo
 including the `directory-lock` recovery step, are never reached there. `--ephemeral-server` gives every server of the
 wave `PAPERCLIP_EPHEMERAL_SERVER`, `PAPERCLIP_DURABLE_AGENT_FILES` and `PAPERCLIP_SHARED_UI_ASSETS`, the wave's
 Postgres as `PAPERCLIP_DATABASE_LISTEN_URL`, a stable `PAPERCLIP_SECRETS_MASTER_KEY` (also written to the config's
-key file) and `RUN_LOG_S3_*` in the wave's object store. It needs `--storage s3` and `--env daytona` (a local
-workspace blocks a volume-free server) and does not combine with K14. Every restart replays the server's startup
+key file inside the wave's temporary root; `assertIsolatedServerEnvironment` admits that one generated key and still
+refuses an inherited key or `PAPERCLIP_SECRETS_MASTER_KEY_FILE`) and `RUN_LOG_S3_*` in the wave's object store. It needs
+`--storage s3` and `--env daytona` (a local workspace blocks a volume-free server) and does not combine with K14.
+`--k15-fresh-home` implies it (and defaults `--storage` to `s3`): a new instance home without the volume-free mode
+loses the agents' instruction bundles, which staging keeps in Postgres and object storage. Every restart replays the server's startup
 eligibility check, so a replacement that refuses to start fails the wave.
 
 ## Absolute symlink in the workspace (F1)
