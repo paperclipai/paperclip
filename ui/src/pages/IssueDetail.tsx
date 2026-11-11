@@ -2346,9 +2346,17 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           "The queued messages are awaiting server acknowledgement.",
         );
       try {
+        // The server orders its whole queue. Messages this view hides (inputs
+        // a starting run already admitted, or ones its first turn takes) keep
+        // their place; the person reorders only the rest.
+        const firstTurnIds = new Set(authoritativeQueuedCommentQueue?.firstTurnCommentIds ?? []);
+        const hidden = (id: string) => startingCommentIds.has(id) || firstTurnIds.has(id);
+        const serverEntries = authoritativeQueuedCommentQueue?.queueId === queueId
+          ? authoritativeQueuedCommentQueue.entries
+          : effectiveQueuedCommentQueue.entries;
         let nextPosition = 0;
-        const fullOrder = effectiveQueuedCommentQueue.entries.map(entry =>
-          startingCommentIds.has(entry.comment.id) ? entry.comment.id : orderedCommentIds[nextPosition++]!);
+        const fullOrder = serverEntries.map(entry =>
+          hidden(entry.comment.id) ? entry.comment.id : orderedCommentIds[nextPosition++]!);
         storeQueuedCommentQueue(
           await issuesApi.reorderQueuedComments(issueId, {
             orderedCommentIds: fullOrder,
@@ -2361,6 +2369,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       }
     },
     [
+      authoritativeQueuedCommentQueue,
       effectiveQueuedCommentQueue,
       startingCommentIds,
       issueId,

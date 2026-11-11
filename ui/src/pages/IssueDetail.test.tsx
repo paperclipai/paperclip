@@ -4641,6 +4641,45 @@ describe("IssueDetail", () => {
     },
   );
 
+  it("keeps first-turn messages the view hides in a reorder of the rest", async () => {
+    const at = (second: number) => new Date(`2026-04-21T00:00:0${second}.000Z`);
+    const joining = createIssueComment({ id: "joins-first-turn", body: "Plain text", createdAt: at(5), updatedAt: at(5) });
+    const withFileA = createIssueComment({ id: "with-file-a", body: "First file", createdAt: at(6), updatedAt: at(6) });
+    const withFileB = createIssueComment({ id: "with-file-b", body: "Second file", createdAt: at(7), updatedAt: at(7) });
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1",
+      executionRunId: "run-boot" }));
+    mockIssuesApi.listComments.mockResolvedValue([joining, withFileA, withFileB]);
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [joining, withFileA, withFileB],
+      latestCommentId: withFileB.id, hasMore: false });
+    const bootingRun = {
+      id: "run-boot", status: "running", invocationSource: "assignment", triggerDetail: null,
+      contextCommentId: null, contextWakeCommentId: null,
+      startedAt: "2026-04-21T00:00:00.000Z", finishedAt: null, createdAt: "2026-04-21T00:00:00.000Z",
+      agentId: "agent-1", agentName: "Codie", adapterType: "paperclip_runner", issueId: "issue-1",
+    };
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(bootingRun);
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([bootingRun]);
+    // Until the seal, the server queue still lists the message the first turn will take.
+    const queue = createQueuedCommentQueue({
+      queueId: "boot-wake", state: "deferred", targetRunId: "run-boot", steeringDisposition: "temporarily_unavailable",
+      entries: [joining, withFileA, withFileB].map((comment, position) => ({ comment, position, canEdit: true, canDiscard: true })),
+      firstTurnCommentIds: [joining.id],
+    });
+    mockIssuesApi.getQueuedComments.mockResolvedValue(queue);
+    mockIssuesApi.reorderQueuedComments.mockResolvedValue(queue);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+      expect(props?.queuedCommentQueue?.entries.map((entry: { comment: IssueComment }) => entry.comment.id))
+        .toEqual([withFileA.id, withFileB.id]);
+    });
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+    await act(async () => props.onReorderQueuedComments([withFileB.id, withFileA.id], queue.revision));
+    expect(mockIssuesApi.reorderQueuedComments).toHaveBeenCalledWith("issue-1", {
+      orderedCommentIds: [joining.id, withFileB.id, withFileA.id], queueId: "boot-wake", revision: queue.revision,
+    });
+  });
+
   it("keeps queue controls for a new message after the run that took an earlier one hands off", async () => {
     const runnerRun = (id: string, startedAt: string) => ({
       id, status: "running" as const, invocationSource: "assignment" as const, triggerDetail: null,
