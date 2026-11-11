@@ -115,8 +115,10 @@ export async function captureWaveRunnerLogs(input: {
           // Evidence that arrives after the deadline was taken after the outage window: never write it.
           if (!live()) { if (!expired) entry.error = "deadline"; continue; }
           entry.exitCode = response.exitCode;
-          entry.file = `${row.id}.txt`;
-          await writeFile(path.join(directory, entry.file), redactKnownSecrets(String(response.result ?? ""), input.secrets), { mode: 0o600 });
+          // The id names the file: keep it one safe path segment, and list the file only once it is written.
+          const file = `${captureDirectoryName(row.id)}.txt`;
+          await writeFile(path.join(directory, file), redactKnownSecrets(String(response.result ?? ""), input.secrets), { mode: 0o600 });
+          entry.file = file;
         } catch (error) {
           if (!expired) entry.error = error instanceof Error ? error.message : String(error);
         }

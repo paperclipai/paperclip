@@ -173,6 +173,18 @@ describe("Daytona Runner log capture", () => {
     expect(RUNNER_LOG_CAPTURE_DEADLINE_MS).toBeLessThanOrEqual(60_000);
   });
 
+  it("keeps a sandbox id to one path segment and lists only files it wrote", async () => {
+    const outDir = await mkdtemp(path.join(os.tmpdir(), "runner-logs-"));
+    const labels = { "paperclip-company-id": COMPANY, "paperclip-environment-id": ENVIRONMENT };
+    const client = { async *list() { yield { id: "../escape", state: "started", labels }; },
+      get: async () => ({ process: { executeCommand: async () => ({ exitCode: 0, result: "ok" }) } }) };
+    const capture = await captureWaveRunnerLogs({ apiKey: "unused", companyId: COMPANY, environmentId: ENVIRONMENT, outDir,
+      label: "f05-stopped", secrets: [], client });
+    expect(capture.sandboxes[0]?.file).toBe("..-escape.txt");
+    expect((await readdir(path.join(outDir, "f05-stopped"))).sort()).toEqual(["..-escape.txt", "index.json"]);
+    expect(await readdir(outDir)).toEqual(["f05-stopped"]);
+  });
+
   it("never writes evidence that arrives after the deadline", async () => {
     const outDir = await mkdtemp(path.join(os.tmpdir(), "runner-logs-"));
     const labels = { "paperclip-company-id": COMPANY, "paperclip-environment-id": ENVIRONMENT };
