@@ -149,7 +149,7 @@ export async function ensurePersonalPrivateProject(dbOrTx: any, companyId: strin
   return project;
 }
 
-interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> {
+interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy" | "legacyEnvironmentId"> {
   urlKey: string;
   goalIds: string[];
   goals: ProjectGoalRef[];
@@ -201,8 +201,9 @@ async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals
 
   return rows.map((r) => {
     const g = map.get(r.id) ?? [];
+    const { legacyEnvironmentId: _legacyEnvironmentId, ...project } = r;
     return {
-      ...r,
+      ...project,
       urlKey: deriveProjectUrlKey(r.name, r.id),
       goalIds: g.map((x) => x.id),
       goals: g,
@@ -1115,7 +1116,9 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
       await notifyStatusCardIssueChange(tx, project.companyId);
       const [row] = await tx.delete(projects).where(eq(projects.id, id)).returning();
-      return row ? { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) } : null;
+      if (!row) return null;
+      const { legacyEnvironmentId: _legacyEnvironmentId, ...publicProject } = row;
+      return { ...publicProject, urlKey: deriveProjectUrlKey(row.name, row.id) };
     }),
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
