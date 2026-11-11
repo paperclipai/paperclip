@@ -3062,8 +3062,27 @@ account at once. ACP harnesses report an exhausted allowance as a generic
 terminal limit failure; Runner adds the provider's typed session-failure title,
 and only a rate-limit or quota title becomes `rate_limit` or `quota_exhausted`.
 Context, turn and configured budget limits stay ordinary terminal failures. A
-reset clock in the provider's wording, such as "resets 2am (UTC)", is used as
+reset clock in the provider's wording, such as "resets 2am (UTC)", or a
+calendar reset such as a weekly limit's "resets Nov 12, 6pm (UTC)", is used as
 the reset time.
+
+A native run whose provider ends a turn with an exhausted allowance
+(`native_provider_usage_limit`) still blocks its task with a recovery action.
+When the run's last turn event is a provider-observed `turn.failed` that reports
+a reset within eight days, the action says when the limit resets, and at that
+time Paperclip requests the task's Retry itself, on behalf of the user who
+requested the run or, for automatic wakes, the run's accountable user. That is
+the same Retry the user would click: admission keeps every gate (stop proof,
+saved-work recovery and action reconciliation), so it never starts work a
+user's Retry could not. The request is idempotent per run, and at most three
+automatic Retries follow one another without a successful run between them.
+A hold whose reset is more than eight days out (for example a monthly limit)
+still names its reset but leaves the Retry to the user. A hold whose reset is
+unknown, more than a day in the past, or that has no accountable user keeps its
+visible Retry, and its message says why. A connected chat conversation's Retry
+is prepared through the chat service, as a user's is. The
+reset deadline is rebuilt from the active holds at startup, so holds saved by an
+earlier release are covered too.
 
 An ingress endpoint failure can use that same bounded retry only when the
 environment provider returns a structured HTTP 429 or 5xx failure and the
@@ -3776,7 +3795,10 @@ infrastructure certification, and grants no agent or provider execution authorit
 Each completed export frees its own slot and wakes the next scan. A slow export
 does not hold a free slot. Completed cleanup and saved-input obligations receive
 one bounded pass through unvisited sources. The pass stops at its tail so paused
-input does not keep the worker active; a committed change starts a fresh pass.
+input does not keep the worker active; a committed change starts a fresh pass
+once the current pass reaches its tail. A pass is never restarted midway, so on
+a busy instance, where changes commit continuously, every candidate is still
+visited: the due re-arms and fallbacks of older exhausted holds included.
 Shutdown joins this worker's exports before closing the database. Repeated Retry
 during physical preservation binds the canonical intent
 without changing the attempt's generation or revision. Progress writes preserve

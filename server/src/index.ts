@@ -951,7 +951,8 @@ async function startServerWithDatabaseTeardown(
     logger.warn({ scope: cloudQualification.scope, blockerCodes: cloudQualification.blockers.map((blocker) => blocker.code) }, "Cloud configuration and package qualification has blockers");
   }
   const idleDeadlineOwners: IdleDeadlineOwners = {};
-  // createApp fills the chat Retry callback; the continuation worker reads it.
+  // createApp fills the chat Retry callback; the continuation and
+  // provider-limit Retry workers read it.
   const budgetResumeDelivery: BudgetResumeDelivery = {};
   const app = await createApp(db as any, {
     idleDeadlineOwners,
@@ -1771,6 +1772,10 @@ async function startServerWithDatabaseTeardown(
     }
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerDeferredReceiptWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
+    // A connected conversation's Retry needs the chat callback createApp registered.
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerProviderLimitResumeWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped,
+      () => budgetResumeDelivery.prepareChatRetry).ready;
     if (config.heartbeatSchedulerEnabled) {
       const work = heartbeat.registerRunDispatchWork(deliveryWork,
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped);
