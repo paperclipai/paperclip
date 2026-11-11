@@ -1739,6 +1739,19 @@ recovered workspace hold offers Retry (`canRetry`) and says "Retry or send a
 message to continue." An intentional Stop keeps "send a message" as its only
 continuation.
 
+A held task can also have a pending question or connection request, for example
+the question a parked turn asked before its Runner was lost. Such a decision does
+not hold a person's Retry: the new run sees the open decision, and its later
+answer still wakes the agent. Only a plain question (`ask_user_questions`) or
+connection request (`connection_intent`) is released this way. A pending approval
+and any decision with approval semantics (a plan review, a governed tool action,
+a secret proposal, a connection authorization, or another confirmation) still
+hold every continuation, Retry included. A new message supersedes a plain
+question, as before, but waits for a decision with approval semantics. The person's own answer to the
+decision is that explicit input: it continues the task through the hold in a
+fresh session, like a new message, and never replays the failed run. An answer
+that a different user resolved does not continue the task.
+
 `native_remote_recovery_lease_mismatch` carries a closed detail:
 `native_remote_recovery_lease_mismatch: stage=<stage> field=<field>`. The stage
 is `workspace_preparation`, `environment_acquire`, `environment_resume`,
