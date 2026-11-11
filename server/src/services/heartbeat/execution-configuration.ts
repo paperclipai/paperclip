@@ -244,6 +244,8 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     )) {
       throw new ConfigurationIncompleteFailure("The AI account changed while this native run was suspended. Start a new execution.", { configurationIncomplete: { reason: "ai_connection_changed", actionUrl: `/agents/${agent.id}/runtime` } });
     }
+    delete resolvedConfig.managedAiRouting;
+    delete resolvedConfig.managedAiConnection;
     Object.assign(resolvedConfig, managedAiRuntime.config);
     for (const key of AI_AUTH_ENV_KEYS) secretKeys.add(key);
     context.aiConnection = { ...managedAiRuntime.attribution, accountName: managedAiRuntime.accountName, identity: managedAiRuntime.identity, sessionIdentity: managedAiRuntime.sessionIdentity };

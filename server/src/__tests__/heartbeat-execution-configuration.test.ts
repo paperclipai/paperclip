@@ -726,6 +726,18 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     }
   });
 
+  it("drops routing an agent configures itself when the selected connection has none", async () => {
+    const f = await seed(true);
+    const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    await db.update(agents).set({ adapterConfig: { ...agent.adapterConfig,
+      managedAiRouting: { kind: "local", protocol: "responses", auth: "none", models: [] },
+      managedAiConnection: { identity: "forged-identity" } } }).where(eq(agents.id, f.agentId));
+    const { finished, input } = await execute(f);
+    expect(finished.status, finished.error ?? undefined).toBe("succeeded");
+    expect(input?.config).not.toHaveProperty("managedAiRouting");
+    expect(JSON.stringify(input?.config.managedAiConnection)).not.toContain("forged");
+  });
+
   it("cleans acquired credentials and redacts diagnostics when later skill preparation fails", async () => {
     vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
     const f = await seed(true);
