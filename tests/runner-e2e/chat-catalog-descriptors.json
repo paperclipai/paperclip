@@ -1448,7 +1448,7 @@
       "chat-catalog-domains/internal-definition.ts",
       "chat-scenarios/cases.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.integrator.case-facts.v6",
+    "oracleVersion": "paperclip.chat-catalog.integrator.case-facts.v7",
     "expectedRunCount": 6,
     "minimumRunCount": 4,
     "expectedHumanMessageCount": 2,
@@ -5675,9 +5675,10 @@
       "run-observations.ts",
       "chat-scenarios/task-coordination.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.block-on-design.v7",
+    "oracleVersion": "paperclip.chat-catalog.runtime.block-on-design.v8",
     "coverageGaps": [],
-    "expectedRunCount": 3,
+    "expectedRunCount": 4,
+    "minimumRunCount": 3,
     "expectedHumanMessageCount": 2,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 720000,

@@ -113,7 +113,8 @@ export const integratorCaseFactsCases = [integratorDefinition("cases", "cases.up
     const worker = await fixtureWorker(ctx); const reviewer = await fixtureWorker(ctx); await ctx.input.api.patch(`/api/agents/${reviewer.id}`, { name: "Riley" });
     for (const scope of [{ scopeType: "company", scopeId: ctx.input.fixtures.company.id }, ...[worker.id, reviewer.id].map(scopeId => ({ scopeType: "agent", scopeId }))])
       await ctx.input.api.post(`/api/companies/${ctx.input.fixtures.company.id}/budgets/policies`, { ...scope, amount: 500, hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" });
-    const gate = await startRunBriefGate(ctx, worker.id); settings.get(ctx)!.gate = gate;
+    const gate = await startRunBriefGate(ctx, worker.id, "Customer evidence for Acorn Test Shop: no further reproduction evidence has been received yet. The affected device is still unconfirmed.");
+    settings.get(ctx)!.gate = gate;
     const kickoff = await ctx.input.api.post<HandoffCaseResult>(`/api/companies/${ctx.input.fixtures.company.id}/case-handoffs`, {
       idempotencyKey: `facts-${ctx.input.nonce}`, case: { create: { caseType: "customer", title: "Checkout reproduction case", projectId: p.id,
         fields: { browser: "Safari; affected device not yet confirmed", customer: "Acorn Test Shop", severity: "normal", expected: "Pay should submit a single order" } } }, toAgentId: worker.id, phase: "investigation",
@@ -136,7 +137,7 @@ export const integratorCaseFactsCases = [integratorDefinition("cases", "cases.up
   const row = state.case as CaseRecord; await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/cases/${row.identifier}`, row.title);
   const task = await ctx.input.api.get<Issue>(`/api/issues/${row.workIssueId}`);
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/issues/${task.identifier}`, task.title);
-}, { oracleVersion: "paperclip.chat-catalog.integrator.case-facts.v6", expectedRunCount: 6, minimumRunCount: 4, expectedHumanMessageCount: 2, attemptTimeoutMs: 900_000,
+}, { oracleVersion: "paperclip.chat-catalog.integrator.case-facts.v7", expectedRunCount: 6, minimumRunCount: 4, expectedHumanMessageCount: 2, attemptTimeoutMs: 900_000,
   runPolicy: { kind: "terminal-counts", terminalStatusCounts: { cancelled: 1, succeeded: 3 }, maximumTerminalStatusCounts: { succeeded: 5 } },
   sourceFiles: ["chat-catalog-domains/integrator-case-facts.ts", "chat-catalog-domains/run-roles.ts", "chat-catalog-domains/internal-run-brief.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-scenarios/cases.yaml"], cleanup,
   async act(ctx, state) {
@@ -154,7 +155,7 @@ export const integratorCaseFactsCases = [integratorDefinition("cases", "cases.up
     const row = first.caseRecord;
     await ctx.input.api.patch(`/api/cases/${row.id}`, { fields: { ...(row.fields as Record<string, unknown>), supportEscalation: state.collaboratorValue } });
     const { sendChatMessage } = await import("../chat-flow.js");
-    await sendChatMessage(ctx.input.page, "Support updated this case while we were talking. Read its current saved facts: does it still include my corrected reproduction step, and what support escalation is saved now?");
+    await sendChatMessage(ctx.input.page, "Support updated this case while we were talking. Read its current saved facts: does it still include my corrected reproduction detail, and what support escalation is saved now?");
     const fresh = await settle(2); state.collaborationCheckpoint = { ...fresh, state: structuredClone(state) }; await ctx.input.evidence("chat-case-concurrent-change.json", state.collaborationCheckpoint);
     if (!retained(fresh, true)) throw new Error("Chat overwrote or lost the separately saved collaboration change");
     const task = await ctx.input.api.get<Issue>(`/api/issues/${row.workIssueId}`);
