@@ -438,7 +438,10 @@ describe("AgentGraph with 250 agents", () => {
       surface: "agent_graph", schemaVersion: 1, updatedAt: null,
       layout: { schemaVersion: 1, direction: "TB", viewport: null, positions: {}, hiddenAgentIds, stickies: [], drafts: [] },
     });
-    uiLayoutsApi.get.mockResolvedValueOnce(stored([agents[5]!.id, agents[6]!.id])).mockResolvedValueOnce(stored([]));
+    let deliver!: (value: unknown) => void;
+    uiLayoutsApi.get
+      .mockResolvedValueOnce(stored([agents[5]!.id, agents[6]!.id]))
+      .mockImplementationOnce(() => new Promise((resolve) => { deliver = resolve; }));
     await mount(agents);
     expect(host.querySelectorAll('[data-testid="agent-graph-node"]')).toHaveLength(10);
 
@@ -449,6 +452,11 @@ describe("AgentGraph with 250 agents", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
     expect(uiLayoutsApi.get).toHaveBeenCalledTimes(2);
+    expect(host.querySelectorAll('[data-testid="agent-graph-node"]')).toHaveLength(0);
+    await act(async () => deliver(stored([])));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
     expect(host.querySelectorAll('[data-testid="agent-graph-node"]')).toHaveLength(12);
     expect(uiLayoutsApi.save).not.toHaveBeenCalled();
   });

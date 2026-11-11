@@ -57,7 +57,9 @@ export function uiLayoutRoutes(db: Db) {
   router.get("/companies/:companyId/ui-layouts/:surface/me", async (req, res) => {
     const companyId = req.params.companyId as string;
     const userId = requireLayoutOwner(req, companyId);
-    res.json(await svc.get(companyId, userId, requireSurface(req)));
+    const preference = await svc.get(companyId, userId, requireSurface(req));
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json(preference);
   });
 
   router.put(

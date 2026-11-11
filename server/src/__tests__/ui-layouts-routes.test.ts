@@ -89,7 +89,17 @@ describe("ui layout routes", () => {
     const res = await request(app).get("/api/companies/company-1/ui-layouts/agent_graph/me");
     expect(res.status).toBe(200);
     expect(res.body.layout).toEqual(GRAPH_LAYOUT);
+    expect(res.headers["cache-control"]).toBe("private, no-store");
     expect(mockUiLayoutService.get).toHaveBeenCalledWith("company-1", "user-1", "agent_graph");
+  });
+
+  it("rejects a save body with keys other than the layout", async () => {
+    const app = await createApp(BOARD_ACTOR);
+    const res = await request(app)
+      .put("/api/companies/company-1/ui-layouts/dashboard/me")
+      .send({ layout: DASHBOARD_LAYOUT, userId: "user-2" });
+    expect(res.status).toBe(400);
+    expect(mockUiLayoutService.upsert).not.toHaveBeenCalled();
   });
 
   it("saves a valid layout for the caller only and writes no activity entry when the layout already exists", async () => {
