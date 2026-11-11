@@ -84,6 +84,17 @@ it("opens the existing create-agent dialog and persists a company-scoped chat pi
 const pinStorageKey = "paperclip.coordinator.pinned-nav.v1:user-a";
 const contactOrder = () => [...container.querySelectorAll('nav[aria-label="Agent conversations"] a')].map(link => link.getAttribute("href"));
 
+it.each([false, true])("keeps the pin button mounted and focused when toggling a contact with pinned=%s", async pinned => {
+  if (pinned) localStorage.setItem(pinStorageKey, JSON.stringify(["agent-chat:company-a:bob"]));
+  await render();
+  const button = container.querySelector<HTMLButtonElement>(`[aria-label="${pinned ? "Unpin" : "Pin"} bob"]`)!;
+  await act(async () => { button.focus(); button.click(); });
+  expect(button.isConnected).toBe(true);
+  expect(document.activeElement).toBe(button);
+  expect(button.getAttribute("aria-label")).toBe(`${pinned ? "Pin" : "Unpin"} bob`);
+  expect(contactOrder()).toEqual(pinned ? ["/chats/alice", "/chats/bob"] : ["/chats/bob", "/chats/alice"]);
+});
+
 it("puts pins first in saved order ahead of active and recent chats, and restores recency when unpinned", async () => {
   const carol = { ...roster[0], id: "carol", name: "carol", urlKey: "carol" };
   client.setQueryData(queryKeys.agents.list("company-a"), [...roster, carol]);
