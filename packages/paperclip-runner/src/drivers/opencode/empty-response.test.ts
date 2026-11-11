@@ -82,7 +82,6 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
       return result;
     };
     const collected = collect();
-    // A reasoning turn's correction still asks with reasoning off (gha-43069861174: two reasoning-only completions).
     const { turnId } = await session.startTurn({ message: { role: "user", text: "Answer the current request." }, reasoningMode: mode === "empty-again" || mode === "reply" ? "default" : "disabled" });
     const completed = guard(collected, mode.endsWith("idle-stall") || mode === "slow-native-tool" ? 26_000 : 5_000);
     await vi.advanceTimersByTimeAsync(0);

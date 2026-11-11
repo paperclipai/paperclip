@@ -854,9 +854,6 @@ class OpenCodeHarnessSession implements HarnessSession {
     const opening = this.#turnHitOutputLimit(turnId)
       ? "Your previous response reached the output limit and was discarded as incomplete."
       : "Your response ended without a user-visible final answer or an accepted completion report.";
-    // The empty completions seen live end inside reasoning: the model reasons that it will answer and call
-    // paperclip_finish, then stops, and a reasoning correction can stop the same way (gha-43069861174,
-    // agent-chat.conference-room). Ask for the final answer with reasoning off so it lands in the answer channel.
     void this.#submitPrompt(`${opening} Continue this same request from the work already done. Give the user a concise final answer and submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.`, "disabled")
       .catch(() => this.#failEmptyResponse(turnId, "OpenCode could not request a final response after an empty completion."));
     return true;
