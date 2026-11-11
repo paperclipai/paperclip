@@ -73,7 +73,7 @@ import {
   resolveExternalChatResponseWaitAuthorizationInTransaction,
 } from "./chat-attachment-reuse.js";
 import { issueService } from "../issues.js";
-import { COMPLETION_REVIEW_STAGE_REASON, completionHumanReviewStageEntry } from "../issue-execution-policy.js";
+import { COMPLETION_REVIEW_STAGE_REASON, completionReviewStageEntry } from "../issue-execution-policy.js";
 import { companySkillService } from "../company-skills.js";
 import { syncRoutineRunStatusForIssue } from "../routine-run-status.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
@@ -1847,7 +1847,8 @@ export async function commitNativeStatusDecision(input: {
     if (input.decision.statusAction === "done" && !await onboardingFirstTaskCompletionAllowed(tx as unknown as Db, {
       companyId: input.companyId, issueId: input.issueId, runId: input.runId,
     })) throw new NativeStatusRaceError();
-    if (input.decision.statusAction === "done" && !isConversation(issue) && heldByAnotherRun(issue, input.runId)) {
+    if ((input.decision.statusAction === "done" || input.decision.reasonCode === COMPLETION_REVIEW_STAGE_REASON) &&
+        !isConversation(issue) && heldByAnotherRun(issue, input.runId)) {
       throw new NativeStatusRaceError();
     }
     if (input.decision.statusAction === "done") {
@@ -2341,12 +2342,12 @@ export async function commitNativeStatusDecision(input: {
       // Start the configured review stage from the locked task, as the issue
       // route does; a changed policy makes the saved decision stale.
       const reviewStage = input.decision.reasonCode === COMPLETION_REVIEW_STAGE_REASON
-        ? completionHumanReviewStageEntry(issue, originRun?.agentId ?? "") : null;
-      if (input.decision.reasonCode === COMPLETION_REVIEW_STAGE_REASON && !reviewStage) throw new NativeStatusRaceError();
+        ? completionReviewStageEntry(issue, originRun?.agentId ?? "") : null;
+      if (reviewStage && reviewStage.kind !== "starts") throw new NativeStatusRaceError();
       const projected = await issueService(tx as unknown as Db).update(
         input.issueId,
         {
-          ...reviewStage,
+          ...(reviewStage?.kind === "starts" ? reviewStage.patch : {}),
           status: input.decision.toStatus,
           statusVersion: input.priorStatusVersion + 1,
           lastStatusDecisionId: decisionRow.id,
@@ -2359,6 +2360,21 @@ export async function commitNativeStatusDecision(input: {
       );
       if (!projected) throw new NativeStatusRaceError();
       updated = projected;
+      // The route wakes an agent participant when its stage starts; a person
+      // acts from the task. This is a workflow wake, not the worker's message.
+      const participant = reviewStage?.kind === "starts" ? reviewStage.state.currentParticipant : null;
+      if (reviewStage?.kind === "starts" && participant?.type === "agent" && participant.agentId) {
+        const state = reviewStage.state;
+        const reason = state.currentStageType === "approval" ? "execution_approval_requested" : "execution_review_requested";
+        const executionStage = { wakeRole: state.currentStageType === "approval" ? "approver" : "reviewer",
+          stageId: state.currentStageId, stageType: state.currentStageType, currentParticipant: participant,
+          returnAssignee: state.returnAssignee, reviewRequest: state.reviewRequest ?? null,
+          lastDecisionOutcome: state.lastDecisionOutcome, allowedActions: ["approve", "request_changes"] };
+        await enqueueWake({ tx: tx as unknown as Db, companyId: input.companyId, issueId: input.issueId,
+          agentId: participant.agentId, reason, idempotencyKey: `native-status:${decisionRow.id}:execution-stage`,
+          payload: { mutation: "update", executionStage },
+          contextSnapshot: { executionStage, executionStageSource: "issue.execution_stage" } });
+      }
       if (updated.originKind === "routine_execution") {
         await syncRoutineRunStatusForIssue(tx as unknown as Db, input.issueId);
       }

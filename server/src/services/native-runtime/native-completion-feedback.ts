@@ -10,7 +10,7 @@ import { findSupersededExternalReviewRequests } from "./superseded-external-revi
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { issueService } from "../issues.js";
 import { isConversation } from "../agent-conversations.js";
-import { completionHumanReviewStageEntry } from "../issue-execution-policy.js";
+import { completionReviewStageEntry } from "../issue-execution-policy.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { isPublishedGitHubReviewCompletionContinuation, readPublishedGitHubReviewCompletionContinuation, resolveExternalChatResponseWaitAuthorization } from "./chat-attachment-reuse.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
@@ -382,10 +382,13 @@ export async function nativeCompletionFeedback(
       );
     }
   }
+  // An approval request can be a governed action card, so only a review
+  // request duplicates the configured stage.
   const reviewStage = issue.executionState?.status !== "pending" && !isConversation(issue) &&
-    completionHumanReviewStageEntry(issue, run.agentId) !== null;
+    completionReviewStageEntry(issue, run.agentId).kind === "starts";
   if (reviewStage && result.reportedWorkDisposition === "needs_review" &&
-      signals.actionableAttentionRequests.every(request => request.kind === "review" || request.kind === "approval")) {
+      (signals.actionableAttentionRequests.length === 0 ||
+        signals.actionableAttentionRequests.some(request => request.kind === "review"))) {
     throw new Error(
       "This task has a configured review stage with its own reviewer. Do not request a separate review. Report done once the work is complete and verified; Paperclip then starts the configured review, and the task stays in review until that reviewer decides.",
     );
