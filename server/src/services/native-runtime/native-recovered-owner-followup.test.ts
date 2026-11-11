@@ -26,6 +26,17 @@ import {
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 
 const toolDefinitions = vi.hoisted(() => vi.fn());
+const hasNativeRunnerCheckpointHook = vi.hoisted(() => vi.fn<() => void>());
+vi.mock("./native-runner-checkpoint.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("./native-runner-checkpoint.js")>();
+  return {
+    ...actual,
+    hasNativeRunnerCheckpoint: async (...args: Parameters<typeof actual.hasNativeRunnerCheckpoint>) => {
+      hasNativeRunnerCheckpointHook();
+      return actual.hasNativeRunnerCheckpoint(...args);
+    },
+  };
+});
 vi.mock("../../runtime-api.js", async importOriginal => ({ ...await importOriginal<typeof import("../../runtime-api.js")>(), resolveLocalRuntimeApiUrl: () => "http://127.0.0.1:43219" }));
 vi.mock("./paperclip-runner-tool-authority.js", () => ({
   PaperclipRunnerToolAuthority: class {
@@ -77,6 +88,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     stateDirectory = await mkdtemp(join(tmpdir(), "native-recovered-owner-state-"));
     process.env.PAPERCLIP_RUNNER_STATE_DIR = stateDirectory;
     toolDefinitions.mockReset().mockRejectedValue(new Error(ADMITTED));
+    hasNativeRunnerCheckpointHook.mockReset();
   });
   afterEach(async () => {
     if (previousStateDirectory === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
@@ -547,6 +559,214 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
       expect(copy).toMatch(/\.identity_indeterminate\./);
       expect(existsSync(join(stateDirectory, "quarantine", copy!, "continuity-breaks"))).toBe(true);
     }, 60_000);
+
+  it.each(["created", "replacement"] as const)(
+    "bootstraps again when a restart cut off a remote run after writing its external marker before the first checkpoint committed: %s sandbox",
+    async outcome => {
+      const prior = await seedRecoveredPriorRun();
+      const followUp = await admitFollowUp(prior);
+      expect(await followUp.start(outcome)).toBe(ADMITTED);
+      const root = await sessionRoot();
+      const identity = {
+        runId: followUp.runId,
+        runnerInstanceId: followUp.native.runnerInstanceId,
+        environmentLeaseId: followUp.native.environmentLeaseId,
+        normalizedSessionId: followUp.native.normalizedSessionId,
+        turnId: followUp.native.turnId,
+        itemId: followUp.native.itemId,
+      };
+      const controller = new DurablePrpControlPlane({
+        stateDirectory: join(root, "control-plane"),
+        identity,
+        expectedRunnerVersion: "uncommitted-marker-fixture",
+        expectedRunnerDigest: `sha256:${"a".repeat(64)}`,
+      });
+      try {
+        controller.setCheckpointPersistence(async () => {
+          throw new Error("checkpoint flush did not commit");
+        });
+        await expect(controller.flushCheckpoint()).rejects.toThrow("checkpoint flush did not commit");
+      } finally {
+        await controller.stop();
+      }
+      const markerPath = join(root, "control-plane", "control-plane-state.json");
+      expect(JSON.parse(await readFile(markerPath, "utf8"))).toMatchObject({
+        schema: "paperclip.runner.external-control-plane-state.v1",
+        identity,
+      });
+      followUp.logs.length = 0;
+      expect(await followUp.start(outcome, {
+        kind: "bootstrap_incomplete",
+        runId: followUp.runId,
+        leaseOwner: "successor",
+        controllerGeneration: 2,
+        providerAttempt: 1,
+        restartKind: "hard",
+        recoveryRequestId: null,
+      } as never)).toBe(ADMITTED);
+      expect(hasNativeRunnerCheckpointHook).toHaveBeenCalledTimes(1);
+      const [copy] = await quarantined();
+      expect(copy).toMatch(/\.identity_indeterminate\./);
+      expect(JSON.parse(await readFile(join(stateDirectory, "quarantine", copy!, "control-plane", "control-plane-state.json"), "utf8")))
+        .toMatchObject({ schema: "paperclip.runner.external-control-plane-state.v1", identity });
+      expect(existsSync(join(stateDirectory, "quarantine", copy!, "continuity-breaks"))).toBe(true);
+    }, 60_000);
+
+  it("refuses bootstrap_incomplete when the current run marker already has a committed checkpoint row", async () => {
+    const prior = await seedRecoveredPriorRun();
+    const followUp = await admitFollowUp(prior);
+    const root = scopedRunnerdStateRoot(prior.executionFor(followUp.runId));
+    const identity = {
+      runId: followUp.runId,
+      runnerInstanceId: followUp.native.runnerInstanceId,
+      environmentLeaseId: followUp.native.environmentLeaseId,
+      normalizedSessionId: followUp.native.normalizedSessionId,
+      turnId: followUp.native.turnId,
+      itemId: followUp.native.itemId,
+    };
+    const owner = {
+      companyId,
+      issueId: prior.issueId,
+      runId: followUp.runId,
+      authorityRunId: followUp.runId,
+      bootId: randomUUID(),
+      generation: 1,
+      leaseOwner: randomUUID(),
+    };
+    await db.update(nativeRunFinalizations).set({
+      controllerBootId: owner.bootId,
+      controllerGeneration: 1,
+      leaseOwner: owner.leaseOwner,
+      leaseExpiresAt: new Date(Date.now() + 60_000),
+    }).where(eq(nativeRunFinalizations.runId, followUp.runId));
+    const controller = new DurablePrpControlPlane({
+      stateDirectory: join(root, "control-plane"),
+      identity,
+      expectedRunnerVersion: "committed-marker-fixture",
+      expectedRunnerDigest: `sha256:${"a".repeat(64)}`,
+    });
+    try {
+      for (const type of ["run.prepare", "session.open", "turn.start"]) {
+        Object.assign(controller.queueCommand(type), { status: "completed", result: { status: "completed" } });
+      }
+      controller.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, owner));
+      await controller.flushCheckpoint();
+    } finally {
+      await controller.stop();
+    }
+    expect(await followUp.start("created", {
+      kind: "bootstrap_incomplete",
+      runId: followUp.runId,
+      leaseOwner: "successor",
+      controllerGeneration: 2,
+      providerAttempt: 1,
+      restartKind: "hard",
+      recoveryRequestId: null,
+    } as never)).toBe("runner_state_identity_mismatch: bootstrap_not_proven_incomplete");
+  }, 60_000);
+
+  it.each(["foreign-session", "other-run-same-session"] as const)(
+    "refuses bootstrap_incomplete when the external marker belongs to %s",
+    async markerOwner => {
+      const prior = await seedRecoveredPriorRun();
+      const followUp = await admitFollowUp(prior);
+      const root = scopedRunnerdStateRoot(prior.executionFor(followUp.runId));
+      await mkdir(join(root, "control-plane"), { recursive: true });
+      const identity = {
+        runId: randomUUID(),
+        runnerInstanceId: followUp.native.runnerInstanceId,
+        environmentLeaseId: followUp.native.environmentLeaseId,
+        normalizedSessionId: markerOwner === "foreign-session" ? `foreign-${randomUUID()}` : followUp.native.normalizedSessionId,
+        turnId: followUp.native.turnId,
+        itemId: followUp.native.itemId,
+      };
+      await writeFile(
+        join(root, "control-plane", "control-plane-state.json"),
+        JSON.stringify({ schema: "paperclip.runner.external-control-plane-state.v1", identity }),
+      );
+      const outcome = await followUp.start("created", {
+        kind: "bootstrap_incomplete",
+        runId: followUp.runId,
+        leaseOwner: "successor",
+        controllerGeneration: 2,
+        providerAttempt: 1,
+        restartKind: "hard",
+        recoveryRequestId: null,
+      } as never);
+      expect(outcome).not.toBe(ADMITTED);
+      expect(outcome).toBe(
+        markerOwner === "foreign-session"
+          ? "runner_state_identity_mismatch: durable_identity_unreadable"
+          : "native_runner_checkpoint_projection_held:prior_checkpoint_missing",
+      );
+    }, 60_000);
+
+  it("refuses resume_dead_runner when the current run external marker has no checkpoint row", async () => {
+    const prior = await seedRecoveredPriorRun();
+    const followUp = await admitFollowUp(prior);
+    expect(await followUp.start("created")).toBe(ADMITTED);
+    const root = await sessionRoot();
+    await mkdir(join(root, "control-plane"), { recursive: true });
+    await writeFile(
+      join(root, "control-plane", "control-plane-state.json"),
+      JSON.stringify({
+        schema: "paperclip.runner.external-control-plane-state.v1",
+        identity: {
+          runId: followUp.runId,
+          runnerInstanceId: followUp.native.runnerInstanceId,
+          environmentLeaseId: followUp.native.environmentLeaseId,
+          normalizedSessionId: followUp.native.normalizedSessionId,
+          turnId: followUp.native.turnId,
+          itemId: followUp.native.itemId,
+        },
+      }),
+    );
+    expect(await followUp.start("created", {
+      kind: "resume_dead_runner",
+      runId: followUp.runId,
+      leaseOwner: "successor",
+      controllerGeneration: 2,
+      providerAttempt: 1,
+      restartKind: "hard",
+      recoveryRequestId: null,
+    } as never)).toBe("runner_state_identity_mismatch: durable_identity_unreadable");
+  }, 60_000);
+
+  it("fails closed without quarantining when checking hasNativeRunnerCheckpoint fails", async () => {
+    const prior = await seedRecoveredPriorRun();
+    const followUp = await admitFollowUp(prior);
+    expect(await followUp.start("created")).toBe(ADMITTED);
+    const root = await sessionRoot();
+    const markerPath = join(root, "control-plane", "control-plane-state.json");
+    await mkdir(join(root, "control-plane"), { recursive: true });
+    const marker = JSON.stringify({
+      schema: "paperclip.runner.external-control-plane-state.v1",
+      identity: {
+        runId: followUp.runId,
+        runnerInstanceId: followUp.native.runnerInstanceId,
+        environmentLeaseId: followUp.native.environmentLeaseId,
+        normalizedSessionId: followUp.native.normalizedSessionId,
+        turnId: followUp.native.turnId,
+        itemId: followUp.native.itemId,
+      },
+    });
+    await writeFile(markerPath, marker);
+    hasNativeRunnerCheckpointHook.mockImplementationOnce(() => {
+      throw new Error("checkpoint existence read failed");
+    });
+    expect(await followUp.start("created", {
+      kind: "bootstrap_incomplete",
+      runId: followUp.runId,
+      leaseOwner: "successor",
+      controllerGeneration: 2,
+      providerAttempt: 1,
+      restartKind: "hard",
+      recoveryRequestId: null,
+    } as never)).toBe("checkpoint existence read failed");
+    expect(hasNativeRunnerCheckpointHook).toHaveBeenCalledTimes(1);
+    expect(await quarantined()).toEqual([]);
+    expect(await readFile(markerPath, "utf8")).toBe(marker);
+  }, 60_000);
 
   async function keepLocalRootWithoutPointer(prior: Awaited<ReturnType<typeof seedRecoveredPriorRun>>,
     followUp: Awaited<ReturnType<typeof admitFollowUp>>) {
