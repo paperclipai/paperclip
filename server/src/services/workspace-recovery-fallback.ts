@@ -24,7 +24,7 @@ import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspace-epoch-abandonment.js";
 import { hasStopOnlyCleanup, prepareHistoricalSandboxStopVerification, prepareSandboxStopAndRetain, restoreSandboxStopAfterFailedRestart, settleStopOnlyCleanup } from "./sandbox-stop-and-retain.js";
-import { nativeWorkspaceFinalizationBlockSchema } from "./native-runtime/preserved-native-result-finalization.js";
+import { holdOwnsBlockedStatus } from "./recovery-hold-blocked-status.js";
 import { withNativeWorkspaceFinalizationOwnership } from "./native-runtime/native-workspace-finalization-ownership.js";
 import { NATIVE_NO_REPLAY_HOLD_CAUSE, PERMANENT_SOURCE_RETRY_CLASSES, RETAINED_SOURCE_FALLBACK_CHECK_KEY, UNVERIFIABLE_SOURCE_CODES, isRetainedFileHold,
   retainedHoldFallbackEligible } from "./workspace-recovery-fallback-discovery.js";
@@ -303,27 +303,6 @@ async function confirmSourceAllocationStopped(db: Db, input: Source & { environm
  * the recovery delivery starts one continuation. Bounded and idempotent: a
  * settled hold is never revisited, and a lost race leaves the hold unchanged.
  */
-/**
- * Whether the task's Blocked status still belongs to this hold: its own
- * receipt names the current status version or, for holds saved before
- * receipts existed, this run's terminal failure set the block and nothing
- * changed it since. Otherwise a newer decision owns the block.
- */
-function holdOwnsBlockedStatus(action: typeof issueRecoveryActions.$inferSelect, issue: typeof issues.$inferSelect,
-  run: typeof heartbeatRuns.$inferSelect) {
-  const block = nativeWorkspaceFinalizationBlockSchema.safeParse(action.evidence.workspaceFinalizationBlock);
-  // A native no-replay hold records the Blocked status version its run's failure set.
-  const failureBlock = object(action.evidence.nativeFailureBlock);
-  const blockedAt = issue.blockedTransitionAt?.getTime();
-  return issue.status === "blocked" && (block.success
-    ? block.data.issueId === issue.id && block.data.runId === run.id
-      && block.data.statusVersion === Number(issue.statusVersion) && block.data.priorDecisionId === issue.lastStatusDecisionId
-    : action.evidence.nativeFailureBlock !== undefined
-      ? failureBlock.runId === run.id && failureBlock.statusVersion === Number(issue.statusVersion)
-      : action.evidence.workspaceFinalizationBlock === undefined && issue.lastStatusDecisionId === null && blockedAt !== undefined
-        && run.finishedAt !== null && blockedAt >= run.finishedAt.getTime() - 1_000 && blockedAt <= action.createdAt.getTime() + 60_000);
-}
-
 export async function continueFromLastSavedWorkspace(input: Source & {
   db: Db; environmentRuntime: EnvironmentRuntimeService; ownership: Ownership;
 }): Promise<RetainedSourceFallbackResult> {

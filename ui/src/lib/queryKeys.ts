@@ -1,4 +1,6 @@
 export const queryKeys = {
+  linkPreview: (companyId: string, userId: string | null, url: string) =>
+    ["link-preview", companyId, userId, url] as const,
   workspacePreferences: {
     mine: (userId: string | null) => ["workspace-preferences", userId] as const,
   },

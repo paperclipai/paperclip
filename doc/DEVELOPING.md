@@ -5197,6 +5197,14 @@ The browser saves a small read cache in `paperclip:query-cache:v1:*` local stora
 
 Restored identity permits cached display only. Restored inline task drafts compare their saved base with a fresh field read before each replay; conflicting edits stay in the editor for review. Account-bound writes wait for a fresh server session and are cancelled if its user changes. A definitive session denial removes saved account reads. Service-worker updates reload hidden tabs only after connectivity is online and mutations, durable sends and autosaves have settled. Durable queues synchronously report each unresolved operation, including the intervals between online rate-limit retries. Sign-out revocation also works on plain-HTTP installs without `crypto.randomUUID`.
 
+The read cache also retains up to 100 learned link previews for the current user
+and accessible companies, including unavailable results. Reloading restores the
+last known PR status without a provider request. Preview timestamps keep their
+original age: hover or keyboard focus reuses a fresh result and refreshes a stale
+one. Stale status stays visible until then. Preview retention uses the same
+24-hour expiry, build boundary, membership checks, and sign-out cleanup as other
+saved reads. It does not add polling or fetch every PR on page load.
+
 Embedded plan documents and preview work products are stripped from saved payloads. A denied task clears its UUID and identifier projections. Sign-out revocation markers contain no task content and remain after sign-out to reject stale records and delayed writes from older tabs. Session responses started before revocation cannot restore those reads, even before the storage event reaches the other tab.
 
 Cached agents retain only safe adapter display fields and an empty runtime configuration. Their configuration objects remain present for existing display consumers; provider credentials and environment values are excluded.

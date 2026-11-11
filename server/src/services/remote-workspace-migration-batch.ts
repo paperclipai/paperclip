@@ -1,8 +1,9 @@
-import { and, asc, desc, isNotNull, sql } from "drizzle-orm";
+import { asc, desc, sql } from "drizzle-orm";
 import { executionWorkspaces, type Db } from "@paperclipai/db";
 import type { StorageService } from "../storage/types.js";
 import { offlineWorkspaceMigrationBlockers } from "./remote-workspace-migration-tree.js";
 import { migrateRemoteWorkspace } from "./remote-workspace-migration.js";
+import { localWorkspaceDependencyWhere } from "./local-workspace-dependencies.js";
 
 /** The Cloud maintenance process owns the stop-all-deployments precondition.
  * Imported records leave the pending set, so a restart resumes the same owner
@@ -19,10 +20,8 @@ export async function migrateWorkspaceTrees(db: Db, input: {
     // supported subset. Silently skipping an unsupported provider or unsettled
     // lifecycle state would abandon files when the original volume is detached.
     const rows = await db.select({ companyId: executionWorkspaces.companyId, workspaceId: executionWorkspaces.id })
-      .from(executionWorkspaces).where(and(isNotNull(executionWorkspaces.cwd),
-        sql`${executionWorkspaces.providerType} <> 'plugin'`,
-        sql`coalesce(${executionWorkspaces.metadata}->'remoteWorkspace'->>'schema', '') <> 'paperclip.remote-workspace.v1'`,
-      )).orderBy(desc(sql`length(${executionWorkspaces.cwd})`), asc(executionWorkspaces.id)).limit(25);
+      .from(executionWorkspaces).where(localWorkspaceDependencyWhere(db))
+      .orderBy(desc(sql`length(${executionWorkspaces.cwd})`), asc(executionWorkspaces.id)).limit(25);
     if (!rows.length) return migrated;
     for (const workspace of rows) {
       input.signal.throwIfAborted();

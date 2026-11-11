@@ -38,6 +38,75 @@ function seed(client: QueryClient, userId = "alice", companyId = "company-one") 
 afterEach(() => { for (const dispose of handles.splice(0)) dispose(); vi.useRealTimers(); vi.clearAllMocks(); });
 
 describe("persisted read cache", () => {
+  it("restores learned PR status and negative reads without invalidating their demand-driven freshness", () => {
+    const first = setup(); seed(first.client);
+    const key = queryKeys.linkPreview("company-one", "alice", "https://github.com/acme/web/pull/241");
+    const result = { preview: { title: "Saved PR status", state: "merged" }, maxAgeMs: 60_000 };
+    first.client.setQueryData(key, result);
+    const absentKey = queryKeys.linkPreview("company-one", "alice", "https://github.com/acme/web/pull/242");
+    first.client.setQueryData(absentKey, { preview: null, maxAgeMs: 60_000 });
+    const updatedAt = first.client.getQueryState(key)!.dataUpdatedAt;
+    first.handle.flush();
+    const restored = setup(first.storage);
+    expect(restored.client.getQueryData(key)).toEqual(result);
+    expect(restored.client.getQueryData(absentKey)).toEqual({ preview: null, maxAgeMs: 60_000 });
+    expect(restored.client.getQueryState(key)).toMatchObject({ dataUpdatedAt: updatedAt, isInvalidated: false });
+  });
+
+  it("persists PR reads only for the active viewer and an accessible company", () => {
+    const first = setup(); seed(first.client);
+    const url = "https://github.com/acme/web/pull/241";
+    const result = { preview: { title: "Private PR" }, maxAgeMs: 60_000 };
+    const forbidden = [
+      queryKeys.linkPreview("company-one", "bob", url),
+      queryKeys.linkPreview("other-company", "alice", url),
+      ["link-preview", "company-one", null, url],
+      ["link-preview", "company-one", "alice"],
+      ["link-preview", "company-one", "alice", url, "extra"],
+    ];
+    for (const key of forbidden) first.client.setQueryData(key, result);
+    first.handle.flush();
+    expect([...first.storage.values.values()].join(" ")).not.toContain("Private PR");
+    const restored = setup(first.storage);
+    for (const key of forbidden) expect(restored.client.getQueryData(key)).toBeUndefined();
+  });
+
+  it("bounds saved PR reads and retains their original age through later saves", () => {
+    let now = Date.now();
+    const first = setup(undefined, () => now); seed(first.client);
+    for (let i = 0; i < 120; i += 1) first.client.setQueryData(
+      queryKeys.linkPreview("company-one", "alice", `https://github.com/acme/web/pull/${i + 1}`),
+      { preview: { title: `PR ${i + 1}`, state: "open" }, maxAgeMs: 60_000 }, { updatedAt: now - 120 + i });
+    first.handle.flush();
+    const restored = setup(first.storage, () => now);
+    expect(restored.client.getQueryCache().findAll({ queryKey: ["link-preview"] })).toHaveLength(100);
+    expect(restored.client.getQueryData(queryKeys.linkPreview("company-one", "alice", "https://github.com/acme/web/pull/1"))).toBeUndefined();
+    expect(restored.client.getQueryData(queryKeys.linkPreview("company-one", "alice", "https://github.com/acme/web/pull/120"))).toBeDefined();
+    first.client.removeQueries({ queryKey: ["link-preview"] });
+    now += 10 * 60_000;
+    first.handle.flush();
+    expect(setup(first.storage, () => now).client.getQueryCache().findAll({ queryKey: ["link-preview"] })).toHaveLength(100);
+    now += QUERY_CACHE_MAX_AGE;
+    first.client.setQueryData(queryKeys.auth.session, session(), { updatedAt: now });
+    first.client.setQueryData(queryKeys.companies.list("alice"), { companies: [{ id: "company-one" }] }, { updatedAt: now });
+    first.handle.flush();
+    expect(setup(first.storage, () => now).client.getQueryCache().findAll({ queryKey: ["link-preview"] })).toHaveLength(0);
+  });
+
+  it.each(["sign-out", "account-change", "membership-loss"])("removes persisted private PR reads on %s", action => {
+    const first = setup(); seed(first.client);
+    const key = queryKeys.linkPreview("company-one", "alice", "https://github.com/acme/private/pull/241");
+    first.client.setQueryData(key, { preview: { title: "Private PR status" }, maxAgeMs: 60_000 });
+    first.handle.flush();
+    expect([...first.storage.values.values()].join(" ")).toContain("Private PR status");
+    if (action === "sign-out") clearPersistedQueryCache(first.client);
+    if (action === "account-change") first.client.setQueryData(queryKeys.auth.session, session("bob"));
+    if (action === "membership-loss") first.client.setQueryData(queryKeys.companies.list("alice"), { companies: [] });
+    first.handle.flush();
+    expect([...first.storage.values.values()].join(" ")).not.toContain("Private PR status");
+    expect(setup(first.storage).client.getQueryData(key)).toBeUndefined();
+  });
+
   it.each([null, "", "   "])("skips hydration and persistence without a build stamp (%s)", (buildId) => {
     const first = setup(); seed(first.client); first.handle.flush();
     const saved = new Map(first.storage.values);

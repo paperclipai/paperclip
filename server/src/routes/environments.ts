@@ -427,10 +427,17 @@ export function environmentRoutes(
   }
 
   function presentEnvironmentForRead<T extends {
+    driver: string;
     config: Record<string, unknown> | null;
     envVars?: Record<string, unknown> | null;
     metadata: Record<string, unknown> | null;
   }>(req: Request, environment: T): T {
+    if (environment.driver === "plugin") {
+      const { pluginKey, driverKey } = environment.config ?? {};
+      if (typeof pluginKey === "string" && typeof driverKey === "string") {
+        environment = { ...environment, pluginDriver: { pluginKey, driverKey } };
+      }
+    }
     if (environment.metadata) {
       const { [SANDBOX_PLATFORM_PROBE_METADATA_KEY]: _probe, ...metadata } = environment.metadata;
       environment = { ...environment, metadata };
