@@ -4,7 +4,7 @@ import { useUiLayout } from "@/hooks/useUiLayout";
 import { defaultAgentGraphLayout } from "./lib/graph-nodes";
 
 export function useAgentGraphDocument(companyId: string) {
-  const { stored, isLoaded, save, stage, saveState, loadError, blocked, allowOverwrite, retryLoad } = useUiLayout({
+  const { stored, isLoaded, save, stage, saveState, saveError, retrySave, loadError, blocked, allowOverwrite, retryLoad } = useUiLayout({
     companyId,
     surface: "agent_graph",
     resolve: resolveAgentGraphLayout,
@@ -12,6 +12,7 @@ export function useAgentGraphDocument(companyId: string) {
   const [layout, setLayout] = useState<AgentGraphLayout | null>(null);
   const layoutRef = useRef<AgentGraphLayout | null>(null);
   const hadStoredLayout = useRef(false);
+  const [restoreCount, setRestoreCount] = useState(0);
 
   const wasBlocked = useRef(false);
 
@@ -24,6 +25,7 @@ export function useAgentGraphDocument(companyId: string) {
     const initial = stored ?? defaultAgentGraphLayout();
     layoutRef.current = initial;
     setLayout(initial);
+    if (recovered) setRestoreCount((count) => count + 1);
   }, [isLoaded, stored, blocked]);
 
   const apply = useCallback(
@@ -58,6 +60,9 @@ export function useAgentGraphDocument(companyId: string) {
     apply,
     setViewport,
     saveState,
+    saveError,
+    retrySave,
+    restoreCount,
     loadError,
     blocked,
     allowOverwrite,

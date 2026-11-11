@@ -68,6 +68,19 @@ describe("agent graph layout validation", () => {
     expect(parseUiLayoutForSurface("agent_graph", graphLayout({ viewport: { x: Number.NaN, y: 0, zoom: 1 } })).ok).toBe(false);
   });
 
+  it("rejects sticky notes and hire drafts that repeat an id", () => {
+    const sticky = { id: "s1", x: 0, y: 0, width: 200, height: 120, text: "", color: "yellow" };
+    const stickies = parseUiLayoutForSurface("agent_graph", graphLayout({ stickies: [sticky, { ...sticky, x: 300 }] }));
+    const drafts = parseUiLayoutForSurface("agent_graph", graphLayout({ drafts: [draft(), draft({ name: "Second copy" })] }));
+    expect(stickies).toEqual({ ok: false, error: "Invalid agent_graph layout: stickies: Sticky note ids must be unique" });
+    expect(drafts).toEqual({ ok: false, error: "Invalid agent_graph layout: drafts: Hire draft ids must be unique" });
+    const distinct = graphLayout({
+      stickies: [sticky, { ...sticky, id: "s2" }],
+      drafts: [draft(), draft({ id: "draft-2" })],
+    });
+    expect(parseUiLayoutForSurface("agent_graph", distinct).ok).toBe(true);
+  });
+
   it("rejects a layout above the byte limit", () => {
     const sticky = { id: "s", x: 0, y: 0, width: 200, height: 120, text: "x".repeat(2_000), color: "yellow" };
     const stickies = Array.from({ length: 200 }, (_, index) => ({ ...sticky, id: `s${index}` }));
