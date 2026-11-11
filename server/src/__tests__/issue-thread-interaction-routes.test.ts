@@ -58,6 +58,10 @@ const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async (_agentId: string, _options: { payload?: unknown; contextSnapshot?: unknown }) => undefined),
   cancelRun: vi.fn(async () => null),
 }));
+const mockEnqueueOwnQuestionDismissalWake = vi.hoisted(() => vi.fn(async (): Promise<string | null> => null));
+vi.mock("../services/native-runtime/own-question-wait.js", () => ({
+  enqueueOwnQuestionDismissalWake: mockEnqueueOwnQuestionDismissalWake,
+}));
 const mockRequestNativeQuestionRunCancellation = vi.hoisted(() =>
   vi.fn(async () => null as string | null)
 );
@@ -797,12 +801,30 @@ describe("issue thread interaction routes", () => {
     const result = await request(await createApp()).post(path).send({});
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ status: "pending", dismissedAt: "2026-10-22T12:00:00Z" });
-    expect(mockInteractionService.dismissInteraction).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company-1" }), "request-1", { userId: "local-board" });
+    expect(mockInteractionService.dismissInteraction).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company-1" }), "request-1", { userId: "local-board" }, expect.any(Function));
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "issue.thread_interaction_dismissed" }));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     mockInteractionService.dismissInteraction.mockClear();
     expect((await request(await createApp({ type: "agent", agentId: CREATED_AGENT_ID, companyId: "company-1", runId: RUN_1 })).post(path).send({})).status).toBe(403);
     expect(mockInteractionService.dismissInteraction).not.toHaveBeenCalled();
+  });
+
+  it("saves the dismissal wake intent in the dismissal transaction only when the card is dismissed", async () => {
+    const dismissed = { id: "request-1", kind: "ask_user_questions", status: "pending", dismissedAt: "2026-10-22T12:00:00Z" };
+    mockInteractionService.dismissInteraction.mockResolvedValue(dismissed);
+    const path = "/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/request-1/dismiss";
+    expect((await request(await createApp()).post(path).send({})).status).toBe(200);
+    expect(mockEnqueueOwnQuestionDismissalWake).not.toHaveBeenCalled();
+    const tx = { transaction: "dismissal" };
+    mockInteractionService.dismissInteraction.mockImplementationOnce(
+      async (_issue: unknown, _id: string, _actor: unknown, afterDismissed?: (tx: unknown) => Promise<void>) => {
+        await afterDismissed?.(tx);
+        return dismissed;
+      });
+    expect((await request(await createApp()).post(path).send({})).status).toBe(200);
+    expect(mockEnqueueOwnQuestionDismissalWake).toHaveBeenCalledWith(tx,
+      { companyId: "company-1", issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", interactionId: "request-1" });
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("hides private task requests from same-company members without task access before dismissal", async () => {

@@ -74,16 +74,22 @@ An issue has at most one assignee.
 
 This is a hard invariant. Paperclip is single-assignee by design.
 
-A legacy agent run can hand its own task to a human without cancelling itself.
+An agent run, legacy or native, can hand its own task to a human without cancelling itself.
 The REST request must use the run's signed token and match the current agent,
 company, task, and active run. The assignment and requested status persist while
 the current turn finishes normally. This avoids losing the handoff when workspace
 restoration takes longer than the stop timeout. The former agent no longer owns
 the task. Its later task mutations are rejected, including under the update
 transaction's task and run locks. Read and comment access follows normal policy.
+A native run's task tools stop acting for the task once it is handed off, and the
+run's result is kept as history: its finalizer preserves the person's task status
+and adds no continuation, blocker, or recovery to it. If a restart interrupts the
+outgoing turn, the run settles and its unsaved files are retained. Once automatic
+recovery saves them, the workspace hold releases for the person who received the
+task through that run's own recorded hand-off.
 
-Board-initiated reassignments, agent API keys, native executions, and handoffs to
-another agent still require the outgoing execution to stop before ownership changes.
+Board-initiated reassignments, agent API keys, and handoffs to another agent still
+require the outgoing execution to stop before ownership changes.
 A native Stop can take longer than the request. When its durable Stop fence is
 committed, the reassignment applies at once and the new assignee's wake waits
 behind the stopping run. When that run releases the task, its Stop still does not
@@ -197,6 +203,21 @@ obsolete questions when evidence satisfies them, and name any input that still
 prevents the current work. New current questions still define a waiting path.
 Approvals, governed tool/credential/connection requests, and configured review
 stages retain their gates; a later message does not grant approval.
+
+One exception keeps the asking agent's own wait honest. When a native turn ends
+without a completion report, the Runner's default report claims completion and
+cites only the agent's final message (`provider:<provider>:agent-message`), with
+no artifact or verification. If the same agent still has its own pending,
+undismissed ordinary question on the task, native status finalization does not
+close the task. The decision is `in_review` with reason
+`own_question_unanswered`, the checkout is released, and the question stays
+pending. The person's answer continues the task as usual. If the person dismisses
+the question instead, and no other pending, undismissed question of that agent
+remains, the dismissal transaction saves a durable wake intent for the assignee
+(`issue_question_dismissed`, one idempotency key per question) in the native status
+wake outbox, so it continues without the answer and a failed delivery is retried. A completion report with its own evidence, a
+dismissed question, and an answered question keep the historical-question rule
+above.
 
 A permission denial is not, by itself, a blocker. If an instructed step is denied at an authorization boundary but the issue's own deliverable is complete, the right disposition is `done`, not `blocked` (see the review-delegation rules in §6).
 
@@ -3332,6 +3353,14 @@ run, it has a confirmed stop-and-retain receipt with state `stopped`, and no
 unsaved writer or pending native workspace export is bound to it. The backup
 stamp, single-owner, and later-provider-work checks above still apply.
 
+A run can also start while its terminal predecessor still holds the warm lease
+as `active`, because the predecessor releases the lease only after it saves its
+instruction and workspace files. Before it selects a lease, acquisition waits up
+to 20 seconds for that release when the matching lease belongs to a run that
+ended in the last two minutes. It then resumes the warm sandbox. A predecessor
+that is still running, or that ended earlier and never released its lease,
+causes no wait; that run gets a new sandbox as before.
+
 Reuse also skips a warm sandbox while its previous run's workspace export is
 still saving. A run that starts in that window gets a new sandbox, waits for
 the export, and realizes the saved files there. By the time it prepares the
@@ -4106,6 +4135,24 @@ An absent, changed, pending, or agent-resolved response grants no such exception
 That bounded response remains a continuation after a workspace or AI-account wait,
 so final dispatch still verifies it. Finishing a dependency during preparation
 does not turn the admitted response into an attempt to check out the task.
+
+A person's answer to the agent's own question also continues a task that the same
+agent blocked while it waited for that answer. The agent can report such a wait as
+a blocker, for example after a later comment from the person moved the question
+into history. When the status committer applies an agent-reported, board-owned
+blocker (`current_track_blocker_waiting` or `task_wide_blocker_bound`), it records
+in the same transaction the agent's own pending, undismissed ordinary questions on
+the task as `awaitingInteractionIds` in the decision. Dispatch accepts the Blocked
+task only when the answered interaction is in that list, was created by the
+assignee and resolved by a person, the decision is still the task's
+`lastStatusDecisionId`, and the task's `statusVersion` still equals the decision's
+`projectedStatusVersion`. The checkout repeats the decision and version comparison
+in its guarded update, so a person who re-blocks the task in between keeps the new
+block. The continuation then checks the task out to `in_progress` and clears its
+blocker fields. If the blocker was about something else, the agent receives the
+answer and reports its blocker again. A task blocked by a person, blocked before
+the question existed, blocked by a decision saved before this rule, reassigned,
+done or cancelled still cancels the answer's continuation, and Retry remains.
 Task interruption notices ignore Retry receipts for a superseded run. A later
 successful conversation must not inherit the old failure banner. This read-only
 projection neither retires Retry authority nor acknowledges independent saved input.
@@ -4811,7 +4858,25 @@ configuration from the same company, task, and bot binding.
 An active remote runner's health probe is an observation, not an exit receipt.
 Timed-out or rejected read-only probes retry within the existing 30-second
 budget. A successful probe keeps the same runner and turn; no provider work is
-replayed. Monitoring checks the saved process generation when available.
+replayed. A probe that times out or fails in transport is unknown, not an exit.
+For example, a stalled environment plugin RPC times out after 40 seconds. While
+the Runner holds its own authenticated connection to the controller, the monitor
+keeps the same runner and turn and probes again. The bound is the remote runner
+reconnect grace (7 minutes). When the Runner has no connection and the 30-second
+budget is spent, or when the bound is spent, the monitor reports
+`runner_process_termination_unconfirmed` and the run rests with Retry.
+
+A plugin RPC timeout (`PLUGIN_RPC_ERROR_CODES.TIMEOUT`) is a stall of the
+environment plugin, not an answer from the sandbox. When a read-only recovery
+read during reattachment times out this way, the recovery's probe budget grows
+from 30 seconds to 3 minutes, capped by the caller's recovery deadline. This
+covers the saved runner state, the identity marker and the process check, and
+the settled-state read after a confirmed exit. A signal is never retried. Other
+transport failures keep the 30-second budget. At the launch of a new remote
+runner, a launch call that stalls this way is not retried. The controller reads
+the identity marker for the launch nonce instead, so the one launched runner is
+adopted or cleaned up by its nonce. The identity read uses the same 3-minute
+stall budget. Each answer that the sandbox gives keeps its current meaning. Monitoring checks the saved process generation when available.
 Only a matching ownership marker and confirmed process exit permit automatic
 replacement. Missing or conflicting identity evidence, failed reads, and an
 exhausted probe budget retain the existing ownership and recovery safeguards.

@@ -19,6 +19,7 @@ import { nativeManualAdmissionHoldsExecution } from "./native-runtime/native-run
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED } from "./native-runtime/completed-turn-cleanup.js";
 import { EXECUTION_FINALIZATION_DEADLINE_EXCEEDED, EXECUTION_FINALIZATION_DEADLINE_MESSAGE } from "./execution-control-deadline.js";
+import { NATIVE_HUMAN_SELF_HANDOFF_KEY } from "./native-runtime/native-human-self-handoff.js";
 
 const blockerContextKeys = ["issueId", "taskId", "source", "connectionIntentResolution",
   "interactionKind", "interactionStatus", "mutation", "interactionId"] as const;
@@ -254,7 +255,8 @@ export function interruptedPreparationBeforeProviderWorkCondition() {
  * unknown outcome, so its hold releases for the same agent too. The proof is
  * the durable completed-recovery receipt bound to this action, so later reuse
  * of the workspace by the current owner (new epoch, writer or snapshot) cannot
- * re-arm the hold.
+ * re-arm the hold. A person who received the task through the stopped run's
+ * own recorded hand-off is released the same way.
  */
 export function restoreHoldReleasedForCurrentOwnerPredicate() {
   const sourceRunId = sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')`;
@@ -271,13 +273,20 @@ export function restoreHoldReleasedForCurrentOwnerPredicate() {
         and stopped.id::text = ${sourceRunId}
         and stopped.status in ('failed', 'timed_out', 'interrupted', 'cancelled')
         and stopped.finished_at is not null
-        and task.assignee_agent_id is not null
-        and ((task.assignee_agent_id <> stopped.agent_id
-          and not coalesce(task.status = 'in_review'
-            and task.execution_state->>'status' = 'pending'
-            and task.execution_state->'currentParticipant'->>'type' = 'agent'
-            and task.execution_state->'currentParticipant'->>'agentId' = stopped.agent_id::text, false))
-          or ${stoppedBeforeProviderTurnCondition()} or ${interruptedPreparationBeforeProviderWorkCondition()}))`,
+        and ((task.assignee_agent_id is not null
+          and ((task.assignee_agent_id <> stopped.agent_id
+            and not coalesce(task.status = 'in_review'
+              and task.execution_state->>'status' = 'pending'
+              and task.execution_state->'currentParticipant'->>'type' = 'agent'
+              and task.execution_state->'currentParticipant'->>'agentId' = stopped.agent_id::text, false))
+            or ${stoppedBeforeProviderTurnCondition()} or ${interruptedPreparationBeforeProviderWorkCondition()}))
+          -- The stopped run handed this task to the person who owns it now
+          -- (its own recorded hand-off). Its remaining outcomes were never
+          -- that person's work; once its files are saved, the hold releases.
+          or (task.assignee_agent_id is null and task.assignee_user_id is not null
+            and jsonb_typeof(stopped.result_json->'${sql.raw(NATIVE_HUMAN_SELF_HANDOFF_KEY)}') = 'object'
+            and stopped.result_json->'${sql.raw(NATIVE_HUMAN_SELF_HANDOFF_KEY)}'->>'issueId' = task.id::text
+            and stopped.result_json->'${sql.raw(NATIVE_HUMAN_SELF_HANDOFF_KEY)}'->>'assigneeUserId' = task.assignee_user_id)))`,
     completedWorkspaceRecoveryCondition(sourceRunId),
     // Copyback put the files back into the task workspace that the new owner
     // reuses. A snapshot-only save needs an explicit fresh-workspace request

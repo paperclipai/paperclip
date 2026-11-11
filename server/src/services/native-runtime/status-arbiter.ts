@@ -1,10 +1,11 @@
 import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
 import { NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_CAPACITY_MAX_RETRIES, NATIVE_PROVIDER_OVERLOADED_CODE, NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
 
-export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v13";
+export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v14";
 
 /** The automatic continuation after a failed turn is used once per chain. */
 export const NATIVE_RUN_FAILED_RETRY_CAUSE = "native_run_failed";
+export const NATIVE_RESPONSE_WAKE_WAITING_REASON = "response_wake_waiting_for_input";
 export const NATIVE_RUN_FAILED_CONTINUATION_EXHAUSTED_ACTION =
   "The agent's turn failed again after Paperclip continued it automatically. The saved work is kept. Check the failed run, then Retry the task.";
 
@@ -129,6 +130,49 @@ export function supersedeStaleOwnerCompletion(
     reasonCode: ownerSuperseded ? "completion_owner_superseded" : "completion_run_superseded",
     unblockDescriptor: null,
     effects: [],
+  };
+}
+
+/**
+ * Effects that give the outgoing agent more work on the task, wake it, or bind
+ * a blocker or reviewer to the task. None of them is valid once the task
+ * belongs to a person.
+ */
+const OUTGOING_AGENT_TASK_EFFECTS: ReadonlySet<NativeStatusEffect["kind"]> = new Set([
+  "enqueue_continuation", "schedule_retry", "notify_owner", "record_recovery",
+  "bind_blocker", "bind_reviewer", "create_delegated_issue", "accept_replacement_turn",
+]);
+
+/**
+ * A run that handed its own task to a person keeps running and finishes its
+ * turn. Its result is history: it cannot move the person's task, wake or
+ * retry the outgoing agent, or bind a blocker to the task. This also applies
+ * to decisions that already preserve the status.
+ *
+ * Two effects stay. A governed request still opens its interaction: the gate
+ * belongs to the request, not to the task owner. A failed workspace
+ * finalization still records its repair, so the run's saved work is not lost.
+ */
+export function supersedeHandedOffDecision(
+  decision: NativeStatusDecision,
+  issue: { status: string; assigneeAgentId: string | null; assigneeUserId: string | null },
+): NativeStatusDecision {
+  if (issue.assigneeAgentId !== null || !issue.assigneeUserId) return decision;
+  // A finalization error only stays for a failed workspace save: it repairs
+  // and re-runs the save of the run's work. Other causes are task recovery.
+  const effects = decision.effects.filter(effect => !OUTGOING_AGENT_TASK_EFFECTS.has(effect.kind)
+    && !(effect.kind === "record_finalization_error" && effect.cause !== "workspace_finalization_failed"));
+  const governed = effects.some(effect => effect.kind === "create_interaction");
+  if (decision.statusAction === "preserve" || governed) {
+    return effects.length === decision.effects.length ? decision : { ...decision, effects };
+  }
+  return {
+    policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+    statusAction: "preserve",
+    toStatus: issue.status as NativeAuthoritativeIssueStatus,
+    reasonCode: "completion_owner_superseded",
+    unblockDescriptor: null,
+    effects,
   };
 }
 
@@ -702,6 +746,20 @@ export function arbitrateNativeStatus(input: {
       unblockDescriptor: null,
       // An answered native plan is not task completion or permission to
       // change modes. Only a new explicit user cause may continue the work.
+      effects: [],
+    };
+  }
+  if (
+    input.assessment.reportedDisposition === "yielded" &&
+    input.assessment.continuation?.kind === "response_wake" &&
+    !unfinishedResponseWait
+  ) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "in_progress",
+      toStatus: "in_progress",
+      reasonCode: NATIVE_RESPONSE_WAKE_WAITING_REASON,
+      unblockDescriptor: null,
       effects: [],
     };
   }

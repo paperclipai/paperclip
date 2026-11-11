@@ -2587,9 +2587,13 @@ export async function executeNativeSession(
         if (recovery.failureClass === PROVIDER_STATE_INCOMPATIBLE) {
           throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
         }
-        throw new Error(
+        const failure = new Error(
           `native_session_recovery_failed: ${recovery.reason ?? "unknown"}`,
         );
+        if (recovery.runnerExitConfirmed === true) {
+          Object.defineProperty(failure, "runnerExitConfirmed", { value: true, enumerable: false });
+        }
+        throw failure;
       }
       continuityBreak = {
         reason: governedWaitFollowUpLostState

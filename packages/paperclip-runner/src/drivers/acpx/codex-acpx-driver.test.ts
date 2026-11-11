@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { cursorToolIdentity } from "./cursor-plan-tool-identity.js";
 import { describe, expect, it, vi, type Mock } from "vitest";
-import { AcpxProviderProcessLostError } from "./codex-runtime-adapter.js";
+import { AcpxProviderProcessLostError } from "./acpx-runtime-adapter.js";
 import { QUALIFIED_ACPX_PROFILES } from "./qualified-profiles.js";
 
 import type { AcpRuntimeEvent } from "acpx/runtime";

@@ -1,4 +1,4 @@
-import { notifyActiveExecutionRecovery, notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
+import { notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
 import { and, eq, gt, lte, sql } from "drizzle-orm";
 import { heartbeatRuns, livenessDb, type Db } from "@paperclipai/db";
 import type { LegacyControllerLeaseLossCause, LegacyControllerLeaseLossTiming } from "./run-cancellation.js";
@@ -48,22 +48,39 @@ export function legacyControllerClaim(runtimeMode: string) {
   };
 }
 
-async function renewLegacyControllerLeaseInTransaction(
+type RenewalTarget = Pick<Run, "id" | "companyId"> & { stage?: "dispatching" };
+type RenewalOutcome = "renewed" | "rejected" | "busy";
+
+async function renewLegacyControllerLeasesInTransaction(
   tx: Db,
-  run: Pick<Run, "id" | "companyId" | "controllerBootId">,
-  stage?: "dispatching",
-): Promise<boolean> {
-  await notifyActiveExecutionRecovery(tx, { companyId: run.companyId, runId: run.id });
-  const [renewed] = await tx.update(heartbeatRuns).set({
-    controllerLeaseExpiresAt: sql`clock_timestamp() + interval '60 seconds'`,
-    ...(stage ? { executionStage: stage } : {}),
-  }).where(and(
-    eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
-    eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.status, "running"),
-    eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
-    gt(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`),
-  )).returning({ id: heartbeatRuns.id });
-  return Boolean(renewed);
+  targets: RenewalTarget[],
+): Promise<Map<string, RenewalOutcome>> {
+  const requested = sql.join(targets.map(target => sql`(${target.id}::uuid, ${target.companyId}::uuid)`), sql`, `);
+  const dispatching = targets.filter(target => target.stage === "dispatching").map(target => sql`${target.id}::uuid`);
+  const stage = dispatching.length
+    ? sql`case when r.id in (${sql.join(dispatching, sql`, `)}) then 'dispatching' else r.execution_stage end`
+    : sql`r.execution_stage`;
+  const rows = await tx.execute<{ id: string; renewed: boolean; examined: boolean }>(sql`
+    with requested(id, company_id) as (values ${requested}),
+    examined as (
+      select r.id from ${heartbeatRuns} r join requested q on r.id = q.id and r.company_id = q.company_id
+      for update of r skip locked
+    ),
+    renewed as (
+      update ${heartbeatRuns} r set controller_lease_expires_at = clock_timestamp() + interval '60 seconds',
+        execution_stage = ${stage}
+      from examined e
+      where r.id = e.id and r.runtime_mode = 'legacy' and r.status = 'running'
+        and r.controller_boot_id = ${legacyControllerBootId}
+        and r.controller_lease_expires_at > clock_timestamp()
+      returning r.id
+    )
+    select q.id::text as id, exists (select 1 from renewed n where n.id = q.id) as renewed,
+      exists (select 1 from examined e where e.id = q.id) as examined
+    from requested q`);
+  const outcomes = new Map<string, RenewalOutcome>();
+  for (const row of rows) outcomes.set(row.id, row.renewed ? "renewed" : row.examined ? "rejected" : "busy");
+  return outcomes;
 }
 
 export async function renewLegacyControllerLease(
@@ -71,7 +88,9 @@ export async function renewLegacyControllerLease(
   run: Pick<Run, "id" | "companyId" | "controllerBootId">,
   stage?: "dispatching",
 ): Promise<boolean> {
-  return db.transaction(tx => renewLegacyControllerLeaseInTransaction(tx as unknown as Db, run, stage));
+  const outcomes = await db.transaction(tx => renewLegacyControllerLeasesInTransaction(tx as unknown as Db,
+    [{ id: run.id, companyId: run.companyId, stage }]));
+  return outcomes.get(run.id) === "renewed";
 }
 
 /** One attempt may wait at most this long; a timed-out attempt is retried
@@ -82,6 +101,8 @@ export const LEGACY_CONTROLLER_RENEWAL_STATEMENT_TIMEOUT_MS = 10_000;
  * connection is retried without spinning against an unavailable database. */
 export const LEGACY_CONTROLLER_RENEWAL_RETRY_DELAY_MS = 1_000;
 
+export const LEGACY_CONTROLLER_RENEWAL_BUSY_RETRY_DELAY_MS = 250;
+
 function isStatementTimeout(error: unknown): boolean {
   for (let cause = error, depth = 0; cause && depth < 4; cause = (cause as { cause?: unknown }).cause, depth++) {
     if ((cause as { code?: unknown }).code === "57014") return true;
@@ -89,18 +110,53 @@ function isStatementTimeout(error: unknown): boolean {
   return false;
 }
 
-/** Renew on the private liveness pool so the write cannot queue behind an
- * unrelated slow statement on a busy shared connection. */
-async function renewOnLivenessPool(
-  db: Db,
-  run: Pick<Run, "id" | "companyId" | "controllerBootId">,
-  stage: "dispatching" | undefined,
-  statementTimeoutMs: number,
-): Promise<boolean> {
-  return livenessDb(db).transaction(async (tx) => {
-    await tx.execute(sql`select set_config('statement_timeout', ${`${statementTimeoutMs}ms`}, true)`);
-    return renewLegacyControllerLeaseInTransaction(tx as unknown as Db, run, stage);
+type RenewalRequest = {
+  target: RenewalTarget;
+  statementTimeoutMs: number;
+  resolve(outcome: RenewalOutcome): void;
+  reject(error: unknown): void;
+};
+type RenewalBatch = { pending: RenewalRequest[]; flushing: boolean };
+const renewalBatches = new WeakMap<object, RenewalBatch>();
+
+function renewThroughBatch(db: Db, target: RenewalTarget, statementTimeoutMs: number): Promise<RenewalOutcome> {
+  let batch = renewalBatches.get(db);
+  if (!batch) renewalBatches.set(db, batch = { pending: [], flushing: false });
+  const outcome = new Promise<RenewalOutcome>((resolve, reject) => {
+    batch.pending.push({ target, statementTimeoutMs, resolve, reject });
   });
+  if (!batch.flushing) void flushRenewals(db, batch);
+  return outcome;
+}
+
+async function flushRenewals(db: Db, batch: RenewalBatch) {
+  batch.flushing = true;
+  try {
+    await Promise.resolve();
+    while (batch.pending.length) {
+      const requests = batch.pending.splice(0);
+      const targets = new Map<string, RenewalTarget>();
+      for (const { target } of requests) {
+        const existing = targets.get(target.id);
+        targets.set(target.id, existing ? { ...existing, stage: existing.stage ?? target.stage } : target);
+      }
+      try {
+        const statementTimeoutMs = Math.min(...requests.map(request => request.statementTimeoutMs));
+        const outcomes = await livenessDb(db).transaction(async (tx) => {
+          await tx.execute(sql`select set_config('statement_timeout', ${`${statementTimeoutMs}ms`}, true)`);
+          return renewLegacyControllerLeasesInTransaction(tx as unknown as Db, [...targets.values()]);
+        });
+        for (const request of requests) {
+          const sameCompany = targets.get(request.target.id)!.companyId === request.target.companyId;
+          request.resolve(sameCompany ? outcomes.get(request.target.id) ?? "rejected" : "rejected");
+        }
+      } catch (error) {
+        for (const request of requests) request.reject(error);
+      }
+    }
+  } finally {
+    batch.flushing = false;
+  }
 }
 
 export async function liveLegacyControllerExpiresAt(db: Db, run: Run): Promise<Date | null> {
@@ -300,7 +356,11 @@ export function watchLegacyControllerLease(
       for (;;) {
         attemptStartedAt = Date.now();
         try {
-          return await renewOnLivenessPool(db, run, stage, renewalStatementTimeoutMs);
+          const outcome = await renewThroughBatch(db, { id: run.id, companyId: run.companyId, stage },
+            renewalStatementTimeoutMs);
+          if (outcome !== "busy") return outcome === "renewed";
+          await new Promise((resolve) => setTimeout(resolve, LEGACY_CONTROLLER_RENEWAL_BUSY_RETRY_DELAY_MS));
+          if (stopped || controller.signal.aborted) return false;
         } catch (error) {
           if (stopped || controller.signal.aborted) throw error;
           // A statement timeout is a stall; it stays a `renewal_deadline` loss.

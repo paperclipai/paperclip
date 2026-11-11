@@ -267,6 +267,19 @@ describe("decideScheduledRetryGate", () => {
 });
 
 describe("decideQueuedRunStaleness", () => {
+  it("continues a task its agent blocked to wait for the answered question", () => {
+    const answer = { ...baseStalenessFacts(), isResolvedInteractionContinuation: true,
+      issueStatus: "blocked", isAgentBlockingQuestionAnswer: true };
+    expect(decideQueuedRunStaleness(answer, NOW)).toEqual({ stale: false });
+    expect(decideQueuedRunStaleness({ ...answer, isAgentBlockingQuestionAnswer: false }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_not_in_progress" });
+    expect(decideQueuedRunStaleness({ ...answer, issueAssigneeAgentId: "other-agent" }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_assignee_changed" });
+    for (const issueStatus of ["backlog", "done", "cancelled"]) {
+      expect(decideQueuedRunStaleness({ ...answer, issueStatus }, NOW)).toMatchObject({ stale: true });
+    }
+  });
+
   it("keeps a verified response bounded to a blocked task and its current assignee", () => {
     const response = { ...baseStalenessFacts(), isResolvedInteractionContinuation: true,
       issueStatus: "blocked", isDependencyBlockedInteractionResponse: true };

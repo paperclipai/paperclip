@@ -333,6 +333,23 @@ describe("native same-conversation historical attachment reading", () => {
     return { sourceCommentId, attachmentId: sourceAttachmentId };
   }
 
+  it("stages authorized historical bytes through the bound remote writer and cleans them on close", async () => {
+    const cleanup = vi.fn(async () => undefined);
+    const stageRemoteAttachment = vi.fn(async () => ({ workspaceRelativePath: ".paperclip-inbound/remote-history/content", cleanup }));
+    const reader = scope({ executionTargetKind: "remote", workspaceRoot: "/remote/workspace", stageRemoteAttachment });
+    const result = await reader.read(selection());
+    expect(stageRemoteAttachment).toHaveBeenCalledExactlyOnceWith({ body: sourceBody, contentType: "text/plain" });
+    expect(result).toMatchObject({ contentAccess: "staged_workspace_file", workspaceRelativePath: ".paperclip-inbound/remote-history/content", selectedForPublication: false });
+    await reader.close();
+    expect(cleanup).toHaveBeenCalledOnce();
+
+    stageRemoteAttachment.mockClear();
+    const denied = scope({ binding: { ...binding, issueId: randomUUID() }, executionTargetKind: "remote", stageRemoteAttachment });
+    await expect(denied.read(selection())).rejects.toThrow();
+    expect(stageRemoteAttachment).not.toHaveBeenCalled();
+    await denied.close();
+  });
+
   it("opens verified historical bytes without creating a publication or deliverable, then clears its exact inode", async () => {
     const reader = scope();
     const before = await db.select().from(issueAttachments);

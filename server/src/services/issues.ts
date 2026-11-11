@@ -48,7 +48,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { recordChatHandoff, recordAcceptedChatHandoff, lockAcceptedChatHandoffSource, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
-import { assertLegacyRunTaskOwnership } from "../legacy-run-task-ownership.js";
+import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { externalConversationStateSql, nonIdleSlackIssueCondition, resumeSlackConversation } from "./slack-conversation-state.js";
 import { documentService } from "./documents.js";
@@ -11908,7 +11908,7 @@ export function issueService(db: Db) {
           const actorRun = await assertAgentRunWriteAllowed(tx, receiptExisting.companyId, {
             agentId: actorAgentId, runId: actorRunId, stopId: actorRunStopId,
           });
-          assertLegacyRunTaskOwnership(actorRun, receiptExisting);
+          assertHandedOffRunTaskOwnership(actorRun, receiptExisting);
         }
         if (blockedByIssueIds !== undefined) {
           await assertOnboardingFirstTaskDependenciesAllowed(tx as Db, {
@@ -12550,6 +12550,7 @@ export function issueService(db: Db) {
       agentId: string,
       expectedStatuses: string[],
       checkoutRunId: string | null,
+      options: { blockedState?: { lastStatusDecisionId: string; statusVersion: number } } = {},
     ) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
@@ -12651,11 +12652,21 @@ export function issueService(db: Db) {
             status: "in_progress",
             startedAt: now,
             updatedAt: now,
+            ...(expectedStatuses.includes("blocked") ? {
+              unblockDescriptor: sql`case when ${issues.status} = 'blocked' then null else ${issues.unblockDescriptor} end`,
+              blockedTransitionAt: sql`case when ${issues.status} = 'blocked' then null else ${issues.blockedTransitionAt} end`,
+              blockedOwnerNotifiedAt: sql`case when ${issues.status} = 'blocked' then null else ${issues.blockedOwnerNotifiedAt} end`,
+            } : {}),
           })
           .where(
             and(
               eq(issues.id, id),
               inArray(issues.status, expectedStatuses),
+              options.blockedState ? or(
+                ne(issues.status, "blocked"),
+                and(eq(issues.lastStatusDecisionId, options.blockedState.lastStatusDecisionId),
+                  eq(issues.statusVersion, options.blockedState.statusVersion)),
+              ) : undefined,
               or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
               executionLockCondition,
             ),

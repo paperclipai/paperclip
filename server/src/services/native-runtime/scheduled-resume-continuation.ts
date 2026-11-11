@@ -1,5 +1,7 @@
 import type { Db } from "@paperclipai/db";
-import { readNativeLocalProcessStop } from "../native-local-process-stop.js";
+import { and, eq } from "drizzle-orm";
+import { heartbeatRuns } from "@paperclipai/db";
+import { readNativeLocalProcessStop, readUnidentifiedLocalRunnerStop, recordUnidentifiedLocalRunnerStop } from "../native-local-process-stop.js";
 import { NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT } from "./native-restart-recovery.js";
 
 export const SAME_RUN_RESUME_DISPOSITION = "same_run_resume";
@@ -44,7 +46,7 @@ export interface ScheduledResumeContinuationEvidence {
   resumeClaim?: Record<string, unknown> | null;
   controllerBootId?: string;
   admittedAttempt: number;
-  localStop: { processPid: number } | null;
+  localStop: { processPid: number | null } | null;
 }
 
 export type ScheduledResumeContinuationDecision =
@@ -79,5 +81,14 @@ export async function scheduledResumeContinuationAllowed(
   const { companyId, runId, ...evidence } = input;
   const localStop = evidence.restartRecovery || evidence.targetKind !== "local"
     ? null : await readNativeLocalProcessStop(db, companyId, runId);
-  return decideScheduledResumeContinuation({ ...evidence, localStop });
+  const decision = decideScheduledResumeContinuation({ ...evidence, localStop });
+  if (decision.allowed || decision.reason !== "local_stop_unverified") return decision;
+  if (await readUnidentifiedLocalRunnerStop(db, companyId, runId))
+    return decideScheduledResumeContinuation({ ...evidence, localStop: { processPid: null } });
+  const [run] = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+    runtimeMode: heartbeatRuns.runtimeMode, processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId,
+    runnerProfileJson: heartbeatRuns.runnerProfileJson })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId))).limit(1);
+  if (!run || !await recordUnidentifiedLocalRunnerStop(db, run)) return decision;
+  return decideScheduledResumeContinuation({ ...evidence, localStop: { processPid: null } });
 }

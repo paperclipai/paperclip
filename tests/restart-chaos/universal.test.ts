@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { gradeTask } from "./grader.js";
 import type { OracleArtifacts, RunSample, TaskRecord, TaskSample } from "./types.js";
-import { bareCauseMessage, DEFAULT_UNIVERSAL_BOUNDS as BOUNDS, diagnosableFailureCause, gradeU1, gradeU2, gradeU3, gradeU4, gradeUniversal, universalBounds } from "./universal.js";
+import { bareCauseMessage, DEFAULT_UNIVERSAL_BOUNDS as BOUNDS, diagnosableFailureCause, gradeU1, gradeU2, gradeU3, gradeU4, gradeU5, gradeUniversal, universalBounds } from "./universal.js";
 import { workloadDefinitions } from "./workloads.js";
 
 const T0 = Date.parse("2026-11-09T12:00:00Z");
@@ -174,6 +174,21 @@ describe("U4 stale notices", () => {
     const runs = [run("r1", "failed", 0, 5 * SEC, { errorCode: "process_lost" }), run("r2", "succeeded", 10 * SEC, 30 * SEC)];
     const samples = [sample(31 * SEC, "done", runs, { interruption: retryable }), sample(34 * SEC, "done", runs)];
     expect(gradeU4(record(samples), BOUNDS).verdict).toBe("pass");
+  });
+});
+
+describe("U5 run budget", () => {
+  it("fails a task that keeps starting runs (the response_wake loop shape)", () => {
+    const runs = Array.from({ length: 65 }, (_, index) => run(`r${index}`, "succeeded", index * 12 * SEC, index * 12 * SEC + 10 * SEC));
+    const samples = [sample(800 * SEC, "in_progress", runs)];
+    expect(gradeU5(record(samples, { restAt: null, finalStatus: null, timedOut: true }), BOUNDS))
+      .toMatchObject({ verdict: "fail", detail: "run_budget_exceeded 65 runs > 10", metrics: { runs: 65 } });
+  });
+  it("passes a task within the budget and reads the bound from the environment", () => {
+    const runs = Array.from({ length: 5 }, (_, index) => run(`r${index}`, "succeeded", index * 20 * SEC, index * 20 * SEC + 10 * SEC));
+    expect(gradeU5(record([sample(120 * SEC, "done", runs)]), BOUNDS).verdict).toBe("pass");
+    expect(universalBounds({ RESTART_CHAOS_U5_MAX_RUNS: "4" }).maxRuns).toBe(4);
+    expect(gradeU5(record([sample(120 * SEC, "done", runs)]), { ...BOUNDS, maxRuns: 4 }).verdict).toBe("fail");
   });
 });
 

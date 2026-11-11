@@ -1,5 +1,6 @@
 import { carriesInheritedRunnerIdentity } from "./native-inherited-runner-retry.js";
 import { readPendingNativeRunStop } from "./native-cancellation-request.js";
+import { nativeRunHandedOffTask } from "./native-human-self-handoff.js";
 import { CONTROLLER_LEASE_RENEW_MS } from "../controller-instance-lease.js";
 import { currentControllerProcessStamp, UNKNOWN_PROCESS_SPACE } from "../controller-process-identity.js";
 import { readNativeSessionResumptionAgent, restoreNativeSessionExecution } from "./native-session-resumption-admission.js";
@@ -101,6 +102,7 @@ export type NativeRestartRecoveryClaim =
         | { kind: "plugin_task"; leaseId: string };
       /** Discovery evidence only; executor revalidates the encrypted header. */
       stagedAttachment?: Pick<NativeStagedAttachmentRecovery, "sourceIdentity" | "targetIdentity" | "templateDigest">;
+      exitedBeforeSessionOpen?: true;
     }
   | {
       kind: "resume_dead_runner";
@@ -1115,7 +1117,7 @@ export async function claimNativeRestartRecoveries(input: {
       const [issue] = await tx
         .select({ id: issues.id, companyId: issues.companyId, status: issues.status,
           executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId,
-          assigneeAgentId: issues.assigneeAgentId })
+          assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId })
         .from(issues)
         .where(and(eq(issues.id, candidate.issueId), eq(issues.companyId, candidate.companyId)))
         .for("update", { skipLocked: true });
@@ -1263,7 +1265,12 @@ export async function claimNativeRestartRecoveries(input: {
         const deferred = await deferRemoteRetry("issue_execution_lock_changed");
         if (deferred) return deferred;
       }
-      if (row.issueExecutionRunId !== row.run.id && !(stopCleanup && row.issueExecutionRunId === null) && !releasedRemoteRetry && !admission.exhausted) {
+      // The run handed its own task to a person. It is not resumed: the
+      // ownership gate below settles it (task_ownership_or_status_changed)
+      // without touching the person's task, instead of leaving it running.
+      const handedOff = row.issueExecutionRunId === null && nativeRunHandedOffTask(row.run.resultJson, issue);
+      if (row.issueExecutionRunId !== row.run.id && !(stopCleanup && row.issueExecutionRunId === null) && !releasedRemoteRetry
+        && !admission.exhausted && !handedOff) {
         return {
           kind: "blocked",
           runId: row.run.id,
@@ -1979,6 +1986,8 @@ export async function claimNativeRestartRecoveries(input: {
             providerLeaseId: remoteWorkspace!.providerLeaseId,
             remoteCwd: remoteWorkspace!.remoteCwd,
           },
+          ...(!pluginTask && row.coordinator.failureDetail?.runnerExitedBeforeSessionOpen === true
+            ? { exitedBeforeSessionOpen: true as const } : {}),
         } satisfies NativeRestartRecoveryClaim;
       }
       if (claimKind === "reattach_existing_runner") {

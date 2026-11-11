@@ -149,6 +149,7 @@ export type QueuedRunFacts = {
   isUnstartedTaskQuestionAnswer?: boolean;
   /** The stored human response was verified again for bounded dependency interaction. */
   isDependencyBlockedInteractionResponse?: boolean;
+  isAgentBlockingQuestionAnswer?: boolean;
   /** A connection resolution or tool refresh can resume an agent waiting in review. */
   isConnectionContinuation?: boolean;
   isInteractionWake: boolean;
@@ -516,7 +517,8 @@ export function decideQueuedRunStaleness(
   if (facts.isResolvedInteractionContinuation || facts.isConnectionContinuation) {
     // A todo task that has never started has no parked execution to protect.
     const startsUnstartedTask = facts.issueStatus === "todo" && facts.isUnstartedTaskQuestionAnswer === true;
-    const answersBlockedTask = facts.issueStatus === "blocked" && facts.isDependencyBlockedInteractionResponse === true;
+    const answersBlockedTask = facts.issueStatus === "blocked" &&
+      (facts.isDependencyBlockedInteractionResponse === true || facts.isAgentBlockingQuestionAnswer === true);
     const earlyStatus = decideIssueStatus({
       status: facts.issueStatus,
       requiresInProgress: facts.issueStatus !== "in_review" && !startsUnstartedTask && !answersBlockedTask,
