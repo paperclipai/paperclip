@@ -362,6 +362,34 @@ collection, another close error from an owner without a task, or continuation
 of the same session still blocks replacement.
 A controller restart is not required for this stopped-owner reset path.
 
+When retiring the previous owner stays unproven anyway (any close failure,
+on any of the paths a new run uses to retire it: instruction preparation,
+configuration change, session reset, or a prior-owner fence on a resumed
+sandbox), the new run has done no provider work. It fails with the typed
+pre-provider error `native_predecessor_retirement_unproven` instead of a
+provider failure. The owner stays registered for its own sandbox, so no run
+on that sandbox launches over it. The heartbeat then:
+
+- marks this run's reusable lease on that sandbox `replaceBeforeReuse`, so the
+  next acquisition creates a fresh sandbox and hands the old one to the
+  cleanup sweep. That replacement uses the same rule as a failed resume: a
+  clean, committed workspace save and a verified harness backup. Without them
+  the next acquisition resumes the sandbox as before;
+- after the run ends, hands its prepared workspace on at the saved version
+  only through the shared unchanged-files proof (no runner command, workspace
+  operation such as a provisioning command, execution event or result).
+  Without that proof the workspace stays dirty and is preserved as today, and
+  the run rests with Retry;
+- re-queues the run in the uncharged `interrupted_preparation` lane instead of
+  a native reconciliation hold. A run that answered a task interaction keeps
+  its own wake in that lane, so the retry still carries the answer.
+
+A run on a different sandbox forgets the unretired owner instead of replaying
+its rejected close. A previous run parked on a durable governed interaction
+leaves its question's tool input unanswered by design. Once its Runner's
+sandbox lease has ended elsewhere, that committed park settles the input for
+retirement.
+
 Core ends a dispatched task lease with `stop`, `status`, and `complete`. When
 that sequence confirms the stop and completes the same task, Core does not also
 call `onEnvironmentReleaseLease`. Core still calls it when the release did not

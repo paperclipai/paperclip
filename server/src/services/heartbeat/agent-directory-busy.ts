@@ -37,18 +37,19 @@ export async function deferRunForBusyAgentDirectory(db: Db, input: {
   run: { id: string; companyId: string };
   error: unknown;
   leaseOwner?: string;
-  schedule: (runId: string, retryAt: Date) => void;
+  restartRecovery?: { leaseOwner: string };
+  schedule: (runId: string, retryAt: Date, mode?: "restart") => void;
   record: (retryAt: Date) => Promise<void>;
   random?: () => number;
 }): Promise<AgentDirectoryDeferralOutcome> {
   if (!(input.error instanceof AgentDirectoryPreparationDeferral)) return "not_applicable";
   const retryAt = new Date(Date.now() + agentDirectoryBusyRetryDelayMs(input.random));
   const outcome = await deferNativeRunForBusyAgentDirectory(db, {
-    companyId: input.run.companyId, runId: input.run.id, leaseOwner: input.leaseOwner,
+    companyId: input.run.companyId, runId: input.run.id, leaseOwner: input.leaseOwner ?? input.restartRecovery?.leaseOwner,
     retryAt, maxDeferrals: AGENT_DIRECTORY_BUSY_MAX_DEFERRALS,
   });
   if (outcome !== "deferred") return outcome;
   await input.record(retryAt).catch(() => undefined);
-  input.schedule(input.run.id, retryAt);
+  input.schedule(input.run.id, retryAt, input.restartRecovery ? "restart" : undefined);
   return "deferred";
 }

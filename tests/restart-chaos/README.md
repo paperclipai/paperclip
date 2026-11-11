@@ -559,11 +559,12 @@ method and status are written to `storage-proxy.json`.
 | ST5 | credentials rejected: every request answers 403 `ExpiredToken`, `InvalidAccessKeyId` or `SignatureDoesNotMatch` (seeded per window) |
 | ST5R | real key rotation: MinIO restarts with a new root key (old key revoked), and the server's credential source keeps serving the old key until the window ends |
 | ST7 | read-after-write lag: a `GET` or `HEAD` of an object answers 404 `NoSuchKey` for 5–30 s (seeded) after its `PUT` or multipart completion succeeded |
+| ST8 | provider-session backup throttle: the next 9–12 (seeded) `PUT`s of a native harness backup answer 503 `SlowDown`, more than one request's own throttled retries. This is the post-turn close checkpoint of a remote (Daytona) run, so use it with `--env daytona --storage s3` |
 
-With ST4 or ST7 in the wave, the harness audits the store when the wave ends (`storage-audit.json` and a
+With ST4, ST7 or ST8 in the wave, the harness audits the store when the wave ends (`storage-audit.json` and a
 `Storage audit` section in `SUMMARY.md`). It reads every committed workspace snapshot back from MinIO and checks
 its size and SHA-256 against the snapshot row, and after the server stops it lists incomplete multipart uploads
-under the wave's prefix. An orphaned upload, a committed snapshot that does not read back, a planned ST4 or ST7 fault
+under the wave's prefix. An orphaned upload, a committed snapshot that does not read back, a planned ST4, ST7 or ST8 fault
 that never changed a request, or a skipped snapshot check fails the wave. ST4 truncation forwards the first bytes
 of the part to MinIO before it cuts both connections.
 
@@ -936,6 +937,25 @@ applies unchanged (`no_failed_attempt` and `issue_done` cover the follow-up), pl
 `session_rotated_before_answer` and `follow_up_new_session` (a follow-up that resumed the saved
 session would not exercise the retirement). Because tasks share their adapter's agent, `--tasks 2 --concurrency 2`
 is the two-concurrent-runs variant. SR1 does not combine with K* or PV* faults.
+
+### SR1U: the retained owner cannot be retired
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-warm \
+  --daytona-image <image@sha256:…> --adapters codex --workloads Q1 --faults SR1U --concurrency 1 --tasks 1 --seed 311
+```
+
+SR1U is SR1 where the parked owner's stop stays unconfirmed even when forced. The harness boots the
+server with `PAPERCLIP_TEST_WARM_RETIREMENT_FAULT=unconfirmed` (test instrumentation, armed only when
+`NODE_ENV=test`, as in the harness server), so every retirement of a warm sandbox owner fails. This is the staging shape
+where a follow-up failed with `Controller journal drain timed out` or `runner did not durably suspend
+before checkpoint` before any provider work and nothing ever restarted the task. The follow-up must
+fail once with `failureCause: native_predecessor_retirement_unproven`, re-queue itself in the
+uncharged `interrupted_preparation` lane, and finish on a fresh sandbox restored from the saved
+workspace. The Q1 oracle applies, except that this one pre-provider failure is not a failed attempt,
+plus `predecessor_unretirable_fell_back` and `follow_up_fresh_sandbox` (the succeeding follow-up ran
+on a different sandbox than the asking run). SR1U needs `--env daytona --daytona-warm`, and it arms
+its fault for the whole server, so it does not share a wave with SR1.
 
 ## Database contention (L1, `--db-pressure`)
 

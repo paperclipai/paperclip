@@ -58,6 +58,7 @@ import { resolvePluginTaskResume } from "../environment-task-runtime.js";
 import { environmentTaskOperationSchema, environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
+import { findNativePredecessorRetirementUnproven, NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 import { NativeStartupCleanupPendingError, clearNativeStartupContext } from "./native-startup-cleanup.js";
 import { readUnreadSteeredMessages } from "./unread-steered-messages.js";
@@ -695,6 +696,10 @@ type WarmNativeSession = {
   onReleased: () => void;
   sessionCheckpointPersisted?: (snapshot: PersistedNativeSession) => void;
   pluginTaskId?: string;
+  /** The sandbox that holds this owner's Runner, when it runs in one. */
+  providerLeaseId?: string;
+  /** A successor's retirement of this owner failed; it stays registered for its own sandbox. */
+  retirementUnproven?: boolean;
   observabilityCompatibilityKey?: string;
   runId: string;
   issueId: string;
@@ -760,6 +765,47 @@ async function closeWarmNativeSession(entry: WarmNativeSession, reason: string, 
   finally { await stopping; }
 }
 
+function sandboxProviderLeaseId(target?: AdapterExecutionTarget | null): string | null {
+  return target?.kind === "remote" && target.transport === "sandbox" ? target.sandboxLeaseAcquisition?.providerLeaseId ?? null : null;
+}
+
+/**
+ * Retire a predecessor before a new run starts. A failed close keeps the owner
+ * registered, so a successor on the same sandbox never launches over it, and
+ * reports the typed pre-provider failure that sends the next attempt to a
+ * fresh sandbox instead of failing the task.
+ */
+async function retireWarmPredecessor(entry: WarmNativeSession, reason: string,
+  options?: Parameters<typeof closeWarmNativeSession>[2]) {
+  // Chaos cell SR1U: a sandbox owner whose stop stays unconfirmed even when
+  // forced. Test instrumentation only: armed only in a NODE_ENV=test server.
+  if (process.env.NODE_ENV === "test" && process.env.PAPERCLIP_TEST_WARM_RETIREMENT_FAULT === "unconfirmed" && entry.providerLeaseId) {
+    entry.retirementUnproven = true;
+    throw new NativePredecessorRetirementUnprovenError(entry.runId, entry.providerLeaseId,
+      new Error("warm Runner stop unconfirmed (injected test fault)"));
+  }
+  try { await closeWarmNativeSession(entry, reason, options); }
+  catch (error) {
+    entry.retirementUnproven = true;
+    throw new NativePredecessorRetirementUnprovenError(entry.runId, entry.providerLeaseId ?? null, error);
+  }
+}
+
+/**
+ * An owner whose retirement stayed unproven lives only in its own sandbox,
+ * which its successor's attempt left for cleanup. A run on a different sandbox
+ * cannot meet that Runner, so it forgets the owner instead of replaying its
+ * rejected close. Any other run keeps retrying retirement.
+ */
+function forgetUnretiredOwnerOnOtherSandbox(scope: string, entry: WarmNativeSession,
+  target?: AdapterExecutionTarget | null): boolean {
+  const next = sandboxProviderLeaseId(target);
+  if (!entry.retirementUnproven || !entry.providerLeaseId || !next || next === entry.providerLeaseId
+    || entry.busy || entry.preparingRunId) return false;
+  forgetWarmNativeSession(scope, entry);
+  return true;
+}
+
 async function detachReleasedWarmNativeSession(entry: WarmNativeSession) {
   entry.controllerDetachedForRestart = true;
   if (!entry.session.detachControllerForRestart) throw new Error("native_session_released_detach_unavailable");
@@ -819,6 +865,8 @@ export async function claimWarmNativeInstructionCopy(input: {
   runId: string;
   preparationKey: string;
   forceRetirement?: boolean;
+  /** This run's execution target; a different sandbox never meets an unretired owner. */
+  target?: AdapterExecutionTarget | null;
   adopt: (previousRunId: string) => Promise<NativeInstructionWorkingCopy | null>;
 }): Promise<(() => Promise<void>) | null> {
   const prior = input.priorExecution;
@@ -832,6 +880,7 @@ export async function claimWarmNativeInstructionCopy(input: {
   // Re-read after the wait: the release may have retired or replaced the session.
   const entry = warmNativeSessions.get(scope);
   if (!entry || !entry.instructionWorkingCopy?.runId || entry.environmentId !== input.environmentId) return null;
+  if (forgetUnretiredOwnerOnOtherSandbox(scope, entry, input.target)) return null;
   if (entry.busy) throw new Error("native_session_supervisor_busy");
   entry.busy = true;
   if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
@@ -840,7 +889,7 @@ export async function claimWarmNativeInstructionCopy(input: {
     if (warmNativeSessions.get(scope) !== entry) return;
     entry.closeOnReleaseReason = reason;
     try {
-      await closeWarmNativeSession(entry, reason);
+      await retireWarmPredecessor(entry, reason);
       forgetWarmNativeSession(scope, entry);
     } finally { entry.busy = false; }
   };
@@ -885,6 +934,7 @@ export async function reserveWarmNativeInstructionDirectory(input: {
 }): Promise<{ reuseRunId: string; adopt: (root: string, collectStopped: () => Promise<void>) => void; release: () => Promise<void> } | null> {
   for (const [id, entry] of warmNativeSessions) {
     if (entry.companyId !== input.companyId || entry.agentId !== input.agentId || entry.instructionCopy?.runId !== input.previousRunId) continue;
+    if (forgetUnretiredOwnerOnOtherSandbox(id, entry, input.target)) return null;
     if (entry.busy || entry.preparingRunId) throw new Error("native_session_supervisor_busy");
     if (entry.idleTimer) clearTimeout(entry.idleTimer);
     entry.idleTimer = null;
@@ -892,7 +942,7 @@ export async function reserveWarmNativeInstructionDirectory(input: {
     const retire = async (reason: string) => {
       entry.closeOnReleaseReason = reason;
       try {
-        await closeWarmNativeSession(entry, reason);
+        await retireWarmPredecessor(entry, reason);
         forgetWarmNativeSession(id, entry);
       } finally {
         // Failed containment remains registered and cannot be adopted. The next
@@ -2173,10 +2223,12 @@ async function retireSupersededWarmNativeSessions(
   nextSessionId: string,
   runId: string,
   ingress?: { db: Db; claim: NativeWarmIngressClaim },
+  target?: AdapterExecutionTarget | null,
 ): Promise<void> {
   for (const [scope, entry] of warmNativeSessions) {
     if (scope === nextSessionScope) continue;
     const logicalOwner = entry.ownerScope === ownerScope;
+    if (logicalOwner && forgetUnretiredOwnerOnOtherSandbox(scope, entry, target)) continue;
     const priorIngress = entry.ingressOwner;
     const physicalOwner = ingress && priorIngress && nativeWarmIngressAllocation(priorIngress.ingress) === nativeWarmIngressAllocation(ingress.claim.ingress);
     if (!logicalOwner && !physicalOwner) continue;
@@ -2198,7 +2250,7 @@ async function retireSupersededWarmNativeSessions(
     entry.busy = true;
     entry.closeOnReleaseReason = logicalOwner ? "warm native session identity changed" : "warm native ingress requires another session";
     try {
-      await closeWarmNativeSession(entry, entry.closeOnReleaseReason, {
+      await retireWarmPredecessor(entry, entry.closeOnReleaseReason, {
         discardUnsettledSession: logicalOwner && entry.normalizedSessionId !== nextSessionId,
         ...(ownReservation ? { preserveInstructionsForRunId: runId } : {}),
       });
@@ -5697,7 +5749,7 @@ const GONE_REMOTE_RUNNER_DELIVERY_COMMANDS = new Set(["run.attach", "semantic_to
   "session.goal.get"]);
 
 function readSettledRunnerdProjection(root: string, identity: Record<string, string>,
-  options: { localRunner?: boolean; controlBytes?: string; remoteRunnerGone?: boolean } = {}): SettledRunnerdProjection {
+  options: { localRunner?: boolean; controlBytes?: string; remoteRunnerGone?: boolean; parkedGovernedWait?: boolean } = {}): SettledRunnerdProjection {
   const refuse = (refused: string): SettledRunnerdProjection => ({ refused });
   try {
     if (!isSafeNativeStateDirectory(root)) return refuse("root_unsafe");
@@ -5743,7 +5795,11 @@ function readSettledRunnerdProjection(root: string, identity: Record<string, str
       return refuse(unsettled.length > 0 ? `journal_commands_unsettled(${[...new Set(unsettled)].slice(0, 4).join(",")})`
         : "journal_terminal_unsettled");
     }
-    if ((control.committedEvents as unknown[]).map(record).some(event =>
+    // A turn parked on a durable governed interaction leaves its question's
+    // tool input unanswered by design: the answer reaches a new provider turn
+    // through that interaction, never this Runner. Once that Runner is gone,
+    // the committed park settles the input.
+    if (!(options.remoteRunnerGone && options.parkedGovernedWait) && (control.committedEvents as unknown[]).map(record).some(event =>
       (event.eventType === "semantic_tool.input" || event.eventType === "mcp_app.tool_input") &&
       !answered.has(event.sourceEventId))) return refuse("journal_tool_input_unanswered");
     return { bytes };
@@ -5843,7 +5899,9 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
     currentProviderLeaseId: target?.kind === "remote" && target.transport === "sandbox"
       ? target.sandboxLeaseAcquisition?.providerLeaseId : undefined,
   });
-  const projectionOptions = { localRunner, controlBytes: input.projectedControlBytes, remoteRunnerGone };
+  const parkedGovernedWait = remoteRunnerGone && await priorRunParkedOnGovernedWait(input.db, {
+    companyId: binding.companyId, issueId: binding.issueId, runId: identity.runId });
+  const projectionOptions = { localRunner, controlBytes: input.projectedControlBytes, remoteRunnerGone, parkedGovernedWait };
   const projection = readSettledRunnerdProjection(input.root, identity, projectionOptions);
   if (projection.refused !== undefined) return refuse(projection.refused);
   const controlBytes = projection.bytes;
@@ -5908,7 +5966,7 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
     for (const name of readdirSync(quarantine)) {
       if (!name.startsWith(`${basename(input.root)}.`)) continue;
       if (quarantinedBootstrapOfOwnerHeldNoProviderWork(resolve(quarantine, name), identity, localRunner)) continue;
-      const copy = readSettledRunnerdProjection(resolve(quarantine, name), identity, { localRunner, remoteRunnerGone });
+      const copy = readSettledRunnerdProjection(resolve(quarantine, name), identity, { localRunner, remoteRunnerGone, parkedGovernedWait });
       if (copy.refused !== undefined) return refuse(`quarantine_${copy.refused}`);
     }
   }
@@ -5930,6 +5988,24 @@ export function quarantinedBootstrapOfOwnerHeldNoProviderWork(root: string, iden
   if (!copied || Object.entries(identity).some(([key, value]) => copied[key] !== value)) return false;
   return runnerdStateProvesIncompleteBootstrap(root, { localProcesses: localRunner })
     || (!localRunner && runnerdStateProvesNoRemoteProviderTurn(root));
+}
+
+/** The prior run committed a governed-wait park: its accepted result waits on a durable task interaction. */
+async function priorRunParkedOnGovernedWait(db: Db, input: { companyId: string; issueId: string; runId: string }): Promise<boolean> {
+  try {
+    const [row] = await db.select({ result: nativeRunResults.resultJson }).from(nativeRunFinalizations)
+      .innerJoin(nativeRunResults, and(eq(nativeRunResults.id, nativeRunFinalizations.resultId),
+        eq(nativeRunResults.companyId, nativeRunFinalizations.companyId), eq(nativeRunResults.runId, nativeRunFinalizations.runId)))
+      .where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId),
+        eq(nativeRunFinalizations.runId, input.runId), eq(nativeRunFinalizations.phase, "committed")))
+      .limit(1);
+    const result = record(row?.result);
+    return record(result.continuation).kind === "response_wake" && Array.isArray(result.artifacts)
+      && result.artifacts.some(artifact => record(artifact).kind === "issue_thread_interaction"
+        && typeof record(artifact).ref === "string" && String(record(artifact).ref).startsWith("interaction:"));
+  } catch {
+    return false;
+  }
 }
 
 async function priorRemoteSandboxLeasesEnded(db: Db, input: {
@@ -6235,7 +6311,16 @@ async function migrateRunnerdStateRootForExecution(input: {
           );
         }
         await recordPriorOwnerFenceRefusal(input, `prior_owner_${verification}`);
-        throw new Error(`runner_state_identity_mismatch: prior_owner_${verification}${retirementRefusal}`);
+        const refusal = new Error(`runner_state_identity_mismatch: prior_owner_${verification}${retirementRefusal}`);
+        // A terminal owner on this reused sandbox can be retired only from a
+        // different sandbox, where its Runner cannot be. Send the next attempt there.
+        const target = input.runnerExecutionTarget;
+        if (verification === "terminal_state_indeterminate" && target?.kind === "remote" && target.transport === "sandbox"
+          && !target.runnerTask && target.sandboxLeaseAcquisition?.outcome === "resumed") {
+          throw new NativePredecessorRetirementUnprovenError(identity.runId ?? null,
+            target.sandboxLeaseAcquisition.providerLeaseId ?? null, refusal);
+        }
+        throw refusal;
       }
     }
     return;
@@ -8437,6 +8522,9 @@ export function nativeSessionFailureDisposition(
   sourceFailureCode?: ReturnType<typeof nativeSessionFailureSourceCode>,
 ) {
   const permanentFailure =
+    // A same-run retry would meet the same unretired owner on the same sandbox;
+    // the next run starts on a fresh one instead.
+    sourceFailureCode === NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE ||
     sourceFailureCode === "runner_task_admission_rejected" ||
     sourceFailureCode === "runner_ingress_access_rejected" ||
     sourceFailureCode === "native_provider_runtime_missing" ||
@@ -8629,7 +8717,9 @@ export function nativeSessionFailureSourceCode(
   | "runner_ingress_access_rejected"
   | "runner_ingress_acquisition_failed"
   | "local_runtime_api_listener_unavailable"
+  | typeof NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE
   | "native_session_interrupted" {
+  if (findNativePredecessorRetirementUnproven(error)) return NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE;
   if (error instanceof NativePermissionDeclinedError) return "native_permission_declined";
   if (error instanceof NativeGovernedWaitSettlementPendingError) return "native_governed_wait_settlement_pending";
   if (error instanceof NativeProviderStateIncompatibleError) return NATIVE_PROVIDER_STATE_INCOMPATIBLE;
@@ -10040,6 +10130,7 @@ export async function executePaperclipNativeSession(input: {
     executingNativeOwnerScopes.set(ownerScope, ownerToken);
     if (!input.useRunnerd) await retireSupersededWarmNativeSessions(
       ownerScope, nativeSessionScopeKey(input.execution), nativeSessionKey(input.execution), runId,
+      undefined, input.runnerExecutionTarget,
     );
     if ((input.execution.schema === "paperclip.native-execution-input.v6" || input.execution.schema === "paperclip.native-execution-input.v8") && isCloudManagedInstance()
         && (!input.useRunnerd || input.runnerExecutionTarget?.kind !== "remote"
@@ -10800,6 +10891,7 @@ async function executePaperclipNativeSessionAttempt(
       nativeSessionScopeKey(input.execution), nativeSessionKey(input.execution), input.execution.binding.runId,
       ingress ? { db: input.db, claim: { ...input.execution.binding, ingress, leaseOwner,
         controllerBootId: controller.bootId, controllerGeneration } } : undefined,
+      input.runnerExecutionTarget,
     );
     claimedStartupContext?.assertOpen();
     if (prepareAfterClaim) input = await prepareAfterClaim();
@@ -11430,7 +11522,9 @@ async function executePaperclipNativeSessionAttempt(
     startupForAdmission!.executionContext = undefined;
   };
   if (warmSessionId !== null && warmConfigDigest !== null && !input.restartRecovery) {
-    const entry = warmNativeSessions.get(warmSessionId);
+    const registered = warmNativeSessions.get(warmSessionId);
+    const entry = registered && forgetUnretiredOwnerOnOtherSandbox(warmSessionId, registered, input.runnerExecutionTarget)
+      ? undefined : registered;
     if (entry?.released) requireReleasedWarmScope(input, releasedWarmRunner(readWarmNativeEnvelope(input.execution)),
         readRunnerdDurableIdentity(scopedRunnerdStateRoot(input.execution)));
     if (entry || remoteWarmRecovery?.releasedSource) {
@@ -11474,7 +11568,7 @@ async function executePaperclipNativeSessionAttempt(
         entry.busy = true;
         entry.closeOnReleaseReason = "warm native session configuration changed";
         try {
-          await closeWarmNativeSession(entry, entry.closeOnReleaseReason, { preserveInstructionsForRunId: input.execution.binding.runId });
+          await retireWarmPredecessor(entry, entry.closeOnReleaseReason, { preserveInstructionsForRunId: input.execution.binding.runId });
           forgetWarmNativeSession(warmSessionId, entry);
         } finally { entry.busy = false; }
         if (preparedCopy) throw new Error("native_instruction_preparation_configuration_changed");
@@ -12007,6 +12101,7 @@ async function executePaperclipNativeSessionAttempt(
                       issueId: input.execution.binding.issueId }),
                     pluginTaskId: usesPluginTask && input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "sandbox"
                       ? input.runnerExecutionTarget.sandboxLeaseAcquisition?.providerLeaseId : undefined,
+                    providerLeaseId: sandboxProviderLeaseId(input.runnerExecutionTarget) ?? undefined,
                     runId: input.execution.binding.runId,
                     issueId: input.execution.binding.issueId,
                     instructionWorkingCopy: input.instructionWorkingCopy?.checkpointWarm ? undefined : input.instructionWorkingCopy,
@@ -12358,7 +12453,11 @@ async function executePaperclipNativeSessionAttempt(
       }
       if (
         error instanceof NativeResultPendingFinalizationError ||
-        error instanceof NativeCancellationPendingRecoveryError
+        error instanceof NativeCancellationPendingRecoveryError ||
+        // An unretired predecessor failed this run before it launched a Runner.
+        // It is not a provider failure: the heartbeat boundary sends the next
+        // attempt to a fresh sandbox, or keeps today's preservation.
+        findNativePredecessorRetirementUnproven(error)
       ) {
         // This is not a provider failure and must not overwrite the durable
         // result/coordinator state. The heartbeat boundary will either hand an
