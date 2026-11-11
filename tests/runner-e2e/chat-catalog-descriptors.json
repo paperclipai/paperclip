@@ -6055,11 +6055,12 @@
       "chat-flow.ts",
       "chat-scenarios/teams.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.team-configure.v3",
-    "expectedRunCount": 2,
+    "oracleVersion": "paperclip.chat-catalog.team-configure.v4",
+    "expectedRunCount": 3,
+    "minimumRunCount": 2,
     "expectedHumanMessageCount": 2,
     "turnTimeoutMs": 120000,
-    "attemptTimeoutMs": 600000,
+    "attemptTimeoutMs": 720000,
     "authentication": "human-session",
     "setupPolicy": {
       "readiness": "preserve-scenario",

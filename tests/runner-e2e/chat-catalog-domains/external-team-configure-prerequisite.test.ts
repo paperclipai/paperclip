@@ -14,6 +14,7 @@ function setupFixture(missing: Probe, working: Probe = { status: "pass", testedA
       if (path.endsWith("/agents")) return members;
       if (path.endsWith("/config-revisions")) return [{ id: "working-revision" }];
       if (path === "/api/agents/coder") return members[1];
+      if (path === "/api/auth/get-session") return { user: { id: "person" } };
       if (["/projects", "/routines", "/teams/catalog/installed"].some(suffix => path.endsWith(suffix))) return [];
       throw new Error("Unexpected setup read");
     },
@@ -34,6 +35,7 @@ it("the actual setup admits the adapter's exact missing-auth warning and preserv
     state = await definition.setup(f.ctx);
     expect(state.initialProbes).toEqual([{ agentId: "qa", ...authWarning }, { agentId: "coder", status: "pass", testedAt: authWarning.testedAt, checks: [] }]);
     expect((await definition.verifySetup!(f.ctx, state)).passed).toBe(true);
+    expect(state.currentUserId).toBe("person");
     expect(f.probes).toHaveBeenCalledTimes(2);
     expect(f.evidence).toHaveBeenCalledWith("chat-catalog-team-initial-probes.json", { initialProbes: state.initialProbes });
     expect(f.api.patchSensitive).toHaveBeenCalledTimes(1);
