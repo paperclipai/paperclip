@@ -16072,6 +16072,22 @@ describe("runnerd provider runtime wiring", () => {
     await expect(access(authPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("binds attachment staging to the remote lease before provider startup", async () => {
+    const stagedExecution = scopedNativeExecution("remote-attachment-staging");
+    const execute = vi.fn();
+    state.stageNativeRunnerWakeAttachments.mockImplementationOnce(async (...args: unknown[]) => {
+      const input = args[0] as { stageRemoteAttachment?: unknown; binding: { executionTargetKind: string } };
+      expect(input.binding.executionTargetKind).toBe("remote");
+      expect(input.stageRemoteAttachment).toBeTypeOf("function");
+      throw new Error("fixture_staging_boundary");
+    });
+    await expect(executePaperclipNativeSession({
+      db: leaseDb(stagedExecution), execution: stagedExecution, runnerInstanceId: "remote-attachment-staging", useRunnerd: true,
+      runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/lease/workspace", runner: { execute } },
+    })).rejects.toThrow("fixture_staging_boundary");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("stages from the authenticated run snapshot and cleans up after the provider turn", async () => {
     const cleanup = vi.fn(async () => undefined);
     state.stageNativeRunnerWakeAttachments.mockResolvedValueOnce({

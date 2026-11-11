@@ -218,6 +218,7 @@ import {
 } from "../../vendor/paperclip-runner/index.js";
 import { adapterExecutionTargetEnablesSandboxDuplexBridge, type AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { createNativeSshCommandRunner } from "./native-ssh-command-runner.js";
+import { createRemoteAttachmentStager } from "./remote-attachment-staging.js";
 import { discoverRemoteExecutable, parseRemoteExecutableCandidate } from "./codex-model-fallback.js";
 export { parseRemoteExecutableCandidate } from "./codex-model-fallback.js";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
@@ -10196,17 +10197,31 @@ export async function executePaperclipNativeSession(input: {
         && nativeWarmIngressAllocation(entry.ingressOwner.ingress) === nativeWarmIngressAllocation(physicalIngress)));
     const prepareAttachments = async () => {
       const admissionSha256 = nativeSha256(input.execution);
-      const targetKind = input.runnerExecutionTarget?.kind ?? "local";
+      const target = input.runnerExecutionTarget;
+      const targetKind = target?.kind ?? "local";
+      const remoteRunner = target?.kind === "remote"
+        ? target.transport === "ssh"
+          ? createNativeSshCommandRunner({ spec: target.spec, defaultCwd: target.remoteCwd })
+          : target.runnerTask ? undefined : target.runner
+        : undefined;
+      const stageRemoteAttachment = target?.kind === "remote" && remoteRunner
+        ? createRemoteAttachmentStager(target.remoteCwd, remoteRunner)
+        : undefined;
       const chatAttachmentReadScope = new NativeChatAttachmentReadScope({
         db: input.db,
         binding: input.execution.binding,
         workspaceRoot,
         executionTargetKind: targetKind,
+        stageRemoteAttachment,
       });
       preparedInput = { ...input, chatAttachmentReadScope };
-      cleanupStagedAttachments = () => chatAttachmentReadScope.close();
+      cleanupStagedAttachments = async () => {
+        try { await chatAttachmentReadScope.close(); }
+        finally { await stageRemoteAttachment?.close(); }
+      };
       const attachmentStage = await stageNativeRunnerWakeAttachments({
         db: input.db,
+        stageRemoteAttachment,
         binding: {
           companyId: input.execution.binding.companyId,
           issueId: input.execution.binding.issueId,
@@ -10221,6 +10236,7 @@ export async function executePaperclipNativeSession(input: {
           chatAttachmentReadScope.close(),
           attachmentStage.cleanup(),
         ]);
+        await stageRemoteAttachment?.close();
         if (cleanupResults.some((result) => result.status === "rejected")) {
           throw new Error("paperclip_runner_attachment_staging_cleanup_failed");
         }

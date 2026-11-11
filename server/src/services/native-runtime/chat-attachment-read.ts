@@ -12,7 +12,7 @@ import {
   type ChatAttachmentReuseSource,
   type ChatReuseBinding,
 } from "./chat-attachment-reuse.js";
-import { stageNativeRunnerAttachmentBytes } from "./native-runner-file-handoff.js";
+import { stageNativeRunnerAttachmentBytes, type NativeRunnerAttachmentStager } from "./native-runner-file-handoff.js";
 
 export const READ_CHAT_ATTACHMENT_TOOL_NAME = "read_chat_attachment";
 export const READ_CHAT_ATTACHMENT_TOOL_DEFINITION = Object.freeze({
@@ -55,6 +55,7 @@ export class NativeChatAttachmentReadScope {
       binding: ChatReuseBinding;
       workspaceRoot: string;
       executionTargetKind: "local" | "remote";
+      stageRemoteAttachment?: NativeRunnerAttachmentStager;
       storage?: StorageService;
       storageTimeoutMs?: number;
     },
@@ -78,7 +79,7 @@ export class NativeChatAttachmentReadScope {
         "paperclip_runner_chat_attachment_read_arguments_invalid",
       );
     }
-    if (this.options.executionTargetKind !== "local") {
+    if (this.options.executionTargetKind !== "local" && !this.options.stageRemoteAttachment) {
       throw new Error(
         "paperclip_runner_chat_attachment_remote_staging_unsupported",
       );
@@ -170,10 +171,9 @@ export class NativeChatAttachmentReadScope {
     // hold issue/endpoint/principal locks over filesystem work (including
     // descriptor inspection and fsync), which can delay inbound admission.
     this.#assertOpen();
-    const staged = await stageNativeRunnerAttachmentBytes({
-      workspaceRoot: this.options.workspaceRoot,
-      body,
-    });
+    const staged = this.options.executionTargetKind === "remote"
+      ? await this.options.stageRemoteAttachment!({ body, contentType: current.contentType })
+      : await stageNativeRunnerAttachmentBytes({ workspaceRoot: this.options.workspaceRoot, body });
     this.#cleanups.push(staged.cleanup);
     try {
       // Cancellation during asynchronous staging must never publish a path.
