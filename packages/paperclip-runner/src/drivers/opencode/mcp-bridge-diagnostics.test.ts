@@ -63,7 +63,7 @@ it("reports the effective supplied schema and bounds diagnostics without admitti
   const inputSchema = { type: "object", required: ["continuation"], properties: { continuation: { type: "object" } } };
   const bridge = await startOpenCodeMcpBridge({
     tools: [{ name: "paperclip_finish", inputSchema }], handler,
-    onDiagnostic: message => messages.push(message),
+    onDiagnostic: message => { if (message.includes("finish-input-diagnostic")) messages.push(message); },
   });
   bridges.push(bridge);
   for (let index = 0; index < 12; index++) {

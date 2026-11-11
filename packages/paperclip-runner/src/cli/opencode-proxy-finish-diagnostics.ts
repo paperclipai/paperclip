@@ -54,6 +54,6 @@ function validToolDelivery(value: Record<string, unknown>): boolean {
     && typeof value.callIdSha256 === "string" && /^[a-f0-9]{64}$/.test(value.callIdSha256)
     && count(value.socketRequestIndex) && count(value.handlerMs)
     && (value.socketIdleMs === null || count(value.socketIdleMs))
-    && ["result", "error", "unanswered"].includes(String(value.outcome))
+    && typeof value.outcome === "string" && ["result", "error", "unanswered"].includes(value.outcome)
     && typeof value.written === "boolean";
 }

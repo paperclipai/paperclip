@@ -96,9 +96,11 @@ it("records a call whose client left before its result was written", async () =>
   const messages: string[] = [];
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
+  let started!: () => void;
+  const handlerStarted = new Promise<void>(resolve => { started = resolve; });
   const bridge = await startOpenCodeMcpBridge({
     tools,
-    handler: async () => { await held; return { ok: true }; },
+    handler: async () => { started(); await held; return { ok: true }; },
     onDiagnostic: message => { if (message.includes("tool-delivery-diagnostic")) messages.push(message); },
   });
   bridges.push(bridge);
@@ -108,10 +110,30 @@ it("records a call whose client left before its result was written", async () =>
     headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "list_agents", arguments: {} } }),
   }).catch(() => undefined);
-  await new Promise(resolve => setTimeout(resolve, 30));
+  await handlerStarted;
   controller.abort();
   await abandoned;
   await expect.poll(() => messages.length).toBe(1);
   release();
   expect(JSON.parse(messages[0]!)).toMatchObject({ outcome: "unanswered", written: false, socketRequestIndex: 1 });
+});
+
+it("records a rejected call as an answered error", async () => {
+  const messages: string[] = [];
+  const bridge = await startOpenCodeMcpBridge({
+    tools,
+    handler: async () => ({ ok: true }),
+    onDiagnostic: message => { if (message.includes("tool-delivery-diagnostic")) messages.push(message); },
+  });
+  bridges.push(bridge);
+  const answer = await (await fetch(bridge.url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "not_declared", arguments: {} } }),
+  })).json() as { result: { isError: boolean } };
+  expect(answer.result.isError).toBe(true);
+  await expect.poll(() => messages.length).toBe(1);
+  expect(JSON.parse(messages[0]!)).toMatchObject({
+    callIdSha256: createHash("sha256").update("11").digest("hex"), outcome: "error", written: true,
+  });
 });

@@ -314,6 +314,14 @@ async function handleRequest(
     return;
   }
   const params = isRecord(message.params) ? message.params : {};
+  const callId = typeof id === "string" || typeof id === "number" ? String(id) : randomBytes(12).toString("hex");
+  // Record how each call's answer left the bridge, rejections included, so a
+  // client that never consumes a written answer can be told apart from a
+  // bridge that never answered it.
+  let outcome: ToolDeliveryOutcome = "unanswered";
+  response.once("close", () => {
+    context.diagnoseToolDelivery(callId, context.delivery, outcome, response.writableFinished);
+  });
   const rawName = typeof params.name === "string" ? params.name : "";
   // A declared operation may itself start with paperclip_. Preserve that
   // authority identity before accepting an OpenCode transport prefix alias.
@@ -322,10 +330,10 @@ async function handleRequest(
     ? exactName
     : canonicalOpenCodeMcpToolName(exactName);
   if (!context.admittedTools.some((entry) => entry.name === tool)) {
+    outcome = "error";
     writeRpc(response, id, { isError: true, content: [{ type: "text", text: "Unsupported tool." }] });
     return;
   }
-  const callId = typeof id === "string" || typeof id === "number" ? String(id) : randomBytes(12).toString("hex");
   const args = params.arguments ?? {};
   const validator = context.validators.get(tool);
   if (validator === undefined || !validator(args)) {
@@ -337,6 +345,7 @@ async function handleRequest(
     }
     const error = toolInputError(validator);
     try { context.onRejectedCall?.({ tool, callId, arguments: args }, error); } catch {}
+    outcome = "error";
     writeRpc(response, id, {
       isError: true,
       content: [{ type: "text", text: error }],
@@ -347,6 +356,7 @@ async function handleRequest(
   const existing = context.calls.get(callId);
   if (existing && existing.fingerprint !== fingerprint) {
     try { context.onRejectedCall?.({ tool, callId, arguments: args }, "Duplicate call identity conflict."); } catch {}
+    outcome = "error";
     writeRpc(response, id, { isError: true, content: [{ type: "text", text: "Duplicate call identity conflict." }] });
     return;
   }
@@ -375,13 +385,6 @@ async function handleRequest(
       if (!response.writableFinished && waiting.size === 0) context.controllers.get(callId)?.abort();
     });
   }
-  // Record how each call's answer left the bridge, so a client that never
-  // consumes a written result can be told apart from a bridge that never
-  // answered it.
-  let outcome: ToolDeliveryOutcome = "unanswered";
-  response.once("close", () => {
-    context.diagnoseToolDelivery(callId, context.delivery, outcome, response.writableFinished);
-  });
   try {
     const result = await execution;
     const text = safeJson(result);
