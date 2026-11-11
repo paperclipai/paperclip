@@ -142,6 +142,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
       "k15-hold-seconds": { type: "string" },
       "k15-overlap-seconds": { type: "string" },
       "k15-fresh-home": { type: "boolean" },
+      "ephemeral-server": { type: "boolean" },
       "tm1-hold-seconds": { type: "string" },
       "fail-recovery-step": { type: "string" },
       "long-turn-minutes": { type: "string" },
@@ -151,7 +152,7 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   const pollMs = integer(values["poll-ms"], "poll-ms", 3_000, 2_000, 5_000);
   const budgetCents = integer(values["budget-cents"], "budget-cents", 3_000, 1, 100_000);
   if (values.replay !== undefined) {
-    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-pack-mismatch", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "k15-overlap-seconds", "k15-fresh-home", "tm1-hold-seconds", "fail-recovery-step", "long-turn-minutes"] as const) {
+    for (const key of ["env", "adapters", "workloads", "faults", "triggers", "concurrency", "tasks", "seed", "daytona-image", "daytona-pack-mismatch", "daytona-cpu", "daytona-reuse-lease", "daytona-warm", "daytona-inherit", "storm-minutes", "lifecycle", "k4-hold-max-seconds", "crash-point", "crash-point-hold-ms", "upgrade-from", "workspace-repo", "storage", "storage-faults", "storage-fault-seconds", "storage-trigger", "native-trigger", "native-trigger-outage", "fault-after-seconds", "provider-fault-message", "provider-fault-delays", "db-pressure", "matrix", "server-from", "time-age-hours", "provider-fault-restart", "provider-fault-restart-after-seconds", "rr-gap-seconds", "rr-stop-on", "k15-hold-seconds", "k15-overlap-seconds", "k15-fresh-home", "ephemeral-server", "tm1-hold-seconds", "fail-recovery-step", "long-turn-minutes"] as const) {
       if (values[key] !== undefined) throw new Error(`--replay reproduces the saved plan; do not combine it with --${key}`);
     }
     return { mode: "replay", ref: parseReplayRef(values.replay), keep,
@@ -374,6 +375,12 @@ export function parseCommand(argv: readonly string[], now = Date.now()): ParsedC
   if (values["db-pressure"] !== undefined) options.dbPressure = integer(values["db-pressure"], "db-pressure", 0, 1, 8);
   if (storage !== "local" && storage !== "s3") throw new Error("--storage must be local or s3");
   if (storage === "s3") options.storage = "s3";
+  if (values["ephemeral-server"]) {
+    if (storage !== "s3") throw new Error("--ephemeral-server runs volume-free and needs shared object storage: pass --storage s3");
+    if (env !== "daytona") throw new Error("--ephemeral-server runs only with --env daytona: a local workspace blocks a volume-free server");
+    if (options.faults.includes("K14")) throw new Error("--ephemeral-server does not combine with K14 (--upgrade-from)");
+    options.ephemeralServer = true;
+  }
   if (values["storage-faults"] !== undefined) {
     if (storage !== "s3") throw new Error("--storage-faults needs --storage s3");
     options.storageFaults = list<StorageFaultKind>(values["storage-faults"], STORAGE_FAULT_KINDS, "storage-faults", []);

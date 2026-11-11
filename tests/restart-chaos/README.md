@@ -26,7 +26,7 @@ Options: `--triggers time,comment,retry,queued,tool,result` (fault timing, below
 default 3000), `--poll-ms` (2000–5000), `--keep` (keep the temporary instance),
 `--k4-hold-max-seconds` (raise the seeded K4 hold upper end from 300 s, up to the 600 s outage cap).
 `--faults K0` plans cells with no fault, for workloads whose shape is the fault (W2, below). `--fail-recovery-step`,
-`--long-turn-minutes`, `--k15-overlap-seconds` and `--k15-fresh-home` are described in their own sections.
+`--long-turn-minutes`, `--k15-overlap-seconds`, `--k15-fresh-home` and `--ephemeral-server` are described in their own sections.
 `--fault-after-seconds <n>` fires every planned fault `n` seconds after its task launches (5–3600; with `--triggers time`), keeping
 the rest of the seeded plan, for example to restart a Daytona R1 task after its workspace preparation.
 `--matrix` crosses every selected workload with every fault kind (below), and `--server-from <dir>`
@@ -419,6 +419,23 @@ for a while after the new one was up. Plain K15 restarts on the same instance ho
 Pass is the usual grade: no Retry (R3), no stuck record (R6), and the oracle. Staging's terminal errors here
 were `ENOENT` on a runtime asset, `Agent directory operation is already active` after a 9.5-minute
 `controller_lease_held` wait.
+
+### Volume-free servers (`--ephemeral-server`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --storage s3 --ephemeral-server \
+  --adapters codex --workloads W2 --faults K1,K2,K15 --k15-fresh-home --k15-overlap-seconds 30-90 --concurrency 3 --tasks 3 --seed 5501
+```
+
+Cloud servers run volume-free (`ephemeral-server-contract.ts`): agent files, run logs and UI assets live in object
+storage, secrets use one stable master key, and remote agent directories are disposable copies whose collection and
+cleanup take the per-agent Postgres operation lock. Every other wave runs the volume-backed mode, so those paths,
+including the `directory-lock` recovery step, are never reached there. `--ephemeral-server` gives every server of the
+wave `PAPERCLIP_EPHEMERAL_SERVER`, `PAPERCLIP_DURABLE_AGENT_FILES` and `PAPERCLIP_SHARED_UI_ASSETS`, the wave's
+Postgres as `PAPERCLIP_DATABASE_LISTEN_URL`, a stable `PAPERCLIP_SECRETS_MASTER_KEY` (also written to the config's
+key file) and `RUN_LOG_S3_*` in the wave's object store. It needs `--storage s3` and `--env daytona` (a local
+workspace blocks a volume-free server) and does not combine with K14. Every restart replays the server's startup
+eligibility check, so a replacement that refuses to start fails the wave.
 
 ## Absolute symlink in the workspace (F1)
 
@@ -1008,7 +1025,10 @@ timed out`, `runner did not durably suspend before checkpoint` (class C+), or
 
 The workload is the fault, so these cells usually run with `--faults K0` (no fault). Every task of an
 adapter runs on that adapter's one agent: `--adapters codex --tasks 10 --concurrency 10` is ten tasks on one
-agent. Phase 1 ends with the task left `in_progress` (`in_review` would gate completion on a review). Then the harness, as the board, wakes the same task the
+agent. Phase 1 ends with the task left `in_progress` (`in_review` would gate completion on a review): the W2 and W2C
+brief asks the agent to report phase 1 with `paperclip_finish` disposition `yielded` and a `response_wake`
+continuation, because an agent that reports `done` closes the task and the wake is never sent (on 2026-11-11 four of
+eight Claude cells tested nothing). Then the harness, as the board, wakes the same task the
 seeded 0–60 s after that run settled (`rewake.ts`):
 
 - **W2**: a board comment, or, by the task's nonce, a board-scheduled issue monitor due now, so the

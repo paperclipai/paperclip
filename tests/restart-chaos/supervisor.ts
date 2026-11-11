@@ -169,6 +169,7 @@ export class ChaosSupervisor {
   redeployEvidence: ((faultId: string, phase: "stopped" | "before_start") => Promise<void>) | null = null;
   /** K15 deploy shape (redeploy.ts `parseK15DeployShape`); main.ts sets it before `start`. */
   deployShape: { overlap: boolean; freshHome: boolean } = { overlap: false, freshHome: false };
+  ephemeralServer = false;
   /** `--k15-fresh-home`: the instance home and config of the serving generation (generation 0 uses `paths`). */
   private serverHome: { home: string; configPath: string };
   /** `--k15-overlap-seconds`: the edge on the wave's port, and the serving generation's own port behind it. */
@@ -277,6 +278,7 @@ export class ChaosSupervisor {
       PAPERCLIP_IN_WORKTREE: "false",
       ...waveServerUrlEnvironment(this.port),
       ...extraEnvironment,
+      ...(this.ephemeralServer ? await this.ephemeralServerEnvironment(extraEnvironment) : {}),
       // K15: the generation's emulated host name and Railway deployment identity; the volume is the instance home.
       ...(this.redeploy ? redeployEnvironment(this.redeploy.identity, this.deployShape.freshHome ? null : home) : {}),
     };
@@ -286,6 +288,25 @@ export class ChaosSupervisor {
     assertIsolatedServerEnvironment(environment, { temporaryRoot, paperclipHome: home, configPath, ...(workspaceStorage ? { workspaceStorage } : {}) });
     this.environment = Object.fromEntries(Object.entries(environment).filter((entry): entry is [string, string] => entry[1] !== undefined));
     await prepareSourceServerDependencies(root, this.environment, false);
+  }
+
+  private async ephemeralServerEnvironment(extraEnvironment: Record<string, string>): Promise<Record<string, string>> {
+    if (extraEnvironment.PAPERCLIP_STORAGE_PROVIDER !== "s3") throw new Error("--ephemeral-server needs the wave's object store (--storage s3)");
+    const config = JSON.parse(await readFile(this.paths.configPath, "utf8")) as { secrets?: { localEncrypted?: { keyFilePath?: string } } };
+    const keyFile = String(config.secrets?.localEncrypted?.keyFilePath ?? path.join(path.dirname(this.paths.configPath), "secrets", "master.key"));
+    let masterKey = await readFile(keyFile, "utf8").then(value => value.trim(), () => "");
+    if (!masterKey) {
+      masterKey = randomBytes(32).toString("base64");
+      await mkdir(path.dirname(keyFile), { recursive: true, mode: 0o700 });
+      await writeFile(keyFile, masterKey, { mode: 0o600, flag: "wx" });
+    }
+    return {
+      PAPERCLIP_EPHEMERAL_SERVER: "true", PAPERCLIP_DURABLE_AGENT_FILES: "true", PAPERCLIP_SHARED_UI_ASSETS: "true",
+      PAPERCLIP_DATABASE_LISTEN_URL: databaseUrlFromConfig(this.paths.configPath), PAPERCLIP_SECRETS_MASTER_KEY: masterKey,
+      RUN_LOG_S3_BUCKET: extraEnvironment.PAPERCLIP_STORAGE_S3_BUCKET!, RUN_LOG_S3_ENDPOINT: extraEnvironment.PAPERCLIP_STORAGE_S3_ENDPOINT!,
+      RUN_LOG_S3_REGION: extraEnvironment.PAPERCLIP_STORAGE_S3_REGION!, RUN_LOG_S3_FORCE_PATH_STYLE: "true",
+      RUN_LOG_S3_PREFIX: `${extraEnvironment.PAPERCLIP_STORAGE_S3_PREFIX ?? ""}run-logs`,
+    };
   }
 
   private async spawnServer(): Promise<ChildProcess> {

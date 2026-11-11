@@ -247,6 +247,7 @@ async function main(): Promise<number> {
   const violationKey = (violation: { rule: string; kind: string; recordId: string }) => `${violation.rule}:${violation.kind}:${violation.recordId}`;
   // `--k15-overlap-seconds`, `--k15-fresh-home`: the staging deploy shape (redeploy.ts).
   supervisor.deployShape = { overlap: plan.options.k15Overlap === true, freshHome: plan.options.k15FreshHome === true };
+  supervisor.ephemeralServer = plan.options.ephemeralServer === true;
   // `--fail-recovery-step`: fail the nth hit of one recovery step once, after the wave's first restart fault.
   const recoveryStepReceipts = path.join(waveDir, "recovery-step-receipts.jsonl");
   if (plan.options.failRecoveryStep) {
