@@ -219,6 +219,16 @@ protected launch argument fails with the closed classification
 controller never opens a replacement session after either class, whatever the
 checkpoint's recovery policy, and stops the run for an operator.
 
+A remote session whose saved working directory is not the run's assigned
+workspace root (its workspace epoch was abandoned, so the saved version was
+restored into a new root) cannot resume there. The driver declines it before
+any Runner or provider process starts. An idle session reports
+`provider_state_incompatible`: a replacement opens in the assigned root when the
+checkpoint allows it, and otherwise the run fails with
+`native_provider_state_incompatible`. A session with an unfinished provider turn
+or a pending runtime request reports `provider_side_effect_pending` and stops
+for an operator, whatever its recovery policy.
+
 A restart can kill the runner after it journaled a run's own cold `run.attach`
 and before the attachment finished. The restored runner settles that command as
 `execution_indeterminate` and never executes it again. When the journal shows no
