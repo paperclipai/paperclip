@@ -1771,6 +1771,8 @@ async function startServerWithDatabaseTeardown(
     }
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerDeferredReceiptWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerProviderLimitResumeWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
     if (config.heartbeatSchedulerEnabled) {
       const work = heartbeat.registerRunDispatchWork(deliveryWork,
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped);

@@ -3060,8 +3060,24 @@ account at once. ACP harnesses report an exhausted allowance as a generic
 terminal limit failure; Runner adds the provider's typed session-failure title,
 and only a rate-limit or quota title becomes `rate_limit` or `quota_exhausted`.
 Context, turn and configured budget limits stay ordinary terminal failures. A
-reset clock in the provider's wording, such as "resets 2am (UTC)", is used as
+reset clock in the provider's wording, such as "resets 2am (UTC)", or a
+calendar reset such as a weekly limit's "resets Nov 12, 6pm (UTC)", is used as
 the reset time.
+
+A native run whose provider ends a turn with an exhausted allowance
+(`native_provider_usage_limit`) still blocks its task with a recovery action.
+When the run's last turn event is a provider-observed `turn.failed` that reports
+a reset within eight days, the action says when the limit resets, and at that
+time Paperclip requests the task's Retry itself, on behalf of the user who
+requested the run or, for automatic wakes, the run's accountable user. That is
+the same Retry the user would click: admission keeps every gate (stop proof,
+saved-work recovery and action reconciliation), so it never starts work a
+user's Retry could not. The request is idempotent per run, and at most three
+automatic Retries follow one another without a successful run between them.
+A hold whose reset is unknown, unbounded, more than a day in the past, or that
+has no accountable user keeps its visible Retry, and its message says why. The
+reset deadline is rebuilt from the active holds at startup, so holds saved by an
+earlier release are covered too.
 
 An ingress endpoint failure can use that same bounded retry only when the
 environment provider returns a structured HTTP 429 or 5xx failure and the
