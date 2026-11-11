@@ -19,7 +19,7 @@ describe.skipIf(!support.supported)("native completion with a configured review 
   }, 90_000);
   afterAll(async () => { await temporary?.cleanup(); });
 
-  type Options = { stage?: "user" | "agent"; monitor?: boolean; liveCycleWithRemovedStage?: boolean;
+  type Options = { stage?: "user" | "agent"; monitor?: boolean; liveCycleWithRemovedStage?: boolean; unprovenEvidence?: boolean;
     beforeFinish?: (runId: string, result: PrpStructuredRunResult) => Promise<void> };
   async function finishVerifiedDone(options: Options = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
@@ -52,11 +52,16 @@ describe.skipIf(!support.supported)("native completion with a configured review 
     const [verified] = await db.insert(issueWorkProducts).values({ companyId, issueId,
       type: "artifact", provider: "test", title: "Site check", status: "completed", reviewState: "approved" }).returning();
     const evidenceRef = `work_product:${verified!.id}`;
+    // The recorded failing report: a file name and an unbound attachment ref,
+    // and a passed check with no durable artifact. The worker cannot make its
+    // own unreviewed work product authoritative; the configured reviewer does.
+    const refs = options.unprovenEvidence ? ["website.html", `attachment:${randomUUID()}`] : [evidenceRef];
     const result: PrpStructuredRunResult = { ...CONTROL_PLANE_CONFORMANCE_RESULT,
       completionClaim: { ...CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim,
-        criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [evidenceRef] }] },
-      evidence: [{ kind: "work_product", ref: evidenceRef }],
-      verification: [{ commandOrCheck: "Site check", status: "passed", artifactRef: evidenceRef }] };
+        criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: refs }] },
+      evidence: options.unprovenEvidence ? refs.map(ref => ({ ref })) : [{ kind: "work_product", ref: evidenceRef }],
+      verification: [options.unprovenEvidence ? { commandOrCheck: "python3 html.parser verification of website.html", status: "passed" }
+        : { commandOrCheck: "Site check", status: "passed", artifactRef: evidenceRef }] } as PrpStructuredRunResult;
     if (options.beforeFinish) await options.beforeFinish(runId, result);
     const identity = { companyId, agentId, issueId, runId };
     const port = new PaperclipControlPlanePort(db, { ...identity, sessionId, completionContractId: contractId,
@@ -84,6 +89,20 @@ describe.skipIf(!support.supported)("native completion with a configured review 
     expect((r.task.executionPolicy as Record<string, unknown>).monitor ?? null).toBeNull();
     expect(r.decisions.map(row => [row.toStatus, row.reasonCode])).toEqual([["in_review", "execution_stage_review_required"]]);
     expect(r.wakes.filter(wake => wake.reason === "execution_review_requested")).toEqual([]);
+  });
+
+  it("starts the configured review for a clean done claim whose evidence only the reviewer can accept", async () => {
+    const r = await finishVerifiedDone({ stage: "user", unprovenEvidence: true });
+    expect(r.task).toMatchObject({ status: "in_review", assigneeUserId: r.reviewerId });
+    expect(r.task.executionState).toMatchObject({ status: "pending", currentParticipant: { type: "user", userId: r.reviewerId } });
+    expect(r.decisions.map(row => [row.toStatus, row.reasonCode])).toEqual([["in_review", "execution_stage_review_required"]]);
+    expect(r.wakes.filter(wake => wake.agentId === r.agentId)).toEqual([]);
+  });
+
+  it("still requires proven evidence to close a task without a configured review", async () => {
+    const r = await finishVerifiedDone({ unprovenEvidence: true });
+    expect(r.task.status).toBe("in_progress");
+    expect(r.decisions.map(row => row.reasonCode)).toEqual(["completion_evidence_incomplete"]);
   });
 
   it("starts a configured agent review stage and wakes that reviewer", async () => {

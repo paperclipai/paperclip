@@ -1643,9 +1643,14 @@ export async function finalizeNativeRun(input: {
       }, authoritativeIssue) : null;
     if (supersededMonitorWait && supersededMonitorWait.resultId !== resultRow.id) throw new NativeStatusRaceError();
     const qualityReview = await readRequiredQualityReview(input.db, authoritativeIssue);
+    // The configured review stage a completion would start, decided as the
+    // issue route decides `status: "done"`. Review runs keep their own path.
+    const reviewStage = isConversation(authoritativeIssue) || reviewContext
+      ? { kind: "none" as const } : completionReviewStageEntry(authoritativeIssue, run.agentId);
     const statusInput: Parameters<typeof resolveNativeFinalizerStatus>[0] = {
       requiredQualityReviewSatisfied: qualityReview.satisfied,
       executionStageApprovedByRun: await executionStageApprovedByRun(input.db, run, authoritativeIssue),
+      executionReviewStageStarts: reviewStage.kind === "starts",
       caseHandoffAuthorized: Boolean(await assertNativeCaseHandoffResult(input.db, run.id, authoritativeIssue.id, result)),
       monitorWaitDispatched: monitorDelivery !== null,
       monitorWaitPreserved: preservedMonitorWait !== null,
@@ -1708,7 +1713,7 @@ export async function finalizeNativeRun(input: {
     if (!isConversation(authoritativeIssue)) {
       proposedDecision = supersedeStaleOwnerCompletion(proposedDecision, authoritativeIssue, run.agentId, run.id);
     }
-    if (proposedDecision.statusAction === "done") {
+    if (proposedDecision.statusAction === "done" || proposedDecision.reasonCode === COMPLETION_REVIEW_STAGE_REASON) {
       const continuation = record(run.contextSnapshot?.executionContinuation);
       const objective = typeof continuation.objective === "string" ? continuation.objective
         : [authoritativeIssue.title, authoritativeIssue.description].filter(Boolean).join("\n");
@@ -1724,21 +1729,14 @@ export async function finalizeNativeRun(input: {
             : effect.kind === "record_finalization_error" ? { ...effect, nextAction: error.message } : effect) };
       }
     }
-    // A configured review stage gates Done exactly as the issue route does:
-    // verified work enters that stage, and a policy the route would refuse
-    // keeps the task open instead of closing it.
-    if (proposedDecision.statusAction === "done" && !isConversation(authoritativeIssue)) {
-      const stage = completionReviewStageEntry(authoritativeIssue, run.agentId);
-      if (stage.kind === "starts") {
-        proposedDecision = { ...proposedDecision, statusAction: "in_review", toStatus: "in_review",
-          reasonCode: COMPLETION_REVIEW_STAGE_REASON, unblockDescriptor: null };
-      } else if (stage.kind === "rejected") {
-        proposedDecision = { ...proposedDecision, statusAction: "in_progress", toStatus: "in_progress",
-          reasonCode: COMPLETION_REVIEW_STAGE_REJECTED_REASON, unblockDescriptor: null,
-          effects: [{ kind: "release_checkout" }, { kind: "record_recovery", cause: COMPLETION_REVIEW_STAGE_REJECTED_REASON,
-            nextAction: `The task's configured review policy cannot start its review: ${stage.message} Correct the review stages or participants; do not mark the task done.`,
-            agentId: run.agentId }] };
-      }
+    // A policy the issue route would refuse for `status: "done"` keeps the
+    // task open instead of closing it.
+    if (proposedDecision.statusAction === "done" && reviewStage.kind === "rejected") {
+      proposedDecision = { ...proposedDecision, statusAction: "in_progress", toStatus: "in_progress",
+        reasonCode: COMPLETION_REVIEW_STAGE_REJECTED_REASON, unblockDescriptor: null,
+        effects: [{ kind: "release_checkout" }, { kind: "record_recovery", cause: COMPLETION_REVIEW_STAGE_REJECTED_REASON,
+          nextAction: `The task's configured review policy cannot start its review: ${reviewStage.message} Correct the review stages or participants; do not mark the task done.`,
+          agentId: run.agentId }] };
     }
     const decision = conversationNativeDecision({
       conversation: isConversation(authoritativeIssue), terminalState,
