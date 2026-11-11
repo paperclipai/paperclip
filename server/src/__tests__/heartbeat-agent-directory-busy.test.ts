@@ -12,6 +12,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueRecoveryActions,
+  issueRelations,
   issues,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -127,7 +128,7 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
     expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", errorCode: AGENT_DIRECTORY_BUSY_ERROR_CODE });
     const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId));
     expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: AGENT_DIRECTORY_BUSY_RETRY_REASON,
-      contextSnapshot: { previousRunId: runId, wakeCommentId: commentId,
+      contextSnapshot: { wakeReason: "issue_commented", previousRunId: runId, wakeCommentId: commentId,
         explicitUserContinuation: { previousRunId: runId, commentId } } });
     const afterDue = new Date(new Date(retry!.scheduledRetryAt!).getTime() + 1_000);
     expect((await heartbeat.promoteDueScheduledRetries(afterDue)).runIds).toContain(retry!.id);
@@ -219,7 +220,7 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
     expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "cancelled", errorCode: AGENT_DIRECTORY_BUSY_ERROR_CODE });
     const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
     expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: AGENT_DIRECTORY_BUSY_RETRY_REASON,
-      contextSnapshot: { preparationWaitDeferredWhileAssignee: false } });
+      contextSnapshot: { wakeReason: "issue_comment_mentioned", preparationWait: { kind: AGENT_DIRECTORY_BUSY_RETRY_REASON, attempt: 1 } } });
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.assigneeAgentId).toBe(assigneeId);
 
     const afterDue = new Date(new Date(retry!.scheduledRetryAt!).getTime() + 1_000);
@@ -249,7 +250,7 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
       expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "cancelled", errorCode: AGENT_DIRECTORY_BUSY_ERROR_CODE });
       const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
       if (retry) {
-        expect(retry.contextSnapshot).not.toMatchObject({ preparationWaitDeferredWhileAssignee: false });
+        expect(retry.contextSnapshot).toMatchObject({ wakeReason: "issue_assigned", preparationWait: { kind: AGENT_DIRECTORY_BUSY_RETRY_REASON } });
         const afterDue = new Date(new Date(retry.scheduledRetryAt!).getTime() + 1_000);
         await heartbeat.promoteDueScheduledRetries(afterDue);
         await heartbeat.resumeQueuedRuns();
@@ -261,6 +262,39 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
     } finally {
       busyPrepares.beforeBusy = null;
     }
+  });
+
+  it("answers a plain comment on a dependency-blocked task after a directory wait, as it would without one", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const blockerId = randomUUID(), issueId = randomUUID(), commentId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Prerequisite", status: "todo", priority: "medium", responsibleUserId: "busy-directory-user", issueNumber: 7 },
+      { id: issueId, companyId, title: "Waits on prerequisite", status: "todo", priority: "medium", responsibleUserId: "busy-directory-user",
+        assigneeAgentId: agentId, issueNumber: 8 },
+    ]);
+    await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks" });
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorType: "user", authorUserId: "busy-directory-user",
+      body: "What is this waiting on?" });
+    busyPrepares.remaining = 1;
+    busyPrepares.calls = 0;
+
+    const run = await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId, commentId }, contextSnapshot: { issueId, wakeReason: "issue_commented" } });
+    expect(run).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "cancelled", errorCode: AGENT_DIRECTORY_BUSY_ERROR_CODE });
+    const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
+    expect(retry).toMatchObject({ status: "scheduled_retry", contextSnapshot: { wakeReason: "issue_commented",
+      preparationWait: { kind: AGENT_DIRECTORY_BUSY_RETRY_REASON, attempt: 1 } } });
+    const afterDue = new Date(new Date(retry!.scheduledRetryAt!).getTime() + 1_000);
+    expect((await heartbeat.promoteDueScheduledRetries(afterDue)).runIds).toContain(retry!.id);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(await heartbeat.getRun(retry!.id)).toMatchObject({ status: "succeeded",
+      contextSnapshot: { dependencyBlockedInteraction: true, unresolvedBlockerIssueIds: [blockerId] } });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("todo");
   });
 
   it("defers the first run of a task instead of failing it, then runs it", async () => {
@@ -280,7 +314,8 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
     expect(busyPrepares.calls).toBe(1);
     expect(executedRunIds).not.toContain(run!.id);
     const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
-    expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: AGENT_DIRECTORY_BUSY_RETRY_REASON, scheduledRetryAttempt: 1 });
+    expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: AGENT_DIRECTORY_BUSY_RETRY_REASON, scheduledRetryAttempt: 1,
+      contextSnapshot: { wakeReason: "issue_assigned", preparationWait: { kind: AGENT_DIRECTORY_BUSY_RETRY_REASON, attempt: 1 } } });
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "in_progress", executionRunId: retry!.id });
 
     const afterDue = new Date(new Date(retry!.scheduledRetryAt!).getTime() + 1_000);

@@ -505,8 +505,13 @@ export function createPostgresRunDispatchAdapter(
       && input.contextSnapshot.dependencyBlockedInteraction === true
       && await isVerifiedDependencyInteractionResponse(dbOrTx, { companyId: input.companyId,
         issueId, agentId: input.agentId, context: input.contextSnapshot });
+    const preparationWait = input.contextSnapshot.preparationWait;
+    const preparationWaitAdmitted = Boolean(readiness && !readiness.isDependencyReady
+      && input.contextSnapshot.dependencyBlockedInteraction === true
+      && preparationWait && typeof preparationWait === "object" && !Array.isArray(preparationWait)
+      && typeof (preparationWait as Record<string, unknown>).kind === "string");
     facts.dependenciesBlocked =
-      readiness && !readiness.isDependencyReady && !stallAdmitted && !responseAdmitted
+      readiness && !readiness.isDependencyReady && !stallAdmitted && !responseAdmitted && !preparationWaitAdmitted
         ? {
             unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
             unresolvedBlockerCount: readiness.unresolvedBlockerCount,

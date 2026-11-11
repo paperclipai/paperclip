@@ -23,7 +23,7 @@ export const RUNNER_REVISION_WAIT_RETRY_REASON = "runner_revision_wait";
 export const STORAGE_UNAVAILABLE_WAIT_RETRY_REASON = "storage_unavailable_wait";
 export const AGENT_DIRECTORY_BUSY_RETRY_REASON = "agent_directory_busy";
 export const PREPARATION_WAIT_RETRY_REASONS: ReadonlySet<string> = new Set([
-  RUNNER_REVISION_WAIT_RETRY_REASON, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON, AGENT_DIRECTORY_BUSY_RETRY_REASON,
+  RUNNER_REVISION_WAIT_RETRY_REASON, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON,
 ]);
 export function isPreparationWaitRetryReason(reason: string | null | undefined): boolean {
   return typeof reason === "string" && PREPARATION_WAIT_RETRY_REASONS.has(reason);
@@ -114,7 +114,7 @@ export function isNonAssigneeWorkspaceBusyRetry(
       contextSnapshot.workspaceBusyDeferredWhileAssignee === false) ||
     ((retryReason === AI_CONNECTION_BUSY_RETRY_REASON || retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON) &&
       contextSnapshot.aiConnectionBusyDeferredWhileAssignee === false) ||
-    (isPreparationWaitRetryReason(retryReason) && contextSnapshot.preparationWaitDeferredWhileAssignee === false)
+    (retryReason === AGENT_DIRECTORY_BUSY_RETRY_REASON && contextSnapshot.preparationWaitDeferredWhileAssignee === false)
   );
 }
 

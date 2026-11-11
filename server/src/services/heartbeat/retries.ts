@@ -471,6 +471,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       wakeReason?: string;
       maxAttempts?: number;
       delayMs?: number;
+      preserveWakeContext?: boolean;
     },
   ) {
     const preparation = parseObject(run.resultJson?.executionRecovery);
@@ -729,8 +730,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         ...contextSnapshot,
         executionRetryAccounting: accountingForScheduledRetry(run, retryReason, schedule.attempt),
         retryOfRunId: run.id,
-        wakeReason,
-        retryReason,
+        ...(opts?.preserveWakeContext
+          ? { preparationWait: { kind: retryReason, attempt: schedule.attempt, nextAttemptAt: schedule.dueAt.toISOString() } }
+          : { wakeReason, retryReason }),
         ...(interactionRunnerWait ? { mutation: "interaction" } : {}),
         ...(retryReason === WORKSPACE_BUSY_RETRY_REASON
           ? {
@@ -1088,7 +1090,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
 
         const scheduledRunId = randomUUID();
         if (contextSnapshot.explicitUserContinuation) {
-          const continuation = issueId && (retryReason === "transient_failure" || isPreparationWaitRetryReason(retryReason))
+          const continuation = issueId && (retryReason === "transient_failure" || isPreparationWaitRetryReason(retryReason)
+            || retryReason === AGENT_DIRECTORY_BUSY_RETRY_REASON)
             ? await admitExplicitContinuationRetry({
             db: tx as unknown as Db, companyId: run.companyId, issueId, agentId: run.agentId,
             parentRunId: run.id, successorRunId: scheduledRunId, now,
@@ -1112,7 +1115,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             agentId: run.agentId,
             source: "automation",
             triggerDetail: "system",
-            reason: wakeReason,
+            reason: opts?.preserveWakeContext ? readNonEmptyString(contextSnapshot.wakeReason) ?? wakeReason : wakeReason,
             payload: withRecoveryContext(
               {
                 ...(issueId ? { issueId } : {}),
@@ -1604,7 +1607,6 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const runContext = parseObject(run.contextSnapshot);
     const admittedNonAssignee = parseObject(run.runnerProfileJson).aiConnectionNonAssigneeCommentWake === true
       || isNonAssigneeWorkspaceBusyRetry(run.scheduledRetryReason, runContext);
-    const wasIssueAssignee = !admittedNonAssignee;
     const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {
       error: deferral.message, errorCode: AGENT_DIRECTORY_BUSY_ERROR_CODE, finishedAt: now,
       resultJson: {
@@ -1617,7 +1619,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           recordedAt: now.toISOString(),
         },
       },
-      contextSnapshot: { ...runContext, preparationWaitDeferredWhileAssignee: wasIssueAssignee },
+      contextSnapshot: { ...runContext, preparationWaitDeferredWhileAssignee: !admittedNonAssignee },
     });
     if (!cancelled.updated) return true;
     await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: now, error: deferral.message }).catch(() => undefined);
@@ -1630,6 +1632,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           now, retryReason: AGENT_DIRECTORY_BUSY_RETRY_REASON, wakeReason: AGENT_DIRECTORY_BUSY_RETRY_WAKE_REASON,
           maxAttempts: AGENT_DIRECTORY_BUSY_MAX_DEFERRALS,
           delayMs: agentDirectoryBusyRetryDelayMs(),
+          preserveWakeContext: true,
         });
         scheduled = retry.outcome === "scheduled";
         await appendRunEvent(cancelledRun, {
