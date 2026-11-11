@@ -281,11 +281,29 @@ export async function testEnvironment(
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
-  const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
+  const configuredCwd = asString(config.cwd, "");
+  const runId = `codex-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  // A local probe without an agent cwd must not depend on the server process's
+  // launch directory: a launchd-managed service starts in /, which Codex
+  // refuses without --skip-git-repo-check. Probe in a throwaway workspace
+  // instead; task execution resolves the project workspace separately.
+  const probeWorkspaceLocalDir =
+    configuredCwd.trim().length === 0 && !targetIsRemote
+      ? await fs.mkdtemp(path.join(os.tmpdir(), `paperclip-codex-envtest-${runId}-`))
+      : null;
+  const cwd = resolveAdapterExecutionTargetCwd(target, configuredCwd, probeWorkspaceLocalDir ?? process.cwd());
   const targetLabel = targetIsRemote
     ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
     : null;
-  const runId = `codex-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  if (probeWorkspaceLocalDir) {
+    checks.push({
+      code: "codex_hello_probe_workspace",
+      level: "info",
+      message: "No agent working directory configured; probed in a temporary workspace instead of the server process directory.",
+      detail: cwd,
+    });
+  }
 
   if (targetLabel) {
     checks.push({
@@ -428,7 +446,7 @@ export async function testEnvironment(
     } else {
       const execArgs = buildCodexExecArgs(
         { ...config, fastMode: false },
-        { skipGitRepoCheck: targetIsSandbox },
+        { skipGitRepoCheck: targetIsSandbox || probeWorkspaceLocalDir !== null },
       );
       // A connection test needs one small response, not plugin catalog sync,
       // repository instructions, or a durable session. Keep provider/model
@@ -454,6 +472,13 @@ export async function testEnvironment(
           level: "info",
           message: "Added --skip-git-repo-check for sandbox hello probes.",
           hint: "Codex requires an explicit trust bypass in headless remote sandbox workspaces.",
+        });
+      } else if (probeWorkspaceLocalDir) {
+        checks.push({
+          code: "codex_git_repo_check_skipped",
+          level: "info",
+          message: "Added --skip-git-repo-check for the temporary probe workspace.",
+          hint: "The throwaway probe directory is not a Git repository; task runs still use the resolved project workspace.",
         });
       }
 
@@ -575,6 +600,10 @@ export async function testEnvironment(
         await preparedProbe.cleanup();
       }
     }
+  }
+
+  if (probeWorkspaceLocalDir) {
+    await fs.rm(probeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
   }
 
   return {
