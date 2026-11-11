@@ -4814,7 +4814,13 @@ configuration from the same company, task, and bot binding.
 An active remote runner's health probe is an observation, not an exit receipt.
 Timed-out or rejected read-only probes retry within the existing 30-second
 budget. A successful probe keeps the same runner and turn; no provider work is
-replayed. Monitoring checks the saved process generation when available.
+replayed. A probe that times out or fails in transport is unknown, not an exit.
+For example, a stalled environment plugin RPC times out after 40 seconds. While
+the Runner holds its own authenticated connection to the controller, the monitor
+keeps the same runner and turn and probes again. The bound is the remote runner
+reconnect grace (7 minutes). When the Runner has no connection and the 30-second
+budget is spent, or when the bound is spent, the monitor reports
+`runner_process_termination_unconfirmed` and the run rests with Retry. Monitoring checks the saved process generation when available.
 Only a matching ownership marker and confirmed process exit permit automatic
 replacement. Missing or conflicting identity evidence, failed reads, and an
 exhausted probe budget retain the existing ownership and recovery safeguards.

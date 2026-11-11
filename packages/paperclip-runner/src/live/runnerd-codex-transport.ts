@@ -6258,6 +6258,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       environment: prepared.environment,
       diagnosticsDirectory: resolve(this.#root, "diagnostics"),
       processLauncher: this.options.runnerProcessLauncher,
+      isRunnerConnected: () => core.activeRunnerConnectionCount() > 0,
     });
     this.#handle = handle;
     this.#watchRunner(handle);
@@ -7132,6 +7133,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ),
           diagnosticsDirectory: resolve(this.#root, "diagnostics"),
           processLauncher: this.options.runnerProcessLauncher,
+          isRunnerConnected: () => core.activeRunnerConnectionCount() > 0,
         });
     if (handle) {
       this.#handle = handle;
