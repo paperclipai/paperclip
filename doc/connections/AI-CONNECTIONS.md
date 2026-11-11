@@ -4,6 +4,10 @@ AI accounts use the existing Apps/Connections substrate. Manage them at
 `/:company/apps`; select their use beside an agent's harness/model settings.
 Onboarding, new-agent setup, account creation/reconnect, and inline task requests
 reuse `AdapterLoginPanel`, its existing login controllers, and `AdapterLoginChrome`.
+For Codex and Claude subscriptions on an agent computer, Connections selects an
+eligible computer in the chosen company and sign-in environment when the user
+starts sign-in. The session keeps that computer until it ends. Connection
+ownership and permissions still come from the account setup.
 Onboarding and new-agent setup retain upstream's `SavedProviderKeySelect` and
 `useSavedProviderKeys`, including saved-key references and account-specific Codex
 homes. Managed default/shared accounts are additional choices in that same
