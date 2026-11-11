@@ -1475,7 +1475,7 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
 
 const ISSUE_WAKE_DIAGNOSTIC_GATE_NEXT_STEPS: Record<string, string> = {
   "agent.not_invokable": "An agent admin must resume or repair the target agent.",
-  "budget.blocked": "A budget owner must raise the budget or lift the budget stop.",
+  "budget.blocked": "A budget owner must check Costs, then resolve pending or unpriced usage (or allow unpriced usage in the budget policy), raise the budget, or lift the budget stop.",
   "company.inactive": "A company admin must reactivate the company.",
   "heartbeat.wakeOnDemand.disabled": "An agent admin must turn on wake on demand for the target agent.",
 };
