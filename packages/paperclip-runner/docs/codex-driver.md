@@ -82,6 +82,17 @@ valid, but when `PAPERCLIP_WORKSPACE_CWD` is present its canonical path must be
 equal to or below that assigned workspace so sibling and symlink escapes fail
 before provider startup.
 
+When the execution target is itself the sandbox (a remote sandbox such as
+Daytona sets `PAPERCLIP_RUNNER_EXTERNAL_SANDBOX=1`), standard and ask runs use
+the default execution mode. The Runner starts their Codex threads and turns
+with the external sandbox policy and sends no collaboration mode. Ask mode
+restricts Paperclip mutation tools, not the Codex sandbox. Planning runs keep
+the `paperclip-runner-workspace-read-only` profile everywhere, because Codex's
+plan collaboration mode is a prompt and does not block writes or commands.
+Inside a container without network-namespace rights, that profile's helper can
+fail thread creation (`bwrap: loopback: Failed RTM_NEWADDR`); the run then ends
+as a provider startup failure with Retry (see `durable-recovery.md`).
+
 The returned sandbox facts remain authoritative. Codex 0.132.0 may inject a
 provider-managed writable root such as `~/.codex/memories` after a first run,
 even with `features.memories=false` and an explicit Codex-home deny. That makes
