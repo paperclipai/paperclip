@@ -1715,6 +1715,16 @@ starts by itself once the gate clears. A Retry accepted during the pre-deploy
 drain stays saved and is dispatched by the deferred-receipt worker after the
 restart.
 
+When a remote native run fails and its close cannot prove that the Runner
+suspended (for example, the Runner is unreachable after `provider_transport_failed`
+or a `turn.start` timeout), the controller no longer force-stops that Runner. It
+leaves the Runner and its saved state running, keeps the session quarantined, and
+the same-run reattachment adopts the live Runner with its real turn state. Before
+this, the close stopped the Runner mid-turn, so the reattachment always found it
+gone with an unsettled journal (`runner_remote_process_identity_unavailable`) and
+the task waited for Retry. A Stop, a cancelled turn and a `stop_cleanup` recovery
+still stop the Runner, and a Runner that settled or exited is handled as before.
+
 A remote native run can lose its original runner or sandbox before reattachment.
 This happens after a server restart, and for a same-run retry after a turn ends
 without a semantic result. The reattachment then fails with
@@ -1738,6 +1748,19 @@ in-flight provider turn do not continue automatically. For these failed runs, a
 recovered workspace hold offers Retry (`canRetry`) and says "Retry or send a
 message to continue." An intentional Stop keeps "send a message" as its only
 continuation.
+
+A held task can also have a pending question or connection request, for example
+the question a parked turn asked before its Runner was lost. Such a decision does
+not hold a person's Retry: the new run sees the open decision, and its later
+answer still wakes the agent. Only a plain question (`ask_user_questions`) or
+connection request (`connection_intent`) is released this way. A pending approval
+and any decision with approval semantics (a plan review, a governed tool action,
+a secret proposal, a connection authorization, or another confirmation) still
+hold every continuation, Retry included. A new message supersedes a plain
+question, as before, but waits for a decision with approval semantics. The person's own answer to the
+decision is that explicit input: it continues the task through the hold in a
+fresh session, like a new message, and never replays the failed run. An answer
+that a different user resolved does not continue the task.
 
 `native_remote_recovery_lease_mismatch` carries a closed detail:
 `native_remote_recovery_lease_mismatch: stage=<stage> field=<field>`. The stage
@@ -3547,6 +3570,8 @@ A disposition request that also ends without a result consumes the marker and
 fails closed as before.
 
 Provider execution and control-plane finalization have different clocks. A healthy provider can think or execute a long tool without output. Once execution settles, recovery and finalization control steps have a 60-second deadline, checked on startup and every 15 seconds. With a healthy database and scheduler, an abandoned transition must be repaired or surfaced within 90 seconds. Terminal persistence must not wait on provider cleanup or publication; a late finalizer cannot change a reassigned or closed task or release another run's locks. In particular, a done report from a run whose task now belongs to another agent, a user or nobody is kept as an accepted result but records `completion_owner_superseded` and preserves the task status for the current owner. Historical ambiguous runs are never automatically replayed after an upgrade.
+
+A control deadline bounds the settlement of one attempt, never a later attempt of the same run. While a native run's finalization owner holds a live lease (for example, a controller that reclaimed the run after a server restart) or has a same-run resume scheduled, that owner is responsible for the run. The reconciler clears a run deadline left by an earlier attempt instead of failing the resumed work. When the live owner's own settlement deadline is due, the reconciler waits until that lease lapses before it surfaces the deadline. A run whose deadline genuinely expires fails with `execution_finalization_deadline_exceeded` and shows plain wording with Retry: its saved work is kept, and actions with unconfirmed outcomes are not repeated. Runs saved by earlier releases with the previous operator-facing wording show the same plain wording when the task is read; no migration is needed.
 
 When that deadline fails a native run with a prepared workspace, the same
 transaction records the exact source's file-preservation obligation. Existing

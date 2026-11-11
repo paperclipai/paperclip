@@ -35,6 +35,7 @@ describe("board-only denial", () => {
     ["post", `/api/companies/${COMPANY_ID}/secrets`, "[Open company secrets](/<prefix>/company/settings/secrets)"],
     ["post", `/api/secrets/${AGENT_ID}/rotate`, "[Open company secrets](/<prefix>/company/settings/secrets)"],
     ["post", `/api/companies/${COMPANY_ID}/budget-incidents/i-1/resolve?x=1`, "[Open budgets](/<prefix>/activity/budgets)"],
+    ["post", `/api/companies/${COMPANY_ID}/costs/retry-accounting`, "[Open costs](/<prefix>/activity/costs)"],
     ["put", `/api/companies/${COMPANY_ID}/prompt-injection-prevention`, "[Open connection settings](/<prefix>/company/settings/connections)"],
     ["patch", `/api/agents/${AGENT_ID}/permissions`, `[Open the agent's permissions](/<prefix>/agents/${AGENT_ID}/permissions)`],
     ["post", `/api/agents/${AGENT_ID}/keys`, `[Open the agent's API keys](/<prefix>/agents/${AGENT_ID}/api-keys)`],
@@ -53,6 +54,8 @@ describe("board-only denial", () => {
     ["post", `/api/environments/${AGENT_ID}/probe`, "[Open environment settings](/<prefix>/company/settings/instance/environments)"],
     ["get", `/api/environment-leases/${AGENT_ID}`, "[Open environment settings](/<prefix>/company/settings/instance/environments)"],
     ["get", `/api/environment-custom-image-setup-sessions/${AGENT_ID}`, "[Open environment settings](/<prefix>/company/settings/instance/environments)"],
+    ["get", "/api/instance/settings/experimental", "[Open Experimental settings](/<prefix>/company/settings/instance/experimental)"],
+    ["patch", "/api/instance/settings/experimental", "[Open Experimental settings](/<prefix>/company/settings/instance/experimental)"],
   ] as const)("tells an agent %s %s is final and names the board page", async (method, path, link) => {
     const res = await request(createApp(agentActor))[method](path).expect(403);
     expect(res.body.error).toBe("Board access required");
@@ -143,6 +146,19 @@ describe("board-only denial", () => {
       const res = await request(createApp(agentActor)).get(`/api/companies/${COMPANY_ID}/environments`).expect(403);
       expect(res.body.remediation).toContain("this denial is final");
       expect(res.body.remediation).not.toContain("/instance/environments");
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_HIDDEN_SETTINGS;
+      else process.env.PAPERCLIP_HIDDEN_SETTINGS = previous;
+    }
+  });
+
+  it("does not link Experimental settings while the operator hides that page", async () => {
+    const previous = process.env.PAPERCLIP_HIDDEN_SETTINGS;
+    process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.experimental";
+    try {
+      const res = await request(createApp(agentActor)).patch("/api/instance/settings/experimental").expect(403);
+      expect(res.body.remediation).toContain("this denial is final");
+      expect(res.body.remediation).not.toContain("/instance/experimental");
     } finally {
       if (previous === undefined) delete process.env.PAPERCLIP_HIDDEN_SETTINGS;
       else process.env.PAPERCLIP_HIDDEN_SETTINGS = previous;

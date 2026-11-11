@@ -73,6 +73,7 @@ import { getSecretProvider } from "../../secrets/provider-registry.js";
 import { runnerApiSensitiveResponse } from "./runner-api-sensitive-response.js";
 import { workspaceFileResourceService } from "../workspace-file-resources.js";
 import { badRequest, forbidden, notFound, HttpError } from "../../errors.js";
+import { casesDisabledError } from "../cases-disabled.js";
 import { runnerApiCatalog, searchRunnerApi } from "./runner-api-catalog.js";
 import { assertRunnerApiDispatchable, executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiCall, type RunnerApiFile, type RunnerApiIo } from "./runner-api-client.js";
 import { acquireRunnerApiResponseSlot, runnerApiCompanyCaptureMaxBytes, RUNNER_API_RESPONSE_MAX_BYTES, RUNNER_API_RESPONSE_RUN_MAX_BYTES, RunnerApiResponseLimitError } from "./runner-api-response-limits.js";
@@ -629,7 +630,7 @@ export class PaperclipRunnerToolAuthority {
     if ((call.tool === "handoff_case" || call.tool === "create_case") && !this.binding.nativeReview) {
       if (this.binding.workMode && this.binding.workMode !== "standard") throw forbidden("Case tools require standard work mode");
       const create = call.tool === "create_case" ? createNativeCaseSchema.parse(call.arguments) : null;
-      if (this.binding.casesEnabled !== true) throw forbidden("Cases are disabled");
+      if (this.binding.casesEnabled !== true) throw casesDisabledError({ inlineRemediation: true });
       if (this.binding.museRuntime) await this.binding.assertBridgeAuthority?.();
       // Both operations use the principal-scoped handoff ledger. A committed
       // receipt stays replayable after ownership moved; fresh work reauthorizes.

@@ -1448,7 +1448,7 @@
       "chat-catalog-domains/internal-definition.ts",
       "chat-scenarios/cases.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.integrator.case-facts.v6",
+    "oracleVersion": "paperclip.chat-catalog.integrator.case-facts.v7",
     "expectedRunCount": 6,
     "minimumRunCount": 4,
     "expectedHumanMessageCount": 2,
@@ -1977,9 +1977,10 @@
       "../../cli/src/index.ts",
       "../../cli/src/commands/worktree.ts",
       "../../cli/src/commands/run.ts",
-      "../e2e/fetch-allowed-port.ts"
+      "../e2e/fetch-allowed-port.ts",
+      "redaction.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.privileged.v1",
+    "oracleVersion": "paperclip.chat-catalog.privileged.owned-dev-instance.v2",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
@@ -3505,10 +3506,12 @@
       "chat-catalog-domains/turn-response-card.ts",
       "chat-catalog-domains/privileged-configuration.ts",
       "chat-scenarios/instance-operations.yaml",
+      "chat-catalog-domains/internal-comment-reference.ts",
       "../../ui/src/pages/InstanceExperimentalSettings.tsx",
-      "../../ui/src/pages/AgentChat.tsx"
+      "../../ui/src/components/CasesExperimentalGate.tsx",
+      "../../ui/src/pages/Cases.tsx"
     ],
-    "oracleVersion": "paperclip.chat-catalog.privileged.v1",
+    "oracleVersion": "paperclip.chat-catalog.privileged.instance-settings.v2",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
@@ -4134,7 +4137,7 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/questions-and-approvals.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.v1",
+    "oracleVersion": "paperclip.chat-catalog.accept-one-proposal.v2",
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
     "turnTimeoutMs": 120000,
@@ -5674,9 +5677,10 @@
       "run-observations.ts",
       "chat-scenarios/task-coordination.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.block-on-design.v7",
+    "oracleVersion": "paperclip.chat-catalog.runtime.block-on-design.v8",
     "coverageGaps": [],
-    "expectedRunCount": 3,
+    "expectedRunCount": 4,
+    "minimumRunCount": 3,
     "expectedHumanMessageCount": 2,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 720000,
@@ -5983,7 +5987,7 @@
       "chat-catalog-domains/internal-privacy.ts",
       "chat-catalog-domains/identity-auth.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.share-private-task.v2",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
