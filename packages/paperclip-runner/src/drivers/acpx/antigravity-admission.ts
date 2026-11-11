@@ -161,15 +161,20 @@ function selectionValues(value: Record<string, unknown>): Map<string, string> {
 }
 
 /** Native model options group variants into a family plus thinking level.
- * ACPX treats currentValue as a concrete model ID. Project only after the
- * native receipt binds the actual initialized variant; keep the native values
- * above so subsequent family/thinking changes cannot inherit that authority.
+ * ACPX treats currentValue as a concrete model ID and accepts only listed
+ * values. Project only after the native receipt binds the actual initialized
+ * variant; keep the native values above so subsequent family/thinking changes
+ * cannot inherit that authority.
  */
 function projectConcreteModel(value: Record<string, unknown>, model: string): void {
   if (!Array.isArray(value.configOptions)) return;
   for (const entry of value.configOptions) {
     const option = record(entry);
-    if (option.id === "model") option.currentValue = model;
+    if (option.id !== "model") continue;
+    option.currentValue = model;
+    if (Array.isArray(option.options) && !option.options.some(choice => record(choice).value === model)) {
+      option.options = [...option.options, { value: model, name: model }];
+    }
   }
 }
 

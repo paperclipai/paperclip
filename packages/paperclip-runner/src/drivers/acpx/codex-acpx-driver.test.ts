@@ -98,9 +98,9 @@ describe("Codex ACPX harness driver", () => {
   it.each(["cursor", "copilot"] as const)("emits partial Cursor metadata only for admitted Cursor, preserving %s settlement", async agent => {
     const fixture = driverFixture({ agent, model: "explicit-test-model", providerPolicy: { readOnly: true } }, { runtimeEvents: [] });
     const session = await fixture.driver.openSession({ runId: "run-native-usage", normalizedSessionId: "session-1", workingDirectory: "/workspace" });
-    const before = { promptMessageIds: [], requestTokenUsage: {} };
-    const after = { lastRequestId: "provider-turn-1", promptMessageIds: ["prompt-1"], requestTokenUsage: {}, cursorPromptUsage: {
-      request_id: "provider-turn-1", prompt_message_id: "prompt-1", receipt: {
+    const before = { requestTokenUsage: {} };
+    const after = { lastRequestId: "provider-turn-1", requestTokenUsage: {}, cursorPromptReceipt: {
+      request_id: "provider-turn-1", receipt: {
         schema: "paperclip.cursor.native-usage.v1", source: "native_turn_ended", promptId: "12345678-1234-1234-1234-123456789abc", completeness: "partial",
         reasons: ["native_counter_semantics_unverified"], observations: [{ invocationId: "invocation-1", role: "parent", nativeRun: 1, sequence: 1, counters: { inputTokens: 7 } }],
         limits: { maxObservations: 64, maxInvocations: 64, maxBytes: 16384 }, truncated: false,
@@ -258,7 +258,7 @@ describe("Codex ACPX harness driver", () => {
     expect(session.turnControlCapabilities?.()).toEqual({ steering: true, queuedFollowUp: true });
     const { turnId } = await session.startTurn({ message: { role: "user", text: "Work" } });
     const turnInput = fixture.host.startTurn.mock.calls[0]![0];
-    const context = { requestId: 0, signal: new AbortController().signal };
+    const context = { requestId: 0, signal: new AbortController().signal, responseDelivery: Promise.resolve() };
     await expect(turnInput.onExtensionRequest!("provider/request", { sessionId: "agent-1" }, context)).rejects.toThrow(/session mismatch/);
     await session.steer!({ turnId, correlationId: "control-1", message: { role: "user", text: "Change focus" } });
     await session.steer!({ turnId, correlationId: "control-2", mode: "follow_up", message: { role: "user", text: "Then validate" } });
