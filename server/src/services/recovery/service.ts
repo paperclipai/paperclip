@@ -5861,7 +5861,9 @@ export function recoveryService(
 
     const queryCandidates = (afterIssueId: string | null) => {
       const filters = [
-        eq(issues.status, "blocked"),
+        opts?.blockerIssueId
+          ? notInArray(issues.status, ["backlog", "done", "cancelled"])
+          : eq(issues.status, "blocked"),
         isNull(issues.conversationAgentId),
         visibleIssueCondition(),
         sql`${issues.assigneeAgentId} is not null`,
@@ -5882,6 +5884,7 @@ export function recoveryService(
             id: issues.id,
             companyId: issues.companyId,
             identifier: issues.identifier,
+            status: issues.status,
             assigneeAgentId: issues.assigneeAgentId,
             blockedTransitionAt: issues.blockedTransitionAt,
             totalCount: sql<number>`count(*) over()::int`,
@@ -5898,6 +5901,7 @@ export function recoveryService(
           id: issues.id,
           companyId: issues.companyId,
           identifier: issues.identifier,
+          status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           blockedTransitionAt: issues.blockedTransitionAt,
           totalCount: sql<number>`count(*) over()::int`,
@@ -5919,15 +5923,28 @@ export function recoveryService(
       resolvedDependencyWakeBackstopCandidateCursor = null;
       candidateRows = await queryCandidates(null);
     }
+    if (opts?.blockerIssueId) {
+      let pageRows = candidateRows;
+      let afterIssueId = pageRows[pageRows.length - 1]?.id ?? null;
+      while (
+        pageRows.length === RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT &&
+        afterIssueId
+      ) {
+        const nextPage = await queryCandidates(afterIssueId);
+        if (nextPage.length === 0) break;
+        candidateRows = [...candidateRows, ...nextPage];
+        pageRows = nextPage;
+        afterIssueId = nextPage[nextPage.length - 1]!.id;
+      }
+    }
     const totalCandidateCount = candidateRows[0]?.totalCount ?? 0;
     const candidates = candidateRows.map(
       ({ totalCount: _totalCount, ...candidate }) => candidate,
     );
     result.checked = candidates.length;
-    result.candidateLimitSkipped = Math.max(
-      0,
-      totalCandidateCount - candidates.length,
-    );
+    result.candidateLimitSkipped = opts?.blockerIssueId
+      ? 0
+      : Math.max(0, totalCandidateCount - candidates.length);
     const lastCandidate = candidates[candidates.length - 1] ?? null;
     if (useCursor) {
       resolvedDependencyWakeBackstopCandidateCursor =
@@ -6009,7 +6026,7 @@ export function recoveryService(
         // blockers were resolved: it is waiting on something outside the blocker
         // graph. Re-waking it here made it re-block on every sweep (each re-block
         // stamps a new cycle, so the ready-state key never repeats).
-        if (await wasBlockedByAssigneeAgent(companyId, candidate.id, agentId, candidate.blockedTransitionAt, readiness.blockerIssueIds)) {
+        if (candidate.status === "blocked" && await wasBlockedByAssigneeAgent(companyId, candidate.id, agentId, candidate.blockedTransitionAt, readiness.blockerIssueIds)) {
           result.selfBlockedSkipped += 1;
           continue;
         }

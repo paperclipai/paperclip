@@ -1354,4 +1354,206 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     });
   });
 
+  it("wakes non-blocked dependents on the blocker-scoped re-check after finalize", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId, executionWorkspaceId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "not_finalized" });
+    const issuePrefix = `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const inReviewAgentId = randomUUID();
+    const inProgressAgentId = randomUUID();
+    const todoAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: inReviewAgentId,
+        companyId,
+        name: "Review owner",
+        role: "engineer",
+        status: "idle",
+        adapterType: "test_adapter",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+      {
+        id: inProgressAgentId,
+        companyId,
+        name: "Progress owner",
+        role: "engineer",
+        status: "idle",
+        adapterType: "test_adapter",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+      {
+        id: todoAgentId,
+        companyId,
+        name: "Todo owner",
+        role: "engineer",
+        status: "idle",
+        adapterType: "test_adapter",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+    ]);
+    const inReviewId = randomUUID();
+    const inProgressId = randomUUID();
+    const todoId = randomUUID();
+    const backlogId = randomUUID();
+    const doneId = randomUUID();
+    const cancelledId = randomUUID();
+    const nullAssigneeId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: inReviewId,
+        companyId,
+        title: "In review dependent",
+        status: "in_review",
+        priority: "medium",
+        assigneeAgentId: inReviewAgentId,
+        issueNumber: 3,
+        identifier: `${issuePrefix}-3`,
+        executionPolicy: { stages: [{ type: "review", participants: [{ type: "agent", agentId: inReviewAgentId }] }] },
+      },
+      {
+        id: inProgressId,
+        companyId,
+        title: "In progress dependent",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: inProgressAgentId,
+        issueNumber: 4,
+        identifier: `${issuePrefix}-4`,
+      },
+      {
+        id: todoId,
+        companyId,
+        title: "Todo dependent",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: todoAgentId,
+        issueNumber: 5,
+        identifier: `${issuePrefix}-5`,
+      },
+      {
+        id: backlogId,
+        companyId,
+        title: "Backlog dependent",
+        status: "backlog",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 6,
+        identifier: `${issuePrefix}-6`,
+      },
+      {
+        id: doneId,
+        companyId,
+        title: "Done dependent",
+        status: "done",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 7,
+        identifier: `${issuePrefix}-7`,
+      },
+      {
+        id: cancelledId,
+        companyId,
+        title: "Cancelled dependent",
+        status: "cancelled",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 8,
+        identifier: `${issuePrefix}-8`,
+      },
+      {
+        id: nullAssigneeId,
+        companyId,
+        title: "Unassigned dependent",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: null,
+        issueNumber: 9,
+        identifier: `${issuePrefix}-9`,
+      },
+    ]);
+    await db.insert(issueRelations).values(
+      [inReviewId, inProgressId, todoId, backlogId, doneId, cancelledId, nullAssigneeId].map((relatedIssueId) => ({
+        companyId,
+        issueId: blockerIssueId,
+        relatedIssueId,
+        type: "blocks" as const,
+      })),
+    );
+
+    const statusById = new Map(
+      (await db.select({ id: issues.id, status: issues.status }).from(issues).where(eq(issues.companyId, companyId)))
+        .map((row) => [row.id, row.status] as const),
+    );
+    const heartbeat = heartbeatService(db);
+
+    const beforeFinalize = await heartbeat.reconcileResolvedDependencyWakes({
+      companyId,
+      blockerIssueId,
+      source: "workspace.finalize",
+    });
+    expect(beforeFinalize.healed).toBe(0);
+    expect(beforeFinalize.checked).toBe(4);
+    expect(beforeFinalize.notReadySkipped).toBe(4);
+
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerIssueId,
+      phase: "workspace_finalize",
+      status: "succeeded",
+      startedAt: new Date(),
+    });
+
+    const globalResult = await heartbeat.reconcileResolvedDependencyWakes({ companyId });
+    expect(globalResult.healed).toBe(1);
+    expect(globalResult.issueIds).toEqual([blockedIssueId]);
+    expect(globalResult.checked).toBe(1);
+
+    const scopedResult = await heartbeat.reconcileResolvedDependencyWakes({
+      companyId,
+      blockerIssueId,
+      source: "workspace.finalize",
+    });
+    expect(scopedResult.healed).toBe(3);
+    expect([...scopedResult.issueIds].sort()).toEqual([inReviewId, inProgressId, todoId].sort());
+
+    const secondScopedResult = await heartbeat.reconcileResolvedDependencyWakes({
+      companyId,
+      blockerIssueId,
+      source: "workspace.finalize",
+    });
+    expect(secondScopedResult.healed).toBe(0);
+
+    const afterStatuses = await db
+      .select({ id: issues.id, status: issues.status })
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    for (const row of afterStatuses) {
+      expect(row.status).toBe(statusById.get(row.id));
+    }
+
+    const wakes = await db
+      .select({ payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_blockers_resolved")));
+    const wokenIssueIds = wakes
+      .map((row) => (row.payload as { issueId?: string } | null)?.issueId)
+      .filter((value): value is string => typeof value === "string")
+      .sort();
+    expect(wokenIssueIds).toEqual([blockedIssueId, inReviewId, inProgressId, todoId].sort());
+    const negativeIds = new Set([backlogId, doneId, cancelledId, nullAssigneeId]);
+    expect(wokenIssueIds.some((id) => negativeIds.has(id))).toBe(false);
+
+    const events = await db
+      .select({ entityId: activityLog.entityId })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "issue.blockers_resolved_wake_emitted")));
+    expect(events.map((row) => row.entityId).sort()).toEqual([blockedIssueId, inReviewId, inProgressId, todoId].sort());
+  });
+
 });
