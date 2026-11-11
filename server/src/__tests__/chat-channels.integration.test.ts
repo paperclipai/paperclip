@@ -11003,6 +11003,32 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(receipt).toMatchObject({ authorAgentId: fixture.assignedAgentId, createdByRunId: null });
     expect((await readIssuesById(job.issueId!))[0].status).not.toBe("done");
     expect(provider).toHaveBeenCalledTimes(1);
+    if (channelProvider === "slack") {
+      await db.update(heartbeatRuns).set({ runtimeMode: "native", status: "running",
+        contextSnapshot: await chatWakeContext({ endpointId: endpoint.id, issueId: job.issueId!, provider: "slack", providerMessageId: "9000.1" }),
+      }).where(eq(heartbeatRuns.id, queuedRun.id));
+      await db.insert(chatPublications).values({ companyId: fixture.companyId, endpointId: endpoint.id,
+        conversationId: job.conversationId!, issueId: job.issueId!, idempotencyKey: `run:${queuedRun.id}:working:${endpoint.id}`,
+        payload: { text: "Maya is working…", progressState: "working" }, createdAt: new Date(Date.now() - 60_000),
+      });
+      await service.processPendingPublications();
+      const [working] = await db.select().from(chatPublications).where(eq(chatPublications.idempotencyKey, `run:${queuedRun.id}:working:${endpoint.id}`));
+      expect(working).toMatchObject({ state: "cancelled", redactedError: "Acknowledged by contextual fast response" });
+      await db.insert(heartbeatRunEvents).values({ companyId: fixture.companyId, agentId: fixture.assignedAgentId, runId: queuedRun.id,
+        seq: 1, eventType: "item.completed", payload: { prpEvent: { schema: "paperclip.prp.event.v1", eventType: "item.completed", runId: queuedRun.id,
+          payload: { kind: "agentMessage", channel: "progress", text: "Found the border rule. Checking the fix." } } },
+      });
+      expect(await enqueueChatRunMilestones(db, { scope: { companyId: fixture.companyId, issueId: job.issueId! } })).toBe(1);
+      await service.processPendingPublications();
+      const slack = runtime.endpoints.get(endpoint.id)!;
+      expect(slack.posts).toHaveLength(1);
+      expect(slack.edits).toEqual([expect.objectContaining({ text: expect.stringContaining("Found the border rule. Checking the fix.") })]);
+      await addSelectedChatFinal({ companyId: fixture.companyId, agentId: fixture.assignedAgentId, issueId: job.issueId!, runId: queuedRun.id, body: "Fixed the border." });
+      await service.processPendingPublications();
+      expect(slack.posts).toHaveLength(2);
+      expect(slack.posts[1].text).toBe("Fixed the border.");
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, queuedRun.id));
+    }
   });
 
   it("mirrors Paperclip messages with user attribution and returns only the selected Slack reply", async () => {
@@ -36494,7 +36520,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
-  it("coalesces one Slack run's lifecycle and final response despite an interleaved task control", async () => {
+  it("keeps one Slack progress message and a separate final response despite an interleaved task control", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture);
@@ -36591,6 +36617,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const providerRuntime = runtime.endpoints.get(endpoint.id);
     expect(providerRuntime?.posts).toEqual([
       { threadId: thread.thread.id, text: "Maya is queued." },
+      { threadId: thread.thread.id, text: finalText, chunks: [finalText] },
     ]);
     expect(providerRuntime?.edits).toEqual([
       {
@@ -36603,11 +36630,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         messageId: "outbound-1",
         text: expect.stringMatching(/ — /),
       },
-      {
-        threadId: thread.thread.id,
-        messageId: "outbound-1",
-        text: finalText,
-      },
     ]);
     const renderedSlackMessages = new Map(
       providerRuntime!.posts.map((post, index) => [
@@ -36617,7 +36639,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
     for (const edit of providerRuntime!.edits)
       renderedSlackMessages.set(edit.messageId, edit.text);
-    expect([...renderedSlackMessages.values()]).toEqual([finalText]);
+    expect([...renderedSlackMessages.values()]).toEqual([expect.stringMatching(/ — /), finalText]);
     const publications = await db
       .select()
       .from(chatPublications)
@@ -36647,6 +36669,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ).toEqual([
       expect.objectContaining({
         providerMessageId: "outbound-1",
+        commentId: null,
+      }),
+      expect.objectContaining({
+        providerMessageId: "outbound-2",
         commentId: finalComment.id,
       }),
     ]);
@@ -36657,6 +36683,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.processPendingPublications();
     expect(providerRuntime?.posts).toEqual([
       { threadId: thread.thread.id, text: "Maya is queued." },
+      { threadId: thread.thread.id, text: finalText, chunks: [finalText] },
       { threadId: thread.thread.id, text: expect.stringMatching(/ — /) },
     ]);
   });
@@ -71746,6 +71773,44 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
     },
   );
+
+  it("edits Slack public progress and posts the final as a fresh reply, cancelling an older queued edit", async () => {
+    const context = await safeNativeProgressFixture("slack", "109");
+    try {
+      const run = await context.createRun("public progress");
+      const addPublic = (seq: number, text: string, channel = "progress") => db.insert(heartbeatRunEvents).values({
+        companyId: context.fixture.companyId, runId: run.runId, agentId: context.fixture.assignedAgentId,
+        seq, eventType: "item.completed", message: "PRIVATE event metadata", payload: { prpEvent: {
+          schema: "paperclip.prp.event.v1", runId: run.runId, eventType: "item.completed",
+          payload: { kind: "agentMessage", channel, text },
+        } },
+      });
+      await addPublic(1, "Found the retry bug. Checking recovery next.");
+      await context.addEvent(run, "tool.execution.completed", 2);
+      expect(await enqueueChatRunMilestones(db, { since: new Date(0) })).toBe(1);
+      await context.service.processPendingPublications(100);
+      expect(context.providerRuntime.posts).toHaveLength(1);
+      expect(context.providerRuntime.edits).toEqual([expect.objectContaining({
+        messageId: "outbound-1", text: expect.stringContaining("Found the retry bug. Checking recovery next."),
+      })]);
+      // The cooldown must retain the newest note, with no post or edit yet.
+      for (let seq = 3; seq < 23; seq++) await addPublic(seq, `Checking recovery case ${seq}.`);
+      expect(await enqueueChatRunMilestones(db, { since: new Date(0) })).toBe(0);
+      await db.update(chatPublications).set({ createdAt: new Date(Date.now() - 31_000), publishedAt: new Date(Date.now() - 31_000) })
+        .where(like(chatPublications.idempotencyKey, `run:${run.runId}:working:${context.endpoint.id}:native:%`));
+      expect(await enqueueChatRunMilestones(db, { since: new Date(0) })).toBe(1);
+      await addSelectedChatFinal({ agentId: context.fixture.assignedAgentId, body: "Fixed retry recovery.",
+        companyId: context.fixture.companyId, issueId: context.conversation.issueId, runId: run.runId });
+      // Final authority wins even while the run still says running.
+      await context.service.processPendingPublications(100);
+      expect(context.providerRuntime.posts).toHaveLength(2);
+      expect(context.providerRuntime.posts[1].text).toBe("Fixed retry recovery.");
+      expect(context.providerRuntime.edits).toHaveLength(1);
+      expect(JSON.stringify(context.providerRuntime.edits)).not.toContain("PRIVATE");
+    } finally {
+      await retirePublicationFixture(context.service, context.endpoint.id);
+    }
+  });
 
   it("enforces the native progress cadence boundary and one publication per phase", async () => {
     const context = await safeNativeProgressFixture("telegram", "8");

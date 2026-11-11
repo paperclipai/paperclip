@@ -19,6 +19,7 @@ export function nativeChatProgressWork(db: Db) {
       scope: { companyId: entry.companyId, issueId: entry.issueId }, limit: batchSize, signal,
     });
     if (result.inserted === batchSize) return { ...entry, dueAt: Date.now() };
+    if (result.nextDueAt !== null) return { ...entry, dueAt: result.contended ? Math.min(result.nextDueAt, Date.now() + 1000) : result.nextDueAt };
     return result.contended ? { ...entry, dueAt: Date.now() + 1000 } : null;
   }
   function register(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {

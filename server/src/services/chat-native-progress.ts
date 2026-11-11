@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, like, notExists, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, like, notExists, or, sql, type SQLWrapper } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { agents, chatConversations, chatEndpoints, chatPublications, heartbeatRunEvents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
@@ -8,7 +8,21 @@ import { hasChatRunOwnedProviderInteraction } from "./chat-interaction-arbitrati
 import { resolveChatOriginPublicationBindings } from "./issues.js";
 import { boundRunIssueIdSql } from "./run-task-binding.js";
 import { allowsAutomaticRunPublication, chatRunProjectionWindow, type ChatRunProjectionScope } from "./chat-run-publication-policy.js";
-import { SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES, safeNativeChatProgressForEvent } from "./safe-native-chat-progress.js";
+import { SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES, safeNativeChatProgressForEvent, publicNativeChatProgressText } from "./safe-native-chat-progress.js";
+
+import { publicChatTaskUrl } from "./chat-task-url.js";
+
+// PRP progress is a normalized public channel. Provider-specific/unknown labels
+// cannot opt in by resemblance. Keep query ordering in sync with the projector.
+function publicProgressEvent(event: { eventType: SQLWrapper; payload: SQLWrapper; runId: SQLWrapper }) {
+  return sql<boolean>`coalesce((${event.eventType} = 'item.completed'
+    and ${event.payload}->'prpEvent'->>'schema' = 'paperclip.prp.event.v1'
+    and ${event.payload}->'prpEvent'->>'eventType' = 'item.completed'
+    and ${event.payload}->'prpEvent'->>'runId' = ${event.runId}::text
+    and ${event.payload}->'prpEvent'->'payload'->>'kind' = 'agentMessage'
+    and ${event.payload}->'prpEvent'->'payload'->>'channel' = 'progress'
+    and jsonb_typeof(${event.payload}->'prpEvent'->'payload'->'text') = 'string'), false)`;
+}
 
 type SafeNativeChatProgressCandidate = {
   eventId: number;
@@ -22,6 +36,7 @@ type SafeNativeChatProgressCandidate = {
   endpointId: string;
   conversationId: string;
   agentName: string;
+  provider: string;
 };
 
 const SAFE_NATIVE_CHAT_PROGRESS_CADENCE_MS = 20_000;
@@ -54,6 +69,7 @@ function nativeProgressPages(db: Db, since: Date, scope?: ChatRunProjectionScope
         endpointId: chatConversations.endpointId,
         conversationId: chatConversations.id,
         agentName: agents.name,
+        provider: chatEndpoints.provider,
       })
       .from(heartbeatRunEvents)
       .innerJoin(
@@ -93,12 +109,9 @@ function nativeProgressPages(db: Db, since: Date, scope?: ChatRunProjectionScope
           eq(basePublication.conversationId, chatConversations.id),
           eq(basePublication.issueId, chatConversations.issueId),
           sql`${basePublication.idempotencyKey} = 'run:' || ${heartbeatRuns.id}::text || ':working:' || ${chatConversations.endpointId}::text`,
-          inArray(basePublication.state, [
-            "pending",
-            "retry",
-            "streaming",
-            "published",
-          ]),
+          or(inArray(basePublication.state, ["pending", "retry", "streaming", "published"]),
+            and(eq(chatEndpoints.provider, "slack"), publicProgressEvent(heartbeatRunEvents),
+              eq(basePublication.state, "cancelled"), eq(basePublication.redactedError, "Acknowledged by contextual fast response"))),
         ),
       )
       .where(
@@ -109,7 +122,7 @@ function nativeProgressPages(db: Db, since: Date, scope?: ChatRunProjectionScope
           gte(heartbeatRunEvents.createdAt, since),
           scope ? eq(heartbeatRuns.companyId, scope.companyId) : undefined,
           scope?.issueId ? eq(chatConversations.issueId, scope.issueId) : undefined,
-          sql`${heartbeatRunEvents.createdAt} >= ${basePublication.createdAt} + interval '20 seconds'`,
+          or(eq(chatEndpoints.provider, "slack"), sql`${heartbeatRunEvents.createdAt} >= ${basePublication.createdAt} + interval '20 seconds'`),
           notExists(
             db
               .select({ id: laterEvent.id })
@@ -118,7 +131,12 @@ function nativeProgressPages(db: Db, since: Date, scope?: ChatRunProjectionScope
                 and(
                   eq(laterEvent.companyId, heartbeatRunEvents.companyId),
                   eq(laterEvent.runId, heartbeatRunEvents.runId),
-                  gt(laterEvent.seq, heartbeatRunEvents.seq),
+                  or(
+                    and(eq(chatEndpoints.provider, "slack"), publicProgressEvent(laterEvent), sql`not ${publicProgressEvent(heartbeatRunEvents)}`),
+                    and(gt(laterEvent.seq, heartbeatRunEvents.seq), or(
+                      sql`${chatEndpoints.provider} <> 'slack'`, publicProgressEvent(laterEvent), sql`not ${publicProgressEvent(heartbeatRunEvents)}`,
+                    )),
+                  ),
                   inArray(laterEvent.eventType, [
                     ...SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES,
                   ]),
@@ -157,6 +175,8 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
   const input = chatRunProjectionWindow(options);
   const pages = nativeProgressPages(db, input.since, options.scope);
   let inserted = 0, contended = false;
+  let nextDueAt: number | null = null;
+  const defer = (dueAt: number) => { nextDueAt = nextDueAt === null ? dueAt : Math.min(nextDueAt, dueAt); };
   let cursor: NativeProgressCursor | null = null;
   while (inserted < input.limit) {
     options.signal?.throwIfAborted();
@@ -254,6 +274,7 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
             id: heartbeatRunEvents.id,
             seq: heartbeatRunEvents.seq,
             eventType: heartbeatRunEvents.eventType,
+            payload: heartbeatRunEvents.payload,
             createdAt: heartbeatRunEvents.createdAt,
           })
           .from(heartbeatRunEvents)
@@ -266,7 +287,7 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
               ]),
             ),
           )
-          .orderBy(desc(heartbeatRunEvents.seq), desc(heartbeatRunEvents.id))
+          .orderBy(...(row.provider === "slack" ? [desc(publicProgressEvent(heartbeatRunEvents))] : []), desc(heartbeatRunEvents.seq), desc(heartbeatRunEvents.id))
           .limit(1);
         if (
           !currentEvent ||
@@ -276,7 +297,9 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
         ) {
           return 0;
         }
-        const progress = safeNativeChatProgressForEvent(
+        const publicText = row.provider === "slack"
+          ? publicNativeChatProgressText(currentEvent.eventType, currentEvent.payload, row.runId) : null;
+        const progress = publicText ? { phase: "public", text: publicText } : safeNativeChatProgressForEvent(
           currentEvent.eventType,
           row.agentName,
         );
@@ -284,7 +307,7 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
 
         const baseKey = `run:${row.runId}:working:${row.endpointId}`;
         const [currentBase] = await tx
-          .select({ createdAt: chatPublications.createdAt })
+          .select({ createdAt: chatPublications.createdAt, state: chatPublications.state })
           .from(chatPublications)
           .where(
             and(
@@ -293,12 +316,8 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
               eq(chatPublications.conversationId, row.conversationId),
               eq(chatPublications.issueId, row.issueId),
               eq(chatPublications.idempotencyKey, baseKey),
-              inArray(chatPublications.state, [
-                "pending",
-                "retry",
-                "streaming",
-                "published",
-              ]),
+              or(inArray(chatPublications.state, ["pending", "retry", "streaming", "published"]),
+                publicText ? and(eq(chatPublications.state, "cancelled"), eq(chatPublications.redactedError, "Acknowledged by contextual fast response")) : undefined),
             ),
           )
           .limit(1);
@@ -309,6 +328,9 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
           .select({
             createdAt: chatPublications.createdAt,
             idempotencyKey: chatPublications.idempotencyKey,
+            payload: chatPublications.payload,
+            state: chatPublications.state,
+            publishedAt: chatPublications.publishedAt,
           })
           .from(chatPublications)
           .where(
@@ -320,27 +342,13 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
               like(chatPublications.idempotencyKey, `${progressKeyPrefix}%`),
             ),
           );
-        if (
-          previousProgress.some((publication) =>
-            publication.idempotencyKey.startsWith(
-              `${progressKeyPrefix}${progress.phase}:`,
-            ),
-          )
-        ) {
-          return 0;
-        }
-        const lastProgressAt = Math.max(
-          currentBase.createdAt.getTime(),
-          ...previousProgress.map((publication) =>
-            publication.createdAt.getTime(),
-          ),
-        );
-        if (
-          currentEvent.createdAt.getTime() - lastProgressAt <
-          SAFE_NATIVE_CHAT_PROGRESS_CADENCE_MS
-        ) {
-          return 0;
-        }
+        // A source event and the existing outbox are the durable pending
+        // candidate. Reconstruct its deadline after restart, without a timer row.
+        if (publicText) {
+          if (previousProgress.some(publication => publication.payload.text.split("\n\n")[0] === publicText)) return 0;
+        } else if (previousProgress.some(publication => publication.idempotencyKey.startsWith(`${progressKeyPrefix}${progress.phase}:`))) return 0;
+        const lastProgressAt = Math.max(currentBase.createdAt.getTime(), ...previousProgress.map(publication =>
+          Math.max(publication.createdAt.getTime(), row.provider === "slack" ? publication.publishedAt?.getTime() ?? 0 : 0)));
 
         const bindings = await resolveChatOriginPublicationBindings(
           tx,
@@ -393,6 +401,18 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
           .limit(1);
         if (explicitlyAuthoredFinal.length > 0) return 0;
 
+        if (row.provider === "slack") {
+          const dueAt = previousProgress.length ? lastProgressAt + 30_000 : currentBase.createdAt.getTime() + 10_000;
+          // One outstanding edit per lane. Delivery owns retries/uncertainty;
+          // progress must never turn a lost receipt into a second post.
+          if (previousProgress.some(publication => ["pending", "retry", "streaming", "delivery_unknown"].includes(publication.state))) {
+            return 0;
+          }
+          if (!["published", "cancelled"].includes(currentBase.state)) return 0;
+          if (Date.now() < dueAt) { defer(dueAt); return 0; }
+        } else if (currentEvent.createdAt.getTime() - lastProgressAt < SAFE_NATIVE_CHAT_PROGRESS_CADENCE_MS) return 0;
+
+        const taskUrl = publicText ? publicChatTaskUrl(row.issueId) : null;
         await notifyChatPublicationWork(tx);
         const insertedRows = await tx
           .insert(chatPublications)
@@ -405,10 +425,12 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
             payload: projectSafeChatPublication({
               classification: "external",
               source: "safe_milestone",
-              text: progress.text,
+              text: publicText && taskUrl
+                ? `${publicText}\n\n[View task](${taskUrl})` : progress.text,
               progressState: "working",
             }),
             state: "pending",
+            createdAt: new Date(),
           })
           .onConflictDoNothing()
           .returning({ id: chatPublications.id });
@@ -418,7 +440,7 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
     }
     if (rows.length < pageSize) break;
   }
-  return { inserted, contended };
+  return { inserted, contended, nextDueAt };
 }
 
 /** Explicit/manual callers retain the original count-only contract. */

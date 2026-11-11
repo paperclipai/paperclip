@@ -3,7 +3,7 @@ import { persistReprojectedWorkspaceDiffs, projectCodexWorkspaceDiffsFromTrace }
 import { randomUUID } from "node:crypto";
 import { eq, like, and } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { chatPublications, createDb, heartbeatRunEvents, heartbeatRuns, issues, subscribeDatabaseWork } from "@paperclipai/db";
+import { chatPublications, createDb, heartbeatRunEvents, heartbeatRuns, issues, issueComments, issueThreadInteractions, subscribeDatabaseWork } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createChatMilestoneFixtures } from "./helpers/chat-milestone-fixtures.js";
@@ -76,6 +76,63 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         protocolSchemaVersion: 1, canonicalPayload: { eventType } } } : {}),
     };
   }
+
+  async function commentary(text: string) {
+    return appendHeartbeatRunEvent(db, { ...event(), payload: { prpEvent: {
+      schema: "paperclip.prp.event.v1", eventType: "item.completed", runId,
+      payload: { kind: "agentMessage", channel: "progress", text },
+    } }, message: "PRIVATE event metadata" });
+  }
+
+  it("coalesces public commentary through grace, cooldown and restart, then becomes quiet", async () => {
+    await db.update(chatPublications).set({ createdAt: new Date() }).where(eq(chatPublications.issueId, f.issueId));
+    await commentary("Checking retries.");
+    await start();
+    expect(await publications()).toHaveLength(0);
+    expect(coordinator!.nextWakeAt()).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(11_000);
+    await vi.waitFor(async () => expect(await publications()).toHaveLength(1));
+    const [first] = await publications();
+    expect(first.payload.text).toContain("Checking retries.");
+    await db.update(chatPublications).set({ state: "published", publishedAt: new Date() }).where(eq(chatPublications.id, first.id));
+    for (let index = 0; index < 20; index++) await commentary(`Found retry case ${index}. Checking recovery next.`);
+    // A later coarse operation must not displace the useful public note.
+    await appendHeartbeatRunEvent(db, event(false, "tool.execution.completed"));
+    await coordinator!.stop(); await start();
+    expect(await publications()).toHaveLength(1);
+    expect(coordinator!.nextWakeAt()).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(31_000);
+    await vi.waitFor(async () => expect(await publications()).toHaveLength(2));
+    expect((await publications()).map(row => row.payload.text).join(" ")).toContain("Found retry case 19.");
+    expect(JSON.stringify(await publications())).not.toContain("PRIVATE");
+    await settle(); await quiet();
+    // Repeated whitespace and another completed item must not create work.
+    await commentary("Found  retry case 19. Checking recovery next.");
+    await settle(); expect(await publications()).toHaveLength(2); await quiet();
+    expect(errors).toEqual([]);
+  });
+
+  it.each(["terminal", "question", "answer"])("cancels the cooldown deadline when %s takes over", async reason => {
+    await commentary("Checking retries.");
+    await start(); await settle();
+    const [first] = await publications();
+    await db.update(chatPublications).set({ state: "published", publishedAt: new Date() }).where(eq(chatPublications.id, first.id));
+    await commentary("Found the cause. Checking recovery.");
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).not.toBeNull());
+    if (reason === "terminal") await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+    if (reason === "question") await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
+      kind: "ask_user_questions", continuationPolicy: "wake_assignee", status: "pending", createdByAgentId: f.agentId, sourceRunId: runId,
+      payload: { version: 1, questions: [] } });
+    if (reason === "answer") {
+      const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+        authorType: "agent", authorAgentId: f.agentId, createdByRunId: runId, body: "Done", metadata: { authorizationReason: "paperclip_runner_protocol" } }).returning();
+      await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId, conversationId: f.conversationId,
+        issueId: f.issueId, commentId: comment.id, idempotencyKey: `answer:${runId}`, payload: { text: "Done" } });
+    }
+    await vi.advanceTimersByTimeAsync(31_000); await settle();
+    expect(await publications()).toHaveLength(1); await quiet(); expect(errors).toEqual([]);
+  });
 
   it.each([false, true])("wakes from a real committed event after idle (native source: %s)", async nativeSource => {
     await start(); await settle(); await quiet(); expect(await publications()).toEqual([]);

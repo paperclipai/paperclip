@@ -1,3 +1,5 @@
+import { slackPublicProgressReceiptToReplace } from "./slack/public-progress.js";
+import { hasChatRunOwnedProviderInteraction } from "../chat-interaction-arbitration.js";
 import { imessageProgressSupersessionReason } from "./imessage-photon/publications.js";
 import { fastResponseRequests } from "@paperclipai/db";
 
@@ -121,6 +123,18 @@ export function createChatPublicationReplacement(db: Db, options: ChatPublicatio
         .for("update")
         .then((rows) => rows[0] ?? null);
     });
+    if (publication.idempotencyKey.startsWith(`run:${runId}:working:${publication.endpointId}:native:public:`)) {
+      if (await hasChatRunOwnedProviderInteraction(db, { companyId: publication.companyId, issueId: publication.issueId, runId })) {
+        return "Run progress was superseded by its provider interaction";
+      }
+      const [answer] = await db.select({ id: chatPublications.id }).from(chatPublications)
+        .innerJoin(issueComments, and(eq(issueComments.id, chatPublications.commentId), eq(issueComments.companyId, publication.companyId)))
+        .where(and(eq(chatPublications.companyId, publication.companyId), eq(chatPublications.endpointId, publication.endpointId),
+          eq(chatPublications.conversationId, publication.conversationId), eq(issueComments.createdByRunId, runId),
+          eq(issueComments.authorType, "agent"), sql`${chatPublications.payload}->>'progressState' is null`,
+          inArray(chatPublications.state, ["pending", "retry", "streaming", "published", "delivery_unknown"]))).limit(1);
+      if (answer) return "Run progress was superseded by its authored answer";
+    }
     const baseProgressKey = `run:${runId}:${progress}:${publication.endpointId}`;
     const nativeProgressPrefix = `run:${runId}:working:${publication.endpointId}:native:`;
     const isTerminalizableProgress =
@@ -325,6 +339,9 @@ export function createChatPublicationReplacement(db: Db, options: ChatPublicatio
     payload: SafeChatPublicationPayload,
   ): Promise<string | null> {
     if (payload.attachmentIds?.length) return null;
+    // Slack answers are fresh replies: users must not have to notice an edit
+    // to discover completion. Progress still shares one bot-owned message.
+    if (publication.commentId && (await endpointRecord(publication.endpointId))?.endpoint.provider === "slack") return null;
     const currentRunId =
       runIdFromMilestonePublication(publication) ??
       (publication.commentId
@@ -377,7 +394,12 @@ export function createChatPublicationReplacement(db: Db, options: ChatPublicatio
             Boolean(row.providerMessageId) &&
             row.payload.progressState !== undefined,
         );
-        if (!replacement?.providerMessageId) return null;
+        if (!replacement?.providerMessageId) {
+          if ((await endpointRecord(publication.endpointId))?.endpoint.provider === "slack") {
+            return slackPublicProgressReceiptToReplace(db, publication, currentRunId);
+          }
+          return null;
+        }
         if (
           (await providerProgressLaneConsumed(
             publication,
@@ -675,6 +697,8 @@ export function createChatPublicationReplacement(db: Db, options: ChatPublicatio
 
   async function progressSupersededByFastResponse(publication: typeof chatPublications.$inferSelect): Promise<boolean> {
     if (!["queued", "working"].includes(publication.payload.progressState ?? "")) return false;
+    // Acknowledgements replace generic liveness, not useful public narration.
+    if (publication.idempotencyKey.includes(":native:public:")) return false;
     const runId = runIdFromMilestonePublication(publication);
     const [run] = runId ? await db.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, publication.companyId), eq(heartbeatRuns.id, runId))) : [];
     const sourceCommentId = typeof run?.context?.wakeCommentId === "string" ? run.context.wakeCommentId : typeof run?.context?.commentId === "string" ? run.context.commentId : publication.commentId;
