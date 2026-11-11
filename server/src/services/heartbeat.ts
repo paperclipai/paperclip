@@ -9,6 +9,7 @@ import { isContextCompactionRun } from "./context-compaction.js";
 import { isUnstartedTaskQuestionAnswer } from "./unstarted-task-question-answer.js";
 import { isVerifiedDependencyInteractionResponse } from "./queued-interaction-response.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
+import { registerProviderLimitResumeWork, type PrepareChatRetry } from "./native-runtime/provider-limit-resume.js";
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
 import { registerIssueRecoveryWork } from "./recovery/work.js";
 import { registerRunDispatchWork } from "./heartbeat/dispatch-work.js";
@@ -4522,6 +4523,13 @@ export function heartbeatService(
         },
       }, () => canRun() && readTaskDrain(new Date()) === null),
     readIdleWatchdogSchedule: taskWatchdogs.readIdleSchedule,
+    registerProviderLimitResumeWork: (coordinator: Parameters<typeof registerProviderLimitResumeWork>[1], canRun: () => boolean,
+      prepareChatRetry?: () => PrepareChatRetry | undefined) =>
+      registerProviderLimitResumeWork(db, coordinator, {
+        resume: (companyId, requestId) => runControl.resumeTaskRetry(companyId, requestId),
+        schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
+        prepareChatRetry,
+      }, () => canRun() && readTaskDrain(new Date()) === null),
     registerIssueStateRecoveryWork: (coordinator: Parameters<typeof registerIssueRecoveryWork>[1], canRun: () => boolean) =>
       registerIssueRecoveryWork(db, coordinator, {
         stranded: scope => reconcileStrandedAssignedIssues({ ...scope, skipExternalConversationSettlement: true, skipRelatedRecovery: true }),
