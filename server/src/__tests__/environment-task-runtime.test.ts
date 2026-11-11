@@ -61,6 +61,28 @@ describe("stopped Runner checkpoint settlement", () => {
 });
 
 describe("plugin-provided Runner execution", () => {
+  it("records a confirmed admission refusal so lease cleanup never looks for a Runner", async () => {
+    const value = row();
+    const fixture = database(value);
+    const refusal = { kind: "admission_rejected", taskId: "attempt-1", reason: "session_state_unavailable" };
+    const workers = worker(refusal);
+    await expect(executeEnvironmentTask(fixture.db, workers as never, {
+      companyId: "company", leaseId, operation: submit,
+    })).resolves.toEqual(refusal);
+    const update = new PgDialect().sqlToQuery(fixture.sets.at(-1)!.metadata as never);
+    expect(update.sql).toContain("- 'runnerTaskIdentity'");
+    const durable = JSON.parse(String(update.params[0]));
+    expect(durable).toEqual({
+      runnerTaskAdmissionRejection: { taskId: "attempt-1", reason: "session_state_unavailable" },
+      runnerTaskDispatched: false, runnerTaskExecutionStopped: true, runnerTaskSessionRetained: false,
+    });
+    Object.assign(value.lease.metadata, durable);
+    await expect(settleDispatchedEnvironmentTask(database(value).db, workers as never, {
+      companyId: "company", id: leaseId,
+    })).resolves.toBe("stopped");
+    expect(workers.call.mock.calls).toHaveLength(1);
+  });
+
   it.each([false, true])("retires an undispatched warm task only with required preparation proof (%s)", async preparationStopped => {
     const value = row();
     Object.assign(value.lease.metadata, { runnerTaskDispatched: false,

@@ -258,7 +258,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   if (operation.kind === "submit" || operation.kind === "copilot_metadata") {
     // No ticket, headers, environment values, or launch paths belong in metadata.
     const marked = await db.update(environmentLeases).set({
-      metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskLease: true, runnerTaskDispatched: true, runnerTaskExecutionStopped: false, runnerTaskSessionRetained: false, ...(operation.kind === "submit" ? { runnerTaskIdentity: operation.runner, runnerTaskResumeFrom: operation.resumeFrom ?? null } : {}) })}::jsonb`,
+      metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'runnerTaskAdmissionRejection') || ${JSON.stringify({ runnerTaskLease: true, runnerTaskDispatched: true, runnerTaskExecutionStopped: false, runnerTaskSessionRetained: false, ...(operation.kind === "submit" ? { runnerTaskIdentity: operation.runner, runnerTaskResumeFrom: operation.resumeFrom ?? null } : {}) })}::jsonb`,
     }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
       eq(environmentLeases.status, "active"), sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`,
       requiredProjectAuthProof ? sql`${environmentLeases.metadata}->'runnerTaskProjectAuthValidation' = ${JSON.stringify(requiredProjectAuthProof)}::jsonb` : undefined,
@@ -280,7 +280,9 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     if (marked.length !== 1) throw new Error("Plugin warm task attachment lost authority");
   }
   try {
-    const stoppedWithoutSession = !!run && metadata.runnerTaskExecutionStopped === true && metadata.runnerTaskSessionRetained !== true;
+    const admissionRejection = metadata.runnerTaskAdmissionRejection as { taskId?: unknown } | undefined;
+    const stoppedWithoutSession = !!run && metadata.runnerTaskExecutionStopped === true &&
+      metadata.runnerTaskSessionRetained !== true && admissionRejection?.taskId !== taskId;
     if (operation.kind === "describe" && (metadata.runnerTaskReused === true || stoppedWithoutSession)) {
       const state = parseEnvironmentTaskResult({kind:"status"}, taskId, await callWorker("environmentTask", {
         driverKey: metadata.driverKey, companyId: input.companyId, environmentId: environment?.id ?? null,
@@ -408,6 +410,20 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
     const result = await callWorker("environmentTask", params, timeout);
     if (executionContext) context!.assertOpen();
     const parsed = parseEnvironmentTaskResult(operation, taskId, result);
+    if (operation.kind === "submit" && parsed.kind === "admission_rejected") {
+      const recorded = await db.update(environmentLeases).set({
+        metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'runnerTaskIdentity') || ${JSON.stringify({
+          runnerTaskAdmissionRejection: { taskId, reason: parsed.reason },
+          runnerTaskDispatched: false, runnerTaskExecutionStopped: true, runnerTaskSessionRetained: false,
+        })}::jsonb`,
+      }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
+        eq(environmentLeases.providerLeaseId, taskId),
+        sql`${environmentLeases.metadata}->>'runnerTaskDispatched' = 'true'`,
+        sql`${environmentLeases.metadata}->'runnerTaskIdentity' = ${JSON.stringify(operation.runner)}::jsonb`,
+      )).returning({ id: environmentLeases.id });
+      if (recorded.length !== 1) throw new Error("Plugin Runner admission receipt is stale");
+      return parsed;
+    }
     if (stoppedSourceCheckpoint && parsed.kind === "state" && isSettledReadyRunnerState(parsed.state)) {
       parsed.state = { ...parsed.state, lifecycle: "suspended" };
     }

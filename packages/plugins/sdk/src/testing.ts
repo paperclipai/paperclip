@@ -75,6 +75,7 @@ import type {
   PluginPerformActionActorContext,
   PluginPerformActionContext,
 } from "./protocol.js";
+import { validateProjectSnapshotRequest } from "./protocol.js";
 
 export interface TestHarnessOptions {
   /** Plugin manifest used to seed capability checks and metadata. */
@@ -1045,6 +1046,11 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         return structuredClone(projectInstanceSecrets.get(JSON.stringify([companyId, projectId])) ?? {});
       },
       async readSnapshots(projectIds, companyId, entityType) {
+        requireCapability(manifest, capabilitySet, "projects.read");
+        requireCapability(manifest, capabilitySet, "project.workspaces.read");
+        requireCapability(manifest, capabilitySet, "projects.instance-secrets");
+        requireCompanyId(companyId);
+        validateProjectSnapshotRequest(projectIds, entityType);
         return Promise.all(projectIds.map(async projectId => {
           const project = await ctx.projects.get(projectId, companyId);
           if (!project || project.archivedAt) throw new Error("Project snapshot unavailable");

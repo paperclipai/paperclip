@@ -311,6 +311,15 @@ export interface PluginInvocationContext {
   traceparent?: string;
 }
 
+export function validateProjectSnapshotRequest(projectIds: unknown, entityType: unknown): void {
+  if (!Array.isArray(projectIds) || !projectIds.length || projectIds.length > 64 ||
+      new Set(projectIds).size !== projectIds.length ||
+      projectIds.some(id => typeof id !== "string" || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(id)) ||
+      typeof entityType !== "string" || !/^[a-zA-Z0-9._-]{1,128}$/.test(entityType)) {
+    throw new Error("Invalid project snapshot scope");
+  }
+}
+
 /**
  * Context provided to host-side worker→host handlers after the worker echoes a
  * host-issued invocation id.

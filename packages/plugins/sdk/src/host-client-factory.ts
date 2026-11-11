@@ -51,7 +51,7 @@
 import { isDeepStrictEqual } from "node:util";
 import type { PluginCapability } from "@paperclipai/shared";
 import type { WorkerHostCallContext, WorkerToHostMethods, WorkerToHostMethodName } from "./protocol.js";
-import { PLUGIN_RPC_ERROR_CODES } from "./protocol.js";
+import { PLUGIN_RPC_ERROR_CODES, validateProjectSnapshotRequest } from "./protocol.js";
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -856,12 +856,7 @@ export function createHostClientHandlers(
       requireCapability("projects.get");
       requireCapability("projects.listWorkspaces");
       const { projectIds, entityType } = params;
-      if (!Array.isArray(projectIds) || !projectIds.length || projectIds.length > 64 ||
-          new Set(projectIds).size !== projectIds.length ||
-          projectIds.some(id => typeof id !== "string" || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(id)) ||
-          typeof entityType !== "string" || !/^[a-zA-Z0-9._-]{1,128}$/.test(entityType)) {
-        throw new Error("Invalid project snapshot scope");
-      }
+      validateProjectSnapshotRequest(projectIds, entityType);
       const snapshots: WorkerToHostMethods["projects.readSnapshots"][1] = [];
       for (const projectId of projectIds) {
         const scope = { companyId, projectId };
