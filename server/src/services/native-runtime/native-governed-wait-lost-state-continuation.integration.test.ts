@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterEach, expect, it, vi } from "vitest";
 import { completionContracts, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, toolInvocations } from "@paperclipai/db";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
@@ -10,6 +10,7 @@ import { DurablePrpControlPlane, parseNativeExecutionInput, type NativeSessionBa
 import { createNativeControllerRecovery } from "./native-controller-recovery.js";
 import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
 import { executePaperclipNativeSession, nativeControllerMigrationDescriptor } from "./native-session-executor.js";
+import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
 import { nativeToolContractFingerprintForTarget, rebindNativeSessionCheckpoint } from "./native-session-resume.js";
 import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
@@ -109,8 +110,15 @@ describeEmbeddedPostgres("governed-wait follow-up whose saved provider state is 
     return { f, companyId, agentId, runId, recover, fresh, replacementObserved, execute };
   }
 
+  const proofFor = (h: Awaited<ReturnType<typeof followUpRun>>) => new PaperclipControlPlanePort(h.f.db, {
+    companyId: h.companyId, issueId: h.f.issueId, runId: h.runId, agentId: h.agentId, sessionId: "proof-session",
+    completionContractId: "proof-contract", completionContractSha256: "proof-contract", sourceInstanceId: "proof-runner",
+    controlPlaneSourceInstanceId: "proof-control",
+  }).provesNoRunProviderWork({ signal: new AbortController().signal });
+
   it("opens a fresh provider session for the follow-up without a Retry", async () => {
     const h = await followUpRun();
+    expect(await proofFor(h)).toBe(true);
     const failure = await h.execute();
     expect(h.recover, String(failure)).toHaveBeenCalledOnce();
     // The fixture stops at the fresh session's boundary; on master the run
@@ -123,6 +131,12 @@ describeEmbeddedPostgres("governed-wait follow-up whose saved provider state is 
     ["a provider event", "event"],
     ["a tool invocation", "tool"],
     ["an accepted result", "result"],
+    // A runner event of a non-provider type still carries a source identity:
+    // a runner wrote it for this run, so the run is not untouched.
+    ["a sourced runner event of a non-provider type", "sourced_event"],
+    // The foreign key normally forbids this. A row restored without its result
+    // must still deny the proof rather than look like an untouched run.
+    ["a finalized result whose result row is missing", "dangling_result"],
   ] as const)("keeps the named refusal when the follow-up run already recorded %s", async (_label, evidence) => {
     const h = await followUpRun();
     if (evidence === "event") await h.f.db.insert(heartbeatRunEvents).values({ companyId: h.companyId, runId: h.runId, agentId: h.agentId,
@@ -134,9 +148,28 @@ describeEmbeddedPostgres("governed-wait follow-up whose saved provider state is 
       await h.f.db.insert(nativeRunResults).values({ companyId: h.companyId, issueId: h.f.issueId, runId: h.runId, completionContractId: run!.completionContractId!,
         serverFingerprint: randomUUID(), schemaStatus: "accepted", resultJson: {}, canonicalSha256: "b".repeat(64) });
     }
+    if (evidence === "sourced_event") await h.f.db.insert(heartbeatRunEvents).values({ companyId: h.companyId, runId: h.runId, agentId: h.agentId,
+      seq: 1_000, eventType: "native.diagnostic", stream: "system", level: "info", message: "runner diagnostic", payload: {},
+      sourceInstanceId: "foreign-runner-instance", sourceEventId: "foreign-runner-instance:event:1", sourceSeq: 1 });
+    if (evidence === "dangling_result") await h.f.db.transaction(async (tx) => {
+      await tx.execute(sql`set local session_replication_role = 'replica'`);
+      await tx.update(nativeRunFinalizations).set({ resultId: randomUUID() }).where(eq(nativeRunFinalizations.runId, h.runId));
+    });
+    if (evidence === "sourced_event" || evidence === "dangling_result") {
+      // The fixture is the only evidence: no tool invocation or result row.
+      expect(await h.f.db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, h.runId))).toEqual([]);
+      expect(await h.f.db.select().from(toolInvocations).where(eq(toolInvocations.runId, h.runId))).toEqual([]);
+    }
+    // The durable proof itself refuses each kind of evidence.
+    expect(await proofFor(h)).toBe(false);
     const failure = await h.execute();
-    expect(h.recover, String(failure)).toHaveBeenCalledOnce();
     expect(h.fresh).not.toHaveBeenCalled();
+    if (evidence === "dangling_result") {
+      // Admission stops even earlier on a finalized result: still no fresh session.
+      expect(String(failure)).toContain("native_result_pending_finalization");
+      return;
+    }
+    expect(h.recover, String(failure)).toHaveBeenCalledOnce();
     expect((failure as { code?: string }).code).toBe("native_provider_state_incompatible");
   }, 60_000);
 });
