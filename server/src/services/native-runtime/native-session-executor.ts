@@ -5668,6 +5668,12 @@ function moveNativeContinuityState(root: string, archiveRoot: string): void {
 type SettledRunnerdProjection = { bytes: string; refused?: never } | { bytes?: never; refused: string };
 
 const LOCAL_RUNNER_LIFECYCLE_COMMANDS = new Set(["runner.suspend", "runner.drain", "runner.shutdown"]);
+/** Commands that only deliver something to the Runner that held this journal:
+ * its attachment, an answer to a tool it already called, or a read. None
+ * carries new user intent, and none can run without that Runner. When its
+ * sandbox lease ended on another sandbox, no process remains to receive them. */
+const GONE_REMOTE_RUNNER_DELIVERY_COMMANDS = new Set(["run.attach", "semantic_tool.result", "session.snapshot",
+  "session.goal.get"]);
 
 function readSettledRunnerdProjection(root: string, identity: Record<string, string>,
   options: { localRunner?: boolean; controlBytes?: string; remoteRunnerGone?: boolean } = {}): SettledRunnerdProjection {
@@ -5690,12 +5696,18 @@ function readSettledRunnerdProjection(root: string, identity: Record<string, str
     const control = record(JSON.parse(bytes));
     const commands = (Array.isArray(control.commands) ? control.commands : []).map(record);
     // A stopped local Runner can no longer act on its own lifecycle commands.
+    // A remote Runner whose sandbox lease ended elsewhere also cannot receive
+    // a delivery that it never acknowledged.
+    const goneCommandTypes = options.remoteRunnerGone ? new Set([...LOCAL_RUNNER_LIFECYCLE_COMMANDS, ...GONE_REMOTE_RUNNER_DELIVERY_COMMANDS])
+      : LOCAL_RUNNER_LIFECYCLE_COMMANDS;
     const settledCommands = ((options.localRunner && lifecycle === "not_suspended") || options.remoteRunnerGone) && Array.isArray(control.commands)
-      ? commands.filter(command => !LOCAL_RUNNER_LIFECYCLE_COMMANDS.has(String(command.type)) || command.status === "completed")
+      ? commands.filter(command => !goneCommandTypes.has(String(command.type)) || command.status === "completed")
       : commands;
     const settledControl = settledCommands === commands ? control : { ...control, commands: settledCommands };
+    // The controller journals a tool's answer after the tool ran. Only its
+    // delivery can be outstanding, and only to a Runner that is gone.
     const answered = new Set(commands
-      .filter(command => command.type === "semantic_tool.result" && command.status === "completed")
+      .filter(command => command.type === "semantic_tool.result" && (command.status === "completed" || options.remoteRunnerGone))
       .map(command => record(command.payload).sourceEventId));
     if (!RUNNERD_CONTROL_PLANE_STATE_SCHEMAS.has(String(control.schema))) return refuse("journal_schema_unsupported");
     if (control.warmTransition != null) return refuse("journal_warm_transition");
