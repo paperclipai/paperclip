@@ -1604,10 +1604,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const runContext = parseObject(run.contextSnapshot);
     const admittedNonAssignee = parseObject(run.runnerProfileJson).aiConnectionNonAssigneeCommentWake === true
       || isNonAssigneeWorkspaceBusyRetry(run.scheduledRetryReason, runContext);
-    const waitIssueId = readNonEmptyString(runContext.issueId);
-    const wasIssueAssignee = admittedNonAssignee ? false : !waitIssueId || await db.select({ assigneeAgentId: issues.assigneeAgentId })
-      .from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.id, waitIssueId)))
-      .then(rows => rows[0]?.assigneeAgentId === run.agentId);
+    const wasIssueAssignee = !admittedNonAssignee;
     const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {
       error: deferral.message, errorCode: AGENT_DIRECTORY_BUSY_ERROR_CODE, finishedAt: now,
       resultJson: {

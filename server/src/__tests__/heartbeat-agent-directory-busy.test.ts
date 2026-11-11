@@ -22,7 +22,7 @@ import { AGENT_DIRECTORY_BUSY_ERROR_CODE, AGENT_DIRECTORY_BUSY_RETRY_REASON } fr
 import { undeliveredLegacyUserCommentIds } from "../services/explicit-native-continuation.js";
 import { isResolvedInteractionContinuationWakeContext } from "../modules/run-dispatch/index.js";
 
-const busyPrepares = vi.hoisted(() => ({ remaining: 0, calls: 0 }));
+const busyPrepares = vi.hoisted(() => ({ remaining: 0, calls: 0, beforeBusy: null as null | (() => Promise<void>) }));
 vi.mock("../services/agent-instruction-working-copies.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../services/agent-instruction-working-copies.js")>();
   return {
@@ -35,6 +35,7 @@ vi.mock("../services/agent-instruction-working-copies.js", async importOriginal 
           busyPrepares.calls++;
           if (busyPrepares.remaining > 0) {
             busyPrepares.remaining--;
+            await busyPrepares.beforeBusy?.();
             throw new AgentDirectoryOperationBusyError();
           }
           return service.prepare(input);
@@ -228,6 +229,38 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
 
     expect((await heartbeat.getRun(retry!.id))?.status).toBe("succeeded");
     expect(executedRunIds).toContain(retry!.id);
+  });
+
+  it("does not let the previous assignee restart after the task is reassigned during preparation", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const newOwnerId = randomUUID(), issueId = randomUUID();
+    await db.insert(agents).values({ id: newOwnerId, companyId, name: "NewOwner", role: "engineer", status: "idle", adapterType: ADAPTER,
+      adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: false, maxConcurrentRuns: 1 } }, permissions: {} });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Handed over", status: "in_progress", priority: "medium",
+      responsibleUserId: "busy-directory-user", assigneeAgentId: agentId, issueNumber: 6 });
+    busyPrepares.remaining = 1;
+    busyPrepares.calls = 0;
+    busyPrepares.beforeBusy = async () => {
+      await db.update(issues).set({ assigneeAgentId: newOwnerId }).where(eq(issues.id, issueId));
+    };
+    try {
+      const run = await heartbeat.invoke(agentId, "assignment", { issueId, wakeReason: "issue_assigned" }, "system");
+      await heartbeat.drainActiveRunExecutions();
+      expect(await heartbeat.getRun(run!.id)).toMatchObject({ status: "cancelled", errorCode: AGENT_DIRECTORY_BUSY_ERROR_CODE });
+      const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
+      if (retry) {
+        expect(retry.contextSnapshot).not.toMatchObject({ preparationWaitDeferredWhileAssignee: false });
+        const afterDue = new Date(new Date(retry.scheduledRetryAt!).getTime() + 1_000);
+        await heartbeat.promoteDueScheduledRetries(afterDue);
+        await heartbeat.resumeQueuedRuns();
+        await heartbeat.drainActiveRunExecutions();
+        expect((await heartbeat.getRun(retry.id))?.status).toBe("cancelled");
+        expect(executedRunIds).not.toContain(retry.id);
+      }
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.assigneeAgentId).toBe(newOwnerId);
+    } finally {
+      busyPrepares.beforeBusy = null;
+    }
   });
 
   it("defers the first run of a task instead of failing it, then runs it", async () => {
