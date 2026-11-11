@@ -28,10 +28,13 @@ export const runtimeConferenceCases = [runtimeDefinition("agent-chat.conference-
   if (health.deploymentMode !== "local_trusted") throw new Error("Conference Room scenario requires a genuinely local-trusted target");
   await ctx.input.api.patch("/api/instance/settings/experimental", { enableConferenceRoomChat: true });
   const settings = await ctx.input.api.get<{ enableConferenceRoomChat: boolean; enableAgentChat: boolean }>("/api/instance/settings/experimental");
+  // The open page cached the experimental settings before this fixture enabled Conference Room; a person
+  // arriving after the instance enabled it loads the current settings, so reload before the query is sent.
+  await ctx.input.page.reload({ waitUntil: "domcontentloaded" });
   return { deploymentMode: health.deploymentMode, conferenceEnabled: settings.enableConferenceRoomChat,
     agentChatEnabled: settings.enableAgentChat, companyPrefix: ctx.input.fixtures.company.issuePrefix };
 }, gradeConference, {
-  oracleVersion: "paperclip.chat-catalog.runtime-conference.v3",
+  oracleVersion: "paperclip.chat-catalog.runtime-conference.v4",
   sourceFiles: ["chat-catalog-domains/runtime-conference.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/agent-chat.yaml"],
   async act(ctx, state) {
     await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx)); state.runsBeforeOpen = (await ctx.allRuns()).length; state.standingIssueBefore = ctx.issue()?.id;
