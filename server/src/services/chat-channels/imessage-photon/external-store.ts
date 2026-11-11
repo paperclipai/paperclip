@@ -21,7 +21,7 @@ export function createPhotonExternalStore(db: Db) {
     return endpoint;
   }
   return {
-    async read(identity: PhotonExternalIdentity) {
+    async read(identity: Pick<PhotonExternalIdentity, "companyId" | "endpointId">) {
       return readPhotonExternalState(await photonStateFor(db, identity).read(PHOTON_EXTERNAL_STATE));
     },
     async inspect(identity: PhotonExternalIdentity) {

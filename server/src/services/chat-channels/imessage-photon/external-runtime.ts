@@ -117,16 +117,21 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
   async function reconcile(id: string): Promise<void> {
     const pending = active.get(id); if (pending) return pending;
     const run = (async () => {
-      const record = await options.endpointRecord(id), broker = options.broker();
-      if (!record || record.endpoint.provider !== "imessage-photon" || !(record.endpoint.setup as InternalSetupState).photonExternalSubject || !broker) return;
-      const subject = (record.endpoint.setup as InternalSetupState).photonExternalSubject;
-      if (!subject) return;
-      const identity: PhotonExternalIdentity = { companyId: record.endpoint.companyId, endpointId: id, connectionId: record.endpoint.connectionId,
-        runtimeGeneration: Number((record.endpoint.setup as InternalSetupState).runtimeGeneration ?? 0), credentialReferences: credentialFingerprint(record.credentialSecretRefs), subject };
-      const previous = await store.read(identity);
-      if (previous && previous.phase !== "retired" && (previous.phase === "retiring"
-        || !isDeepStrictEqual(previous.identity, identity) || !["active", "verifying", "attention"].includes(record.endpoint.status))) {
+      const record = await options.endpointRecord(id);
+      if (!record || record.endpoint.provider !== "imessage-photon") return;
+      const previous = await store.read({ companyId: record.endpoint.companyId, endpointId: id });
+      const broker = options.broker(), subject = (record.endpoint.setup as InternalSetupState).photonExternalSubject;
+      const identity: PhotonExternalIdentity | null = subject ? { companyId: record.endpoint.companyId, endpointId: id, connectionId: record.endpoint.connectionId,
+        runtimeGeneration: Number((record.endpoint.setup as InternalSetupState).runtimeGeneration ?? 0), credentialReferences: credentialFingerprint(record.credentialSecretRefs), subject } : null;
+      if (previous && previous.phase !== "retired" && (previous.phase === "retiring" || !identity
+        || !isDeepStrictEqual(previous.identity, identity) || !await store.inspect(identity)
+        || broker && (previous.binding.instanceId !== broker.instanceIdentity().instanceId
+          || previous.binding.environment !== broker.instanceIdentity().environment))) {
         await createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) }).retire(previous);
+        return;
+      }
+      if (!identity || !broker) {
+        if (previous && previous.phase !== "retired") throw new Error("Photon retained Cloud receiver port is unavailable");
         return;
       }
       const optionsConfig = await options.config(record);
@@ -156,7 +161,7 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
       const context = options.context(runtime), lease = options.ownership(id);
       if (!context || !lease || lease.context !== context || context.endpointRuntime !== runtime || lease.stopping) throw new Error("Photon normal local resource lease changed");
       const currentIdentity: PhotonExternalIdentity = { companyId: record.endpoint.companyId, endpointId: id, connectionId: record.endpoint.connectionId,
-        runtimeGeneration: context.generation, credentialReferences: context.credentialFingerprint, subject };
+        runtimeGeneration: context.generation, credentialReferences: context.credentialFingerprint, subject: identity.subject };
       const owner = createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) });
       // Keep the real runtime in the normal registry through shutdown. Its failure
       // persistence callbacks still see the exact current object/lease; removing
@@ -236,9 +241,18 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
         if (scope?.kind !== "connection" || row.connectionId === scope.id) values.push({ id: row.endpointId, companyId: row.companyId, connectionId: row.connectionId, dueAt: 0 });
         continue;
       }
-      if (state.phase === "retired" || scope?.kind === "connection" && state.identity.connectionId !== scope.id) continue;
-      values.push({ id: row.endpointId, companyId: row.companyId, connectionId: state.identity.connectionId,
-        dueAt: state.failure ? (state.failure.nextAttemptAt ? Date.parse(state.failure.nextAttemptAt) : null)
+      if (state.phase === "retired") continue;
+      const record = state.phase === "external" ? await options.endpointRecord(row.endpointId) : null;
+      const current = record && record.endpoint.provider === "imessage-photon"
+        && (record.endpoint.setup as InternalSetupState).photonExternalSubject === state.identity.subject
+        ? await store.inspect(state.identity) : null;
+      const connector = options.broker()?.instanceIdentity();
+      const changedExternal = state.phase === "external" && (!current || current.phase !== "external" || current.handoffId !== state.handoffId
+        || connector && (state.binding.instanceId !== connector.instanceId || state.binding.environment !== connector.environment));
+      const restoredRetirementPort = state.phase === "retiring" && state.failure?.code === "authority"
+        && state.failure.nextAttemptAt === null && connector !== undefined;
+      values.push({ id: row.endpointId, companyId: row.companyId, connectionId: row.connectionId,
+        dueAt: changedExternal || restoredRetirementPort ? 0 : state.failure ? (state.failure.nextAttemptAt ? Date.parse(state.failure.nextAttemptAt) : null)
           : state.localResourceDebt ? (state.localResourceDebt.nextAttemptAt ? Date.parse(state.localResourceDebt.nextAttemptAt) : null)
           : state.phase === "external" ? null : 0 });
     }

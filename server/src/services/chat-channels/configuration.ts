@@ -179,7 +179,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
     const endpoint = record.endpoint;
     const mutate = <T>(work: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<T>) => db.transaction(async tx => {
       const result = await work(tx);
-      if (endpoint.provider === "slack" && options.stageConfigurationEffects) {
+      if ((endpoint.provider === "slack" || endpoint.provider === "imessage-photon") && options.stageConfigurationEffects) {
         await options.stageConfigurationEffects(tx as unknown as Db, endpointId, actorUserId);
         await credentialLease.assertOwned(tx);
       }

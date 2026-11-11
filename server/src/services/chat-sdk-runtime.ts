@@ -2949,7 +2949,7 @@ export class ChatSdkEndpointRuntime {
       const metadata = isRecord(descriptor.attachment) ? durableAttachmentMetadata(descriptor.attachment as unknown as Attachment) : null;
       if (!parsed.success || !metadata || parsed.data.lineId !== thread.lineId || parsed.data.chatGuid !== thread.chatGuid || parsed.data.messageGuid !== source.messageId) return null;
       const adapter = this.adapter;
-      return { ...metadata, fetchData: () => downloadPhotonAttachment(adapter.client, thread.lineId, parsed.data, adapter.authentication.identity.allocation) };
+      return { ...metadata, fetchData: () => adapter.withClient(client => downloadPhotonAttachment(client, thread.lineId, parsed.data, adapter.authentication.identity.allocation)) };
     }
     if (
       this.provider === "microsoft-teams" &&

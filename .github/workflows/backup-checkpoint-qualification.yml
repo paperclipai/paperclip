@@ -46,6 +46,9 @@ jobs:
         with:
           node-version: '24'
           cache: pnpm
+      - name: Resolve PR dependency manifests
+        if: github.event_name == 'pull_request'
+        run: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Build workspace import prerequisites
         run: |

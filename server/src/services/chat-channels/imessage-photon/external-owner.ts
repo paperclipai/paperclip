@@ -13,6 +13,7 @@ import { assertPhotonExternalBinding, photonExternalBindingSchema, photonHash, r
   parsePhotonExternalDelivery, type PhotonExternalBinding, type PhotonExternalIdentity, type PhotonExternalState } from "./external-contract.js";
 
 class PhotonPhysicalResourceUnknown extends Error {}
+class PhotonExternalBrokerUnavailable extends Error {}
 const CHECKPOINT_AUTHORITY = "checkpoint-authority";
 const checkpointIdentity = ({ subject: _subject, ...identity }: PhotonExternalIdentity) => identity;
 type Checkpoint = { schema: 1; lineId: string; sequence: number };
@@ -68,9 +69,13 @@ export class PhotonLocalResources {
 }
 export type PhotonExternalHandoffInput = { identity: PhotonExternalIdentity; lease: PhotonExternalLease; config: ResolvedPhotonChatConfig;
   localResourceId: string | null; localResource?: NonNullable<PhotonExternalState["localResource"]> };
-export function createPhotonExternalOwner(options: { store: PhotonExternalStore; broker: PhotonExternalBroker;
+export function createPhotonExternalOwner(options: { store: PhotonExternalStore; broker: PhotonExternalBroker | undefined;
   resources: PhotonLocalResources; notify(identity: PhotonExternalIdentity): void; now?: () => Date }) {
   const now = options.now ?? (() => new Date());
+  function requireBroker(): PhotonExternalBroker {
+    if (!options.broker) throw new PhotonExternalBrokerUnavailable("Photon Cloud receiver port is unavailable");
+    return options.broker;
+  }
   async function failure(expected: PhotonExternalState, code: NonNullable<PhotonExternalState["failure"]>["code"], retryable = true) {
     const attempts = (expected.failure?.attempts ?? 0) + 1;
     // Existing receiver coordinator consumes this deadline/notification; no timer.
@@ -84,7 +89,7 @@ export function createPhotonExternalOwner(options: { store: PhotonExternalStore;
     throw primary;
   }
   function bindingFor(identity: PhotonExternalIdentity, config: ResolvedPhotonChatConfig): PhotonExternalBinding {
-    const instance = options.broker.instanceIdentity();
+    const instance = requireBroker().instanceIdentity();
     const fingerprint = photonHash([instance.instanceId, instance.environment, identity.companyId, identity.endpointId, identity.connectionId,
       identity.runtimeGeneration, config.credentials.projectId, config.credentials.lineId, config.credentials.phoneNumber,
       (config.credentials.allocation ?? "dedicated"), photonHash(config.credentials.projectSecret)]);
@@ -134,7 +139,7 @@ export function createPhotonExternalOwner(options: { store: PhotonExternalStore;
     if (!["enrolling", "joining"].includes(retained.phase)) throw new Error("Photon receiver requires retirement reconciliation");
     if (retained.phase === "enrolling") {
       try {
-        const reply = await options.broker.photonReceiverOperation({ subject: identity.subject, companyId: identity.companyId,
+        const reply = await requireBroker().photonReceiverOperation({ subject: identity.subject, companyId: identity.companyId,
           operation: { kind: "enroll", enrollment: { companyId: identity.companyId, endpointId: identity.endpointId, connectionId: identity.connectionId,
             runtimeGeneration: identity.runtimeGeneration, projectId: binding.projectId, lineId: binding.lineId, phoneNumber: binding.phoneNumber,
             allocation: binding.allocation, intakeAfter: binding.intakeAfter, maxFrameBytes: binding.maxFrameBytes,
@@ -173,6 +178,7 @@ export function createPhotonExternalOwner(options: { store: PhotonExternalStore;
   }
   async function dispatch(input: { identity: PhotonExternalIdentity; lease: PhotonExternalLease;
     delivery: { id: string; event: string; createdAt: string; installationId: string | null; bindingIds: readonly string[]; payload: unknown }; admit(event: LiveEvent): Promise<void> }): Promise<void> {
+    requireBroker();
     const retained = await options.store.read(input.identity);
     if (!retained || retained.phase !== "external") throw new Error("Photon local join or retirement remains outstanding");
     const decoded = parsePhotonExternalDelivery(input.delivery, retained);
@@ -205,19 +211,19 @@ export function createPhotonExternalOwner(options: { store: PhotonExternalStore;
   }
   async function retire(retained: PhotonExternalState): Promise<void> {
     if (retained.phase === "retired") return;
-    if (retained.phase !== "retiring") retained = await options.store.retained(retained, value => ({ ...value, phase: "retiring" }));
+    if (retained.phase !== "retiring") retained = await options.store.retained(retained, value => ({ ...value, phase: "retiring", failure: null }));
     try {
       const physical = await repair(retained); retained = physical.state;
       if (!physical.closed) throw new PhotonPhysicalResourceUnknown("Photon original local resource closure is unknown; physical retirement remains held");
       const request = { subject: retained.identity.subject, companyId: retained.identity.companyId };
-      await options.broker.photonReceiverOperation({ ...request, operation: { kind: "retire", binding: retained.binding } });
+      await requireBroker().photonReceiverOperation({ ...request, operation: { kind: "retire", binding: retained.binding } });
       const response = z.object({ binding: photonExternalBindingSchema, handoffId: z.string().uuid(),
-        phase: z.enum(["staged", "active", "retiring", "retired"]) }).strict().parse(await options.broker.photonReceiverOperation({ ...request, operation: { kind: "status", binding: retained.binding } }));
+        phase: z.enum(["staged", "active", "retiring", "retired"]) }).strict().parse(await requireBroker().photonReceiverOperation({ ...request, operation: { kind: "status", binding: retained.binding } }));
       if (!isDeepStrictEqual(response.binding, retained.binding) || response.handoffId !== retained.handoffId) throw new Error("Photon retirement tuple changed");
       if (response.phase !== "retired") throw new Error("Photon original physical close or queue drain remains outstanding");
       await options.store.retained(retained, value => ({ ...value, phase: "retired", failure: null }));
       options.notify(retained.identity);
-    } catch (error) { return fail(retained, "retirement", error, !(error instanceof PhotonPhysicalResourceUnknown)); }
+    } catch (error) { return fail(retained, error instanceof PhotonExternalBrokerUnavailable ? "authority" : "retirement", error, !(error instanceof PhotonPhysicalResourceUnknown || error instanceof PhotonExternalBrokerUnavailable)); }
   }
   return { prepare, repair, reconcile, dispatch, retire };
 }

@@ -1,8 +1,9 @@
 import { expect, it, vi } from "vitest";
-import { createChatSdkRuntime, type CreateChatSdkEndpointRuntimeOptions } from "../../services/chat-sdk-runtime.js";
+import { createChatSdkRuntime, createChatSdkEndpointRuntime, type CreateChatSdkEndpointRuntimeOptions } from "../../services/chat-sdk-runtime.js";
 import { PhotonChatAdapter } from "../../services/photon/adapter.js";
 import { PhotonReceiver } from "../../services/photon/receiver.js";
-import { memoryPersistence } from "./fixture.js";
+import { memoryPersistence, photonFixture, photonMessage, stream as photonStream } from "./fixture.js";
+import * as photonClients from "../../services/photon/owned-client.js";
 
 it("receiver failure still attempts independent SDK close and swallowed adapter failure retains the same runtime for retry", async () => {
   // Controlled receiver/resource faults and memory state ports. Real installed
@@ -53,5 +54,58 @@ it("receiver failure still attempts independent SDK close and swallowed adapter 
     // cleanup. Repair only controlled faults, then join the normal registry.
     repairAdapter?.();receiverClose.mockResolvedValue(undefined);
     try { await registry.shutdown(); } finally { vi.restoreAllMocks(); }
+  }
+});
+
+
+it("saved Photon attachments use the external useful owner and retain failed close for normal retry", async () => {
+  // Real endpoint Runtime/attachment and useful-client owners; controlled unary
+  // provider bytes/close faults, not a physical transport or SQL assertion.
+  const controls = [photonFixture(), photonFixture(), photonFixture()];
+  const clients = controls.map(value => value.adapter.client);
+  let allocations = 0;
+  const allocate = vi.spyOn(photonClients, "createOwnedPhotonClient").mockImplementation(() => {
+    const client = clients[allocations++]; if (!client) throw new Error("unexpected useful client allocation"); return client;
+  });
+  vi.spyOn(PhotonChatAdapter.prototype, "initialize").mockResolvedValue(undefined);
+  const debt = vi.fn(async () => {});
+  const runtime = createChatSdkEndpointRuntime({ companyId:"company", endpointId:"endpoint", logger:"silent", persistence:memoryPersistence(),
+    providerConfig:{provider:"imessage-photon",userName:"Agent",intakeAfter:0,credentials:{allocation:"dedicated",projectId:"project",projectSecret:"controlled-project-secret",lineId:"line",phoneNumber:"+15555550100"}},
+    callbacks:{onMessage:async()=>{},onPhotonEvent:async()=>{},onPhotonAssertOwned:async()=>{},onPhotonCheckpoint:async()=>{},onPhotonFailure:async()=>{},
+      onPhotonUsefulClientDebt:debt,onPhotonIntakePlacement:async()=>({kind:"cloud",bindingId:"controlled-current-binding"})} });
+  let closeFails = true;
+  const failure = new Error("controlled useful close failed");
+  controls[1]!.client.close.mockImplementation(async () => { if (closeFails) throw failure; });
+  try {
+    await runtime.initialize();
+    const adapter = runtime.getProviderAdapter(); if (!(adapter instanceof PhotonChatAdapter)) throw new Error("normal Photon adapter unavailable");
+    expect(() => adapter.client).toThrow("useful-operation owner");
+    expect(allocate).toHaveBeenCalledTimes(1); expect(controls[0]!.client.close).toHaveBeenCalledTimes(1);
+    const body = Buffer.from("actual controlled saved attachment bytes");
+    const info = {guid:"saved-file",totalBytes:body.length,fileName:"saved.txt",mimeType:"text/plain",isHidden:false,isSticker:false};
+    const raw = photonMessage("saved-message",controls[0]!.chat.guid); Object.assign(raw,{paperclipIsGroup:false}); Object.assign(raw.content,{attachments:[info]});
+    const message = adapter.parseMessage(raw), attachment = message.attachments[0]; if (!attachment) throw new Error("normal attachment absent");
+    const source = {threadId:message.threadId,messageId:message.id,message};
+    const descriptor = runtime.attachmentRecoveryDescriptor(attachment,source); if (!descriptor) throw new Error("normal durable locator absent");
+    const saved = JSON.parse(JSON.stringify(descriptor));
+    const recovered = runtime.rehydrateAttachment(saved,{threadId:message.threadId,messageId:message.id});
+    if (!recovered?.fetchData) throw new Error("normal replay download absent");
+    for (const control of controls.slice(1)) {
+      control.client.messages.get.mockResolvedValue(raw);
+      control.client.attachments.downloadStream.mockImplementation(() => photonStream([{type:"header",info},{type:"primaryChunk",data:body}]));
+    }
+    expect(runtime.rehydrateAttachment(saved,{threadId:message.threadId,messageId:"foreign-message"})).toBeNull();
+    await expect(recovered.fetchData()).resolves.toEqual(body);
+    expect(debt).toHaveBeenCalledTimes(1); expect(controls[1]!.client.attachments.downloadStream).toHaveBeenCalledTimes(1);
+    expect(allocate).toHaveBeenCalledTimes(2);
+    await expect(recovered.fetchData()).rejects.toBe(failure);
+    expect(allocate).toHaveBeenCalledTimes(2); expect(controls[1]!.client.attachments.downloadStream).toHaveBeenCalledTimes(1);
+    closeFails = false;
+    await expect(recovered.fetchData()).resolves.toEqual(body);
+    expect(allocate).toHaveBeenCalledTimes(3); expect(controls[2]!.client.attachments.downloadStream).toHaveBeenCalledTimes(1);
+    expect(controls[2]!.client.close).toHaveBeenCalledTimes(1);
+  } finally {
+    closeFails = false;
+    try { await runtime.shutdown(); } finally { vi.restoreAllMocks(); }
   }
 });

@@ -585,14 +585,14 @@ mod tests {
         let directory = temporary_directory("reap");
         let pid_file = directory.join("job.pid");
         // The wrapper lives past several samples, as a real tool wrapper does.
-        let tool = r#"sleep 0.3; nohup /bin/sh -c 'while :; do sleep 1; done' >/dev/null 2>&1 & echo $! > "$0.tmp"; mv "$0.tmp" "$0"; exit 0"#;
+        let tool = r#"sleep 0.3; nohup /bin/sleep 30 >/dev/null 2>&1 & echo $! > "$0.tmp"; mv "$0.tmp" "$0"; exit 0"#;
         let wrapper = format!(
             "use POSIX (); POSIX::setsid() or die; exec '/bin/sh', '-c', q{{{tool}}}, $ARGV[0];"
         );
         let mut provider = std::process::Command::new("/bin/sh")
             .args([
                 "-c",
-                r#"sleep 0.2; perl -e "$1" "$2"; while :; do sleep 1; done"#,
+                r#"sleep 0.2; perl -e "$1" "$2"; exec /bin/sleep 30"#,
                 "provider",
                 &wrapper,
                 &pid_file.display().to_string(),

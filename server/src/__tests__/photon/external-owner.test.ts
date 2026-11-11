@@ -253,3 +253,19 @@ describe("Photon recorded allocation lifetime utility (controlled process probes
     expect(legacy.localResourceId).toBe(f.resourceId); expect(legacy.localClosureConfirmed).toBeUndefined();
   });
 });
+
+
+it("absent Cloud port cannot activate business and retirement retains authority attention", async () => {
+  const f=fixture();const original=await f.reconcile();const count=f.requests.length;
+  const missing=createPhotonExternalOwner({store:f.store,broker:undefined,resources:f.resources,notify:()=>{}});
+  const input={identity,config,lease:{token:"lease"},localResourceId:f.resourceId};
+  await expect(missing.prepare(input)).rejects.toThrow("Cloud receiver port is unavailable");
+  await expect(missing.reconcile(input)).rejects.toThrow("Cloud receiver port is unavailable");
+  let admitted=0;
+  await expect(missing.dispatch({identity,lease:{token:"lease"},delivery:delivery(original),admit:async()=>{admitted++;}})).rejects.toThrow("Cloud receiver port is unavailable");
+  expect(admitted).toBe(0);expect(await f.read()).toEqual(original);expect(f.requests).toHaveLength(count);
+  await expect(missing.retire(original)).rejects.toThrow("Cloud receiver port is unavailable");
+  const held=await f.read();expect(held).toMatchObject({phase:"retiring",failure:{code:"authority",nextAttemptAt:null}});
+  expect(held?.binding).toEqual(original.binding);expect(held?.acceptedSequence).toBe(original.acceptedSequence);
+  expect(held?.localResourceId).toBe(original.localResourceId);expect(f.requests).toHaveLength(count);
+});
