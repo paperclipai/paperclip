@@ -7607,6 +7607,24 @@ function providerSessionIdentityIsPresent(value: unknown): boolean {
 }
 
 /** Closed diagnostic categories; durable state may contain private provider data. */
+export function remoteProviderStateNeverOpened(execution: NativeExecutionInput, providerState: unknown): boolean {
+  const state = record(providerState);
+  if (state.lifecycle !== "prepared") return false;
+  switch (execution.provider.kind) {
+    case "acpx":
+      return state.schema === ACPX_PROVIDER_STATE_SCHEMA && (state.identity ?? null) === null
+        && (state.activeTurnId ?? null) === null && state.providerExitUnconfirmed === false;
+    case "cursor_cloud":
+    case "codex":
+    case "opencode":
+      return state.schema === CODEX_PROVIDER_STATE_SCHEMA && (state.threadId ?? null) === null
+        && (state.providerSessionId ?? null) === null && (state.activeProviderTurnId ?? null) === null
+        && state.ambiguousTurnStartPending !== true;
+    default:
+      return false;
+  }
+}
+
 export function durableProviderCheckpointFailureReason(execution: NativeExecutionInput, providerState: unknown): string {
   if (execution.provider.kind !== "acpx") return "identity_binding";
   const state = record(providerState);
@@ -15669,6 +15687,13 @@ async function createRunnerdBackendWithinSessionClaim(
    * this invocation's archived rotation snapshot; every other caller,
    * including close checkpointing, must inspect the live Runner state.
    */
+  const provenOwnBootstrapRestart = (runId: string | null | undefined) =>
+    input.restartRecovery?.kind === "bootstrap_incomplete"
+    && runId === input.execution.binding.runId
+    && hasRemoteBootstrapRestartProof(input.execution.binding.runId);
+  const restartableBootstrapState = (state: { incompleteReason: string | null; notSuspendedRunId?: string | null }) =>
+    (state.incompleteReason === "not_suspended" || state.incompleteReason === "provider_unopened")
+    && provenOwnBootstrapRestart(state.notSuspendedRunId);
   const inspectRemoteHarnessState = async (
     source: "live" | "host_preparation" = "live",
   ): Promise<{
@@ -15763,14 +15788,8 @@ async function createRunnerdBackendWithinSessionClaim(
         providerState,
       });
     if (!providerSessionIdentityIsPresent(providerSessionIdentity)) {
-      // This run's own interrupted bootstrap suspended its Runner before the
-      // provider opened a session (for example a provider rate limit at
-      // session.open). The controller's durable state already proved that no
-      // provider turn ran, so the restart may set it aside like a Runner that
-      // never suspended. Any other run's state stays fail-closed.
-      if (source === "host_preparation" && input.restartRecovery?.kind === "bootstrap_incomplete"
-        && runnerState.runId === input.execution.binding.runId
-        && hasRemoteBootstrapRestartProof(input.execution.binding.runId)) {
+      if (source === "host_preparation" && remoteProviderStateNeverOpened(input.execution, providerState)
+        && provenOwnBootstrapRestart(typeof runnerState.runId === "string" ? runnerState.runId : null)) {
         return {
           complete: false,
           runnerState: null,
@@ -16118,11 +16137,7 @@ async function createRunnerdBackendWithinSessionClaim(
                       !state.runnerState ||
                       !state.providerSessionIdentity
                     ) {
-                      const provenRestart = (state.incompleteReason === "not_suspended" || state.incompleteReason === "provider_unopened")
-                        && !backupAvailable
-                        && input.restartRecovery?.kind === "bootstrap_incomplete"
-                        && state.notSuspendedRunId === input.execution.binding.runId
-                        && hasRemoteBootstrapRestartProof(input.execution.binding.runId)
+                      const provenRestart = restartableBootstrapState(state) && !backupAvailable
                         && await moveInterruptedBootstrapSessionAside()
                         && takeRemoteBootstrapRestartProof(input.execution.binding.runId);
                       // A resumed allocation that never held this session (for example
@@ -16201,10 +16216,7 @@ async function createRunnerdBackendWithinSessionClaim(
                       // lease was not provider-confirmed lost. Never silently create a new
                       // provider session from that ambiguous state.
                       throw new Error("runner_harness_state_mismatch: backup_without_reusable_lease");
-                    } else if ((state.incompleteReason === "not_suspended" || state.incompleteReason === "provider_unopened")
-                      && input.restartRecovery?.kind === "bootstrap_incomplete"
-                      && state.notSuspendedRunId === input.execution.binding.runId
-                      && hasRemoteBootstrapRestartProof(input.execution.binding.runId)) {
+                    } else if (restartableBootstrapState(state)) {
                       if (!(await moveInterruptedBootstrapSessionAside()
                         && takeRemoteBootstrapRestartProof(input.execution.binding.runId)
                         && await claimUntouchedRemoteSession())) {

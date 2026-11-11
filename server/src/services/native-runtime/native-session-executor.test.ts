@@ -471,6 +471,7 @@ import {
   syncRemoteRunnerDirectoryOut,
   verifyNativeHarnessBackup,
   shouldRestoreNativeHarnessBackupIntoSandbox,
+  remoteProviderStateNeverOpened,
 } from "./native-session-executor.js";
 import { onNativeRunnerEvidence } from "./native-runner-evidence-signal.js";
 
@@ -20251,12 +20252,13 @@ describe("runnerd provider runtime wiring", () => {
       .map((scenario) => ({ outcome, scenario, homeMode: "isolated" }))),
     ...["resumed", "replacement"].map(outcome => ({ outcome, scenario: "fresh", homeMode: "preconfigured" })),
     ...["interrupted_bootstrap", "interrupted_bootstrap_other_run", "interrupted_bootstrap_unproven", "interrupted_bootstrap_symlink_parent",
-      "interrupted_bootstrap_unopened", "interrupted_bootstrap_unopened_unproven", "interrupted_bootstrap_unopened_other_run"]
+      "interrupted_bootstrap_unopened", "interrupted_bootstrap_unopened_unproven", "interrupted_bootstrap_unopened_other_run",
+      "interrupted_bootstrap_unopened_active_turn"]
       .map(scenario => ({ outcome: "resumed", scenario, homeMode: "isolated" })),
     { outcome: "created", scenario: "interrupted_bootstrap", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_symlink_parent", homeMode: "isolated" },
-    // The Runner suspended after session.open failed, so no provider session exists.
     { outcome: "created", scenario: "interrupted_bootstrap_unopened", homeMode: "isolated" },
+    { outcome: "created", scenario: "interrupted_bootstrap_unopened_active_turn", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_unopened_unproven", homeMode: "isolated" },
   ])(
     "bootstraps only an untouched provider session in a $outcome workspace lease: $scenario ($homeMode)", async ({ outcome, scenario, homeMode }) => {
@@ -20301,6 +20303,13 @@ describe("runnerd provider runtime wiring", () => {
         try { execFileSync("sh", command.args, { stdio: "pipe" }); return { exitCode: 0, timedOut: false, stdout: "", stderr: "" }; }
         catch { return { exitCode: 1, timedOut: false, stdout: "", stderr: "" }; }
       }
+      if (command.args?.[1]?.includes("base64") && scenario.startsWith("interrupted_bootstrap_unopened")
+        && command.args[1].includes("codex-provider-state.json") && !command.args[1].includes("runner-state.json")) return {
+        exitCode: 0, timedOut: false, stderr: "", stdout: Buffer.from(JSON.stringify({
+          schema: "paperclip.runner.codex-provider-state.v1", lifecycle: "prepared", threadId: null, providerSessionId: null,
+          activeProviderTurnId: scenario.endsWith("_active_turn") ? "turn-in-progress" : null, ambiguousTurnStartPending: false,
+          config: { provider: "codex", driver: "codex_app_server" } })).toString("base64"),
+      };
       if (command.args?.[1]?.includes("base64") && scenario.startsWith("interrupted_bootstrap")) return {
         exitCode: 0, timedOut: false, stderr: "", stdout: Buffer.from(JSON.stringify({
           runnerInstanceId: "runner-new-in-retained-workspace", normalizedSessionId: execution.session.normalizedSessionId,
@@ -20398,7 +20407,7 @@ describe("runnerd provider runtime wiring", () => {
       await writeFile(join(options.stateDirectory!, "failover-backups", "current", "manifest.json"), "{}");
     }
     if (["interrupted_bootstrap", "interrupted_bootstrap_other_run", "interrupted_bootstrap_symlink_parent",
-      "interrupted_bootstrap_unopened", "interrupted_bootstrap_unopened_other_run"].includes(scenario)) {
+      "interrupted_bootstrap_unopened", "interrupted_bootstrap_unopened_other_run", "interrupted_bootstrap_unopened_active_turn"].includes(scenario)) {
       noteRemoteBootstrapRestartProven(execution.binding.runId, "stopped");
     }
     if (scenario === "interrupted_bootstrap" || scenario === "interrupted_bootstrap_unopened") {
@@ -21228,4 +21237,23 @@ describe("HTTP Stop during remote runner staging", () => {
       expect(dispatches).toBe(0);
     } finally { release(); await outcome; await stopping; await bundle.transport.detachControllerForRestart?.().catch(() => {}); await temporary.cleanup(); await rm(root, { recursive: true, force: true }); }
   }, 120000);
+});
+
+describe("remoteProviderStateNeverOpened", () => {
+  const acpx = { provider: { kind: "acpx" } } as unknown as Parameters<typeof remoteProviderStateNeverOpened>[0];
+  const prepared = {
+    schema: "paperclip.runner.acpx-provider-state.v3", launchProfileDigest: `sha256:${"c".repeat(64)}`, lifecycle: "prepared",
+    descriptor: { kind: "acpx", provider: "acpx", driver: "acpx_runtime", agent: "claude", model: "explicit-model" },
+    toolSet: {}, identity: null, activeTurnId: null, attemptedTurnControls: [], providerExitUnconfirmed: false,
+    semanticResult: null, goalProjection: null,
+  };
+  it("accepts the ACPX state a rejected session.open leaves, and nothing that may hold a turn", () => {
+    expect(remoteProviderStateNeverOpened(acpx, prepared)).toBe(true);
+    for (const changed of [{ lifecycle: "session_open" }, { lifecycle: "turn_active", activeTurnId: "turn" }, { activeTurnId: "turn" },
+      { providerExitUnconfirmed: true }, { lifecycle: "closed", providerExitUnconfirmed: true }, { schema: "paperclip.runner.acpx-provider-state.v2" },
+      { identity: { kind: "acpx", acpxRecordId: "record" } }]) {
+      expect(remoteProviderStateNeverOpened(acpx, { ...prepared, ...changed })).toBe(false);
+    }
+    expect(remoteProviderStateNeverOpened({ provider: { kind: "claude_managed" } } as never, { lifecycle: "prepared" })).toBe(false);
+  });
 });
