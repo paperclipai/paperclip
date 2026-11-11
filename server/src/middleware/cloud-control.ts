@@ -1,22 +1,46 @@
+import type { Request } from "express";
+import type { VerifiedIdleCapabilities } from "../services/idle-incoming-wake-capability.js";
 import type { RequestHandler } from "express";
 import { logger } from "./logger.js";
 import {
   CLOUD_CONTROL_HEADER,
   verifyCloudControlAssertion,
   type CloudControlAction,
+  type CloudControlClaims,
 } from "../services/cloud-runtime-identity.js";
 
-/** Method → the one action a control assertion must name to take it. */
-const ACTION_BY_METHOD: Record<string, CloudControlAction> = {
-  GET: "task-drain:read",
-  POST: "task-drain:start",
-  DELETE: "task-drain:stop",
+const idleCapabilities = new WeakMap<Request, VerifiedIdleCapabilities>();
+const controlClaims = new WeakMap<Request, CloudControlClaims>();
+export function verifiedCloudControlClaims(req: Request): CloudControlClaims | undefined {
+  return controlClaims.get(req);
+}
+/** Only this middleware's verified assertion can install request capabilities. */
+export function verifiedIdleCapabilities(req: Request): VerifiedIdleCapabilities | undefined {
+  return idleCapabilities.get(req);
+}
+
+/** Endpoint → method → the one action a control assertion must name to take it. */
+const ACTIONS_BY_ENDPOINT: Record<string, Record<string, CloudControlAction>> = {
+  "/api/instance/ephemeral-enrollment/prepare": { POST: "ephemeral-enrollment:prepare" },
+  "/api/instance/connector-events/wake": { POST: "connector-events:wake" },
+  "/api/instance/task-drain/status": { POST: "task-drain:read-body" },
+  "/api/instance/task-drain": {
+    GET: "task-drain:read",
+    POST: "task-drain:start",
+    DELETE: "task-drain:stop",
+  },
+  "/api/instance/lifecycle": {
+    GET: "lifecycle:read",
+  },
+  "/api/instance/lifecycle/unarchive-primary": {
+    POST: "lifecycle:unarchive-primary",
+  },
 };
 
 /**
- * Accepts Cloud's signed control assertion only on the task-drain endpoint,
- * so the Cloud control plane can hold new agent work and wait for quiescence
- * before restarting the container for a deploy. The JWS is the entire
+ * Accepts Cloud's signed control assertion only on the closed endpoint set
+ * above — the task-drain hold the deploy path uses, and the lifecycle
+ * read-back/unarchive pair behind the Cloud archive sync. The JWS is the entire
  * authorization: a valid assertion installs a synthetic instance-admin board
  * actor (replacing whatever weaker actor the request carried), each assertion
  * is bound to exactly one method's action, and the header is rejected loudly
@@ -32,16 +56,20 @@ export function cloudControlMiddleware(): RequestHandler {
       next();
       return;
     }
-    const expectedAction = ACTION_BY_METHOD[req.method];
     // Express's non-strict routing treats a trailing slash as the same
     // route; the endpoint check must agree with it.
     const normalizedPath = req.path.length > 1 && req.path.endsWith("/") ? req.path.slice(0, -1) : req.path;
-    if (normalizedPath !== "/api/instance/task-drain" || !expectedAction) {
+    const expectedAction = ACTIONS_BY_ENDPOINT[normalizedPath]?.[req.method];
+    if (!expectedAction) {
       res.status(400).json({ error: "cloud_control_wrong_endpoint" });
       return;
     }
     try {
-      verifyCloudControlAssertion({ compactJws: assertion, expectedAction });
+      const rawBody: unknown = Reflect.get(req, "rawBody");
+      const claims = verifyCloudControlAssertion({ compactJws: assertion, expectedAction,
+        ...(Buffer.isBuffer(rawBody) ? { rawBody } : {}) });
+      controlClaims.set(req, claims);
+      if (claims.idleCapabilities) idleCapabilities.set(req, claims.idleCapabilities as VerifiedIdleCapabilities);
     } catch (error) {
       logger.warn({ err: error }, "Rejected Cloud control assertion");
       res.status(401).json({ error: "invalid_cloud_control_assertion" });

@@ -55,6 +55,8 @@ export const issueThreadInteractions = pgTable(
     payload: jsonb("payload").$type<IssueThreadInteractionPayload>().notNull(),
     result: jsonb("result").$type<IssueThreadInteractionResult>(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
+    dismissedByUserId: text("dismissed_by_user_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

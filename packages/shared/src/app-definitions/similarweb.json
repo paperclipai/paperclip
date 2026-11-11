@@ -37,7 +37,8 @@
           "type": "password",
           "required": true,
           "placeholder": "Paste your Similarweb API key",
-          "secret": true
+          "secret": true,
+          "helperMd": "None: analytics retrieval; subscription entitlements apply. A read-only key is sufficient."
         }
       ],
       "keyPlacement": {

@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent, ExecutionWorkspace, Project, RoutineVariable } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "../lib/queryKeys";
 import { RoutineRunVariablesDialog } from "./RoutineRunVariablesDialog";
 
 let issueWorkspaceDraftCalls = 0;
@@ -175,14 +176,16 @@ function createExecutionWorkspace(): ExecutionWorkspace {
   };
 }
 
-function createQueryClient() {
-  return new QueryClient({
+function createQueryClient(hiddenSettings: string[] = []) {
+  const client = new QueryClient({
     defaultOptions: {
       queries: {
         retry: false,
       },
     },
   });
+  client.setQueryData(queryKeys.health, { hiddenSettings });
+  return client;
 }
 
 async function renderRoutineRunDialog(container: HTMLDivElement, props: {
@@ -249,13 +252,7 @@ describe("RoutineRunVariablesDialog", () => {
 
   it("does not loop when the workspace card reports the same draft repeatedly", async () => {
     const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: {
-          retry: false,
-        },
-      },
-    });
+    const queryClient = createQueryClient();
 
     await flushUi(() => {
       root.render(
@@ -284,6 +281,31 @@ describe("RoutineRunVariablesDialog", () => {
     await flushUi(() => {
       root.unmount();
     });
+  });
+
+  it("hides workspace overrides while retaining an automatic workspace branch", async () => {
+    const root = createRoot(container);
+    const queryClient = createQueryClient(["workspaces.isolation"]);
+    const onSubmit = vi.fn();
+    const workspace = createExecutionWorkspace();
+    await flushUi(() => root.render(
+      <QueryClientProvider client={queryClient}>
+        <RoutineRunVariablesDialog open onOpenChange={() => {}} companyId="company-1"
+          projects={[createProject()]} agents={[createAgent()]} defaultProjectId="project-1"
+          defaultAssigneeAgentId="agent-1" defaultExecutionWorkspace={workspace}
+          variables={[{ name: "workspaceBranch", required: true } as RoutineVariable]}
+          isPending={false} onSubmit={onSubmit} />
+      </QueryClientProvider>,
+    ));
+    await flushUi(() => {});
+    expect(document.body.textContent).not.toContain("Workspace card");
+    expect(findRunButton()?.disabled).toBe(false);
+    await flushUi(() => findRunButton()?.click());
+    expect(onSubmit).toHaveBeenCalledWith({
+      variables: { workspaceBranch: workspace.branchName }, assigneeAgentId: "agent-1", projectId: "project-1",
+    });
+    expect(issueWorkspaceDraftCalls).toBe(0);
+    await flushUi(() => root.unmount());
   });
 
   it("keeps the run disabled while a reusable workspace selection is incomplete", async () => {
@@ -322,13 +344,7 @@ describe("RoutineRunVariablesDialog", () => {
 
   it("keeps the mobile dialog bounded with an internal form scroll region", async () => {
     const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: {
-          retry: false,
-        },
-      },
-    });
+    const queryClient = createQueryClient();
 
     await flushUi(() => {
       root.render(
@@ -394,13 +410,7 @@ describe("RoutineRunVariablesDialog", () => {
     issueWorkspaceBranchName = "pap-1634-routine-branch";
     const onSubmit = vi.fn();
     const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: {
-          retry: false,
-        },
-      },
-    });
+    const queryClient = createQueryClient();
 
     await flushUi(() => {
       root.render(
@@ -481,13 +491,7 @@ describe("RoutineRunVariablesDialog", () => {
     issueWorkspaceBranchName = workspace.branchName;
 
     const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: {
-        queries: {
-          retry: false,
-        },
-      },
-    });
+    const queryClient = createQueryClient();
 
     await flushUi(() => {
       root.render(

@@ -1,5 +1,6 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Navigate, useNavigate, useParams } from "@/lib/router";
+import { Navigate, useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, History, Pencil, Repeat, Sparkles, X } from "lucide-react";
 import { ApiError } from "../api/client";
@@ -13,7 +14,6 @@ import { secretsApi } from "../api/secrets";
 import { type RoutineHistoryDirtyFieldDescriptor } from "../components/RoutineHistoryTab";
 import { heartbeatsApi } from "../api/heartbeats";
 import { agentsApi } from "../api/agents";
-import { projectsApi } from "../api/projects";
 import { accessApi } from "../api/access";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -21,10 +21,13 @@ import { useToastActions } from "../context/ToastContext";
 import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
+import { routineOverviewCopyText } from "../lib/routine-description-copy";
 import { buildMarkdownMentionOptions } from "../lib/company-members";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
+import { describeError } from "../api/errors";
 import { type InlineEntityOption } from "../components/InlineEntitySelector";
 import { type MarkdownEditorRef, type MentionOption } from "../components/MarkdownEditor";
 import {
@@ -37,6 +40,7 @@ import { getRecentProjectIds, trackRecentProject } from "../lib/recent-projects"
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { RoutineOverview } from "../components/RoutineOverview";
+import { RoutineSectionHeading } from "../components/RoutineSectionHeading";
 import { RoutineSectionPicker, RoutineSubSidebar } from "../components/RoutineSubSidebar";
 import {
   isRoutineDetailView,
@@ -86,7 +90,7 @@ export function buildRoutineProjectOptions(
 
 const SECTION_TITLES: Record<RoutineSectionKey, string> = {
   overview: "Overview",
-  triggers: "Schedule",
+  triggers: "Triggers",
   variables: "Variables",
   secrets: "Secrets",
   delivery: "Delivery",
@@ -121,6 +125,8 @@ function buildRoutineMutationPayload(input: RoutineEditDraft) {
 
 export function RoutineDetail() {
   const { routineId, section: sectionParam } = useParams<{ routineId: string; section?: string }>();
+  const [searchParams] = useSearchParams();
+  const triggerSetup = sectionParam === "triggers" && searchParams.has("triggerSetup");
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
@@ -172,11 +178,13 @@ export function RoutineDetail() {
     [navigate, routineId, streamlinedUiEnabled],
   );
 
-  const { data: routine, isLoading, error } = useQuery({
+  const routineQuery = useQuery({
     queryKey: queryKeys.routines.detail(routineId!),
     queryFn: () => routinesApi.get(routineId!),
     enabled: !!routineId,
   });
+  const { data: routine, isLoading } = routineQuery;
+  const routineView = useQueryView(routineQuery);
   const activeIssueId = routine?.activeIssue?.id;
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(activeIssueId!),
@@ -198,7 +206,7 @@ export function RoutineDetail() {
     }),
     [routine?.triggers, routineRuns],
   );
-  const { data: activity } = useQuery({
+  const activityQuery = useQuery({
     queryKey: [
       ...queryKeys.routines.activity(selectedCompanyId!, routineId!),
       relatedActivityIds.triggerIds.join(","),
@@ -207,14 +215,15 @@ export function RoutineDetail() {
     queryFn: () => routinesApi.activity(selectedCompanyId!, routineId!, relatedActivityIds),
     enabled: !!selectedCompanyId && !!routineId && !!routine,
   });
+  const { data: activity } = activityQuery;
+  const activityView = useQueryView(activityQuery);
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
-    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
+    ...companyProjectsQuery(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
   const { data: companyMembers } = useQuery({
@@ -325,14 +334,14 @@ export function RoutineDetail() {
 
   useEffect(() => {
     if (!routine) return;
-    setBreadcrumbs([{ label: "Routines", href: "/routines" }, { label: routine.title }]);
+    if (!triggerSetup) setBreadcrumbs([{ label: "Routines", href: "/routines" }, { label: routine.title }]);
     if (!routineDefaults) return;
     const changedRoutine = hydratedRoutineIdRef.current !== routine.id;
     if (changedRoutine || !isEditDirty) {
       setEditDraft(routineDefaults);
       hydratedRoutineIdRef.current = routine.id;
     }
-  }, [routine, routineDefaults, isEditDirty, setBreadcrumbs]);
+  }, [routine, routineDefaults, isEditDirty, setBreadcrumbs, triggerSetup]);
 
   useEffect(() => {
     autoResizeTextarea(titleInputRef.current);
@@ -350,7 +359,7 @@ export function RoutineDetail() {
       } catch (copyError) {
         pushToast({
           title: `Failed to copy ${label.toLowerCase()}`,
-          body: copyError instanceof Error ? copyError.message : "Clipboard access was denied.",
+          body: describeError(copyError, { action: "copy to the clipboard" }).body,
           tone: "error",
         });
       }
@@ -388,7 +397,7 @@ export function RoutineDetail() {
       }
       pushToast({
         title: "Failed to save routine",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not save the routine.",
+        body: describeError(mutationError, { action: "save the routine" }).body,
         tone: "error",
       });
     },
@@ -413,6 +422,7 @@ export function RoutineDetail() {
       setRunVariablesOpen(false);
       navigateToSection("runs");
       await Promise.all([
+        queryClient.invalidateQueries({ queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine", routineId!] }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.detail(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.runs(routineId!) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.routines.list(selectedCompanyId!) }),
@@ -422,7 +432,7 @@ export function RoutineDetail() {
     onError: (runError) => {
       pushToast({
         title: "Routine run failed",
-        body: runError instanceof Error ? runError.message : "Paperclip could not start the routine run.",
+        body: describeError(runError, { action: "start the routine run" }).body,
         tone: "error",
       });
     },
@@ -444,7 +454,7 @@ export function RoutineDetail() {
     onError: (statusError) => {
       pushToast({
         title: "Failed to update routine",
-        body: statusError instanceof Error ? statusError.message : "Paperclip could not update the routine.",
+        body: describeError(statusError, { action: "update the routine" }).body,
         tone: "error",
       });
     },
@@ -483,7 +493,7 @@ export function RoutineDetail() {
     onError: (triggerError) => {
       pushToast({
         title: "Failed to add trigger",
-        body: triggerError instanceof Error ? triggerError.message : "Paperclip could not create the trigger.",
+        body: describeError(triggerError, { action: "create the trigger" }).body,
         tone: "error",
       });
     },
@@ -502,7 +512,7 @@ export function RoutineDetail() {
     onError: (triggerError) => {
       pushToast({
         title: "Failed to update trigger",
-        body: triggerError instanceof Error ? triggerError.message : "Paperclip could not update the trigger.",
+        body: describeError(triggerError, { action: "update the trigger" }).body,
         tone: "error",
       });
     },
@@ -521,7 +531,7 @@ export function RoutineDetail() {
     onError: (triggerError) => {
       pushToast({
         title: "Failed to delete trigger",
-        body: triggerError instanceof Error ? triggerError.message : "Paperclip could not delete the trigger.",
+        body: describeError(triggerError, { action: "delete the trigger" }).body,
         tone: "error",
       });
     },
@@ -542,7 +552,7 @@ export function RoutineDetail() {
     onError: (triggerError) => {
       pushToast({
         title: "Failed to rotate webhook secret",
-        body: triggerError instanceof Error ? triggerError.message : "Paperclip could not rotate the webhook secret.",
+        body: describeError(triggerError, { action: "rotate the webhook secret" }).body,
         tone: "error",
       });
     },
@@ -602,6 +612,7 @@ export function RoutineDetail() {
 
   const onHistoryRestoreSecretMaterials = useCallback((response: RestoreRoutineRevisionResponse) => {
     if (response.secretMaterials.length > 0) {
+      navigateToSection("triggers");
       setSecretMessage({
         title:
           response.secretMaterials.length === 1
@@ -613,7 +624,7 @@ export function RoutineDetail() {
         })),
       });
     }
-  }, []);
+  }, [navigateToSection]);
 
   const onHistoryRestored = useCallback(
     (response: RestoreRoutineRevisionResponse) => {
@@ -663,15 +674,29 @@ export function RoutineDetail() {
     );
   }
 
-  if (isLoading) {
+  // Keep a loaded routine on screen through a failed refetch; only a real
+  // failure, or an outage before the first load, replaces the page.
+  if (isLoading || routineView.kind === "reconnecting") {
     return <PageSkeleton variant="issues-list" />;
   }
 
-  if (error || !routine || !routineDefaults) {
+  if (routineView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={routineView.error}
+        action="load this routine"
+        onRetry={routineView.retry}
+        retrying={routineView.isFetching}
+      />
+    );
+  }
+
+  if (!routine || !routineDefaults) {
     return (
       <EmptyState
         icon={AlertCircle}
-        message={error instanceof Error ? error.message : "We couldn't load this routine."}
+        message="We couldn't load this routine."
       />
     );
   }
@@ -759,6 +784,8 @@ export function RoutineDetail() {
     onHistoryRestored,
     navigateToSection,
   };
+
+  if (triggerSetup) return <RoutineDetailContext.Provider value={contextValue}><TriggersSection /></RoutineDetailContext.Provider>;
 
   const isEditableSection = EDITABLE_SECTIONS.includes(section);
 
@@ -893,9 +920,16 @@ export function RoutineDetail() {
                   : "w-full"
             }
           >
-            <h2 id="routine-section-title" className="mb-4 text-lg font-semibold">
-              {SECTION_TITLES[section]}
-            </h2>
+            <RoutineSectionHeading
+              title={SECTION_TITLES[section]}
+              copyText={section === "overview"
+                ? routineOverviewCopyText({
+                    editing: overviewEditing,
+                    draft: editDraft.description,
+                    saved: routine.description,
+                  })
+                : null}
+            />
 
             {section === "overview" && (overviewEditing ? <OverviewSection /> : <RoutineOverview />)}
             {section === "triggers" && <TriggersSection />}
@@ -903,7 +937,14 @@ export function RoutineDetail() {
             {section === "secrets" && <SecretsSection />}
             {section === "delivery" && <DeliverySection />}
             {section === "runs" && <RunsSection />}
-            {section === "activity" && <ActivitySection />}
+            {section === "activity" && (
+              <ActivitySection
+                isLoading={activityView.kind === "loading" || activityView.kind === "reconnecting"}
+                error={activityView.kind === "error" ? activityView.error : null}
+                onRetry={activityView.retry}
+                retrying={activityView.isFetching}
+              />
+            )}
             {section === "history" && <HistorySection />}
 
             {isEditableSection && (section !== "overview" || overviewEditing) ? (

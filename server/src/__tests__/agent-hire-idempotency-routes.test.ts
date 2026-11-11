@@ -136,6 +136,8 @@ describeEmbeddedPostgres("agent hire idempotency within a run", () => {
     expect(second.status, JSON.stringify(second.body)).toBe(200);
     expect(second.body.idempotent).toBe(true);
     expect(second.body.agent?.id).toBe(createdId);
+    expect(first.body.agent?.appearance).toMatchObject({ schemaVersion: 1, characterVersion: "cap-v1" });
+    expect(second.body.agent?.appearance).toEqual(first.body.agent?.appearance);
     // The retry must not have auto-renamed a duplicate to "Sam 2".
     expect(second.body.agent?.name).toBe("Sam");
 
@@ -183,11 +185,11 @@ describeEmbeddedPostgres("agent hire idempotency within a run", () => {
     // Same identity, corrected configuration: the agent meant a different hire.
     const corrected = await request(app)
       .post(`/api/companies/${company.id}/agent-hires`)
-      .send({ name: "Sam", role: "engineer", adapterType: "process", budgetMonthlyCents: 5000 });
+      .send({ name: "Sam", role: "engineer", adapterType: "process", title: "Store Builder" });
     expect(corrected.status, JSON.stringify(corrected.body)).toBe(201);
     expect(corrected.body.idempotent).toBeUndefined();
     expect(corrected.body.agent?.id).not.toBe(first.body.agent?.id);
-    expect(corrected.body.agent?.budgetMonthlyCents).toBe(5000);
+    expect(corrected.body.agent?.title).toBe("Store Builder");
   });
 
   it("still creates a distinct agent for a different hire in the same run", async () => {

@@ -1,14 +1,22 @@
 import { api } from "./client";
 import type {
   EmailConnectionInput,
+  EmailCredentialOption,
   ToolConnection,
   EmailEndpointSummary,
   EmailPublicationSummary,
   EmailThreadSummary,
   EmailSendInput,
   EmailEndpointSetupInput,
+  EmailAddressCheckInput,
+  EmailAddressCheckResult,
 } from "@paperclipai/shared";
 export const emailApi = {
+  credentials: (companyId: string) => api.get<EmailCredentialOption[]>(`/companies/${companyId}/email/connections`),
+  checkAddress: (companyId: string, connectionId: string, input: EmailAddressCheckInput, signal?: AbortSignal) =>
+    api.post<EmailAddressCheckResult>(
+      `/companies/${companyId}/email/connections/${connectionId}/check-address`, input, { signal },
+    ),
   connect: (companyId: string, input: EmailConnectionInput) =>
     api.post<ToolConnection>(
       `/companies/${companyId}/email/connections`,
@@ -29,6 +37,7 @@ export const emailApi = {
     ),
   inspect: (companyId: string, apiKey: string) =>
     api.post<{
+      scope: { scope_type: string };
       inboxes: { inbox_id: string }[];
       domains: { domain_id: string; domain: string; status: string }[];
     }>(`/companies/${companyId}/email/inspect`, { apiKey }),

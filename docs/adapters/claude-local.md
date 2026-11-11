@@ -5,6 +5,18 @@ summary: Claude Code local adapter setup and configuration
 
 The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports session persistence, skills injection, and structured output parsing.
 
+## Quota waits
+
+Claude ACP runs that end with a typed provider-quota error retain the quota
+classification and any parsed reset time. Recovery waits until that time, or
+uses its existing one-hour quota backoff when no reset time is available.
+This includes the Claude bridge's typed “The Claude account has no available
+quota.” fallback, which carries no reset timestamp.
+The adapter inspects the terminal provider message in memory; the run result
+and run log retain only the generic failure message, recovery labels, and reset
+timestamp. Context, turn, rate, and configured budget limits are not treated as
+subscription quota exhaustion merely because ACP labels them `limit`.
+
 ## Prerequisites
 
 - Claude Code CLI installed (`claude` command available)
@@ -24,6 +36,10 @@ The `claude_local` adapter runs Anthropic's Claude Code CLI locally. It supports
 | `graceSec` | number | No | Grace period before force-kill |
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (default: `true`); required for headless runs where interactive approval is impossible |
+
+On the CLI engine, version and `--effort` capability probes have a bounded
+20-second budget when `timeoutSec` is zero or unset. A positive run timeout below
+20 seconds also limits these probes, with a minimum probe budget of one second.
 
 ## Default model
 
@@ -81,7 +97,7 @@ What the adapter does automatically:
 On-call checklist if you see this in production:
 
 - Confirm `errorCode` is `claude_poisoned_previous_message_id` in the run row — that means the guards fired correctly and the issue auto-recovers on the next heartbeat.
-- If the same issue still loops after one heartbeat, check that `agentTaskSessions` for that `(agentId, taskKey)` was cleared. If not, the adapter return value was lost (e.g. a malformed run finalization) — escalate; do **not** manually edit the row, file a child issue with the run id.
+- If the same issue still loops after one heartbeat, check that `agentTaskSessions` for that `(agentId, taskKey)` was cleared. If not, the adapter return value was lost (e.g. a malformed run finalization) — escalate; do **not** manually edit the row, include the run id in the escalation.
 - For remote execution targets (sandbox/SSH), the poisoned JSONL is on the remote and the adapter only logs the cleanup intent. The fresh-session retry still succeeds because it uses a new session id, and the server-side `clearSession: true` is authoritative regardless of remote disk state.
 
 ## Skills Injection
@@ -115,6 +131,23 @@ the run.
 This differs from [`codex_local`](/adapters/codex-local), where a
 Paperclip-managed sandbox run uploads a host-owned `CODEX_HOME/auth.json` and
 therefore shadows any Codex login already present inside the sandbox image.
+
+## Sandbox memory limits
+
+A sandbox has a fixed memory limit. When a tool command (for example a type
+check or a dependency install) uses most of that memory, the kernel kills one
+process. Without help it can kill the Claude Code process, and the run fails
+with "The connection to Claude was lost."
+
+For managed sandbox runs, the same materialization step installs a
+`tool-shell-prefix.sh` script in the run's Claude runtime directory and sets
+`CLAUDE_CODE_SHELL_PREFIX` to it. Claude Code runs each Bash tool command and
+hook through that script. The script raises the command's `oom_score_adj` to
+1000 and then runs the command in the shell that Claude Code selects. The
+kernel then kills the tool command first, and Claude sees a failed command
+(exit 137) that it can recover from. Paperclip sets the variable only after the
+sandbox confirms the install. An operator `CLAUDE_CODE_SHELL_PREFIX` in the
+adapter env is kept, and no script is installed.
 
 For manual local CLI usage outside heartbeat runs (for example running as `claudecoder` directly), use:
 

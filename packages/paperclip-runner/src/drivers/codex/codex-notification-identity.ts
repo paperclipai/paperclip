@@ -15,6 +15,8 @@ const informational = new Set([
   "configWarning",
   "guardianWarning",
   "deprecationNotice",
+  // Child startup may arrive before thread/started establishes its lineage.
+  "mcpServer/startupStatus/updated",
 ]);
 const record = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v)
@@ -38,7 +40,7 @@ export function classifyCodexNotification(input: {
   const { params, method } = input;
   const isInformation = informational.has(method) ||
     (method === "paperclip/canonicalProviderEvent" &&
-      ["provider.notice.recorded", "harness.diagnostic"].includes(String(params.eventType)));
+      ["provider.notice.recorded", "harness.diagnostic", "auth.credentials.updated"].includes(String(params.eventType)));
   const threads = [
     params.threadId,
     record(params.thread).id,

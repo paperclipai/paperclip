@@ -1,3 +1,4 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Fingerprint, KeyRound, Link2, ShieldAlert, Variable, ServerCog } from "lucide-react";
@@ -6,7 +7,6 @@ import type {
   SecretProposalAgentRef,
   SecretProposalView,
 } from "@paperclipai/shared";
-import { AgentIcon } from "@/components/AgentIconPicker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,7 +24,6 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToastActions } from "../../context/ToastContext";
 import { secretsApi } from "../../api/secrets";
-import { ApiError } from "../../api/client";
 import { queryKeys } from "../../lib/queryKeys";
 import {
   aliasFromConfigPath,
@@ -34,6 +33,7 @@ import {
 import { cn } from "../../lib/utils";
 import { copyTextToClipboard } from "../../lib/clipboard";
 import { SecretPathName } from "./SecretPathName";
+import { describeError } from "@/api/errors";
 
 /* -------------------------------------------------------------------------- */
 /* Presentation helpers (shared by the tab + agent-settings surfaces)         */
@@ -126,7 +126,7 @@ export function AgentRefChip({
 }) {
   return (
     <span className={cn("inline-flex min-w-0 items-center gap-1", className)}>
-      <AgentIcon icon={agent.icon ?? null} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <AgentAvatar agent={agent} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
       <span className="min-w-0 truncate">{agent.name}</span>
     </span>
   );
@@ -186,9 +186,7 @@ export function bindingSecretLabel(proposal: SecretProposalView): {
 }
 
 function readableError(error: unknown): string {
-  if (error instanceof ApiError) return error.message || `Request failed: ${error.status}`;
-  if (error instanceof Error) return error.message;
-  return "Something went wrong. Try again.";
+  return describeError(error).body;
 }
 
 /* -------------------------------------------------------------------------- */

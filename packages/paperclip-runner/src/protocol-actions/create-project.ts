@@ -1,3 +1,51 @@
+/** Project icon contract; kept aligned with the server project validator. */
+export const projectIconSchema = {
+  type: ["string", "null"],
+  description: "Project icon.",
+  enum: [
+    "folder",
+    "rocket",
+    "code",
+    "terminal",
+    "database",
+    "globe",
+    "package",
+    "boxes",
+    "box",
+    "layers",
+    "briefcase",
+    "compass",
+    "target",
+    "flame",
+    "zap",
+    "star",
+    "bug",
+    "wrench",
+    "hammer",
+    "lightbulb",
+    "sparkles",
+    "shield",
+    "lock",
+    "search",
+    "cog",
+    "brain",
+    "cpu",
+    "git-branch",
+    "file-code",
+    "puzzle",
+    "gem",
+    "atom",
+    "heart",
+    "mail",
+    "message-square",
+    "crown",
+    "radar",
+    "telescope",
+    "hexagon",
+    null,
+  ],
+} as const;
+
 /** Existing GitHub repository references, never arbitrary network/resource URIs. */
 export const projectRepositoryUrlSchema = {
   type: "string",
@@ -154,14 +202,7 @@ export const createProjectAction = {
             "description": "Project color.",
             "maxLength": 20000
           },
-          "icon": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Project icon.",
-            "maxLength": 20000
-          },
+          "icon": projectIconSchema,
           "env": {
             "type": "object",
             "additionalProperties": true

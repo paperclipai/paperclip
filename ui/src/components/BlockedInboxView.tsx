@@ -1,7 +1,9 @@
+import { AgentIdentity } from "@/components/AgentIdentity";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import type { Issue } from "@paperclipai/shared";
+import { describeError } from "../api/errors";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
@@ -18,17 +20,20 @@ import {
   type BlockedInboxSort,
 } from "../lib/blockedInbox";
 import { BlockedReasonChip } from "./BlockedReasonChip";
+import { useQueryView } from "./QueryView";
 import { IssueGroupHeader } from "./IssueGroupHeader";
 import { IssueRow, type IssueRowPresentation } from "./IssueRow";
 import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 interface BlockedInboxViewProps {
   companyId: string;
   searchQuery: string;
   agentNameById: ReadonlyMap<string, string>;
+  agents?: import("./AgentAvatar").AvatarAgent[];
   userLabelById?: ReadonlyMap<string, string>;
   issueLinkState: unknown;
   groupBy: BlockedInboxGroupBy;
@@ -50,6 +55,7 @@ export function BlockedInboxView({
   companyId,
   searchQuery,
   agentNameById,
+  agents,
   userLabelById,
   issueLinkState,
   groupBy,
@@ -66,23 +72,25 @@ export function BlockedInboxView({
 }: BlockedInboxViewProps) {
   const [collapsedVariants, setCollapsedVariants] = useState<Set<string>>(() => new Set());
 
-  const {
-    data: issues = [] as Issue[],
-    isLoading,
-    isFetching,
-    error,
-    refetch,
-  } = useQuery({
-    queryKey: [...queryKeys.issues.listBlockedAttention(companyId), "live-descendant-summary"],
+  const blockedQuery = useQuery({
+    queryKey: [...queryKeys.issues.listBlockedAttention(companyId), "live-descendant-summary", issueFilters.showAgentCreatedTasks],
     queryFn: () =>
       issuesApi.list(companyId, {
         attention: "blocked",
+        includeRoutineExecutions: true,
+        includeAgentCreatedTasks: issueFilters.showAgentCreatedTasks,
+        includeParticipatedTasks: true,
         includeBlockedInboxAttention: true,
         includeBlockedBy: true,
         includeLiveDescendantSummary: true,
         limit: BLOCKED_LIST_LIMIT,
       }),
   });
+  const {
+    data: issues = [] as Issue[],
+    isLoading,
+  } = blockedQuery;
+  const blockedView = useQueryView(blockedQuery);
 
   const allRows = useMemo(() => buildBlockedInboxRows(issues), [issues]);
   const filteredRows = useMemo(
@@ -95,7 +103,7 @@ export function BlockedInboxView({
         filteredRows.map((row) => row.issue),
         issueFilters,
         currentUserId,
-        true,
+        false,
         liveIssueIds,
         workspaceFilterContext,
       ).map((issue) => issue.id),
@@ -117,7 +125,9 @@ export function BlockedInboxView({
     });
   };
 
-  if (isLoading) {
+  // A loaded list stays on screen through a failed refetch; an outage before
+  // the first load shows the skeleton, and only a real failure shows copy.
+  if (isLoading || blockedView.kind === "reconnecting") {
     return (
       <div data-testid="blocked-inbox-loading" className="space-y-3" aria-busy="true">
         {Array.from({ length: 3 }).map((_, groupIdx) => (
@@ -144,9 +154,7 @@ export function BlockedInboxView({
     );
   }
 
-  if (error) {
-    const message =
-      error instanceof Error ? error.message : "Couldn't load the Blocked tab.";
+  if (blockedView.kind === "error") {
     return (
       <div
         data-testid="blocked-inbox-error"
@@ -158,7 +166,7 @@ export function BlockedInboxView({
           <div className="flex-1 space-y-1">
             <p className="text-sm font-medium">Couldn't load the Blocked tab.</p>
             <p className="text-xs opacity-80">
-              Other Inbox tabs still work. {message}
+              Other Inbox tabs still work. {describeError(blockedView.error, { action: "load the Blocked tab" }).body}
             </p>
           </div>
           <Button
@@ -166,10 +174,10 @@ export function BlockedInboxView({
             variant="outline"
             size="sm"
             className="h-7 shrink-0 border-amber-400/70 bg-white/40 text-amber-900 hover:bg-white/70 dark:bg-amber-500/20 dark:text-amber-100"
-            onClick={() => void refetch()}
-            disabled={isFetching}
+            onClick={blockedView.retry}
+            disabled={blockedView.isFetching}
           >
-            {isFetching ? "Trying…" : "Try again"}
+            {blockedView.isFetching ? "Trying…" : "Try again"}
           </Button>
         </div>
       </div>
@@ -217,7 +225,7 @@ export function BlockedInboxView({
               key={row.issue.id}
               row={row}
               issueLinkState={issueLinkState}
-              agentNameById={agentNameById}
+              agentNameById={agentNameById} agents={agents}
               userLabelById={userLabelById}
               liveIssueIds={liveIssueIds}
               subtreeLiveCounts={subtreeLiveCounts}
@@ -247,7 +255,7 @@ export function BlockedInboxView({
                         key={row.issue.id}
                         row={row}
                         issueLinkState={issueLinkState}
-                        agentNameById={agentNameById}
+                        agentNameById={agentNameById} agents={agents}
                         userLabelById={userLabelById}
                         liveIssueIds={liveIssueIds}
                         subtreeLiveCounts={subtreeLiveCounts}
@@ -272,6 +280,7 @@ interface BlockedInboxRowProps {
   row: BlockedInboxIssueRow;
   issueLinkState: unknown;
   agentNameById: ReadonlyMap<string, string>;
+  agents?: import("./AgentAvatar").AvatarAgent[];
   userLabelById?: ReadonlyMap<string, string>;
   liveIssueIds: ReadonlySet<string>;
   subtreeLiveCounts: ReadonlyMap<string, number>;
@@ -301,6 +310,7 @@ function BlockedInboxRow({
   row,
   issueLinkState,
   agentNameById,
+  agents,
   userLabelById,
   liveIssueIds,
   subtreeLiveCounts,
@@ -330,11 +340,7 @@ function BlockedInboxRow({
       </span>
       {ownerName ? (
         <span className="hidden w-(--sz-150px) min-w-0 items-center text-muted-foreground sm:inline-flex">
-          <Identity
-            name={ownerName}
-            size="xs"
-            className="max-w-full"
-          />
+          {isAgent ? <AgentIdentity agent={agents?.find((agent) => agent.id === row.attention.owner.agentId) ?? { id: row.attention.owner.agentId ?? undefined, name: ownerName }} size="xs" className="max-w-full" /> : <Identity name={ownerName} size="xs" className="max-w-full" />}
         </span>
       ) : (
         <span className="hidden w-(--sz-150px) shrink-0 sm:inline-flex" aria-hidden="true" />
@@ -372,7 +378,7 @@ function BlockedInboxRow({
       showDivider={presentation === "legacy"}
       statusSlot={presentation === "task"
         ? showStatusColumn
-          ? <StatusIcon status={row.issue.status} blockerAttention={blockerAttention} />
+          ? <StatusIcon {...taskStatusIconProps(row.issue)} blockerAttention={blockerAttention} />
           : <span className="inline-flex size-4" aria-hidden="true" />
         : undefined}
       showIdentifier={presentation === "task" ? showIdentifierColumn : undefined}
@@ -386,7 +392,7 @@ function BlockedInboxRow({
       ) : undefined}
       mobileLeading={
         <span className="flex shrink-0 items-center gap-1.5 pt-px">
-          <StatusIcon status={row.issue.status} blockerAttention={blockerAttention} />
+          <StatusIcon {...taskStatusIconProps(row.issue)} blockerAttention={blockerAttention} />
         </span>
       }
       titleSuffix={
@@ -418,7 +424,7 @@ function BlockedRowDesktopMeta({
   const identifier = row.issue.identifier ?? row.issue.id.slice(0, 8);
   return (
     <span className="hidden shrink-0 items-center gap-2 sm:inline-flex">
-      {showStatusColumn ? <StatusIcon status={row.issue.status} blockerAttention={blockerAttention} /> : null}
+      {showStatusColumn ? <StatusIcon {...taskStatusIconProps(row.issue)} blockerAttention={blockerAttention} /> : null}
       {showIdentifierColumn ? <span className="font-mono text-xs text-muted-foreground">{identifier}</span> : null}
     </span>
   );

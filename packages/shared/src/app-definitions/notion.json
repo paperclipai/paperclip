@@ -24,7 +24,10 @@
       ],
       "whenToUse": "Use the provider-hosted connection for the quickest setup.",
       "defaults": {
-        "serverUrl": "https://mcp.notion.com/mcp"
+        "serverUrl": "https://mcp.notion.com/mcp",
+        "scopesHint": [
+          "default"
+        ]
       },
       "guidanceMd": "Connect Notion for workspace content. Share only the pages and databases agents should use.",
       "riskTier": "S3",

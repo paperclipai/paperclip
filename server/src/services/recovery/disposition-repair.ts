@@ -30,6 +30,17 @@ type DispositionRepairIssue = Pick<
   | "monitorNextCheckAt"
 >;
 
+export const dispositionRepairIssueFields = {
+  id: issues.id,
+  companyId: issues.companyId,
+  status: issues.status,
+  assigneeAgentId: issues.assigneeAgentId,
+  assigneeUserId: issues.assigneeUserId,
+  executionPolicy: issues.executionPolicy,
+  executionState: issues.executionState,
+  monitorNextCheckAt: issues.monitorNextCheckAt,
+};
+
 export type DispositionRepairSourceState = {
   fingerprint: string;
   dependencyIssueIds: string[];
@@ -73,6 +84,58 @@ export function dispositionRepairDelayMs(attempt: number, fingerprint: string) {
     DISPOSITION_REPAIR_BASE_DELAYS_MS,
     "disposition repair",
   );
+}
+
+type DurableWaitingFacts = {
+  hasBlocker: boolean;
+  hasPendingInteraction: boolean;
+  hasPendingApproval: boolean;
+};
+
+function dispositionRepairDurablePathReason(issue: DispositionRepairIssue, facts: DurableWaitingFacts) {
+  return issue.assigneeUserId
+    ? "user_owner"
+    : facts.hasBlocker
+      ? "blocker"
+      : issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now()
+        ? "monitor"
+        : parseIssueExecutionState(issue.executionState)?.status === "pending"
+          ? "execution_stage"
+          : facts.hasPendingInteraction
+            ? "interaction"
+            : facts.hasPendingApproval
+              ? "approval"
+              : null;
+}
+
+/** Current wait facts for recovery resolution, without collecting retry fingerprints. */
+export async function readDispositionRepairDurableWaitingState(
+  db: Db,
+  input: { issue: DispositionRepairIssue },
+): Promise<Pick<DispositionRepairSourceState, "hasDurableWaitingPath" | "durablePathReason">> {
+  const issue = input.issue;
+  const [facts] = await db.execute<DurableWaitingFacts>(sql`select
+    exists (select 1 from ${issueRelations}
+      inner join ${issues} on ${issues.companyId} = ${issueRelations.companyId}
+        and ${issues.id} = ${issueRelations.issueId}
+      where ${issueRelations.companyId} = ${issue.companyId}
+        and ${issueRelations.relatedIssueId} = ${issue.id}
+        and ${issueRelations.type} = 'blocks'
+        and ${issues.status} not in ('done', 'cancelled')
+        and ${issues.hiddenAt} is null) as "hasBlocker",
+    exists (select 1 from ${issueThreadInteractions}
+      where ${issueThreadInteractions.companyId} = ${issue.companyId}
+        and ${issueThreadInteractions.issueId} = ${issue.id}
+        and ${issueThreadInteractions.status} = 'pending') as "hasPendingInteraction",
+    exists (select 1 from ${issueApprovals}
+      inner join ${approvals} on ${issueApprovals.approvalId} = ${approvals.id}
+        and ${issueApprovals.companyId} = ${approvals.companyId}
+      where ${issueApprovals.companyId} = ${issue.companyId}
+        and ${approvals.companyId} = ${issue.companyId}
+        and ${issueApprovals.issueId} = ${issue.id}
+        and ${approvals.status} in ('pending', 'revision_requested')) as "hasPendingApproval"`);
+  const durablePathReason = dispositionRepairDurablePathReason(issue, facts!);
+  return { hasDurableWaitingPath: durablePathReason !== null, durablePathReason };
 }
 
 export async function collectDispositionRepairSourceState(
@@ -188,24 +251,11 @@ export async function collectDispositionRepairSourceState(
         ),
     ]);
 
-  const pendingExecutionState = parseIssueExecutionState(issue.executionState);
-  const pendingInteraction = interactions.some((row) => row.status === "pending");
-  const pendingApproval = linkedApprovals.some((row) =>
-    row.status === "pending" || row.status === "revision_requested",
-  );
-  const durablePathReason = issue.assigneeUserId
-    ? "user_owner"
-    : blockers.length > 0
-      ? "blocker"
-      : issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now()
-        ? "monitor"
-        : pendingExecutionState?.status === "pending"
-          ? "execution_stage"
-          : pendingInteraction
-            ? "interaction"
-            : pendingApproval
-              ? "approval"
-              : null;
+  const durablePathReason = dispositionRepairDurablePathReason(issue, {
+    hasBlocker: blockers.length > 0,
+    hasPendingInteraction: interactions.some((row) => row.status === "pending"),
+    hasPendingApproval: linkedApprovals.some((row) => row.status === "pending" || row.status === "revision_requested"),
+  });
 
   const durableState = {
     source: {

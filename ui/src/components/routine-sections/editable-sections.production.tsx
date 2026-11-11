@@ -1,3 +1,4 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { useEffect, useMemo, useState } from "react";
 import {
   ArrowRight,
@@ -28,7 +29,6 @@ import { timeAgo } from "../../lib/timeAgo";
 import { EmptyState } from "../EmptyState";
 import { InlineEntitySelector } from "../InlineEntitySelector";
 import { DocumentAnnotationsCountChip, IssueDocumentAnnotations } from "../IssueDocumentAnnotations";
-import { AgentIcon } from "../AgentIconPicker";
 import { MarkdownEditor } from "../MarkdownEditor";
 import { ScheduleEditor, getScheduleCronValidation } from "../ScheduleEditor";
 import { RoutineVariablesEditor, RoutineVariablesHint } from "../RoutineVariablesEditor";
@@ -96,14 +96,16 @@ const activityGateScopeOptions = [
 ];
 
 const triggerKinds = ["schedule", "webhook"];
-const signingModes = ["bearer", "hmac_sha256", "github_hmac", "none"];
+const signingModes = ["app_webhook", "bearer", "hmac_sha256", "github_hmac", "none"];
 const signingModeDescriptions: Record<string, string> = {
-  bearer: "Expect a shared bearer token in the Authorization header.",
-  hmac_sha256: "Expect an HMAC SHA-256 signature over the request using the shared secret.",
+  bearer: "Send Authorization: Bearer <secret> with each request.",
+  hmac_sha256: "Send X-Paperclip-Timestamp and X-Paperclip-Signature: sha256=<hex>, signing timestamp + a dot + the exact JSON body.",
   github_hmac: "Accept GitHub-style X-Hub-Signature-256 header (HMAC over raw body, no timestamp).",
+  app_webhook: "Accept a bearer token or an HMAC-SHA256 signature over the exact request body in X-Hub-Signature or X-Hub-Signature-256.",
+  fireflies_hmac: "Signed webhook (legacy).",
   none: "No authentication — the webhook URL itself acts as a shared secret.",
 };
-const SIGNING_MODES_WITHOUT_REPLAY_WINDOW = new Set(["github_hmac", "none"]);
+const SIGNING_MODES_WITHOUT_REPLAY_WINDOW = new Set(["app_webhook", "bearer", "github_hmac", "fireflies_hmac", "none"]);
 
 export function OverviewSection({
   defaultDescriptionAnnotationsOpen = false,
@@ -177,7 +179,7 @@ export function OverviewSection({
               option ? (
                 currentAssignee ? (
                   <>
-                    <AgentIcon icon={currentAssignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <AgentAvatar agent={currentAssignee} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
                     <span className="truncate">{option.label}</span>
                   </>
                 ) : (
@@ -193,7 +195,7 @@ export function OverviewSection({
               return (
                 <>
                   {assignee ? (
-                    <AgentIcon icon={assignee.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <AgentAvatar agent={assignee} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
                   ) : null}
                   <span className="truncate">{option.label}</span>
                 </>
@@ -417,7 +419,7 @@ function SummaryCard({
 
 export function TriggersSection() {
   const ctx = useRoutineDetail();
-  const { routine, newTrigger, setNewTrigger, createTrigger, updateTrigger, deleteTrigger, rotateTrigger } = ctx;
+  const { routine, newTrigger, setNewTrigger, createTrigger, updateTrigger, deleteTrigger, rotateTrigger, secretMessage, copySecretValue, setSecretMessage } = ctx;
   const [addOpen, setAddOpen] = useState(false);
   const [newScheduleEditorValid, setNewScheduleEditorValid] = useState(true);
   const newScheduleValidation = useMemo(
@@ -477,9 +479,8 @@ export function TriggersSection() {
               </SelectTrigger>
               <SelectContent>
                 {triggerKinds.map((kind) => (
-                  <SelectItem key={kind} value={kind} disabled={kind === "webhook"}>
+                  <SelectItem key={kind} value={kind}>
                     {kind}
-                    {kind === "webhook" ? " — COMING SOON" : ""}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -558,12 +559,42 @@ export function TriggersSection() {
       </div>
       ) : null}
 
+      {secretMessage ? (
+        <div className="space-y-3 rounded-lg border border-border bg-muted/20 p-4 text-sm">
+          <div>
+            <p className="font-medium">{secretMessage.title}</p>
+            <p className="text-xs text-muted-foreground">
+              Save this now. Paperclip will not show the secret value again.
+            </p>
+          </div>
+          <div className="space-y-3">
+            {secretMessage.entries.map((entry, index) => (
+              <div key={`${entry.webhookUrl}-${index}`} className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <Input aria-label="New webhook URL" value={entry.webhookUrl} readOnly className="flex-1" />
+                  <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook URL", entry.webhookUrl)}>
+                    URL
+                  </Button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Input aria-label="New webhook secret" value={entry.webhookSecret} readOnly className="flex-1" />
+                  <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook secret", entry.webhookSecret)}>
+                    Secret
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <Button variant="outline" size="sm" onClick={() => setSecretMessage(null)}>Done</Button>
+        </div>
+      ) : null}
+
       {/* Existing triggers */}
       {routine.triggers.length === 0 ? (
         <EmptyState
           icon={Clock3}
           message="No triggers yet."
-          action="Add a schedule"
+          action="Add a trigger"
           onAction={() => setAddOpen(true)}
         />
       ) : (
@@ -623,7 +654,7 @@ export function VariablesSection() {
 
 export function SecretsSection() {
   const ctx = useRoutineDetail();
-  const { editDraft, setEditDraft, availableSecrets, createSecret, secretMessage, copySecretValue } = ctx;
+  const { editDraft, setEditDraft, availableSecrets, createSecret } = ctx;
 
   // Project/company-scoped secrets that already see real usage, surfaced as
   // quick-bind chips (§3.4). Ranked by reference count then recency.
@@ -647,34 +678,6 @@ export function SecretsSection() {
         project and agent env. <span className="font-mono">PAPERCLIP_*</span> names are reserved.
       </div>
 
-      {secretMessage ? (
-        <div className="space-y-3 rounded-lg border border-blue-500/30 bg-blue-500/5 p-4 text-sm">
-          <div>
-            <p className="font-medium">{secretMessage.title}</p>
-            <p className="text-xs text-muted-foreground">
-              Save this now. Paperclip will not show the secret value again.
-            </p>
-          </div>
-          <div className="space-y-3">
-            {secretMessage.entries.map((entry, index) => (
-              <div key={`${entry.webhookUrl}-${index}`} className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <Input value={entry.webhookUrl} readOnly className="flex-1" />
-                  <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook URL", entry.webhookUrl)}>
-                    URL
-                  </Button>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Input value={entry.webhookSecret} readOnly className="flex-1" />
-                  <Button variant="outline" size="sm" onClick={() => copySecretValue("Webhook secret", entry.webhookSecret)}>
-                    Secret
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
 
       <EnvironmentVariablesEditor
         value={(editDraft.env ?? {}) as Record<string, EnvBinding>}

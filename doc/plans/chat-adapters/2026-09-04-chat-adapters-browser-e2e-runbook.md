@@ -153,7 +153,7 @@ Before opening a real provider, I run the deterministic Paperclip-side browser c
 ```sh
 pnpm exec playwright test \
   --config tests/e2e/playwright.config.ts \
-  tests/e2e/chat-adapters-ui.spec.ts \
+  tests/e2e/chat-adapters-ui-providers.spec.ts \
   --grep '^Slack:'
 ```
 

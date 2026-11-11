@@ -1,0 +1,22 @@
+# Sandbox providers stay out of the root workspace, and most of them must not
+# commit a lockfile: scripts/build-standalone-public-packages.mjs uses a frozen
+# install when one exists. This workspace pins their dependencies in one lockfile
+# for scripts/typecheck-test-programs.mjs, without changing how they are released.
+#
+# List each provider by its full path. Do not use a glob such as
+# ../../packages/plugins/sandbox-providers/*. Dependabot updates this workspace
+# (see .github/dependabot.yml), and it does not expand a glob that starts with
+# ../, so it would not see the providers. Daytona is not listed: it has its own
+# lockfile and its own Dependabot entry, and scripts/typecheck-test-programs.mjs
+# installs it from that lockfile (LOCKED_PROVIDERS). A test checks that this list
+# matches SANDBOX_PROVIDERS without LOCKED_PROVIDERS.
+packages:
+  - ../../packages/plugins/sandbox-providers/boxd
+  - ../../packages/plugins/sandbox-providers/cloudflare
+  - ../../packages/plugins/sandbox-providers/cloudflare/bridge-template
+  - ../../packages/plugins/sandbox-providers/createos
+  - ../../packages/plugins/sandbox-providers/e2b
+  - ../../packages/plugins/sandbox-providers/exe-dev
+  - ../../packages/plugins/sandbox-providers/kubernetes
+  - ../../packages/plugins/sandbox-providers/modal
+  - ../../packages/plugins/sandbox-providers/novita

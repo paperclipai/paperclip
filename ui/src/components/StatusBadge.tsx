@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { resolveTaskStatusPresentation, type TaskStatusPresentationInput } from "../lib/task-status-presentation";
 import { cn } from "../lib/utils";
 import {
   statusBadge,
@@ -27,12 +28,13 @@ function sentenceCaseStatus(status: string): string {
  */
 // design-allow(pill-pattern): DECISION-SHEET.md C8 - status badges keep the bespoke WCAG-tuned
 // .status-chip color-mix mechanic and do not wrap the Badge primitive.
-export function StatusBadge({ status, label }: { status: string; label?: string }) {
+export function StatusBadge({ status, label, className }: { status: string; label?: string; className?: string }) {
   return (
     <span
       className={cn(
         "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap shrink-0",
-        statusBadge[status] ?? statusBadgeDefault
+        statusBadge[status] ?? statusBadgeDefault,
+        className
       )}
     >
       {label ?? status.replace(/[_-]/g, " ")}
@@ -83,18 +85,20 @@ export function AgentStatusCapsule({ status }: { status: string }) {
  * Distinct from the generic {@link StatusBadge} so run/goal/approval badges are
  * unaffected.
  */
-export function IssueStatusBadge({ status }: { status: string }) {
-  const cssVar = taskStatusVar[status] ?? taskStatusVarDefault;
+export function IssueStatusBadge(props: TaskStatusPresentationInput) {
+  const { glyphStatus, label, ariaLabel } = resolveTaskStatusPresentation(props);
+  const cssVar = taskStatusVar[glyphStatus] ?? taskStatusVarDefault;
   return (
     <span
       className={cn(
         "status-chip inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-normal leading-none whitespace-nowrap shrink-0",
-        status === "cancelled" && "line-through"
+        glyphStatus === "cancelled" && "line-through"
       )}
       style={scStyle(cssVar)}
+      title={ariaLabel === label ? undefined : ariaLabel}
     >
-      <StatusGlyph status={status} size="sm" />
-      {sentenceCaseStatus(status)}
+      <StatusGlyph status={glyphStatus} size="sm" />
+      {sentenceCaseStatus(label.toLowerCase())}
     </span>
   );
 }

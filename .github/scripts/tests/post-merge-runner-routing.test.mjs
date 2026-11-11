@@ -7,11 +7,12 @@ const fleet = "runs-on/fleet=paperclip-post-merge-x64/env=public-ci";
 const sha = "a".repeat(40);
 const base = {
   repository: "paperclipai/paperclip", repository_id: "1170821064",
-  ref: "refs/heads/master", event_name: "push", sha,
+  ref: "refs/heads/master", event_name: "push", sha, run_attempt: 1,
 };
 const expectedJobs = {
-  "cloud-readiness.yml": [],
-  "cloud-artifacts.yml": ["dispatch_migrator"],
+  "docker.yml": ["source_verification", "publication_verification"],
+  "cloud-readiness.yml": ["admission", "source_verified"],
+  "cloud-migrator-artifacts.yml": [],
   "release-verify.yml": ["typecheck", "general_tests", "serialized_tests", "runner_workflow_evals", "verify_paperclip_runner", "build"],
   "runner-chaos-evals.yml": ["chaos_and_recovery"],
   "release.yml": ["plan_preview", "package_preview"],
@@ -58,6 +59,11 @@ for (const [file, expectedNames] of Object.entries(expectedJobs)) {
       cases.push({ name: "preview of master", inputs: { channel: "preview" } });
       cases.push({ name: "stable release", inputs: { channel: "stable" } });
     }
+    cases.push({ name: "first attempt as a string", github: { run_attempt: "1" }, expected: fleet });
+    cases.push({ name: "admitted retry", github: { run_attempt: 2 }, expected: release ? "ubuntu-latest" : fleet });
+    cases.push({ name: "later retry", github: { run_attempt: 3 }, expected: release ? "ubuntu-latest" : fleet });
+    cases.push({ name: "retry attempt as a string", github: { run_attempt: "2" }, expected: release ? "ubuntu-latest" : fleet });
+    cases.push({ name: "missing attempt", github: { run_attempt: undefined } });
     for (const { name, github = {}, inputs: overrides = {}, enabled = "true", expected = "ubuntu-latest" } of cases) {
       test(`${file}/${job}: ${name}`, () => {
         const context = { github: { ...defaultContext, ...github }, inputs: { ...inputs, ...overrides }, vars: { AWS_POST_MERGE_CI_ENABLED: enabled } };
@@ -83,25 +89,21 @@ for (const [file, expectedNames] of Object.entries(expectedJobs)) {
 }
 
 
-test("Cloud readiness bookkeeping never waits for the AWS verification fleet", () => {
+test("Cloud source proof keeps source-only gating on protected verification capacity", () => {
   const workflow = readFileSync(new URL("../../workflows/cloud-readiness.yml", import.meta.url), "utf8");
   const bodies = new Map();
   for (const [name, needs] of [
-    ["artifacts", null],
     ["source_verified", "[verify]"],
-    ["ready", "[verify, image, artifacts]"],
   ]) {
     const body = workflow.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z_]+:|(?![\\s\\S]))`, "m"))?.[1];
     assert.ok(body, `missing ${name} job`);
     bodies.set(name, body);
-    assert.match(body, /^    runs-on: ubuntu-latest$/m);
+    assert.match(body, /runs-on:.*paperclip-post-merge-x64/);
     assert.doesNotMatch(body, /^ +continue-on-error:|^ +if:.*always\(\)/m);
     assert.match(body, /^    if: github.repository == 'paperclipai\/paperclip' && github.ref == 'refs\/heads\/master'$/m);
     assert.match(body, /^ +SOURCE_SHA: \$\{\{ github.sha \}\}$/m);
     assert.equal(body.match(/^    needs: (.+)$/m)?.[1] ?? null, needs, `${name} prerequisites`);
   }
-  assert.match(bodies.get("artifacts"), /^        run: node scripts\/cloud-readiness.mjs "\$SOURCE_SHA"$/m);
   assert.match(bodies.get("source_verified"), /^        run: node --test scripts\/cloud-source-verification.test.mjs$/m);
   assert.match(bodies.get("source_verified"), /echo "Cloud source verified v1: \$SOURCE_SHA"/);
-  assert.match(bodies.get("ready"), /echo "Cloud deployable v1: \$SOURCE_SHA"/);
 });

@@ -2,9 +2,33 @@ import { describe, expect, it } from "vitest";
 import {
   instanceExperimentalSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
+  instanceExperimentalSettingsWithManagedSchema,
 } from "./instance.js";
 
 describe("instance experimental settings validators", () => {
+  it("defaults legacy composer submission off and accepts only explicit boolean patches", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).enableLegacyComposerSubmit).toBe(false);
+    expect(patchInstanceExperimentalSettingsSchema.parse({})).not.toHaveProperty("enableLegacyComposerSubmit");
+    for (const enabled of [true, false]) {
+      expect(patchInstanceExperimentalSettingsSchema.parse({ enableLegacyComposerSubmit: enabled })).toEqual({ enableLegacyComposerSubmit: enabled });
+    }
+    expect(patchInstanceExperimentalSettingsSchema.safeParse({ enableLegacyComposerSubmit: "true" }).success).toBe(false);
+  });
+  it("keeps Notebook disabled by default and accepts only explicit boolean rollout values", () => {
+    expect(instanceExperimentalSettingsSchema.parse({ enableApps: true, enableMemoryConnectors: true }).enablePaperclipNotebook).toBe(false);
+    expect(patchInstanceExperimentalSettingsSchema.parse({})).toEqual({});
+    for (const enabled of [true, false]) {
+      expect(patchInstanceExperimentalSettingsSchema.parse({ enablePaperclipNotebook: enabled })).toEqual({ enablePaperclipNotebook: enabled });
+      expect(instanceExperimentalSettingsWithManagedSchema.parse({ enablePaperclipNotebook: enabled,
+        managedKeys: { enablePaperclipNotebook: { managed: true, managedBy: "paperclip-cloud" } },
+      }).enablePaperclipNotebook).toBe(enabled);
+    }
+    expect(patchInstanceExperimentalSettingsSchema.safeParse({ enablePaperclipNotebook: "true" }).success).toBe(false);
+  });
+  it("defaults GitHub review bots off independently of chat and accepts explicit changes", () => {
+    expect(instanceExperimentalSettingsSchema.parse({ enableChatConnectors: true }).enableGitHubReviewBots).toBe(false);
+    expect(patchInstanceExperimentalSettingsSchema.parse({ enableGitHubReviewBots: true })).toEqual({ enableGitHubReviewBots: true });
+  });
   it("defaults chat connectors off independently of Apps and accepts only explicit boolean patches", () => {
     expect(instanceExperimentalSettingsSchema.parse({}).enableChatConnectors).toBe(false);
     expect(instanceExperimentalSettingsSchema.parse({ enableApps: true }).enableChatConnectors).toBe(false);

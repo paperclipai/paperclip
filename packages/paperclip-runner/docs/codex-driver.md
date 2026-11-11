@@ -169,3 +169,31 @@ than surfacing a raw filesystem `ENOENT`. See the
 This phase changes no browser surface, so no new browser screenshot applies.
 The canonical events are proved through the existing reducer/replay path and
 JSON trace evidence.
+
+
+## Explicit assigned skills in native tasks
+
+A task description can explicitly invoke an assigned skill with `/skill-name`
+or `$skill-name`. The native Codex backend resolves these references against
+that run's assigned runtime context; assignment alone does not invoke a skill.
+Selections are recomputed from the current task description on each wake,
+including approval replies and recovered sessions. Ordinary tasks without an
+explicit reference receive no structured skill invocation.
+
+The driver sends both the `$skill-name` text reference and Codex's structured
+`{ type: "skill", name, path }` input on every requested turn. Runnerd validates
+the assigned source path, maps it to the provider's isolated
+`codex-home/skills/<name>/SKILL.md` (including remote runners), and preserves it
+through the durable `turn.start` command. `turn.submitted.skillInputs` records
+the controller's selected inputs for inspection; protocol tests separately
+verify the outgoing provider request and mapped path.
+
+`includeSkillInstructions` is forwarded to Codex on both `thread/start` and
+`thread/resume`. Old persisted configurations without the field retain their
+provider default until a fresh, settled run supplies an explicit value. That
+one-time upgrade reopens the same thread with the new setting. OpenCode does
+not receive Codex's skill configuration or structured skill inputs.
+
+These are delivery guarantees, not guarantees of model adherence. The onboarding
+`first-task` skill uses this generic mechanism; its prompt and persona are not
+changed by the wiring.

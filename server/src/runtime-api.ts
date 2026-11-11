@@ -1,4 +1,41 @@
 import os from "node:os";
+import type { Server } from "node:http";
+import { isIP } from "node:net";
+
+const runtimeApiListeners = new Set<Server>();
+const registeredRuntimeApiListeners = new WeakSet<Server>();
+let runtimeApiListenerClosed = false;
+
+/**
+ * The process had a runtime API listener and has since closed it, which only
+ * happens while it shuts down. Work that needs a callback origin must hand off
+ * to the next controller instead of failing as a provider or startup error.
+ */
+export class LocalRuntimeApiListenerClosedError extends Error {
+  constructor() {
+    // Keep the established failure code for classifiers and persisted rows.
+    super("local_runtime_api_listener_unavailable");
+    this.name = "LocalRuntimeApiListenerClosedError";
+  }
+}
+
+/** Track listener ownership without treating configured or advertised URLs as authority. */
+export function registerLocalRuntimeApiServer(server: Server): void {
+  if (!registeredRuntimeApiListeners.has(server)) {
+    registeredRuntimeApiListeners.add(server);
+    server.on("listening", () => {
+      runtimeApiListeners.add(server);
+      runtimeApiListenerClosed = false;
+    });
+    server.on("close", () => {
+      if (runtimeApiListeners.delete(server)) runtimeApiListenerClosed = true;
+    });
+  }
+  if (server.listening) {
+    runtimeApiListeners.add(server);
+    runtimeApiListenerClosed = false;
+  }
+}
 
 function normalizeHost(value: string | null | undefined): string {
   return (value ?? "").trim();
@@ -46,20 +83,67 @@ function pushCandidate(
   }
 }
 
+// A base URL written as `host:port` (no `//`) is a VALID URL with an opaque
+// scheme, and the origin of an opaque-scheme URL serializes to the *string*
+// "null". That string is truthy, so it escapes every `if (origin)` guard and is
+// then handed to `new URL(origin)`, which throws `TypeError: Invalid URL`.
+// Treat it as absent config, exactly like input that fails to parse at all.
+function parsePublicOrigin(rawUrl: string | null | undefined): string | null {
+  const trimmed = rawUrl?.trim();
+  if (!trimmed) return null;
+  let origin: string;
+  try {
+    origin = new URL(trimmed).origin;
+  } catch {
+    return null;
+  }
+  return origin === "null" ? null : origin;
+}
+
+export function chooseLocalRuntimeApiUrl(input: {
+  bindHost: string;
+  port: number;
+}): string {
+  const bindHost = normalizeHost(input.bindHost).replace(/^\[([^\]]+)\]$/, "$1");
+  if (isIP(bindHost) === 0 || !Number.isInteger(input.port) || input.port < 1 || input.port > 65535) {
+    throw new Error("local_runtime_api_listener_address_invalid");
+  }
+  const connectHost = bindHost === "::" ? "::1"
+    : bindHost === "0.0.0.0" ? "127.0.0.1"
+    : bindHost;
+  return formatOrigin("http:", connectHost, input.port);
+}
+
+export function resolveLocalRuntimeApiUrl(): string {
+  const listeners = [...runtimeApiListeners].filter(server => server.listening);
+  // `server.close()` clears `listening` at once; its close event waits for
+  // admitted requests. Either state means this process stopped serving.
+  if (listeners.length === 0 && (runtimeApiListenerClosed || runtimeApiListeners.size > 0)) {
+    throw new LocalRuntimeApiListenerClosedError();
+  }
+  if (listeners.length !== 1) {
+    throw new Error(listeners.length ? "local_runtime_api_listener_ambiguous" : "local_runtime_api_listener_unavailable");
+  }
+  const address = listeners[0]!.address();
+  if (!address || typeof address === "string") throw new Error("local_runtime_api_listener_unavailable");
+  return chooseLocalRuntimeApiUrl({ bindHost: address.address, port: address.port });
+}
+
+export const runtimeApiInternals = {
+  resetForTests(): void {
+    runtimeApiListeners.clear();
+    runtimeApiListenerClosed = false;
+  },
+};
+
 export function choosePrimaryRuntimeApiUrl(input: {
   authPublicBaseUrl?: string | null;
   allowedHostnames: string[];
   bindHost: string;
   port: number;
 }): string {
-  const explicitPublicBaseUrl = input.authPublicBaseUrl?.trim();
-  if (explicitPublicBaseUrl) {
-    try {
-      return new URL(explicitPublicBaseUrl).origin;
-    } catch {
-      // Fall through to derived candidates if config parsing drifted.
-    }
-  }
+  const explicitOrigin = parsePublicOrigin(input.authPublicBaseUrl);
+  if (explicitOrigin) return explicitOrigin;
 
   const bindHost = normalizeHost(input.bindHost);
   if (bindHost && !isWildcardHost(bindHost) && isLoopbackHost(bindHost)) {
@@ -118,15 +202,7 @@ export function buildRuntimeApiCandidateUrls(input: {
 }): string[] {
   const candidates: string[] = [];
   const seen = new Set<string>();
-  const explicitPublicBaseUrl = input.authPublicBaseUrl?.trim() ?? "";
-  const explicitOrigin = (() => {
-    if (!explicitPublicBaseUrl) return null;
-    try {
-      return new URL(explicitPublicBaseUrl).origin;
-    } catch {
-      return null;
-    }
-  })();
+  const explicitOrigin = parsePublicOrigin(input.authPublicBaseUrl);
   const protocol = explicitOrigin ? new URL(explicitOrigin).protocol : "http:";
 
   pushCandidate(candidates, seen, input.preferredApiUrl);

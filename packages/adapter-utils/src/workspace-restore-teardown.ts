@@ -1,4 +1,5 @@
 import type { RuntimeProgressSink } from "./runtime-progress.js";
+import { getWorkspaceRestoreDiagnostic, withWorkspaceRestoreDiagnosticCapture } from "./workspace-restore-diagnostics.js";
 import {
   classifyWorkspaceRestoreFailure,
   describeWorkspaceRestoreFailure,
@@ -33,7 +34,7 @@ export function createWorkspaceRestoreTeardown(input: {
   failurePrefix: string;
 }): () => Promise<WorkspaceRestoreOutcome> {
   const { stagedRuntime, onLog, startMessage, failurePrefix } = input;
-  return async () => {
+  return () => withWorkspaceRestoreDiagnosticCapture(async () => {
     try {
       await onLog("stdout", startMessage);
       await stagedRuntime.restoreWorkspace((line) => onLog("stdout", line));
@@ -44,8 +45,9 @@ export function createWorkspaceRestoreTeardown(input: {
       // filesystem path or a process id. Log only the fixed, allowlisted
       // diagnostic for the classified code.
       const code = classifyWorkspaceRestoreFailure(err);
+      const diagnostic = getWorkspaceRestoreDiagnostic(err);
       await onLog("stderr", `${failurePrefix}: ${describeWorkspaceRestoreFailure(code)}\n`);
-      return { ok: false, code };
+      return { ok: false, code, ...(diagnostic ? { diagnostic } : {}) };
     }
-  };
+  });
 }

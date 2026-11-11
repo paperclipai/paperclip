@@ -31,6 +31,8 @@ export const joinRequests = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    pendingRetentionIdx: index("join_requests_pending_retention_idx").on(table.updatedAt, table.id)
+      .where(sql`${table.status} = 'pending_approval'`),
     inviteUniqueIdx: uniqueIndex("join_requests_invite_unique_idx").on(table.inviteId),
     companyStatusTypeCreatedIdx: index("join_requests_company_status_type_created_idx").on(
       table.companyId,

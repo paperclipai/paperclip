@@ -3,9 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 import {
   closeHttpListenerForShutdown,
   coordinateHeartbeatSchedulerShutdown,
+  createPreDrainShutdownBudget,
   drainRunExecutionFinalizersForShutdown,
   finalizeServerShutdown,
+  finishServiceShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
+  runBoundedShutdownStep,
 } from "./shutdown.js";
 
 function deferred<T = void>() {
@@ -169,6 +172,73 @@ describe("finalizeServerShutdown", () => {
     );
   });
 
+  it("waits for pending run-failure reports before the database stop and the Sentry flush", async () => {
+    const order: string[] = [];
+    const release = deferred();
+    const drainPendingRunFailureReports = vi.fn(async () => {
+      order.push("runFailureReports:start");
+      await release.promise;
+      order.push("runFailureReports:settled");
+    });
+    const closeDatabase = vi.fn(async () => {
+      order.push("database:close");
+    });
+    const shutdownSentry = vi.fn(async () => {
+      order.push("sentry:flush");
+    });
+
+    const finalize = finalizeServerShutdown({
+      signal: "SIGTERM",
+      shutdownAppServices: vi.fn(async () => undefined),
+      drainPendingRunFailureReports,
+      closeDatabase,
+      stopEmbeddedPostgres: null,
+      shutdownInstrumentation: vi.fn(async () => undefined),
+      shutdownSentry,
+      log: stubLogger(),
+    });
+
+    await vi.waitFor(() => expect(drainPendingRunFailureReports).toHaveBeenCalledOnce());
+    expect(closeDatabase).not.toHaveBeenCalled();
+    expect(shutdownSentry).not.toHaveBeenCalled();
+
+    release.resolve();
+    await finalize;
+
+    expect(order).toEqual([
+      "runFailureReports:start",
+      "runFailureReports:settled",
+      "database:close",
+      "sentry:flush",
+    ]);
+  });
+
+  it("logs a failed run-failure report drain and still stops the database and exits", async () => {
+    const drainError = new Error("drain failed");
+    const drainPendingRunFailureReports = vi.fn(async () => {
+      throw drainError;
+    });
+    const closeDatabase = vi.fn(async () => undefined);
+    const log = stubLogger();
+
+    await finalizeServerShutdown({
+      signal: "SIGTERM",
+      shutdownAppServices: vi.fn(async () => undefined),
+      drainPendingRunFailureReports,
+      closeDatabase,
+      stopEmbeddedPostgres: null,
+      shutdownInstrumentation: vi.fn(async () => undefined),
+      shutdownSentry: vi.fn(async () => undefined),
+      log,
+    });
+
+    expect(closeDatabase).toHaveBeenCalledOnce();
+    expect(log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: drainError, signal: "SIGTERM" }),
+      "run-failure report drain failed",
+    );
+  });
+
   it("skips the database stop when no embedded PostgreSQL runs in this process", async () => {
     const shutdownAppServices = vi.fn(async () => undefined);
     const shutdownInstrumentation = vi.fn(async () => undefined);
@@ -211,6 +281,19 @@ describe("closeHttpListenerForShutdown", () => {
     expect(server.closeAllConnections).not.toHaveBeenCalled();
   });
 
+  it("closes run admission before it stops accepting requests", async () => {
+    const order: string[] = [];
+    const server = fakeServer({ listening: true, closeDelayMs: 0 });
+    server.close.mockImplementation((callback?: (err?: Error) => void) => { order.push("listener"); setTimeout(() => callback?.(), 0); });
+    await closeHttpListenerForShutdown({ server, signal: "SIGTERM", timeoutMs: 1_000, log: stubLogger(),
+      closeRunAdmission: () => order.push("run_admission") });
+    expect(order).toEqual(["run_admission", "listener"]);
+    const stopped = vi.fn();
+    await expect(closeHttpListenerForShutdown({ server: fakeServer({ listening: false }), signal: "SIGTERM", log: stubLogger(),
+      closeRunAdmission: stopped })).resolves.toBe("not_listening");
+    expect(stopped).toHaveBeenCalledOnce();
+  });
+
   it("closes the remaining connections when the drain outlives the grace period", async () => {
     vi.useFakeTimers();
     try {
@@ -227,6 +310,20 @@ describe("closeHttpListenerForShutdown", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("waits for HTTP work without waiting for upgraded sockets to close", async () => {
+    const server = fakeServer({ listening: true, closeDelayMs: null });
+    const requests = deferred();
+    let finished = false;
+    const drain = closeHttpListenerForShutdown({ server, signal: "SIGTERM", log: stubLogger(),
+      drainRequests: () => requests.promise }).then(result => { finished = true; return result; });
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    requests.resolve();
+    await expect(drain).resolves.toBe("closed");
+    expect(server.close).toHaveBeenCalledOnce();
+    expect(server.closeAllConnections).not.toHaveBeenCalled();
   });
 
   it("does nothing when the listener was never bound", async () => {
@@ -269,6 +366,131 @@ describe("drainRunExecutionFinalizersForShutdown", () => {
         expect.objectContaining({ timeoutMs: 250 }),
         expect.stringContaining("timed out"),
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("runBoundedShutdownStep", () => {
+  it("returns the step value and logs its duration", async () => {
+    const log = stubLogger();
+    await expect(runBoundedShutdownStep({
+      step: "delivery_work_stop",
+      signal: "SIGTERM",
+      timeoutMs: 1_000,
+      run: async () => "stopped",
+      log,
+    })).resolves.toMatchObject({ outcome: "completed", value: "stopped" });
+    expect(log.info).toHaveBeenCalledWith(
+      expect.objectContaining({ step: "delivery_work_stop", signal: "SIGTERM", durationMs: expect.any(Number) }),
+      "shutdown step completed",
+    );
+  });
+
+  it("stops waiting for a step that outlives its bound", async () => {
+    vi.useFakeTimers();
+    try {
+      const log = stubLogger();
+      const pending = runBoundedShutdownStep({
+        step: "scheduler_idle",
+        signal: "SIGTERM",
+        timeoutMs: 250,
+        run: () => new Promise<void>(() => undefined),
+        log,
+      });
+      await vi.advanceTimersByTimeAsync(250);
+      await expect(pending).resolves.toMatchObject({ outcome: "timed_out" });
+      expect(log.info).toHaveBeenCalledWith(
+        expect.objectContaining({ step: "scheduler_idle", timeoutMs: 250 }),
+        expect.stringContaining("timed out"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("logs a step that rejects and does not reject the shutdown", async () => {
+    const log = stubLogger();
+    const error = new Error("skill sync stop failed");
+    await expect(runBoundedShutdownStep({
+      step: "skill_source_sync_stop",
+      signal: "SIGINT",
+      timeoutMs: 1_000,
+      run: async () => { throw error; },
+      log,
+    })).resolves.toMatchObject({ outcome: "failed", error });
+    expect(log.error).toHaveBeenCalledWith(
+      expect.objectContaining({ step: "skill_source_sync_stop", err: error }),
+      expect.stringContaining("failed"),
+    );
+  });
+
+  it("contains a step that throws synchronously", async () => {
+    const result = await runBoundedShutdownStep({
+      step: "systemd_notify",
+      signal: "SIGTERM",
+      timeoutMs: 1_000,
+      run: () => { throw new Error("spawn failed"); },
+      log: stubLogger(),
+    });
+    expect(result.outcome).toBe("failed");
+  });
+});
+
+describe("createPreDrainShutdownBudget", () => {
+  it("gives each step only the time that is left in the shared budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const log = stubLogger();
+      const budget = createPreDrainShutdownBudget({ signal: "SIGTERM", budgetMs: 1_000, log });
+      const first = budget.run("skill_source_sync_stop", () =>
+        new Promise<void>((resolve) => setTimeout(resolve, 700)));
+      await vi.advanceTimersByTimeAsync(700);
+      await expect(first).resolves.toMatchObject({ outcome: "completed" });
+
+      const second = budget.run("scheduler_idle", () => new Promise<void>(() => undefined));
+      await vi.advanceTimersByTimeAsync(300);
+      await expect(second).resolves.toMatchObject({ outcome: "timed_out" });
+      expect(log.info).toHaveBeenCalledWith(
+        expect.objectContaining({ step: "scheduler_idle", timeoutMs: 300 }),
+        expect.stringContaining("timed out"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reaches the run drain within the budget when every pre-drain step hangs", async () => {
+    vi.useFakeTimers();
+    try {
+      const budget = createPreDrainShutdownBudget({ signal: "SIGTERM", budgetMs: 1_000, log: stubLogger() });
+      const hang = () => new Promise<void>(() => undefined);
+      const drain = vi.fn(async () => ({ interrupted: 1 }));
+      const shutdown = (async () => {
+        await budget.run("skill_source_sync_stop", hang);
+        await budget.run("delivery_work_stop", hang);
+        await coordinateHeartbeatSchedulerShutdown({
+          signal: "SIGTERM",
+          prepareHotRestartShutdown: async () => {
+            const preparation = await budget.run("hot_restart_prepare", () =>
+              new Promise<{ skipDrain: boolean }>(() => undefined));
+            if (preparation.outcome === "completed") return preparation.value;
+            throw new Error("hot-restart shutdown preparation timed out");
+          },
+          waitForHeartbeatSchedulerIdle: async () => {
+            await budget.run("scheduler_idle", hang);
+          },
+        });
+        return drain();
+      })();
+
+      const startedAt = Date.now();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.runAllTimersAsync();
+      await expect(shutdown).resolves.toEqual({ interrupted: 1 });
+      expect(drain).toHaveBeenCalledOnce();
+      expect(Date.now() - startedAt).toBeLessThan(1_010);
     } finally {
       vi.useRealTimers();
     }
@@ -454,5 +676,28 @@ describe("coordinateHeartbeatSchedulerShutdown", () => {
       preparationError,
       waitedForSchedulerIdle: true,
     });
+  });
+});
+
+describe("service shutdown failure isolation", () => {
+  it("awaits remaining cleanup before reporting a scheduler failure", async () => {
+    const failure = new Error("plugin result could not be saved");
+    const gate = deferred();
+    const cleanup = vi.fn(() => gate.promise);
+    let finished = false;
+    const stopping = finishServiceShutdown(async () => { throw failure; }, cleanup)
+      .then(() => { finished = true; return undefined; }, error => { finished = true; return error; });
+    try {
+      await vi.waitFor(() => expect(cleanup).toHaveBeenCalledOnce());
+      expect(finished).toBe(false);
+    } finally { gate.resolve(); }
+    expect(await stopping).toBe(failure);
+  });
+  it("reports both failures after attempting cleanup", async () => {
+    const stopFailure = new Error("scheduler failure"), cleanupFailure = new Error("worker failure");
+    const cleanup = vi.fn(async () => { throw cleanupFailure; });
+    await expect(finishServiceShutdown(async () => { throw stopFailure; }, cleanup))
+      .rejects.toMatchObject({ errors: [stopFailure, cleanupFailure] });
+    expect(cleanup).toHaveBeenCalledOnce();
   });
 });

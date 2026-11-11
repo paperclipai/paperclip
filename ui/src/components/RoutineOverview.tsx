@@ -14,11 +14,10 @@ import { Button } from "@/components/ui/button";
 import { createIssueDetailLocationState } from "@/lib/issueDetailBreadcrumb";
 import { Link } from "@/lib/router";
 import {
-  routineActivityAuditHref,
   routineDetailHref,
-  routineRunsAuditHref,
 } from "./RoutineContextualSidebar";
 import { useRoutineDetail } from "./routine-sections/context";
+import { RoutineResponsibleUser } from "./RoutineResponsibleUser";
 
 export type RoutineScheduleSummary = {
   label: string;
@@ -41,6 +40,14 @@ export function summarizeRoutineSchedule(triggers: RoutineTrigger[]): RoutineSch
     .sort((left, right) => left.getTime() - right.getTime())[0] ?? null;
 
   if (schedules.length === 0) {
+    const webhooks = triggers.filter((trigger) => trigger.kind === "webhook" && trigger.enabled);
+    if (webhooks.length > 0) {
+      return {
+        label: `${webhooks.length} active webhook${webhooks.length === 1 ? "" : "s"}`,
+        detail: "Runs on incoming requests",
+        nextRunAt: null,
+      };
+    }
     return { label: "No active schedule", detail: "Manual runs only", nextRunAt: null };
   }
 
@@ -134,6 +141,7 @@ function OverviewFact({
 export function RoutineOverview() {
   const { routine, routineRuns, currentAssignee, hasLiveRun } = useRoutineDetail();
   const schedule = summarizeRoutineSchedule(routine.triggers);
+  const hasWebhook = routine.triggers.some((trigger) => trigger.kind === "webhook" && trigger.enabled);
   const sortedRuns = [...(routineRuns ?? [])].sort(
     (left, right) => new Date(right.triggeredAt).getTime() - new Date(left.triggeredAt).getTime(),
   );
@@ -161,38 +169,41 @@ export function RoutineOverview() {
         />
         <OverviewFact
           icon={CalendarClock}
-          label="Schedule"
+          label="Triggers"
           value={schedule.label}
           detail={<span className="font-mono">{schedule.detail}</span>}
         />
         <OverviewFact
           icon={Clock3}
           label="Next run"
-          value={schedule.nextRunAt ? formatRoutineTimestamp(schedule.nextRunAt) : "Not scheduled"}
-          detail={schedule.nextRunAt ? "Scheduled" : "Add or enable a schedule"}
+          value={schedule.nextRunAt ? formatRoutineTimestamp(schedule.nextRunAt) : hasWebhook ? "On webhook delivery" : "Not scheduled"}
+          detail={schedule.nextRunAt ? "Scheduled" : hasWebhook ? "Waiting for an incoming request" : "Add or enable a schedule"}
         />
         <OverviewFact
           icon={Play}
           label="Last run"
           value={lastRun ? <StatusBadge status={lastRun.status} /> : "No runs yet"}
-          detail={lastRun ? formatRoutineTimestamp(lastRun.triggeredAt) : "Run manually or wait for the schedule"}
+          detail={lastRun ? formatRoutineTimestamp(lastRun.triggeredAt) : "Run manually or wait for a trigger"}
         />
       </div>
 
-      <section className="flex flex-col gap-2" aria-labelledby="routine-agent-heading">
-        <h2 id="routine-agent-heading" className="text-sm font-semibold">Default agent</h2>
-        {currentAssignee ? (
-          <Link
-            to={`/agents/${currentAssignee.urlKey ?? currentAssignee.id}`}
-            className="flex w-fit items-center gap-2 rounded-md text-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <UserRound className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-            {currentAssignee.name}
-          </Link>
-        ) : (
-          <p className="text-sm text-muted-foreground">No default agent. Automatic triggers remain paused.</p>
-        )}
-      </section>
+      <div className="grid gap-6 sm:grid-cols-2">
+        <section className="flex flex-col gap-2" aria-labelledby="routine-agent-heading">
+          <h2 id="routine-agent-heading" className="text-sm font-semibold">Default agent</h2>
+          {currentAssignee ? (
+            <Link
+              to={`/agents/${currentAssignee.urlKey ?? currentAssignee.id}`}
+              className="flex w-fit items-center gap-2 rounded-md text-sm font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <UserRound className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+              {currentAssignee.name}
+            </Link>
+          ) : (
+            <p className="text-sm text-muted-foreground">No default agent. Automatic triggers remain paused.</p>
+          )}
+        </section>
+        <RoutineResponsibleUser key={routine.id} routine={routine} />
+      </div>
 
       <section className="flex flex-col gap-2" aria-labelledby="routine-description-heading">
         <h2 id="routine-description-heading" className="text-sm font-semibold">Description</h2>
@@ -209,7 +220,7 @@ export function RoutineOverview() {
         <div className="flex items-center justify-between gap-3">
           <h2 id="routine-recent-runs-heading" className="text-sm font-semibold">Recent runs</h2>
           <Button variant="ghost" size="sm" asChild>
-            <Link to={routineRunsAuditHref(routine.id)}>View all runs</Link>
+            <Link to={routineDetailHref(routine.id, "runs")}>View all runs</Link>
           </Button>
         </div>
         {recentRuns.length === 0 ? (
@@ -241,7 +252,7 @@ export function RoutineOverview() {
           </div>
         )}
         <Button variant="link" size="sm" className="w-fit px-0" asChild>
-          <Link to={routineActivityAuditHref(routine.id)}>View routine activity</Link>
+          <Link to={routineDetailHref(routine.id, "activity")}>View routine activity</Link>
         </Button>
       </section>
     </div>

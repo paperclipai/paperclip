@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createAcpxEngineExecutor } from "./execute.js";
 
 const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
@@ -15,6 +15,12 @@ const fixturePath = path.join(
   "acp-echo-agent.mjs",
 );
 const tempRoots: string[] = [];
+
+async function writeFailureFile(root: string, title: string): Promise<string> {
+  const file = path.join(root, "failure.json");
+  await fs.writeFile(file, JSON.stringify({ title, category: "request" }));
+  return file;
+}
 
 afterEach(async () => {
   await Promise.all(
@@ -61,7 +67,7 @@ it("spawns a real Node ACP agent with per-session env on this platform", async (
   expect(stderr).toContain("paperclip-acp-echo-agent started");
 });
 
-it("fails closed on a typed ACP session failure without exposing its provider text", async () => {
+it("retains a typed ACP failure as diagnostics without making it assistant output", async () => {
   const root = await fs.mkdtemp(
     path.join(os.tmpdir(), "paperclip-acpx-typed-failure-"),
   );
@@ -80,7 +86,7 @@ it("fails closed on a typed ACP session failure without exposing its provider te
       mode: "oneshot",
       stateDir: path.join(root, "state"),
       cwd: repoRoot,
-      env: { PAPERCLIP_ACPX_TYPED_FAILURE_CANARY: providerText },
+      env: { PAPERCLIP_ACPX_TYPED_FAILURE_FILE: await writeFailureFile(root, providerText) },
     },
     context: {},
     onLog: async (_stream: string, text: string) => logs.push(text),
@@ -89,8 +95,10 @@ it("fails closed on a typed ACP session failure without exposing its provider te
 
   expect(result.exitCode).toBe(1);
   expect(result.errorCode).toBe("acpx_turn_failed");
-  expect(JSON.stringify(result)).not.toContain(providerText);
-  expect(logs.join("\n")).not.toContain(providerText);
+  expect(result.errorMessage).toContain(providerText);
+  expect(result.resultJson?.terminalSessionFailure).toMatchObject({ title: providerText });
+  expect(result.summary).not.toContain(providerText);
+  expect(logs.join("\n")).toContain(providerText);
   expect(result.summary).toContain("terminal request failure");
 });
 
@@ -114,7 +122,7 @@ it("fails closed on a typed ACP session failure in persistent mode", async () =>
       warmHandleIdleMs: 0,
       stateDir: path.join(root, "state"),
       cwd: repoRoot,
-      env: { PAPERCLIP_ACPX_TYPED_FAILURE_CANARY: providerText },
+      env: { PAPERCLIP_ACPX_TYPED_FAILURE_FILE: await writeFailureFile(root, providerText) },
     },
     context: {},
     onLog: async (_stream: string, text: string) => logs.push(text),
@@ -123,8 +131,10 @@ it("fails closed on a typed ACP session failure in persistent mode", async () =>
 
   expect(result.exitCode).toBe(1);
   expect(result.errorCode).toBe("acpx_turn_failed");
-  expect(JSON.stringify(result)).not.toContain(providerText);
-  expect(logs.join("\n")).not.toContain(providerText);
+  expect(result.errorMessage).toContain(providerText);
+  expect(result.resultJson?.terminalSessionFailure).toMatchObject({ title: providerText });
+  expect(result.summary).not.toContain(providerText);
+  expect(logs.join("\n")).toContain(providerText);
   expect(result.summary).toContain("terminal request failure");
 });
 
@@ -166,7 +176,8 @@ it("keeps a typed retry warning nonfatal when the turn produces an answer", asyn
   const answer = "Recovered after the transient connection warning.";
   const warningCanary = "typed-warning-is-not-terminal";
   const logs: string[] = [];
-  const execute = createAcpxEngineExecutor();
+  const classifyTerminalSessionFailure = vi.fn(() => null);
+  const execute = createAcpxEngineExecutor({ classifyTerminalSessionFailure });
 
   const result = await execute({
     runId: "typed-warning-smoke",
@@ -190,6 +201,7 @@ it("keeps a typed retry warning nonfatal when the turn produces an answer", asyn
 
   expect(result.exitCode).toBe(0);
   expect(result.summary).toBe(answer);
+  expect(classifyTerminalSessionFailure).not.toHaveBeenCalled();
   expect(JSON.stringify(result)).not.toContain(warningCanary);
   expect(logs.join("\n")).not.toContain(warningCanary);
 });

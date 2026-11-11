@@ -2,16 +2,18 @@
   "schemaVersion": 1,
   "slug": "supabase",
   "name": "Supabase",
-  "description": "Connect Supabase's provider-hosted MCP server.",
+  "description": "Create Supabase projects, deploy Edge Functions, manage databases, and configure application authentication and APIs.",
   "categories": [
-    "data"
+    "data",
+    "developer"
   ],
   "featured": false,
   "branding": {
     "logoUrl": "/brands/apps/supabase.svg"
   },
   "urlPatterns": [
-    "https://mcp.supabase.com/*"
+    "https://mcp.supabase.com/*",
+    "https://api.supabase.com/*"
   ],
   "docsUrl": "https://supabase.com/docs/guides/ai-tools/mcp",
   "redirectConstraints": "https-or-loopback-http",
@@ -25,9 +27,24 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://mcp.supabase.com/mcp"
+        "serverUrl": "https://mcp.supabase.com/mcp",
+        "scopesHint": [
+          "organizations:read",
+          "projects:read",
+          "projects:write",
+          "database:write",
+          "database:read",
+          "analytics:read",
+          "secrets:read",
+          "edge_functions:read",
+          "edge_functions:write",
+          "environment:read",
+          "environment:write",
+          "storage:read",
+          "storage:write"
+        ]
       },
-      "guidanceMd": "Connect Supabase in the browser and scope the connection to one development project. Write tools start enabled and remain governed by Paperclip's action policies.",
+      "guidanceMd": "Connect the Supabase organization agents should use. Leave Project reference empty to create and manage projects; pin a project to restrict access and disable account tools. Database migrations and Edge Function deployment are available through MCP. Use the Management API method for Auth and Data API configuration.",
       "riskTier": "S4",
       "label": "Sign in with Supabase",
       "consoleLinks": {
@@ -40,14 +57,18 @@
       "tenantFields": [
         {
           "key": "projectRef",
-          "label": "Project reference",
+          "label": "Pin to project reference",
           "type": "text",
-          "required": true,
           "placeholder": "abcdefghijklmnopqrst",
-          "helperMd": "Scope the connection to one development project.",
+          "helperMd": "Optional. Restrict access to one existing project. Leave empty to create projects and use account tools.",
           "transport": {
             "location": "query",
             "name": "project_ref"
+          },
+          "advanced": true,
+          "validation": {
+            "pattern": "^[a-z]{20}$",
+            "maxLength": 20
           }
         },
         {
@@ -60,7 +81,8 @@
             "location": "query",
             "name": "read_only",
             "format": "boolean"
-          }
+          },
+          "advanced": true
         },
         {
           "key": "features",
@@ -68,16 +90,17 @@
           "type": "textarea",
           "advanced": true,
           "placeholder": "database,docs",
-          "helperMd": "Optional comma-separated feature groups.",
+          "helperMd": "Optional comma-separated groups: docs, account, database, debugging, development, functions, branching, storage. Storage is disabled unless selected. Include account for project creation and functions for deployment.",
           "transport": {
             "location": "query",
             "name": "features",
             "format": "csv"
+          },
+          "validation": {
+            "pattern": "^(docs|account|database|debugging|development|functions|branching|storage)(\\s*,\\s*(docs|account|database|debugging|development|functions|branching|storage))*$",
+            "maxLength": 256
           }
         }
-      ],
-      "requiredResourceFilters": [
-        "project"
       ]
     },
     {
@@ -87,21 +110,22 @@
       "ownershipModes": [
         "customer"
       ],
-      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "whenToUse": "Use a scoped Supabase personal access token for hosted MCP.",
       "defaults": {
         "serverUrl": "https://mcp.supabase.com/mcp"
       },
-      "guidanceMd": "Use a customer-created Supabase key scoped to one development project. Write tools start enabled and remain governed by Paperclip's action policies.",
+      "guidanceMd": "Connect the Supabase organization agents should use. Leave Project reference empty to create and manage projects; pin a project to restrict access and disable account tools. Database migrations and Edge Function deployment are available through MCP. Use the Management API method for Auth and Data API configuration.",
       "riskTier": "S4",
-      "label": "Use an API key",
+      "label": "Use a personal access token",
       "credentialFields": [
         {
           "key": "authorization",
-          "label": "Supabase API key",
+          "label": "Supabase personal access token",
           "type": "password",
           "required": true,
           "placeholder": "sbp_...",
-          "secret": true
+          "secret": true,
+          "helperMd": "Use a scoped personal access token (sbp_...) with permissions for the enabled MCP tools and selected projects. Project publishable, anon, service_role and secret API keys are not supported. Project creation needs account access; Paperclip cannot increase an issued token’s permissions."
         }
       ],
       "keyPlacement": {
@@ -110,7 +134,7 @@
         "prefix": "Bearer "
       },
       "consoleLinks": {
-        "keys": "https://supabase.com/docs/guides/ai-tools/mcp",
+        "keys": "https://supabase.com/dashboard/account/tokens",
         "docs": "https://supabase.com/docs/guides/ai-tools/mcp"
       },
       "warnings": [
@@ -120,14 +144,18 @@
       "tenantFields": [
         {
           "key": "projectRef",
-          "label": "Project reference",
+          "label": "Pin to project reference",
           "type": "text",
-          "required": true,
           "placeholder": "abcdefghijklmnopqrst",
-          "helperMd": "Scope the connection to one development project.",
+          "helperMd": "Optional. Restrict access to one existing project. Leave empty to create projects and use account tools.",
           "transport": {
             "location": "query",
             "name": "project_ref"
+          },
+          "advanced": true,
+          "validation": {
+            "pattern": "^[a-z]{20}$",
+            "maxLength": 20
           }
         },
         {
@@ -140,7 +168,8 @@
             "location": "query",
             "name": "read_only",
             "format": "boolean"
-          }
+          },
+          "advanced": true
         },
         {
           "key": "features",
@@ -148,16 +177,72 @@
           "type": "textarea",
           "advanced": true,
           "placeholder": "database,docs",
-          "helperMd": "Optional comma-separated feature groups.",
+          "helperMd": "Optional comma-separated groups: docs, account, database, debugging, development, functions, branching, storage. Storage is disabled unless selected. Include account for project creation and functions for deployment.",
           "transport": {
             "location": "query",
             "name": "features",
             "format": "csv"
+          },
+          "validation": {
+            "pattern": "^(docs|account|database|debugging|development|functions|branching|storage)(\\s*,\\s*(docs|account|database|debugging|development|functions|branching|storage))*$",
+            "maxLength": 256
+          }
+        }
+      ]
+    },
+    {
+      "key": "management-api",
+      "label": "Deploy and configure with an access token",
+      "transport": "rest_api",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Deploy Edge Function source files and secrets, and configure Auth redirect URLs, signup settings, and Data API schemas for an existing project.",
+      "defaults": {
+        "serverUrl": "https://api.supabase.com/v1"
+      },
+      "riskTier": "S4",
+      "guidanceMd": "Connect a scoped Supabase personal access token and the project reference. Agents can deploy and remove Edge Functions, set their environment secrets, inspect project details, and configure Auth and the Data API. Use hosted MCP for project creation, SQL migrations, and storage tools. Use the Supabase Dashboard when a human must enter a credential privately.",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Supabase personal access token",
+          "type": "password",
+          "required": true,
+          "placeholder": "sbp_...",
+          "secret": true,
+          "helperMd": "Create a scoped Supabase personal access token for the selected project. Set Project Settings, Auth Config, Data API Config, Edge Functions, and Edge Function Secrets to Read-write. Leave API Key Secrets, Auth Signing Keys, and Data API JWT Secret at None. Use a short expiration. Project API keys are not supported; Paperclip cannot increase an issued token’s permissions."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "tenantFields": [
+        {
+          "key": "projectRef",
+          "label": "Project reference",
+          "type": "text",
+          "required": true,
+          "placeholder": "abcdefghijklmnopqrst",
+          "helperMd": "Copy the project reference from Supabase Dashboard → Project Settings. Every action is restricted to this project.",
+          "validation": {
+            "pattern": "^[a-z]{20}$",
+            "maxLength": 20
           }
         }
       ],
       "requiredResourceFilters": [
         "project"
+      ],
+      "consoleLinks": {
+        "keys": "https://supabase.com/dashboard/account/tokens",
+        "docs": "https://supabase.com/docs/reference/api/introduction"
+      },
+      "warnings": [
+        "Deployments and configuration changes affect the selected project. Configure action permissions for the agents that should manage it."
       ]
     }
   ]

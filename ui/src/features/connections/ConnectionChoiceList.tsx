@@ -3,7 +3,7 @@ import { Check, ChevronRight, Loader2 } from "lucide-react";
 
 /** The account-reuse rows shared by connection setup and agent bindings. */
 export function ConnectionChoiceList({ choices, selectedId, pendingId, disabled, onSelect }: {
-  choices: { id: string; name: string; description: ReactNode; disabled?: boolean }[];
+  choices: { id: string; name: string; description: ReactNode; icon?: ReactNode; disabled?: boolean }[];
   selectedId?: string;
   pendingId?: string | null;
   disabled?: boolean;
@@ -19,7 +19,8 @@ export function ConnectionChoiceList({ choices, selectedId, pendingId, disabled,
       disabled={disabled || Boolean(pendingId) || choice.disabled}
       onClick={() => onSelect(choice.id)}
     >
-      <span className="min-w-0">
+      {choice.icon && <span aria-hidden="true" className="shrink-0">{choice.icon}</span>}
+      <span className="min-w-0 flex-1">
         <span className="block font-medium text-foreground">{choice.name}</span>
         <span className="mt-1 block text-xs text-muted-foreground">{choice.description}</span>
       </span>

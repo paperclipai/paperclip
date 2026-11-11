@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en"><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Popular repositories with repeated Paperclip credit</title>
+<style>
+body{margin:0;padding:28px;color:#19332b;background:#f6f8f4;font:15px/1.6 system-ui,sans-serif}
+h1{font-size:28px;line-height:1.2;margin:8px 0 16px}p{color:#526459}small{display:block;color:#526459}
+.eyebrow{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#527366}
+.controls{display:flex;flex-wrap:wrap;gap:20px;margin:24px 0;padding:18px;background:white;border:1px solid #dce4da;border-radius:12px}
+label{display:grid;gap:6px;flex:1;min-width:180px}input{accent-color:#28765d;font:inherit;padding:6px;min-width:0}
+table{border-collapse:collapse;width:100%;font-size:14px}th{text-align:left;color:#526459;font-weight:500}td,th{padding:12px 8px;border-bottom:1px solid #dce4da}
+.bar{height:6px;background:#28765d;border-radius:3px;margin-top:5px}.scroll{overflow:auto}
+@media(max-width:480px){body{padding:18px}h1{font-size:24px}}
+</style></head><body>
+<div class="eyebrow">Research report · October 7, 2026</div>
+<h1>Popular repositories that use Paperclip a lot</h1>
+<p>Compare repository popularity with repeated, attributed usage. Adjust the weighting to explore the ranking.</p>
+<div class="controls">
+<label>Popularity weight <input id="weight" type="range" min="0" max="100" value="50"><small id="weights"></small></label>
+<label>Find a repository <input id="query" type="search" placeholder="Search repositories"></label>
+</div>
+<p id="total" aria-live="polite"></p>
+<div class="scroll"><table><thead><tr><th>Rank</th><th>Repository</th><th>Stars</th><th>Credits</th><th>Score</th></tr></thead><tbody></tbody></table></div>
+<small>Illustrative Storybook snapshot. Credits measure attribution, not unique users.</small>
+<script>
+const records=[['juspay/hyperswitch',46434,117],['storybookjs/storybook',94832,56],['lacymorrow/crossover',1251,44],['smart-mcp-proxy/mcpproxy-go',387,57],['octasoft-ltd/wsl-ui',411,40],['s4solutionsllc/Nexis',87,131]];
+const weight=document.querySelector('#weight'),query=document.querySelector('#query');
+function render(){const w=Number(weight.value)/100;const rows=records.map(([name,stars,credits])=>({name,stars,credits,score:Math.pow(Math.log1p(stars),w)*Math.pow(Math.log1p(credits),1-w)})).sort((a,b)=>b.score-a.score);const max=rows[0].score;document.querySelector('#weights').textContent=weight.value+'% popularity · '+(100-weight.value)+'% attributed usage';const visible=rows.filter(r=>r.name.toLowerCase().includes(query.value.toLowerCase()));document.querySelector('#total').textContent=visible.length+' qualifying repositories';const body=document.querySelector('tbody');body.replaceChildren();visible.forEach(r=>{const tr=document.createElement('tr');[rows.indexOf(r)+1,r.name,r.stars.toLocaleString(),r.credits,(100*r.score/max).toFixed(1)].forEach((value,i)=>{const td=document.createElement('td');td.textContent=value;if(i===4){const bar=document.createElement('div');bar.className='bar';bar.style.width=(100*r.score/max)+'%';td.append(bar)}tr.append(td)});body.append(tr)})}
+weight.addEventListener('input',render);query.addEventListener('input',render);render();
+</script></body></html>

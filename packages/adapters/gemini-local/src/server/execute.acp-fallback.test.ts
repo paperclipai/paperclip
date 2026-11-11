@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 const {
   ensureAdapterExecutionTargetCommandResolvable,
@@ -68,6 +71,7 @@ vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
 });
 
 import { execute } from "./execute.js";
+import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 
 function buildContext(config: Record<string, unknown> = {}) {
   return {
@@ -112,5 +116,68 @@ describe("gemini_local ACP startup fallback", () => {
     await expect(execute(ctx as never)).rejects.toThrow('Unexpected "<<"');
 
     expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
+  });
+
+  it.each(["fresh", "resumed", "missing"] as const)(
+    "supplies initial communication guidance at the CLI attempt boundary (%s)", async (state) => {
+      const cwd = await mkdtemp(path.join(tmpdir(), "gemini-communication-"));
+      const prompts: string[] = [];
+      try {
+        if (state === "missing") {
+          runAdapterExecutionTargetProcess.mockResolvedValueOnce({
+            exitCode: 1, signal: null, timedOut: false, stdout: "",
+            stderr: "Unknown session 'previous'", pid: 123, startedAt: new Date().toISOString(),
+          });
+        }
+        const ctx = buildContext({ engine: "cli", cwd });
+        await execute({
+          ...ctx,
+          runtime: { ...ctx.runtime, sessionId: state === "fresh" ? null : "previous" },
+          context: { paperclipTaskCommunicationGuidance: "Frozen Slack preferences." },
+          onMeta: async (meta) => { prompts.push(meta.prompt ?? ""); },
+        });
+        if (state === "fresh") {
+          expect(prompts).toHaveLength(1);
+          expect(prompts[0]?.match(/Frozen Slack preferences\./g)).toHaveLength(1);
+        } else {
+          expect(prompts[0]).not.toContain("Frozen Slack preferences.");
+          expect(prompts).toHaveLength(state === "missing" ? 2 : 1);
+          if (state === "missing") {
+            expect(prompts[1]?.match(/Frozen Slack preferences\./g)).toHaveLength(1);
+          }
+        }
+      } finally {
+        await rm(cwd, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("rebuilds the full assignment when a resume falls back to a fresh CLI attempt", async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "gemini-context-fallback-"));
+    const prompts: string[] = [];
+    try {
+      runAdapterExecutionTargetProcess
+        .mockResolvedValueOnce({
+          exitCode: 1, signal: null, timedOut: false, stdout: "",
+          stderr: "Unknown session 'previous'", pid: 123, startedAt: new Date().toISOString(),
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0, signal: null, timedOut: false,
+          stdout: JSON.stringify({ type: "message", role: "assistant", content: "done" }),
+          stderr: "", pid: 123, startedAt: new Date().toISOString(),
+        });
+      const ctx = buildContext({ engine: "cli", cwd });
+      await execute({
+        ...ctx,
+        runtime: { ...ctx.runtime, sessionId: "previous" },
+        context: createPromptContextFixture(),
+        onMeta: async (meta) => { prompts.push(meta.prompt ?? ""); },
+      });
+      expect(prompts).toHaveLength(2);
+      expect(prompts[0]).toContain("## Compact assignment");
+      expect(prompts[1]).toContain("## Owned assignment");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 });

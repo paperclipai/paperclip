@@ -12,7 +12,7 @@ import type {
   StartEnvironmentCustomImageSetupSession,
   CreateEnvironmentCustomImageTerminalSessionToken,
 } from "@paperclipai/shared";
-import { api } from "./client";
+import { api, type RequestOptions } from "./client";
 
 export interface EnvironmentCustomImageOverview {
   activeTemplate: EnvironmentCustomImageTemplate | null;
@@ -152,12 +152,13 @@ export const environmentsApi = {
         : `/environments/${environmentId}`,
       body,
     ),
-  probe: (environmentId: string, companyId?: string | null) =>
+  probe: (environmentId: string, companyId?: string | null, options?: RequestOptions) =>
     api.post<EnvironmentProbeResult>(
       companyId
         ? `/environments/${environmentId}/probe?${companyIdQuery(companyId)}`
         : `/environments/${environmentId}/probe`,
       {},
+      options,
     ),
   probeConfig: (companyId: string, body: {
     name?: string;

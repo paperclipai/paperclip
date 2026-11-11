@@ -166,12 +166,12 @@ function registerModuleMocks() {
 }
 
 async function createApp(actor: Record<string, unknown>) {
-  const [{ errorHandler }, { routineRoutes }] = await Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/routines.js")>("../routes/routines.js"),
-  ]);
+  // Load the route after its mocks are installed. Concurrent importActual
+  // calls through the middleware barrel can cache unmocked dependencies.
+  const { errorHandler } = await import("../middleware/error-handler.js");
+  const { routineRoutes } = await import("../routes/routines.js");
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ verify: (req, _res, buf) => { (req as any).rawBody = buf; } }));
   app.use((req, _res, next) => {
     (req as any).actor = actor;
     next();
@@ -182,6 +182,18 @@ async function createApp(actor: Record<string, unknown>) {
 }
 
 describe("routine routes", () => {
+  it("forwards the Fireflies signature and exact raw JSON to the public handler", async () => {
+    const app = await createApp({ type: "none" });
+    const raw = '{ "event": "meeting.summarized", "meeting_id": "meeting-1", "timestamp": 1780000000000 }';
+    mockRoutineService.firePublicTrigger.mockResolvedValue({ status: "ignored", routineStarted: false });
+    const res = await request(app).post("/api/routine-triggers/public/fireflies-public/fire")
+      .set("Content-Type", "application/json").set("X-Hub-Signature", "sha256=fixture").send(raw);
+    expect(res.status).toBe(202);
+    expect(mockRoutineService.firePublicTrigger).toHaveBeenCalledWith("fireflies-public", expect.objectContaining({
+      firefliesSignatureHeader: "sha256=fixture", rawBody: Buffer.from(raw), payload: JSON.parse(raw),
+    }));
+  });
+
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
@@ -517,6 +529,54 @@ describe("routine routes", () => {
     expect(mockRoutineService.create).not.toHaveBeenCalled();
   });
 
+  it("hides responsibility editing from people without tasks:assign and rejects their writes", async () => {
+    const app = await createApp({ type: "board", userId: "viewer", source: "session", isInstanceAdmin: false, companyIds: [companyId] });
+    mockRoutineService.getDetail.mockResolvedValue(routine);
+    expect((await request(app).get(`/api/routines/${routineId}`)).body.canChangeResponsibleUser).toBe(false);
+    const res = await request(app).patch(`/api/routines/${routineId}`).send({ responsibleUserId: "viewer" });
+    expect(res.status).toBe(403);
+    expect(mockRoutineService.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: "viewer", memberships: [{ companyId, membershipRole: "viewer", status: "active" }] },
+    { name: "inactive member", memberships: [{ companyId, membershipRole: "operator", status: "suspended" }] },
+    { name: "missing member", memberships: [] },
+  ])("hides responsibility editing from a $name even with tasks:assign", async ({ memberships }) => {
+    const app = await createApp({ type: "board", userId: "read-only-user", source: "session", isInstanceAdmin: false, companyIds: [companyId], memberships });
+    mockAccessService.canUser.mockResolvedValue(true);
+    mockRoutineService.getDetail.mockResolvedValue(routine);
+
+    const detail = await request(app).get(`/api/routines/${routineId}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.canChangeResponsibleUser).toBe(false);
+    const res = await request(app).patch(`/api/routines/${routineId}`).send({ responsibleUserId: "operator" });
+    expect(res.status).toBe(403);
+    expect(mockRoutineService.update).not.toHaveBeenCalled();
+  });
+
+  it.each(["granted", "instance-admin", "local"])("allows responsibility changes for a %s operator", async (kind) => {
+    const app = await createApp({ type: "board", userId: "operator", source: kind === "local" ? "local_implicit" : "session", isInstanceAdmin: kind === "instance-admin", companyIds: [companyId], memberships: [{ companyId, membershipRole: kind === "granted" ? "operator" : "viewer", status: "active" }] });
+    mockAccessService.canUser.mockResolvedValue(kind === "granted");
+    mockRoutineService.getDetail.mockResolvedValue(routine);
+    mockRoutineService.update.mockResolvedValue({ ...routine, responsibleUserId: "operator", previousResponsibleUserId: "actual-predecessor" });
+    expect((await request(app).get(`/api/routines/${routineId}`)).body.canChangeResponsibleUser).toBe(true);
+    const res = await request(app).patch(`/api/routines/${routineId}`).send({ responsibleUserId: "operator", baseRevisionId: revisionId });
+    expect(res.status).toBe(200);
+    expect(mockRoutineService.update).toHaveBeenCalledWith(routineId, expect.objectContaining({ responsibleUserId: "operator", baseRevisionId: revisionId }), expect.objectContaining({ userId: "operator" }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "routine.updated", details: expect.objectContaining({ responsibleUserId: "operator", previousResponsibleUserId: "actual-predecessor" }) }));
+    expect(res.body).not.toHaveProperty("previousResponsibleUserId");
+  });
+
+  it("prevents even the assigned agent from transferring routine responsibility", async () => {
+    const app = await createApp({ type: "agent", agentId, companyId });
+    mockRoutineService.getDetail.mockResolvedValue(routine);
+    expect((await request(app).get(`/api/routines/${routineId}`)).body.canChangeResponsibleUser).toBe(false);
+    const res = await request(app).patch(`/api/routines/${routineId}`).send({ responsibleUserId: "operator" });
+    expect(res.status).toBe(403);
+    expect(mockRoutineService.update).not.toHaveBeenCalled();
+  });
+
   it("requires tasks:assign permission to retarget a routine assignee", async () => {
     const app = await createApp({
       type: "board",
@@ -638,6 +698,7 @@ describe("routine routes", () => {
     }, {
       agentId: null,
       userId: "board-user",
+      runId: null,
     });
   });
 
@@ -669,6 +730,21 @@ describe("routine routes", () => {
       userId: "board-user",
       runId: null,
     });
-    expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
+    try {
+      expect(mockTrackRoutineCreated).toHaveBeenCalledWith(expect.anything());
+    } catch (error) {
+      // Report mock wiring without importing modules again or changing timing.
+      console.error("Routine creation telemetry mock diagnostic", {
+        clientGetterCalls: mockGetTelemetryClient.mock.calls.length,
+        clientGetterResults: mockGetTelemetryClient.mock.results.slice(-4).map(result => ({
+          type: result.type,
+          truthy: Boolean(result.value),
+        })),
+        trackingCalls: mockTrackRoutineCreated.mock.calls.length,
+        createCalls: mockRoutineService.create.mock.calls.length,
+        activityCalls: mockLogActivity.mock.calls.length,
+      });
+      throw error;
+    }
   });
 });

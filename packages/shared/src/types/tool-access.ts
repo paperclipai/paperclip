@@ -68,7 +68,7 @@ export type {
 
 export type ToolActorType = "agent" | "user" | "system" | "plugin";
 export type ToolConnectionTransport =
-  "mcp_remote" | "rest_api" | "local_stdio" | "chat_sdk" | "runtime_auth";
+  "mcp_remote" | "rest_api" | "local_stdio" | "chat_sdk" | "runtime_auth" | "voice";
 export type ToolConnectionPurpose = "tool" | "channel" | "ai";
 export type ToolConnectionAuthKind = "oauth" | "api_key" | "none";
 export type ToolConnectionOwnership =
@@ -165,6 +165,7 @@ export interface ToolApplication {
 }
 
 export interface ToolConnection {
+  agentInstructions?: import("../connection-instructions.js").ConnectionAgentInstructions | null;
   id: string;
   companyId: string;
   applicationId: string;
@@ -182,6 +183,8 @@ export interface ToolConnection {
   transportConfig: Record<string, unknown>;
   config?: Record<string, unknown>;
   credentialSecretRefs: ToolCredentialSecretRef[];
+  /** Saved client secret for the requesting user, or the shared connection. Never includes secret material. */
+  hasSavedOAuthClientSecret?: boolean;
   credentialRefs?: McpConnectionCredentialRef[];
   healthStatus: ToolConnectionHealthStatus;
   /** Managed GitHub grant state; transient health failures do not require sign-in. */
@@ -216,6 +219,22 @@ export interface ConnectionGrant {
       strategy?: string;
       accessTokenExpiresAt?: string | null;
       scopes?: string[];
+      /**
+       * Whether `scopes` is what the provider asserted, or only what we requested.
+       * `requested_fallback` means the token response carried no `scope`, so the value is
+       * inferred from the request per RFC 6749 §5.1 and is not a provider assertion.
+       */
+      scopeSource?: "provider" | "requested_fallback";
+      /** Scopes the provider asserted that we never asked for. Empty unless it over-granted. */
+      unrequestedScopes?: string[];
+      /**
+       * The scopes the authorization URL sent for *this* grant, kept per-grant because two
+       * users can authorize the same connection with different scopes. A refresh has no fresh
+       * request, so this is the baseline its response is judged against.
+       */
+      requestedScopes?: string[];
+      /** Last successful consent; ordinary token refresh preserves this. */
+      consentedAt?: string;
       tokenType?: string;
       refreshTokenExpiresAt?: string;
       refreshedAt?: string;
@@ -224,6 +243,7 @@ export interface ConnectionGrant {
         expiresAt?: string;
       };
     };
+    slackSearch?: { endpointId: string; workspaceId: string; slackUserId: string; clientRevision: string };
     github?: {
       userId: string;
       login: string;
@@ -238,6 +258,7 @@ export interface ConnectionGrant {
         id: string;
         fullName: string;
         installationId: string;
+        ownerType?: "personal" | "organization";
         private?: boolean;
       }>;
       installationUrl?: string;
@@ -245,6 +266,9 @@ export interface ConnectionGrant {
       appSlug?: string;
       accessRevision?: string;
       lastAccessRefreshAt?: string;
+      /** Unsettled Cloud binding changes; retained until the exact revision is delivered. */
+      bindingSync?: { id: string; removeInstallationIds: string[] };
+      continuityRetry?: { at: string; attempts: number; revision: string };
       lastWebhookAt?: string;
       webhookHealth?: "pending" | "healthy" | "unhealthy";
     };
@@ -283,6 +307,8 @@ export interface ConnectionGrantCapabilities {
  * not "render disabled".
  */
 export interface ToolConnectionCapabilities {
+  management?: { allowed: boolean; reason: string; operation: string };
+  usage?: { allowed: boolean; reason: string; operation: string; requiresApproval?: boolean; allowedCount?: number; askFirstCount?: number };
   canConfigure: boolean;
   canCreateOrganizationGrant: boolean;
   canSetCompanyInstall: boolean;
@@ -726,6 +752,10 @@ export interface ToolMcpGatewayToken {
   revokedAt: Date | string | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  /** Agent client delegation. Null with an issuing agent identifies an unbound legacy client. */
+  responsibleUserId?: string | null;
+  /** True for an agent-created client token whose value has not yet been revealed to its responsible person. */
+  pendingReveal?: boolean;
   createdAt: Date | string;
   updatedAt: Date | string;
 }
@@ -755,6 +785,12 @@ export interface ToolProfileSummary {
   assignmentCount: number;
   appliesToAgentCount: number;
   isCompanyDefault: boolean;
+}
+
+/** Saved configuration only; no effective-access summary or pending-review calculation. */
+export interface ToolProfileConfiguration extends Omit<ToolProfile, "newToolsPendingCount"> {
+  entries: ToolProfileEntry[];
+  bindings: ToolProfileBinding[];
 }
 
 export interface ToolProfileWithDetails extends ToolProfile {
@@ -986,6 +1022,11 @@ export interface ToolAppAttentionItem {
   reasons: ToolAppAttentionReason[];
 }
 
+export interface ToolConnectionReviewCounts {
+  pendingActionRequestCount: number;
+  quarantinedCatalogEntryCount: number;
+}
+
 export interface ToolAppsAttentionResponse {
   generatedAt: Date | string;
   apps: ToolAppAttentionItem[];
@@ -1215,7 +1256,8 @@ export interface ToolOAuthStartResult {
   connectionId: string;
   provider: string;
   authorizationUrl: string;
-  expiresAt: string;
+  /** Null until the addressed human starts provider authorization from a saved setup. */
+  expiresAt: string | null;
   /**
    * Opaque Paperclip Cloud authorization handoff. The board submits this only
    * to its fixed same-origin Cloud endpoint; it is never treated as a URL.
@@ -1555,6 +1597,7 @@ export interface ToolAccessDecisionInput {
   };
   runContext?: {
     heartbeatRunId?: string | null;
+    originatingAgentId?: string | null;
     issueId?: string | null;
     projectId?: string | null;
     routineId?: string | null;
@@ -1657,6 +1700,17 @@ export interface ToolConnectionTestAgentAccessResponse {
   access: ToolConnectionAccessSummary;
 }
 
+export interface ToolUpstreamPending {
+  kind: "authorization" | "approval";
+  links: Array<{ url: string; host: string; elicitationId?: string }>;
+  executionId?: string;
+  elicitationId?: string;
+  resumeTool?: string;
+  expiresAt?: string;
+  message?: string;
+  requestedSchema?: Record<string, unknown>;
+}
+
 /** Result of `POST /tool-connections/:id/test-calls`. */
 export interface ToolConnectionTestCallResult {
   decision: ToolConnectionTestDecision;
@@ -1667,6 +1721,8 @@ export interface ToolConnectionTestCallResult {
   error?: { message: string; reasonCode: ToolAccessReasonCode | string | null };
   /** Present (with `decision: "ask_first"`) — the parked approval request. */
   actionRequestId?: string;
+  /** Provider handoff, distinct from a Paperclip permission approval. */
+  upstreamPending?: ToolUpstreamPending;
 }
 
 /**
@@ -1692,6 +1748,7 @@ export interface ToolConnectionTestCallStatus {
   parameters?: Record<string, unknown> | null;
   /** Present once `phase === "done"` and the tool succeeded. */
   result?: unknown;
+  upstreamPending?: ToolUpstreamPending;
   /** Present once `phase === "done"` and the tool failed, or when the request was denied/expired. */
   error?: { message: string; reasonCode: ToolAccessReasonCode | string | null };
   /** Wall-clock duration of the executed call in ms, when known. */

@@ -11,7 +11,7 @@ function minuteBucket(date: Date): Date {
 }
 
 export async function incrementToolRuntimeMetricCounter(
-  db: Db,
+  db: Pick<Db, "insert">,
   input: {
     companyId: string;
     metric: string;
@@ -42,7 +42,7 @@ export async function incrementToolRuntimeMetricCounter(
     });
 }
 
-export async function recordToolRuntimeAuditWriteFailure(db: Db, companyId: string) {
+export async function recordToolRuntimeAuditWriteFailure(db: Pick<Db, "insert">, companyId: string) {
   try {
     await incrementToolRuntimeMetricCounter(db, {
       companyId,

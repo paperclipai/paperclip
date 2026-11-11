@@ -1,0 +1,25 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::paperclipai-runner-e2e-history-078455283791-us-east-1/cloud-migrators/v1/*",
+      "Condition": {
+        "StringEquals": {
+          "s3:if-none-match": "*"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::paperclipai-runner-e2e-history-078455283791-us-east-1",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": "cloud-migrators/v1/*"
+        }
+      }
+    }
+  ]
+}

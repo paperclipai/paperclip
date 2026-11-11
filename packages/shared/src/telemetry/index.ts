@@ -18,6 +18,10 @@ export {
   trackErrorHandlerCrash,
   trackInteractionCreated,
   trackInteractionResolved,
+  trackConnectionCreated,
+  trackConnectionUpdated,
+  trackConnectionInvoked,
+  trackServerStarted,
 } from "./events.js";
 export type {
   TelemetryConfig,

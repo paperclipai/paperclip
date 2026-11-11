@@ -1,8 +1,10 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode, type MouseEventHandler } from "react";
 
 export interface Breadcrumb {
   label: string;
   href?: string;
+  /** Optional handler for preserving local work before navigating. */
+  onClick?: MouseEventHandler<HTMLAnchorElement>;
   /**
    * Optional task identifier (e.g. "PAP-1204") rendered in gray monospace
    * between the leading glyph and the label.
@@ -20,6 +22,10 @@ export interface Breadcrumb {
   trailing?: ReactNode;
   /** Stable identity for the action, following leadingKey semantics. */
   trailingKey?: string;
+  /** Optional control that replaces the visible label and its leading/trailing nodes. */
+  control?: ReactNode;
+  /** Stable identity for the control, following leadingKey semantics. */
+  controlKey?: string;
 }
 
 interface BreadcrumbContextValue {
@@ -51,10 +57,12 @@ function breadcrumbsEqual(left: Breadcrumb[], right: Breadcrumb[]) {
   for (let index = 0; index < left.length; index += 1) {
     if (
       left[index]?.label !== right[index]?.label
+      || left[index]?.onClick !== right[index]?.onClick
       || left[index]?.href !== right[index]?.href
       || left[index]?.identifier !== right[index]?.identifier
       || left[index]?.leadingKey !== right[index]?.leadingKey
       || left[index]?.trailingKey !== right[index]?.trailingKey
+      || left[index]?.controlKey !== right[index]?.controlKey
     ) {
       return false;
     }

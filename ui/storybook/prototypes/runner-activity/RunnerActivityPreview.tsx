@@ -3,11 +3,15 @@ import { Pause, Play, RotateCcw, StepForward } from "lucide-react";
 import { useReducedMotion } from "motion/react";
 import { TaskChatThreadView } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
+import { TaskChatLiveTail } from "@/components/task-chat/TaskChatLiveTail";
+import { TaskChatLiveRunPill, toolCountSummaryFromEntries } from "@/components/task-chat/TaskChatLiveRunPill";
 import { TaskChatExpansionState } from "@/components/task-chat/expansion-state";
-import { buildTurnTimelineRows } from "@/components/task-chat/transcript-adapter";
+import { buildTurnTimelineRows, transcriptToTaskChatItems } from "@/components/task-chat/transcript-adapter";
+import type { TranscriptEntry } from "@/adapters";
 import type {
   TaskChatItem,
   TaskChatMessageItem,
+  TaskChatTurnItem,
 } from "@/components/task-chat/task-chat-model";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -48,7 +52,7 @@ const entries: Entry[] = [
     kind: "activity",
     id: "read",
     tool: "read",
-    target: "TaskChatActivityPhase.tsx",
+    target: "TaskChatRunnerActivityGroup.tsx",
     detail:
       "The activity phase owns expansion. Individual tool rows have separate icon widths and padding.",
   },
@@ -104,10 +108,10 @@ const entries: Entry[] = [
   {
     kind: "activity",
     id: "image",
-    tool: "view_image",
+    tool: "image_generation",
     target: "runner-activity-mobile.png",
     detail:
-      "Reviewed the narrow layout: tool paths truncate in both modes. Click a row to inspect its full target and detail.",
+      "Generated an image to check the activity feed’s image-tool label and icon.",
   },
   {
     kind: "commentary",
@@ -116,6 +120,35 @@ const entries: Entry[] = [
   },
 ];
 
+// Exercise the CLI transcript adapter, including provider names, stable call IDs,
+// multi-line reasoning, and tool results, before entering the legacy live path.
+function legacyTranscript(visible: Entry[], finished: boolean): TranscriptEntry[] {
+  const ts = "2026-09-15T12:00:00.000Z";
+  return visible.flatMap((entry, index): TranscriptEntry[] => {
+    if (entry.kind === "commentary") return [{
+      kind: "assistant", ts, itemId: entry.id, text: entry.text,
+      channel: entry.id === "final" ? "final" : "progress",
+    }];
+    const active = !finished && index === visible.length - 1;
+    if (!entry.tool) return [{
+      kind: "thinking", ts, itemId: entry.id,
+      text: `${entry.target}\n${entry.detail}`,
+      lifecycle: active ? "started" : "completed",
+    }];
+    const name = entry.tool === "read" ? "Read" : entry.tool;
+    const input = entry.tool === "exec_command"
+      ? { command: entry.target }
+      : { file_path: entry.target };
+    const call: TranscriptEntry = {
+      kind: "tool_call", ts, name, toolUseId: entry.id, input,
+    };
+    return active && !entry.failed ? [call] : [call, {
+      kind: "tool_result", ts, toolUseId: entry.id,
+      content: entry.detail, isError: Boolean(entry.failed),
+    }];
+  });
+}
+
 export interface RunnerActivityPreviewProps {
   initialStep?: number;
   autoPlay?: boolean;
@@ -123,6 +156,7 @@ export interface RunnerActivityPreviewProps {
   narrow?: boolean;
   longLabels?: boolean;
   failed?: boolean;
+  legacy?: boolean;
 }
 
 export function RunnerActivityPreview({
@@ -132,6 +166,7 @@ export function RunnerActivityPreview({
   narrow = false,
   longLabels = false,
   failed = false,
+  legacy = false,
 }: RunnerActivityPreviewProps) {
   const [step, setStep] = useState(initialStep);
   const [playing, setPlaying] = useState(autoPlay);
@@ -167,7 +202,10 @@ export function RunnerActivityPreview({
     };
   });
   const memory = useMemo(() => new Map<string, boolean>(), [replay]);
-  const items = visible.map((entry, index): TaskChatItem => {
+  const transcript = legacyTranscript(visible, finished);
+  const items = legacy
+    ? transcriptToTaskChatItems(transcript, { runId: `legacy-${replay}`, running: !finished })
+    : visible.map((entry, index): TaskChatItem => {
     if (entry.kind === "commentary")
       return {
         kind: "message",
@@ -199,13 +237,32 @@ export function RunnerActivityPreview({
       if (row.kind === "activity_phase" && !memory.has(row.id))
         memory.set(row.id, true);
     }
+  const finalResponse = items.find(
+    (item): item is TaskChatMessageItem => item.kind === "message" && item.channel === "final",
+  );
+  const savedTurn: TaskChatTurnItem = {
+    id: "preview-saved-turn",
+    kind: "turn",
+    settled: true,
+    standaloneHeader: !legacy,
+    agentName: "Engineer",
+    agentIcon: "code",
+    items: buildTurnTimelineRows(items, false),
+    summary: {
+      durationLabel: "28s",
+      toolCount: items.filter((item) => item.kind === "tool").length,
+      added: 0,
+      removed: 0,
+    },
+    finalResponse: legacy ? undefined : finalResponse,
+  };
   return (
     <div className="min-h-screen bg-background text-foreground">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-3">
         <div className="flex flex-col gap-1">
           <h1 className="text-sm font-semibold">Runner activity</h1>
           <p className="text-xs text-muted-foreground">
-            Production component ·{" "}
+            {legacy ? "Legacy CLI transcript" : "Native runner"} ·{" "}
             {reducedMotion ? "Reduced motion" : "One activity at a time"}
           </p>
         </div>
@@ -262,28 +319,19 @@ export function RunnerActivityPreview({
           {finished ? (
             <TaskChatThreadView
               scroll={false}
-              items={[
-                {
-                  id: "preview-saved-turn",
-                  kind: "turn",
-                  settled: true,
-                  standaloneHeader: true,
-                  agentName: "Engineer",
-                  agentIcon: "code",
-                  items: buildTurnTimelineRows(items, false),
-                  summary: {
-                    durationLabel: "28s",
-                    toolCount: 8,
-                    added: 0,
-                    removed: 0,
-                  },
-                  finalResponse: items.find(
-                    (item): item is TaskChatMessageItem =>
-                      item.kind === "message" && item.channel === "final",
-                  ),
-                },
-              ]}
+              items={legacy && finalResponse
+                ? [{ ...finalResponse, attachedTurn: savedTurn }]
+                : [savedTurn]}
             />
+          ) : legacy ? (
+            <div className="flex flex-col gap-2" data-testid="legacy-live-preview">
+              <TaskChatLiveRunPill
+                status="running"
+                startedAtMs={null}
+                toolSummary={toolCountSummaryFromEntries(transcript)}
+              />
+              <TaskChatLiveTail items={items} />
+            </div>
           ) : (
             <TaskChatRunnerTurn
               runId={`preview-${replay}`}

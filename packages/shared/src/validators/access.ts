@@ -104,6 +104,13 @@ export const updateMemberPermissionsSchema = z.object({
 
 export type UpdateMemberPermissions = z.infer<typeof updateMemberPermissionsSchema>;
 
+export const updateAgentPermissionGrantSchema = z.object({
+  permissionKey: z.enum(PERMISSION_KEYS),
+  enabled: z.boolean(),
+}).strict();
+
+export type UpdateAgentPermissionGrant = z.infer<typeof updateAgentPermissionGrantSchema>;
+
 const editableMembershipStatuses = ["pending", "active", "suspended"] as const;
 
 export const updateCompanyMemberSchema = z.object({
@@ -205,6 +212,8 @@ export const authSessionSchema = z.object({
   // monitoring. The browser reads this value to open its own Sentry gate —
   // see `ui/src/lib/sentry.ts`.
   sentryDsn: z.string().min(1).nullable(),
+  // Optional for browser/server version skew; null leaves the SDK default.
+  sentryEnvironment: z.string().nullable().optional(),
 });
 
 export type AuthSession = z.infer<typeof authSessionSchema>;

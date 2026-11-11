@@ -1,3 +1,4 @@
+import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
@@ -34,6 +35,7 @@ import { getStorageService } from "../../storage/index.js";
 import type { StorageService } from "../../storage/types.js";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { issueService } from "../issues.js";
+import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 
 export type RemoteWorkspaceFileReader = (input: Pick<NativeRunnerFileHandoffInput, "contentRef" | "byteSize" | "sha256">) => Promise<Buffer>;
 
@@ -46,6 +48,8 @@ export interface NativeRunnerFileHandoffBinding {
   readonly executionTargetKind: "local" | "remote";
   /** Server-bound reader. Never supplied by the model or a request body. */
   readonly readRemoteWorkspaceFile?: RemoteWorkspaceFileReader;
+  /** Provider-bound reader which authorizes absolute paths within task-granted locations. */
+  readonly readRemoteTaskFile?: RemoteWorkspaceFileReader;
 }
 
 export interface NativeRunnerFileHandoffInput {
@@ -63,6 +67,9 @@ export interface NativeRunnerFileHandoffResult {
   readonly stateRevision: number;
   readonly entityRefs: readonly string[];
   readonly scheduledWakeIds: readonly string[];
+  readonly attachmentId: string;
+  readonly contentPath: string;
+  readonly downloadPath: string;
 }
 
 export interface PreparedNativeRunnerFileHandoff {
@@ -241,7 +248,13 @@ async function openedFilePath(fd: number): Promise<string> {
       execFile(
         "/usr/sbin/lsof",
         ["-a", "-p", String(process.pid), "-d", String(fd), "-F0n"],
-        { encoding: "buffer", maxBuffer: 16_384, timeout: 1_000 },
+        {
+          encoding: "buffer",
+          maxBuffer: 16_384,
+          timeout: 1_000,
+          // lsof escapes non-ASCII names under the C locale, breaking descriptor verification.
+          env: { ...process.env, LC_ALL: "en_US.UTF-8" },
+        },
         (error, stdout) => {
           if (error) reject(error);
           else resolve(Buffer.from(stdout));
@@ -286,7 +299,7 @@ function sameFileIdentity(left: Stats, right: Stats): boolean {
   );
 }
 
-async function readVerifiedWorkspaceFile(
+export async function readVerifiedWorkspaceFile(
   binding: NativeRunnerFileHandoffBinding,
   input: NativeRunnerFileHandoffInput,
 ): Promise<VerifiedWorkspaceFile> {
@@ -316,14 +329,15 @@ async function readVerifiedWorkspaceFile(
   }
 
   if (binding.executionTargetKind === "remote") {
-    if (!binding.readRemoteWorkspaceFile) throw new Error("paperclip_runner_file_handoff_remote_unsupported");
+    const readFile = binding.readRemoteTaskFile ?? binding.readRemoteWorkspaceFile;
+    if (!readFile) throw new Error("paperclip_runner_file_handoff_remote_unsupported");
     const contentRef = requiredText(input.contentRef, "content_ref", 2_000);
-    if (path.posix.isAbsolute(contentRef) || /^[a-z][a-z0-9+.-]*:/iu.test(contentRef)
+    if ((!binding.readRemoteTaskFile && path.posix.isAbsolute(contentRef)) || /^[a-z][a-z0-9+.-]*:/iu.test(contentRef)
       || contentRef.includes("\\") || path.posix.normalize(contentRef) === ".."
       || path.posix.normalize(contentRef).startsWith("../")) {
       throw new Error("paperclip_runner_file_handoff_path_denied");
     }
-    const body = await binding.readRemoteWorkspaceFile({ contentRef, byteSize: input.byteSize, sha256: expectedSha256 });
+    const body = await readFile({ contentRef, byteSize: input.byteSize, sha256: expectedSha256 });
     if (body.length !== input.byteSize) throw new Error("paperclip_runner_file_handoff_size_denied");
     if (createHash("sha256").update(body).digest("hex") !== expectedSha256) throw new Error("paperclip_runner_file_handoff_hash_mismatch");
     return { body, contentType, filename, sha256: expectedSha256, title };
@@ -813,6 +827,7 @@ export async function stageNativeRunnerWakeAttachments(input: {
     .select({
       contextSnapshot: heartbeatRuns.contextSnapshot,
       agentStatus: agents.status,
+      assigneeAgentId: issues.assigneeAgentId,
     })
     .from(heartbeatRuns)
     .innerJoin(
@@ -839,7 +854,6 @@ export async function stageNativeRunnerWakeAttachments(input: {
         inArray(heartbeatRuns.status, ["queued", "running"]),
         eq(issues.id, input.binding.issueId),
         eq(issues.companyId, input.binding.companyId),
-        eq(issues.assigneeAgentId, input.binding.agentId),
         eq(issues.executionRunId, input.binding.runId),
         eq(agents.id, input.binding.agentId),
         eq(agents.companyId, input.binding.companyId),
@@ -852,6 +866,18 @@ export async function stageNativeRunnerWakeAttachments(input: {
       run.agentStatus,
     )
   ) {
+    throw new Error("paperclip_runner_attachment_staging_not_authorized");
+  }
+  const reviewContext = readNativeReviewAssignmentContext(run.contextSnapshot);
+  const nativeReview = reviewContext
+    ? await getNativeReviewAssignment(input.db, {
+        companyId: input.binding.companyId,
+        issueId: input.binding.issueId,
+        agentId: input.binding.agentId,
+        contextSnapshot: reviewContext,
+      })
+    : null;
+  if (run.assigneeAgentId !== input.binding.agentId && !nativeReview) {
     throw new Error("paperclip_runner_attachment_staging_not_authorized");
   }
   const selections = wakeAttachmentSelections(run.contextSnapshot);
@@ -867,10 +893,10 @@ export async function stageNativeRunnerWakeAttachments(input: {
   if (workspaceRoot) {
     const processDirectoryName = await currentStagingProcessDirectoryName();
     await withStagingRegistryLock(workspaceRoot, async () => {
-      const stagingDirectory = await ensurePrivateStagingDirectory(
-        workspaceRoot,
-        processDirectoryName,
-      );
+      // Empty wakes still scrub abandoned bytes, but need no new staging paths.
+      const stagingDirectory = selections.length > 0
+        ? await ensurePrivateStagingDirectory(workspaceRoot, processDirectoryName)
+        : null;
       const activePaths =
         activeStagingPathsByWorkspace.get(workspaceRoot) ?? new Set<string>();
       const reusablePaths = await scrubNativeRunnerStagingResidue(
@@ -878,7 +904,7 @@ export async function stageNativeRunnerWakeAttachments(input: {
         activePaths,
         processDirectoryName,
       );
-      if (selections.length > 0) {
+      if (stagingDirectory !== null) {
         stagingDestinations = reusablePaths.slice(0, selections.length);
         while (stagingDestinations.length < selections.length) {
           const candidate = path.join(stagingDirectory, randomUUID());
@@ -1116,14 +1142,11 @@ async function assertCurrentBinding(
 export async function prepareNativeRunnerFileHandoff(input: {
   readonly db: Db;
   readonly binding: NativeRunnerFileHandoffBinding;
-  readonly deliverable: NativeRunnerFileHandoffInput;
+  readonly verifiedFile: VerifiedWorkspaceFile;
   readonly storage?: StorageService;
 }): Promise<PreparedNativeRunnerFileHandoff> {
   const { statusVersion } = await assertCurrentBinding(input.db, input.binding);
-  const verified = await readVerifiedWorkspaceFile(
-    input.binding,
-    input.deliverable,
-  );
+  const verified = input.verifiedFile;
 
   const [existing] = await input.db
     .select({
@@ -1195,6 +1218,9 @@ export async function prepareNativeRunnerFileHandoff(input: {
       result: {
         commandId: `deliverable-prepared:${existing.attachmentId}`,
         disposition: "duplicate",
+        attachmentId: existing.attachmentId,
+        contentPath: `/api/attachments/${existing.attachmentId}/content`,
+        downloadPath: `/api/attachments/${existing.attachmentId}/content?download=1`,
         stateRevision: statusVersion,
         entityRefs: [
           existing.attachmentId,
@@ -1240,7 +1266,9 @@ export async function prepareNativeRunnerFileHandoff(input: {
     ) {
       throw new Error("paperclip_runner_file_handoff_origin_not_persisted");
     }
-    await input.db
+    await input.db.transaction(async tx => {
+      await notifyIssueRecovery(tx, { companyId: input.binding.companyId });
+      await tx
       .update(issueWorkProducts)
       .set({ title: verified.title, updatedAt: new Date() })
       .where(
@@ -1251,6 +1279,7 @@ export async function prepareNativeRunnerFileHandoff(input: {
           eq(issueWorkProducts.createdByRunId, input.binding.runId),
         ),
       );
+    });
     const comment = await issueService(input.db).addComment(
       input.binding.issueId,
       `Prepared ${verified.title} for this response.`,
@@ -1258,6 +1287,7 @@ export async function prepareNativeRunnerFileHandoff(input: {
       {
         attachmentIds: [attachment.id],
         authorizationReason: "paperclip_runner_protocol",
+        metadata: { version: 1, sections: [], attachmentPreparation: { attachmentId: attachment.id } },
       },
       input.db,
     );
@@ -1265,6 +1295,9 @@ export async function prepareNativeRunnerFileHandoff(input: {
       result: {
         commandId: `deliverable-prepared:${attachment.id}`,
         disposition: "applied",
+        attachmentId: attachment.id,
+        contentPath: `/api/attachments/${attachment.id}/content`,
+        downloadPath: `/api/attachments/${attachment.id}/content?download=1`,
         stateRevision: statusVersion,
         entityRefs: [
           attachment.id,
