@@ -6,8 +6,9 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase, type
 type RecoveryPostgresOptions = { dedicatedDatabaseUrl?: string };
 
 export async function getRecoveryPostgresSupport(options: RecoveryPostgresOptions = {}): Promise<EmbeddedPostgresTestSupport> {
-  if (options.dedicatedDatabaseUrl !== undefined) {
-    if (!resolveExternalTestDatabaseUrl("dedicated recovery database", options.dedicatedDatabaseUrl)) {
+  const dedicatedDatabaseUrl = options.dedicatedDatabaseUrl ?? process.env.PAPERCLIP_RECOVERY_TEST_DATABASE_URL;
+  if (dedicatedDatabaseUrl !== undefined) {
+    if (!resolveExternalTestDatabaseUrl("dedicated recovery database", dedicatedDatabaseUrl)) {
       throw new Error("Dedicated recovery database URL is required");
     }
     return { supported: true };
@@ -16,7 +17,7 @@ export async function getRecoveryPostgresSupport(options: RecoveryPostgresOption
 }
 
 export async function startRecoveryPostgres(prefix: string, options: RecoveryPostgresOptions = {}) {
-  const dedicated = options.dedicatedDatabaseUrl;
+  const dedicated = options.dedicatedDatabaseUrl ?? process.env.PAPERCLIP_RECOVERY_TEST_DATABASE_URL;
   if (dedicated !== undefined) {
     const connectionString = resolveExternalTestDatabaseUrl("dedicated recovery database", dedicated);
     if (!connectionString) throw new Error("Dedicated recovery database URL is required");

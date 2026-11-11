@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { agents, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { NativeSession } from "../../vendor/paperclip-runner/index.js";
-import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres-fixture.js";
 import { canonicalProviderPackJson, type ProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { admittedNativeProviderPack, nativeProviderPackAdmissionPending, recordNativeProviderPackAdmission,
   rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack } from "./native-provider-pack-admission.js";
@@ -118,9 +118,9 @@ describe("provider pack admission identity", () => {
 });
 
 describe("provider pack admission PostgreSQL fencing", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startRecoveryPostgres>>;
   let db: ReturnType<typeof createDb>;
-  beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("pack-admission-"); db = createDb(database.connectionString); }, 90_000);
+  beforeAll(async () => { database = await startRecoveryPostgres("pack-admission-"); db = createDb(database.connectionString); }, 90_000);
   afterAll(async () => { await database?.cleanup(); });
   async function fixture() {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
