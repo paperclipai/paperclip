@@ -1445,14 +1445,16 @@ archive is a disposable copy of a saved version that control-plane storage
 already holds, and the sandbox checks every file against that version's
 manifest. Extraction writes the files from the last to the first and shortens the
 archive behind each one, so the archive and the restored tree together need the
-workspace size plus the largest file. While it holds the root's restore lock, the
-restore also removes what an earlier attempt on that root left when it died: a
-`<root>.restoring-*` partial tree, an archive it was consuming, and archive staging
-that names the same root. Staging that an earlier release left without that name
-is kept. A sandbox that still cannot hold one copy fails with
-`reason=sandbox_disk_full` at the stage that ran out of space. A retry on the same
-disk would fail again, so it is not retried automatically. The board recovery
-action's Retry works once the sandbox has room for the workspace.
+workspace size plus the largest file. Before the upload, a reclaim step takes the
+root's restore lock and checks the epoch fence. It removes what an earlier attempt
+on that root left when it died: a `<root>.restoring-*` partial tree, an archive it
+was uploading or consuming, and archive staging that names the same root. Each
+attempt names its staging before its upload starts. Staging that an earlier
+release left without that name is kept. A sandbox that still cannot hold one copy
+fails with `reason=sandbox_disk_full` at the stage that ran out of space (`helper`,
+`upload`, or a restore script stage). A retry on the same disk would fail again,
+so it is not retried automatically. The board recovery action's Retry works once
+the sandbox has room for the workspace.
 
 A retained sandbox can still hold a workspace's earlier root after the workspace
 moved to another allocation, for example when child tasks that an older release
@@ -1464,9 +1466,9 @@ quiesced, committed final save, and the folder carries a Paperclip preparation o
 restore receipt. Its files are then already part of the saved lineage being
 restored. Any other occupant (no receipt, a later unsaved use, or a sandbox that
 never saved that root) is still refused with `reason=occupied_root`, and none of
-its files are removed. After that proof, the root's files are removed before the
-saved version is extracted, so the old copy never shares the disk with the new
-one. Its receipt and `.paperclip-runtime` stay until the restored root is
+its files are removed. After that proof, the reclaim step removes the root's files
+before the saved archive is uploaded, so the old copy never shares the disk with
+the new one. Its receipt and `.paperclip-runtime` stay until the restored root is
 published, so a restore interrupted after the removal proves the same root again
 and finishes from the saved version. The replaced
 root's `.paperclip-runtime` state, such as a retained runner session, is never in

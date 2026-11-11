@@ -285,7 +285,8 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       let lost = false;
       execute.mockImplementation(async input => {
         const result = await original(input);
-        if (!lost && input.args?.[0] === "-e" && input.args[1]?.includes("workspace-restored.json") && result.exitCode === 0) {
+        if (!lost && input.args?.[0] === "-e" && input.args[1]?.includes("workspace-restored.json") && input.args.at(-1) === "extract"
+          && result.exitCode === 0) {
           lost = true; throw new Error("synthetic lost restore reply");
         }
         return result;
@@ -333,7 +334,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       if (scenario === "interrupted") {
         const run = execute.getMockImplementation()!; let interrupt = true;
         execute.mockImplementation(async command => {
-          if (interrupt && command.args?.[1]?.includes("remote_workspace_restore_failed")) {
+          if (interrupt && command.args?.[1]?.includes("remote_workspace_restore_failed") && command.args.at(-1) === "extract") {
             interrupt = false;
             return run({ ...command, args: command.args.map((arg, index) => index === 1
               ? arg.replace("try{await fs.rename(staged,root);}", "throw Error('interrupted');try{await fs.rename(staged,root);}") : arg) });
@@ -388,6 +389,7 @@ fs.unlinkSync(${JSON.stringify(postPublish)});throw Error('published_interrupted
       const run = execute.getMockImplementation()!; let interrupt = scenario === "interrupted";
       execute.mockImplementation(async command => {
         if (!command.args?.[1]?.includes("remote_workspace_restore_failed")) return run(command);
+        if (command.args.at(-1) !== "extract") return run({ ...command, args: ["--require", preload, ...command.args] });
         const args = interrupt ? command.args.map((arg, index) => index === 1
           ? arg.replace("await fs.rename(path.join(staged,'.paperclip-runtime','workspace-restored.json')", "throw Error('interrupted');await fs.rename(path.join(staged,'.paperclip-runtime','workspace-restored.json')") : arg) : command.args;
         interrupt = false;
@@ -756,6 +758,17 @@ require('node:module').syncBuiltinESMExports();`);
         await walk(disk);
         return total;
       };
+      // The upload lands on the same disk, so it must fit beside what is already there.
+      const syncIn = remote.runner!.syncIn!;
+      remote.runner!.syncIn = async (operations, options) => {
+        let incoming = 0;
+        for (const operation of operations) for (const file of operation.files) {
+          incoming += (await fs.stat(file.sourcePath)).size;
+          incoming -= (await fs.stat(file.targetPath).catch(() => null))?.size ?? 0;
+        }
+        if (await used() + incoming > capacity) throw Object.assign(new Error("upload failed: ENOSPC: no space left on device"), { code: "ENOSPC" });
+        return syncIn(operations, options);
+      };
       return { disk, remote, execute, used, root: path.join(disk, "workspace-root") };
     }
     async function savedWorkspace() {
@@ -782,6 +795,26 @@ require('node:module').syncBuiltinESMExports();`);
         expect(await used()).toBeLessThan(4 * MiB + 256 * 1024);
         expect((await fs.readdir(disk)).filter(name => name.includes(".restoring-") || name.startsWith(".workspace-restore-"))).toEqual([]);
       } finally { await captured.cleanup(); }
+    });
+
+    it("names a disk that cannot take the upload so it is not retried automatically", async () => {
+      const { captured, archiveSize } = await savedWorkspace();
+      try {
+        const { remote, root } = await boundedDisk(archiveSize / 2);
+        await expect(restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: root, archivePath: captured.archivePath,
+          manifestDigest: captured.manifestDigest, restorationIdentity: "9".repeat(64), restorationEpoch: 1 })).rejects.toThrow(
+          /^remote_workspace_operation_failed: operation=upload; remote_workspace_restore_failed: stage=upload reason=sandbox_disk_full$/);
+      } finally { await captured.cleanup(); }
+    });
+
+    it("names a disk that cannot take the archive helper so it is not retried automatically", async () => {
+      const { remote, execute } = target();
+      execute.mockResolvedValueOnce({ exitCode: 1, stdout: "", stderr: REMOTE_WORKSPACE_SANDBOX_DISK_FULL, timedOut: false, signal: null,
+        pid: process.pid, startedAt: new Date().toISOString() });
+      const archivePath = path.join(scratch, "restore.pcws"); await fs.writeFile(archivePath, "synthetic archive");
+      await expect(restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: path.join(scratch, "restored"), archivePath,
+        manifestDigest: "a".repeat(64), restorationIdentity: "b".repeat(64) })).rejects.toThrow(
+        /^remote_workspace_operation_failed: operation=archive_helper; remote_workspace_restore_failed: stage=helper reason=sandbox_disk_full$/);
     });
 
     it("names a disk too small for one workspace copy so it is not retried automatically, and restores once space exists", async () => {
