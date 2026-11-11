@@ -2429,7 +2429,8 @@ describe("remote provider pack manifest", () => {
       const capture = vi.spyOn(providerArtifactCapture, "captureRemoteNativeProviderArtifacts");
       const backup = vi.spyOn(harnessStorage, "persistNativeHarnessBackup").mockImplementation(async input => {
         expect(JSON.parse(await readFile(join(input.root, "manifest.json"), "utf8")).providerArtifacts).toEqual(newReceipt);
-        if (provider === "opencode-new-durable-store-failed") throw new Error("SlowDown: Please reduce your request rate.");
+        // Only the first save fails; a later checkpoint of the same run saves.
+        if (provider === "opencode-new-durable-store-failed" && backup.mock.calls.length === 1) throw new Error("SlowDown: Please reduce your request rate.");
         // The durable backup is stored; only the later local publication fails.
         if (provider === "opencode-new-durable-publish-failed") await rm(input.root, { recursive: true, force: true });
         return undefined as never;
@@ -2541,7 +2542,15 @@ describe("remote provider pack manifest", () => {
           // Only a backup that was never stored makes the next run start fresh.
           if (provider === "opencode-new-durable-store-failed") {
             expect(providerStateUnsaved.mark).toHaveBeenCalledWith(preparedDb, remoteExecution.binding);
-          } else expect(providerStateUnsaved.mark).not.toHaveBeenCalled();
+            // A later checkpoint of the same run that saves clears the mark once.
+            providerStateUnsaved.clear.mockClear();
+            await driver.mock.calls.at(-1)![0].checkpoint!("settled");
+            expect(providerStateUnsaved.clear).toHaveBeenCalledTimes(1);
+            expect(providerStateUnsaved.clear).toHaveBeenCalledWith(preparedDb, remoteExecution.binding);
+          } else {
+            expect(providerStateUnsaved.mark).not.toHaveBeenCalled();
+            expect(providerStateUnsaved.clear).not.toHaveBeenCalled();
+          }
           return;
         }
         await driver.mock.calls.at(-1)![0].checkpoint!("settled");
