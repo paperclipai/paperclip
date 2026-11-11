@@ -773,13 +773,15 @@ export class CodexAppServerDriver implements HarnessDriver {
       // resume it here. With nothing in flight, the runtime's recovery policy
       // decides, as for a moved workspace root. An in-flight session keeps the
       // unclassified failure.
-      const failureClass = runnerRecoveryFailureClass(error)
-        ?? (isRunnerResumeStateUnavailable(error) && !persistedSessionInFlight(snapshot)
-          ? PROVIDER_STATE_INCOMPATIBLE : undefined);
+      const classified = runnerRecoveryFailureClass(error);
+      const resumeStateUnavailable = !classified && isRunnerResumeStateUnavailable(error)
+        && !persistedSessionInFlight(snapshot);
+      const failureClass = classified ?? (resumeStateUnavailable ? PROVIDER_STATE_INCOMPATIBLE : undefined);
       return {
         recovered: false,
         reason: redactCodexDiagnostic(String(error)),
         ...(failureClass ? { failureClass } : {}),
+        ...(resumeStateUnavailable ? { resumeStateUnavailable: true as const } : {}),
       };
     } finally {
       cancellation.detach();
