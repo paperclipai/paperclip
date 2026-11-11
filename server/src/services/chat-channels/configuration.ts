@@ -2,7 +2,7 @@ import { notifyChatEndpointConfiguration } from "./configuration-work-notificati
 import { notifyChatConnectionHealth } from "./connection-health-notifications.js";
 import type { ConnectionManagementContext } from "../connection-management.js";
 import { CHAT_HUMAN_CREDENTIAL_FIELDS } from "./credentials.js";
-import { preparePhotonConfiguration, createPhotonConfiguration } from "./imessage-photon/setup.js";
+import { preparePhotonConfiguration, createPhotonConfiguration, photonIntakeAfter } from "./imessage-photon/setup.js";
 import { slackRuntimeConfig } from "./slack/setup.js";
 import { createTelegramSetup } from "./telegram/setup.js";
 import { createGitHubSetup } from "./github/setup.js";
@@ -970,7 +970,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
     if (endpoint.provider === "speko") throw conflict("Speko uses the voice runtime");
     if (endpoint.provider === "imessage-photon") return {
       provider: "imessage-photon", userName,
-      intakeAfter: Date.parse(String((endpoint.setup as InternalSetupState).photonIntakeAfter ?? endpoint.setup.testStartedAt ?? endpoint.createdAt.toISOString())),
+      intakeAfter: photonIntakeAfter(endpoint),
       credentials: { allocation: credentials.allocation === "shared" ? "shared" : "dedicated", projectId: credentials.projectId, lineId: credentials.lineId, projectSecret: credentials.projectSecret, phoneNumber: endpoint.botExternalId! },
     };
     if (endpoint.provider === "slack")

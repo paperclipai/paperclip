@@ -1,3 +1,4 @@
+import { photonIntakeAfter } from "./setup.js";
 import { photonStateFor, PHOTON_EXTERNAL_STATE } from "./external-store.js";
 import { credentialFingerprint } from "../credential-fingerprint.js";
 import { stagePhotonResponseNotice } from "./response-notices.js";
@@ -725,6 +726,17 @@ export function createPhotonEvents(db: Db, options: PhotonEventsOptions) {
     ]);
     if (!record)
       throw new Error("Photon receiver no longer owns this endpoint");
+    // Cloud custody can survive a same-generation pause/resume. Use the
+    // authorized endpoint's CURRENT policy, never its older sealed binding.
+    const occurredAt = new Date(event.occurredAt).getTime();
+    if (!Number.isFinite(occurredAt))
+      throw new PhotonError("invalid_response", "Photon event timestamp is invalid");
+    const intakeAfter = photonIntakeAfter(record.endpoint);
+    if (!Number.isFinite(intakeAfter))
+      throw new PhotonError("invalid_response", "Photon intake boundary is invalid");
+    // A fulfilled no-effect admission still lets the ordinary external owner
+    // durably checkpoint this sequence and the normal caller ACK its delivery.
+    if (occurredAt < intakeAfter) return;
     const adapter = context.endpointRuntime!.getProviderAdapter();
     if (!(adapter instanceof PhotonChatAdapter))
       throw new Error("Photon adapter unavailable");

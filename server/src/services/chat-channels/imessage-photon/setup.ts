@@ -1,6 +1,6 @@
 import type { createPhotonCredentialChecks } from "./credentials.js";
 
-import type { EndpointRow } from "../runtime-types.js";
+import type { EndpointRow, InternalSetupState } from "../runtime-types.js";
 
 import { type CredentialMutationLeaseGuard } from "../../chat-credential-mutation-lease.js";
 
@@ -27,6 +27,12 @@ import {
 } from "../../../errors.js";
 
 import type { EndpointRecord } from "../runtime-types.js";
+
+/** Current endpoint policy, shared by local receiver construction and callback admission. */
+export function photonIntakeAfter(endpoint: Pick<EndpointRow, "setup" | "createdAt">): number {
+  return Date.parse(String((endpoint.setup as InternalSetupState).photonIntakeAfter
+    ?? endpoint.setup.testStartedAt ?? endpoint.createdAt.toISOString()));
+}
 
 type PhotonSetupInspectionOptions = {
   endpointRecord: (endpointId: string) => Promise<EndpointRecord | null>;

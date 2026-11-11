@@ -681,6 +681,58 @@ describe("iMessage Photon channel control plane", () => {
     expect(secretSafe).not.toContain("private-line-token");
     expect(secretSafe).not.toContain('"projectSecret"');
   }, 30_000);
+  it("filters pause-window events through current Photon admission after a same-generation resume", async () => {
+    const t = await setup();
+    await t.start();
+    await t.qualify();
+    const [before] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    const [connectionBefore] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+    if (!before || !connectionBefore) throw new Error("Missing configured Photon endpoint");
+    const wakeups = t.wakeup.mock.calls.length;
+    const deliveredBefore = await db.select({ id: chatDeliveries.id }).from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, t.endpoint.id));
+    await t.service.configure(t.endpoint.id, { action: "pause" }, t.userId);
+    const [paused] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    if (!paused) throw new Error("Missing paused Photon endpoint");
+    const duringPause = { ...photonEvent(3, t.f.chat, "Queued while paused"), occurredAt: paused.updatedAt };
+    await t.service.configure(t.endpoint.id, { action: "resume" }, t.userId);
+    const [resumed] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    const [connectionResumed] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+    if (!resumed || !connectionResumed) throw new Error("Missing resumed Photon endpoint");
+    const cutoffValue = Reflect.get(resumed.setup, "photonIntakeAfter");
+    if (typeof cutoffValue !== "string") throw new Error("Missing normal Photon resume cutoff");
+    const cutoff = Date.parse(cutoffValue);
+    expect(Number.isFinite(cutoff)).toBe(true);
+    expect(duringPause.occurredAt.getTime()).toBeLessThan(cutoff);
+    const generation = Reflect.get(before.setup, "runtimeGeneration");
+    expect(Number.isSafeInteger(generation)).toBe(true);
+    expect(Reflect.get(resumed.setup, "runtimeGeneration")).toBe(generation);
+    expect(resumed.connectionId).toBe(before.connectionId);
+    expect(connectionResumed.credentialSecretRefs).toEqual(connectionBefore.credentialSecretRefs);
+    const providerReads = t.f.client.chats.get.mock.calls.length;
+    // This is the actual normal callback used by external-owner.dispatch. The
+    // local receiver's catch-up cutoff is deliberately not the tested boundary.
+    await t.deliver(duringPause);
+    expect(t.wakeup.mock.calls.length, "pause-window input must not create useful work after resume").toBe(wakeups);
+    expect(await db.select({ id: chatDeliveries.id }).from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, t.endpoint.id))).toEqual(deliveredBefore);
+    expect(t.f.client.chats.get).toHaveBeenCalledTimes(providerReads);
+    const boundary = { ...photonEvent(4, t.f.chat, "Exactly at the resumed boundary"), occurredAt: new Date(cutoff) };
+    await t.deliver(boundary);
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
+    await t.deliver(boundary);
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
+    await t.deliver({ ...photonEvent(5, t.f.chat, "Fresh after resume"), occurredAt: new Date(cutoff + 1) });
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 2);
+    await expect(t.callbacks().onPhotonEvent!({ ...photonEvent(6), occurredAt: new Date(NaN) }))
+      .rejects.toMatchObject({ code: "invalid_response" });
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 2);
+    await t.service.configure(t.endpoint.id, { action: "pause" }, t.userId);
+    // Authority still wins before timestamp validation while inactive.
+    await expect(t.callbacks().onPhotonEvent!({ ...photonEvent(7), occurredAt: new Date(NaN) }))
+      .rejects.toThrow("Photon receiver no longer owns this endpoint");
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 2);
+  }, 30_000);
   it("preserves DM identity across restart, ignores echoes, and reserves a paused number", async () => {
     const t = await setup();
     const first = await t.start();
