@@ -5613,7 +5613,7 @@
       "registered-artifact.ts",
       "chat-scenarios/steering.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.runtime.v2",
+    "oracleVersion": "paperclip.chat-catalog.runtime.steer-active.v3",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "minimumRunCount": 2,
