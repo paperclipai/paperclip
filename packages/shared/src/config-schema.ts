@@ -107,6 +107,10 @@ export const updatesConfigSchema = z.object({
   checkEnabled: z.boolean().default(true),
 }).passthrough().prefault({});
 
+export const toolsConfigSchema = z.object({
+  resultPromptInjectionMode: z.enum(["block", "redact", "ignore"]).default("block"),
+}).passthrough().prefault({});
+
 export const paperclipConfigSchema = z
   .object({
     $meta: configMetaSchema,
@@ -116,6 +120,7 @@ export const paperclipConfigSchema = z
     server: serverConfigSchema,
     telemetry: telemetryConfigSchema,
     updates: updatesConfigSchema.optional(),
+    tools: toolsConfigSchema,
     auth: authConfigSchema.default({
       baseUrlMode: "auto",
       disableSignUp: false,
