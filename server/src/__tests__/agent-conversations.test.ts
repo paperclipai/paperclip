@@ -1100,7 +1100,7 @@ describe("chat prompt policy", () => {
   it("tells chat how to link projects and to link only the workspace pages a tool result gives", () => {
     const app = readFileSync(new URL("../../../ui/src/App.tsx", import.meta.url), "utf8");
     expect(app).toMatch(/<Route\s+path="projects\/:projectId"/);
-    expect(AGENT_CHAT_DIRECTIVE).toContain("agent profiles, projects) uses that same prefix");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("agent profiles, projects, goals) uses that same prefix");
     expect(AGENT_CHAT_DIRECTIVE).toContain("For a project, link /<prefix>/projects/<projectId>.");
     expect(AGENT_CHAT_DIRECTIVE).toContain("When a tool result gives a record's href, such as a project or a workspace, link that href; a workspace without an href has no page on this instance");
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
@@ -1114,6 +1114,34 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("running pnpm dev in their own Paperclip checkout and visiting /<prefix>/dev/task-chat-lab");
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
     expect(prompt).toContain("/<prefix>/dev/task-chat-lab");
+  });
+
+  it("links reference pages for a component or chat state instead of creating a real card or a mock", () => {
+    const app = readFileSync(new URL("../../../ui/src/App.tsx", import.meta.url), "utf8");
+    expect(app).toMatch(/<Route\s+path="design-guide"/);
+    for (const lab of ["responsible-user-denial", "bootstrap-setup", "cross-issue-collaboration"]) {
+      expect(app).toMatch(new RegExp(`<Route\\s+path="ux-lab/${lab}"`));
+      expect(AGENT_CHAT_DIRECTIVE).toContain(`/ux-lab/${lab}`);
+    }
+    expect(AGENT_CHAT_DIRECTIVE).toContain("link its existing reference page instead of creating a real card, request or record and instead of drawing a mock");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("the design guide at /<prefix>/design-guide shows the standard components, including the pending question card");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("The ux-lab pages take no company prefix.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("synthetic presentation fixtures, not proof that the live flow works");
+  });
+
+  it("explains a task's purpose from its saved goal chain with goal links", () => {
+    const app = readFileSync(new URL("../../../ui/src/App.tsx", import.meta.url), "utf8");
+    expect(app).toMatch(/<Route\s+path="goals\/:goalId"/);
+    expect(AGENT_CHAT_DIRECTIVE).toContain("For a goal, link /<prefix>/goals/<goalId>.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("its goal with GET /api/goals/{id} and each parent goal through parentId, and give the reason the goals' own descriptions state");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("When the task has no goal, say so instead of supplying a reason.");
+  });
+
+  it("asks for a missing name before building or handing off work that must carry it", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("ask for that name before starting: use request_human_input with interactionKind: \"questions\" and one required free-text question");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not build, delegate or brief the work with an invented or placeholder name");
+    const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
+    expect(prompt).toContain("Do not build, delegate or brief the work with an invented or placeholder name");
   });
 
   it("routes a person's own profile change to their profile settings instead of an agent write", () => {
