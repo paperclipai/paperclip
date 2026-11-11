@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { EventEmitter, once } from "node:events";
 import { expect, test } from "@playwright/test";
 
 test.use({ trace: "retain-on-failure" });
@@ -20,6 +21,8 @@ for (const cloudOrigin of ["https://my.paperclip.app", "https://my-staging.paper
       let authenticated = false;
       let handoffs = 0;
       let formWasRendered = false;
+      const healthDrain = new EventEmitter();
+      let lateHealthComplete = false;
       await page.exposeFunction("reportInstanceLoginForm", () => { formWasRendered = true; });
       await page.addInitScript(() => {
         new MutationObserver(() => {
@@ -28,12 +31,19 @@ for (const cloudOrigin of ["https://my.paperclip.app", "https://my-staging.paper
           }
         }).observe(document, { childList: true, subtree: true });
       });
-      await page.route("**/api/health", async (route) => {
+      await page.route("**/api/health*", async (route) => {
         const response = await route.fetch();
+        const lateHealth = new URL(route.request().url()).searchParams.has("cloudFixtureDrain");
+        if (lateHealth) {
+          const release = once(healthDrain, "release");
+          healthDrain.emit("fetched");
+          await release;
+        }
         await route.fulfill({ response, json: {
           ...await response.json(), deploymentMode: "authenticated", bootstrapStatus: "ready",
           cloud: { managed: true, managedBy: "paperclip-cloud", cloudBaseUrl: cloudOrigin, stackSlug: "test-workspace" },
         } });
+        if (lateHealth) lateHealthComplete = true;
       });
       await page.route("**/api/auth/get-session", (route) => route.fulfill(authenticated ? {
         json: { session: { id: "test-session", userId: "local-board" }, user: { id: "local-board", email: "test@example.test", name: "Test user", image: null }, sentryDsn: null },
@@ -44,18 +54,28 @@ for (const cloudOrigin of ["https://my.paperclip.app", "https://my-staging.paper
         authenticated = true;
         await route.fulfill({ status: 302, headers: { Location: `${baseURL}${target}` } });
       });
-      const returnedFromCloud = page.waitForURL((url) => handoffs === 1 && url.href === `${baseURL}${target}`);
-      await page.goto(entry === "auth" ? `/auth?next=${encodeURIComponent(target)}` : target);
-      await returnedFromCloud;
-      await expect(page.getByRole("heading", { name: issue.title, exact: true })).toBeVisible();
-      expect(page.url()).toBe(`${baseURL}${target}`);
-      expect(handoffs).toBe(1);
-      expect(formWasRendered).toBe(false);
-      await page.screenshot({ path: testInfo.outputPath("cloud-session-recovered.png") });
-      await page.reload();
-      await expect(page.getByRole("heading", { name: issue.title, exact: true })).toBeVisible();
-      expect(handoffs).toBe(1);
-      expect(formWasRendered).toBe(false);
+      try {
+        const returnedFromCloud = page.waitForURL((url) => handoffs === 1 && url.href === `${baseURL}${target}`);
+        await page.goto(entry === "auth" ? `/auth?next=${encodeURIComponent(target)}` : target);
+        await returnedFromCloud;
+        await expect(page.getByRole("heading", { name: issue.title, exact: true })).toBeVisible();
+        expect(page.url()).toBe(`${baseURL}${target}`);
+        expect(handoffs).toBe(1);
+        expect(formWasRendered).toBe(false);
+        await page.screenshot({ path: testInfo.outputPath("cloud-session-recovered.png") });
+        await page.reload();
+        await expect(page.getByRole("heading", { name: issue.title, exact: true })).toBeVisible();
+        expect(handoffs).toBe(1);
+        expect(formWasRendered).toBe(false);
+        const fetched = once(healthDrain, "fetched");
+        await page.evaluate(() => { void fetch("/api/health?cloudFixtureDrain=1"); });
+        await fetched;
+      } finally {
+        const drained = page.unrouteAll({ behavior: "wait" });
+        healthDrain.emit("release");
+        await drained;
+      }
+      expect(lateHealthComplete).toBe(true);
     });
   }
 }

@@ -1298,6 +1298,16 @@ releasing its simulated live-process hold, then verifies HTTP 202 admission.
 Its saved comment can otherwise complete automatically and remove Retry before
 the click reaches the server.
 
+The Cloud recovery browser fixture releases and drains owned health-route handlers
+before page teardown. Each Cloud case holds a final real health response before
+JSON parsing and checks that the handler completes before its response is disposed.
+Run `pnpm test:e2e tests/e2e/cloud-auth.spec.ts` for both origins and entry paths.
+
+Runner process-table inspection failures retain only the inspector's numeric exit
+code, signal, numeric errno and output byte count in the existing fail-closed
+cleanup error. Process arguments, table contents and raw error text stay excluded.
+This adds no retries and does not change inspection or shutdown deadlines.
+
 For normal issue work, start with the smallest targeted check that proves the change.
 Use the incremental command above and required final-revision CI for PR handoff.
 Run broad local checks when an unresolved risk or explicit qualification needs them.
