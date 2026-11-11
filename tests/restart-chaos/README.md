@@ -461,6 +461,30 @@ The observer clicks Retry in the board UI, as for every other cell. In waves `w-
 and `w-20261111T134316-s9413` the disk-full rest showed "Recover saved files", not a Retry button, while the API reported
 `canRetry: true`; R3 records this as `ui_retry_button_missing`.
 
+## Environment-provider faults (EP1, `env-provider-wave.ts`)
+
+```sh
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/env-provider-wave.ts --fault EP1 --adapters codex --tasks 2 --seed 71
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/env-provider-wave.ts --fault EP1N --tasks 1 --seed 72
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/env-provider-wave.ts --fault EP1D --tasks 1 --seed 73
+```
+
+Lease acquisition fails before any provider call, in the shapes staging recorded
+on 2026-11-11: Daytona's acquisition deadline ("lease acquisition timed out;
+allocation cleanup is pending") and a failed database query. The server seam
+`server/src/services/environment-lease-fault-injection.ts` (test mode only) reads
+`PAPERCLIP_CHAOS_LEASE_FAULT_CONTROL` and fails each task's first N acquisitions.
+It runs on a local instance; no sandbox provider is needed. One fault per wave.
+
+| Fault | Shape | Pass |
+| --- | --- | --- |
+| EP1 | Deadline, 2 times (the automatic bound), then succeeds | Exactly 2 `environment_provider_unavailable` runs, no `setup_failed`, completes with no user action |
+| EP1N | Deadline on every attempt | 3 failed runs, the task rests offering Retry; the harness disarms, clicks Retry, and the task completes |
+| EP1D | Database error once, then succeeds | 1 failed run, completes with no user action |
+
+Every fault also fails if a board-owned recovery action is ever active on the
+task, and the A1 brief oracle must pass. Results go to `results/<wave>-ep/`.
+
 ## Config faults (CF1–CF3, `config-wave.ts`)
 
 ```sh
