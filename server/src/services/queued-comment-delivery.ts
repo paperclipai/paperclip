@@ -3,8 +3,8 @@ import { heartbeatRunEvents, heartbeatRuns, issueComments, type Db } from "@pape
 
 /** The wake reason an inbound chat message records (see chat inbound wakeups). */
 export const EXTERNAL_CHAT_MESSAGE_WAKE_REASON = "External chat message received";
-/** The error a saved wake records when a completed run already received all of its messages. */
-export const QUEUED_MESSAGES_DELIVERED_REASON = "Queued messages were already delivered to a completed run";
+/** The mutation an inbound chat message wake records. */
+export const EXTERNAL_CHAT_MESSAGE_WAKE_MUTATION = "chat_message_received";
 
 /**
  * Per-comment consumption (work-intent outbox, invariant 4). A succeeded run

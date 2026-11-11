@@ -100,7 +100,8 @@ describe.skipIf(!support.supported)("release of a saved chat wake whose message 
     const { run, wake } = await seed(false);
     // Promotion reaches the host; the refusal proves the wake was not consumed.
     const unexpected = vi.fn((): never => { throw new Error("promotion reached the host"); });
-    await release(unexpected)({ companyId, runId: run.id, now: new Date() }).catch(() => undefined);
+    await expect(release(unexpected)({ companyId, runId: run.id, now: new Date() })).rejects.toThrow("promotion reached the host");
+    expect(unexpected).toHaveBeenCalled();
     const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
     expect(saved.status).not.toBe("cancelled");
   });

@@ -3,7 +3,7 @@ import {
   assertDurableChatWakeupReceipt,
   createDurableChatWakeupRequest,
 } from "./durable-chat-wakeup.js";
-import { QUEUED_MESSAGES_DELIVERED_REASON } from "./queued-comment-delivery.js";
+import { QUEUED_MESSAGES_DELIVERED_REASON } from "../modules/wake-queue/index.js";
 
 type Action = typeof chatActions.$inferSelect;
 type Receipt = typeof agentWakeupRequests.$inferSelect;
