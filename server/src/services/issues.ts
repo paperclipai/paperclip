@@ -10203,6 +10203,10 @@ export function issueService(db: Db) {
               .select({
                 id: executionWorkspaces.id,
                 mode: executionWorkspaces.mode,
+                strategyType: executionWorkspaces.strategyType,
+                providerType: executionWorkspaces.providerType,
+                repoUrl: executionWorkspaces.repoUrl,
+                branchName: executionWorkspaces.branchName,
               })
               .from(executionWorkspaces)
               .where(
@@ -10219,9 +10223,14 @@ export function issueService(db: Db) {
               executionWorkspaceSettings = {
                 ...((workspaceSource.executionWorkspaceSettings as
                   Record<string, unknown> | null | undefined) ?? {}),
-                mode: issueExecutionWorkspaceModeForPersistedWorkspace(
-                  sourceWorkspace.mode,
-                ),
+                // An inherited directory is shared by two tasks even when the
+                // source task originally owned it as an isolated workspace.
+                mode: sourceWorkspace.mode === "isolated_workspace" &&
+                  sourceWorkspace.strategyType === "project_primary" &&
+                  sourceWorkspace.providerType === "local_fs" &&
+                  !sourceWorkspace.repoUrl && !sourceWorkspace.branchName
+                  ? "shared_workspace"
+                  : issueExecutionWorkspaceModeForPersistedWorkspace(sourceWorkspace.mode),
               };
             }
           }

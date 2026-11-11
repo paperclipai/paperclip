@@ -157,6 +157,17 @@ const support = await getEmbeddedPostgresTestSupport();
     }
   });
 
+  it("shares an inherited non-Git task directory instead of requesting a new Git worktree", async () => {
+    const f = await fixture();
+    await db.update(executionWorkspaces).set({ mode: "isolated_workspace", strategyType: "project_primary" })
+      .where(eq(executionWorkspaces.id, f.workspaceId));
+    await db.update(issues).set({ executionWorkspaceId: f.workspaceId, executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" } }).where(eq(issues.id, f.issueId));
+    const child = await issueService(db).create(f.companyId, { title: "Review the parent files", parentId: f.issueId });
+    expect(child).toMatchObject({ executionWorkspaceId: f.workspaceId, executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "shared_workspace" } });
+  });
+
   it.each([
     { entryPoint: "create", parentSource: "task_directory" },
     { entryPoint: "createChild", parentSource: "task_directory" },
