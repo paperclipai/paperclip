@@ -21,6 +21,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issues,
+  nativeHarnessBackups,
   nativeRunFinalizations,
   nativeRunResults,
 } from "@paperclipai/db";
@@ -1157,7 +1158,7 @@ const recoveryFakeCodex = resolve(
 (databaseSupported ? describe : describe.skip)(
   "native session recovery database orchestration",
   () => {
-    it.each(["accepted", "no_result", "rejected"] as const)(
+    it.each(["accepted", "no_result", "rejected", "backup_current"] as const)(
       "marks the checkpoint not resumable only after an accepted result (%s)", async (outcome) => {
         const database = await startEmbeddedPostgresTestDatabase("paperclip-native-unsaved-state-");
         const db = createDb(database.connectionString);
@@ -1180,9 +1181,13 @@ const recoveryFakeCodex = resolve(
           const resultId = randomUUID();
           if (outcome !== "no_result") await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId, runId: previousRunId,
             completionContractId: sourceExecution.completionContract.id, serverFingerprint: "test",
-            schemaStatus: outcome === "accepted" ? "accepted" : "rejected", resultJson, canonicalSha256: "a".repeat(64) });
+            schemaStatus: outcome === "rejected" ? "rejected" : "accepted", resultJson, canonicalSha256: "a".repeat(64) });
           await db.insert(nativeRunFinalizations).values({ runId: previousRunId, companyId, issueId,
-            phase: outcome === "accepted" ? "committed" : "observed", resultId: outcome === "no_result" ? null : resultId });
+            phase: outcome === "accepted" || outcome === "backup_current" ? "committed" : "observed",
+            resultId: outcome === "no_result" ? null : resultId });
+          // The durable backup became current before a later step failed.
+          if (outcome === "backup_current") await db.insert(nativeHarnessBackups).values({ companyId, issueId, runId: previousRunId,
+            scopeDigest: "b".repeat(64), manifestSha256: `sha256:${"c".repeat(64)}`, status: "current", reference: {} });
           const binding = { companyId, issueId, runId: previousRunId };
           const selection = { companyId, agentId, issueId, normalizedSessionId, currentRunId,
             beforeCreatedAt: new Date(Date.UTC(2026, 10, 11, 0, 1, 0)) };
@@ -1205,7 +1210,7 @@ const recoveryFakeCodex = resolve(
             expect(rebindNativeSessionCheckpoint({ previousRun: restored!, currentExecution: execution(currentRunId) }))
               .toMatchObject({ providerRecoveryPolicy: "allow_replacement_after_resume_failure" });
           } else {
-            // A backup failure before a result was accepted keeps today's path.
+            // A failure before acceptance, or after the backup became current, keeps today's path.
             expect(after.runnerProfileJson).toEqual(before.runnerProfileJson);
             expect(rebound).toMatchObject({ providerRecoveryPolicy: "allow_replacement_after_resume_failure" });
           }

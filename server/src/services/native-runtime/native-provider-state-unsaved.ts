@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+import { heartbeatRuns, nativeHarnessBackups, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { NATIVE_PROVIDER_STATE_INCOMPATIBLE, NATIVE_PROVIDER_STATE_UNSAVED_KEY } from "./native-session-resume.js";
 
 const REASON = "harness_backup_not_saved";
@@ -8,7 +8,8 @@ type RunBinding = { companyId: string; issueId: string; runId: string };
 
 /**
  * Mark the run's checkpoint not resumable, only when the run already holds an
- * accepted result. A failure before acceptance changes nothing here. The run
+ * accepted result and no current durable backup. A failure before acceptance,
+ * or after the backup became current, changes nothing here. The run
  * status, result, and outcome are untouched.
  */
 export async function markAcceptedRunProviderStateUnsaved(db: Db, binding: RunBinding): Promise<boolean> {
@@ -27,6 +28,12 @@ export async function markAcceptedRunProviderStateUnsaved(db: Db, binding: RunBi
       where ${nativeRunFinalizations.runId} = ${binding.runId}::uuid
         and ${nativeRunFinalizations.companyId} = ${binding.companyId}::uuid
         and ${nativeRunFinalizations.issueId} = ${binding.issueId}::uuid)`,
+    // A failure after this run's durable backup became current (for example
+    // scratch cleanup) leaves the backup restorable: keep the resume path.
+    sql`not exists (select 1 from ${nativeHarnessBackups}
+      where ${nativeHarnessBackups.companyId} = ${binding.companyId}::uuid
+        and ${nativeHarnessBackups.runId} = ${binding.runId}::uuid
+        and ${nativeHarnessBackups.status} = 'current')`,
   )).returning({ id: heartbeatRuns.id });
   return rows.length > 0;
 }
