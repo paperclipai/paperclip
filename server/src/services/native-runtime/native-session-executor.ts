@@ -8646,6 +8646,18 @@ export function nativeRunnerExitConfirmed(error: unknown, depth = 0): boolean {
     || (Array.isArray(value.errors) && value.errors.slice(0, 3).some(item => nativeRunnerExitConfirmed(item, depth + 1)));
 }
 
+function runnerExitBeforeSessionOpenMessage(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== "object" || depth > 5) return false;
+  const value = error as Record<string, unknown>;
+  if (typeof value.message === "string" && /runnerd exited (?:while waiting for session\.open|unexpectedly)/.test(value.message)) return true;
+  return runnerExitBeforeSessionOpenMessage(value.cause, depth + 1)
+    || (Array.isArray(value.errors) && value.errors.slice(0, 3).some(item => runnerExitBeforeSessionOpenMessage(item, depth + 1)));
+}
+
+export function nativeRunnerExitedBeforeSessionOpen(error: unknown): boolean {
+  return nativeRunnerExitConfirmed(error) && runnerExitBeforeSessionOpenMessage(error);
+}
+
 /** Same provider, category and message (numbers ignored): a retry would meet the same fault. */
 export function nativeStartupFailureSignature(failure: unknown): string | null {
   const value = record(failure);
@@ -12689,6 +12701,8 @@ async function executePaperclipNativeSessionAttempt(
               // with this proof that the failed runner is gone.
               ...(recoveryEvidence.recoveryMode === "bootstrap_retry" && nativeRunnerExitConfirmed(error)
                 ? { runnerExitConfirmed: true } : {}),
+              ...(input.runnerExecutionTarget?.kind === "remote" && nativeRunnerExitedBeforeSessionOpen(error)
+                ? { runnerExitedBeforeSessionOpen: true } : {}),
               ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
               ...(providerLimit?.plan.resetAt ? { providerLimitResetAt: providerLimit.plan.resetAt.toISOString() } : {}),
               recoveryOwner: recoveryProjection.recoveryOwner,
@@ -14734,7 +14748,8 @@ export async function verifyRemoteRunnerReattachment(input: {
 }
 
 export async function verifyRemoteRunnerOrSettledExit(
-  input: Parameters<typeof verifyRemoteRunnerReattachment>[0] & { providerAttempt: number },
+  input: Parameters<typeof verifyRemoteRunnerReattachment>[0] & { providerAttempt: number;
+    claim: { exitedBeforeSessionOpen?: true } },
 ) {
   const recoveryDeadline = Math.min(input.recoveryDeadline ?? Number.POSITIVE_INFINITY,
     Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS);
@@ -14743,16 +14758,23 @@ export async function verifyRemoteRunnerOrSettledExit(
   } catch (error) {
     const diagnostic = readRemoteRunnerRecoveryError(error);
     const target = input.target;
+    const exitedBeforeSessionOpen = input.claim.exitedBeforeSessionOpen === true;
     if (input.providerAttempt > NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT || diagnostic?.stage !== "process_verification" ||
         diagnostic.reason !== "process_not_running" ||
-        diagnostic.runnerLifecycle !== "suspended" || diagnostic.runnerSettled !== true ||
+        (!exitedBeforeSessionOpen && (diagnostic.runnerLifecycle !== "suspended" || diagnostic.runnerSettled !== true)) ||
         target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) throw error;
     const state = await readRemoteRunnerState({ runner: target.runner,
       stateDirectory: remoteRunnerStateDirectory(target.remoteCwd, input.normalizedSessionId), recoveryDeadline });
-    if (REMOTE_RUNNER_IDENTITY_FIELDS.some(field => state[field] !== input.identity[field]) ||
-        state.lifecycle !== "suspended" || !describeExitedRemoteRunner(state).runnerSettled) throw error;
+    if (REMOTE_RUNNER_IDENTITY_FIELDS.some(field => state[field] !== input.identity[field])) throw error;
+    if (exitedBeforeSessionOpen ? !runnerStateAllowsFreshStart(state)
+      : state.lifecycle !== "suspended" || !describeExitedRemoteRunner(state).runnerSettled) throw error;
     return undefined;
   }
+}
+
+function runnerStateAllowsFreshStart(state: Record<string, unknown>): boolean {
+  return ["ready", "suspended", "connecting"].includes(String(state.lifecycle))
+    && state.pendingTerminalDelivery == null && state.pendingProviderCleanup == null && state.warmTransition == null;
 }
 
 /** A crash before source bootstrap leaves a suspended Runner; a crash during
@@ -14788,6 +14810,14 @@ async function verifyStagedRemoteRunner(input: {
   const claim = { ...input.claim, runId: identity.runId };
   const verify = () => verifyRemoteRunnerReattachment({ claim, target, identity: { ...identity },
     runId: identity.runId, normalizedSessionId: identity.normalizedSessionId });
+  if (state.lifecycle !== "suspended" && input.claim.exitedBeforeSessionOpen === true && runnerStateAllowsFreshStart(state)) {
+    try { return await verify(); }
+    catch (error) {
+      const diagnostic = readRemoteRunnerRecoveryError(error);
+      if (diagnostic?.stage !== "process_verification" || diagnostic.reason !== "process_not_running") throw error;
+      return undefined;
+    }
+  }
   if (state.lifecycle !== "suspended") return verify();
   const settled = (value: Record<string, unknown>) => sameIdentity(value) && value.lifecycle === "suspended" &&
     Array.isArray(value.outbox) && value.outbox.length === 0 && value.pendingTerminalDelivery == null &&

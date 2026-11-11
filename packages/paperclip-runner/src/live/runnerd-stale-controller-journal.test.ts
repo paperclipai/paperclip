@@ -14,7 +14,7 @@ const identity = {
   itemId: "stale-journal-item",
 };
 
-function transport(root: string, resumeProviderSession?: { driverSessionId: string; providerSessionId: string }) {
+function transport(root: string, resumeProviderSession?: { driverSessionId: string; providerSessionId: string; providerIdentity?: Record<string, unknown> }) {
   return createCapabilityRunnerdCodexTransport({
     runnerBinary: defaultCapabilityRunnerdBinary(),
     codexCommand: fakeCodex,
@@ -44,16 +44,18 @@ it.each(["stale", "current"] as const)("a follow-up controller resumes the prede
     expect(runner).toMatchObject({ lastControllerCommandSeq: closed.commands.length, lifecycle: "suspended" });
     if (journal === "stale") await writeFile(controlPath, JSON.stringify({ ...closed, commands: closed.commands.slice(0, -2) }));
 
-    follower = transport(root, { driverSessionId: opened.id, providerSessionId: opened.sessionId });
+    const providerIdentity = journal === "stale" ? { providerIdentity: { kind: "codex", threadId: opened.id } } : {};
+    follower = transport(root, { driverSessionId: opened.id, providerSessionId: opened.sessionId, ...providerIdentity });
     const outcome = await follower.transport.request("thread/read", {})
       .then(() => "resumed", (error: unknown) => String(error));
-    const exit = await readFile(join(root, "diagnostics", "runnerd.stderr.log"), "utf8").catch(() => "");
     if (journal === "stale") {
       expect(outcome).not.toBe("resumed");
-      expect(exit).toContain("controller sequence must be contiguous");
+      expect(outcome).toContain("controller sequence must be contiguous");
+      await follower.transport.close().catch(() => undefined);
+      expect(follower.transport.runnerExitConfirmed?.()).toBe(true);
     } else {
       expect(outcome).toBe("resumed");
-      expect(exit).not.toContain("controller sequence must be contiguous");
+      expect(outcome).not.toContain("controller sequence must be contiguous");
     }
   } finally {
     await follower?.transport.close().catch(() => undefined);

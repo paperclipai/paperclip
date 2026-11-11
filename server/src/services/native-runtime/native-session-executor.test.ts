@@ -446,6 +446,7 @@ import {
   NATIVE_PROVIDER_SESSION_CLOSED,
   NATIVE_PROVIDER_STARTUP_REJECTED,
   nativeRemoteStartupRejectionCode,
+  nativeRunnerExitedBeforeSessionOpen,
   nativeRepeatedStartupFailureAction,
   nativePreviousStartupFailureSignature,
   nativeStartupFailureSignature,
@@ -1020,6 +1021,26 @@ describe("remote controller restart adoption", () => {
   it.each([2, 3])("resumes scheduled attempt %i whose runner exited after its previous attempt suspended it", async providerAttempt => {
     await expect(verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(settledSuspension) as never, identity,
       runId: "run", normalizedSessionId: "session", providerAttempt })).resolves.toBeUndefined();
+  });
+  const exitedBeforeOpen = { lifecycle: "ready", outbox: [{ id: 127 }], pendingTerminalDelivery: null, pendingProviderCleanup: null };
+  it("starts a new runner when the previous attempt's runner exited before answering session.open", async () => {
+    const error = await verifyRemoteRunnerOrSettledExit({ claim, target: exitedRunner(exitedBeforeOpen) as never, identity,
+      runId: "run", normalizedSessionId: "session", providerAttempt: 2 }).catch(caught => caught);
+    expect(readRemoteRunnerRecoveryError(error)).toMatchObject({ stage: "process_verification", reason: "process_not_running",
+      runnerLifecycle: "ready", runnerSettled: false });
+    await expect(verifyRemoteRunnerOrSettledExit({ claim: { ...claim, exitedBeforeSessionOpen: true },
+      target: exitedRunner(exitedBeforeOpen) as never, identity, runId: "run", normalizedSessionId: "session", providerAttempt: 2 }))
+      .resolves.toBeUndefined();
+  });
+  it.each([
+    ["a pending provider cleanup", { ...exitedBeforeOpen, pendingProviderCleanup: { pid: 7 } }, 2],
+    ["a pending terminal delivery", { ...exitedBeforeOpen, pendingTerminalDelivery: { eventId: "event" } }, 2],
+    ["a runner that stopped mid-turn", { ...exitedBeforeOpen, lifecycle: "turn_active" }, 2],
+    ["an exhausted attempt budget", exitedBeforeOpen, 4],
+  ] as const)("keeps a runner that exited before session.open fail-closed after %s", async (_case, state, providerAttempt) => {
+    const error = await verifyRemoteRunnerOrSettledExit({ claim: { ...claim, exitedBeforeSessionOpen: true },
+      target: exitedRunner(state) as never, identity, runId: "run", normalizedSessionId: "session", providerAttempt }).catch(caught => caught);
+    expect(readRemoteRunnerRecoveryError(error)).toMatchObject({ stage: "process_verification", reason: "process_not_running" });
   });
   it.each([
     ["an unsettled suspension", { ...settledSuspension, outbox: [{ id: 1 }] }, 2],
@@ -14238,6 +14259,14 @@ describe("native session bounded recovery", () => {
       expect(nativeSessionFailureDisposition(3, new Date(), "provider_session_open_rejected")).toEqual({
         phase: "terminal_failure", failureCode: "native_session_retry_exhausted", nextAttemptAt: null,
       });
+    });
+
+    it("records a runner proven to have exited before answering session.open as a failed fresh start", () => {
+      const proven = (message: string) => Object.defineProperty(new Error(message), "runnerExitConfirmed", { value: true });
+      expect(nativeRunnerExitedBeforeSessionOpen(new Error("native_session_recovery_failed", {
+        cause: proven("runnerd exited while waiting for session.open") }))).toBe(true);
+      expect(nativeRunnerExitedBeforeSessionOpen(new Error("runnerd exited while waiting for session.open"))).toBe(false);
+      expect(nativeRunnerExitedBeforeSessionOpen(proven("PRP command session.open rejected: {}"))).toBe(false);
     });
 
     it("stops a remote startup rejection at once because a remote same-run bootstrap cannot be verified", () => {

@@ -3982,6 +3982,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #observedProviderModel: string | undefined;
   #sessionId: string | null = null;
   #providerIdentity: Record<string, unknown> | null = null;
+  #openingCommandId: string | null = null;
   #turnControls: NativeTurnControlCapabilities = { steering: false, queuedFollowUp: false };
 
   supportsTurnReasoning(): boolean {
@@ -4294,8 +4295,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
    * new runner: the old one is gone, and its provider never opened a thread.
    */
   runnerExitConfirmed(): boolean {
-    return this.#closeFinished && !this.#startupComplete && this.#providerIdentity === null
+    return this.#closeFinished && !this.#startupComplete
+      && (this.#providerIdentity === null || this.#openingCommandUnanswered())
       && this.#evidence.runnerExited === true && this.#handle?.isExitConfirmed?.() !== false;
+  }
+
+  #openingCommandUnanswered(): boolean {
+    return this.#openingCommandId !== null && this.#core?.getCommand(this.#openingCommandId)?.status === "pending";
   }
 
   async request(
@@ -6204,7 +6210,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     core.persistRunAttachTemplate(runAttachTemplate);
     if (!unclaimedBootstrap) {
       core.queueCommand("run.prepare", runAttachTemplate);
-      core.queueCommand("session.open", { reuse: "same_session" });
+      this.#openingCommandId = core.queueCommand("session.open", { reuse: "same_session" }).commandId;
     }
     const registration = this.options.controlPlaneRegistration
       ? await this.options.controlPlaneRegistration(core)
@@ -6879,7 +6885,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         ? `command_resume_probe_${randomUUID().replaceAll("-", "")}`
         : null;
     if (recoveryProbeCommandId !== null) {
-      core.queueCommand(sourceAttachmentTarget ? "session.open" : "runner.drain", {}, recoveryProbeCommandId);
+      this.#openingCommandId = core.queueCommand(sourceAttachmentTarget ? "session.open" : "runner.drain", {}, recoveryProbeCommandId).commandId;
     }
     // A controller retry can open the exact authority after run.attach has
     // already reached a durable outcome. Re-observe that command instead of
