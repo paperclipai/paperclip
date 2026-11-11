@@ -47,6 +47,7 @@ import { createIssueReadTiming } from "../services/issue-read-timing.js";
 import { createInboxMineTiming, type InboxMinePhaseDurations } from "../services/inbox-mine-timing.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
+import { enqueueOwnQuestionDismissalWake } from "../services/native-runtime/own-question-wait.js";
 import { confirmNativeControllerStopped, NATIVE_CONTROLLER_HOST_UNVERIFIED } from "../services/native-runtime/native-controller-host-recovery.js";
 import { confirmOwnerGone, OWNER_UNPROVABLE_CAUSE } from "../services/recovery/owner-gone-attestation.js";
 import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
@@ -19115,6 +19116,11 @@ export function issueRoutes(
       const interaction = await issueThreadInteractionService(db).dismissInteraction(
         issue, req.params.interactionId as string,
         { userId: actor.actorType === "user" ? actor.actorId : null },
+        async (tx) => {
+          await enqueueOwnQuestionDismissalWake(tx, {
+            companyId: issue.companyId, issueId: issue.id, interactionId: req.params.interactionId as string,
+          });
+        },
       );
       await logActivity(db, {
         companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
