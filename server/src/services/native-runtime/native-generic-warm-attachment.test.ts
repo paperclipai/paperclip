@@ -10,10 +10,10 @@ import { expect, it, vi } from "vitest";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
 import { DurablePrpControlPlane, createRunnerdCodexTransport as createCapabilityRunnerdCodexTransport,
   defaultCapabilityRunnerdBinary, readRunnerdArtifactBinding, createRunnerProviderLaunch,
-  QUALIFIED_ACPX_PROFILES, type DurablePrpCheckpoint, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
+  QUALIFIED_ACPX_PROFILES, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { runnerLaunchRequirementsDigest } from "@paperclipai/paperclip-runner";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
-import { nativeRunnerCheckpointWriter, readNativeGenericWarmPublication } from "./native-runner-checkpoint.js";
+import { nativeRunnerCheckpointRegistration, loadNativeRunnerCheckpoint, readNativeGenericWarmPublication } from "./native-runner-checkpoint.js";
 import { nativeToolContractFingerprintForTarget, rebindNativeSessionCheckpoint } from "./native-session-resume.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { nativeGenericWarmAttachmentPublication, resolveNativeGenericWarmAttachmentRecovery } from "./native-generic-warm-attachment.js";
@@ -56,13 +56,14 @@ describeEmbeddedPostgres("generic warm attachment handoff", () => {
       completionContract: { id: contract!.id, sha256: `sha256:${contract!.canonicalSha256}`,
         schemaVersion: contract!.schemaVersion, contract: contract!.contractJson as any }, runtimeContext: nativeRuntimeContextFixture() });
     const sourceExecution = execution(sourceId), currentExecution = execution(targetId);
-    await f.db.update(heartbeatRuns).set({ runnerProfileJson: { ...f.preparedProfile, nativeExecutionInput: sourceExecution },
+    await f.db.update(heartbeatRuns).set({ runnerProfileJson: { ...f.preparedProfile, nativeExecutionInput: sourceExecution,
+      nativePreparationHandoffVersion: 1 },
       createdAt: new Date(Date.now() - 120_000) }).where(eq(heartbeatRuns.id, sourceId));
     await f.db.update(nativeRunFinalizations).set({ controllerBootId: bootId, controllerGeneration: 1,
       leaseOwner: owner(sourceId).leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, sourceId));
-    let authority: DurablePrpControlPlane | null = null, saved: DurablePrpCheckpoint | undefined;
-    const registered = new WeakSet<DurablePrpControlPlane>();
-    let writer = nativeRunnerCheckpointWriter(f.db, owner(sourceId));
+    let authority: DurablePrpControlPlane | null = null, authorityRunId = sourceId;
+    const register = nativeRunnerCheckpointRegistration({ db: f.db, bootId,
+      binding: { companyId: shared.companyId, issueId: f.issueId, runId: sourceId }, authorityRunId: () => authorityRunId });
     let entered!: () => void, release!: () => void;
     const preparing = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
     const server = createServer();
@@ -72,18 +73,12 @@ describeEmbeddedPostgres("generic warm attachment handoff", () => {
     const calls = async () => (await readFile(journal, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     const options = { provider: "acpx" as const, acpxAgent: "claude" as const, runnerBinary: binary, runnerArtifact: artifact,
       lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 }, runnerReconnectGraceMs: 3_000,
+      get authorityRunId() { return authorityRunId; },
       runnerStateDirectory: join(remote, "runner"),
       readRunnerState: async () => JSON.parse(await readFile(join(remote, "runner", "runner-state.json"), "utf8")),
-      controlPlaneCheckpointRegistration: async (core: DurablePrpControlPlane) => {
-        core.enablePreparationHandoff();
-        if (!registered.has(core)) {
-          core.setCheckpointPersistence(async checkpoint => { await writer(checkpoint); saved = checkpoint; });
-          registered.add(core);
-        }
-        await core.flushCheckpoint();
-      },
+      controlPlaneCheckpointRegistration: register,
       controlPlaneRegistration: async (core: DurablePrpControlPlane, identity?: DurableRecoveryIdentity) => {
-        if (identity?.runId === targetId) writer = nativeRunnerCheckpointWriter(f.db, owner(targetId));
+        await register(core, identity);
         authority = core;
         return { connectUrl: `ws://127.0.0.1:${address.port}/runner`, release: () => { if (authority === core) authority = null; } }; },
       prepareLaunch: async (requirements: Parameters<typeof createRunnerProviderLaunch>[0]) => {
@@ -134,14 +129,17 @@ describeEmbeddedPostgres("generic warm attachment handoff", () => {
       await f.db.update(issues).set({ executionRunId: targetId }).where(eq(issues.id, f.issueId));
       await f.db.insert(nativeRunFinalizations).values({ runId: targetId, companyId: shared.companyId, issueId: f.issueId,
         phase: "observed", controllerBootId: bootId, controllerGeneration: 1, leaseOwner: owner(targetId).leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000) });
+      authorityRunId = targetId;
       attachment = first.transport.attachRun!(targetIdentity).catch(error => error);
       await within("attachment preparation", Promise.race([preparing, attachment.then(result => {
         throw result instanceof Error ? result : new Error("attachment ended before external preparation");
       })]));
-      const checkpoint = saved!, publication = nativeGenericWarmAttachmentPublication(checkpoint, owner(targetId));
+      const checkpoint = await loadNativeRunnerCheckpoint(f.db, { companyId: shared.companyId, issueId: f.issueId, runId: targetId });
+      expect(checkpoint).not.toBeNull();
+      const publication = nativeGenericWarmAttachmentPublication(checkpoint!, owner(targetId));
       expect(publication).toMatchObject({ phase: "preparing", sourceIdentity, targetIdentity });
       const recover = () => resolveNativeGenericWarmAttachmentRecovery({ db: f.db, currentRun: currentRun!, publication: publication!,
-        header: checkpoint.records.get("header")!, owner: owner(targetId) });
+        header: checkpoint!.records.get("header")!, owner: owner(targetId) });
       const proof = await recover(); expect(proof).not.toBeNull();
       const binding = { companyId: shared.companyId, issueId: f.issueId, runId: targetId };
       expect(await readNativeGenericWarmPublication(f.db, binding)).not.toBeNull();
@@ -152,7 +150,7 @@ describeEmbeddedPostgres("generic warm attachment handoff", () => {
       await f.db.insert(nativeRunnerCheckpoints).values(cursor!);
       expect(await readNativeGenericWarmPublication(f.db, binding)).not.toBeNull();
       expect(await resolveNativeGenericWarmAttachmentRecovery({ db: f.db, currentRun: currentRun!, publication: publication!,
-        header: checkpoint.records.get("header")!, owner: { ...owner(targetId), generation: 2 } })).toBeNull();
+        header: checkpoint!.records.get("header")!, owner: { ...owner(targetId), generation: 2 } })).toBeNull();
       await f.db.update(heartbeatRuns).set({ runnerProfileJson: { ...currentRun!.runnerProfileJson,
         nativePreparationHandoffVersion: 0 } }).where(eq(heartbeatRuns.id, targetId));
       expect(await recover()).toBeNull();
@@ -162,7 +160,7 @@ describeEmbeddedPostgres("generic warm attachment handoff", () => {
       expect(await recover()).toBeNull();
       await f.db.update(heartbeatRuns).set({ runnerProfileJson: currentRun!.runnerProfileJson }).where(eq(heartbeatRuns.id, targetId));
       await first.detachControllerForRestart(); release(); expect(await attachment).toBeInstanceOf(Error);
-      checkpoint.restoreSessionDirectory(newRoot); await rm(oldRoot, { recursive: true, force: true });
+      checkpoint!.restoreSessionDirectory(newRoot); await rm(oldRoot, { recursive: true, force: true });
       const noSpawn = vi.fn(() => { throw new Error("duplicate Runner launch"); });
       successor = createCapabilityRunnerdCodexTransport({ ...options, stateDirectory: newRoot, prpIdentity: targetIdentity,
         authorityRunId: targetId,
@@ -179,6 +177,9 @@ describeEmbeddedPostgres("generic warm attachment handoff", () => {
       expect(successor.evidence().runnerPid).toBe(pid); expect(noSpawn).not.toHaveBeenCalled(); expect(launch).toHaveBeenCalledTimes(1);
       expect((await options.readRunnerState()).runId).toBe(targetId);
       expect((await calls()).filter(call => call.command === "turn.start")).toHaveLength(1);
+      expect((await f.db.select({ phase: nativeRunFinalizations.phase, resultId: nativeRunFinalizations.resultId,
+        leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations)
+        .where(eq(nativeRunFinalizations.runId, sourceId)))[0]).toEqual({ phase: "committed", resultId, leaseOwner: null });
       await f.db.update(nativeRunFinalizations).set({ leaseOwner: "successor" }).where(eq(nativeRunFinalizations.runId, targetId));
       expect(await recover()).toBeNull();
     } catch (error) {

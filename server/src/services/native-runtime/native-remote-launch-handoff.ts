@@ -36,7 +36,14 @@ const launchCodes = ["native_remote_launch_intent_invalid", "native_remote_launc
 type LaunchCode = typeof launchCodes[number];
 
 export class NativeRemoteLaunchHandoffError extends Error {
-  constructor(readonly code: LaunchCode) { super(code); this.name = "NativeRemoteLaunchHandoffError"; }
+  readonly classification: "native_provider_state_incompatible" | null;
+  constructor(readonly code: LaunchCode) {
+    super(code);
+    this.name = "NativeRemoteLaunchHandoffError";
+    this.classification = code === "native_remote_launch_intent_invalid" || code === "native_remote_launch_identity_mismatch"
+      || code === "native_remote_launch_configuration_changed" || code === "native_remote_launch_path_unsafe"
+      ? "native_provider_state_incompatible" : null;
+  }
 }
 
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -79,6 +86,12 @@ function configuration(input: Pick<NativeRemoteLaunchIntent, "remoteBinary" | "r
 
 function assertConfiguration(intent: NativeRemoteLaunchIntent, spec: RunnerProcessLaunchSpec) {
   assertNativeRemoteLaunchIntent(intent);
+  if (!spec || typeof spec.command !== "string" || typeof spec.cwd !== "string"
+    || !Array.isArray(spec.args) || !spec.args.every(arg => typeof arg === "string")
+    || !spec.environment || typeof spec.environment !== "object" || Array.isArray(spec.environment)
+    || !Object.values(spec.environment).every(value => value === undefined || typeof value === "string")) {
+    fail("native_remote_launch_configuration_changed");
+  }
   const config = configuration(intent, spec);
   if (digest(config) !== intent.launchConfigSha256) fail("native_remote_launch_configuration_changed");
   const expected = { "--runner-id": intent.identity.runnerInstanceId, "--environment-lease-id": intent.identity.environmentLeaseId,
@@ -91,6 +104,11 @@ function assertConfiguration(intent: NativeRemoteLaunchIntent, spec: RunnerProce
     }
   }
   return config;
+}
+
+export function nativeRemoteLaunchConfigurationMatches(intent: NativeRemoteLaunchIntent, spec: RunnerProcessLaunchSpec | undefined) {
+  if (!spec) return false;
+  try { assertConfiguration(intent, spec); return true; } catch { return false; }
 }
 
 export function createNativeRemoteLaunchIntent(input: Omit<NativeRemoteLaunchIntent, "schema" | "launchId" | "nonce" | "launchConfigSha256">

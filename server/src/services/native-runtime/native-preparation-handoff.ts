@@ -9,6 +9,7 @@ import { nativeRunnerLaunchMatchesPublication, readNativeRunnerLaunchIntent,
   nativeRemoteLaunchMatchesPublication, readNativeRemoteRunnerLaunchIntent } from "./native-runner-launch-intent.js";
 import { readNativeWarmPreparation } from "./native-warm-preparation.js";
 import { resolveNativeGenericWarmAttachmentRecovery } from "./native-generic-warm-attachment.js";
+import { nativeRemoteLaunchConfigurationMatches } from "./native-remote-launch-handoff.js";
 
 type Scope = { companyId: string; issueId: string; runId: string; controllerBootId: string; deadline?: number };
 
@@ -100,6 +101,7 @@ async function readPreparationProof(db: Db, scope: Scope, liveOwner: boolean) {
       const saved = await readNativeRemoteRunnerLaunchIntent(db, scope);
       if (saved) {
         if (saved.environmentLeaseId !== lease.id || saved.providerLeaseId !== lease.providerLeaseId
+          || !nativeRemoteLaunchConfigurationMatches(saved.intent, saved.launchSpec)
           || !nativeRemoteLaunchMatchesPublication(saved, proof)) return null;
         return { kind: "launching" as const, ...binding };
       }

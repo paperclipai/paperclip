@@ -6699,11 +6699,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     // Reusing resources still requires current environment authorization. The
     // optional hook avoids re-preparation after controller storage is lost.
     // Existing consumers retain the preparation callback's authorization path.
-    await this.options.controlPlaneCheckpointRegistration?.(core, desiredIdentity);
     if (this.options.genericWarmAttachment && sourceAttachmentTarget) {
-      await this.options.controlPlaneCheckpointRegistration?.(core, sourceAttachmentTarget);
       await core.prepareRunAttachment(sourceAttachmentTarget);
-    }
+      await this.options.controlPlaneCheckpointRegistration?.(core, sourceAttachmentTarget);
+    } else await this.options.controlPlaneCheckpointRegistration?.(core, desiredIdentity);
     if (warmRecovery && this.options.genericWarmAttachment && this.options.adoptExistingRunner) core.prepareWarmTransitionAdoption({
       transitionId: warmRecovery.transitionId, runnerState: warmRecovery.runnerState,
       expectedTarget: this.options.genericWarmAttachment.targetIdentity });

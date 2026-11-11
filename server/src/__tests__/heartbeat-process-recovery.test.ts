@@ -3516,9 +3516,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   // A hard restart can kill the server after it claimed a legacy run but before
   // the adapter dispatch renewal, leaving an expired lease from another boot.
-  async function seedRestartOrphanedLegacySetup(executionStage: "preparing" | "dispatching") {
+  async function seedRestartOrphanedLegacySetup(executionStage: "preparing" | "dispatching", adapterType = "paperclip_runner") {
     const fixture = await seedRunFixture({
-      adapterType: "paperclip_runner",
+      adapterType,
       agentStatus: "idle",
       runtimeMode: "legacy",
     });
@@ -3530,28 +3530,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return fixture;
   }
 
-  it("retries a legacy run that a restart stopped before adapter dispatch", async () => {
-    const { companyId, runId, issueId } = await seedRestartOrphanedLegacySetup("preparing");
+  it("requeues the same Runner preparation that a restart stopped before adapter dispatch", async () => {
+    const { companyId, runId, issueId, wakeupRequestId } = await seedRestartOrphanedLegacySetup("preparing");
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionRetryAccounting: spentFailureRetryAccounting } })
+      .where(eq(heartbeatRuns.id, runId));
+    const [admitted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
 
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reapOrphanedRuns();
 
-    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+    expect(result).toEqual({ reaped: 0, runIds: [] });
     const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(reaped).toMatchObject({
-      status: "failed",
-      errorCode: "process_lost",
-      error: "Process lost -- server may have restarted; retrying once",
+      id: runId, status: "queued", wakeupRequestId, errorCode: null, error: null, startedAt: null,
+      controllerBootId: null, controllerLeaseExpiresAt: null, executionStage: null,
+      responsibleUserId: admitted!.responsibleUserId, runnerProfileJson: admitted!.runnerProfileJson,
+      contextSnapshot: admitted!.contextSnapshot,
     });
-    expect(reaped?.resultJson).toMatchObject({
-      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
-      processLossDiagnostic: { localCheck: "no_identifiers", retryEligible: true, runPredatesObserver: true },
-    });
+    expect(reaped?.resultJson).toEqual(admitted!.resultJson);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupRequestId)))[0])
+      .toMatchObject({ status: "queued", runId, claimedAt: null });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].executionRunId).toBeNull();
     const retries = await db.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, companyId),
       eq(heartbeatRuns.retryOfRunId, runId),
     ));
-    expect(retries).toEqual([expect.objectContaining({ status: "scheduled_retry" })]);
+    expect(retries).toEqual([]);
     expect(await db.select().from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([]);
     expect(mockAdapterExecute).not.toHaveBeenCalled();
@@ -3560,8 +3564,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   it.each([
     ["an assignment", {}],
     ["a due monitor", { wakeReason: "issue_monitor_due" }],
-  ] as const)("retries %s run whose lease this process lost before adapter dispatch", async (_label, contextSnapshot) => {
-    const { companyId, runId, issueId } = await seedRunFixture({
+  ] as const)("requeues the same %s Runner preparation whose lease this process lost before adapter dispatch", async (_label, contextSnapshot) => {
+    const { companyId, runId, issueId, wakeupRequestId } = await seedRunFixture({
       adapterType: "paperclip_runner", agentStatus: "idle", runtimeMode: "legacy", contextSnapshot,
     });
     await db.update(heartbeatRuns).set({
@@ -3578,18 +3582,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }).where(eq(heartbeatRuns.id, runId));
 
     const heartbeat = heartbeatService(db);
-    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [runId] });
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 0, runIds: [] });
 
     const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    expect(reaped).toMatchObject({ status: "failed", errorCode: "process_lost",
-      error: "Process lost -- server may have restarted; retrying once" });
-    expect(reaped?.resultJson).toMatchObject({
-      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
-      processLossDiagnostic: { localCheck: "no_identifiers", retryEligible: true },
-    });
+    expect(reaped).toMatchObject({ id: runId, status: "queued", wakeupRequestId, errorCode: null, error: null });
+    expect(reaped?.contextSnapshot).toMatchObject({ issueId, ...contextSnapshot });
+    expect(reaped?.runnerProfileJson).toMatchObject({ adapterDispatch: { adapterType: "paperclip_runner" },
+      remoteWorkspace: { state: "prepared", epoch: 6 } });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupRequestId)))[0])
+      .toMatchObject({ status: "queued", runId });
     expect(await db.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId),
-    ))).toEqual([expect.objectContaining({ status: "scheduled_retry" })]);
+    ))).toEqual([]);
     await heartbeat.reapOrphanedRuns();
     expect(await db.select().from(issueRecoveryActions)
       .where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([]);
@@ -3621,9 +3625,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ]);
   });
 
-  it("keeps a lost preparation from an older build without a controller stamp in the charged lane", async () => {
-    const { companyId, runId } = await seedRestartOrphanedLegacySetup("preparing");
-    await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } } })
+  it("keeps a lost direct-adapter preparation from an older build without a controller stamp in the charged lane", async () => {
+    const { companyId, runId } = await seedRestartOrphanedLegacySetup("preparing", "codex_local");
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "codex_local" } } })
       .where(eq(heartbeatRuns.id, runId));
 
     await heartbeatService(db).reapOrphanedRuns();
@@ -3633,10 +3637,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "scheduled_retry", scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 1 })]);
   });
 
-  it("continues a chain whose preparations were killed twice and then interrupted again, without a Retry", async () => {
-    const { companyId, agentId, runId: firstRunId } = await seedRunFixture({ adapterType: "paperclip_runner",
+  it("keeps the same Runner preparation through repeated controller loss before a graceful interruption", async () => {
+    const { companyId, agentId, runId: firstRunId, wakeupRequestId, issueId } = await seedRunFixture({ adapterType: "paperclip_runner",
       agentStatus: "idle", runtimeMode: "legacy" });
-    const preparing = async (runId: string, owner: "killed" | "current") => {
+    const [admitted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, firstRunId));
+    const preparing = async (owner: "killed" | "current") => {
+      const runId = firstRunId;
       const live = currentControllerProcessStamp();
       const bootId = owner === "current" ? controllerLeases.legacyControllerBootId : randomUUID();
       const pid = Number(spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"],
@@ -3647,40 +3653,43 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           : { bootId, pid, hostHash: live.hostHash, processStartedAt: new Date(Date.now() - 120_000).toISOString() },
         controllerLeaseExpiresAt: sql`clock_timestamp() + interval '45 seconds'` }).where(eq(heartbeatRuns.id, runId));
       await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId));
+      await db.update(agentWakeupRequests).set({ status: "claimed", claimedAt: new Date() })
+        .where(eq(agentWakeupRequests.id, wakeupRequestId));
+      await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     };
     const successorOf = async (runId: string) => (await db.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId))))[0];
     const heartbeat = heartbeatService(db);
 
-    await preparing(firstRunId, "killed");
-    await heartbeat.reapOrphanedRuns();
-    const second = await successorOf(firstRunId);
-    expect(second).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "interrupted_preparation",
-      scheduledRetryAttempt: 1 });
+    for (let loss = 0; loss < 2; loss++) {
+      await preparing("killed");
+      expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 0, runIds: [] });
+      const [same] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, firstRunId));
+      expect(same).toMatchObject({ id: firstRunId, status: "queued", wakeupRequestId,
+        errorCode: null, contextSnapshot: admitted!.contextSnapshot });
+      expect(await successorOf(firstRunId)).toBeUndefined();
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupRequestId)))[0])
+        .toMatchObject({ runId: firstRunId, status: "queued" });
+    }
 
-    await preparing(second!.id, "killed");
-    await heartbeat.reapOrphanedRuns();
-    const third = await successorOf(second!.id);
-    expect(third).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "interrupted_preparation",
-      scheduledRetryAttempt: 2 });
-    expect(third!.contextSnapshot?.executionRetryAccounting).toMatchObject({ failureRetries: 0, interruptedPreparations: 2 });
-
-    await preparing(third!.id, "current");
+    await preparing("current");
     const drained = await heartbeat.drainRunningRunsForShutdown("SIGTERM");
-    expect(drained.interruptedRunIds).toEqual([third!.id]);
+    expect(drained.interruptedRunIds).toEqual([firstRunId]);
     const exited = randomUUID();
     await db.update(heartbeatRuns).set({ controllerBootId: exited, controllerProcess: { bootId: exited,
       pid: Number(spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" }).stdout),
       hostHash: currentControllerProcessStamp().hostHash, processStartedAt: new Date(Date.now() - 120_000).toISOString() } })
-      .where(eq(heartbeatRuns.id, third!.id));
+      .where(eq(heartbeatRuns.id, firstRunId));
     await settleUnrecoverableExecutions(db);
     await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: true });
-    expect(await successorOf(third!.id)).toMatchObject({ agentId, status: "scheduled_retry",
-      scheduledRetryReason: "interrupted_preparation", scheduledRetryAttempt: 3 });
+    const continued = await successorOf(firstRunId);
+    expect(continued).toMatchObject({ agentId, status: "scheduled_retry",
+      scheduledRetryReason: "interrupted_preparation", scheduledRetryAttempt: 1 });
+    expect(continued!.contextSnapshot?.executionRetryAccounting).toMatchObject({ failureRetries: 0, interruptedPreparations: 1 });
   });
 
   it("retries within the failure budget even when a legacy process-loss counter is set", async () => {
-    const { companyId, runId } = await seedRestartOrphanedLegacySetup("preparing");
+    const { companyId, runId } = await seedRestartOrphanedLegacySetup("preparing", "codex_local");
     // Earlier releases wrote this counter; nothing writes it now.
     await db.update(heartbeatRuns).set({ processLossRetryCount: 1 }).where(eq(heartbeatRuns.id, runId));
 
@@ -3694,7 +3703,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("does not promise a process-loss retry once the failure budget is spent", async () => {
-    const { companyId, runId } = await seedRestartOrphanedLegacySetup("preparing");
+    const { companyId, runId } = await seedRestartOrphanedLegacySetup("preparing", "codex_local");
     const [seeded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     await db.update(heartbeatRuns).set({
       contextSnapshot: { ...(seeded!.contextSnapshot ?? {}), executionRetryAccounting: spentFailureRetryAccounting },

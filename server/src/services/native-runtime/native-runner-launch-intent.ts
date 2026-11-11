@@ -7,7 +7,9 @@ import type { NativePreparationPublication } from "./native-preparation-checkpoi
 import { inspectPendingBootstrapTicket } from "../../vendor/paperclip-runner/index.js";
 import { isDeepStrictEqual } from "node:util";
 import type { RunnerProcessLaunchSpec } from "../../vendor/paperclip-runner/index.js";
-import { assertNativeRemoteLaunchIntent, createNativeRemoteLaunchIntent, type NativeRemoteLaunchIntent } from "./native-remote-launch-handoff.js";
+import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
+import { assertNativeRemoteLaunchIntent, createNativeRemoteLaunchIntent, NativeRemoteLaunchHandoffError,
+  launchNativeRemoteRunnerOnce, readNativeRemoteLaunchReceipt, type NativeRemoteLaunchIntent } from "./native-remote-launch-handoff.js";
 import { NATIVE_PREPARATION_HANDOFF_VERSION } from "./native-active-runs.js";
 
 type Scope = { companyId: string; issueId: string; runId: string };
@@ -105,6 +107,7 @@ export type NativeRemoteRunnerLaunchIntent = Scope & {
   bootId: string; generation: number; leaseOwner: string;
   environmentLeaseId: string; providerLeaseId: string;
   intent: NativeRemoteLaunchIntent; bootstrapTicket: string;
+  launchSpec?: RunnerProcessLaunchSpec;
   publication?: { headerSha256: string; cursorSha256: string; partsSha256: string };
 };
 
@@ -133,6 +136,36 @@ export function nativeRemoteLaunchMatchesPublication(saved: NativeRemoteRunnerLa
     && publication.headerSha256 === proof.headerSha256
     && publication.cursorSha256 === proof.cursorSha256
     && publication.partsSha256 === proof.partsSha256;
+}
+
+export async function reconcileNativeRemoteRunnerLaunchIntent(db: Db, input: Scope & {
+  leaseOwner: string; controllerGeneration: number; environmentLeaseId: string; providerLeaseId: string | undefined;
+  remoteCwd: string; identity: Record<string, unknown>; runner: CommandManagedRuntimeRunner; deadline: number;
+}) {
+  const saved = await readNativeRemoteRunnerLaunchIntent(db, input);
+  const publication = await readNativePreparationPublication(db, input);
+  if (!saved || saved.environmentLeaseId !== input.environmentLeaseId || saved.providerLeaseId !== input.providerLeaseId
+    || saved.intent.remoteCwd !== input.remoteCwd || !isDeepStrictEqual(saved.intent.identity, input.identity)
+    || publication?.kind !== "published" || publication.publication.kind !== "launching"
+    || !nativeRemoteLaunchMatchesPublication(saved, publication.publication)) {
+    throw new NativeRemoteLaunchHandoffError("native_remote_launch_identity_mismatch");
+  }
+  const [owner] = await db.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
+    eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId),
+    eq(nativeRunFinalizations.runId, input.runId), eq(nativeRunFinalizations.controllerBootId, saved.bootId),
+    eq(nativeRunFinalizations.leaseOwner, input.leaseOwner), eq(nativeRunFinalizations.controllerGeneration, input.controllerGeneration),
+    eq(nativeRunFinalizations.phase, "observed"), sql`${nativeRunFinalizations.resultId} is null`,
+    sql`${nativeRunFinalizations.failureCode} is null`, gt(nativeRunFinalizations.leaseExpiresAt, sql`clock_timestamp()`))).limit(1);
+  if (!owner) throw new Error("native_runner_checkpoint_owner_lost");
+  const [lease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.id, saved.environmentLeaseId),
+    eq(environmentLeases.issueId, input.issueId), eq(environmentLeases.heartbeatRunId, input.runId),
+    eq(environmentLeases.providerLeaseId, saved.providerLeaseId), eq(environmentLeases.status, "active"),
+    sql`${environmentLeases.releasedAt} is null`, sql`${environmentLeases.cleanupStatus} is null`)).limit(1);
+  if (!lease) throw new NativeRemoteLaunchHandoffError("native_remote_launch_identity_mismatch");
+  const launch = { runner: input.runner, intent: saved.intent, deadline: input.deadline };
+  return saved.launchSpec ? launchNativeRemoteRunnerOnce({ ...launch, spec: saved.launchSpec })
+    : readNativeRemoteLaunchReceipt(launch);
 }
 
 export async function recordNativeRemoteRunnerLaunchIntent(db: Db, input: Scope & {
@@ -172,7 +205,9 @@ export async function recordNativeRemoteRunnerLaunchIntent(db: Db, input: Scope 
     const saved: NativeRemoteRunnerLaunchIntent = { schema: "paperclip.native-remote-runner-launch.v1",
       companyId: input.companyId, issueId: input.issueId, runId: input.runId, bootId: input.bootId,
       generation: owner.controllerGeneration, leaseOwner: owner.leaseOwner!, environmentLeaseId: input.environmentLeaseId,
-      providerLeaseId: physical.providerLeaseId, intent, bootstrapTicket: native.ticket };
+      providerLeaseId: physical.providerLeaseId, intent, bootstrapTicket: native.ticket,
+      launchSpec: { command: input.spec.command, args: [...input.spec.args], cwd: input.spec.cwd,
+        environment: { ...input.spec.environment } } };
     const material = createLocalEncryptedCipher("write").encrypt(JSON.stringify(saved));
     await tx.update(heartbeatRuns).set({ runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb)
       || ${JSON.stringify({ nativeRemoteRunnerLaunchIntent: material })}::jsonb` })

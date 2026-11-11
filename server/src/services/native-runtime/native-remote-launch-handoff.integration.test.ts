@@ -14,12 +14,14 @@ import { describeEmbeddedPostgres, fakeCodexAppServer, nativeRestartFixture, pro
   remotePreparedWorkspace, stopOwnedProcessGroup, waitForCondition } from "../../__tests__/helpers/native-restart.js";
 import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
 import { currentControllerProcess } from "../controller-process-identity.js";
+import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { loadNativeRunnerCheckpoint, nativeRunnerCheckpointRegistration, readNativePreparationPublication, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { readNativePreparationHandoffReadiness } from "./native-preparation-handoff.js";
-import { recordNativeRemoteRunnerLaunchIntent, readNativeRemoteRunnerLaunchIntent } from "./native-runner-launch-intent.js";
+import { recordNativeRemoteRunnerLaunchIntent, readNativeRemoteRunnerLaunchIntent,
+  reconcileNativeRemoteRunnerLaunchIntent } from "./native-runner-launch-intent.js";
 import { claimNativeRestartRecoveries } from "./native-restart-recovery.js";
-import { launchNativeRemoteRunnerOnce, NATIVE_REMOTE_LAUNCH_SCRIPT, readNativeRemoteLaunchReceipt } from "./native-remote-launch-handoff.js";
+import { launchNativeRemoteRunnerOnce, NATIVE_REMOTE_LAUNCH_SCRIPT } from "./native-remote-launch-handoff.js";
 
 const executeFile = promisify(execFile);
 
@@ -28,8 +30,9 @@ describeEmbeddedPostgres("classic remote launch checkpoint cutover", () => {
   let shared: typeof environment.current;
   beforeAll(() => { shared = environment.current; });
 
-  realProcessIt("preserves the launching PG proof and adopts one physical Runner after pre-receipt lost ACK", async () => {
-    const f = await environment.seedRun("CLASSIC-PRE-RECEIPT");
+  realProcessIt.each(["lost ACK", "saved before submission"] as const)(
+    "preserves the launching PG proof and adopts one physical Runner after %s", async cut => {
+    const f = await environment.seedRun(cut === "lost ACK" ? "CLASSIC-PRE-RECEIPT" : "CLASSIC-BEFORE-SUBMISSION");
     const oldRoot = join(shared.runtimeRoot, f.runId + "-old-controller");
     const newRoot = join(shared.runtimeRoot, f.runId + "-new-controller");
     const finalRoot = join(shared.runtimeRoot, f.runId + "-final-controller");
@@ -99,6 +102,10 @@ describeEmbeddedPostgres("classic remote launch checkpoint cutover", () => {
           environmentLeaseId: remote.leaseId, providerLeaseId: remote.providerLeaseId,
           remoteCwd: sandbox, remoteBinary: spec.command, processIdentityPath, stateDirectory, diagnosticsDirectory, spec });
         if (!intent) throw new Error("canonical_remote_launch_intent_missing");
+        if (cut === "saved before submission") {
+          accepted();
+          throw new Error("fixture_controller_died_before_launch_submission");
+        }
         await launchNativeRemoteRunnerOnce({ runner: oldRunner, intent, spec, deadline: Date.now() + 2_000 });
       };
       void start().catch(error => { launchFailure.push(error); });
@@ -113,12 +120,24 @@ describeEmbeddedPostgres("classic remote launch checkpoint cutover", () => {
       await Promise.race([launchAccepted, new Promise<never>((_resolve, reject) =>
         setTimeout(() => reject(new Error("remote_launch_was_not_accepted")), 10_000).unref())]);
       await waitForCondition("old controller launch receipt remains unresolved", async () => launchFailure.length === 1);
-      expect(launchFailure).toEqual([expect.objectContaining({ code: "native_remote_launch_receipt_pending" })]);
+      const expectedFailure = cut === "lost ACK" ? { code: "native_remote_launch_receipt_pending" }
+        : { message: "fixture_controller_died_before_launch_submission" };
+      expect(launchFailure).toEqual([expect.objectContaining(expectedFailure)]);
+      if (cut === "saved before submission") expect(execute).not.toHaveBeenCalled();
       expect(existsSync(processIdentityPath)).toBe(false);
       expect(await readNativePreparationHandoffReadiness(f.db, { ...binding, controllerBootId: bootId }))
         .toMatchObject({ kind: "launching", runnerInstanceId: identity.runnerInstanceId, environmentLeaseId: remote.leaseId });
       const saved = await readNativeRemoteRunnerLaunchIntent(f.db, binding);
       expect(saved).not.toBeNull();
+      expect(saved!.launchSpec?.args).toEqual(expect.arrayContaining(["--run-id", f.runId]));
+      const [originalRun] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      for (const launchSpec of [undefined, { ...saved!.launchSpec!, args: [...saved!.launchSpec!.args, "changed"] }]) {
+        await f.db.update(heartbeatRuns).set({ runnerProfileJson: { ...originalRun!.runnerProfileJson,
+          nativeRemoteRunnerLaunchIntent: createLocalEncryptedCipher("write").encrypt(JSON.stringify({ ...saved, launchSpec })) } })
+          .where(eq(heartbeatRuns.id, f.runId));
+        expect(await readNativePreparationHandoffReadiness(f.db, { ...binding, controllerBootId: bootId })).toBeNull();
+      }
+      await f.db.update(heartbeatRuns).set({ runnerProfileJson: originalRun!.runnerProfileJson }).where(eq(heartbeatRuns.id, f.runId));
       await first.detachControllerForRestart();
       await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, f.runId));
       const [claim] = await claimNativeRestartRecoveries({ db: f.db, controller: shared.successor, restartKind: "hard", runIds: [f.runId] });
@@ -128,7 +147,12 @@ describeEmbeddedPostgres("classic remote launch checkpoint cutover", () => {
       expect(firstCheckpoint).not.toBeNull();
       const secondOwner = await readNativeRemoteRunnerLaunchIntent(f.db, binding);
       expect(secondOwner).toMatchObject({ bootId: shared.successor.bootId, generation: 2, intent: saved!.intent,
-        bootstrapTicket: saved!.bootstrapTicket });
+        bootstrapTicket: saved!.bootstrapTicket, launchSpec: saved!.launchSpec });
+      const callsBeforeStale = execute.mock.calls.length;
+      await expect(reconcileNativeRemoteRunnerLaunchIntent(f.db, { ...binding, leaseOwner, controllerGeneration: 1,
+        environmentLeaseId: remote.leaseId, providerLeaseId: remote.providerLeaseId, remoteCwd: sandbox,
+        identity, runner: remoteRunner, deadline: Date.now() + 1_000 })).rejects.toThrow("native_runner_checkpoint_owner_lost");
+      expect(execute.mock.calls).toHaveLength(callsBeforeStale);
       expect(await readNativePreparationHandoffReadiness(f.db, { ...binding, controllerBootId: shared.successor.bootId }))
         .toMatchObject({ kind: "launching", runnerInstanceId: identity.runnerInstanceId });
       intermediate = new DurablePrpControlPlane({ stateDirectory: join(newRoot, "control-plane"), identity,
@@ -151,6 +175,7 @@ describeEmbeddedPostgres("classic remote launch checkpoint cutover", () => {
       const finalOwner = { ...shared.successor, bootId: randomUUID() };
       const [secondClaim] = await claimNativeRestartRecoveries({ db: f.db, controller: finalOwner, restartKind: "hard", runIds: [f.runId] });
       expect(secondClaim).toMatchObject({ kind: "reattach_remote_runner", runId: f.runId, controllerGeneration: 3 });
+      if (secondClaim?.kind !== "reattach_remote_runner") throw new Error("expected_classic_launch_recovery");
       const finalIntent = await readNativeRemoteRunnerLaunchIntent(f.db, binding);
       expect(finalIntent).toMatchObject({ bootId: finalOwner.bootId, generation: 3, intent: saved!.intent,
         bootstrapTicket: saved!.bootstrapTicket });
@@ -158,7 +183,20 @@ describeEmbeddedPostgres("classic remote launch checkpoint cutover", () => {
       const checkpoint = await restoreNativeRunnerCheckpoint(f.db, binding, finalRoot);
       expect(checkpoint).not.toBeNull();
       writeFileSync(join(sandbox, "release-receipt"), "release");
-      const receipt = await readNativeRemoteLaunchReceipt({ runner: remoteRunner, intent: saved!.intent, deadline: Date.now() + 5_000 });
+      const priorSubmissions = execute.mock.calls.filter(([request]) => request.args?.[2] === "launch").length;
+      const recovered = reconcileNativeRemoteRunnerLaunchIntent(f.db, { ...binding,
+        leaseOwner: secondClaim!.leaseOwner, controllerGeneration: secondClaim!.controllerGeneration,
+        environmentLeaseId: remote.leaseId, providerLeaseId: remote.providerLeaseId, remoteCwd: sandbox,
+        identity, runner: remoteRunner, deadline: Date.now() + 5_000 })
+        .then(receipt => ({ receipt }), error => ({ error }));
+      await waitForCondition("successor submits the saved launch", async () =>
+        execute.mock.calls.filter(([request]) => request.args?.[2] === "launch").length > priorSubmissions);
+      const [recovery, lateOriginal] = await Promise.all([recovered,
+        launchNativeRemoteRunnerOnce({ runner: remoteRunner, intent: saved!.intent,
+          spec: saved!.launchSpec!, deadline: Date.now() + 5_000 })]);
+      if ("error" in recovery) throw recovery.error;
+      const { receipt } = recovery;
+      expect(lateOriginal).toEqual(receipt);
       runnerPid = receipt.pid;
       const startedAt = await readProcessStartedAt(runnerPid);
       const duplicate = vi.fn(() => { throw new Error("duplicate_runner_spawn"); });
@@ -178,14 +216,15 @@ describeEmbeddedPostgres("classic remote launch checkpoint cutover", () => {
       expect(await readProcessStartedAt(receipt.pid)).toBe(startedAt);
       expect(readFileSync(join(sandbox, "spawned-runner-pids"), "utf8").trim().split("\n")).toEqual([String(receipt.pid)]);
       expect((await readFile(join(sandbox, "calls.log"), "utf8")).match(/^turn\/start$/gm)).toHaveLength(1);
-      expect(execute.mock.calls.filter(([request]) => request.args?.[2] === "launch")).toHaveLength(1);
+      expect(execute.mock.calls.filter(([request]) => request.args?.[2] === "launch"))
+        .toHaveLength(cut === "lost ACK" ? 3 : 2);
       expect(duplicate).not.toHaveBeenCalled();
       expect(stop).not.toHaveBeenCalled();
       expect(saved!.intent.nonce).toBe(receipt.nonce);
       const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
       expect(run!.runnerInstanceId).toBe(identity.runnerInstanceId);
       expect(run!.nativeSessionId).toBe(identity.normalizedSessionId);
-      expect(launchFailure).toEqual([expect.objectContaining({ code: "native_remote_launch_receipt_pending" })]);
+      expect(launchFailure).toEqual([expect.objectContaining(expectedFailure)]);
       const finalCheckpoint = await loadNativeRunnerCheckpoint(f.db, binding);
       const finalState = JSON.parse(finalCheckpoint!.records.get("header")!).state;
       expect(finalState.identity).toEqual(identity);

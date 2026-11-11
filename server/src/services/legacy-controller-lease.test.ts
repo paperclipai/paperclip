@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, ne, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, authUsers, closeLivenessDb, companies, companyMemberships, createDb, heartbeatRuns, issues, livenessDb, subscribeDatabaseWork } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
@@ -43,14 +43,23 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 (support.supported ? describe : describe.skip)("durable legacy controller ownership", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
+  const fixtureCompanies = new Set<string>();
   beforeAll(async () => {
     if (!external) database = await startEmbeddedPostgresTestDatabase("legacy-controller-");
     db = createDb(external ?? database.connectionString, { maxConnections: 6 });
   }, 30000);
+  afterEach(async () => {
+    if (fixtureCompanies.size === 0) return;
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(and(
+      inArray(heartbeatRuns.companyId, [...fixtureCompanies]), eq(heartbeatRuns.status, "running"),
+    ));
+    fixtureCompanies.clear();
+  });
   afterAll(async () => { await closeLivenessDb(db, 1); await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
   async function seed() {
     const companyId = randomUUID(), agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Controller test", issuePrefix: `C${companyId.slice(0, 7)}` });
+    fixtureCompanies.add(companyId);
     await db.insert(agents).values({ id: agentId, companyId, name: "Agent", role: "general", adapterType: "claude_local", status: "idle" });
     const [queued] = await db.insert(heartbeatRuns).values({ companyId, agentId }).returning();
     const [run] = await db.update(heartbeatRuns).set({ status: "running", ...legacyControllerClaim("legacy") })

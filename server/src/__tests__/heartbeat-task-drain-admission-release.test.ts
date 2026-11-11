@@ -153,6 +153,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       agentId,
       source: "assignment",
       status: "queued",
+      runId,
     });
 
     await db.insert(heartbeatRuns).values({

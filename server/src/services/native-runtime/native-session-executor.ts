@@ -59,8 +59,8 @@ import { environmentTaskOperationSchema, environmentTaskResultSchema } from "@pa
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
 import { recordNativeRunnerLaunchIntent, readNativeRunnerLaunchIntent, nativeRunnerLaunchMatchesPublication, reconcileNativeRunnerLaunchIntent,
-  recordNativeRemoteRunnerLaunchIntent, readNativeRemoteRunnerLaunchIntent } from "./native-runner-launch-intent.js";
-import { launchNativeRemoteRunnerOnce, readNativeRemoteLaunchReceipt, type NativeRemoteLaunchIntent } from "./native-remote-launch-handoff.js";
+  recordNativeRemoteRunnerLaunchIntent, readNativeRemoteRunnerLaunchIntent, reconcileNativeRemoteRunnerLaunchIntent } from "./native-runner-launch-intent.js";
+import { launchNativeRemoteRunnerOnce, NativeRemoteLaunchHandoffError, type NativeRemoteLaunchIntent } from "./native-remote-launch-handoff.js";
 import { readNativePreparationPublication } from "./native-runner-checkpoint.js";
 import { nativePreparationClaimNeverLaunched } from "./native-preparation-handoff.js";
 import { restoreNativeWarmPreparationClaim } from "./native-warm-preparation-recovery.js";
@@ -8635,6 +8635,8 @@ export function nativeSessionFailureSourceCode(
   if (error instanceof NativePermissionDeclinedError) return "native_permission_declined";
   if (error instanceof NativeGovernedWaitSettlementPendingError) return "native_governed_wait_settlement_pending";
   if (error instanceof NativeProviderStateIncompatibleError) return NATIVE_PROVIDER_STATE_INCOMPATIBLE;
+  if (error instanceof NativeRemoteLaunchHandoffError && error.classification === NATIVE_PROVIDER_STATE_INCOMPATIBLE)
+    return NATIVE_PROVIDER_STATE_INCOMPATIBLE;
   if (error instanceof NativeProviderSideEffectPendingError) return NATIVE_PROVIDER_SIDE_EFFECT_PENDING;
   if (error instanceof NativeProviderTerminalFailure) {
     if (error.providerCode === "approval_required") return "native_provider_approval_required";
@@ -14606,18 +14608,14 @@ export async function verifyRemoteRunnerOrSettledExit(
         gt(nativeRunFinalizations.leaseExpiresAt, sql`clock_timestamp()`))).limit(1);
     if (!owner) throw new Error("native_runner_checkpoint_owner_lost");
     if (owner.reason === "durable_pre_session_launch_requires_exact_adoption") {
-      const saved = await readNativeRemoteRunnerLaunchIntent(scope.db, scope), target = input.target;
-      if (!saved || target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner
-        || saved.environmentLeaseId !== target.leaseId || nativeSha256(saved.intent.identity) !== nativeSha256(input.identity)) {
-        throw new Error("native_remote_launch_recovery_identity_mismatch");
+      const target = input.target;
+      if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner
+        || typeof target.leaseId !== "string" || typeof target.remoteCwd !== "string") {
+        throw new NativeRemoteLaunchHandoffError("native_remote_launch_identity_mismatch");
       }
-      const [lease] = await scope.db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
-        eq(environmentLeases.companyId, scope.companyId), eq(environmentLeases.id, saved.environmentLeaseId),
-        eq(environmentLeases.issueId, scope.issueId), eq(environmentLeases.heartbeatRunId, scope.runId),
-        eq(environmentLeases.providerLeaseId, saved.providerLeaseId), eq(environmentLeases.status, "active"),
-        isNull(environmentLeases.releasedAt), isNull(environmentLeases.cleanupStatus))).limit(1);
-      if (!lease) throw new Error("native_remote_launch_recovery_identity_mismatch");
-      await readNativeRemoteLaunchReceipt({ runner: target.runner, intent: saved.intent, deadline: recoveryDeadline });
+      await reconcileNativeRemoteRunnerLaunchIntent(scope.db, { ...scope, environmentLeaseId: target.leaseId,
+        providerLeaseId: target.sandboxLeaseAcquisition?.providerLeaseId, remoteCwd: target.remoteCwd,
+        identity: input.identity, runner: target.runner, deadline: recoveryDeadline });
     }
   }
   try {
@@ -15408,6 +15406,8 @@ async function createRunnerdBackendWithinSessionClaim(
   }
   let durableState: ReturnType<typeof readDurableState> | undefined;
   let pluginTaskOwner: ReturnType<typeof preparePluginTaskOwner> | undefined;
+  const genericRecovery = await verifyGenericWarmAttachmentRestart(input);
+  let genericRunnerState: Record<string, unknown> | undefined;
   const earlyPluginTaskOwner = pluginTask && remoteTarget?.transport === "sandbox" && input.beginRetainedRunAttachment
     && input.retainedPluginTaskOwner && !input.remoteWarmRecovery && !input.restartRecovery
     ? pluginTaskOwner = preparePluginTaskOwner().then(prepared => { input.beginRetainedRunAttachment!(); return prepared; })
@@ -15493,8 +15493,6 @@ async function createRunnerdBackendWithinSessionClaim(
     throw error;
   }
   const { root, durableIdentity, durableBinding } = durableState ??= readDurableState();
-  const genericRecovery = await verifyGenericWarmAttachmentRestart(input);
-  let genericRunnerState: Record<string, unknown> | undefined;
   const stagedRecovery = input.restartRecovery?.kind === "reattach_remote_runner"
     ? await verifyStagedAttachmentRestart(input) : null;
   const retainedSystemInstructions = input.restartRecovery?.kind === "reattach_remote_runner"

@@ -67,8 +67,9 @@ describe("shared Runner execution driver", () => {
       runId: "run-a", turnId: "turn-a", itemId: "item-a" };
     const targetIdentity = { ...sourceIdentity, runId: "run-c", turnId: "turn-c", itemId: "item-c" };
     await driver.onStagedRunAttachment!(authority, { sourceIdentity, targetIdentity, templateDigest: `sha256:${"a".repeat(64)}` });
-    expect(transport.checkpointRegistration).toHaveBeenCalledExactlyOnceWith({ ...persistence,
-      binding: { companyId: binding.companyId, issueId: binding.issueId, runId: "run-c" } });
+    const registration = { ...persistence,
+      binding: { companyId: binding.companyId, issueId: binding.issueId, runId: "run-c" } };
+    expect(transport.checkpointRegistration.mock.calls).toEqual([[registration], [registration]]);
     expect(transport.checkpoint.mock.calls).toEqual([[authority, sourceIdentity], [authority, targetIdentity]]);
     expect(prepare).not.toHaveBeenCalled();
     expect(transport.register).not.toHaveBeenCalled();
