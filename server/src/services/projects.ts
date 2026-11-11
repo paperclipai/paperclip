@@ -1116,7 +1116,9 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
       await notifyStatusCardIssueChange(tx, project.companyId);
       const [row] = await tx.delete(projects).where(eq(projects.id, id)).returning();
-      return row ? { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) } : null;
+      if (!row) return null;
+      const { legacyEnvironmentId: _legacyEnvironmentId, ...publicProject } = row;
+      return { ...publicProject, urlKey: deriveProjectUrlKey(row.name, row.id) };
     }),
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {

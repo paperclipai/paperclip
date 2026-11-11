@@ -51,7 +51,9 @@ describePostgres("project environment rolling migration", () => {
   it("preserves committed old-writer values and gives concurrent old readers an unbroken column", async () => {
     const { environmentIds, projectIds } = await prepare();
     const writer = postgres(database.connectionString, { max: 1, onnotice: () => {} });
-    const reader = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    const readerUrl = new URL(database.connectionString);
+    readerUrl.searchParams.set("application_name", "project-column-overlap-reader");
+    const reader = postgres(readerUrl.toString(), { max: 1, onnotice: () => {} });
     const migrationUrl = new URL(database.connectionString);
     migrationUrl.searchParams.set("application_name", "project-column-overlap-migrator");
     let migration: Promise<void> | undefined;
@@ -66,6 +68,11 @@ describePostgres("project environment rolling migration", () => {
           AND a.application_name = 'project-column-overlap-migrator') AS waiting`)[0]?.waiting,
       { timeout: 10_000 }).toBe(true);
       read = reader`SELECT id, environment_id FROM projects ORDER BY id`.then((result) => Array.from(result));
+      await expect.poll(async () => (await sql`SELECT EXISTS (
+        SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+        WHERE l.relation = 'projects'::regclass AND l.mode = 'AccessShareLock' AND NOT l.granted
+          AND a.application_name = 'project-column-overlap-reader') AS waiting`)[0]?.waiting,
+      { timeout: 10_000 }).toBe(true);
       const before = Array.from(await writer`SELECT id, environment_id FROM projects ORDER BY id`);
       await writer`COMMIT`;
       await migration;
