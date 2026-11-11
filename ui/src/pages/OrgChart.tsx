@@ -654,13 +654,13 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
                       style={{ backgroundColor: dotColor }}
                     />
                   </div>
-                  {/* Name + role + adapter type */}
+                  {/* Title (or role) + name + adapter type, in the agent page header order */}
                   <div className="flex flex-col items-start min-w-0 flex-1">
                     <span className="text-sm font-semibold text-foreground leading-tight">
-                      {node.name}
+                      {agent?.title || roleLabel(node.role)}
                     </span>
                     <span className="text-(length:--text-micro) text-muted-foreground leading-tight mt-0.5">
-                      {agent?.title ?? roleLabel(node.role)}
+                      {node.name}
                     </span>
                     {agent && (
                       <span className="text-(length:--text-nano) text-muted-foreground/60 font-mono leading-tight mt-1">
