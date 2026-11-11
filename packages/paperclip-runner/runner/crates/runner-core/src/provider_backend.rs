@@ -6679,7 +6679,10 @@ mod tests {
             use std::io::{BufRead, BufReader};
             use std::os::unix::process::CommandExt;
             // The leader starts a child in its own process group, reports the
-            // child pid, and is then killed and reaped. The child keeps the group.
+            // child pid, and is then killed and reaped. The child keeps the group
+            // as an orphan, which is held apart from a reap that must verify.
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            let orphans = crate::process_lineage::host_orphans::may_orphan();
             let mut leader = std::process::Command::new("sh")
                 .args(["-c", "sleep 30 & echo $!; wait"])
                 .process_group(0)
@@ -6706,6 +6709,13 @@ mod tests {
             let _ = std::process::Command::new("kill")
                 .args(["-KILL", &child.to_string()])
                 .status();
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                crate::process_lineage::host_orphans::wait_until_group_gone(
+                    i32::try_from(group).unwrap(),
+                );
+                drop(orphans);
+            }
             fs::remove_dir_all(directory).unwrap();
         }
     }
