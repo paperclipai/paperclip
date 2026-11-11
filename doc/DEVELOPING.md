@@ -5158,11 +5158,15 @@ lease and save baseline remain unchanged; current canonical files are never
 uploaded over the retained execution. Remote collection and cleanup serialize
 through Postgres across controller homes. A missing remote collector retains a
 pending save instead of treating an empty local cache as the agent's files.
-When a native run finds another operation on the same agent's directory
-already holding that lock, the run does not fail: it waits on the same run,
-retrying 5 to 15 seconds later through the native same-run retry schedule,
-without spending a retry attempt. After 30 such deferrals the run follows the
-normal failure path.
+A run whose instruction preparation finds another operation on the same
+agent's directory holding that lock does not fail. Before native admission it
+is cancelled as an expected wait and a `agent_directory_busy` retry is
+scheduled 5 to 15 seconds later; this lane spends no failure retries and stops
+after 30 attempts. A native run resuming on its own saved state instead stays
+on the same run and is rescheduled through the same-run retry schedule; its
+count is kept on the run's context so a resume claim does not reset it, and a
+Stop, a lost lease or a moved task leave it to normal settlement. A busy lock
+met while collecting files after a turn is not deferred this way.
 
 ## Cloud startup configuration
 

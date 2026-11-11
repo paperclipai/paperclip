@@ -1,4 +1,5 @@
 import { runOwnerFenceHeldSql } from "../remote-workspace-writer-hold.js";
+import { AGENT_DIRECTORY_BUSY_ERROR_CODE, AGENT_DIRECTORY_BUSY_MAX_DEFERRALS, AGENT_DIRECTORY_BUSY_RETRY_REASON, AGENT_DIRECTORY_BUSY_RETRY_WAKE_REASON, agentDirectoryBusyRetryDelayMs, type AgentDirectoryPreparationDeferral } from "./agent-directory-busy.js";
 import { isInterruptedNativePreparation } from "../cancelled-native-startup.js";
 import { isPreDispatchExecutionWaitVerified } from "../pre-dispatch-execution-wait.js";
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
@@ -1594,6 +1595,55 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     }
   }
 
+  async function finalizeAgentDirectoryBusyDeferral(
+    run: typeof heartbeatRuns.$inferSelect,
+    deferral: AgentDirectoryPreparationDeferral,
+  ): Promise<boolean> {
+    if (executionRetryAttemptCount(run, AGENT_DIRECTORY_BUSY_RETRY_REASON) >= AGENT_DIRECTORY_BUSY_MAX_DEFERRALS) return false;
+    const now = new Date();
+    const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {
+      error: deferral.message, errorCode: AGENT_DIRECTORY_BUSY_ERROR_CODE, finishedAt: now,
+      resultJson: {
+        executionRecovery: { kind: "agent_directory_wait", providerWorkStarted: false },
+        cancellation: {
+          source: "control_plane",
+          expected: true,
+          initiator: { type: "system" },
+          reason: "Waiting for another run of this agent to finish with its files",
+          recordedAt: now.toISOString(),
+        },
+      },
+    });
+    if (!cancelled.updated) return true;
+    await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: now, error: deferral.message }).catch(() => undefined);
+    const cancelledRun = cancelled.run ?? await getRun(run.id);
+    const agent = await getAgent(run.agentId);
+    let scheduled = false;
+    try {
+      if (cancelledRun && agent) {
+        const retry = await scheduleBoundedRetryForRun(cancelledRun, agent, {
+          now, retryReason: AGENT_DIRECTORY_BUSY_RETRY_REASON, wakeReason: AGENT_DIRECTORY_BUSY_RETRY_WAKE_REASON,
+          maxAttempts: AGENT_DIRECTORY_BUSY_MAX_DEFERRALS,
+          delayMs: agentDirectoryBusyRetryDelayMs(),
+        });
+        scheduled = retry.outcome === "scheduled";
+        await appendRunEvent(cancelledRun, {
+          eventType: "lifecycle", stream: "system", level: "info",
+          message: scheduled ? "Another run of this agent is still using its files. This task will continue automatically."
+            : "Another run of this agent is still using its files, and this task could not be rescheduled.",
+          payload: { retryScheduled: scheduled },
+        });
+      }
+    } finally {
+      try {
+        if (cancelledRun && !scheduled) await releaseIssueExecutionAndPromote(cancelledRun);
+      } finally {
+        await finalizeAgentStatus(run.agentId, "cancelled", null, { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) });
+      }
+    }
+    return true;
+  }
+
   // The wait applies only while the task keeps the workspace binding it had
   // when it deferred; run dispatch compares the same binding before parking.
   async function readWorkspaceBusyWaitForRetry(
@@ -2057,6 +2107,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     findExecutionWorkspaceHolder,
     finalizeAiConnectionBusyDeferral,
     finalizeWorkspaceBusyDeferral,
+    finalizeAgentDirectoryBusyDeferral,
     promoteDueScheduledRetries,
     nextScheduledRetryAt,
     retryScheduledRetryNow,

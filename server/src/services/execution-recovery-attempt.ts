@@ -14,7 +14,7 @@ export const INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS = PROVIDER_ATTEMPT_CREDI
 
 /** Retry lanes that keep their own counter and never spend failures. */
 const UNCHARGED_RETRY_LANES: ReadonlySet<string> = new Set([
-  "workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", RUNNER_REVISION_WAIT_RETRY_REASON,
+  "workspace_busy", "ai_connection_busy", "ai_connection_pool_wait", "agent_directory_busy", RUNNER_REVISION_WAIT_RETRY_REASON,
   INTERRUPTED_PREPARATION_RETRY_REASON, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON,
 ]);
 

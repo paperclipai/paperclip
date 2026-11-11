@@ -8,6 +8,7 @@ export function isPreDispatchResourceWait(run: Pick<typeof heartbeatRuns.$inferS
   const evidence = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
   return run.runtimeMode === "legacy" && run.status === "cancelled" && evidence?.providerWorkStarted === false &&
     (run.errorCode === "workspace_busy" && evidence.kind === "workspace_wait" ||
+      run.errorCode === "agent_directory_busy" && evidence.kind === "agent_directory_wait" ||
       ["ai_connection_busy", "ai_connection_pool_exhausted", "provider_limit_wait"].includes(run.errorCode ?? "") &&
       evidence.kind === "ai_connection_wait");
 }
