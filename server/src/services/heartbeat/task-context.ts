@@ -17,6 +17,7 @@ import type { TrustPresetResolution } from "../trust-preset-resolver.js";
 import { liveVoiceExecutionGuidance } from "../voice/voice-execution-guidance.js";
 import { buildPaperclipWakePayload, ConfigurationIncompleteFailure, readHeartbeatWakeComments, PAPERCLIP_WAKE_PAYLOAD_KEY, type createHeartbeatRunPreparation } from "./run-preparation.js";
 import { buildPaperclipTaskMarkdown } from "./task-markdown.js";
+import { withCurrentDependencyBlockers } from "./dependency-blockers.js";
 import { deriveCommentId, extractWakeCommentIds } from "../../modules/run-dispatch/index.js";
 import { workspacePreferenceService } from "../workspace-preferences.js";
 
@@ -40,7 +41,7 @@ export interface HeartbeatTaskContextInput {
     experimentalInstanceSettings: { enableSimplifiedEnglishInteractions?: boolean; enableCases?: boolean; enableConferenceRoomChat?: boolean; enableStatusCards?: boolean };
   };
   services: {
-    issuesSvc: Pick<ReturnType<typeof issueService>, "getAncestors">;
+    issuesSvc: Pick<ReturnType<typeof issueService>, "getAncestors" | "listDependencyReadiness">;
     getPinnedSkillTestContext: RunPreparation["getPinnedSkillTestContext"];
   };
 }
@@ -152,7 +153,8 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     companyId: agent.companyId,
     agentId: agent.id,
     runId: run.id,
-    contextSnapshot: context,
+    contextSnapshot: await withCurrentDependencyBlockers(db, issuesSvc, {
+      companyId: agent.companyId, issueId: issueRef?.id ?? null, context }),
     wakeCommentRows,
     continuationSummary,
     issueSummary: issueRef

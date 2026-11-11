@@ -1483,8 +1483,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   }, 40_000);
 
   it.each([
-    { name: "drops dependency-blocked context from a queued run whose blockers resolved before it starts", openBlocker: false },
-    { name: "refreshes dependency-blocked context to the blockers that remain when a queued run starts", openBlocker: true },
+    { name: "shows no unresolved blocker in the wake of a queued run whose blockers resolved before it starts", openBlocker: false },
+    { name: "shows only the remaining blockers in the wake of a queued run whose blockers changed before it starts", openBlocker: true },
   ])("$name", async ({ openBlocker }) => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -1551,21 +1551,19 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(run?.status).toBe("succeeded");
     for (const context of [calls[0][0].context, run!.contextSnapshot as Record<string, unknown>]) {
-      expect(context).toMatchObject({ issueId: parentId, wakeReason });
+      expect(context).toMatchObject({ issueId: parentId, wakeReason, dependencyBlockedInteraction: true });
+      const wake = context.paperclipWake as Record<string, unknown>;
       if (openBlocker) {
-        expect(context).toMatchObject({
-          dependencyBlockedInteraction: true,
-          unresolvedBlockerIssueIds: [openBlockerId],
-          unresolvedBlockerCount: 1,
-        });
-        expect(context.unresolvedBlockerSummaries).toEqual([
+        expect(wake).toMatchObject({ dependencyBlockedInteraction: true, unresolvedBlockerIssueIds: [openBlockerId] });
+        expect(wake.unresolvedBlockerSummaries).toEqual([
           expect.objectContaining({ id: openBlockerId, title: "Security review", status: "todo" }),
         ]);
       } else {
-        expect(context).not.toHaveProperty("dependencyBlockedInteraction");
-        expect(context).not.toHaveProperty("unresolvedBlockerIssueIds");
-        expect(context).not.toHaveProperty("unresolvedBlockerCount");
-        expect(context).not.toHaveProperty("unresolvedBlockerSummaries");
+        expect(wake).toMatchObject({
+          dependencyBlockedInteraction: false,
+          unresolvedBlockerIssueIds: [],
+          unresolvedBlockerSummaries: [],
+        });
       }
     }
   }, 40_000);

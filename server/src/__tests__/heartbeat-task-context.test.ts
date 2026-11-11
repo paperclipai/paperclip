@@ -171,7 +171,7 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
     await prepareHeartbeatTaskContext(db, {
       run, agent, task: { issueRef, issueContext: null, context, taskSession: null },
       policy: { trustPreset: { kind: "standard" }, experimentalInstanceSettings: {} },
-      services: { issuesSvc: { getAncestors: async () => [] }, getPinnedSkillTestContext: async () => null },
+      services: { issuesSvc: { getAncestors: async () => [], listDependencyReadiness: async () => new Map() }, getPinnedSkillTestContext: async () => null },
     });
     expect(context.paperclipWakeComment).toMatchObject({ id: commentId, body: "", presentation: null, metadata: null });
     expect(context.paperclipWake).toMatchObject({ comments: [{ id: commentId, body: "", presentation: null, metadata: null }] });
@@ -189,7 +189,7 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
     const preparing = prepareHeartbeatTaskContext(db, {
       run, agent, task: { issueRef, issueContext: null, context, taskSession: null },
       policy: { recovering, trustPreset: { kind: "standard" }, experimentalInstanceSettings: {} },
-      services: { issuesSvc: { getAncestors: async () => [] }, getPinnedSkillTestContext: pinned },
+      services: { issuesSvc: { getAncestors: async () => [], listDependencyReadiness: async () => new Map() }, getPinnedSkillTestContext: pinned },
     });
     if (recovering) await expect(preparing).rejects.toThrow("skill test's saved version is unavailable");
     else await preparing;
@@ -210,7 +210,7 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
     await prepareHeartbeatTaskContext(db, {
       run, agent, task: { issueRef: null, issueContext: null, context, taskSession: null },
       policy: { trustPreset: { kind: "standard" }, experimentalInstanceSettings: {} },
-      services: { issuesSvc: { getAncestors: async () => [] }, getPinnedSkillTestContext: async () => null },
+      services: { issuesSvc: { getAncestors: async () => [], listDependencyReadiness: async () => new Map() }, getPinnedSkillTestContext: async () => null },
     });
     expect(JSON.stringify(context.paperclipWake)).not.toContain("other issue canary");
     expect(context.paperclipWakeComment).toBeUndefined();

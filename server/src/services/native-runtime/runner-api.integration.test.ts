@@ -651,7 +651,7 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     await prepareHeartbeatTaskContext(server.db, { run, agent,
       task: { issueRef: issue, issueContext: null, context, taskSession: null },
       policy: { recovering: true, trustPreset: { kind: "standard" }, experimentalInstanceSettings: {} },
-      services: { issuesSvc: { getAncestors: async () => [] },
+      services: { issuesSvc: { getAncestors: async () => [], listDependencyReadiness: async () => new Map() },
         getPinnedSkillTestContext: createHeartbeatRunPreparation(server.db).getPinnedSkillTestContext },
     });
     await server.db.update(heartbeatRuns).set({ contextSnapshot: context }).where(eq(heartbeatRuns.id, fixture.runId));
