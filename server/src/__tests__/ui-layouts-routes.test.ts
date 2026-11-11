@@ -37,6 +37,12 @@ const BOARD_ACTOR = {
   memberships: [{ companyId: "company-1", status: "active", membershipRole: "owner" }],
 };
 
+const VIEWER_ACTOR = {
+  ...BOARD_ACTOR,
+  userId: "viewer-1",
+  memberships: [{ companyId: "company-1", status: "active", membershipRole: "viewer" }],
+};
+
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
 
 const GRAPH_LAYOUT = {
@@ -157,6 +163,48 @@ describe("ui layout routes", () => {
     expect(mockUiLayoutService.upsert).not.toHaveBeenCalled();
   });
 
+  it("lets a viewer read, save and reset their own layout", async () => {
+    const app = await createApp(VIEWER_ACTOR);
+    const read = await request(app).get("/api/companies/company-1/ui-layouts/agent_graph/me");
+    const write = await request(app)
+      .put("/api/companies/company-1/ui-layouts/dashboard/me")
+      .send({ layout: DASHBOARD_LAYOUT });
+    const reset = await request(app).delete("/api/companies/company-1/ui-layouts/dashboard/me");
+    expect(read.status).toBe(200);
+    expect(write.status).toBe(200);
+    expect(reset.status).toBe(200);
+    expect(mockUiLayoutService.get).toHaveBeenCalledWith("company-1", "viewer-1", "agent_graph");
+    expect(mockUiLayoutService.upsert).toHaveBeenCalledWith("company-1", "viewer-1", "dashboard", {
+      layout: DASHBOARD_LAYOUT,
+      schemaVersion: 1,
+    });
+    expect(mockUiLayoutService.remove).toHaveBeenCalledWith("company-1", "viewer-1", "dashboard");
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("rejects a viewer of another company and a member whose access is not active", async () => {
+    const outsider = await createApp(VIEWER_ACTOR);
+    const outsiderWrite = await request(outsider)
+      .put("/api/companies/company-2/ui-layouts/dashboard/me")
+      .send({ layout: DASHBOARD_LAYOUT });
+    const outsiderReset = await request(outsider).delete("/api/companies/company-2/ui-layouts/dashboard/me");
+    const suspended = await createApp({
+      ...VIEWER_ACTOR,
+      memberships: [{ companyId: "company-1", status: "suspended", membershipRole: "viewer" }],
+    });
+    const suspendedRead = await request(suspended).get("/api/companies/company-1/ui-layouts/dashboard/me");
+    const suspendedWrite = await request(suspended)
+      .put("/api/companies/company-1/ui-layouts/dashboard/me")
+      .send({ layout: DASHBOARD_LAYOUT });
+    expect(outsiderWrite.status).toBe(403);
+    expect(outsiderReset.status).toBe(403);
+    expect(suspendedRead.status).toBe(403);
+    expect(suspendedWrite.status).toBe(403);
+    expect(mockUiLayoutService.get).not.toHaveBeenCalled();
+    expect(mockUiLayoutService.upsert).not.toHaveBeenCalled();
+    expect(mockUiLayoutService.remove).not.toHaveBeenCalled();
+  });
+
   it("rejects agent callers", async () => {
     const app = await createApp({
       type: "agent",
@@ -169,9 +217,13 @@ describe("ui layout routes", () => {
     const write = await request(app)
       .put("/api/companies/company-1/ui-layouts/agent_graph/me")
       .send({ layout: GRAPH_LAYOUT });
+    const reset = await request(app).delete("/api/companies/company-1/ui-layouts/agent_graph/me");
     expect(read.status).toBe(403);
     expect(write.status).toBe(403);
+    expect(reset.status).toBe(403);
+    expect(mockUiLayoutService.get).not.toHaveBeenCalled();
     expect(mockUiLayoutService.upsert).not.toHaveBeenCalled();
+    expect(mockUiLayoutService.remove).not.toHaveBeenCalled();
   });
 
   it("resets the caller's layout without a company activity entry", async () => {

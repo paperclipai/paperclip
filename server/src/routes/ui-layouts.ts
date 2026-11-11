@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from "express";
+import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   parseUiLayoutForSurface,
@@ -6,16 +6,18 @@ import {
   upsertUiLayoutSchema,
   type UiLayoutSurface,
 } from "@paperclipai/shared";
-import { badRequest, notFound } from "../errors.js";
+import { badRequest, forbidden, notFound } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { uiLayoutService } from "../services/index.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoard, hasCompanyAccess } from "./authz.js";
 
-function requireBoardUserId(req: Request, res: Response): string | null {
+function requireLayoutOwner(req: Request, companyId: string): string {
   assertBoard(req);
-  if (!req.actor.userId) {
-    res.status(403).json({ error: "Board user context required" });
-    return null;
+  if (!hasCompanyAccess(req, companyId)) throw forbidden("User does not have access to this company");
+  if (!req.actor.userId) throw forbidden("Board user access required");
+  if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin
+    && !req.actor.memberships?.some((member) => member.companyId === companyId && member.status === "active")) {
+    throw forbidden("User does not have active company access");
   }
   return req.actor.userId;
 }
@@ -32,9 +34,7 @@ export function uiLayoutRoutes(db: Db) {
 
   router.get("/companies/:companyId/ui-layouts/:surface/me", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const userId = requireBoardUserId(req, res);
-    if (!userId) return;
+    const userId = requireLayoutOwner(req, companyId);
     res.json(await svc.get(companyId, userId, requireSurface(req)));
   });
 
@@ -43,9 +43,7 @@ export function uiLayoutRoutes(db: Db) {
     validate(upsertUiLayoutSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertCompanyAccess(req, companyId);
-      const userId = requireBoardUserId(req, res);
-      if (!userId) return;
+      const userId = requireLayoutOwner(req, companyId);
       const surface = requireSurface(req);
 
       const parsed = parseUiLayoutForSurface(surface, req.body.layout);
@@ -61,9 +59,7 @@ export function uiLayoutRoutes(db: Db) {
 
   router.delete("/companies/:companyId/ui-layouts/:surface/me", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const userId = requireBoardUserId(req, res);
-    if (!userId) return;
+    const userId = requireLayoutOwner(req, companyId);
     const surface = requireSurface(req);
 
     const result = await svc.remove(companyId, userId, surface);
