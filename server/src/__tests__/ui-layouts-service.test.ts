@@ -44,13 +44,15 @@ describeDatabase("ui layout service", () => {
 
   it("upserts one row per company, user and surface", async () => {
     const svc = uiLayoutService(db);
-    await svc.upsert(companyA, "user-1", "dashboard", { layout: { schemaVersion: 1, widgets: [] }, schemaVersion: 1 });
-    const second = await svc.upsert(companyA, "user-1", "dashboard", {
+    const first = await svc.upsert(companyA, "user-1", "dashboard", { layout: { schemaVersion: 1, widgets: [] }, schemaVersion: 1 });
+    const { preference: second, created: secondCreated } = await svc.upsert(companyA, "user-1", "dashboard", {
       layout: { schemaVersion: 1, widgets: [{ instanceId: "a" }] },
       schemaVersion: 1,
     });
     await svc.upsert(companyA, "user-1", "agent_graph", { layout: { schemaVersion: 1, direction: "LR" }, schemaVersion: 1 });
 
+    expect(first.created).toBe(true);
+    expect(secondCreated).toBe(false);
     expect(second.layout).toEqual({ schemaVersion: 1, widgets: [{ instanceId: "a" }] });
     expect(second.updatedAt).toBeInstanceOf(Date);
     const rows = await db.select().from(companyUserUiLayouts).where(eq(companyUserUiLayouts.companyId, companyA));
@@ -69,8 +71,12 @@ describeDatabase("ui layout service", () => {
 
   it("removes only the caller's surface and cascades with the company", async () => {
     const svc = uiLayoutService(db);
-    await svc.remove(companyA, "user-1", "dashboard");
+    expect((await svc.remove(companyA, "user-1", "dashboard")).removed).toBe(true);
+    expect((await svc.remove(companyA, "user-1", "dashboard")).removed).toBe(false);
     expect((await svc.get(companyA, "user-1", "dashboard")).layout).toBeNull();
+    const again = await svc.upsert(companyA, "user-1", "dashboard", { layout: { schemaVersion: 1, widgets: [] }, schemaVersion: 1 });
+    expect(again.created).toBe(true);
+    expect((await svc.remove(companyA, "user-1", "dashboard")).removed).toBe(true);
     expect((await svc.get(companyA, "user-1", "agent_graph")).layout).not.toBeNull();
     expect((await svc.get(companyA, "user-2", "dashboard")).layout).not.toBeNull();
 

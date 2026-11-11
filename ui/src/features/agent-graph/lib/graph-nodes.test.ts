@@ -45,6 +45,25 @@ describe("syncNodes with 250 agents", () => {
     expect(edges).toHaveLength(249);
   });
 
+  it("keeps the position of a node that is being dragged when live data changes", () => {
+    const dragged = roster[7]!;
+    const idle = roster[9]!;
+    const moving = nodes.map((node) => {
+      if (node.id === dragged.id) return { ...node, dragging: true, position: { x: 4_321, y: 1_234 } };
+      if (node.id === idle.id) return { ...node, position: { x: 9_999, y: 9_999 } };
+      return node;
+    });
+    const next = syncNodes(moving, { ...base, liveAgentIds: new Set([dragged.id]) });
+    const draggedNode = next.find((node) => node.id === dragged.id)!;
+    expect(draggedNode.position).toEqual({ x: 4_321, y: 1_234 });
+    expect(draggedNode.dragging).toBe(true);
+    expect(draggedNode.data).toMatchObject({ live: true });
+    expect(next.find((node) => node.id === idle.id)!.position).toEqual(autoPositions.get(idle.id));
+
+    const unchanged = syncNodes(moving, { ...base, agents: roster.map((agent) => ({ ...agent })) });
+    expect(unchanged.find((node) => node.id === dragged.id)).toBe(moving.find((node) => node.id === dragged.id));
+  });
+
   it("returns the same arrays when nothing changed, even with a refetched roster", () => {
     const refetched = roster.map((agent) => ({ ...agent }));
     expect(syncNodes(nodes, { ...base, agents: refetched })).toBe(nodes);

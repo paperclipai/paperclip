@@ -17,7 +17,7 @@ import {
 export type GraphHistoryEntry = HistoryEntry<AgentGraphLayout>;
 
 export function useAgentGraphDocument(companyId: string) {
-  const { stored, isLoaded, save, stage, saveState, saveError, retrySave, loadError, blocked, allowOverwrite, retryLoad } = useUiLayout({
+  const { stored, isLoaded, save, stage, saveState, saveError, retrySave, loadError, blocked, allowOverwrite, retryLoad, owner } = useUiLayout({
     companyId,
     surface: "agent_graph",
     resolve: resolveAgentGraphLayout,
@@ -30,22 +30,25 @@ export function useAgentGraphDocument(companyId: string) {
   const [restoreCount, setRestoreCount] = useState(0);
 
   const wasBlocked = useRef(false);
+  const loadedOwner = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isLoaded) return;
     const recovered = wasBlocked.current && blocked === null && stored !== null;
     wasBlocked.current = blocked !== null;
-    if (layoutRef.current && !recovered) return;
+    const ownerChanged = loadedOwner.current !== null && loadedOwner.current !== owner;
+    loadedOwner.current = owner;
+    if (layoutRef.current && !recovered && !ownerChanged) return;
     hadStoredLayout.current = stored !== null;
     const initial = stored ?? defaultAgentGraphLayout();
     layoutRef.current = initial;
     setLayout(initial);
-    if (recovered) {
+    if (recovered || ownerChanged) {
       setRestoreCount((count) => count + 1);
       historyRef.current = emptyHistory();
       setHistory(historyRef.current);
     }
-  }, [isLoaded, stored, blocked]);
+  }, [isLoaded, stored, blocked, owner]);
 
   const write = useCallback(
     (next: AgentGraphLayout) => {
@@ -160,7 +163,7 @@ export function useAgentGraphDocument(companyId: string) {
     restoreCount,
     loadError,
     blocked,
-    allowOverwrite,
+    allowOverwrite: useCallback(() => allowOverwrite(layoutRef.current ?? undefined), [allowOverwrite]),
     retryLoad,
     hadStoredLayout: hadStoredLayout.current,
   };

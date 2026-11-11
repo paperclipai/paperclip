@@ -75,16 +75,12 @@ describe("ui layout routes", () => {
       updatedAt: null,
     });
     mockUiLayoutService.upsert.mockImplementation(async (_companyId, _userId, surface, input) => ({
-      surface,
-      schemaVersion: input.schemaVersion,
-      layout: input.layout,
-      updatedAt: null,
+      created: false,
+      preference: { surface, schemaVersion: input.schemaVersion, layout: input.layout, updatedAt: null },
     }));
     mockUiLayoutService.remove.mockImplementation(async (_companyId, _userId, surface) => ({
-      surface,
-      schemaVersion: null,
-      layout: null,
-      updatedAt: null,
+      removed: false,
+      preference: { surface, schemaVersion: null, layout: null, updatedAt: null },
     }));
   });
 
@@ -96,7 +92,7 @@ describe("ui layout routes", () => {
     expect(mockUiLayoutService.get).toHaveBeenCalledWith("company-1", "user-1", "agent_graph");
   });
 
-  it("saves a valid layout for the caller only and keeps this personal preference out of the company activity log", async () => {
+  it("saves a valid layout for the caller only and writes no activity entry when the layout already exists", async () => {
     const app = await createApp(BOARD_ACTOR);
     const res = await request(app)
       .put("/api/companies/company-1/ui-layouts/dashboard/me")
@@ -226,7 +222,58 @@ describe("ui layout routes", () => {
     expect(mockUiLayoutService.remove).not.toHaveBeenCalled();
   });
 
-  it("resets the caller's layout without a company activity entry", async () => {
+  it("writes one activity entry for the first save of a layout and none for the saves that follow", async () => {
+    const app = await createApp(BOARD_ACTOR);
+    mockUiLayoutService.upsert.mockResolvedValueOnce({
+      created: true,
+      preference: { surface: "dashboard", schemaVersion: 1, layout: DASHBOARD_LAYOUT, updatedAt: null },
+    });
+    const first = await request(app)
+      .put("/api/companies/company-1/ui-layouts/dashboard/me")
+      .send({ layout: DASHBOARD_LAYOUT });
+    expect(first.status).toBe(200);
+    expect(first.body).toEqual({ surface: "dashboard", schemaVersion: 1, layout: DASHBOARD_LAYOUT, updatedAt: null });
+    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+    expect(mockLogActivity.mock.calls[0]![1]).toMatchObject({
+      companyId: "company-1",
+      actorType: "user",
+      actorId: "user-1",
+      action: "ui_layout.created",
+      entityType: "company",
+      entityId: "company-1",
+      details: { userId: "user-1", surface: "dashboard" },
+    });
+
+    const second = await request(app)
+      .put("/api/companies/company-1/ui-layouts/dashboard/me")
+      .send({ layout: DASHBOARD_LAYOUT });
+    expect(second.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes one activity entry for a reset that removes a layout and none when nothing was saved", async () => {
+    const app = await createApp(BOARD_ACTOR);
+    mockUiLayoutService.remove.mockResolvedValueOnce({
+      removed: true,
+      preference: { surface: "agent_graph", schemaVersion: null, layout: null, updatedAt: null },
+    });
+    const res = await request(app).delete("/api/companies/company-1/ui-layouts/agent_graph/me");
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+    expect(mockLogActivity.mock.calls[0]![1]).toMatchObject({
+      action: "ui_layout.reset",
+      entityType: "company",
+      entityId: "company-1",
+      details: { userId: "user-1", surface: "agent_graph" },
+    });
+    expect(JSON.stringify(mockLogActivity.mock.calls[0]![1])).not.toContain("positions");
+
+    const again = await request(app).delete("/api/companies/company-1/ui-layouts/agent_graph/me");
+    expect(again.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it("resets the caller's layout and answers with an empty preference", async () => {
     const app = await createApp(BOARD_ACTOR);
     const res = await request(app).delete("/api/companies/company-1/ui-layouts/dashboard/me");
     expect(res.status).toBe(200);

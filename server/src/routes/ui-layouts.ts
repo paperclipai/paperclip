@@ -8,8 +8,8 @@ import {
 } from "@paperclipai/shared";
 import { badRequest, forbidden, notFound } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { uiLayoutService } from "../services/index.js";
-import { assertBoard, hasCompanyAccess } from "./authz.js";
+import { logActivity, uiLayoutService } from "../services/index.js";
+import { assertBoard, getActorInfo, hasCompanyAccess } from "./authz.js";
 
 function requireLayoutOwner(req: Request, companyId: string): string {
   assertBoard(req);
@@ -32,6 +32,28 @@ export function uiLayoutRoutes(db: Db) {
   const router = Router();
   const svc = uiLayoutService(db);
 
+  async function logLayoutActivity(
+    req: Request,
+    companyId: string,
+    userId: string,
+    surface: UiLayoutSurface,
+    action: "ui_layout.created" | "ui_layout.reset",
+  ) {
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action,
+      entityType: "company",
+      entityId: companyId,
+      details: { userId, surface },
+    });
+  }
+
   router.get("/companies/:companyId/ui-layouts/:surface/me", async (req, res) => {
     const companyId = req.params.companyId as string;
     const userId = requireLayoutOwner(req, companyId);
@@ -49,11 +71,12 @@ export function uiLayoutRoutes(db: Db) {
       const parsed = parseUiLayoutForSurface(surface, req.body.layout);
       if (!parsed.ok) throw badRequest(parsed.error);
 
-      const result = await svc.upsert(companyId, userId, surface, {
+      const { preference, created } = await svc.upsert(companyId, userId, surface, {
         layout: parsed.layout as Record<string, unknown>,
         schemaVersion: parsed.schemaVersion,
       });
-      res.json(result);
+      if (created) await logLayoutActivity(req, companyId, userId, surface, "ui_layout.created");
+      res.json(preference);
     },
   );
 
@@ -62,8 +85,9 @@ export function uiLayoutRoutes(db: Db) {
     const userId = requireLayoutOwner(req, companyId);
     const surface = requireSurface(req);
 
-    const result = await svc.remove(companyId, userId, surface);
-    res.json(result);
+    const { preference, removed } = await svc.remove(companyId, userId, surface);
+    if (removed) await logLayoutActivity(req, companyId, userId, surface, "ui_layout.reset");
+    res.json(preference);
   });
 
   return router;
