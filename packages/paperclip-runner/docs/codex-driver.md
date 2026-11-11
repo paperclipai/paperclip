@@ -102,6 +102,10 @@ network namespace (`bwrap: loopback: Failed RTM_NEWADDR`), which made thread
 creation fail. Writes from commands and patches are still refused. When the
 controller disables network, the thread still starts, but bubblewrap must
 isolate the network, so planning commands fail closed in such a container.
+On the current Daytona image, bubblewrap also cannot map user IDs for
+planning commands (`bwrap: setting up uid map: Permission denied`), so shell
+commands fail closed there in every planning turn. The planning turn still
+reads files and writes its Plan through Codex and Paperclip tools.
 The broader read access matches what default-mode turns already have in the
 same sandbox, and the session context records `rootAccess: "read"` for these
 planning turns. Local and SSH planning keep the narrower profile that denies host
