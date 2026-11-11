@@ -92,7 +92,7 @@ export interface HeartbeatRunCompletionDependencies extends Pick<RunState,
     "finalizeIssueCommentPolicy" | "handleIssueReviewPathDisposition" | "handleRunLivenessContinuation" |
     "handleSuccessfulRunHandoff" | "updateRuntimeState">,
   Pick<ReturnType<typeof createHeartbeatRetries>,
-    "scheduleBoundedRetryForRun" | "scheduleInteractionContinuationInfrastructureRetryIfEligible" | "timerClaimWasFirstHeartbeat">,
+    "scheduleBoundedRetryForRun" | "scheduleInteractionContinuationInfrastructureRetryIfEligible" | "scheduleTransientSpawnLikeFailureRetryIfEligible" | "timerClaimWasFirstHeartbeat">,
   Pick<ReturnType<typeof createHeartbeatRunControl>, "releaseIssueExecutionAndPromote">,
   Pick<HeartbeatRetryDependencies, "finalizeAgentStatus">,
   Pick<ReturnType<typeof createHeartbeatQueue>, "enqueueWakeup"> {
@@ -417,6 +417,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     updateRuntimeState,
     scheduleBoundedRetryForRun,
     scheduleInteractionContinuationInfrastructureRetryIfEligible,
+    scheduleTransientSpawnLikeFailureRetryIfEligible,
     timerClaimWasFirstHeartbeat,
     releaseIssueExecutionAndPromote,
     finalizeAgentStatus,
@@ -1424,6 +1425,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           livenessRun,
           agent,
         );
+        if (fallbackRetry === null) {
+          fallbackRetry = await scheduleTransientSpawnLikeFailureRetryIfEligible(
+            livenessRun,
+            agent,
+          );
+        }
       }
       // Another retry that took over after a failed storage wait keeps the promise.
       await settleStorageWaitMessage(livenessRun, fallbackRetry?.outcome === "scheduled" ? fallbackRetry : storageWait, err);
@@ -1802,6 +1809,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
                 : scheduleBoundedRetryForRun(livenessRun, failedAgent)
             : scheduleNativePreDispatchRetry(livenessRun, failedAgent).then(nativeRetry => nativeRetry
               ?? scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent))
+              .then(fallbackRetry => fallbackRetry
+                ?? scheduleTransientSpawnLikeFailureRetryIfEligible(livenessRun, failedAgent))
           ).catch((retryError) => {
             logger.warn(
               { err: retryError, runId: livenessRun.id },

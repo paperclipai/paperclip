@@ -129,6 +129,7 @@ export {
   WorkspaceBusyDeferral,
   computeWorkspaceBusyRetryDelayMs,
   computeBoundedTransientHeartbeatRetrySchedule,
+  isSpawnLikeFailureMessage,
 } from "./heartbeat/retries.js";
 import {
   EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
@@ -1035,6 +1036,7 @@ export function heartbeatService(
     scheduleBoundedRetryForRun,
     timerClaimWasFirstHeartbeat,
     scheduleInteractionContinuationInfrastructureRetryIfEligible,
+    scheduleTransientSpawnLikeFailureRetryIfEligible,
     findSharedWorkspaceHolder,
     findExecutionWorkspaceHolder,
     finalizeAiConnectionBusyDeferral,
@@ -1043,6 +1045,7 @@ export function heartbeatService(
     nextScheduledRetryAt,
     retryScheduledRetryNow,
     scheduleBoundedRetry,
+    scheduleTransientSpawnLikeFailureRetry,
   } = createHeartbeatRetries(db, {
     hasCaseHandoffForRun: async (run) => Boolean(await pendingCaseHandoffForRun(db, run.id, run.companyId)),
     appendRunEvent,
@@ -1859,6 +1862,7 @@ export function heartbeatService(
     updateRuntimeState,
     scheduleBoundedRetryForRun,
     scheduleInteractionContinuationInfrastructureRetryIfEligible,
+    scheduleTransientSpawnLikeFailureRetryIfEligible,
     timerClaimWasFirstHeartbeat,
     releaseIssueExecutionAndPromote,
     finalizeAgentStatus,
@@ -4570,6 +4574,7 @@ export function heartbeatService(
     },
 
     scheduleBoundedRetry,
+    scheduleTransientSpawnLikeFailureRetry,
 
     reconcileStrandedAssignedIssues,
     recoverPendingSessionGoalActions,

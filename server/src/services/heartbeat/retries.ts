@@ -325,9 +325,11 @@ export function readTransientRecoveryContractFromRun(
     : null;
 }
 
-function isSpawnLikeFailureMessage(value: unknown) {
+export function isSpawnLikeFailureMessage(value: unknown) {
   if (typeof value !== "string") return false;
-  return /failed to start command|spawn\b|\bENOENT\b/i.test(value);
+  return /failed to start command|spawn\b|\bENOENT\b|not found in PATH/i.test(
+    value,
+  );
 }
 
 // A sandbox provider plugin's worker can be briefly down during its own
@@ -389,6 +391,32 @@ function isRetryableInteractionContinuationInfrastructureFailure(
     isSandboxProviderWorkerUnavailableFailureMessage(error) ||
     isSandboxProviderWorkerUnavailableFailureMessage(resultJson.errorMessage) ||
     isSandboxProviderWorkerUnavailableFailureMessage(resultJson.message)
+  );
+}
+
+// Same errorCode + spawn-like-message check as
+// isRetryableInteractionContinuationInfrastructureFailure, but without the
+// sandbox-provider-specific checks (out of scope here) and without the
+// non-adapter bypass codes (controller_lease_lost/process_lost/workspace
+// validation and friends already have their own dedicated retry lanes). Used
+// by an ordinary heartbeat, which never carries a resolved
+// interaction-continuation context, so it has no other retry path for this
+// failure class today.
+function isSpawnLikeAdapterOrSetupFailure(
+  run: Pick<
+    typeof heartbeatRuns.$inferSelect,
+    "error" | "errorCode" | "resultJson"
+  >,
+) {
+  if (run.errorCode !== "adapter_failed" && run.errorCode !== "setup_failed")
+    return false;
+
+  const resultJson = parseObject(run.resultJson);
+  const error = currentRunFailureText(run);
+  return (
+    isSpawnLikeFailureMessage(error) ||
+    isSpawnLikeFailureMessage(resultJson.errorMessage) ||
+    isSpawnLikeFailureMessage(resultJson.message)
   );
 }
 
@@ -1795,6 +1823,30 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     });
   }
 
+  // An ordinary heartbeat (wake source on_demand/manual/scheduled, no
+  // pending interaction) never satisfies isResolvedInteractionContinuationWakeContext,
+  // so scheduleInteractionContinuationInfrastructureRetryIfEligible always
+  // returns null for it today, even for a transient, spawn-like adapter or
+  // setup failure (binary missing from PATH, ENOENT, "failed to start
+  // command"). This gives that failure class the same bounded retry budget
+  // regardless of whether the failing run is resuming an interaction.
+  // Explicitly defers to the interaction-continuation path above when it
+  // applies, so the two never race a scheduleBoundedRetryForRun call on the
+  // same run.
+  async function scheduleTransientSpawnLikeFailureRetryIfEligible(
+    run: typeof heartbeatRuns.$inferSelect,
+    agent: typeof agents.$inferSelect,
+  ) {
+    if (await hasCaseHandoffForRun(run)) return null;
+    if (isResolvedInteractionContinuationWakeContext(run.contextSnapshot))
+      return null;
+    if (!isSpawnLikeAdapterOrSetupFailure(run)) return null;
+
+    return scheduleBoundedRetryForRun(run, agent, {
+      retryReason: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON,
+    });
+  }
+
   async function nextScheduledRetryAt() {
     return runDispatch.nextScheduledRetryAt({ cutoff: await getWorktreeExecutionCutoff() });
   }
@@ -2053,6 +2105,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     scheduleBoundedRetryForRun,
     timerClaimWasFirstHeartbeat,
     scheduleInteractionContinuationInfrastructureRetryIfEligible,
+    scheduleTransientSpawnLikeFailureRetryIfEligible,
     findSharedWorkspaceHolder,
     findExecutionWorkspaceHolder,
     finalizeAiConnectionBusyDeferral,
@@ -2077,6 +2130,14 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       const agent = await getAgent(run.agentId);
       if (!agent) return { outcome: "missing_agent" as const };
       return scheduleBoundedRetryForRun(run, agent, opts);
+    },
+
+    scheduleTransientSpawnLikeFailureRetry: async (runId: string) => {
+      const run = await getRun(runId, { unsafeFullResultJson: true });
+      if (!run) return null;
+      const agent = await getAgent(run.agentId);
+      if (!agent) return null;
+      return scheduleTransientSpawnLikeFailureRetryIfEligible(run, agent);
     },
   };
 }
