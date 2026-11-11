@@ -174,6 +174,19 @@ const RECOVERABLE_READ_OPERATIONS = new Set([
   READ_CURRENT_WAKE_COMMENTS_TOOL_NAME, LIST_CHAT_ATTACHMENTS_TOOL_NAME, READ_CHAT_ATTACHMENT_TOOL_NAME,
   READ_TOOL_RESULT, "connections_search",
 ]);
+// Writes whose effect and idempotency receipt commit in one transaction, with
+// no outside effect before commit, and whose effect is compare-and-swap on the
+// state it read. Recovery may run them again: the receipt proves whether the
+// first attempt applied (see #recoverTransactionalWrite).
+const TRANSACTIONAL_RECEIPT_OPERATIONS = new Set(["write_document"]);
+const TRANSACTIONAL_RECOVERY_REFUSALS = new Set([
+  "paperclip_runner_tool_idempotency_conflict", "paperclip_runner_tool_input_invalid",
+  "paperclip_runner_tool_mode_denied",
+]);
+function nativeToolAllowedInMode(operationId: string, workMode: string): boolean {
+  return CAPABILITY_SEMANTIC_TOOL_CATALOG.some(candidate => candidate.operationId === operationId
+    && candidate.allowedModes.includes(workMode as "standard" | "planning" | "ask"));
+}
 const RECOVERABLE_READ_ERRORS = new Set([
   "paperclip_runner_document_not_found", "paperclip_runner_agent_not_found",
   "paperclip_runner_approval_not_found", "paperclip_runner_tool_input_invalid",
@@ -477,6 +490,7 @@ export class PaperclipRunnerToolAuthority {
       if (!Object.hasOwn(receipt, "result")) return null;
       return { result: await this.#withInstructionMutationReceipt(call.tool, call.callId, input, true) };
     }
+    if (TRANSACTIONAL_RECEIPT_OPERATIONS.has(call.tool)) return this.#recoverTransactionalWrite(call.tool, input);
     // Recovery goes through the receipt owner: it must use the same parsed
     // input, current authority and safe post-commit dispatch as an ordinary
     // retry, without ever falling through to an uncertain mutation.
@@ -539,6 +553,32 @@ export class PaperclipRunnerToolAuthority {
     return new Error(`paperclip_runner_agent_not_found: no agent in this company has id ${JSON.stringify(actorId.slice(0, 80))}.`
       + (closest.length ? ` Closest ids: ${closest.join(", ")}.` : "")
       + " Call list_agents and copy a valid id exactly; nothing was created or changed.");
+  }
+
+  /**
+   * Settle a transactional write whose callback a restart cut off. The effect
+   * and its idempotency receipt commit in one transaction under the run and
+   * issue row locks, so the receipt is the durable outcome record: present
+   * means applied, absent means not applied. Running the same receipt-guarded
+   * mutation therefore either replays the saved result or applies the write
+   * for the first time, never twice. A definite pre-commit refusal (a stale
+   * base, a reused key, invalid input) is the call's real outcome and returns
+   * as a tool error; any other failure stays unsettled.
+   */
+  async #recoverTransactionalWrite(tool: string, input: Record<string, unknown>) {
+    try {
+      if (tool === "write_document") return { result: await this.#writeDocument(input, true) };
+      throw new Error(`paperclip_runner_transactional_recovery_unsupported: ${tool}`);
+    } catch (error) {
+      // Each of these is raised before the transaction commits, so it rolls the
+      // write back: the call's outcome is this refusal, not an unknown one.
+      const definite = error instanceof HttpError ? error.status >= 400 && error.status < 500
+        : error instanceof Error && TRANSACTIONAL_RECOVERY_REFUSALS.has(error.message);
+      if (!definite) throw error;
+      return { isError: true, result: {
+        success: false, contentItems: [{ type: "inputText", text: (error as Error).message }],
+      } };
+    }
   }
 
   async #recoverRead(call: Parameters<PaperclipRunnerToolAuthority["execute"]>[0]) {
@@ -1850,10 +1890,16 @@ export class PaperclipRunnerToolAuthority {
     return result;
   }
 
-  async #writeDocument(input: Record<string, unknown>): Promise<unknown> {
+  async #writeDocument(input: Record<string, unknown>, recovering = false): Promise<unknown> {
     const idempotencyKey = requiredString(input.idempotencyKey);
     let publication: Awaited<ReturnType<typeof persistActivity>>["publication"] | null = null;
     const result = await this.#withMutationReceipt("write_document", idempotencyKey, input, async (tx, context) => {
+      // execute() checks the work mode before dispatch. A recovered write
+      // applies later, so it checks the mode it locked; a saved receipt
+      // still replays without this check because its effect already applied.
+      if (recovering && !nativeToolAllowedInMode("write_document", context.issue.workMode)) {
+        throw new Error("paperclip_runner_tool_mode_denied");
+      }
       const sourceTrust = this.binding.museRuntime ? await resolveActorSourceTrustForIssue({ db: tx, issue: context.issue,
         actor: { actorType: "agent", actorId: this.binding.agentId, agentId: this.binding.agentId, runId: this.binding.runId } }) : undefined;
       const write = await documentService(tx).upsertIssueDocument({

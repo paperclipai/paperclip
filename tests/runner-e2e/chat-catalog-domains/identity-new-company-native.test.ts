@@ -90,11 +90,12 @@ describe("actual supported route and provider contracts", () => {
     expect(aiRoutingModel(routing, "opencode_local", NEW_COMPANY_NATIVE_MODEL)).toBe(NEW_COMPANY_NATIVE_MODEL);
     expect(createAiConnectionSchema.parse({ provider: "openrouter", method: "api_key", name: "My OpenRouter", ownership: "personal", allAgents: false, agentIds: [agentId], routing, apiKey: "synthetic-private-key" })).toMatchObject({ ownership: "personal", agentIds: [agentId], allAgents: false });
   });
-  it("binds the original production UI draft gate and public first-agent hold/reuse", () => {
+  it("binds the reviewed marketing type and public first-agent hold/reuse", () => {
     const source = (file: string) => readFileSync(new URL(`../../../${file}`, import.meta.url), "utf8");
     expect(source("ui/src/components/OnboardingWizard.tsx")).toContain('const setupSnapshot = step === 4');
     expect(source("ui/src/context/DialogContext.tsx")).toContain('const [onboardingOpen, setOnboardingOpen] = useState(false)');
-    expect(source("ui/src/components/new-agent/AgentBasicsDialog.tsx")).toContain('role: existing.length ? "general" : "ceo"');
+    expect(source("ui/src/components/new-agent/AgentBasicsDialog.tsx")).toContain('role: marketingAgentRole(profile.typeId, Boolean(leader))');
+    expect(source("ui/src/components/new-agent/AgentBasicsDialog.tsx")).toContain('marketingAgentProfileSchema');
     expect(source("ui/src/components/new-agent/AgentBasicsDialog.tsx")).toContain('buildNewAgentRuntimeConfig({ heartbeatEnabled: false })');
     expect(source("ui/src/components/new-agent/NewAgentSetup.tsx")).toContain('setupAgentId: created.id');
     expect(source("ui/src/lib/test-agent-setup.ts")).toContain('input.adapterType,');

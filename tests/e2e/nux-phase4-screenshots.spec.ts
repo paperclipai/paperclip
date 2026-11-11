@@ -62,17 +62,15 @@ test.describe("NUX Phase 4 visual QA", () => {
     // ── Section A: create-company path (name → hire) ──────────────────────
     await openWizard(page);
     await expect(
-      page.getByRole("heading", { name: "What is the name of your organization?" }),
+      page.getByRole("heading", { name: "Criar workspace" }),
     ).toBeVisible({ timeout: 15_000 });
-    await page.getByPlaceholder("e.g. Northwind Labs").fill("QA Robotics");
+    await page.getByPlaceholder("Ex.: Minha marca").fill("QA Robotics");
     await page.screenshot({ path: shot("02-create-name.png") });
 
-    await page.getByRole("button", { name: /^Continue/ }).click();
+    await page.getByRole("button", { name: "Criar workspace", exact: true }).click();
     // Step 1's "Next" creates the company and goes straight to the team lead.
     // The mission screenshot that sat here is gone with the step it captured.
-    await page.waitForSelector("#onboarding-agent-name", {
-      timeout: 30_000,
-    });
+    await expect(page.getByRole("heading", { name: "Crie seu agente de marketing" })).toBeVisible();
     await page.screenshot({ path: shot("04-hire-team-lead.png") });
 
     // The company just created anchors the route-scoped sections below.

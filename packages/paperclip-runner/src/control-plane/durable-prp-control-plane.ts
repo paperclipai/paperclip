@@ -84,6 +84,15 @@ export function isRunnerRecoveryMaintenanceCommand(type: string): boolean {
   return ["session.snapshot", "session.goal.get", "runner.drain", "runner.suspend", "runner.shutdown", "turn.stop"].includes(type);
 }
 
+/** The Runner journaled this command before its effect, then died. It sends
+ * that `indeterminate` entry as `failed` with `execution_indeterminate`, never
+ * executes it again, and still treats a lifecycle command as terminal. */
+function isIndeterminateCommandResult(command: DurableRecoveryCoreCommand): boolean {
+  if (command.status === "indeterminate") return true;
+  const detail = command.result?.result;
+  return command.status === "failed" && isRecord(detail) && detail.code === "execution_indeterminate";
+}
+
 const commandTypes = new Set([
   "run.prepare",
   "run.attach",
@@ -4102,7 +4111,8 @@ export class DurablePrpControlPlane {
    * A rejected runner.suspend changes no provider state, and the runner keeps
    * serving this connection. Lift the terminal-lifecycle fence it installed
    * so the controller's next command (a fresh suspend) can be delivered.
-   * Completed suspensions and every shutdown keep the fence.
+   * Completed suspensions and every shutdown keep the fence. So does an
+   * indeterminate suspension: the Runner treats it as terminal and exits.
    */
   #releaseServingLifecycle(
     connection: AuthorityConnection,
@@ -4111,6 +4121,7 @@ export class DurablePrpControlPlane {
     if (
       command.type === "runner.suspend" &&
       (command.status === "failed" || command.status === "rejected") &&
+      !isIndeterminateCommandResult(command) &&
       connection.terminalLifecycleCommandId === command.commandId
     ) {
       connection.terminalLifecycleCommandId = null;
@@ -4159,7 +4170,11 @@ export class DurablePrpControlPlane {
           commandId: command.commandId,
           commandType: command.type,
           controllerSeq: command.controllerSeq,
-          status: command.status,
+          // A Runner journals a command it may have started before dying as
+          // `indeterminate` and sends it as `failed`. Runners compare this
+          // acknowledgement with their journal, so name that journal status;
+          // current Runners accept either spelling.
+          status: isIndeterminateCommandResult(command) ? "indeterminate" : command.status,
         },
       ),
     );

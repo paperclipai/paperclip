@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: papermarketing-qualification-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   PAPERCLIP_TELEMETRY_DISABLED: "1"
@@ -23,7 +23,7 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      max-parallel: 6
+      max-parallel: 13
       matrix:
         include:
           - name: server-1
@@ -68,6 +68,12 @@ jobs:
             pnpm install --frozen-lockfile
           fi
       - run: node scripts/ensure-plugin-build-deps.mjs
+      - name: Build native runner fixtures before starting test timeouts
+        if: matrix.name == 'native-runner'
+        working-directory: packages/paperclip-runner
+        run: |
+          cargo build --locked --manifest-path runner/Cargo.toml -p paperclip-runner-core --bin paperclip-runnerd
+          cargo build --release --locked --manifest-path runner/Cargo.toml -p paperclip-runner-core --bin paperclip-runnerd
       - name: Run complete assigned Vitest partition
         run: |
           set -o pipefail

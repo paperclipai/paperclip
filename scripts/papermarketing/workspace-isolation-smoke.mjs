@@ -165,7 +165,7 @@ export async function exerciseWorkspaceIsolation({ base, compose }) {
   await verify(a, b);
   await verify(b, a);
   await verify(a, b);
-  console.log(`PASS: ${assertions} HTTP checks with real sessions, two workspaces, scoped agent keys, 12 marketing types and rejected cross-workspace reads/writes/secret references.`);
+  console.log(`PASS: ${assertions} HTTP checks with real sessions, two workspaces, scoped agent keys, 12 marketing types, per-user graph/dashboard layouts and rejected cross-workspace reads/writes/secret references.`);
   return async function verifyAfterRestart() {
     await verifyLayouts(a, b);
     await verifyLayouts(b, a);
@@ -175,6 +175,6 @@ export async function exerciseWorkspaceIsolation({ base, compose }) {
     for (const created of a.agents) {
       assert.ok(agents.some(agent => agent.id === created.id && agent.metadata?.marketingAgent?.typeId === created.metadata.marketingAgent.typeId));
     }
-    console.log(`PASS: PostgreSQL records, membership, agent types, sessions and authorization persist after restart (${assertions} total HTTP checks).`);
+    console.log(`PASS: PostgreSQL records, membership, agent types, graph/dashboard layouts, sessions and authorization persist after restart (${assertions} total HTTP checks).`);
   };
 }

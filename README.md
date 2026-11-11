@@ -16,12 +16,16 @@ facilitar atualizações.
 - Modelo, runtime e conta independentes do cargo. Cadastro salvo antes da conexão
   permanece em configuração e não inicia tarefas.
 - Estrutura existente de equipe visual, documentos, aprovações e histórico.
+- Grafo de agentes e dashboard personalizável, com layouts separados por usuário
+  e workspace. Ative `enableAgentGraph` e `enableCustomizableDashboard` nas
+  configurações experimentais da instância para testar essas telas.
 - Sem WordPress, CMS, rede social ou analytics obrigatórios.
 
 Comece pelo [guia de auto-hospedagem](docker/papermarketing/README.md).
 O pacote está em desenvolvimento; a execução de contêineres, o isolamento dos
 trabalhadores e o uso efetivo das assinaturas exigem homologação antes do MVP.
 Veja [o escopo do primeiro incremento](doc/plans/2026-11-09-papermarketing-foundation.md).
+Veja também [o contrato da integração visual e seus testes](doc/plans/2026-11-11-papermarketing-integration.md).
 
 As instruções abaixo documentam o **Paperclip original**. Comandos `npx paperclipai`
 instalam o upstream; para usar as alterações deste fork, construa a partir deste

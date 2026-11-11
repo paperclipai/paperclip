@@ -485,8 +485,7 @@ describe("New agent setup", () => {
     ]);
     adapterApi.list.mockImplementation(async (context?: { environmentId?: string | null }) => state.adapters.map((adapter: any) =>
       adapter.type === "codex_local" ? { ...adapter, supportedRunners: context?.environmentId === "linux-ssh" ? ["paperclip", "legacy"] : ["legacy"], defaultRunner: context?.environmentId === "linux-ssh" ? "paperclip" : "legacy" } : adapter));
-    state.params = new URLSearchParams({ name: "Atlas", adapterType: "codex_local", runner: "legacy" });
-    await renderCurrentParams();
+    await render("codex_local", "codex", "legacy");
     expect(container.querySelector('[aria-label="Runner"]')).toBeNull();
     await connect("OpenAI");
     expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "codex_local", expect.objectContaining({ runner: "legacy" }));
@@ -579,7 +578,12 @@ describe("New agent setup", () => {
   });
 
   it("opens pending Antigravity configuration without creating or admitting a native agent", async () => {
-    await render("paperclip_runner", "antigravity");
+    const id = "00000000-0000-4000-8000-000000000095";
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "paperclip_runner", runnerProvider: "antigravity", setupAgentId: id });
+    api.get.mockResolvedValue({ id, companyId: "company-1", name: "Atlas", adapterType: "process", adapterConfig: {}, runtimeConfig: {},
+      metadata: { marketingAgent: createMarketingAgentProfile("cmo"), setupAdapterPending: true,
+        setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" } }, pauseReason: "setup", status: "paused" });
+    await renderCurrentParams();
     expect(api.create).not.toHaveBeenCalled();
     expect(api.adapterModels).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Google Antigravity is not available yet");
@@ -591,7 +595,7 @@ describe("New agent setup", () => {
   it.each([false, true])("connects, saves and finishes the exact company-authorized Antigravity candidate with cached setup %s while release qualification stays pending", async cached => {
     const id = "00000000-0000-4000-8000-000000000091", model = "exact-antigravity-model";
     const draft = { id, companyId: "company-1", name: "Atlas", adapterType: "process", adapterConfig: {}, runtimeConfig: {},
-      metadata: { setupAdapterPending: true, setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" } }, pauseReason: "setup", status: "paused" };
+      metadata: { marketingAgent: createMarketingAgentProfile("cmo"), setupAdapterPending: true, setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" } }, pauseReason: "setup", status: "paused" };
     state.params = new URLSearchParams({ name: "Atlas", adapterType: "paperclip_runner", runnerProvider: "antigravity", setupAgentId: id });
     api.get.mockResolvedValue(draft);
     api.update.mockImplementation(async (_id, patch) => ({ ...draft, ...patch }));
@@ -626,7 +630,7 @@ describe("New agent setup", () => {
     const id = "00000000-0000-4000-8000-000000000091";
     state.params = new URLSearchParams({ name: "Atlas", adapterType: "process", runnerProvider: "codex", setupAgentId: id });
     api.get.mockResolvedValue({ id, companyId: "company-1", name: "Atlas", adapterType: "process", adapterConfig: {}, runtimeConfig: {},
-      metadata: { setupAdapterPending: true, setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" } }, pauseReason: "setup", status: "paused" });
+      metadata: { marketingAgent: createMarketingAgentProfile("cmo"), setupAdapterPending: true, setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" } }, pauseReason: "setup", status: "paused" });
     await renderCurrentParams();
     const params = new URL(state.navigate.mock.calls.at(-1)![0], "http://local").searchParams;
     expect(Object.fromEntries(params)).toMatchObject({ adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto", setupAgentId: id });
@@ -644,7 +648,7 @@ describe("New agent setup", () => {
     await act(async () => document.querySelector<HTMLInputElement>('input[value="codex_local"]')!.click());
     await act(async () => [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Configure agent")!.click());
     await settle();
-    expect(api.update).toHaveBeenCalledWith(id, expect.objectContaining({ adapterType: "codex_local", metadata: { setupAdapterPending: false } }), "company-1");
+    expect(api.update).toHaveBeenCalledWith(id, expect.objectContaining({ adapterType: "codex_local", metadata: expect.objectContaining({ setupAdapterPending: false, marketingAgent: createMarketingAgentProfile("cmo") }) }), "company-1");
   });
   it.each(["api_key", "subscription"] as const)("reviews pending Antigravity %s settings from the held Add agent draft without execution", async method => {
     const id = "00000000-0000-4000-8000-000000000091";
@@ -996,8 +1000,7 @@ describe("New agent setup", () => {
   it("preserves a saved Cursor Cloud runner choice through test and finish", async () => {
     adapterApi.list.mockImplementation(async () => state.adapters.map((adapter: any) => adapter.type === "cursor_cloud"
       ? { ...adapter, supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" } : adapter));
-    state.params = new URLSearchParams({ name: "Atlas", adapterType: "cursor_cloud", runner: "paperclip" });
-    await renderCurrentParams();
+    await render("cursor_cloud", "codex", "paperclip");
     expect(container.querySelector('[aria-label="Runner"]')).toBeNull();
     await settle();
     await fill("GitHub repository", "https://github.com/acme/repo");
@@ -1045,7 +1048,7 @@ describe("New agent setup", () => {
     try {
       const setupId = "00000000-0000-4000-8000-000000000094";
       state.params = new URLSearchParams({ name: "Atlas", adapterType: "process", setupAgentId: setupId });
-      api.get.mockResolvedValue({ id: setupId, companyId: "company-1", name: "Atlas", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, metadata: { setupAdapterPending: true }, pauseReason: "setup", status: "paused" });
+      api.get.mockResolvedValue({ id: setupId, companyId: "company-1", name: "Atlas", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, metadata: { marketingAgent: createMarketingAgentProfile("cmo"), setupAdapterPending: true }, pauseReason: "setup", status: "paused" });
       await renderCurrentParams();
       await settle();
       expect(document.querySelector('input[name="new-agent-adapter"][value="kimi_local"]')).not.toBeNull();
@@ -1465,8 +1468,7 @@ describe("New agent setup", () => {
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     state.adapters = state.adapters.map((adapter: any) => adapter.type === "opencode_local"
       ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" } : adapter);
-    state.params = new URLSearchParams({ name: "Atlas", adapterType: "opencode_local", ...(runner === "legacy" ? { runner } : {}) });
-    await renderCurrentParams();
+    await render("opencode_local", "codex", runner);
     const model = "openrouter/anthropic/claude-sonnet-4.6";
     await fill("Model", model);
     expect(container.querySelector('[aria-label="Runner"]')).toBeNull();

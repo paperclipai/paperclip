@@ -77,8 +77,45 @@ export function readConversationDomLinks(input: ReturnType<typeof conversationLi
   }
   return rows;
 }
+/** The API reports a saved reply before the open conversation renders it.
+ * When this conversation is open in the page, wait (bounded) for its latest
+ * saved lead reply to render so rendered links are not read too early. A page
+ * that is not showing this conversation is left alone. */
+export const CONVERSATION_REPLY_RENDER_WAIT_MS = 10_000;
+// A reply that did not render within one wait is not waited for again on the same page, so repeated
+// observations in a poll loop pay the wait at most once per reply.
+const expiredReplyWaits = new WeakMap<object, Set<string>>();
+export type ConversationReplyRender = "closed" | "rendered" | "pending";
+export function readLatestConversationReplyRender(input: { anchors: string[]; latest: string }): ConversationReplyRender {
+  const threadSelector = '[data-testid="task-chat-thread"], [data-testid="thread-root"]';
+  // A thread is this conversation's when every comment it renders is one of its saved comments; a thread that
+  // has not rendered any comment yet (still loading after navigation or reload) counts too.
+  const roots = Array.from(document.querySelectorAll(threadSelector)).filter(root =>
+    Array.from(root.querySelectorAll('[id^="comment-"]')).every(node => input.anchors.some(id => node.id === `comment-${id}`)));
+  if (!roots.length) return "closed";
+  const rendered = roots.some(root => Array.from(root.querySelectorAll('[id^="comment-"]'))
+    .some(node => node.id === `comment-${input.latest}` && node.getClientRects().length > 0));
+  return rendered ? "rendered" : "pending";
+}
+export async function waitForLatestConversationReplyRender(page: Pick<Page, "evaluate">, bindings: Pick<ReturnType<typeof conversationLinkBindings>, "anchors" | "replies">,
+  timeoutMs = CONVERSATION_REPLY_RENDER_WAIT_MS, intervalMs = 250): Promise<ConversationReplyRender> {
+  const latest = bindings.replies.at(-1);
+  if (!latest) return "rendered";
+  const expired = expiredReplyWaits.get(page) ?? new Set<string>();
+  if (expired.has(latest)) timeoutMs = 0;
+  // Bounded by attempts as well as time so a frozen test clock cannot spin.
+  for (let attempt = 0, attempts = Math.max(1, Math.ceil(timeoutMs / intervalMs)), deadlineAt = Date.now() + timeoutMs; ; attempt++) {
+    let state: unknown;
+    try { state = await page.evaluate(readLatestConversationReplyRender, { anchors: bindings.anchors, latest }); } catch { return "closed"; }
+    if (state !== "pending") return state === "closed" ? "closed" : "rendered";
+    if (attempt + 1 >= attempts || Date.now() >= deadlineAt) { expired.add(latest); expiredReplyWaits.set(page, expired); return "pending"; }
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+}
 export async function collectConversationLinks(page: Page, input: ConversationLinkInput) {
-  return page.evaluate(readConversationDomLinks, conversationLinkBindings(input));
+  const bindings = conversationLinkBindings(input);
+  await waitForLatestConversationReplyRender(page, bindings);
+  return page.evaluate(readConversationDomLinks, bindings);
 }
 export function conversationLinkLocator(page: Page, link: RenderedConversationLink): Locator {
   const thread = page.getByTestId(link.threadTestId).filter({ has: page.locator(`[id=${JSON.stringify(`comment-${link.anchorCommentId}`)}]`) });

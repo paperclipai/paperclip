@@ -6,6 +6,7 @@ import type { LinkPreview as Preview, LinkPreviewResult, LinkPreviewState, LinkP
 import { useLinkPreviewContext, type LinkPreviewContextValue } from "@/context/LinkPreviewContext";
 import { timeAgo } from "@/lib/timeAgo";
 import { retryTransientOnly } from "@/lib/query-client";
+import { queryKeys } from "@/lib/queryKeys";
 
 export const linkPreviewStateLabel: Record<LinkPreviewState, string> = {
   unknown: "Status unknown", open: "Open", merged: "Merged", conflicts: "Merge conflicts", draft: "Draft", closed: "Closed",
@@ -50,7 +51,7 @@ function ConnectedLinkPreview({ context, target, children }: {
     get contextElement() { return triggerRef.current ?? undefined; },
   }), []);
   const query = useQuery({
-    queryKey: ["link-preview", context.companyId, context.userId, target.canonicalUrl],
+    queryKey: queryKeys.linkPreview(context.companyId, context.userId, target.canonicalUrl),
     // Optional enrichment: a failed read is a cached absence, not a global error.
     queryFn: async (): Promise<LinkPreviewResult> => {
       try { return await context.load(target); } catch { return { preview: null, maxAgeMs: 60_000 }; }

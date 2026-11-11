@@ -1,0 +1,57 @@
+name: papermarketing browser qualification
+
+on:
+  push:
+    branches: [feat/marketing-ui-integration]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: papermarketing-browser-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser:
+    name: Browser suite (${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      PAPERCLIP_TELEMETRY_DISABLED: "1"
+      PAPERCLIP_E2E_SKIP_LLM: "true"
+      PAPERCLIP_PLAYWRIGHT_CHANNEL: chrome
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies with CI-owned lock resolution
+        run: |
+          if ! pnpm install --frozen-lockfile; then
+            pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+            pnpm install --frozen-lockfile
+          fi
+      - run: node scripts/ensure-plugin-build-deps.mjs
+      - run: google-chrome --version
+      - name: Run complete assigned browser partition without live providers
+        run: |
+          specs="$(node scripts/e2e-shard.mjs --shard-index ${{ matrix.shard }} --shard-count 8)"
+          pnpm test:e2e $specs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-browser-${{ matrix.shard }}-${{ github.sha }}
+          path: |
+            tests/e2e/playwright-report/
+            tests/e2e/test-results/
+          retention-days: 7

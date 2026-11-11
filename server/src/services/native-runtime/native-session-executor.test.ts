@@ -390,7 +390,11 @@ vi.mock("../issue-recovery-actions.js", () => ({
 
 vi.mock("./native-codex-runner.js", () => ({
   resolvePaperclipRunnerBinary: state.resolveRunnerBinary,
+  resolvePaperclipRunnerBinaryAsync: async (...args: unknown[]) => state.resolveRunnerBinary(...(args as [])),
   resolveRemotePaperclipRunnerBinary: state.resolveRemoteRunnerBinary,
+  // Resolves through the (mocked) vendor bundle, like the production checks.
+  verifiedBundledRemoteRunnerBinary: async () =>
+    (await import("../../vendor/paperclip-runner/index.js")).bundledRemoteRunnerBinary(),
 }));
 
 import {
@@ -398,6 +402,7 @@ import {
   buildNativeProviderEnvironment,
   resolveNativeProviderEnvironment,
   buildNativeHarnessBackupManifest,
+  buildNativeHarnessBackupManifestStreamed,
   cancelNativeSession,
   closeWarmNativeSessionsForEnvironment,
   claimWarmNativeInstructionCopy,
@@ -429,6 +434,7 @@ import {
   retainedNativeCleanupJournalMatches,
   nativeProviderUsageLimitFromEvent,
   nativeSessionFailureSourceCode,
+  NATIVE_PROVIDER_SESSION_CLOSED,
   nativeSessionRecoveryProjection,
   nativeGovernedWaitResult,
   nativeConversationReplyResult,
@@ -447,6 +453,7 @@ import {
   stopStaleRemoteRunnerBeforeBootstrap,
   verifyRemoteRunnerOrSettledExit,
   readRemoteProviderPackManifest,
+  verifyRemoteProviderPackManifest,
   prepareRemoteProviderPackOnTarget,
   resolveRemoteProviderPackSource,
   readBundledRemoteProviderPackManifest,
@@ -469,8 +476,13 @@ import {
   stageRemoteRunnerFile,
   steerNativeSession,
   syncRemoteRunnerDirectoryOut,
+  isTransientRemoteCheckpointReadFailure,
+  remoteProviderStateUnreadable,
+  retryTransientRemoteCheckpointRead,
   verifyNativeHarnessBackup,
+  verifyNativeHarnessBackupStreamed,
   shouldRestoreNativeHarnessBackupIntoSandbox,
+  remoteProviderStateNeverOpened,
 } from "./native-session-executor.js";
 import { onNativeRunnerEvidence } from "./native-runner-evidence-signal.js";
 
@@ -2312,8 +2324,14 @@ describe("remote provider pack manifest", () => {
     return JSON.stringify(value);
   };
 
-  it.each(["opencode", "opencode-new-durable", "opencode-continuation", "opencode-continuation-missing", "opencode-continuation-no-receipt", "opencode-continuation-replacement", "opencode-continuation-cold", "opencode-continuation-legacy-durable", "opencode-dirty", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
-    const firstDurable = provider === "opencode-new-durable";
+  it.each(["opencode", "opencode-new-durable", "opencode-new-durable-reset", "opencode-new-durable-inspect-reset", "opencode-new-durable-provider-reset", "opencode-continuation", "opencode-continuation-missing", "opencode-continuation-no-receipt", "opencode-continuation-replacement", "opencode-continuation-cold", "opencode-continuation-legacy-durable", "opencode-dirty", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
+    const firstDurable = provider.startsWith("opencode-new-durable");
+    // A sandbox connection drops once while the settled state is read out.
+    let checkpointReadResets = provider === "opencode-new-durable-reset" ? 1 : 0;
+    // Or while the checkpoint inspects the runner state, or reads the provider state, before any copy starts.
+    let inspectionResets = 0;
+    const inspectionReset = provider === "opencode-new-durable-inspect-reset" ? "runner-state.json"
+      : provider === "opencode-new-durable-provider-reset" ? "codex-provider-state.json" : null;
     const architecture = provider === "claude-arm64" ? "arm64" : "x64";
     const claude = provider.startsWith("claude-");
     const opencode = provider.startsWith("opencode");
@@ -2372,6 +2390,10 @@ describe("remote provider pack manifest", () => {
     const suspendedState = durableRunnerState({ runId: remoteExecution.binding.runId, runnerInstanceId: "bundled-image-runner",
       environmentLeaseId: "lease", normalizedSessionId: remoteExecution.session.normalizedSessionId }, "suspended");
     const syncOut = vi.fn(async (operations: Array<{ files: Array<{ kind: string; targetPath: string }> }>) => {
+      if (checkpointReadResets > 0 && operations.some(operation => operation.files.some(file => file.targetPath.includes("/.pending-")))) {
+        checkpointReadResets--;
+        throw Object.assign(new Error("write ECONNRESET"), { code: "ECONNRESET" });
+      }
       for (const operation of operations) for (const file of operation.files) {
         if (file.kind === "directory") {
           await mkdir(file.targetPath, { recursive: true });
@@ -2402,7 +2424,14 @@ describe("remote provider pack manifest", () => {
       });
       onTestFinished(() => { storage.mockRestore(); owner.mockRestore(); validate.mockRestore(); retain.mockRestore(); capture.mockRestore(); backup.mockRestore(); });
     }
-    const execute = vi.fn(async (command: { command: string; args?: string[] }) => ({
+    const execute = vi.fn(async (command: { command: string; args?: string[] }) => {
+      const script = command.args?.[1] ?? "";
+      if (inspectionResets > 0 && inspectionReset && script.includes("base64 <") && script.includes(inspectionReset)
+        && (inspectionReset === "runner-state.json" || !script.includes("runner-state.json"))) {
+        inspectionResets--;
+        throw Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+      }
+      return {
       exitCode: 0, signal: null, timedOut: false, stderr: "",
       stdout: command.args?.[0] === "--build-metadata" ? JSON.stringify({
         schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
@@ -2412,7 +2441,8 @@ describe("remote provider pack manifest", () => {
       }) : firstDurable && command.args?.[1]?.startsWith("const os=require") ? JSON.stringify({ home: "/home/runtime-account", uid: 1000 })
         : firstDurable && command.args?.[1]?.includes("base64 <") ? Buffer.from(JSON.stringify(command.args[1].includes("codex-provider-state.json")
           && !command.args[1].includes("runner-state.json") ? providerState : suspendedState)).toString("base64") : "",
-    }));
+      };
+    });
     try {
       let coldAdmission: ReturnType<typeof admittedNativeProviderPack> = null;
       const prepare = createRunnerdBackend({ db: preparedDb, execution: remoteExecution,
@@ -2492,8 +2522,11 @@ describe("remote provider pack manifest", () => {
         expect(exportSources.every(source => source.startsWith("/workspace/"))).toBe(true);
         expect(providerArtifactStorage.retainNativeProviderArtifacts).toHaveBeenCalledWith(expect.objectContaining({
           owner: expect.objectContaining({ runId: remoteExecution.binding.runId }), source: expect.objectContaining({ manifest: installed, launchRoot, accountUid: 1000 }) }));
+        if (inspectionReset) inspectionResets = 1;
         await driver.mock.calls.at(-1)![0].checkpoint!("settled");
         expect(harnessStorage.persistNativeHarnessBackup).toHaveBeenCalledTimes(1);
+        expect(checkpointReadResets).toBe(0);
+        expect(inspectionResets).toBe(0);
         return;
       }
       expect(execute.mock.calls.some(([call]) => call.args?.[0] === "-e" || call.args?.[0] === "--version")).toBe(false);
@@ -2650,6 +2683,30 @@ describe("remote provider pack manifest", () => {
             leaseOwner: "controller", controllerGeneration: 2, providerAttempt: 1, restartKind: "graceful", recoveryRequestId: null,
             remote: { providerLeaseId: "sandbox", remoteCwd: "/workspace" } },
         };
+        // Staging failure (OpenCode and ACPX): a same-run
+        // retry under a persisted runner artifact found the runner settled and
+        // exited. Nothing is adopted, so the transport relaunches it from its
+        // durable state and needs the admitted provider pack's launch inputs.
+        const settledExecute = vi.fn(async (request: { args: string[] }) => {
+          if (request.args[2] === "paperclip-runner-recovery-check") return { exitCode: 45, timedOut: false, stderr: "", stdout: "" };
+          if (request.args[1]?.includes("base64")) return { exitCode: 0, timedOut: false, stderr: "", stdout: Buffer.from(JSON.stringify({
+            ...identity, lifecycle: "suspended", outbox: [], pendingTerminalDelivery: null, pendingProviderCleanup: null, warmTransition: null,
+          })).toString("base64") };
+          return recoveryExecute(request);
+        });
+        const settledTarget = { ...(recoveryInput.runnerExecutionTarget as unknown as Record<string, unknown>),
+          runner: { execute: settledExecute, syncIn: vi.fn(async () => undefined), syncOut: vi.fn(async () => undefined) } };
+        await createRunnerdBackend({ ...recoveryInput, runnerExecutionTarget: settledTarget as never,
+          controllerPersistence: { bootId: "replacement-controller", runnerArtifact: artifact } });
+        state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+        const relaunched = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions;
+        expect(relaunched.adoptExistingRunner).toBeUndefined();
+        expect(relaunched).toMatchObject({ providerPackAuthorityDigest: admitted.digest, runnerArtifact: artifact,
+          providerNodeCommandSha256: admitted.payload.artifacts.nodeCommand.sha256,
+          ...(opencode
+            ? { opencodeCommand: `/opt/paperclip-runner/provider-pack/${admitted.payload.artifacts.opencodeExecutable.path}`,
+              opencodeCommandSha256: admitted.payload.artifacts.opencodeExecutable.sha256 }
+            : { acpxSidecarSha256: (admitted.payload.artifacts as Record<string, { sha256: string }>).acpxSidecar.sha256 }) });
         const recoveredBackend = await createRunnerdBackend(recoveryInput);
         state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
         const recovered = state.createTransport.mock.calls.at(-1)![0];
@@ -2870,6 +2927,8 @@ describe("remote provider pack manifest", () => {
     Object.assign(payload, { providers: { cursor } });
     await writeManifest();
     expect(readRemoteProviderPackManifest(root).payload.providers?.cursor?.version).toBe(QUALIFIED_ACPX_PROFILES.cursor.agentServerVersion);
+    // The run path streams the same checks off the event loop.
+    await expect(verifyRemoteProviderPackManifest(root)).resolves.toEqual(readRemoteProviderPackManifest(root));
     const releaseMetadata = await mkdtemp(join(tmpdir(), "paperclip-image-identity-"));
     const manifestPath = join(releaseMetadata, "provider-pack.json");
     await cp(join(root, "provider-pack.json"), manifestPath);
@@ -2894,6 +2953,7 @@ describe("remote provider pack manifest", () => {
     await rm(releaseMetadata, { recursive: true, force: true });
     await writeFile(join(root, cursorPath, "runtime"), "substitute Cursor runtime");
     expect(() => readRemoteProviderPackManifest(root)).toThrow("asset tree digest mismatch");
+    await expect(verifyRemoteProviderPackManifest(root)).rejects.toThrow("asset tree digest mismatch");
     await writeFile(join(root, cursorPath, "runtime"), "pinned Cursor runtime");
     const kimiPath = "provider-assets/kimi/linux-x64";
     await mkdir(join(root, kimiPath), { recursive: true });
@@ -3457,7 +3517,22 @@ describe("verified native harness backups", () => {
         sourceProviderLeaseId: "sandbox-1",
         completedAt: "2026-08-26T00:00:00.000Z",
       });
+      // The run path builds and verifies the same manifest by streaming.
+      await expect(buildNativeHarnessBackupManifestStreamed({
+        backupRoot: current,
+        execution: backupExecution,
+        runnerInstanceId: "runner-1",
+        providerSessionIdentity: {
+          providerSessionId: "thread-1",
+          providerBackendSessionId: "session-1",
+          providerSessionIdentity: null,
+        },
+        sourceProviderLeaseId: "sandbox-1",
+        completedAt: "2026-08-26T00:00:00.000Z",
+      })).resolves.toEqual(manifest);
       await writeFile(join(current, "manifest.json"), JSON.stringify(manifest));
+      await expect(verifyNativeHarnessBackupStreamed({ root, execution: backupExecution, runnerInstanceId: "runner-1" }))
+        .resolves.toEqual(verifyNativeHarnessBackup({ root, execution: backupExecution, runnerInstanceId: "runner-1" }));
 
       expect(
         verifyNativeHarnessBackup({
@@ -3503,6 +3578,8 @@ describe("verified native harness backups", () => {
           runnerInstanceId: "runner-1",
         }),
       ).toBeNull();
+      await expect(verifyNativeHarnessBackupStreamed({ root, execution: backupExecution, runnerInstanceId: "runner-1" }))
+        .resolves.toBeNull();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -13912,6 +13989,16 @@ describe("native session bounded recovery", () => {
     },
   );
 
+  it("stops same-run retries when the execution provider proves task admission was rejected", () => {
+    for (const prefix of ["", "runner_ingress_unavailable: runnerd exited unexpectedly with code 1: "]) {
+      const code = nativeSessionFailureSourceCode(new Error(`${prefix}runner_task_admission_rejected: session_state_unavailable`));
+      expect(code).toBe("runner_task_admission_rejected");
+      expect(nativeSessionFailureDisposition(1, new Date(), code)).toEqual({
+        phase: "terminal_failure", failureCode: code, nextAttemptAt: null,
+      });
+    }
+  });
+
   it("stops same-run retries when the runner proves the saved provider session incompatible", () => {
     const failure = new NativeProviderStateIncompatibleError(
       "Error: PRP command run.attach failed: ACPX durable launch profile digest does not match runner startup",
@@ -13925,6 +14012,52 @@ describe("native session bounded recovery", () => {
     });
     // Only the typed runner class is deterministic; the same text stays retryable.
     expect(nativeSessionFailureSourceCode(new Error(failure.message))).toBe("native_session_interrupted");
+  });
+
+  // Chaos w-20261111T011704-s9107/t05: after a cut-off ACPX turn start the
+  // Runner saved the session closed; three same-run resumes each got the same
+  // refusal before the board offered Retry.
+  describe("a turn start the Runner refused because this run's session is closed", () => {
+    const turnStartFailure = (result: Record<string, unknown>) => {
+      const commandResult = { commandId: "command_lab_1", commandType: "turn.start", controllerSeq: 10, result, status: "failed" };
+      return Object.defineProperty(new Error(`PRP command turn.start failed: ${JSON.stringify(commandResult)}`),
+        "runnerCommandResult", { value: commandResult, enumerable: false });
+    };
+    const closed = (message: string) => turnStartFailure({ code: "command_execution_failed", message,
+      classification: "provider_session_closed" });
+
+    it.each(["ACPX session is not open", "ACPX turn start failed closed: ACPX sidecar request timed out at turn.start"])(
+      "stops on the first refusal and hands the run to the board: %s", (message) => {
+        const code = nativeSessionFailureSourceCode(closed(message));
+        expect(code).toBe(NATIVE_PROVIDER_SESSION_CLOSED);
+        const disposition = nativeSessionFailureDisposition(1, new Date(), code);
+        expect(disposition).toEqual({ phase: "terminal_failure", failureCode: NATIVE_PROVIDER_SESSION_CLOSED, nextAttemptAt: null });
+        expect(nativeSessionRecoveryProjection({ ...disposition, agentId: "agent" })).toMatchObject({
+          issueStatus: "blocked", recoveryOwner: { kind: "board" },
+        });
+        // A rewrapped failure keeps the class through its authenticated text.
+        expect(nativeSessionFailureSourceCode(new Error(closed(message).message))).toBe(NATIVE_PROVIDER_SESSION_CLOSED);
+        expect(nativeSessionFailureSourceCode(Object.assign(new Error("native session failed"), { cause: closed(message) })))
+          .toBe(NATIVE_PROVIDER_SESSION_CLOSED);
+      });
+
+    it("keeps retrying a start the Runner proved never reached the provider", () => {
+      const failure = turnStartFailure({ code: "command_execution_failed",
+        message: "ACPX turn start failed before its prompt reached the provider: ACPX sidecar request timed out at turn.start" });
+      expect(nativeSessionFailureSourceCode(failure)).toBe("native_session_interrupted");
+      expect(nativeSessionFailureDisposition(1, new Date(), "native_session_interrupted").phase).toBe("retryable_failure");
+    });
+
+    it("keeps today's same-run retries for an unclassified refusal from an older Runner", () => {
+      // An older Runner sends the same text for a session that can reopen after
+      // a restart (provider exit not yet proven), so the text alone proves nothing.
+      const failure = turnStartFailure({ code: "command_execution_failed", message: "ACPX session is not open" });
+      expect(nativeSessionFailureSourceCode(failure)).toBe("native_session_interrupted");
+      // Another command's class is not a turn-start refusal.
+      const other = Object.defineProperty(new Error("PRP command session.open failed"), "runnerCommandResult",
+        { value: { commandType: "session.open", result: { classification: "provider_session_closed" } }, enumerable: false });
+      expect(nativeSessionFailureSourceCode(other)).not.toBe(NATIVE_PROVIDER_SESSION_CLOSED);
+    });
   });
 
   it("stops same-run retries for an operator while a saved side-effecting call has no result", () => {
@@ -20226,10 +20359,15 @@ describe("runnerd provider runtime wiring", () => {
     ["fresh", "external_checkpoint", "external_pending_turn", "external_wrong_identity", "external_unregistered", "existing_state", "symlink_parent", "wrong_identity", "wrong_runner", "wrong_lease", "missing_control_plane", "connected", "committed_event", "committed_command", "pending_turn", "remote_probe_failed", "backup_present"]
       .map((scenario) => ({ outcome, scenario, homeMode: "isolated" }))),
     ...["resumed", "replacement"].map(outcome => ({ outcome, scenario: "fresh", homeMode: "preconfigured" })),
-    ...["interrupted_bootstrap", "interrupted_bootstrap_other_run", "interrupted_bootstrap_unproven", "interrupted_bootstrap_symlink_parent"]
+    ...["interrupted_bootstrap", "interrupted_bootstrap_other_run", "interrupted_bootstrap_unproven", "interrupted_bootstrap_symlink_parent",
+      "interrupted_bootstrap_unopened", "interrupted_bootstrap_unopened_unproven", "interrupted_bootstrap_unopened_other_run",
+      "interrupted_bootstrap_unopened_active_turn"]
       .map(scenario => ({ outcome: "resumed", scenario, homeMode: "isolated" })),
     { outcome: "created", scenario: "interrupted_bootstrap", homeMode: "isolated" },
     { outcome: "created", scenario: "interrupted_bootstrap_symlink_parent", homeMode: "isolated" },
+    { outcome: "created", scenario: "interrupted_bootstrap_unopened", homeMode: "isolated" },
+    { outcome: "created", scenario: "interrupted_bootstrap_unopened_active_turn", homeMode: "isolated" },
+    { outcome: "created", scenario: "interrupted_bootstrap_unopened_unproven", homeMode: "isolated" },
   ])(
     "bootstraps only an untouched provider session in a $outcome workspace lease: $scenario ($homeMode)", async ({ outcome, scenario, homeMode }) => {
     const remoteCwd = join(isolatedStateDirectory, "remote");
@@ -20273,11 +20411,19 @@ describe("runnerd provider runtime wiring", () => {
         try { execFileSync("sh", command.args, { stdio: "pipe" }); return { exitCode: 0, timedOut: false, stdout: "", stderr: "" }; }
         catch { return { exitCode: 1, timedOut: false, stdout: "", stderr: "" }; }
       }
+      if (command.args?.[1]?.includes("base64") && scenario.startsWith("interrupted_bootstrap_unopened")
+        && command.args[1].includes("codex-provider-state.json") && !command.args[1].includes("runner-state.json")) return {
+        exitCode: 0, timedOut: false, stderr: "", stdout: Buffer.from(JSON.stringify({
+          schema: "paperclip.runner.codex-provider-state.v1", lifecycle: "prepared", threadId: null, providerSessionId: null,
+          activeProviderTurnId: scenario.endsWith("_active_turn") ? "turn-in-progress" : null, ambiguousTurnStartPending: false,
+          config: { provider: "codex", driver: "codex_app_server" } })).toString("base64"),
+      };
       if (command.args?.[1]?.includes("base64") && scenario.startsWith("interrupted_bootstrap")) return {
         exitCode: 0, timedOut: false, stderr: "", stdout: Buffer.from(JSON.stringify({
           runnerInstanceId: "runner-new-in-retained-workspace", normalizedSessionId: execution.session.normalizedSessionId,
-          runId: scenario === "interrupted_bootstrap_other_run" ? "previous-warm-run" : execution.binding.runId,
-          lifecycle: "ready", outbox: [], pendingTerminalDelivery: null })).toString("base64"),
+          runId: scenario.endsWith("_other_run") ? "previous-warm-run" : execution.binding.runId,
+          lifecycle: scenario.startsWith("interrupted_bootstrap_unopened") ? "suspended" : "ready",
+          outbox: [], pendingTerminalDelivery: null })).toString("base64"),
       };
       if (command.args?.[1]?.includes("base64")) return {
         exitCode: 1, timedOut: false, stdout: "", stderr: "",
@@ -20368,10 +20514,11 @@ describe("runnerd provider runtime wiring", () => {
       await mkdir(join(options.stateDirectory!, "failover-backups", "current"), { recursive: true });
       await writeFile(join(options.stateDirectory!, "failover-backups", "current", "manifest.json"), "{}");
     }
-    if (["interrupted_bootstrap", "interrupted_bootstrap_other_run", "interrupted_bootstrap_symlink_parent"].includes(scenario)) {
+    if (["interrupted_bootstrap", "interrupted_bootstrap_other_run", "interrupted_bootstrap_symlink_parent",
+      "interrupted_bootstrap_unopened", "interrupted_bootstrap_unopened_other_run", "interrupted_bootstrap_unopened_active_turn"].includes(scenario)) {
       noteRemoteBootstrapRestartProven(execution.binding.runId, "stopped");
     }
-    if (scenario === "interrupted_bootstrap") {
+    if (scenario === "interrupted_bootstrap" || scenario === "interrupted_bootstrap_unopened") {
       await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
       const siblings = await readdir(dirname(sessionRoot));
       expect(siblings.filter(name => name.startsWith(`${basename(sessionRoot)}.bootstrap-restart-`))).toHaveLength(1);
@@ -21198,4 +21345,57 @@ describe("HTTP Stop during remote runner staging", () => {
       expect(dispatches).toBe(0);
     } finally { release(); await outcome; await stopping; await bundle.transport.detachControllerForRestart?.().catch(() => {}); await temporary.cleanup(); await rm(root, { recursive: true, force: true }); }
   }, 120000);
+});
+
+describe("remoteProviderStateNeverOpened", () => {
+  const acpx = { provider: { kind: "acpx" } } as unknown as Parameters<typeof remoteProviderStateNeverOpened>[0];
+  const prepared = {
+    schema: "paperclip.runner.acpx-provider-state.v3", launchProfileDigest: `sha256:${"c".repeat(64)}`, lifecycle: "prepared",
+    descriptor: { kind: "acpx", provider: "acpx", driver: "acpx_runtime", agent: "claude", model: "explicit-model" },
+    toolSet: { schema: "paperclip.runner.authorized-tools.v1", schemaVersion: 1, catalogDigest: `sha256:${"d".repeat(64)}`, operations: [] },
+    identity: null, activeTurnId: null, attemptedTurnControls: [], providerExitUnconfirmed: false,
+    semanticResult: null, goalProjection: null, turnControls: { steering: false, queuedFollowUp: false },
+    goalRevision: 0, goalSourceRevision: null, pendingEvents: [], pendingRuntimeRequests: {}, nextEventSequence: 1,
+    openSemanticCalls: [], retiredSemanticCalls: [],
+  };
+  it("accepts the ACPX state a rejected session.open leaves, and nothing that may hold a turn", () => {
+    expect(remoteProviderStateNeverOpened(acpx, prepared)).toBe(true);
+    const { providerExitUnconfirmed: _exit, activeTurnId: _turn, identity: _identity, ...beforeDefaults } = prepared;
+    expect(remoteProviderStateNeverOpened(acpx, beforeDefaults)).toBe(true);
+    for (const changed of [{ lifecycle: "session_open" }, { lifecycle: "turn_active", activeTurnId: "turn" }, { activeTurnId: "turn" },
+      { providerExitUnconfirmed: true }, { lifecycle: "closed", providerExitUnconfirmed: true }, { schema: "paperclip.runner.acpx-provider-state.v2" },
+      { identity: { kind: "acpx", acpxRecordId: "record" } }]) {
+      expect(remoteProviderStateNeverOpened(acpx, { ...prepared, ...changed })).toBe(false);
+    }
+    expect(remoteProviderStateNeverOpened({ provider: { kind: "claude_managed" } } as never, { lifecycle: "prepared" })).toBe(false);
+  });
+});
+
+describe("isTransientRemoteCheckpointReadFailure", () => {
+  it("repeats only a dropped sandbox connection, never a state or safety refusal", () => {
+    expect(isTransientRemoteCheckpointReadFailure(Object.assign(new Error("write ECONNRESET"), { code: "ECONNRESET" }))).toBe(true);
+    expect(isTransientRemoteCheckpointReadFailure(new Error("Daytona syncOut directory download failed: socket hang up"))).toBe(true);
+    expect(isTransientRemoteCheckpointReadFailure(new Error("runner_harness_state_mismatch: checkpoint_identity_incomplete"))).toBe(false);
+    expect(isTransientRemoteCheckpointReadFailure(new Error("Daytona syncOut refusing tarball member that escapes the extraction dir: ../x"))).toBe(false);
+    expect(isTransientRemoteCheckpointReadFailure(Object.assign(new Error("certificate expired"), { code: "CERT_HAS_EXPIRED" }))).toBe(false);
+    // A provider-state refusal is transient only when the read behind it dropped.
+    expect(isTransientRemoteCheckpointReadFailure(remoteProviderStateUnreadable(Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" })))).toBe(true);
+    expect(isTransientRemoteCheckpointReadFailure(remoteProviderStateUnreadable(new Error("runner_remote_provider_state_unavailable")))).toBe(false);
+    expect(isTransientRemoteCheckpointReadFailure(remoteProviderStateUnreadable(new SyntaxError("Unexpected token")))).toBe(false);
+    expect(remoteProviderStateUnreadable(new Error("read ECONNRESET")).message).toBe("runner_harness_state_mismatch: provider_state_unreadable");
+  });
+
+  it("stops after three reads, and never repeats a refusal", async () => {
+    const reset = () => Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+    const onRetry = vi.fn();
+    const dropping = vi.fn(async () => { throw reset(); });
+    await expect(retryTransientRemoteCheckpointRead(dropping, onRetry, 0)).rejects.toThrow("read ECONNRESET");
+    expect(dropping).toHaveBeenCalledTimes(3);
+    expect(onRetry.mock.calls).toEqual([[1, 3], [2, 3]]);
+    const refusing = vi.fn(async () => { throw new Error("runner_harness_state_mismatch: runner_identity"); });
+    await expect(retryTransientRemoteCheckpointRead(refusing, vi.fn(), 0)).rejects.toThrow("runner_identity");
+    expect(refusing).toHaveBeenCalledTimes(1);
+    let drops = 2;
+    await expect(retryTransientRemoteCheckpointRead(async () => { if (drops-- > 0) throw reset(); return "settled"; }, vi.fn(), 0)).resolves.toBe("settled");
+  });
 });

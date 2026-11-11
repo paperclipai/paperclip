@@ -1,3 +1,4 @@
+import { createMarketingAgentProfile } from "@paperclipai/shared/marketing-agents";
 // @vitest-environment jsdom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -299,10 +300,10 @@ it.each([true, false])("offers Google Antigravity in the ordinary picker while e
   expect(query.get("adapterType")).toBe("paperclip_runner");
   expect(query.get("runnerProvider")).toBe("antigravity");
   expect(query.get("setupAgentId")).toBe(agents.create.mock.calls[0][1].setupId);
-  expect(agents.update).toHaveBeenCalledWith(agents.create.mock.calls[0][1].setupId, {
-    name: "Ada & Co", metadata: { setupAdapterPending: true,
+  expect(agents.update).toHaveBeenCalledWith(agents.create.mock.calls[0][1].setupId, expect.objectContaining({
+    name: "Ada & Co", metadata: { marketingAgent: createMarketingAgentProfile("cmo"), setupAdapterPending: true,
       setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" } },
-  }, "company-1");
+  }), "company-1");
   expect(agents.create.mock.calls[0][1]).toMatchObject({ adapterType: "process", metadata: { setupAdapterPending: true } });
 });
 it("hides Google Antigravity when the runtime adapter is disabled", async () => {
