@@ -155,7 +155,7 @@ export const integratorCaseFactsCases = [integratorDefinition("cases", "cases.up
     const row = first.caseRecord;
     await ctx.input.api.patch(`/api/cases/${row.id}`, { fields: { ...(row.fields as Record<string, unknown>), supportEscalation: state.collaboratorValue } });
     const { sendChatMessage } = await import("../chat-flow.js");
-    await sendChatMessage(ctx.input.page, "Support updated this case while we were talking. Read its current saved facts: does it still include my corrected reproduction step, and what support escalation is saved now?");
+    await sendChatMessage(ctx.input.page, "Support updated this case while we were talking. Read its current saved facts: does it still include my corrected reproduction detail, and what support escalation is saved now?");
     const fresh = await settle(2); state.collaborationCheckpoint = { ...fresh, state: structuredClone(state) }; await ctx.input.evidence("chat-case-concurrent-change.json", state.collaborationCheckpoint);
     if (!retained(fresh, true)) throw new Error("Chat overwrote or lost the separately saved collaboration change");
     const task = await ctx.input.api.get<Issue>(`/api/issues/${row.workIssueId}`);
