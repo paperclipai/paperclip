@@ -1358,8 +1358,12 @@ same-run bootstrap retry, and leaves an active board recovery action that asks
 for a supported model. A definite rejection whose startup `providerFailure`
 is `requires_action` for `authentication`, `permission` or `invalid_request`
 stops on its first attempt as `native_provider_startup_rejected`. On a remote
-execution target, any definite rejection with a startup `providerFailure` stops
-the same way, because a remote same-run bootstrap cannot prove ownership. No
+execution target, another definite rejection with a startup `providerFailure`
+retries on the same run only when the Runner transport proved, at close, that
+the failed runner settled and its process exited (`runnerExitConfirmed` in the
+saved failure). Restart recovery then launches a new runner. A rejection
+without that proof, or one that repeats the previous attempt's startup error,
+stops as `native_provider_startup_rejected`; the repeat names that error. No
 provider work began, so the board offers Retry, which starts a new run with a
 fresh provider session. Other local `session.open` rejections keep the bounded
 startup retry and end with Retry when it is spent. An
