@@ -1,5 +1,4 @@
 import { notifyNativeFinalizationWork } from "./native-finalization-notifications.js";
-import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
 import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { readSystemRecovery } from "./system-recovery-state.js";
@@ -22,7 +21,9 @@ function isLockNotAvailable(error: unknown): boolean {
  * nobody stopped the run; and no newer run, owner or applied generation exists.
  * Any missing or contradicting fact returns null, so callers keep their existing
  * behaviour. `lock` takes the row locks that resumption needs. */
-async function readPreservedResult(db: Db, companyId: string, runId: string, lock: boolean) {
+type Lock = false | "nowait" | "wait";
+
+async function readPreservedResult(db: Db, companyId: string, runId: string, lock: Lock) {
   const applicable = await readApplicableResult(db, companyId, runId, lock);
   if (!applicable) return null;
   const { coordinator, issue, run, result } = applicable;
@@ -50,21 +51,23 @@ async function readPreservedResult(db: Db, companyId: string, runId: string, loc
 /** The facts that do not depend on the saved-work proof: an accepted, succeeded
  * result held by a terminal coordinator, no Stop, no newer run, and the same
  * agent owner with no current execution. */
-async function readApplicableResult(db: Db, companyId: string, runId: string, lock: boolean) {
+async function readApplicableResult(db: Db, companyId: string, runId: string, lock: Lock) {
   // The finalizer and owner-stop confirmation lock the coordinator before the
   // issue; Retry dispatch locks the issue first. This takes the coordinator
-  // first (like the finalizer) and never waits for the issue or run while it
-  // holds it: a busy row fails the attempt (lock_not_available), and the held
-  // Retry is resumed again by the next dispatch or recovery pass.
+  // first (like the finalizer). With "nowait" it does not wait for the issue or
+  // run while it holds the coordinator: a busy row fails the attempt
+  // (lock_not_available) and the caller tries again.
   const coordinatorQuery = db.select().from(nativeRunFinalizations).where(and(
     eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, runId)));
   const [coordinator] = lock ? await coordinatorQuery.for("update") : await coordinatorQuery;
   if (!coordinator?.resultId || coordinator.phase !== "terminal_failure" || coordinator.leaseOwner ||
       coordinator.failureDetail?.successorRunId) return null;
   const issueQuery = db.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, coordinator.issueId)));
-  const [issue] = lock ? await issueQuery.for("update", { noWait: true }) : await issueQuery;
+  const [issue] = lock === "nowait" ? await issueQuery.for("update", { noWait: true })
+    : lock ? await issueQuery.for("update") : await issueQuery;
   const runQuery = db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
-  const [run] = lock ? await runQuery.for("update", { noWait: true }) : await runQuery;
+  const [run] = lock === "nowait" ? await runQuery.for("update", { noWait: true })
+    : lock ? await runQuery.for("update") : await runQuery;
   if (!issue || !run || run.status === "cancelled" || preservedResultHasStop(run.resultJson)
       || issue.assigneeAgentId !== run.agentId || issue.assigneeUserId || ["done", "cancelled"].includes(issue.status) ||
       issue.executionRunId || issue.checkoutRunId) return null;
@@ -98,15 +101,14 @@ export async function canResumePreservedResultFinalization(db: Db, companyId: st
  * recreate a result, grant an executor budget, or apply it over newer work. */
 export async function resumePreservedResultFinalization(db: Db, companyId: string, runId: string) {
   // Each attempt rereads every fact. A row held by another writer (usually a
-  // Retry dispatch for this task) is briefly retried; if it stays busy, the
-  // held Retry's receipt worker is woken to resume it again.
+  // Retry dispatch for this task) is briefly retried without waiting while the
+  // coordinator is held. The last attempt waits for its locks, as this
+  // resumption always did, so a recovered result is never left unapplied
+  // because a row stayed busy.
   for (let attempt = 1; ; attempt += 1) {
-    const resumed = await attemptPreservedResultFinalization(db, companyId, runId);
+    const wait = attempt >= PRESERVED_RESULT_LOCK_ATTEMPTS;
+    const resumed = await attemptPreservedResultFinalization(db, companyId, runId, wait);
     if (resumed !== "busy") return resumed;
-    if (attempt >= PRESERVED_RESULT_LOCK_ATTEMPTS) {
-      await notifyDeferredExecutionWork(db, { companyId });
-      return false;
-    }
     await new Promise(resolve => setTimeout(resolve, PRESERVED_RESULT_LOCK_DELAY_MS));
   }
 }
@@ -114,9 +116,9 @@ export async function resumePreservedResultFinalization(db: Db, companyId: strin
 const PRESERVED_RESULT_LOCK_ATTEMPTS = 10;
 const PRESERVED_RESULT_LOCK_DELAY_MS = 100;
 
-async function attemptPreservedResultFinalization(db: Db, companyId: string, runId: string): Promise<boolean | "busy"> {
+async function attemptPreservedResultFinalization(db: Db, companyId: string, runId: string, wait: boolean): Promise<boolean | "busy"> {
   const resumed = await db.transaction(async tx => {
-    const found = await readPreservedResult(tx as unknown as Db, companyId, runId, true);
+    const found = await readPreservedResult(tx as unknown as Db, companyId, runId, wait ? "wait" : "nowait");
     if (!found) return null;
     const { coordinator, issue, run, result, recovery, intent, generationId } = found;
     await notifyNativeFinalizationWork(tx, { companyId, runId });
