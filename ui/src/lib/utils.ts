@@ -2,6 +2,7 @@ import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { deriveAgentUrlKey, deriveProjectUrlKey, normalizeProjectUrlKey, hasNonAsciiContent } from "@paperclipai/shared";
 import type { BillingType, FinanceDirection, FinanceEventKind } from "@paperclipai/shared";
+import { elapsedLabel, justNowLabel } from "./timeAgo";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -84,17 +85,18 @@ export function formatShortDate(date: Date | string): string {
   });
 }
 
-export function relativeTime(date: Date | string): string {
+export function relativeTime(date: Date | string, language?: string | null): string {
   const now = Date.now();
   const then = new Date(date).getTime();
   const diffSec = Math.round((now - then) / 1000);
-  if (diffSec < 60) return "just now";
+  // Same Russian clock as timeAgo. Past 30 days this stays an absolute date.
+  if (diffSec < 60) return justNowLabel(language);
   const diffMin = Math.round(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffMin < 60) return elapsedLabel(diffMin, "m", language);
   const diffHr = Math.round(diffMin / 60);
-  if (diffHr < 24) return `${diffHr}h ago`;
+  if (diffHr < 24) return elapsedLabel(diffHr, "h", language);
   const diffDay = Math.round(diffHr / 24);
-  if (diffDay < 30) return `${diffDay}d ago`;
+  if (diffDay < 30) return elapsedLabel(diffDay, "d", language);
   return formatDate(date);
 }
 

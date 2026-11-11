@@ -1,5 +1,7 @@
 import { groupImageResources } from "./image-resources";
 import { useState, type ReactNode } from "react";
+import { turnOutcomeLabel } from "@/i18n/task-chat-copy";
+import { translateLabel, useUiLanguage } from "@/i18n/tx";
 import { cn } from "@/lib/utils";
 import { TaskChatRunHealthBanner } from "./TaskChatRunHealthBanner";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
@@ -78,6 +80,7 @@ export function TaskChatTurn({
   leading,
 }: TaskChatTurnProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
+  const language = useUiLanguage();
   const parentRow = !item.settled && item.liveStatus != null;
   // The new Paperclip Runner task surface owns one durable chronological
   // timeline. The Worked/Stopped row is its stable header, so it stays directly
@@ -103,11 +106,7 @@ export function TaskChatTurn({
           ) : null}
           {!item.historical ? <span className="min-w-0 truncate">
             {item.continuedAfterSteering ? "Continued after steering · " : ""}
-            {item.summary.durationLabel
-              ? `${item.summary.failed ? "Stopped" : "Worked"} for ${item.summary.durationLabel}`
-              : item.summary.failed
-                ? "Stopped"
-                : "Worked"}
+            {turnOutcomeLabel(language, item.summary.failed === true, item.summary.durationLabel)}
           </span> : null}
         </div> : null}
         <TaskChatRunHealthBanner failures={item.mcpStartupFailures ?? []} />
@@ -209,11 +208,13 @@ export function TaskChatTurn({
         <SummaryIcon className="h-3.5 w-3.5 shrink-0" />
       ) : null}
       <span>
-        {item.historical ? "Activity" : item.standaloneHeader && item.summary.durationLabel
-          ? `${item.summary.failed ? "Stopped" : "Worked"} for ${item.summary.durationLabel}`
-          : item.summary.failed
-            ? "Stopped"
-            : "Worked"}
+        {item.historical
+          ? translateLabel(language, "Activity")
+          : turnOutcomeLabel(
+              language,
+              item.summary.failed === true,
+              item.standaloneHeader ? item.summary.durationLabel : null,
+            )}
       </span>
       {!item.standaloneHeader && turnSummaryMetrics(item.summary) ? (
         // Time/tools/tokens is demoted, not deleted (PAP-502): it stays in the

@@ -40,6 +40,16 @@
           document.documentElement.style.colorScheme = "dark";
         }
       })();
+      (() => {
+        try {
+          const stored = window.localStorage.getItem("paperclip.locale");
+          if (stored === "en" || stored === "ru") {
+            document.documentElement.lang = stored;
+          }
+        } catch {
+          // Keep the document language when storage is unavailable.
+        }
+      })();
     </script>
   </head>
   <body>

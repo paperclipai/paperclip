@@ -16,6 +16,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
+import { useTx } from "@/i18n/tx";
 import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
 
 /* ---- Help text for (?) tooltips ---- */
@@ -88,11 +89,12 @@ export function HintIcon({ text }: { text: string }) {
 }
 
 export function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode; configSection?: import("../adapters/types").AdapterConfigSection }) {
+  const tx = useTx();
   return (
     <div>
       <div className="flex items-center gap-1.5 mb-1">
-        <label className="text-xs text-muted-foreground">{label}</label>
-        {hint && <HintIcon text={hint} />}
+        <label className="text-xs text-muted-foreground">{tx(label)}</label>
+        {hint && <HintIcon text={tx(hint)} />}
       </div>
       {children}
     </div>
@@ -112,18 +114,20 @@ export function ToggleField({
   onChange: (v: boolean) => void;
   toggleTestId?: string;
 }) {
+  const tx = useTx();
+  const shownLabel = tx(label);
   return (
     <div className="flex items-center justify-between">
       <div className="flex items-center gap-1.5">
-        <span className="text-xs text-muted-foreground">{label}</span>
-        {hint && <HintIcon text={hint} />}
+        <span className="text-xs text-muted-foreground">{shownLabel}</span>
+        {hint && <HintIcon text={tx(hint)} />}
       </div>
       {/* Gallery feedback r3: was a hand-rolled h-5 w-9 pill with a bg-green-600
           track — the app's second switch implementation. Converged on the one
           canonical ToggleSwitch (status-green on-state), DESIGN.md principle 1. */}
       <ToggleSwitch
         data-testid={toggleTestId}
-        aria-label={label}
+        aria-label={shownLabel}
         checked={checked}
         onCheckedChange={onChange}
       />
@@ -154,12 +158,13 @@ export function ToggleWithNumber({
   numberPrefix?: string;
   showNumber: boolean;
 }) {
+  const tx = useTx();
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-1.5">
-          <span className="text-xs text-muted-foreground">{label}</span>
-          {hint && <HintIcon text={hint} />}
+          <span className="text-xs text-muted-foreground">{tx(label)}</span>
+          {hint && <HintIcon text={tx(hint)} />}
         </div>
         <ToggleSwitch
           checked={checked}
@@ -175,8 +180,8 @@ export function ToggleWithNumber({
             value={number}
             onChange={(e) => onNumberChange(Number(e.target.value))}
           />
-          <span>{numberLabel}</span>
-          {numberHint && <HintIcon text={numberHint} />}
+          <span>{tx(numberLabel)}</span>
+          {numberHint && <HintIcon text={tx(numberHint)} />}
         </div>
       )}
     </div>

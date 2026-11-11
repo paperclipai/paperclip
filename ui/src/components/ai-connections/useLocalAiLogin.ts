@@ -67,7 +67,7 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
         setError(next.error ?? (next.status === "expired" ? "This sign-in attempt expired. Start sign-in again." : null));
         // Stop polling a verified account. Focus rechecks after the provider
         // browser visit; sign-in never requires repeated Connect clicks.
-        if (next.status === "sign_in_required") timer = setTimeout(() => void check(), 5000);
+        if (next.status === "sign_in_required") timer = setTimeout(() => void check(), next.authorizationUrl ? 5000 : 1000);
       } catch (cause) {
         if (!cancelled && (!isolated || current.current?.request === request)) setError(describeError(cause).body);
       } finally { checking = false; }

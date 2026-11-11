@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "../../lib/utils";
+import { useTx } from "@/i18n/tx";
 
 export function PropertySection({
   children,
@@ -17,6 +18,7 @@ export function PropertySection({
   first?: boolean;
   streamlined?: boolean;
 }) {
+  const tx = useTx();
   return (
     <div className={className} data-property-section="true">
       {title ? (
@@ -30,7 +32,7 @@ export function PropertySection({
             first ? "pt-0" : "pt-3",
           )}
         >
-          {title}
+          {tx(title)}
         </div>
       ) : null}
       <div className="space-y-0.5">{children}</div>
@@ -48,6 +50,8 @@ export function PropertyRow({
   /** Opt-in wrapping for chip-collection rows only (§5). Default rows stay one line. */
   wrap?: boolean;
 }) {
+  const tx = useTx();
+  const visibleLabel = typeof label === "string" ? tx(label) : label;
   return (
     <div
       className={cn(
@@ -64,7 +68,7 @@ export function PropertyRow({
         data-property-label={typeof label === "string" ? label : undefined}
         title={typeof label === "string" ? label : undefined}
       >
-        {label}
+        {visibleLabel}
       </span>
       <div
         className={cn(

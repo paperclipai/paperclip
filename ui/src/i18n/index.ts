@@ -2,10 +2,13 @@ import i18n, { type InitOptions, type TOptions } from "i18next";
 import { initReactI18next, useTranslation as useReactI18nextTranslation } from "react-i18next";
 
 import { DEFAULT_LOCALE, i18nextResources, supportedLocales } from "./locales";
+import { applyDocumentLang, readStoredLocale } from "./preference";
+
+const initialLocale = readStoredLocale();
 
 const i18nextOptions: InitOptions = {
   resources: i18nextResources,
-  lng: DEFAULT_LOCALE,
+  lng: initialLocale,
   fallbackLng: DEFAULT_LOCALE,
   supportedLngs: supportedLocales,
   defaultNS: "translation",
@@ -14,7 +17,9 @@ const i18nextOptions: InitOptions = {
   initAsync: false,
 };
 
-void i18n.use(initReactI18next).init(i18nextOptions).catch((error: unknown) => {
+void i18n.use(initReactI18next).init(i18nextOptions).then(() => {
+  applyDocumentLang(i18n.resolvedLanguage ?? initialLocale);
+}).catch((error: unknown) => {
   console.error("Failed to initialize i18next", error);
 });
 
