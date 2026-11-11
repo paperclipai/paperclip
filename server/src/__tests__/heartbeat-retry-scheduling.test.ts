@@ -762,7 +762,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(retryRun?.scheduledRetryAt?.toISOString()).toBe(expectedDueAt.toISOString());
 
     const earlyPromotion = await heartbeat.promoteDueScheduledRetries(new Date(expectedDueAt.getTime() - 1));
-    expect(earlyPromotion).toEqual({ promoted: 0, runIds: [] });
+    expect(earlyPromotion).toEqual({ promoted: 0, runIds: [], degraded: false });
 
     const stillScheduled = await db
       .select({ status: heartbeatRuns.status })
@@ -772,7 +772,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(stillScheduled?.status).toBe("scheduled_retry");
 
     const duePromotion = await heartbeat.promoteDueScheduledRetries(expectedDueAt);
-    expect(duePromotion).toEqual({ promoted: 1, runIds: [scheduled.run.id] });
+    expect(duePromotion).toEqual({ promoted: 1, runIds: [scheduled.run.id], degraded: false });
 
     const promotedRun = await db
       .select({ status: heartbeatRuns.status })
@@ -1647,7 +1647,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       if (phase === "promote") await clearLock();
       const promotion = await heartbeat.promoteDueScheduledRetries(scheduled.dueAt);
       if (phase === "promote") {
-        expect(promotion).toEqual({ promoted: 0, runIds: [] });
+        expect(promotion).toEqual({ promoted: 0, runIds: [], degraded: false });
       } else {
         expect(promotion.runIds).toContain(scheduled.run.id);
         await clearLock();
@@ -1717,7 +1717,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .where(eq(agentWakeupRequests.id, duplicateWakeupId));
 
     const promotion = await heartbeat.promoteDueScheduledRetries(scheduled.dueAt);
-    expect(promotion).toEqual({ promoted: 1, runIds: [scheduled.run.id] });
+    expect(promotion).toEqual({ promoted: 1, runIds: [scheduled.run.id], degraded: false });
 
     const duplicate = await db
       .select({
@@ -1761,7 +1761,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       }).where(eq(issues.id, issueId));
 
       const promotion = await heartbeat.promoteDueScheduledRetries(scheduled.dueAt);
-      expect(promotion).toEqual({ promoted: 0, runIds: [] });
+      expect(promotion).toEqual({ promoted: 0, runIds: [], degraded: false });
 
       const retryRun = await db
         .select({

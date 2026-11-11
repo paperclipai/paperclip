@@ -1795,8 +1795,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     });
   }
 
-  async function nextScheduledRetryAt() {
-    return runDispatch.nextScheduledRetryAt({ cutoff: await getWorktreeExecutionCutoff() });
+  async function nextScheduledRetryAt(input: { excludeReason?: string } = {}) {
+    const cutoff = await getWorktreeExecutionCutoff();
+    return runDispatch.nextScheduledRetryAt(input.excludeReason ? { cutoff, excludeReason: input.excludeReason } : { cutoff });
   }
 
   async function promoteDueScheduledRetries(now = new Date()) {
@@ -1806,7 +1807,39 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       cutoff,
     });
     applyRunDispatchPostCommitEffects(result.postCommitEffects);
-    return { promoted: result.promoted, runIds: result.runIds };
+    const { decisions, agents, degraded, capPerAgent, released, deferred } = result.releasePlan;
+    // `plan.deferred` holds every row that was not released, including retries
+    // of other mechanisms, which this sweep promotes on its existing path.
+    // Reporting those as "deferred" logged a promotion and a deferral for the
+    // same row, so the two populations are counted apart: `deferred` is quota
+    // retries actually held back, `outOfScope` is other mechanisms released
+    // elsewhere. `deferredApplied`/`deferralSuperseded` split the planned
+    // deferrals by whether the deferred write won its compare-and-set.
+    const deferredQuota = deferred.filter((decision) => !decision.outOfScope).length;
+    const outOfScope = decisions.length - released.length - deferredQuota;
+    const summary = {
+      now: result.releasePlan.now.toISOString(),
+      promoted: result.promoted,
+      released: released.length,
+      deferred: deferredQuota,
+      outOfScope,
+      deferredApplied: result.deferredApplied,
+      deferralSuperseded: result.deferralSuperseded,
+      degraded,
+      capPerAgent,
+      agents: agents.length,
+    };
+    if (degraded) {
+      logger.warn({ ...summary, decisions }, "scheduled retry sweep degraded: in-flight state unreadable, no quota-recovery retry released");
+    } else {
+      logger.info(summary, "scheduled retry sweep");
+    }
+    // `degraded` leaves the dispatch coordinator: rows denied by this sweep
+    // keep their own past due time, so the deadline it derives next would ask
+    // for an immediate re-run of the count query that just failed. The
+    // coordinator is the only consumer that schedules the next sweep, and it
+    // backs that deadline off (`dispatch-work.ts`).
+    return { promoted: result.promoted, runIds: result.runIds, degraded };
   }
 
   async function getIssueRetryRun(

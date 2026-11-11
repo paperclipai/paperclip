@@ -66,6 +66,7 @@ import {
 } from "../../../services/issue-continuation-summary.js";
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
 import { decideQueuedRunStaleness, decideScheduledRetryGate } from "../domain/policy.js";
+import { QUOTA_RECOVERY_RETRY_REASON } from "../domain/quota-recovery-release.js";
 import type {
   QueuedRunFacts,
   ReviewParticipantFacts,
@@ -82,6 +83,8 @@ import {
 } from "../domain/wake-context.js";
 import type {
   CancelStaleQueuedRunInput,
+  DeferScheduledRetryInput,
+  DeferScheduledRetryOutcome,
   DispatchResolvedInteractionInput,
   DispatchResolvedInteractionOutcome,
   DueRetryRun,
@@ -553,38 +556,121 @@ export function createPostgresRunDispatchAdapter(
     return decideScheduledRetryGate(factsResult.facts, input.now);
   }
 
-  async function nextScheduledRetryAt(input: { cutoff: Date | null }): Promise<number | null> {
+  async function nextScheduledRetryAt(input: { cutoff: Date | null; excludeReason?: string }): Promise<number | null> {
     const [row] = await db.select({ at: heartbeatRuns.scheduledRetryAt }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.status, "scheduled_retry"),
         sql`jsonb_typeof(${heartbeatRuns.resultJson}->'startupCancellation') is distinct from 'object'`,
+        input.excludeReason
+          ? sql`${heartbeatRuns.scheduledRetryReason} is distinct from ${input.excludeReason}`
+          : undefined,
         input.cutoff ? gte(heartbeatRuns.createdAt, input.cutoff) : undefined))
       .orderBy(asc(heartbeatRuns.scheduledRetryAt)).limit(1);
     return row?.at?.getTime() ?? null;
   }
 
   async function listDueRetries(input: ListDueRetriesInput): Promise<DueRetryRun[]> {
-    const rows = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.status, "scheduled_retry"),
-          sql`jsonb_typeof(${heartbeatRuns.resultJson}->'startupCancellation') is distinct from 'object'`,
-          lte(heartbeatRuns.scheduledRetryAt, input.now),
-          input.cutoff ? gte(heartbeatRuns.createdAt, input.cutoff) : undefined,
-        ),
-      )
-      .orderBy(
-        asc(heartbeatRuns.scheduledRetryAt),
-        asc(heartbeatRuns.createdAt),
-        asc(heartbeatRuns.id),
-      )
-      .limit(input.limit);
+    const dueNow = and(
+      eq(heartbeatRuns.status, "scheduled_retry"),
+      sql`jsonb_typeof(${heartbeatRuns.resultJson}->'startupCancellation') is distinct from 'object'`,
+      lte(heartbeatRuns.scheduledRetryAt, input.now),
+      input.cutoff ? gte(heartbeatRuns.createdAt, input.cutoff) : undefined,
+    );
+    const columns = {
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+      scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      createdAt: heartbeatRuns.createdAt,
+    };
+    const orderByDue = [
+      asc(heartbeatRuns.scheduledRetryAt),
+      asc(heartbeatRuns.createdAt),
+      asc(heartbeatRuns.id),
+    ];
+
+    // Two reads, one per mechanism class, because the limit is a per-sweep
+    // ceiling on work, not a fairness policy. A quota-recovery cohort denied
+    // while the in-flight count is unreadable keeps its own (past) due time, so
+    // a single ordered read hands every later sweep the same head-of-queue
+    // cohort and never reaches the process-loss retries sorting behind it --
+    // retries that do not depend on that count at all. Each class gets its own
+    // budget and the merged result keeps the caller's due order.
+    const [quotaRows, otherRows] = await Promise.all([
+      db
+        .select(columns)
+        .from(heartbeatRuns)
+        .where(and(dueNow, eq(heartbeatRuns.scheduledRetryReason, QUOTA_RECOVERY_RETRY_REASON)))
+        .orderBy(...orderByDue)
+        .limit(input.limit),
+      db
+        .select(columns)
+        .from(heartbeatRuns)
+        .where(
+          and(
+            dueNow,
+            sql`${heartbeatRuns.scheduledRetryReason} is distinct from ${QUOTA_RECOVERY_RETRY_REASON}`,
+          ),
+        )
+        .orderBy(...orderByDue)
+        .limit(input.limit),
+    ]);
+
+    const rows = [...quotaRows, ...otherRows].sort(
+      (left, right) =>
+        (left.scheduledRetryAt?.getTime() ?? 0) - (right.scheduledRetryAt?.getTime() ?? 0) ||
+        (left.createdAt?.getTime() ?? 0) - (right.createdAt?.getTime() ?? 0) ||
+        left.id.localeCompare(right.id),
+    );
 
     return rows.map((row) => ({
       runId: row.id,
       companyId: row.companyId,
+      agentId: row.agentId,
+      scheduledRetryAt: row.scheduledRetryAt ? new Date(row.scheduledRetryAt) : new Date(0),
+      scheduledRetryReason: row.scheduledRetryReason ?? null,
     }));
+  }
+
+  async function countInflightQuotaRecoveryRetries(): Promise<Map<string, number> | null> {
+    const rows = await db
+      .select({ agentId: heartbeatRuns.agentId, count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          inArray(heartbeatRuns.status, ["queued", "running"]),
+          eq(heartbeatRuns.scheduledRetryReason, QUOTA_RECOVERY_RETRY_REASON),
+        ),
+      )
+      .groupBy(heartbeatRuns.agentId);
+
+    const counts = new Map<string, number>();
+    for (const row of rows) counts.set(row.agentId, Number(row.count) || 0);
+    return counts;
+  }
+
+  async function deferScheduledRetry(
+    input: DeferScheduledRetryInput,
+  ): Promise<DeferScheduledRetryOutcome> {
+    const [row] = await db
+      .update(heartbeatRuns)
+      .set({ scheduledRetryAt: input.scheduledRetryAt, updatedAt: input.now })
+      .where(
+        and(
+          eq(heartbeatRuns.id, input.runId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          // Compare-and-set on the due time this sweep read. Status alone is
+          // not enough: an operator "retry now" moves the due time and leaves
+          // the row `scheduled_retry`, so a status-only guard lets a stale
+          // sweep push the row an operator just released back into the future.
+          // Compared at millisecond precision because Postgres keeps
+          // microseconds and a JS Date does not.
+          sql`date_trunc('milliseconds', ${heartbeatRuns.scheduledRetryAt}) = date_trunc('milliseconds', ${input.previousScheduledRetryAt}::timestamptz)`,
+        ),
+      )
+      .returning({ id: heartbeatRuns.id });
+    return row ? { deferred: true } : { deferred: false };
   }
 
   async function loadStalenessFacts(
@@ -1567,6 +1653,8 @@ export function createPostgresRunDispatchAdapter(
     evaluateScheduledRetryGate,
     nextScheduledRetryAt,
     listDueRetries,
+    countInflightQuotaRecoveryRetries,
+    deferScheduledRetry,
     cancelStaleQueuedRun,
     dispatchResolvedInteractionIfCurrent,
     promoteOrCancelDueRetry,

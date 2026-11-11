@@ -10,6 +10,21 @@ import {
 import type { RunDispatchWriter, ScheduledRetryReader } from "./application/ports.js";
 
 export {
+  QUOTA_RECOVERY_RETRY_REASON,
+  DEFAULT_QUOTA_RECOVERY_CAP_PER_AGENT,
+  DEFAULT_QUOTA_RECOVERY_DECORRELATION_WINDOW_MS,
+  decorrelateRetryAt,
+  planDueQuotaRecoveryReleases,
+} from "./domain/quota-recovery-release.js";
+export type {
+  DueQuotaRetry,
+  ReleaseDecision,
+  ReleasePlan,
+  AgentReleaseState,
+  QuotaRecoveryReleaseReport,
+} from "./domain/quota-recovery-release.js";
+
+export {
   MAX_TURN_CONTINUATION_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON,
   AI_CONNECTION_BUSY_RETRY_REASON,
@@ -77,12 +92,13 @@ export function createRunDispatch(db: Db, deps: RunDispatchDeps = {}) {
   });
 
   return {
-    nextScheduledRetryAt: (input: { cutoff: Date | null }) => adapter.nextScheduledRetryAt(input),
+    nextScheduledRetryAt: (input: { cutoff: Date | null; excludeReason?: string }) => adapter.nextScheduledRetryAt(input),
     evaluateScheduledRetryGate: createEvaluateScheduledRetryGate({ reader: adapter }),
     promoteScheduledRetry,
     promoteDueScheduledRetries: createPromoteDueScheduledRetries({
       reader: adapter,
       promoteScheduledRetry,
+      deferScheduledRetry: (input) => adapter.deferScheduledRetry(input),
     }),
     cancelStaleQueuedRun: createCancelStaleQueuedRun({
       writer: adapter,
