@@ -132,6 +132,46 @@ export function supersedeStaleOwnerCompletion(
   };
 }
 
+/**
+ * Effects that give the outgoing agent more work on the task, wake it, or bind
+ * a blocker or reviewer to the task. None of them is valid once the task
+ * belongs to a person.
+ */
+const OUTGOING_AGENT_TASK_EFFECTS: ReadonlySet<NativeStatusEffect["kind"]> = new Set([
+  "enqueue_continuation", "schedule_retry", "notify_owner", "record_recovery",
+  "bind_blocker", "bind_reviewer", "create_delegated_issue", "accept_replacement_turn",
+]);
+
+/**
+ * A run that handed its own task to a person keeps running and finishes its
+ * turn. Its result is history: it cannot move the person's task, wake or
+ * retry the outgoing agent, or bind a blocker to the task. This also applies
+ * to decisions that already preserve the status.
+ *
+ * Two effects stay. A governed request still opens its interaction: the gate
+ * belongs to the request, not to the task owner. A failed workspace
+ * finalization still records its repair, so the run's saved work is not lost.
+ */
+export function supersedeHandedOffDecision(
+  decision: NativeStatusDecision,
+  issue: { status: string; assigneeAgentId: string | null; assigneeUserId: string | null },
+): NativeStatusDecision {
+  if (issue.assigneeAgentId !== null || !issue.assigneeUserId) return decision;
+  const effects = decision.effects.filter(effect => !OUTGOING_AGENT_TASK_EFFECTS.has(effect.kind));
+  const governed = effects.some(effect => effect.kind === "create_interaction");
+  if (decision.statusAction === "preserve" || governed) {
+    return effects.length === decision.effects.length ? decision : { ...decision, effects };
+  }
+  return {
+    policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+    statusAction: "preserve",
+    toStatus: issue.status as NativeAuthoritativeIssueStatus,
+    reasonCode: "completion_owner_superseded",
+    unblockDescriptor: null,
+    effects,
+  };
+}
+
 /** Pure authority boundary: model prose is evidence, never a status command. */
 export function arbitrateNativeStatus(input: {
   assessment: NativeEvidenceAssessment;

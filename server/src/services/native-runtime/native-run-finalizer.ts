@@ -62,6 +62,7 @@ import type { PrpIgnoredAttentionRequest, PrpTerminalState } from "@paperclipai/
 import {
   arbitrateNativeStatus,
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
+  supersedeHandedOffDecision,
   supersedeStaleOwnerCompletion,
   type NativeAuthoritativeIssueStatus,
 } from "./status-arbiter.js";
@@ -1706,6 +1707,7 @@ export async function finalizeNativeRun(input: {
     // new owner's task. The status committer rechecks this under the issue lock.
     if (!isConversation(authoritativeIssue)) {
       proposedDecision = supersedeStaleOwnerCompletion(proposedDecision, authoritativeIssue, run.agentId, run.id);
+      if (!reviewContext) proposedDecision = supersedeHandedOffDecision(proposedDecision, authoritativeIssue);
     }
     if (proposedDecision.statusAction === "done") {
       const continuation = record(run.contextSnapshot?.executionContinuation);

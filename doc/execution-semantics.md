@@ -74,16 +74,19 @@ An issue has at most one assignee.
 
 This is a hard invariant. Paperclip is single-assignee by design.
 
-A legacy agent run can hand its own task to a human without cancelling itself.
+An agent run, legacy or native, can hand its own task to a human without cancelling itself.
 The REST request must use the run's signed token and match the current agent,
 company, task, and active run. The assignment and requested status persist while
 the current turn finishes normally. This avoids losing the handoff when workspace
 restoration takes longer than the stop timeout. The former agent no longer owns
 the task. Its later task mutations are rejected, including under the update
 transaction's task and run locks. Read and comment access follows normal policy.
+A native run's task tools stop acting for the task once it is handed off, and the
+run's result is kept as history: its finalizer preserves the person's task status
+and adds no continuation, blocker, or recovery to it.
 
-Board-initiated reassignments, agent API keys, native executions, and handoffs to
-another agent still require the outgoing execution to stop before ownership changes.
+Board-initiated reassignments, agent API keys, and handoffs to another agent still
+require the outgoing execution to stop before ownership changes.
 A native Stop can take longer than the request. When its durable Stop fence is
 committed, the reassignment applies at once and the new assignee's wake waits
 behind the stopping run. When that run releases the task, its Stop still does not

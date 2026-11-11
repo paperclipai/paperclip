@@ -1,6 +1,11 @@
 import { forbidden } from "./errors.js";
 
-export function assertLegacyRunTaskOwnership(
+/**
+ * A run that handed its own task to a person keeps running to finish its turn,
+ * but it no longer owns the task. Reject its later task mutations, legacy or
+ * native, so the person's task cannot be changed by the outgoing run.
+ */
+export function assertHandedOffRunTaskOwnership(
   run: {
     companyId: string;
     runtimeMode: string;
@@ -13,7 +18,7 @@ export function assertLegacyRunTaskOwnership(
     assigneeUserId: string | null;
   },
 ) {
-  if (run?.runtimeMode === "legacy" && run.companyId === issue.companyId &&
+  if ((run?.runtimeMode === "legacy" || run?.runtimeMode === "native") && run.companyId === issue.companyId &&
       run.contextSnapshot?.issueId === issue.id &&
       issue.assigneeAgentId === null && issue.assigneeUserId) {
     throw forbidden("This task is assigned to a human; the outgoing run can no longer change it", {

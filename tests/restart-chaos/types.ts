@@ -32,9 +32,10 @@ export type TaskFaultKind = FaultKind | "K13" | "K0" | ProviderFaultKind | DiskF
  * L1: high-output, high-accounting run for database contention (contention.ts).
  * F1: an absolute symlink pointing out of the repository workspace, kept at rest (staging save-back class F).
  * T1: a 100-second shell tool in the agent's workspace, so a fault lands while the remote Runner runs a tool (staging class R).
+ * H2: the agent's own last step hands the task to the person who created it, in review (staging class H).
  * W2, W2Q, W2C: the same task woken again 0–60 s after its run succeeded (rewake.ts), many tasks on one agent.
  */
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "Q4", "F1", "T1", "W2", "W2Q", "W2C"] as const;
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "Q4", "F1", "T1", "W2", "W2Q", "W2C", "H2"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
@@ -363,6 +364,19 @@ export interface OracleArtifacts {
   rewake?: import("./rewake.js").RewakeArtifacts;
   /** `--long-turn-minutes`: the task's runs, for the harness's own long-turn evidence (long-turn.ts). */
   runs?: import("./rewake.js").RewakeArtifacts["runs"];
+  /** H2: who owns the task at rest, and how its runs ended. */
+  handoff?: HandoffArtifacts;
+}
+
+/** H2: the task's owner and execution state at rest, and each run's terminal state. */
+export interface HandoffArtifacts {
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  createdByUserId: string | null;
+  executionBlocker: boolean;
+  activeRecoveryAction: boolean;
+  /** Null when the run history could not be read: the run checks then fail. */
+  runs: Array<{ id: string; status: string; errorCode: string | null }> | null;
 }
 
 /** What the board did for a governance task (G1, H1), and what the observer saw. */
