@@ -19,6 +19,7 @@ export const connectionGuidanceTasks = cases.map(id => {
   if (!original) throw new Error("Missing original connection story: " + id);
   return {
     ...original,
+    expectedRunCount: id === "provider-second" ? 3 : original.expectedRunCount,
     automaticRetryPolicy: "single_attempt" as const,
     buildPrompt: (nonce: string) => connectionGuidanceDeclinePrompts[id] ?? original.buildPrompt(nonce),
   };
@@ -26,7 +27,7 @@ export const connectionGuidanceTasks = cases.map(id => {
 
 export function connectionGuidanceDefinitionDigest() {
   const files = [
-    "connection-guidance-cases.ts", "connection-guidance-evidence.ts",
+    "connection-guidance-cases.ts", "connection-guidance-evidence.ts", "continuation-screenshot.ts",
     "everyday-cases.ts", "everyday-flow.ts", "everyday-decisions.ts",
     "everyday-observations.ts", "everyday-delivery.ts",
     "connection-routing-evidence.ts", "connection-reviews.ts", "aggregator-fixture.ts",

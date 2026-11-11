@@ -8,7 +8,7 @@ import {
   defaultAgentPermissions,
   normalizeAgentPermissions,
   permissionsImplyLowTrust,
-} from "../services/agent-permissions.js";
+} from "../lib/agent-permissions.js";
 
 describe("agent permissions service", () => {
   it("grants agent-creation authority to new agents by default", () => {
@@ -27,6 +27,19 @@ describe("agent permissions service", () => {
     expect(normalizeAgentPermissions({}).canCreateAgents).toBe(false);
     expect(normalizeAgentPermissions("malformed").canCreateAgents).toBe(false);
     expect(normalizeAgentPermissions([]).canCreateAgents).toBe(false);
+  });
+
+  it("reports a CEO's hiring authority unless the board recorded a denial", () => {
+    expect(normalizeAgentPermissions({}, { role: "ceo" }).canCreateAgents).toBe(true);
+    expect(normalizeAgentPermissions(undefined, { role: "ceo" }).canCreateAgents).toBe(true);
+    expect(normalizeAgentPermissions({ canCreateAgents: false }, { role: "ceo" }).canCreateAgents).toBe(true);
+    const denial = { actorType: "user", actorId: "board-user", at: "2026-11-08T00:00:00.000Z" };
+    expect(normalizeAgentPermissions({ canCreateAgents: false, ceoHiringDeniedBy: denial }, { role: "ceo" }))
+      .toMatchObject({ canCreateAgents: false, ceoHiringDeniedBy: denial });
+    expect(normalizeAgentPermissions({ canCreateAgents: true, ceoHiringDeniedBy: denial }, { role: "ceo" })).not.toHaveProperty("ceoHiringDeniedBy");
+    expect(normalizeAgentPermissions({ canCreateAgents: false, ceoHiringDeniedBy: { actorType: "forged" } }, { role: "ceo" }).canCreateAgents).toBe(true);
+    expect(normalizeAgentPermissions({ trustPreset: LOW_TRUST_REVIEW_PRESET }, { role: "ceo" }).canCreateAgents).toBe(false);
+    expect(normalizeAgentPermissions({}, { role: "engineer" }).canCreateAgents).toBe(false);
   });
 
   it("withholds agent-creation authority from new low-trust agents", () => {

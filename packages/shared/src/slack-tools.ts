@@ -200,7 +200,7 @@ export const SLACK_TOOLS = [
     "chat.postMessage",
     ["chat:write"],
     "write",
-    "Send a requested message or thread reply as the bot in an allowed destination. Preserve the same idempotency key and arguments on retries. Delivery is separate from the final reply.",
+    "Send an explicitly requested message or thread reply as the bot in an allowed destination. Paperclip delivers the normal final reply to the current chat automatically; do not post a second copy here. Preserve the same idempotency key and arguments on retries; inspect slack_delivery for queued or uncertain operations.",
     { channel, text, thread_ts: timestamp.optional(), ...write },
   ),
   tool(
@@ -224,7 +224,7 @@ export const SLACK_TOOLS = [
     "files.completeUploadExternal",
     ["files:write"],
     "write",
-    "Upload a task attachment to an allowed Slack destination. Use a Paperclip attachment ID, never a local path or arbitrary URL.",
+    "Upload an existing task attachment to an explicitly requested allowed Slack destination. Use a Paperclip attachment ID, never a local path or arbitrary URL. For a file requested in the current chat, use its external-chat file-delivery contract instead of uploading a second copy.",
     {
       channel,
       attachmentId: z.string().uuid(),

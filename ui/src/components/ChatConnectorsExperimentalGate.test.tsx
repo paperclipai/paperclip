@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { ChatConnectorsExperimentalGate } from "./ChatConnectorsExperimentalGate";
 import { AgentChannelsPanel } from "./chat/AgentChannelsPanel";
 import { ExternallyConnectedTaskBanner } from "./chat/ExternallyConnectedTaskBanner";
@@ -104,6 +105,31 @@ describe("Chat connectors visibility gate", () => {
     await vi.waitFor(() => expect(Boolean(container.querySelector("[data-chat-setup]"))).toBe(provider === "agentmail"));
     if (provider !== "agentmail") expect(container.querySelector("[data-redirect]")).not.toBeNull();
   });
+  it.each([true, false])("gates GitHub setup by its own flag, not chat (%s)", async (githubEnabled) => {
+    api.provider = "github";
+    api.settings.mockResolvedValue({ enableChatConnectors: !githubEnabled, enableGitHubReviewBots: githubEnabled });
+    await render();
+    expect(Boolean(container.querySelector("[data-chat-setup]"))).toBe(githubEnabled);
+  });
+  it.each(["github", "slack"])("gates each existing endpoint by provider with only GitHub enabled (%s)", async (provider) => {
+    api.endpointId = "endpoint-1";
+    api.get.mockResolvedValue({ provider });
+    api.settings.mockResolvedValue({ enableChatConnectors: false, enableGitHubReviewBots: true });
+    await render();
+    await vi.waitFor(() => expect(api.get).toHaveBeenCalledWith("endpoint-1"));
+    await vi.waitFor(() => expect(Boolean(container.querySelector("[data-chat-setup]"))).toBe(provider === "github"));
+  });
+  it("keeps GitHub agent channels visible while hiding Slack under the independent flag", async () => {
+    api.settings.mockResolvedValue({ enableChatConnectors: false, enableGitHubReviewBots: true });
+    api.list.mockResolvedValue([
+      { provider: "github", id: "github", assignedAgentId: "agent-1", status: "active" },
+      { provider: "slack", id: "slack", assignedAgentId: "agent-1", status: "active" },
+    ]);
+    flushSync(() => root.render(<QueryClientProvider client={client}><AgentChannelsPanel companyId="company-1" agentId="agent-1" /></QueryClientProvider>));
+    await flushReact();
+    expect(container.querySelector('a[href="/apps/chat/github/settings"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/apps/chat/slack/settings"]')).toBeNull();
+  });
   it("waits without exposing setup, then enables the route after explicit opt-in", async () => {
     let resolve!: (value: unknown) => void;
     api.settings.mockReturnValue(
@@ -143,6 +169,45 @@ describe("Chat connectors visibility gate", () => {
     ).toEqual({ enableChatConnectors: true });
     expect(container.querySelector("[data-chat-setup]")).toBeNull();
     expect(container.querySelector("[data-redirect]")).not.toBeNull();
+  });
+  it("keeps a loaded endpoint gating the page when its refetch fails transiently", async () => {
+    api.endpointId = "endpoint-1";
+    api.get.mockResolvedValue({ provider: "slack" });
+    api.settings.mockResolvedValue({ enableChatConnectors: true });
+    await render();
+    await vi.waitFor(() => expect(container.querySelector("[data-chat-setup]")).not.toBeNull());
+
+    api.get.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await client.invalidateQueries({ queryKey: queryKeys.chatEndpoints.detail("endpoint-1") });
+    await flushReact();
+
+    expect(api.get).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("[data-chat-setup]")).not.toBeNull();
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+  it("shows readable copy with Retry when the endpoint fails to load", async () => {
+    api.endpointId = "endpoint-1";
+    api.get
+      .mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }))
+      .mockResolvedValue({ provider: "slack" });
+    api.settings.mockResolvedValue({ enableChatConnectors: true });
+    await render();
+    await vi.waitFor(() => expect(container.querySelector('[data-query-view="error"]')).not.toBeNull());
+
+    expect(container.textContent).toContain("Couldn't load this endpoint");
+    expect(container.querySelector("[data-chat-setup]")).toBeNull();
+    expect(container.querySelector("[data-redirect]")).toBeNull();
+    const retry = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Retry");
+    expect(retry, "Retry button").toBeTruthy();
+    retry!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushReact();
+
+    await vi.waitFor(() => expect(container.querySelector("[data-chat-setup]")).not.toBeNull());
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
   });
   it("defaults off without a query provider and performs no settings request", async () => {
     await render(false);

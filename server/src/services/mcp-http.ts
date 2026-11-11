@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { markMcpHttpResponseFailure, retainMcpConnectionFailure, withMcpConnectionFailure } from "./mcp-connection-failure.js";
 // Helpers for talking to remote MCP servers over the Streamable HTTP transport.
 //
 // The MCP Streamable HTTP spec requires the client to advertise that it accepts
@@ -72,18 +73,18 @@ export async function initializeMcpHttpSession(input: {
     }),
   });
   if (!initializeResponse.ok) {
-    throw new McpHttpInitializationError(
+    throw markMcpHttpResponseFailure(initializeResponse, new McpHttpInitializationError(
       `Remote MCP initialization returned HTTP ${initializeResponse.status}`,
       "initialize",
       initializeResponse.status,
       initializeResponse,
-    );
+    ));
   }
   let payload: unknown;
   try {
-    payload = await readMcpHttpResponse(initializeResponse, `${input.requestId}-initialize`);
-  } catch {
-    throw new McpHttpInitializationError("Remote MCP initialization returned an invalid response", "initialize", null);
+    payload = await withMcpConnectionFailure(() => readMcpHttpResponse(initializeResponse, `${input.requestId}-initialize`));
+  } catch (error) {
+    throw retainMcpConnectionFailure(error, new McpHttpInitializationError("Remote MCP initialization returned an invalid response", "initialize", null));
   }
   const result = payload && typeof payload === "object" && "result" in payload
     ? (payload as { result?: unknown }).result
@@ -109,11 +110,11 @@ export async function initializeMcpHttpSession(input: {
     }),
   });
   if (!initializedResponse.ok) {
-    throw new McpHttpInitializationError(
+    throw markMcpHttpResponseFailure(initializedResponse, new McpHttpInitializationError(
       `Remote MCP initialized notification returned HTTP ${initializedResponse.status}`,
       "initialized_notification",
       initializedResponse.status,
-    );
+    ));
   }
   return sessionHeaders;
 }
@@ -174,13 +175,27 @@ export function parseMcpHttpResponseBody(bodyText: string, contentType: string |
   throw new SyntaxError("MCP SSE response contained no data events");
 }
 
+export type McpHttpResponseProgress = {
+  bytesReceived: number;
+  chunksReceived: number;
+  eventsReceived: number;
+  matchedResponse: boolean;
+  ended: boolean;
+};
+
 /** Read until the response for this request arrives, without waiting for an SSE
  * connection to close. Notifications and responses for other IDs are ignored. */
 export async function readMcpHttpResponse(
   response: Response,
   requestId: string | number,
-  options: { maxBytes?: number; onRequest?: (message: Record<string, unknown>) => Promise<void> } = {},
+  options: {
+    maxBytes?: number;
+    onRequest?: (message: Record<string, unknown>) => Promise<void>;
+    onProgress?: (progress: McpHttpResponseProgress) => void;
+  } = {},
 ): Promise<unknown> {
+  const progress: McpHttpResponseProgress = { bytesReceived: 0, chunksReceived: 0, eventsReceived: 0, matchedResponse: false, ended: false };
+  options.onProgress?.(progress);
   const maxBytes = options.maxBytes ?? 8 * 1024 * 1024;
   const isStream = response.headers.get("content-type")?.toLowerCase().includes("text/event-stream");
   const reader = response.body?.getReader();
@@ -203,19 +218,26 @@ export async function readMcpHttpResponse(
   const inspect = async (message: unknown): Promise<unknown | undefined> => {
     if (!message || typeof message !== "object") return undefined;
     const record = message as Record<string, unknown>;
-    if (record.id === requestId && ("result" in record || "error" in record)) return record;
+    if (record.id === requestId && ("result" in record || "error" in record)) {
+      progress.matchedResponse = true;
+      return record;
+    }
     if ("method" in record && "id" in record) await options.onRequest?.(record);
     return undefined;
   };
   const event = async (value: string) => {
     const data = value.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n");
     if (!data) return undefined;
+    progress.eventsReceived += 1;
     return inspect(parse(data));
   };
   try {
     while (true) {
       const { value, done } = await reader.read();
       bytes += value?.byteLength ?? 0;
+      progress.bytesReceived = bytes;
+      if (value) progress.chunksReceived += 1;
+      progress.ended = done;
       if (bytes > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
       buffer += decoder.decode(value, { stream: !done });
       if (isStream) {
@@ -243,10 +265,14 @@ const sessions = new Map<string, { headers: Record<string, string>; expiresAt: n
 const initializing = new Map<string, Promise<Record<string, string>>>();
 const SESSION_TTL_MS = 30 * 60_000;
 
+function mcpHttpSessionKey(scope: string, headers: Record<string, string> | undefined) {
+  return `${scope}:${createHash("sha256").update(JSON.stringify(Object.entries(headers ?? {}).sort())).digest("hex")}`;
+}
+
 /** Cache only protocol headers; credential hashes and scope separate every
  * connection and effective identity. Never cache a tool call or replay a write. */
 export async function getMcpHttpSession(input: Parameters<typeof initializeMcpHttpSession>[0] & { scope: string }) {
-  const key = `${input.scope}:${createHash("sha256").update(JSON.stringify(Object.entries(input.headers ?? {}).sort())).digest("hex")}`;
+  const key = mcpHttpSessionKey(input.scope, input.headers);
   const cached = sessions.get(key);
   if (cached && cached.expiresAt > Date.now()) return { ...input.headers, ...cached.headers };
   const pending = initializing.get(key);
@@ -261,6 +287,15 @@ export async function getMcpHttpSession(input: Parameters<typeof initializeMcpHt
   }).finally(() => { if (initializing.get(key) === promise) initializing.delete(key); });
   initializing.set(key, promise);
   return promise;
+}
+
+/** Drop one identity's cached session after the server may have ended it. Other
+ * identities, in-flight initializations, and a session that already replaced
+ * the failed one are kept. */
+export function forgetMcpHttpSession(input: { scope: string; headers?: Record<string, string>; sessionId: string }) {
+  const key = mcpHttpSessionKey(input.scope, input.headers);
+  const cached = sessions.get(key);
+  if (cached && new Headers(cached.headers).get("mcp-session-id") === input.sessionId) sessions.delete(key);
 }
 
 export function forgetMcpHttpSessions(connectionId: string) {

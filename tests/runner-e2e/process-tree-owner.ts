@@ -5,6 +5,49 @@ import {
   type ObservedProcessGroup, type ProcessObservation,
 } from "./process-tree.js";
 
+/** Supplied by the company-scoped run API, never by process-name discovery. */
+export interface RestartRunnerIdentity {
+  processPid: number;
+  processGroupId: number;
+  processStartedAt: string;
+}
+export function parseRestartRunnerIdentity(value: unknown): RestartRunnerIdentity {
+  const v = value as RestartRunnerIdentity | null;
+  if (!v || !Number.isSafeInteger(v.processPid) || v.processPid <= 1
+    || v.processGroupId !== v.processPid || typeof v.processStartedAt !== "string"
+    || !Number.isFinite(Date.parse(v.processStartedAt))) throw new Error("Invalid restart runner identity");
+  return { processPid: v.processPid, processGroupId: v.processGroupId, processStartedAt: v.processStartedAt };
+}
+
+/** Linux run receipts retain milliseconds; ps lstart retains whole seconds. */
+export function restartProcessStartMatches(observed: string, expected: string, platform = process.platform): boolean {
+  const actualTime = Date.parse(observed), expectedTime = Date.parse(expected);
+  if (!Number.isFinite(actualTime) || !Number.isFinite(expectedTime)) return false;
+  return platform === "linux"
+    ? Math.floor(actualTime / 1000) === Math.floor(expectedTime / 1000)
+    : actualTime === expectedTime;
+}
+
+export const UNCERTAIN_GROUP_IDENTITY = "Owned process group identity became uncertain";
+
+/**
+ * Under load or during a graceful drain a whole group can turn over between
+ * two inspections: its observed members exit and a member nobody saw start
+ * is left for a moment, reparented away from every owned anchor. Its identity
+ * is unproven, so the owner refuses to signal anything. Re-run the step until
+ * a later inspection settles it or the deadline passes, never signaling
+ * meanwhile; a straggler that outlives the deadline keeps the original error.
+ */
+export async function settleUncertainIdentity<T>(step: () => Promise<T>, until: () => number, pollMs = 100): Promise<T> {
+  for (;;) {
+    try { return await step(); }
+    catch (error) {
+      if (!String(error).includes(UNCERTAIN_GROUP_IDENTITY) || Date.now() >= until()) throw error;
+      await new Promise(resolve => setTimeout(resolve, pollMs));
+    }
+  }
+}
+
 export function createProcessTreeOwner(root: ChildProcess, options: {
   readTable?: () => Promise<ProcessObservation[] | null>;
   signalGroup?: (pid: number, signal: NodeJS.Signals) => void;
@@ -12,6 +55,8 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
   let groups: ObservedProcessGroup[] = [];
   let table: ProcessObservation[] = [];
   let rootStarted: string | undefined;
+  let preserved: ObservedProcessGroup[] = [];
+  let restartRunner: ProcessObservation | undefined;
   let observing: Promise<void> | undefined;
   const covered = new Set<number>();
   const readTable = options.readTable ?? readProcessTable;
@@ -30,10 +75,26 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
       const rootRow = next.find(row => row.pid === root.pid);
       if (!rootStarted && !exited()) rootStarted = rootRow?.started;
       const retained = revalidateObservedProcessGroups(groups, next);
-      // Never acquire a recycled group from its numeric ID alone.
+      const trustedAnchors = retained.flatMap(group => group.members
+        .filter(member => next.some(row => row.pid === member.pid && row.started === member.started
+          && row.processGroupId === group.processGroupId)).map(member => member.pid));
+      if (rootRow && rootStarted === rootRow.started) trustedAnchors.push(rootRow.pid);
+      const ownedNow = new Set(trustedAnchors.flatMap(pid =>
+        observeDescendantProcessTree(next, pid).members.map(member => member.process.pid)));
+      // A short-lived leader can exit between polls while its replacement
+      // remains a descendant of a separately validated owner. Admit that
+      // ancestry, never a recycled numeric group or a mixed ownership group.
       const lost = groups.filter(group => !retained.includes(group) && next.some(row => row.processGroupId === group.processGroupId && running(row)));
-      if (lost.length) throw new Error("Owned process group identity became uncertain");
-      const refreshed = refreshContinuouslyLiveProcessGroups(retained, next)
+      const uncertain = lost.filter(group => next.some(row => row.processGroupId === group.processGroupId
+        && running(row) && !ownedNow.has(row.pid)));
+      if (uncertain.length) {
+        // Name the unproven members so the next occurrence identifies the process.
+        const ids = new Set(uncertain.map(group => group.processGroupId));
+        const members = next.filter(row => ids.has(row.processGroupId) && running(row) && !ownedNow.has(row.pid))
+          .map(row => `pid=${row.pid} ppid=${row.parentPid} pgid=${row.processGroupId} kind=${row.kind} started=${row.started}`);
+        throw new Error(`${UNCERTAIN_GROUP_IDENTITY}: ${[...ids].join(",")} (unowned members: ${members.join("; ")})`);
+      }
+      const refreshed = refreshContinuouslyLiveProcessGroups([...retained, ...lost], next)
         .filter(group => group.processGroupId !== callerGroup);
       const anchors = refreshed.flatMap(group => group.members.map(member => member.pid));
       if (rootRow && rootStarted === rootRow.started) anchors.push(rootRow.pid);
@@ -41,12 +102,28 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
       for (const pid of anchors) {
         for (const group of observeDescendantProcessTree(next, pid).groups) {
           if (group.processGroupId !== callerGroup) {
-            byGroup.set(group.processGroupId, group);
+            // A descendant traversal can cover only part of an already
+            // validated group. Keep every observed peer as an identity anchor.
+            const previous = byGroup.get(group.processGroupId);
+            const members = new Map(previous?.members.map(member => [member.pid, member]) ?? []);
+            for (const member of group.members) members.set(member.pid, member);
+            byGroup.set(group.processGroupId, { ...group,
+              depth: Math.max(group.depth, previous?.depth ?? group.depth),
+              members: [...members.values()],
+            });
             if (covered.has(next.find(row => row.pid === pid)!.processGroupId)) covered.add(group.processGroupId);
           }
         }
       }
       groups = [...byGroup.values()];
+      // Follow only continuously owned members of the admitted daemon tree.
+      // Orphaned descendants stay owned, but unrelated controller children do not.
+      const retainedPreserved = refreshContinuouslyLiveProcessGroups(revalidateObservedProcessGroups(preserved, next), next);
+      const preservedIds = new Set(retainedPreserved.map(group => group.processGroupId));
+      for (const member of retainedPreserved.flatMap(group => group.members)) {
+        for (const group of observeDescendantProcessTree(next, member.pid).groups) preservedIds.add(group.processGroupId);
+      }
+      preserved = groups.filter(group => preservedIds.has(group.processGroupId));
       table = next;
     })().finally(() => { observing = undefined; });
     return observing;
@@ -60,7 +137,41 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
   function liveGroups() {
     return groups.filter(group => table.some(row => row.processGroupId === group.processGroupId && running(row)));
   }
-  function signalSnapshot(signal: NodeJS.Signals, selected?: ReadonlySet<number>) {
+  async function preserveRunnerForRestart(identity: RestartRunnerIdentity) {
+    const expected = parseRestartRunnerIdentity(identity);
+    await observe();
+    if (restartRunner || exited()) throw new Error("Restart runner admission must precede controller exit");
+    const tree = observeDescendantProcessTree(table, root.pid!);
+    const candidate = tree.members.map(member => member.process).find(row => row.pid === expected.processPid);
+    if (!candidate || !running(candidate) || candidate.kind !== "paperclip-runnerd"
+      || candidate.processGroupId !== expected.processGroupId
+      || !restartProcessStartMatches(candidate.started, expected.processStartedAt)
+      || candidate.processGroupId === root.pid) throw new Error("Restart runner is not the exact owned durable daemon");
+    const subtree = observeDescendantProcessTree(table, candidate.pid);
+    const members = new Set(subtree.members.map(member => member.process.pid));
+    const ids = new Set(subtree.groups.map(group => group.processGroupId));
+    if (table.some(row => ids.has(row.processGroupId) && !members.has(row.pid) && running(row))) {
+      throw new Error("Restart runner shares a process group with an unrelated process");
+    }
+    restartRunner = { ...candidate };
+    preserved = groups.filter(group => ids.has(group.processGroupId));
+  }
+  function assertRestartRunnerAlive() {
+    if (!restartRunner || !table.some(row => row.pid === restartRunner!.pid && row.started === restartRunner!.started
+      && row.processGroupId === restartRunner!.processGroupId && running(row))) throw new Error("Admitted restart runner did not survive controller restart");
+  }
+  function restartCleanupGroups() {
+    const ids = new Set(preserved.map(group => group.processGroupId));
+    return new Set(liveGroups().filter(group => !ids.has(group.processGroupId)).map(group => group.processGroupId));
+  }
+  /** Darwin killpg reports EPERM, not ESRCH, when every remaining group member
+   * has exited but is not yet reaped. A zombie-only group needs no signal; any
+   * running member keeps EPERM a real failure. */
+  async function exitedSinceSnapshot(pid: number) {
+    const fresh = await readTable();
+    return !!fresh && !fresh.some(row => row.processGroupId === pid && running(row));
+  }
+  async function signalSnapshot(signal: NodeJS.Signals, selected?: ReadonlySet<number>) {
     const currentProcessGroupId = table.find(row => row.pid === process.pid)?.processGroupId ?? null;
     if (currentProcessGroupId === null) throw new Error("Cleanup caller group identity is unavailable");
     const live = liveGroups();
@@ -69,14 +180,18 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
     for (const pid of ordered) {
       if (selected && !selected.has(pid)) continue;
       try { signalGroup(pid, signal); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; else continue; }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ESRCH" || (code === "EPERM" && await exitedSinceSnapshot(pid))) continue;
+        throw error;
+      }
       signaled.push(pid);
     }
     return signaled;
   }
   async function signal(signal: NodeJS.Signals, selected?: ReadonlySet<number>) {
     await observe();
-    return signalSnapshot(signal, selected);
+    return await signalSnapshot(signal, selected);
   }
   function gracefulRoots() {
     const live = liveGroups();
@@ -99,13 +214,13 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
   }
   let graceComplete = false;
   let directGraceDelivered = false;
-  async function signalGracefully() {
+  async function signalGracefully(signal: "SIGTERM" | "SIGINT" = "SIGTERM") {
     if (graceComplete) return;
     await observe();
     // Choose and deliver from one validated table. ESRCH grants no ownership
     // coverage: the next grace poll can select that branch's surviving owner.
     const selected = new Set([...gracefulRoots()].filter(pid => !covered.has(pid)));
-    const delivered = signalSnapshot("SIGTERM", selected);
+    const delivered = await signalSnapshot(signal, selected);
     for (const pid of delivered) {
       if (pid === root.pid) directGraceDelivered = true;
       covered.add(pid);
@@ -118,6 +233,7 @@ export function createProcessTreeOwner(root: ChildProcess, options: {
     graceComplete = selected.size > 0 && delivered.length === selected.size;
   }
   return { observe, signal, liveGroups, gracefulRoots, signalGracefully,
+    preserveRunnerForRestart, assertRestartRunnerAlive, restartCleanupGroups,
     directGraceDelivered: () => directGraceDelivered, stopObserving: () => { if (timer) clearInterval(timer); } };
 }
 
@@ -141,9 +257,10 @@ export async function stopKnownDirectChild(child: ChildProcess, phase: { gracefu
 }
 
 export async function incompleteTreeFallback(error: unknown, child: ChildProcess,
-  phase: { gracefulSent: boolean; forcedDeadline?: number }, deadline: number, forcedMs: number) {
+  phase: { gracefulSent: boolean; forcedDeadline?: number }, deadline: number, forcedMs: number,
+  signal: "SIGTERM" | "SIGINT" = "SIGTERM") {
   let fallbackError: unknown;
-  try { await stopKnownDirectChild(child, phase, deadline, forcedMs); }
+  try { await stopKnownDirectChild(child, phase, deadline, forcedMs, signal); }
   catch (failure) { fallbackError = failure; }
   throw new Error(`Owned tree cleanup incomplete: ${String(error)}${fallbackError ? `; ${String(fallbackError)}` : ""}`);
 }
@@ -155,34 +272,46 @@ export async function stopOwnedProcessTree(
   owner: ReturnType<typeof createProcessTreeOwner>,
   gracefulMs = 45_000,
   forcedMs = 5_000,
+  gracefulSignal: "SIGTERM" | "SIGINT" = "SIGTERM",
 ): Promise<void> {
   const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
   const deadline = Date.now() + gracefulMs;
   const phase: { gracefulSent: boolean; forcedDeadline?: number } = { gracefulSent: false };
+  // Under load a whole group can turn over between two inspections: its
+  // observed members exit and a member nobody saw start is left behind,
+  // reparented away from every owned anchor. Its identity is then unproven,
+  // so the owner refuses to signal anything. That state is usually brief (the
+  // straggler exits with its group), so wait within the same deadline for a
+  // later inspection to settle it, never signaling meanwhile. If it persists,
+  // the original error stands.
+  const settled = settleUncertainIdentity;
   try {
     if (process.platform === "win32") {
-      await stopKnownDirectChild(child, phase, deadline, forcedMs);
+      await stopKnownDirectChild(child, phase, deadline, forcedMs, gracefulSignal);
       return;
     }
-    const stopped = async () => {
-      await owner.observe();
+    const stopped = async (until: () => number) => {
+      await settled(() => owner.observe(), until);
       return (child.exitCode !== null || child.signalCode !== null) && owner.liveGroups().length === 0;
     };
+    const graceDeadline = () => deadline;
+    const forcedDeadline = () => phase.forcedDeadline!;
     do {
-      await owner.signalGracefully();
+      await settled(() => owner.signalGracefully(gracefulSignal), graceDeadline);
       phase.gracefulSent ||= owner.directGraceDelivered();
-      if (await stopped()) return;
+      if (await stopped(graceDeadline)) return;
       await wait(50);
     } while (Date.now() < deadline);
-    await owner.signal("SIGKILL");
+    // One forced window covers the escalation retry, the stop check and any fallback.
     phase.forcedDeadline = Date.now() + forcedMs;
+    await settled(() => owner.signal("SIGKILL"), forcedDeadline);
     do {
-      if (await stopped()) return;
+      if (await stopped(forcedDeadline)) return;
       await wait(50);
     } while (Date.now() < phase.forcedDeadline);
     throw new Error("Observed launcher descendants remained after bounded cleanup");
   } catch (error) {
     phase.gracefulSent ||= owner.directGraceDelivered();
-    await incompleteTreeFallback(error, child, phase, deadline, forcedMs);
+    await incompleteTreeFallback(error, child, phase, deadline, forcedMs, gracefulSignal);
   }
 }

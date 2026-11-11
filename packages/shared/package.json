@@ -12,6 +12,7 @@
     "directory": "packages/shared"
   },
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
     "./telemetry": "./src/telemetry/index.ts",
@@ -45,7 +46,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "zod": "^4.4.3",
+    "zod": "^4.6.6",
     "three": "0.185.1"
   },
   "devDependencies": {

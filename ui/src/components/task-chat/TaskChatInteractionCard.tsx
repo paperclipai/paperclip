@@ -9,7 +9,9 @@ import { CircleHelp, ChevronRight } from "lucide-react";
 import { shouldHideInteractionCard } from "@/lib/issue-thread-interactions";
 import { TaskChatCompactInteractionCard } from "./TaskChatCompactInteractionCard";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
+import { markdownToPlainText } from "@/lib/markdown-plain-text";
 import type { TaskChatInteractionItem } from "./task-chat-model";
+import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 
 type InteractionCardProps = Omit<
   ComponentProps<typeof IssueThreadInteractionCard>,
@@ -20,6 +22,7 @@ export interface TaskChatInteractionCardProps extends InteractionCardProps {
   item: TaskChatInteractionItem;
   onReviewRequest?: (interactionId: string) => void;
   showUnansweredQuestion?: boolean;
+  showPendingRequest?: boolean;
   planDocument?: IssueDocument | null;
   showPlanPreview?: boolean;
   presentation?: "timeline" | "takeover";
@@ -38,13 +41,20 @@ export function TaskChatInteractionCard({
   item,
   onReviewRequest,
   showUnansweredQuestion = false,
+  showPendingRequest = false,
   planDocument,
   showPlanPreview = true,
   presentation = "timeline",
   draftKey,
   ...cardProps
 }: TaskChatInteractionCardProps) {
+  const { enabled: coordinatorEnabled } = useCoordinatorWorkspaceEnabled();
   const interaction = item.interaction;
+  if (coordinatorEnabled && interaction.kind === "suggest_tasks" && !shouldHideInteractionCard(interaction)) {
+    return <div id={`interaction-${interaction.id}`} data-testid="task-chat-interaction" className="w-full">
+      <TaskChatCompactInteractionCard interaction={interaction} presentation={presentation} draftKey={draftKey} {...cardProps} />
+    </div>;
+  }
   if (presentation === "timeline" && showUnansweredQuestion && !shouldHideInteractionCard(interaction) && interaction.kind === "ask_user_questions" && interaction.status === "pending") {
     const prompt = interaction.payload.questionSet?.questions[0]?.prompt ?? interaction.payload.questions[0]?.prompt ?? interaction.title ?? "Question";
     return (
@@ -58,7 +68,7 @@ export function TaskChatInteractionCard({
         className="group flex w-full items-center gap-2 rounded-sm px-1 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         <CircleHelp aria-hidden className="h-3.5 w-3.5 shrink-0" />
-        <span className="min-w-0 flex-1"><span className="block text-xs">Unanswered question</span><span className="block truncate">{prompt}</span></span>
+        <span className="min-w-0 flex-1"><span className="block text-xs">Unanswered question</span><span className="block truncate">{markdownToPlainText(prompt)}</span></span>
         <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
       </button>
     );
@@ -79,6 +89,33 @@ export function TaskChatInteractionCard({
         ) : (
           <IssueThreadInteractionCard interaction={interaction} {...cardProps} />
         )}
+      </div>
+    );
+  }
+  if (presentation === "timeline" && showPendingRequest && interaction.status === "pending"
+    && interaction.kind !== "connection_intent" && interaction.kind !== "ask_user_questions"
+    && !shouldHideInteractionCard(interaction)) {
+    const label = interaction.title ?? (interaction.kind === "suggest_tasks" ? "Suggested tasks" : "Review request");
+    const preview = interaction.summary ?? ("prompt" in interaction.payload ? interaction.payload.prompt : null);
+    // One truncated line: show the words, not the markdown syntax.
+    const previewText = preview ? markdownToPlainText(preview) : null;
+    const showPlan = interaction.kind === "request_confirmation"
+      && interaction.payload.target?.type === "issue_document" && interaction.payload.target.key === "plan"
+      && planDocument && showPlanPreview
+      && (planDocument.latestRevisionId
+        ? interaction.payload.target.revisionId === planDocument.latestRevisionId
+        : interaction.payload.target.revisionNumber === planDocument.latestRevisionNumber);
+    return (
+      <div className="w-full space-y-2">
+        {showPlan ? <TaskChatPlanPreviewCard source={{ kind: "saved", document: planDocument }} testId="plan-review-preview" /> : null}
+        <button type="button" id={`interaction-${interaction.id}`} data-testid="task-chat-pending-request"
+          aria-label={`Open request: ${label}`} disabled={!onReviewRequest}
+          onClick={() => onReviewRequest?.(interaction.id)}
+          className="group flex w-full items-center gap-2 rounded-sm px-1 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <CircleHelp aria-hidden className="h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 flex-1"><span className="block text-xs">{label}</span><span className="block truncate">{previewText}</span></span>
+          <ChevronRight aria-hidden className="h-3 w-3 shrink-0" />
+        </button>
       </div>
     );
   }
@@ -121,26 +158,37 @@ export function TaskChatInteractionCard({
     interaction.payload.target.key === "plan";
   const resolvedPlanMatchesDocument =
     isResolvedPlanReview &&
+    interaction.kind === "request_confirmation" && interaction.payload.target?.type === "issue_document" &&
     planDocument != null &&
     (planDocument.latestRevisionId
       ? interaction.payload.target?.revisionId === planDocument.latestRevisionId
       : interaction.payload.target?.revisionNumber ===
         planDocument.latestRevisionNumber);
-  if (isResolvedPlanReview) {
-    if (resolvedPlanMatchesDocument && showPlanPreview && planDocument) {
-      return (
-        <div
-          id={`interaction-${interaction.id}`}
-          data-testid="task-chat-interaction"
-        >
+  if (isResolvedPlanReview && !coordinatorEnabled) {
+    // Keep the decision visible: the approved or sent-back plan stays as a
+    // card while it is current, and the receipt records who decided and why.
+    return (
+      <div
+        id={`interaction-${interaction.id}`}
+        className="w-full space-y-2"
+        data-testid="task-chat-interaction"
+      >
+        {resolvedPlanMatchesDocument && showPlanPreview && planDocument ? (
           <TaskChatPlanPreviewCard
             source={{ kind: "saved", document: planDocument }}
             testId="plan-review-preview"
           />
-        </div>
-      );
-    }
-    return null;
+        ) : null}
+        <TaskChatCompactInteractionCard
+          interaction={interaction}
+          planDocument={planDocument}
+          showPlanPreview={false}
+          presentation="timeline"
+          draftKey={draftKey}
+          {...cardProps}
+        />
+      </div>
+    );
   }
   if (presentation === "timeline" && interaction.status !== "pending") {
     return (

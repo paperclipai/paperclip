@@ -7,7 +7,6 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::process::Stdio;
 use std::time::Duration;
 
 use paperclip_runner_core::local_runner::HarnessCommand;
@@ -17,13 +16,16 @@ use paperclip_runner_core::process_supervisor::{
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-fn process_exists(pid: u64) -> bool {
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+/// Whether the process has not exited. A zombie has exited and waits only
+/// for its parent; a worker re-parented to init waits for init, which can
+/// take longer than any fixed sleep. A process that cannot be read counts as
+/// running, so the check never passes on a platform it cannot see.
+fn process_running(pid: u64) -> bool {
+    match paperclip_process_table::read(i32::try_from(pid).unwrap()) {
+        paperclip_process_table::Read::Present(entry) => !entry.zombie,
+        paperclip_process_table::Read::Gone => false,
+        paperclip_process_table::Read::Unreadable => true,
+    }
 }
 
 fn write_executable(path: &Path, contents: &str) {
@@ -190,6 +192,177 @@ fn verified_launch_preserves_homebrew_node_loader_layout() {
     process.wait().unwrap();
 }
 
+#[cfg(target_os = "macos")]
+mod darwin_executable_role {
+    use super::*;
+    use std::time::Instant;
+
+    struct OwnedDirectory(PathBuf);
+
+    impl OwnedDirectory {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "paperclip-executable-role-{}",
+                uuid::Uuid::new_v4().simple()
+            ));
+            fs::create_dir(&path).unwrap();
+            let mut owned = Self(path);
+            fs::set_permissions(&owned.0, fs::Permissions::from_mode(0o700)).unwrap();
+            owned.0 = fs::canonicalize(&owned.0).unwrap();
+            owned
+        }
+    }
+
+    impl Drop for OwnedDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn wait_for_success(process: &mut SupervisedProcess) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(fact) = process.try_wait().unwrap() {
+                assert!(fact.success, "verified child must exit successfully");
+                return;
+            }
+            assert!(Instant::now() < deadline, "verified child did not exit");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn named_executable_preserves_command_and_script_after_atomic_replacement() {
+        // Declared first so process/launch guards retire before directory cleanup,
+        // including assertion failures and unsuccessful process admission.
+        let directory = OwnedDirectory::new();
+        let command = directory.0.join("command");
+        let script = directory.0.join("script");
+        let original_command = "#!/bin/sh\nprintf '%s\\n' old-command\nprintf '%s\\n' \"$PAPERCLIP_VERIFIED_RUNTIME_EXECUTABLE\"\nexec /bin/sh \"$1\"\n";
+        let original_script = "#!/bin/sh\nprintf '%s\\n' old-script\n";
+        write_executable(&command, original_command);
+        write_executable(&script, original_script);
+        let launch = VerifiedProcessLaunch::new(
+            VerifiedProcessArtifact::snapshot_verified_executable(
+                command.clone(),
+                File::open(&command).unwrap(),
+                &sha256(original_command),
+            )
+            .unwrap(),
+            vec![VerifiedProcessArgument::Artifact(
+                VerifiedProcessArtifact::snapshot_verified(
+                    script.clone(),
+                    File::open(&script).unwrap(),
+                    &sha256(original_script),
+                )
+                .unwrap(),
+            )],
+        )
+        .with_inherited_runtime_executable();
+        let replacement_command = directory.0.join("replacement-command");
+        let replacement_script = directory.0.join("replacement-script");
+        write_executable(
+            &replacement_command,
+            "#!/bin/sh\nprintf '%s\\n' replacement-command\nexec /bin/sh \"$1\"\n",
+        );
+        write_executable(
+            &replacement_script,
+            "#!/bin/sh\nprintf '%s\\n' replacement-script\n",
+        );
+        fs::rename(replacement_command, &command).unwrap();
+        fs::rename(replacement_script, &script).unwrap();
+        let mut process = SupervisedProcess::spawn_verified_with_environment_keys(
+            &launch,
+            Duration::from_millis(50),
+            1024,
+            &[],
+        )
+        .unwrap();
+        // The live supervised process must retain the named image independently.
+        drop(launch);
+        assert_eq!(
+            process
+                .receive_stdout_line(Duration::from_secs(1))
+                .unwrap()
+                .as_deref(),
+            Some("old-command")
+        );
+        let inherited_runtime = process
+            .receive_stdout_line(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            Path::new(&inherited_runtime).parent(),
+            Some(directory.0.as_path())
+        );
+        assert!(Path::new(&inherited_runtime)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(".paperclip-verified-executable-"));
+        assert!(Path::new(&inherited_runtime).exists());
+        assert_eq!(
+            process
+                .receive_stdout_line(Duration::from_secs(1))
+                .unwrap()
+                .as_deref(),
+            Some("old-script")
+        );
+        wait_for_success(&mut process);
+        drop(process);
+        assert!(!Path::new(&inherited_runtime).exists());
+    }
+
+    #[test]
+    fn named_executable_preserves_homebrew_node_loader_layout() {
+        // Resolve the same executable PATH would choose without an extra helper
+        // process; only the supervised Node image is launched by this test.
+        let node = std::env::split_paths(&std::env::var_os("PATH").expect("PATH is set"))
+            .map(|directory| directory.join("node"))
+            .find(|path| {
+                fs::metadata(path).is_ok_and(|metadata| {
+                    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+                })
+            })
+            .and_then(|path| fs::canonicalize(path).ok())
+            .expect("node must resolve on PATH");
+        let launch = VerifiedProcessLaunch::new(
+            VerifiedProcessArtifact::snapshot_verified_executable(
+                node.clone(),
+                File::open(&node).unwrap(),
+                &sha256_file(&node),
+            )
+            .unwrap(),
+            vec![
+                VerifiedProcessArgument::Literal("--eval".to_owned()),
+                VerifiedProcessArgument::Literal("console.log(process.execPath)".to_owned()),
+            ],
+        );
+        let mut process = SupervisedProcess::spawn_verified_with_environment_keys(
+            &launch,
+            Duration::from_millis(50),
+            1024,
+            &[],
+        )
+        .expect("named verified Node must start with loader-relative libraries");
+        drop(launch);
+        let executed_node = process
+            .receive_stdout_line(Duration::from_secs(2))
+            .unwrap()
+            .expect("Node must report executable path");
+        assert_eq!(Path::new(&executed_node).parent(), node.parent());
+        assert!(Path::new(&executed_node)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(".paperclip-verified-executable-"));
+        assert!(Path::new(&executed_node).exists());
+        wait_for_success(&mut process);
+        drop(process);
+        assert!(!Path::new(&executed_node).exists());
+    }
+}
+
 fn spawn_linger_process() -> (SupervisedProcess, u32, u64) {
     let harness = PathBuf::from(env!("CARGO_BIN_EXE_fake-harness"));
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -245,8 +418,8 @@ fn spawn_linger_process() -> (SupervisedProcess, u32, u64) {
         }
     }
     let worker_pid = worker_pid.expect("linger script should report its worker pid");
-    assert!(process_exists(u64::from(harness_pid)));
-    assert!(process_exists(worker_pid));
+    assert!(process_running(u64::from(harness_pid)));
+    assert!(process_running(worker_pid));
     (process, harness_pid, worker_pid)
 }
 
@@ -257,9 +430,9 @@ fn forced_process_group_cleanup_stops_harness_and_worker() {
     process
         .terminate_group()
         .expect("process group cleanup should finish");
-    std::thread::sleep(Duration::from_millis(20));
-    assert!(!process_exists(u64::from(harness_pid)));
-    assert!(!process_exists(worker_pid));
+    // Cleanup returns only after it proves every recorded process exited.
+    assert!(!process_running(u64::from(harness_pid)));
+    assert!(!process_running(worker_pid));
 }
 
 #[test]
@@ -277,9 +450,9 @@ fn natural_harness_exit_also_cleans_up_workers() {
         .wait()
         .expect("harness should exit after interruption");
 
-    std::thread::sleep(Duration::from_millis(20));
-    assert!(!process_exists(u64::from(harness_pid)));
-    assert!(!process_exists(worker_pid));
+    // Waiting returns only after it proves every recorded process exited.
+    assert!(!process_running(u64::from(harness_pid)));
+    assert!(!process_running(worker_pid));
 }
 
 #[test]

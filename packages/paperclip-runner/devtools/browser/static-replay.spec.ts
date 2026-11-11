@@ -5,6 +5,7 @@ test("validates and renders the shared Replay fixture", async ({ page }, testInf
   await expect(page.getByRole("heading", { name: "Live runner diagnostics" })).toBeVisible();
   await page.getByRole("button", { name: "Static replay" }).click();
   await expect(page.getByRole("heading", { name: "Static protocol replay" })).toBeVisible();
+  await page.getByLabel("Fixture", { exact: true }).selectOption("happy-path");
   await expect(page.getByTestId("terminal-badge")).toHaveText("Succeeded");
   await expect(page.getByTestId("timeline").getByRole("listitem")).toHaveCount(9);
   await expect(page.getByTestId("timeline")).not.toContainText("workspace_preparing");
@@ -26,7 +27,7 @@ test("shows duplicate and unsupported-version replay states", async ({ page }) =
     .getByLabel("Fixture", { exact: true })
     .selectOption("unsupported-required-version");
   await expect(page.getByRole("heading", { name: "Fixture cannot be replayed" })).toBeVisible();
-  await expect(page.getByText(/protocolVersion 2 is unsupported/)).toBeVisible();
+  await expect(page.getByText(/protocolVersion 3 is unsupported/)).toBeVisible();
 });
 
 test("streams a live run and proves replay parity", async ({ page }, testInfo) => {

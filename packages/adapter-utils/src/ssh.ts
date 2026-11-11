@@ -9,8 +9,11 @@ import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import {
   createUnrelatedHistoryGraftCommit,
   GIT_SYNC_COMMIT_IDENTITY_ARGS,
+  listProjectRepositoryStagingPaths,
   PROJECT_REPOSITORIES_DIR,
+  PROJECT_REPOSITORY_STAGING_PATTERN,
   readSanitizedOriginRemoteUrl,
+  resetLocalGitIndexToHead,
 } from "./git-workspace-sync.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
@@ -60,17 +63,15 @@ export function createSshCommandManagedRuntimeRunner(input: {
       const cwd = commandInput.cwd?.trim() || defaultCwd;
       const envEntries = Object.entries(commandInput.env ?? {})
         .filter((entry): entry is [string, string] => typeof entry[1] === "string");
+      for (const [key] of envEntries) {
+        if (!isValidShellEnvKey(key)) {
+          throw new Error(`Invalid SSH environment variable key: ${key}`);
+        }
+      }
       const envPrefix = envEntries.length > 0
-        ? `env ${envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ")} `
+        ? `env ${envEntries.map(([key, value]) => shellQuote(`${key}=${value}`)).join(" ")} `
         : "";
-      const exportPrefix = envEntries.length > 0
-        ? envEntries.map(([key, value]) => `export ${key}=${shellQuote(value)};`).join(" ") + " "
-        : "";
-      const commandScript = command === "sh" || command === "bash"
-        ? (args[0] === "-c" || args[0] === "-lc") && typeof args[1] === "string"
-          ? `${exportPrefix}${args[1]}`
-          : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
-        : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
+      const commandScript = `exec ${envPrefix}${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
       const remoteCommand = `cd ${shellQuote(cwd)} && ${commandScript}`;
 
       try {
@@ -1090,7 +1091,7 @@ async function isLocalGitRepositoryRoot(localDir: string): Promise<boolean> {
   }
 }
 
-async function listLocalProjectRepositories(localDir: string): Promise<string[]> {
+export async function listLocalProjectRepositories(localDir: string): Promise<string[]> {
   const root = path.join(localDir, PROJECT_REPOSITORIES_DIR);
   const rootStat = await fs.lstat(root).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
@@ -1102,6 +1103,7 @@ async function listLocalProjectRepositories(localDir: string): Promise<string[]>
   }
   const repositories: string[] = [];
   for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+    if (entry.isDirectory() && PROJECT_REPOSITORY_STAGING_PATTERN.test(entry.name)) continue;
     if (!entry.isDirectory() || !PROJECT_REPOSITORY_NAME_PATTERN.test(entry.name)) {
       throw new Error("Invalid project repository directory");
     }
@@ -1646,9 +1648,11 @@ export async function prepareWorkspaceForSshExecution(input: {
   onProgress?: RuntimeProgressSink;
   workspaceFileMode?: "all";
   workspaceExclude?: string[];
-}): Promise<{ gitBacked: boolean; repositories?: string[] }> {
+}): Promise<{ gitBacked: boolean; repositories?: string[]; excludedPaths?: string[] }> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   const gitSnapshot = input.workspaceFileMode === "all" ? null : await readLocalGitWorkspaceSnapshot(input.localDir);
+  const excludedPaths = await listProjectRepositoryStagingPaths(input.localDir);
+  const excludedResult = excludedPaths.length > 0 ? { excludedPaths } : {};
 
   if (gitSnapshot) {
     const repositories = await listLocalProjectRepositories(input.localDir);
@@ -1657,7 +1661,7 @@ export async function prepareWorkspaceForSshExecution(input: {
       localDir: input.localDir,
       remoteDir,
       snapshot: gitSnapshot,
-      exclude: repositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : [],
+      exclude: repositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : excludedPaths,
       onProgress: input.onProgress,
       progressLabel: "workspace",
     });
@@ -1677,7 +1681,7 @@ export async function prepareWorkspaceForSshExecution(input: {
         progressLabel: relative,
       });
     }
-    return { gitBacked: true, ...(repositories.length > 0 ? { repositories } : {}) };
+    return { gitBacked: true, ...(repositories.length > 0 ? { repositories } : {}), ...excludedResult };
   }
 
   await clearRemoteDirectory({
@@ -1689,11 +1693,11 @@ export async function prepareWorkspaceForSshExecution(input: {
     spec: input.spec,
     localDir: input.localDir,
     remoteDir,
-    exclude: [".paperclip-runtime", ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
+    exclude: [".paperclip-runtime", ...excludedPaths, ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
     onProgress: input.onProgress,
     progressLabel: "workspace",
   });
-  return { gitBacked: false };
+  return { gitBacked: false, ...excludedResult };
 }
 
 export async function restoreWorkspaceFromSshExecution(input: {
@@ -1795,6 +1799,13 @@ async function restoreWorkspaceRootFromSsh(input: {
               localDir: input.localDir,
               importedHead,
             });
+          }
+          : undefined,
+        // integrateImportedGitHead moves the branch with update-ref, which leaves the index
+        // on the old tip. Reset it to HEAD as the sandbox restore does (#8595).
+        afterApply: importedHead
+          ? async () => {
+            await resetLocalGitIndexToHead({ localDir: input.localDir });
           }
           : undefined,
       });

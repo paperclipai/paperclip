@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { cancellationResultJson, canContinueCancelledRun, isUnexpectedRunCancellation, requestedRunCancellation } from "./run-cancellation.js";
+import { cancellationResultJson, canContinueCancelledRun, controllerLeaseLossCancellation, isUnexpectedRunCancellation,
+  readControllerLeaseLossCause, readRunCancellation, requestedRunCancellation } from "./run-cancellation.js";
 
 describe("cancellation provenance", () => {
   const run = { status: "cancelled", runtimeMode: "legacy" as const, startedAt: new Date(0), finishedAt: new Date(1),
@@ -18,6 +19,37 @@ describe("cancellation provenance", () => {
       .toMatchObject({ source: "shutdown", expected: true });
     expect(requestedRunCancellation({ queuedCommentInterruptQueueId: "queue", interruptedByActorType: "user", interruptedByActorId: "board" }, "Send messages"))
       .toMatchObject({ source: "queued_message", initiator: { type: "user", id: "board" } });
+  });
+  it.each([
+    { runtimeMode: "legacy", source: "dependency_gate" },
+    { runtimeMode: "legacy", source: "stale_queued_run_gate" },
+    { runtimeMode: "native", source: "stale_queued_run_gate" },
+  ] as const)("records an unstarted $runtimeMode $source dependency cancellation without authorizing a continuation", ({ runtimeMode, source }) => {
+    const queued = { ...run, runtimeMode, startedAt: null };
+    const resultJson = cancellationResultJson(queued, "cancelled", {
+      stopReason: "issue_dependencies_blocked", timeoutSource: source,
+    }, "issue_dependencies_blocked");
+    expect(resultJson?.cancellation).toMatchObject({ source: "control_plane", expected: true });
+    expect(canContinueCancelledRun({ ...queued, resultJson })).toBe(false);
+    expect(cancellationResultJson(run, "cancelled", {}, "issue_dependencies_blocked")?.cancellation)
+      .toMatchObject({ expected: false });
+  });
+  it("attributes a host lease loss instead of reporting an unknown stop", () => {
+    const resultJson = cancellationResultJson(run, "cancelled", {
+      cancellation: controllerLeaseLossCancellation("renewal_deadline") });
+    const cancellation = readRunCancellation(resultJson);
+    expect(cancellation).toMatchObject({ source: "controller_lease", expected: false, initiator: { type: "system" } });
+    expect(readControllerLeaseLossCause(cancellation!)).toBe("renewal_deadline");
+    expect(isUnexpectedRunCancellation({ ...run, resultJson })).toBe(true);
+    expect(canContinueCancelledRun({ ...run, resultJson: { ...resultJson,
+      acpToolInventoryComplete: true, acpPendingToolCount: 0 } })).toBe(false);
+    expect(readControllerLeaseLossCause({ ...cancellation!, reason: "Legacy controller lease lost (forged)" })).toBeNull();
+  });
+  it("keeps a recorded stop request over a later lease loss", () => {
+    const requested = requestedRunCancellation({}, "Stop");
+    const resultJson = cancellationResultJson({ ...run, resultJson: { cancellation: requested } }, "cancelled", {
+      cancellation: controllerLeaseLossCancellation("renewal_rejected") });
+    expect(resultJson?.cancellation).toEqual(requested);
   });
   it("requires positive provider evidence and a complete empty tool inventory for saved input", () => {
     const resultJson = cancellationResultJson(run, "cancelled", { status: "cancelled", acpToolInventoryComplete: true, acpPendingToolCount: 0 });

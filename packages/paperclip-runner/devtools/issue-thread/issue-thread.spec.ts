@@ -251,7 +251,7 @@ test.describe("Capability issue thread", () => {
     await always.click();
     await panel.getByRole("button", { name: /get_task_context/ }).click();
     const dialog = page.getByRole("dialog", { name: "Get active task context" });
-    await expect(dialog).toContainText("Read the active mock task, actor, wake, ancestors, budget, and interaction results.");
+    await expect(dialog).toContainText("Read the active task and actor, including the exact approved Markdown revision when this issue has an accepted plan.");
     await expect(dialog).toContainText("Input schema");
     await dialog.getByRole("button", { name: "Close tool details" }).click();
     await expect(dialog).toHaveCount(0);
@@ -723,9 +723,12 @@ test.describe("Capability clean-room chat", () => {
     await page.getByTestId("evidence-toggle").click();
     const panel = page.getByTestId("evidence-panel");
     const tabs = panel.getByRole("tab");
-    await expect(tabs.first()).toHaveText(/Evidence/);
-    await expect(tabs.nth(1)).toHaveText(/Timeline/);
-    await expect(panel.locator(".pit-devtools-tabs .pit-icon")).toHaveCount(8);
+    await expect(tabs).toHaveText([
+      "Evidence", "Timeline", "State", "Diff", "Documents", "Protocol",
+      "Provider trace", "Runtime", "Authority",
+    ]);
+    await expect(tabs).toHaveCount(9);
+    await expect(panel.locator(".pit-devtools-tabs .pit-icon")).toHaveCount(9);
     const centerOffsets = await tabs.evaluateAll((elements) => elements.map((element) => {
       const icon = element.querySelector(".pit-tab-glyph")?.getBoundingClientRect();
       const label = element.querySelector(".pit-tab-glyph + span")?.getBoundingClientRect();

@@ -22,7 +22,7 @@ export function mustPreserveRecoveryState(input: {
   resourceAdmissionStarted?: boolean;
   results: readonly { cleanup: string; synthetic?: boolean }[];
 }) {
-  return input.processCleanupFailed || input.results.some(result => result.cleanup === "failed")
+  return input.processCleanupFailed || input.results.some(result => result.cleanup === "failed" || result.synthetic)
     || (input.resourceAdmissionStarted === true && (input.results.length === 0 || input.results.some(result => result.synthetic)));
 }
 
@@ -59,4 +59,8 @@ export async function runCleanupWithObservers(input: {
   errors.push(...verification.errors);
   try { await input.teardown(); } catch (error) { errors.push(error); }
   return { checks: verification.checks, errors };
+}
+
+export function ownedActiveCleanupRunIds(runs: readonly { id: string; companyId?: string; status: string }[], companyId: string, terminal: ReadonlySet<string>) {
+  return [...new Set(runs.filter(run => run.companyId === companyId && !terminal.has(run.status)).map(run => run.id).filter(Boolean))];
 }

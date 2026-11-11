@@ -6,11 +6,13 @@
 pub(crate) enum RunAttachmentPolicy {
     ImmutableInstructions,
     AuthenticatedRunGrants,
+    AuthenticatedAssetPaths,
 }
 
 pub(crate) fn run_attachment_policy(agent: &str) -> RunAttachmentPolicy {
     match agent {
-        "cursor" => RunAttachmentPolicy::AuthenticatedRunGrants,
+        "cursor" | "copilot" | "pi" | "kimi" => RunAttachmentPolicy::AuthenticatedRunGrants,
+        "claude" | "grok" | "codex" => RunAttachmentPolicy::AuthenticatedAssetPaths,
         _ => RunAttachmentPolicy::ImmutableInstructions,
     }
 }
@@ -25,11 +27,29 @@ mod tests {
             run_attachment_policy("cursor"),
             RunAttachmentPolicy::AuthenticatedRunGrants
         );
-        for agent in ["claude", "codex", "grok", "pi", "copilot", "unknown"] {
-            assert_eq!(
-                run_attachment_policy(agent),
-                RunAttachmentPolicy::ImmutableInstructions
-            );
-        }
+        assert_eq!(
+            run_attachment_policy("copilot"),
+            RunAttachmentPolicy::AuthenticatedRunGrants
+        );
+        assert_eq!(
+            run_attachment_policy("pi"),
+            RunAttachmentPolicy::AuthenticatedRunGrants
+        );
+        assert_eq!(
+            run_attachment_policy("claude"),
+            RunAttachmentPolicy::AuthenticatedAssetPaths
+        );
+        assert_eq!(
+            run_attachment_policy("grok"),
+            RunAttachmentPolicy::AuthenticatedAssetPaths
+        );
+        assert_eq!(
+            run_attachment_policy("codex"),
+            RunAttachmentPolicy::AuthenticatedAssetPaths
+        );
+        assert_eq!(
+            run_attachment_policy("unknown"),
+            RunAttachmentPolicy::ImmutableInstructions
+        );
     }
 }

@@ -705,6 +705,9 @@ describe("CompanyEnvironments — test provider button", () => {
     });
     await flushReact();
 
+    const options = Array.from(container.querySelectorAll("option"));
+    expect(options.some((option) => option.textContent?.trim() === "Local")).toBe(true);
+
     await act(async () => {
       click(container.querySelector('[aria-label="Add environment"]'));
     });
@@ -770,7 +773,11 @@ describe("CompanyEnvironments — test provider button", () => {
       // bindings even when the environment has none yet.
       "company-1",
     );
-    expect(getEnvironmentFormPage()).toBeNull();
+    // Saving awaits query invalidation before navigating away. A single flush
+    // can observe the API call before that asynchronous success path settles.
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()).toBeNull();
+    });
   });
 
   it("confirms before cancelling the edit page with unsaved environment variable drafts", async () => {
@@ -874,18 +881,7 @@ describe("CompanyEnvironments — test provider button", () => {
       adapters: [],
       drivers: { local: "supported", ssh: "supported", sandbox: "supported", plugin: "unsupported" },
       sandboxProviders: {
-        daytona: {
-          status: "supported",
-          supportsSavedProbe: true,
-          supportsUnsavedProbe: true,
-          supportsRunExecution: true,
-          supportsReusableLeases: true,
-          supportsInteractiveSetup: true,
-          interactiveSetupConnectionTypes: ["ssh"],
-          supportsTemplateCapture: true,
-          supportsTemplateDelete: true,
-          displayName: "Daytona",
-        },
+        daytona: supportedDaytonaCapabilities().sandboxProviders.daytona,
         e2b: {
           status: "supported",
           supportsSavedProbe: true,
@@ -953,24 +949,7 @@ describe("CompanyEnvironments — test provider button", () => {
     mockEnvironmentsApi.list.mockResolvedValue([
       { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
     ]);
-    mockEnvironmentsApi.capabilities.mockResolvedValue({
-      adapters: [],
-      drivers: { local: "supported", ssh: "supported", sandbox: "supported", plugin: "unsupported" },
-      sandboxProviders: {
-        daytona: {
-          status: "supported",
-          supportsSavedProbe: true,
-          supportsUnsavedProbe: true,
-          supportsRunExecution: true,
-          supportsReusableLeases: true,
-          supportsInteractiveSetup: true,
-          interactiveSetupConnectionTypes: ["ssh"],
-          supportsTemplateCapture: true,
-          supportsTemplateDelete: true,
-          displayName: "Daytona",
-        },
-      },
-    });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
     mockEnvironmentsApi.customImageTemplate.mockImplementation(async () => ({
       activeTemplate: null,
       activeSession,
@@ -1138,24 +1117,7 @@ describe("CompanyEnvironments — test provider button", () => {
     mockEnvironmentsApi.list.mockResolvedValue([
       { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
     ]);
-    mockEnvironmentsApi.capabilities.mockResolvedValue({
-      adapters: [],
-      drivers: { local: "supported", ssh: "supported", sandbox: "supported", plugin: "unsupported" },
-      sandboxProviders: {
-        daytona: {
-          status: "supported",
-          supportsSavedProbe: true,
-          supportsUnsavedProbe: true,
-          supportsRunExecution: true,
-          supportsReusableLeases: true,
-          supportsInteractiveSetup: true,
-          interactiveSetupConnectionTypes: ["ssh"],
-          supportsTemplateCapture: true,
-          supportsTemplateDelete: true,
-          displayName: "Daytona",
-        },
-      },
-    });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
     mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
       activeTemplate: null,
       activeSession: createSession(),
@@ -1251,24 +1213,7 @@ describe("CompanyEnvironments — test provider button", () => {
     mockEnvironmentsApi.list.mockResolvedValue([
       { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
     ]);
-    mockEnvironmentsApi.capabilities.mockResolvedValue({
-      adapters: [],
-      drivers: { local: "supported", ssh: "supported", sandbox: "supported", plugin: "unsupported" },
-      sandboxProviders: {
-        daytona: {
-          status: "supported",
-          supportsSavedProbe: true,
-          supportsUnsavedProbe: true,
-          supportsRunExecution: true,
-          supportsReusableLeases: true,
-          supportsInteractiveSetup: true,
-          interactiveSetupConnectionTypes: ["ssh"],
-          supportsTemplateCapture: true,
-          supportsTemplateDelete: true,
-          displayName: "Daytona",
-        },
-      },
-    });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
     mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
       activeTemplate: createTemplate({ id: activeTemplateId }),
       activeSession: null,
@@ -1483,24 +1428,7 @@ describe("CompanyEnvironments — test provider button", () => {
     mockEnvironmentsApi.list.mockResolvedValue([
       { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
     ]);
-    mockEnvironmentsApi.capabilities.mockResolvedValue({
-      adapters: [],
-      drivers: { local: "supported", ssh: "supported", sandbox: "supported", plugin: "unsupported" },
-      sandboxProviders: {
-        daytona: {
-          status: "supported",
-          supportsSavedProbe: true,
-          supportsUnsavedProbe: true,
-          supportsRunExecution: true,
-          supportsReusableLeases: true,
-          supportsInteractiveSetup: true,
-          interactiveSetupConnectionTypes: ["ssh"],
-          supportsTemplateCapture: true,
-          supportsTemplateDelete: true,
-          displayName: "Daytona",
-        },
-      },
-    });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
     mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
       activeTemplate: createTemplate({ id: "template-active" }),
       activeSession: null,
@@ -1535,24 +1463,7 @@ describe("CompanyEnvironments — test provider button", () => {
     mockEnvironmentsApi.list.mockResolvedValue([
       { id: "env-1", name: "Daytona", driver: "sandbox", description: null, config: { provider: "daytona" } },
     ]);
-    mockEnvironmentsApi.capabilities.mockResolvedValue({
-      adapters: [],
-      drivers: { local: "supported", ssh: "supported", sandbox: "supported", plugin: "unsupported" },
-      sandboxProviders: {
-        daytona: {
-          status: "supported",
-          supportsSavedProbe: true,
-          supportsUnsavedProbe: true,
-          supportsRunExecution: true,
-          supportsReusableLeases: true,
-          supportsInteractiveSetup: true,
-          interactiveSetupConnectionTypes: ["ssh"],
-          supportsTemplateCapture: true,
-          supportsTemplateDelete: true,
-          displayName: "Daytona",
-        },
-      },
-    });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(supportedDaytonaCapabilities());
     mockEnvironmentsApi.customImageTemplate.mockResolvedValue({
       activeTemplate: createTemplate({ id: "template-active" }),
       activeTemplateMatchesConfig: false,
@@ -1659,19 +1570,6 @@ describe("CompanyEnvironments — test provider button", () => {
     } finally {
       confirmSpy.mockRestore();
     }
-  });
-
-  it("offers the implicit Local option in the default picker by default", async () => {
-    root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-
-    await act(async () => {
-      root!.render(renderCompanyEnvironments(queryClient));
-    });
-    await flushReact();
-
-    const options = Array.from(container.querySelectorAll("option"));
-    expect(options.some((option) => option.textContent?.trim() === "Local")).toBe(true);
   });
 
   it("hides the implicit Local option in the default picker under managed-sandbox-only", async () => {
@@ -1926,5 +1824,58 @@ describe("CompanyEnvironments — test provider button", () => {
     });
 
     expect(document.body.querySelector("[data-testid='environment-delete-button']")).toBeNull();
+  });
+
+  it("keeps the loaded environments list visible when a refetch fails transiently", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Alpha");
+      expect(container.textContent).toContain("Beta");
+    });
+
+    mockEnvironmentsApi.list.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+    await waitForAssertion(() => {
+      expect(mockEnvironmentsApi.list.mock.calls.length).toBeGreaterThan(1);
+    });
+
+    expect(container.textContent).toContain("Alpha");
+    expect(container.textContent).toContain("Beta");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+
+  it("shows readable copy and a Retry button when the environments list fails to load", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockEnvironmentsApi.list.mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }));
+
+    await act(async () => {
+      root!.render(renderCompanyEnvironments(queryClient));
+    });
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    });
+    expect(container.textContent).toContain("Couldn't load environments");
+    expect(container.textContent).not.toContain("Alpha");
+    const retry = findButton(container, "Retry");
+    expect(retry).toBeTruthy();
+
+    await act(async () => click(retry));
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Alpha");
+    });
+    expect(mockEnvironmentsApi.list).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
   });
 });

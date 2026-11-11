@@ -62,6 +62,12 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => ({}),
   accessService: () => ({
     canUser: vi.fn(),
+    decide: vi.fn(async (input: { action: string }) => ({
+      allowed: ["project:read", "issue:read"].includes(input.action),
+      action: input.action,
+      reason: ["project:read", "issue:read"].includes(input.action) ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: ["project:read", "issue:read"].includes(input.action) ? "Allowed by test default." : "Missing permission.",
+    })),
     hasPermission: vi.fn(),
   }),
   agentService: () => ({
@@ -119,6 +125,10 @@ vi.mock("../services/issue-assignment-wakeup.js", () => ({
   queueIssueAssignmentWakeup: vi.fn(),
 }));
 
+vi.mock("../services/fast-responses.js", () => ({
+  enqueueFastResponse: vi.fn(async () => undefined),
+}));
+
 function buildApp(routerFactory: (app: express.Express) => void) {
   const app = express();
   app.use(express.json());
@@ -147,7 +157,7 @@ function createProjectApp() {
 
 function createIssueApp() {
   issueServer ??= buildApp((expressApp) => {
-    expressApp.use("/api", issueRoutes({} as any, {} as any));
+    expressApp.use("/api", issueRoutes({ transaction: async (effect: (tx: unknown) => unknown) => effect({}) } as any, {} as any));
   }).listen(0);
   return issueServer;
 }
@@ -201,17 +211,12 @@ describe("execution environment route guards", () => {
     mockLogActivity.mockReset();
   });
 
-  it("accepts sandbox environments on project create", async () => {
-    mockEnvironmentService.getById.mockResolvedValue({
-      id: sandboxEnvironmentId,
-      companyId: "company-1",
-      driver: "sandbox",
-      config: { provider: "fake-plugin" },
-    });
+  it("ignores a stale legacy policy environment on project create", async () => {
+    mockEnvironmentService.getById.mockResolvedValue(null);
     mockProjectService.create.mockResolvedValue({
       id: "project-1",
       companyId: "company-1",
-      name: "Sandboxed Project",
+      name: "Legacy Project",
       status: "backlog",
     });
     const app = createProjectApp();
@@ -219,35 +224,31 @@ describe("execution environment route guards", () => {
     const res = await request(app)
       .post("/api/companies/company-1/projects")
       .send({
-        name: "Sandboxed Project",
+        name: "Legacy Project",
         executionWorkspacePolicy: {
           enabled: true,
           environmentId: sandboxEnvironmentId,
         },
       });
 
-    expect(res.status).not.toBe(422);
+    expect(res.status).toBe(201);
+    expect(mockEnvironmentService.getById).not.toHaveBeenCalled();
     expect(mockProjectService.create).toHaveBeenCalled();
   });
 
-  it("accepts sandbox environments on project update", async () => {
+  it("ignores a stale legacy policy environment on project update", async () => {
     mockProjectService.getById.mockResolvedValue({
       id: "project-1",
       companyId: "company-1",
-      name: "Sandboxed Project",
+      name: "Legacy Project",
       status: "backlog",
       archivedAt: null,
     });
-    mockEnvironmentService.getById.mockResolvedValue({
-      id: sandboxEnvironmentId,
-      companyId: "company-1",
-      driver: "sandbox",
-      config: { provider: "fake-plugin" },
-    });
+    mockEnvironmentService.getById.mockResolvedValue(null);
     mockProjectService.update.mockResolvedValue({
       id: "project-1",
       companyId: "company-1",
-      name: "Sandboxed Project",
+      name: "Legacy Project",
       status: "backlog",
     });
     const app = createProjectApp();
@@ -261,7 +262,8 @@ describe("execution environment route guards", () => {
         },
       });
 
-    expect(res.status).not.toBe(422);
+    expect(res.status).toBe(200);
+    expect(mockEnvironmentService.getById).not.toHaveBeenCalled();
     expect(mockProjectService.update).toHaveBeenCalled();
   });
 

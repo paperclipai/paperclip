@@ -1,5 +1,6 @@
 import type {
   AskUserQuestionsQuestion,
+  PaperclipQuestionSetPayload,
   ConnectionSearchResultItem,
 } from "./types/index.js";
 import {
@@ -335,6 +336,20 @@ export function aggregatorProviderQuestion(
         description: "Do not connect through an external service.",
       },
     ],
+  };
+}
+
+/** Native question form, preserving the exact saved-answer authorization contract. */
+export function aggregatorProviderQuestionSet(question: AskUserQuestionsQuestion): PaperclipQuestionSetPayload {
+  return {
+    schema: "paperclip.question_set.v1",
+    questions: [{
+      id: question.id,
+      prompt: question.prompt,
+      required: true,
+      answerMode: "single_select",
+      options: question.options.map(({ id, label, description }) => ({ id, label, ...(description != null ? { description } : {}) })),
+    }],
   };
 }
 

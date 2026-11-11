@@ -43,6 +43,10 @@ export function persistedAcpxTurnUsage(
 ): Record<string, unknown> | null {
   const current = record(after);
   if (current.lastRequestId !== requestId) return null;
+  const terminal = record(current.terminalPromptUsage);
+  const priorTerminal = record(record(before).terminalPromptUsage);
+  if (terminal.requestId === requestId && terminal.promptId !== priorTerminal.promptId
+    && priorTerminal.requestId !== requestId) return record(terminal.event);
   const previousReceipts = record(record(before).requestTokenUsage);
   const receipts = record(current.requestTokenUsage);
   const added = Object.keys(receipts).filter(
@@ -50,7 +54,9 @@ export function persistedAcpxTurnUsage(
   );
   if (added.length !== 1) return null;
   const usage = record(receipts[added[0]!]);
-  const piReceipt = agent === "pi" ? record(usage.paperclip_pi) : {};
+  // Pi's cost provenance comes from this turn's own prompt reply, not ACPX's record.
+  const piPrompt = record(current.piPromptReceipt);
+  const piReceipt = agent === "pi" && piPrompt.request_id === requestId ? record(piPrompt.receipt) : {};
   const piReceiptVerified = piReceipt.provenance === "assistant_message_receipts"
     || piReceipt.provenance === "assistant_message_and_compaction_receipts";
   const estimate = piReceiptVerified && typeof piReceipt.cost_usd === "number"
@@ -95,3 +101,5 @@ export function acpxUsageEstimateNotice(usage: Record<string, unknown>, itemId: 
     },
   };
 }
+
+export { parseCursorNativeUsageReceipt, persistedCursorUsageNotice } from "./cursor-usage-receipt.js";

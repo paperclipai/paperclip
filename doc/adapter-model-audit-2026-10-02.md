@@ -10,7 +10,7 @@ No agent defaults or saved model selections are migrated.
 
 | Adapter | Changes from the audit |
 | --- | --- |
-| Codex and the Codex runner catalog | Add GPT-6.1 Sol (`gpt-6.1-sol`). Expose efforts through Ultra and Fast mode, as documented. Keep `gpt-5.6-sol` as the default. |
+| Codex and the Codex runner catalog | Add GPT-6.1 Sol (`gpt-6.1-sol`). Expose efforts through Ultra and Fast mode, as documented. Keep `gpt-5.6-sol` as the default. Follow-up (October 6, 2026): with ChatGPT sign-in the Codex backend accepts `gpt-6.1-sol` only from Codex CLI 0.159.0 or newer (0.156.1 and older are rejected with "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."), and `gpt-6-sol` / `gpt-6-luna` entered the bundled catalog in 0.157.0. The adapter now records these floors; the environment Test and the remote runner compare the installed `codex --version` against them, so a sandbox image baked before the pin moved reports the stale CLI instead of an account error. |
 | Claude on Bedrock | Add Sonnet 5.5 (`us.anthropic.claude-sonnet-5-5`), using the catalog's existing US inference-profile convention. Sonnet 5.5 IDs (direct or Bedrock-qualified) get the documented `xhigh` and `max` efforts and require Claude Code 2.1.284 or later on the CLI lane. |
 | OpenCode | Add `openai/gpt-6.1-sol` and `anthropic/claude-sonnet-5-5` to the static fallback used by remote environments. Both IDs are present in the OpenCode model registry. |
 | Claude Code (direct) | No change in this audit. [#14993](https://github.com/paperclipai/paperclip/pull/14993) (merged October 5, 2026, superseding #14816) adds Sonnet 5.5 (`claude-sonnet-5-5`, Claude Code 2.1.284 or later) and refreshes the Claude runtime. |

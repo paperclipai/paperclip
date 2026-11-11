@@ -1,3 +1,4 @@
+import { groupImageResources } from "./image-resources";
 import type { ReactElement } from "react";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import type { TaskChatItem, TaskChatRuntimeRequestDecision, TaskChatRuntimeRequestItem } from "./task-chat-model";
@@ -7,6 +8,7 @@ import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import { TaskChatThinking } from "./TaskChatThinking";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { buildTurnTimelineRows } from "./transcript-adapter";
+import { visibleTranscriptPlaceholder } from "./TaskChatShimmer";
 
 /**
  * Live body for legacy runner transcripts. The adapter drops debug plumbing;
@@ -37,13 +39,14 @@ export function TaskChatLiveTail({
   const visibleItems = excludeFinal
     ? items.filter((item) => item.kind !== "message" || item.interstitial)
     : items;
-  const rows = buildTurnTimelineRows(visibleItems, true)
+  const rows = groupImageResources(buildTurnTimelineRows(visibleItems, true))
     .map((item) => renderTailRow(item, onRuntimeRequestDecision))
     .filter((row): row is ReactElement => row != null);
 
   if (rows.length === 0) {
-    return emptyMessage ? (
-      <div className="px-1 py-1 text-xs text-muted-foreground/70">{emptyMessage}</div>
+    const placeholder = visibleTranscriptPlaceholder(emptyMessage);
+    return placeholder ? (
+      <div className="px-1 py-1 text-xs text-muted-foreground/70">{placeholder}</div>
     ) : null;
   }
 
@@ -69,6 +72,7 @@ function renderTailRow(
           key={item.id}
           className="px-1 text-sm text-foreground/90"
           data-testid="task-chat-live-text"
+          data-conversation-text={item.channel === "final" ? "final" : "progress"}
         >
           <MarkdownBody softBreaks linkIssueReferences>
             {item.text}

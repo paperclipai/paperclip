@@ -732,9 +732,17 @@ export function attentionItemMatchesFilters(item: AttentionItem, filters: Attent
   return true;
 }
 
-export function filterAttentionItems(items: AttentionItem[], filters: AttentionFilterState): AttentionItem[] {
-  if (countActiveAttentionFilters(filters) === 0) return items;
-  return items.filter((item) => attentionItemMatchesFilters(item, filters));
+export function filterAttentionItems(items: AttentionItem[], filters: AttentionFilterState, query = ""): AttentionItem[] {
+  const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  if (countActiveAttentionFilters(filters) === 0 && terms.length === 0) return items;
+  return items.filter((item) => {
+    if (!attentionItemMatchesFilters(item, filters)) return false;
+    if (terms.length === 0) return true;
+    const text = [item.subject.title, item.subject.identifier, item.relatedIssue?.title,
+      item.relatedIssue?.identifier, item.whyNow, attentionDetailLine(item),
+      item.originAgentName, item.project?.name, item.workspace?.name].filter(Boolean).join(" ").toLocaleLowerCase();
+    return terms.every(term => text.includes(term));
+  });
 }
 
 /** Distinct filterable dimensions present in the current feed, for the picker. */

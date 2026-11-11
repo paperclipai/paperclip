@@ -17,6 +17,7 @@ import {
   runnerE2EServerControlPaths,
 } from "./harness-env.js";
 import { runnerExecutionById, runnerMatrix } from "./catalog.js";
+import { CHAT_ANNOUNCEMENT_SCENARIO } from "./chat-announcement-fixture.js";
 import { assertEmbeddedDatabaseIsolation } from "./instance-isolation.js";
 import { evaluateMatchers, persistedFinalRunMessage } from "./matchers.js";
 import {
@@ -175,6 +176,7 @@ describe("runner E2E local binary resolution", () => {
         runnerBinary,
         undefined,
         "linux",
+        "x64",
       ),
     ).toBe(runnerBinary);
     expect(
@@ -183,6 +185,7 @@ describe("runner E2E local binary resolution", () => {
         runnerBinary,
         undefined,
         "linux",
+        "x64",
       ),
     ).toBeUndefined();
     expect(
@@ -201,7 +204,14 @@ describe("runner E2E local binary resolution", () => {
         "darwin",
       ),
     ).toBe("/cross-compiled/paperclip-runnerd");
+    expect(resolvePaperclipRemoteRunnerBinaryForHarness(
+      [remoteNativeExecution], runnerBinary, undefined, "linux", "arm64",
+    )).toBeUndefined();
+    expect(resolvePaperclipRemoteRunnerBinaryForHarness(
+      [remoteNativeExecution], runnerBinary, "/cross-compiled/linux-x64-runnerd", "linux", "arm64",
+    )).toBe("/cross-compiled/linux-x64-runnerd");
   });
+
 });
 
 describe("runner E2E provider environment", () => {
@@ -238,11 +248,11 @@ describe("runner E2E provider environment", () => {
     }
   });
 
-  it("disables announcements through the server boundary for every runner cell", () => {
+  it("disables announcements through the server boundary except the isolated dismissal fixture", () => {
     for (const execution of runnerMatrix) {
       const source = { PAPERCLIP_ANNOUNCEMENTS_ENABLED: "true" };
       const env = buildRunnerE2EProcessEnvironment(source, [execution]);
-      expect(buildPaperclipServerEnvironment(env).PAPERCLIP_ANNOUNCEMENTS_ENABLED).toBe("false");
+      expect(buildPaperclipServerEnvironment(env).PAPERCLIP_ANNOUNCEMENTS_ENABLED).toBe(execution.suite.id === "chat-features" && execution.task.id === CHAT_ANNOUNCEMENT_SCENARIO ? "true" : "false");
       expect(source.PAPERCLIP_ANNOUNCEMENTS_ENABLED).toBe("true");
     }
   });
@@ -793,6 +803,12 @@ describe("runner E2E run observations", () => {
 });
 
 describe("runner E2E failure policy", () => {
+  it("classifies settled oracle check failures as candidate failures whatever the check ids say", () => {
+    for (const ids of ["specific-operator-qualification-next-step", "provider-connection-timeout-explained", "unauthorized-write-denied, cleanup-reported"])
+      expect(classifyFailure(new Error(`Stopped waiting for agents.managed-profile: Settled scenario failed: ${ids}`))).toBe("candidate_failure");
+    expect(classifyFailure(new Error("Stopped waiting for x: Settled scenario failed: a; secret plaintext leak in server.log"))).toBe("secret_leak");
+  });
+
   it("classifies sandbox file-transfer RPC deadlines without hiding other RPC defects", () => {
     for (const method of ["environmentSyncIn", "environmentSyncOut"]) {
       expect(classifyFailure(new Error(
@@ -922,6 +938,8 @@ describe("runner E2E server isolation", () => {
         XAI_API_KEY: "xai",
         GROK_AUTH_JSON: "grok-auth-json",
         DAYTONA_API_KEY: "daytona",
+        GITHUB_TOKEN: "github-private-repository",
+        GH_TOKEN: "github-cli",
         XAI_ORG_ID: "xai-sensitive",
         GROK_HOME: "/outside/grok",
         OPENAI_ORG_ID: "also-provider-sensitive",
@@ -946,6 +964,8 @@ describe("runner E2E server isolation", () => {
     expect(env.PATH).toBe("/bin");
     expect(env.DATABASE_URL).toBeUndefined();
     expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.GH_TOKEN).toBeUndefined();
     expect(env.KIMI_MODEL_API_KEY).toBeUndefined();
     expect(env.XAI_API_KEY).toBeUndefined();
     expect(env.GROK_AUTH_JSON).toBeUndefined();

@@ -1,0 +1,855 @@
+{
+  "schema": "paperclip.copilot-authenticated-discovery/v1",
+  "observedAt": "2026-09-28T19:15:41.413Z",
+  "harnessVersion": "1.0.88",
+  "sourceRevision": "5272fc6398d42344d1888a3f97ca6909684eefbf",
+  "providerPackDigest": "sha256:4ba17b2455b0ab92cfe6ee223f77708379fe219792ccb66dbdef70060e6e22e1",
+  "profileDigest": "sha256:b18c01603dd0169d233140709cfaa8bf5304a03cf5de78ca4f625f30013e8457",
+  "agentCapabilities": {
+    "loadSession": true,
+    "mcpCapabilities": {
+      "http": true,
+      "sse": true
+    },
+    "promptCapabilities": {
+      "image": true,
+      "audio": false,
+      "embeddedContext": true
+    },
+    "sessionCapabilities": {
+      "close": {},
+      "list": {}
+    }
+  },
+  "models": {
+    "availableModels": [
+      {
+        "modelId": "auto",
+        "name": "Auto",
+        "description": "Let Copilot pick the best model"
+      },
+      {
+        "modelId": "gpt-5.6-terra",
+        "name": "GPT-5.6 Terra",
+        "description": "GPT-5.6 Terra",
+        "_meta": {
+          "copilotUsage": "1x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "medium"
+        }
+      },
+      {
+        "modelId": "gpt-5.6-luna",
+        "name": "GPT-5.6 Luna",
+        "description": "GPT-5.6 Luna",
+        "_meta": {
+          "copilotUsage": "1x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "low"
+        }
+      },
+      {
+        "modelId": "gpt-5.4",
+        "name": "GPT-5.4",
+        "description": "GPT-5.4",
+        "_meta": {
+          "copilotUsage": "1x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "medium"
+        }
+      },
+      {
+        "modelId": "gpt-5.4-mini",
+        "name": "GPT-5.4 mini",
+        "description": "GPT-5.4 mini",
+        "_meta": {
+          "copilotUsage": "0.33x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "low"
+        }
+      },
+      {
+        "modelId": "gpt-5.3-codex",
+        "name": "GPT-5.3-Codex",
+        "description": "GPT-5.3-Codex",
+        "_meta": {
+          "copilotUsage": "1x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "medium"
+        }
+      },
+      {
+        "modelId": "gpt-5-mini",
+        "name": "GPT-5 mini",
+        "description": "GPT-5 mini",
+        "_meta": {
+          "copilotUsage": "0x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "low"
+        }
+      },
+      {
+        "modelId": "claude-sonnet-5",
+        "name": "Claude Sonnet 5",
+        "description": "Claude Sonnet 5",
+        "_meta": {
+          "copilotUsage": "1x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "medium"
+        }
+      },
+      {
+        "modelId": "claude-haiku-4.5",
+        "name": "Claude Haiku 4.5",
+        "description": "Claude Haiku 4.5",
+        "_meta": {
+          "copilotUsage": "0.33x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "low"
+        }
+      },
+      {
+        "modelId": "mai-code-1.1-flash",
+        "name": "MAI-Code-1.1-Flash",
+        "description": "MAI-Code-1.1-Flash",
+        "_meta": {
+          "copilotUsage": "1x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "low"
+        }
+      },
+      {
+        "modelId": "gemini-3.8-flash",
+        "name": "Gemini 3.8 Flash",
+        "description": "Gemini 3.8 Flash",
+        "_meta": {
+          "copilotUsage": "14x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "low"
+        }
+      },
+      {
+        "modelId": "gemini-3.7-flash",
+        "name": "Gemini 3.7 Flash",
+        "description": "Gemini 3.7 Flash",
+        "_meta": {
+          "copilotUsage": "14x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "low"
+        }
+      },
+      {
+        "modelId": "gemini-3.6-flash",
+        "name": "Gemini 3.6 Flash",
+        "description": "Gemini 3.6 Flash",
+        "_meta": {
+          "copilotUsage": "14x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "low"
+        }
+      },
+      {
+        "modelId": "gemini-3.5-flash",
+        "name": "Gemini 3.5 Flash",
+        "description": "Gemini 3.5 Flash",
+        "_meta": {
+          "copilotUsage": "14x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "medium"
+        }
+      },
+      {
+        "modelId": "grok-4.5",
+        "name": "Grok 4.5",
+        "description": "Grok 4.5",
+        "_meta": {
+          "copilotUsage": "1x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "medium"
+        }
+      },
+      {
+        "modelId": "kimi-k3",
+        "name": "Kimi K3",
+        "description": "Kimi K3",
+        "_meta": {
+          "copilotUsage": "1x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "medium"
+        }
+      },
+      {
+        "modelId": "kimi-k2.7-code",
+        "name": "Kimi K2.7 Code",
+        "description": "Kimi K2.7 Code",
+        "_meta": {
+          "copilotUsage": "1x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "low"
+        }
+      },
+      {
+        "modelId": "claude-sonnet-5.5",
+        "name": "Claude Sonnet 5.5",
+        "description": "Claude Sonnet 5.5",
+        "_meta": {
+          "copilotUsage": "1x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "medium"
+        }
+      },
+      {
+        "modelId": "gpt-6-luna",
+        "name": "GPT-6 Luna",
+        "description": "GPT-6 Luna",
+        "_meta": {
+          "copilotUsage": "1x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "low"
+        }
+      },
+      {
+        "modelId": "grok-4.6",
+        "name": "Grok 4.6",
+        "description": "Grok 4.6",
+        "_meta": {
+          "copilotUsage": "1x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "medium"
+        }
+      },
+      {
+        "modelId": "grok-4.7",
+        "name": "Grok 4.7",
+        "description": "Grok 4.7",
+        "_meta": {
+          "copilotUsage": "1x",
+          "copilotEnablement": "enabled",
+          "copilotPriceCategory": "medium"
+        }
+      }
+    ],
+    "currentModelId": "gpt-5.6-terra"
+  },
+  "configOptions": [
+    {
+      "type": "select",
+      "id": "mode",
+      "name": "Mode",
+      "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+      "options": [
+        {
+          "value": "https://agentclientprotocol.com/protocol/session-modes#agent",
+          "name": "Agent",
+          "description": "Default agent mode for conversational interactions"
+        },
+        {
+          "value": "https://agentclientprotocol.com/protocol/session-modes#plan",
+          "name": "Plan",
+          "description": "Plan mode for creating and executing multi-step plans"
+        },
+        {
+          "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+          "name": "Autopilot",
+          "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)"
+        }
+      ],
+      "category": "mode",
+      "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot."
+    },
+    {
+      "type": "select",
+      "id": "model",
+      "name": "Model",
+      "category": "model",
+      "description": "The AI model Copilot uses to generate responses.",
+      "currentValue": "gpt-5.6-terra",
+      "options": [
+        {
+          "value": "auto",
+          "name": "Auto",
+          "description": "Let Copilot pick the best model",
+          "_meta": null
+        },
+        {
+          "value": "gpt-5.6-terra",
+          "name": "GPT-5.6 Terra",
+          "description": "GPT-5.6 Terra",
+          "_meta": {
+            "copilotUsage": "1x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "medium"
+          }
+        },
+        {
+          "value": "gpt-5.6-luna",
+          "name": "GPT-5.6 Luna",
+          "description": "GPT-5.6 Luna",
+          "_meta": {
+            "copilotUsage": "1x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "low"
+          }
+        },
+        {
+          "value": "gpt-5.4",
+          "name": "GPT-5.4",
+          "description": "GPT-5.4",
+          "_meta": {
+            "copilotUsage": "1x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "medium"
+          }
+        },
+        {
+          "value": "gpt-5.4-mini",
+          "name": "GPT-5.4 mini",
+          "description": "GPT-5.4 mini",
+          "_meta": {
+            "copilotUsage": "0.33x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "low"
+          }
+        },
+        {
+          "value": "gpt-5.3-codex",
+          "name": "GPT-5.3-Codex",
+          "description": "GPT-5.3-Codex",
+          "_meta": {
+            "copilotUsage": "1x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "medium"
+          }
+        },
+        {
+          "value": "gpt-5-mini",
+          "name": "GPT-5 mini",
+          "description": "GPT-5 mini",
+          "_meta": {
+            "copilotUsage": "0x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "low"
+          }
+        },
+        {
+          "value": "claude-sonnet-5",
+          "name": "Claude Sonnet 5",
+          "description": "Claude Sonnet 5",
+          "_meta": {
+            "copilotUsage": "1x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "medium"
+          }
+        },
+        {
+          "value": "claude-haiku-4.5",
+          "name": "Claude Haiku 4.5",
+          "description": "Claude Haiku 4.5",
+          "_meta": {
+            "copilotUsage": "0.33x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "low"
+          }
+        },
+        {
+          "value": "mai-code-1.1-flash",
+          "name": "MAI-Code-1.1-Flash",
+          "description": "MAI-Code-1.1-Flash",
+          "_meta": {
+            "copilotUsage": "1x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "low"
+          }
+        },
+        {
+          "value": "gemini-3.8-flash",
+          "name": "Gemini 3.8 Flash",
+          "description": "Gemini 3.8 Flash",
+          "_meta": {
+            "copilotUsage": "14x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "low"
+          }
+        },
+        {
+          "value": "gemini-3.7-flash",
+          "name": "Gemini 3.7 Flash",
+          "description": "Gemini 3.7 Flash",
+          "_meta": {
+            "copilotUsage": "14x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "low"
+          }
+        },
+        {
+          "value": "gemini-3.6-flash",
+          "name": "Gemini 3.6 Flash",
+          "description": "Gemini 3.6 Flash",
+          "_meta": {
+            "copilotUsage": "14x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "low"
+          }
+        },
+        {
+          "value": "gemini-3.5-flash",
+          "name": "Gemini 3.5 Flash",
+          "description": "Gemini 3.5 Flash",
+          "_meta": {
+            "copilotUsage": "14x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "medium"
+          }
+        },
+        {
+          "value": "grok-4.5",
+          "name": "Grok 4.5",
+          "description": "Grok 4.5",
+          "_meta": {
+            "copilotUsage": "1x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "medium"
+          }
+        },
+        {
+          "value": "kimi-k3",
+          "name": "Kimi K3",
+          "description": "Kimi K3",
+          "_meta": {
+            "copilotUsage": "1x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "medium"
+          }
+        },
+        {
+          "value": "kimi-k2.7-code",
+          "name": "Kimi K2.7 Code",
+          "description": "Kimi K2.7 Code",
+          "_meta": {
+            "copilotUsage": "1x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "low"
+          }
+        },
+        {
+          "value": "claude-sonnet-5.5",
+          "name": "Claude Sonnet 5.5",
+          "description": "Claude Sonnet 5.5",
+          "_meta": {
+            "copilotUsage": "1x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "medium"
+          }
+        },
+        {
+          "value": "gpt-6-luna",
+          "name": "GPT-6 Luna",
+          "description": "GPT-6 Luna",
+          "_meta": {
+            "copilotUsage": "1x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "low"
+          }
+        },
+        {
+          "value": "grok-4.6",
+          "name": "Grok 4.6",
+          "description": "Grok 4.6",
+          "_meta": {
+            "copilotUsage": "1x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "medium"
+          }
+        },
+        {
+          "value": "grok-4.7",
+          "name": "Grok 4.7",
+          "description": "Grok 4.7",
+          "_meta": {
+            "copilotUsage": "1x",
+            "copilotEnablement": "enabled",
+            "copilotPriceCategory": "medium"
+          }
+        }
+      ]
+    },
+    {
+      "type": "select",
+      "id": "reasoning_effort",
+      "name": "Reasoning Effort",
+      "category": "thought_level",
+      "description": "How much reasoning the model performs before responding. Higher effort can improve quality at the cost of speed.",
+      "currentValue": "medium",
+      "options": [
+        {
+          "value": "none",
+          "name": "none",
+          "description": "No additional reasoning; fastest responses."
+        },
+        {
+          "value": "low",
+          "name": "low",
+          "description": "Minimal reasoning before responding."
+        },
+        {
+          "value": "medium",
+          "name": "medium",
+          "description": "Balanced reasoning and speed."
+        },
+        {
+          "value": "high",
+          "name": "high",
+          "description": "More thorough reasoning; slower responses."
+        },
+        {
+          "value": "xhigh",
+          "name": "xhigh",
+          "description": "Extensive reasoning for the hardest problems."
+        },
+        {
+          "value": "max",
+          "name": "max",
+          "description": "Maximum reasoning; slowest but most thorough."
+        }
+      ]
+    },
+    {
+      "type": "select",
+      "id": "allow_all",
+      "name": "Allow All",
+      "currentValue": "off",
+      "options": [
+        {
+          "value": "on",
+          "name": "On",
+          "description": "Automatically approve all tool, path, and URL requests"
+        },
+        {
+          "value": "off",
+          "name": "Off",
+          "description": "Require approval for tool, path, and URL requests"
+        }
+      ],
+      "category": "permissions",
+      "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs."
+    }
+  ],
+  "promptSent": false,
+  "qualification": "pending; metadata discovery only",
+  "observedMethods": {
+    "session/update": 3
+  },
+  "modelSelection": {
+    "requestedModel": "gpt-5.6-luna",
+    "succeeded": true,
+    "response": {},
+    "configEcho": {
+      "configOptions": [
+        {
+          "type": "select",
+          "id": "mode",
+          "name": "Mode",
+          "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+          "options": [
+            {
+              "value": "https://agentclientprotocol.com/protocol/session-modes#agent",
+              "name": "Agent",
+              "description": "Default agent mode for conversational interactions"
+            },
+            {
+              "value": "https://agentclientprotocol.com/protocol/session-modes#plan",
+              "name": "Plan",
+              "description": "Plan mode for creating and executing multi-step plans"
+            },
+            {
+              "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+              "name": "Autopilot",
+              "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)"
+            }
+          ],
+          "category": "mode",
+          "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot."
+        },
+        {
+          "type": "select",
+          "id": "model",
+          "name": "Model",
+          "category": "model",
+          "description": "The AI model Copilot uses to generate responses.",
+          "currentValue": "gpt-5.6-luna",
+          "options": [
+            {
+              "value": "auto",
+              "name": "Auto",
+              "description": "Let Copilot pick the best model",
+              "_meta": null
+            },
+            {
+              "value": "gpt-5.6-terra",
+              "name": "GPT-5.6 Terra",
+              "description": "GPT-5.6 Terra",
+              "_meta": {
+                "copilotUsage": "1x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "medium"
+              }
+            },
+            {
+              "value": "gpt-5.6-luna",
+              "name": "GPT-5.6 Luna",
+              "description": "GPT-5.6 Luna",
+              "_meta": {
+                "copilotUsage": "1x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "low"
+              }
+            },
+            {
+              "value": "gpt-5.4",
+              "name": "GPT-5.4",
+              "description": "GPT-5.4",
+              "_meta": {
+                "copilotUsage": "1x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "medium"
+              }
+            },
+            {
+              "value": "gpt-5.4-mini",
+              "name": "GPT-5.4 mini",
+              "description": "GPT-5.4 mini",
+              "_meta": {
+                "copilotUsage": "0.33x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "low"
+              }
+            },
+            {
+              "value": "gpt-5.3-codex",
+              "name": "GPT-5.3-Codex",
+              "description": "GPT-5.3-Codex",
+              "_meta": {
+                "copilotUsage": "1x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "medium"
+              }
+            },
+            {
+              "value": "gpt-5-mini",
+              "name": "GPT-5 mini",
+              "description": "GPT-5 mini",
+              "_meta": {
+                "copilotUsage": "0x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "low"
+              }
+            },
+            {
+              "value": "claude-sonnet-5",
+              "name": "Claude Sonnet 5",
+              "description": "Claude Sonnet 5",
+              "_meta": {
+                "copilotUsage": "1x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "medium"
+              }
+            },
+            {
+              "value": "claude-haiku-4.5",
+              "name": "Claude Haiku 4.5",
+              "description": "Claude Haiku 4.5",
+              "_meta": {
+                "copilotUsage": "0.33x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "low"
+              }
+            },
+            {
+              "value": "mai-code-1.1-flash",
+              "name": "MAI-Code-1.1-Flash",
+              "description": "MAI-Code-1.1-Flash",
+              "_meta": {
+                "copilotUsage": "1x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "low"
+              }
+            },
+            {
+              "value": "gemini-3.8-flash",
+              "name": "Gemini 3.8 Flash",
+              "description": "Gemini 3.8 Flash",
+              "_meta": {
+                "copilotUsage": "14x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "low"
+              }
+            },
+            {
+              "value": "gemini-3.7-flash",
+              "name": "Gemini 3.7 Flash",
+              "description": "Gemini 3.7 Flash",
+              "_meta": {
+                "copilotUsage": "14x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "low"
+              }
+            },
+            {
+              "value": "gemini-3.6-flash",
+              "name": "Gemini 3.6 Flash",
+              "description": "Gemini 3.6 Flash",
+              "_meta": {
+                "copilotUsage": "14x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "low"
+              }
+            },
+            {
+              "value": "gemini-3.5-flash",
+              "name": "Gemini 3.5 Flash",
+              "description": "Gemini 3.5 Flash",
+              "_meta": {
+                "copilotUsage": "14x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "medium"
+              }
+            },
+            {
+              "value": "grok-4.5",
+              "name": "Grok 4.5",
+              "description": "Grok 4.5",
+              "_meta": {
+                "copilotUsage": "1x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "medium"
+              }
+            },
+            {
+              "value": "kimi-k3",
+              "name": "Kimi K3",
+              "description": "Kimi K3",
+              "_meta": {
+                "copilotUsage": "1x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "medium"
+              }
+            },
+            {
+              "value": "kimi-k2.7-code",
+              "name": "Kimi K2.7 Code",
+              "description": "Kimi K2.7 Code",
+              "_meta": {
+                "copilotUsage": "1x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "low"
+              }
+            },
+            {
+              "value": "claude-sonnet-5.5",
+              "name": "Claude Sonnet 5.5",
+              "description": "Claude Sonnet 5.5",
+              "_meta": {
+                "copilotUsage": "1x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "medium"
+              }
+            },
+            {
+              "value": "gpt-6-luna",
+              "name": "GPT-6 Luna",
+              "description": "GPT-6 Luna",
+              "_meta": {
+                "copilotUsage": "1x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "low"
+              }
+            },
+            {
+              "value": "grok-4.6",
+              "name": "Grok 4.6",
+              "description": "Grok 4.6",
+              "_meta": {
+                "copilotUsage": "1x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "medium"
+              }
+            },
+            {
+              "value": "grok-4.7",
+              "name": "Grok 4.7",
+              "description": "Grok 4.7",
+              "_meta": {
+                "copilotUsage": "1x",
+                "copilotEnablement": "enabled",
+                "copilotPriceCategory": "medium"
+              }
+            }
+          ]
+        },
+        {
+          "type": "select",
+          "id": "reasoning_effort",
+          "name": "Reasoning Effort",
+          "category": "thought_level",
+          "description": "How much reasoning the model performs before responding. Higher effort can improve quality at the cost of speed.",
+          "currentValue": "medium",
+          "options": [
+            {
+              "value": "none",
+              "name": "none",
+              "description": "No additional reasoning; fastest responses."
+            },
+            {
+              "value": "low",
+              "name": "low",
+              "description": "Minimal reasoning before responding."
+            },
+            {
+              "value": "medium",
+              "name": "medium",
+              "description": "Balanced reasoning and speed."
+            },
+            {
+              "value": "high",
+              "name": "high",
+              "description": "More thorough reasoning; slower responses."
+            },
+            {
+              "value": "xhigh",
+              "name": "xhigh",
+              "description": "Extensive reasoning for the hardest problems."
+            },
+            {
+              "value": "max",
+              "name": "max",
+              "description": "Maximum reasoning; slowest but most thorough."
+            }
+          ]
+        },
+        {
+          "type": "select",
+          "id": "allow_all",
+          "name": "Allow All",
+          "currentValue": "off",
+          "options": [
+            {
+              "value": "on",
+              "name": "On",
+              "description": "Automatically approve all tool, path, and URL requests"
+            },
+            {
+              "value": "off",
+              "name": "Off",
+              "description": "Require approval for tool, path, and URL requests"
+            }
+          ],
+          "category": "permissions",
+          "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs."
+        }
+      ]
+    }
+  },
+  "sessionClosed": true,
+  "promptRequestsSent": 0,
+  "inferenceVerified": false
+}

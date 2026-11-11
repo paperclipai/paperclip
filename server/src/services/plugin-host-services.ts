@@ -1,3 +1,11 @@
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
+import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
+import { projectGitAuthorizationService } from "./project-git-authorization.js";
+import { createLiveEventDelivery } from "../realtime/live-event-delivery.js";
+import { createLiveRunEventRedactor } from "./live-run-event-redaction.js";
+import { projectInstanceSecretService } from "./project-instance-secrets.js";
+import { pluginAgentRuntimeState, pluginAgentRuntimeIdentity } from "./plugin-agent-runtime-state.js";
+import { createAgentLifecycle } from "./agent-lifecycle.js";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -27,7 +35,7 @@ import type {
   PluginIssueOrchestrationSummary,
   PluginExecutionWorkspaceMetadata,
 } from "@paperclipai/plugin-sdk";
-import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
+import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, IssueRelationIssueSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
 import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
@@ -77,9 +85,17 @@ import { isIP } from "node:net";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
-import { authorizationService, type AuthorizationActor } from "./authorization.js";
+import {
+  authorizationService,
+  canActorReadIssuePrivacy,
+  issuePrivacyMode,
+  issueReadSqlCondition,
+  type AuthorizationActor,
+  type IssuePrivacyRow,
+} from "./authorization.js";
 import { redactEventPayload, sanitizeRecord } from "../redaction.js";
 import type { WorkerHostCallContext } from "@paperclipai/plugin-sdk";
+import { WORKSPACE_OPERATION_FAILURE_REASONS } from "@paperclipai/plugin-sdk";
 import {
   normalizeProviderFamily,
   SANDBOX_STARTUP_SPAN_ATTRS,
@@ -524,6 +540,13 @@ const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set([
   "postUploadCommand",
   "session.open",
   "session.close",
+  "lease.wait_for_teardown", "lease.lookup", "lease.refresh", "lease.channel_cleanup",
+  "lease.start", "lease.recover", "lease.wait_transition", "lease.force_stop", "lease.verify", "lease.workspace", "lease.sentinel",
+  "lease.shell", "lease.create", "lease.expiry", "lease.cleanup",
+  "plugin.worker", "plugin.host.identity.read", "plugin.host.config.read", "plugin.host.progress.read", "plugin.host.progress.write",
+  "plugin.workspace.prepare", "plugin.workspace.failure", "plugin.storage.queue", "plugin.storage.execute",
+  "plugin.runtime.queue", "plugin.runtime.prepare", "plugin.runtime.reconcile", "plugin.runtime.verify",
+  "plugin.remote.request", "plugin.remote.operation", "plugin.remote.lifecycle",
 ]);
 
 /** Clamp the span name to a closed, namespaced set. A known name maps to
@@ -534,7 +557,7 @@ const KNOWN_PROVIDER_SPAN_NAMES: ReadonlySet<string> = new Set([
  * `provider` family attribute on the span instead of this literal. */
 function clampProviderSpanName(raw: unknown): string {
   const name = typeof raw === "string" && KNOWN_PROVIDER_SPAN_NAMES.has(raw) ? raw : "other";
-  return `sandbox.daytona.${name}`;
+  return name.startsWith("plugin.") ? name : `sandbox.daytona.${name}`;
 }
 
 /** The closed allowlist of attribute keys a provider span may carry. The host
@@ -547,13 +570,19 @@ const PROVIDER_SPAN_ATTR_ALLOWLIST: ReadonlySet<string> = new Set<string>([
   SPAN_ATTRS.transferWallMs,
   SPAN_ATTRS.transferGuardCount,
   SPAN_ATTRS.transferDirection,
+  SPAN_ATTRS.state,
+  "plugin.operation", "plugin.reused", "plugin.item_count", "plugin.bytes", "plugin.call_count", "plugin.failure_reason",
 ]);
+
+/** The closed value set for `plugin.failure_reason`: a workspace operation failure reason, or `unknown`. */
+const KNOWN_PLUGIN_FAILURE_REASONS: ReadonlySet<string> = new Set<string>([...WORKSPACE_OPERATION_FAILURE_REASONS, "unknown"]);
 
 /** The subset of allowed keys that carry a finite number. */
 const PROVIDER_SPAN_NUMERIC_ATTRS: ReadonlySet<string> = new Set<string>([
   SPAN_ATTRS.packWallMs,
   SPAN_ATTRS.transferWallMs,
   SPAN_ATTRS.transferGuardCount,
+  "plugin.item_count", "plugin.bytes", "plugin.call_count",
 ]);
 
 /** The closed value set for the `outcome` attribute. */
@@ -561,6 +590,12 @@ const KNOWN_SPAN_OUTCOMES: ReadonlySet<string> = new Set(["ok", "skipped", "fail
 
 /** The closed value set for the `transfer.direction` attribute. */
 const KNOWN_TRANSFER_DIRECTIONS: ReadonlySet<string> = new Set(["inbound", "outbound"]);
+
+// Settled states plus the transitions a start waits out; anything else is dropped.
+const PROVIDER_STARTUP_STATES: ReadonlySet<string> = new Set([
+  "started", "stopped", "archived", "error", "other",
+  "starting", "stopping", "restoring", "archiving", "resizing",
+]);
 
 /**
  * Re-clamp the worker-sent attributes at the trust boundary. Drop every key that
@@ -576,6 +611,19 @@ export function clampProviderSpanAttributes(
   if (!raw) return clamped;
   for (const [key, value] of Object.entries(raw)) {
     if (!PROVIDER_SPAN_ATTR_ALLOWLIST.has(key)) continue;
+    if (key === SPAN_ATTRS.state) {
+      if (typeof value === "string" && PROVIDER_STARTUP_STATES.has(value)) clamped[key] = value;
+      continue;
+    }
+    if (key === "plugin.operation") {
+      if (typeof value === "string" && ["request", "queue.wait", "launch.wait", "mount.refresh", "guest.setup", "process.execute", "script.workspace", "script.git", "script.settings", "script.publication", "cleanup", "process.start", "hello", "checkpoint.load"].includes(value)) clamped[key] = value;
+      continue;
+    }
+    if (key === "plugin.reused") { if (typeof value === "boolean") clamped[key] = value; continue; }
+    if (key === "plugin.failure_reason") {
+      if (typeof value === "string" && KNOWN_PLUGIN_FAILURE_REASONS.has(value)) clamped[key] = value;
+      continue;
+    }
     if (key === SPAN_ATTRS.provider) {
       clamped[key] = normalizeProviderFamily(typeof value === "string" ? value : undefined);
       continue;
@@ -589,7 +637,7 @@ export function clampProviderSpanAttributes(
       continue;
     }
     if (PROVIDER_SPAN_NUMERIC_ATTRS.has(key)) {
-      if (typeof value === "number" && Number.isFinite(value)) clamped[key] = value;
+      if (typeof value === "number" && Number.isFinite(value) && (!key.startsWith("plugin.") || value >= 0 && value <= 1e12)) clamped[key] = value;
       continue;
     }
   }
@@ -651,12 +699,14 @@ const MAX_PROVIDER_SPAN_END_SKEW_MS = 60 * 1000; // 1 minute
 function validateProviderSpanTimes(
   startTimeMs: unknown,
   endTimeMs: unknown,
+  maxDurationMs = MAX_PROVIDER_SPAN_DURATION_MS,
+  maxAgeMs = MAX_PROVIDER_SPAN_START_AGE_MS,
 ): { startTimeMs: number; endTimeMs: number } | undefined {
   if (typeof startTimeMs !== "number" || !Number.isFinite(startTimeMs)) return undefined;
   if (typeof endTimeMs !== "number" || !Number.isFinite(endTimeMs)) return undefined;
   if (startTimeMs > endTimeMs) return undefined;
-  if (endTimeMs - startTimeMs > MAX_PROVIDER_SPAN_DURATION_MS) return undefined;
-  if (Date.now() - startTimeMs > MAX_PROVIDER_SPAN_START_AGE_MS) return undefined;
+  if (endTimeMs - startTimeMs > maxDurationMs) return undefined;
+  if (Date.now() - startTimeMs > maxAgeMs) return undefined;
   if (endTimeMs - Date.now() > MAX_PROVIDER_SPAN_END_SKEW_MS) return undefined;
   return { startTimeMs, endTimeMs };
 }
@@ -678,20 +728,40 @@ export function recordWorkerProviderSpan(
     status?: { code?: unknown; message?: unknown };
     startTimeMs?: unknown;
     endTimeMs?: unknown;
+    children?: unknown;
+    relationship?: unknown;
   },
   context: WorkerHostCallContext | undefined,
 ): void {
   const parent = parseTraceparent(context?.traceparent);
   if (!parent) return; // reject a missing or malformed traceparent
-  const times = validateProviderSpanTimes(params.startTimeMs, params.endTimeMs);
-  const status = clampSpanStatus(params.status);
-  recordProviderPluginSpan({
-    name: clampProviderSpanName(params.name),
-    parent,
-    attributes: clampProviderSpanAttributes(params.attributes),
-    ...(status ? { status } : {}),
-    ...(times ? { startTimeMs: times.startTimeMs, endTimeMs: times.endTimeMs } : {}),
-  });
+  const budget = context?.providerSpanBudget ?? {remaining:256};
+  const longInvocation = params.name === "plugin.worker";
+  const invocationLimitMs = 24 * 60 * 60 * 1000;
+  const visit = (params: { name: string; attributes?: Record<string, unknown>; status?: { code?: unknown }; startTimeMs?: unknown; endTimeMs?: unknown; children?: unknown; relationship?: unknown }, parent: ParsedTraceparent, depth: number, enclosing?: { startTimeMs: number; endTimeMs: number }) => {
+    if (depth > 12 || budget.remaining-- <= 0) return;
+    const times = validateProviderSpanTimes(params.startTimeMs, params.endTimeMs,
+      depth === 0 && longInvocation ? invocationLimitMs : MAX_PROVIDER_SPAN_DURATION_MS,
+      longInvocation ? invocationLimitMs : MAX_PROVIDER_SPAN_START_AGE_MS);
+    const linked = params.relationship === "linked" && params.name === "plugin.remote.lifecycle";
+    if (params.relationship !== undefined && !linked) return;
+    if (linked && (!times || Date.now() - times.startTimeMs > MAX_PROVIDER_SPAN_DURATION_MS)) return;
+    if (enclosing && (!times || (!linked && times.startTimeMs < enclosing.startTimeMs) || times.endTimeMs > enclosing.endTimeMs)) return;
+    const status = clampSpanStatus(params.status);
+    const childParent = recordProviderPluginSpan({
+      name: clampProviderSpanName(params.name),
+      parent,
+      ...(linked ? { linked: true } : {}),
+      attributes: clampProviderSpanAttributes(params.attributes),
+      ...(status ? { status } : {}),
+      ...(times ? { startTimeMs: times.startTimeMs, endTimeMs: times.endTimeMs } : {}),
+    });
+    if (childParent && times && Array.isArray(params.children)) for (const child of params.children.slice(0, 256)) {
+      if (budget.remaining <= 0) break;
+      if (child && typeof child === "object" && typeof child.name === "string") visit(child, childParent, depth + 1, times);
+    }
+  };
+  try { visit(params, parent, 0); } catch {}
 }
 
 export function buildHostServices(
@@ -712,6 +782,7 @@ export function buildHostServices(
   const secretsHandler = createPluginSecretsHandler({ db, pluginId });
   const companies = companyService(db);
   const agents = agentService(db);
+  const agentsLifecycle = createAgentLifecycle(db);
   const managedAgents = pluginManagedAgentService(db, {
     pluginId,
     pluginKey,
@@ -759,6 +830,135 @@ export function buildHostServices(
   const interactions = issueThreadInteractionService(db);
   const scopedBus = eventBus.forPlugin(pluginKey);
   const lifecycleInbox = pluginLifecycleInbox(db, pluginId);
+
+  // --- Issue privacy for plugin-facing reads (PAP-16091 / PAP-16050) ---------
+  // Plugins are non-member principals: they hold no company membership, issue
+  // access grant, or private-project access, so the canonical issue-visibility
+  // predicate resolves them to the same scope as any other non-member — public
+  // issues only. Notification/digest plugins (e.g. a Slack notifier) fan issue
+  // data out to shared channels whose audience is, by definition, non-members,
+  // so private issue content and relationship metadata must never reach them.
+  //
+  // A synthetic { type: "none" } actor produces exactly that scope: it yields a
+  // null privacy principal (no implicit/grant/project-member match) and does not
+  // trip the local-implicit / instance-admin bypasses inside the predicate. In
+  // "off"/"shadow" modes these helpers are pass-through, matching every other
+  // enforcement surface so the enforce flip stays the single behavioral switch.
+  const pluginIssuePrivacyActor: AuthorizationActor = { type: "none" };
+  const toIssuePrivacyRow = (issue: {
+    id: string;
+    companyId: string;
+    visibility?: string | null;
+    privacyRootIssueId?: string | null;
+    responsibleUserId?: string | null;
+    createdByUserId?: string | null;
+    assigneeUserId?: string | null;
+    assigneeAgentId?: string | null;
+    projectId?: string | null;
+  }): IssuePrivacyRow => ({
+    id: issue.id,
+    companyId: issue.companyId,
+    visibility: issue.visibility ?? "open",
+    privacyRootIssueId: issue.privacyRootIssueId ?? null,
+    responsibleUserId: issue.responsibleUserId ?? null,
+    createdByUserId: issue.createdByUserId ?? null,
+    assigneeUserId: issue.assigneeUserId ?? null,
+    assigneeAgentId: issue.assigneeAgentId ?? null,
+    projectId: issue.projectId ?? null,
+  });
+  const pluginCanReadIssue = async (
+    issue: Parameters<typeof toIssuePrivacyRow>[0] | null | undefined,
+  ): Promise<boolean> => {
+    if (!issue) return false;
+    if (issuePrivacyMode() !== "enforce") return true;
+    return canActorReadIssuePrivacy(db, pluginIssuePrivacyActor, toIssuePrivacyRow(issue));
+  };
+  const pluginReadableIssueIds = async (
+    issueList: Array<Parameters<typeof toIssuePrivacyRow>[0]>,
+  ): Promise<Set<string>> => {
+    if (issuePrivacyMode() !== "enforce") return new Set(issueList.map((issue) => issue.id));
+    const decisions = await Promise.all(
+      issueList.map(async (issue) => ({
+        id: issue.id,
+        allowed: await canActorReadIssuePrivacy(db, pluginIssuePrivacyActor, toIssuePrivacyRow(issue)),
+      })),
+    );
+    return new Set(decisions.filter((decision) => decision.allowed).map((decision) => decision.id));
+  };
+  // Column projection matching IssuePrivacyRow, for ad-hoc readability lookups
+  // of bare issue IDs (relation targets, subtree descendants) that arrive
+  // without their privacy columns loaded.
+  const issuePrivacyRowColumns = {
+    id: issuesTable.id,
+    companyId: issuesTable.companyId,
+    visibility: issuesTable.visibility,
+    privacyRootIssueId: issuesTable.privacyRootIssueId,
+    responsibleUserId: issuesTable.responsibleUserId,
+    createdByUserId: issuesTable.createdByUserId,
+    assigneeUserId: issuesTable.assigneeUserId,
+    assigneeAgentId: issuesTable.assigneeAgentId,
+    projectId: issuesTable.projectId,
+  } as const;
+  // Resolve which of the given issue IDs a non-member plugin may read. Loads
+  // the privacy-relevant columns for those IDs and evaluates the canonical
+  // predicate. An ID with no surviving row (deleted, cross-company) is absent
+  // from the result set — fail closed.
+  const pluginReadableIssueIdsByIds = async (
+    companyId: string,
+    ids: Iterable<string>,
+  ): Promise<Set<string>> => {
+    const uniqueIds = [...new Set(ids)];
+    if (issuePrivacyMode() !== "enforce" || uniqueIds.length === 0) {
+      return new Set(uniqueIds);
+    }
+    const rows = await db
+      .select(issuePrivacyRowColumns)
+      .from(issuesTable)
+      .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, uniqueIds)));
+    return pluginReadableIssueIds(rows);
+  };
+  // Fetch an issue and require it be both in-company and readable by a
+  // non-member plugin. A private (unreadable) issue throws the same "not found"
+  // error a genuinely missing issue would, so its existence never leaks. This
+  // is the single gate every issue-derived plugin read routes through, so no
+  // method needs its own bespoke visibility check.
+  const requirePluginReadableIssue = async (issueId: string, companyId: string): Promise<Issue> => {
+    const issue = requireInCompany("Issue", await issues.getById(issueId), companyId);
+    if (!(await pluginCanReadIssue(issue))) {
+      throw new Error("Issue not found");
+    }
+    return issue as Issue;
+  };
+  // Redact a relation summary so blocker/blocked edges pointing at an issue the
+  // plugin cannot read are dropped, recursing into nested terminal blockers. An
+  // edge's title/status/assignee is relationship metadata a non-member must not
+  // see even when the issue that owns the edge is itself public.
+  const pluginRedactRelationSummary = async <
+    R extends { blockedBy: IssueRelationIssueSummary[]; blocks: IssueRelationIssueSummary[] },
+  >(
+    companyId: string,
+    relation: R,
+  ): Promise<R> => {
+    if (issuePrivacyMode() !== "enforce") return relation;
+    const edgeIds = new Set<string>();
+    const collect = (edges: IssueRelationIssueSummary[]) => {
+      for (const edge of edges) {
+        edgeIds.add(edge.id);
+        if (edge.terminalBlockers?.length) collect(edge.terminalBlockers);
+      }
+    };
+    collect(relation.blockedBy);
+    collect(relation.blocks);
+    if (edgeIds.size === 0) return relation;
+    const readable = await pluginReadableIssueIdsByIds(companyId, edgeIds);
+    const redact = (edges: IssueRelationIssueSummary[]): IssueRelationIssueSummary[] =>
+      edges
+        .filter((edge) => readable.has(edge.id))
+        .map((edge) => (edge.terminalBlockers?.length
+          ? { ...edge, terminalBlockers: redact(edge.terminalBlockers) }
+          : edge));
+    return { ...relation, blockedBy: redact(relation.blockedBy), blocks: redact(relation.blocks) };
+  };
 
   // Track active session event subscriptions for cleanup
   const activeSubscriptions = new Set<{ unsubscribe: () => void; timer: ReturnType<typeof setTimeout> }>();
@@ -1554,13 +1754,13 @@ export function buildHostServices(
         return registry.upsertEntity(pluginId, params as any) as any;
       },
       async list(params) {
-        return registry.listEntities(pluginId, params as any) as any;
+        return registry.listEntities(pluginId, params) as any;
       },
     },
 
     events: {
       async listLifecycle(params) {
-        return lifecycleInbox.list(ensureCompanyId(params.companyId), params.limit, params.afterId);
+        return lifecycleInbox.list(ensureCompanyId(params.companyId), params.limit, params.afterId, options.manifest?.resourceLifecycle?.includes("agent_runtime") ? ["agent", "project", "agent_runtime"] : ["agent", "project"]);
       },
       async acknowledgeLifecycle(params) {
         await lifecycleInbox.acknowledge(ensureCompanyId(params.companyId), params.eventId);
@@ -1723,6 +1923,16 @@ export function buildHostServices(
     },
 
     projects: {
+      async resolveGitCredential(params, context) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return projectGitAuthorizationService(db).resolve(params, context.invocationScope?.projectGit);
+      },
+      async getInstanceSecrets(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return projectInstanceSecretService(db, pluginId).read(companyId, params.projectId);
+      },
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
@@ -1912,13 +2122,21 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         assertReadableOriginFilter(params.originKind);
-        return applyWindow((await issues.list(companyId, params as any)) as Issue[], params);
+        // Push the non-member visibility predicate into the list query so private
+        // issues are filtered at the SQL layer before they can reach a plugin.
+        const readCondition = await issueReadSqlCondition(db, pluginIssuePrivacyActor);
+        return applyWindow(
+          (await issues.list(companyId, { ...(params as any), readCondition })) as Issue[],
+          params,
+        );
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const issue = await issues.getById(params.issueId);
-        return (inCompany(issue, companyId) ? issue : null) as Issue | null;
+        if (!inCompany(issue, companyId)) return null;
+        if (!(await pluginCanReadIssue(issue))) return null;
+        return issue as Issue;
       },
       async create(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -1929,6 +2147,17 @@ export function buildHostServices(
             ? pluginOperationIssueOriginKind(pluginKey)
             : originKind,
         );
+        if (issueInput.parentId) await requirePluginReadableIssue(issueInput.parentId, companyId);
+        const sourceRunId = params.originRunId ?? actorRunId;
+        if (sourceRunId) {
+          const [sourceRun] = await db.select().from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.id, sourceRunId), eq(heartbeatRuns.companyId, companyId)));
+          if (!sourceRun) throw new Error("Origin run not found");
+          if (sourceRun.scopeKind !== "company") {
+            if (!sourceRun.issueId) throw new Error("Origin run not found");
+            await requirePluginReadableIssue(sourceRun.issueId, companyId);
+          }
+        }
         const issue = (await issues.create(companyId, {
           ...(issueInput as any),
           originKind: normalizedOriginKind,
@@ -1960,6 +2189,7 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const existing = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        await requirePluginReadableIssue(params.issueId, companyId);
         const patch = { ...(params.patch as Record<string, unknown>) };
         const actorAgentId = typeof patch.actorAgentId === "string" ? patch.actorAgentId : null;
         const actorUserId = typeof patch.actorUserId === "string" ? patch.actorUserId : null;
@@ -1996,13 +2226,20 @@ export function buildHostServices(
       async getRelations(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
-        return await issues.getRelationSummaries(params.issueId);
+        // Private root -> indistinguishable from missing; readable root ->
+        // still redact any edge that points at an issue the plugin cannot read.
+        await requirePluginReadableIssue(params.issueId, companyId);
+        return await pluginRedactRelationSummary(
+          companyId,
+          await issues.getRelationSummaries(params.issueId),
+        );
       },
       async setBlockedBy(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        return setBlockedByWithActivity({
+        // The echoed relation summary can name a private blocker target, so
+        // redact unreadable edges before returning it to a non-member plugin.
+        return pluginRedactRelationSummary(companyId, await setBlockedByWithActivity({
           companyId,
           issueId: params.issueId,
           blockedByIssueIds: params.blockedByIssueIds,
@@ -2010,7 +2247,7 @@ export function buildHostServices(
           actorAgentId: params.actorAgentId,
           actorUserId: params.actorUserId,
           actorRunId: params.actorRunId,
-        });
+        }));
       },
       async addBlockers(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -2023,7 +2260,7 @@ export function buildHostServices(
             ...params.blockerIssueIds,
           ]),
         ];
-        return setBlockedByWithActivity({
+        return pluginRedactRelationSummary(companyId, await setBlockedByWithActivity({
           companyId,
           issueId: params.issueId,
           blockedByIssueIds: nextBlockedByIssueIds,
@@ -2031,7 +2268,7 @@ export function buildHostServices(
           actorAgentId: params.actorAgentId,
           actorUserId: params.actorUserId,
           actorRunId: params.actorRunId,
-        });
+        }));
       },
       async removeBlockers(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -2042,7 +2279,7 @@ export function buildHostServices(
         const nextBlockedByIssueIds = previous.blockedBy
           .map((relation) => relation.id)
           .filter((issueId) => !removals.has(issueId));
-        return setBlockedByWithActivity({
+        return pluginRedactRelationSummary(companyId, await setBlockedByWithActivity({
           companyId,
           issueId: params.issueId,
           blockedByIssueIds: nextBlockedByIssueIds,
@@ -2050,7 +2287,7 @@ export function buildHostServices(
           actorAgentId: params.actorAgentId,
           actorUserId: params.actorUserId,
           actorRunId: params.actorRunId,
-        });
+        }));
       },
       async assertCheckoutOwner(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -2089,17 +2326,31 @@ export function buildHostServices(
       async getSubtree(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const rootIssue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        // A private root is invisible to a non-member plugin: report not-found
+        // rather than leak its existence or any descendant metadata.
+        const rootIssue = await requirePluginReadableIssue(params.issueId, companyId);
         const includeRoot = params.includeRoot !== false;
         const subtreeIssueIds = await collectIssueSubtreeIds(companyId, rootIssue.id);
-        const issueIds = includeRoot ? subtreeIssueIds : subtreeIssueIds.filter((issueId) => issueId !== rootIssue.id);
-        const issueRows = issueIds.length > 0
+        const candidateIssueIds = includeRoot
+          ? subtreeIssueIds
+          : subtreeIssueIds.filter((issueId) => issueId !== rootIssue.id);
+        const issueRows = candidateIssueIds.length > 0
           ? await db
             .select()
             .from(issuesTable)
-            .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, issueIds)))
+            .where(and(eq(issuesTable.companyId, companyId), inArray(issuesTable.id, candidateIssueIds)))
           : [];
-        const issuesById = new Map(issueRows.map((issue) => [issue.id, issue as Issue]));
+        // Filter private descendants BEFORE fetching any relations, documents,
+        // runs, or assignees so private issue rows and their metadata never
+        // enter the result. The root has already cleared the readability gate.
+        const readableSubtreeIds = await pluginReadableIssueIds(issueRows);
+        readableSubtreeIds.add(rootIssue.id);
+        const issueIds = candidateIssueIds.filter((issueId) => readableSubtreeIds.has(issueId));
+        const issuesById = new Map(
+          issueRows
+            .filter((issue) => readableSubtreeIds.has(issue.id))
+            .map((issue) => [issue.id, issue as Issue]),
+        );
         const outputIssues = issueIds
           .map((issueId) => issuesById.get(issueId))
           .filter((issue): issue is Issue => Boolean(issue));
@@ -2110,7 +2361,10 @@ export function buildHostServices(
 
         const [relationPairs, documentPairs, activeRunRows, assigneeRows] = await Promise.all([
           params.includeRelations
-            ? Promise.all(issueIds.map(async (issueId) => [issueId, await issues.getRelationSummaries(issueId)] as const))
+            ? Promise.all(issueIds.map(async (issueId) => [
+              issueId,
+              await pluginRedactRelationSummary(companyId, await issues.getRelationSummaries(issueId)),
+            ] as const))
             : Promise.resolve(null),
           params.includeDocuments
             ? Promise.all(
@@ -2308,12 +2562,27 @@ export function buildHostServices(
       async getOrchestrationSummary(params): Promise<PluginIssueOrchestrationSummary> {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        const rootIssue = requireInCompany("Issue", await issues.getById(params.issueId), companyId);
-        const subtreeIssueIds = params.includeSubtree
+        // A private root is invisible to a non-member plugin: report not-found
+        // rather than leak its existence or any subtree relationship metadata.
+        const rootIssue = await requirePluginReadableIssue(params.issueId, companyId);
+        const rawSubtreeIssueIds = params.includeSubtree
           ? await collectIssueSubtreeIds(companyId, rootIssue.id)
           : [rootIssue.id];
+        // Drop any private descendant the plugin may not read so its relations,
+        // approvals, runs, costs, and budget blocks never enter the summary.
+        const readableSubtreeIds = await pluginReadableIssueIdsByIds(companyId, rawSubtreeIssueIds);
+        readableSubtreeIds.add(rootIssue.id);
+        const subtreeIssueIds = rawSubtreeIssueIds.filter((id) => readableSubtreeIds.has(id));
+        // Blocker edges can point at private issues outside the readable subtree
+        // (e.g. a public task blocked by a private one). Their title/status/
+        // assignee are relationship metadata a non-member must not see, so
+        // pluginRedactRelationSummary drops any edge whose target is unreadable,
+        // recursing into nested terminal blockers.
         const relationPairs = await Promise.all(
-          subtreeIssueIds.map(async (issueId) => [issueId, await issues.getRelationSummaries(issueId)] as const),
+          subtreeIssueIds.map(async (issueId) => [
+            issueId,
+            await pluginRedactRelationSummary(companyId, await issues.getRelationSummaries(issueId)),
+          ] as const),
         );
         const approvalRows = (
           await Promise.all(
@@ -2383,7 +2652,10 @@ export function buildHostServices(
       async listComments(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        if (!inCompany(await issues.getById(params.issueId), companyId)) return [];
+        const issue = await issues.getById(params.issueId);
+        if (!inCompany(issue, companyId)) return [];
+        // Comment visibility follows the ACL of the issue they were posted on.
+        if (!(await pluginCanReadIssue(issue))) return [];
         return (await issues.listComments(params.issueId)) as IssueComment[];
       },
       async createComment(params) {
@@ -2498,7 +2770,11 @@ export function buildHostServices(
       async listInteractions(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        if (!inCompany(await issues.getById(params.issueId), companyId)) return [];
+        const issue = await issues.getById(params.issueId);
+        if (!inCompany(issue, companyId)) return [];
+        // Interaction payloads follow the ACL of the issue they belong to; a
+        // private issue yields no interactions to a non-member plugin.
+        if (!(await pluginCanReadIssue(issue))) return [];
         return (await interactions.listForIssue(params.issueId)) as any;
       },
       async respondInteraction(params) {
@@ -2589,7 +2865,9 @@ export function buildHostServices(
       async listAttachments(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        if (!inCompany(await issues.getById(params.issueId), companyId)) return [];
+        const issue = await issues.getById(params.issueId);
+        if (!inCompany(issue, companyId)) return [];
+        if (!(await pluginCanReadIssue(issue))) return [];
         return (await issues.listAttachments(params.issueId)) as any;
       },
       async getAttachmentContent(params) {
@@ -2599,6 +2877,9 @@ export function buildHostServices(
         // Unknown and cross-company ids are deliberately indistinguishable to
         // the plugin: both return null (no existence oracle across companies).
         if (!attachment || attachment.companyId !== companyId) return null;
+        // A private issue's attachment content must not reach a non-member
+        // plugin: gate on the parent issue's visibility, same null response.
+        if (!(await pluginCanReadIssue(await issues.getById(attachment.issueId)))) return null;
 
         const maxBytes = typeof params.maxBytes === "number" && params.maxBytes > 0 ? params.maxBytes : null;
         if (maxBytes !== null && attachment.byteSize > maxBytes) {
@@ -2729,14 +3010,15 @@ export function buildHostServices(
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        // Document bodies follow the issue ACL; a private issue is not-found.
+        await requirePluginReadableIssue(params.issueId, companyId);
         const rows = await documents.listIssueDocuments(params.issueId);
         return rows as any;
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
-        requireInCompany("Issue", await issues.getById(params.issueId), companyId);
+        await requirePluginReadableIssue(params.issueId, companyId);
         const doc = await documents.getIssueDocumentByKey(params.issueId, params.key);
         return (doc ?? null) as any;
       },
@@ -2785,6 +3067,16 @@ export function buildHostServices(
     },
 
     agents: {
+      async getRuntimeIdentity(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return pluginAgentRuntimeIdentity(db, pluginId, companyId, params.agentId);
+      },
+      async getRuntime(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        return pluginAgentRuntimeState(db, pluginId, companyId, params.agentId, params.environmentId, params.installEnvironmentSkills);
+      },
       async list(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
@@ -2805,20 +3097,23 @@ export function buildHostServices(
         await ensurePluginAvailableForCompany(companyId);
         const agent = await agents.getById(params.agentId);
         requireInCompany("Agent", agent, companyId);
-        return (await agents.pause(params.agentId)) as Agent;
+        return (await agentsLifecycle.pauseAgent(params.agentId)) as Agent;
       },
       async resume(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const agent = await agents.getById(params.agentId);
         requireInCompany("Agent", agent, companyId);
-        return (await agents.resume(params.agentId)) as Agent;
+        return (await agentsLifecycle.resumeAgent(params.agentId)) as Agent;
       },
       async invoke(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const agent = await agents.getById(params.agentId);
         requireInCompany("Agent", agent, companyId);
+        const origin = currentPluginInteractionOrigin();
+        await assertAgentInteraction(db, { companyId, actorAgentId: origin?.agentId,
+          operation: "assign", targetAgentId: params.agentId, texts: params.prompt ? [params.prompt] : [] });
         const run = await heartbeat.wakeup(params.agentId, {
           source: "automation",
           triggerDetail: "system",
@@ -2832,8 +3127,8 @@ export function buildHostServices(
               pluginKey,
             },
           },
-          requestedByActorType: "system",
-          requestedByActorId: pluginId,
+          requestedByActorType: origin ? "agent" : "system",
+          requestedByActorId: origin?.agentId ?? pluginId,
         });
         if (!run) throw new Error("Agent wakeup was skipped by heartbeat policy");
         return { runId: run.id };
@@ -3113,15 +3408,14 @@ export function buildHostServices(
         const policy = params.policy ? sanitizeRecord(params.policy) : null;
         if (params.resourceType === "agent") {
           const agent = requireInCompany("Agent", await agents.getById(params.resourceId), companyId);
-          const permissions = agent.permissions && typeof agent.permissions === "object"
-            ? { ...(agent.permissions as Record<string, unknown>) }
-            : {};
-          if (policy) permissions.authorizationPolicy = policy;
-          else delete permissions.authorizationPolicy;
-          await db
-            .update(agentsTable)
-            .set({ permissions, updatedAt: new Date() })
-            .where(eq(agentsTable.id, agent.id));
+          await db.transaction(async tx => {
+            await assertAgentInteraction(tx, { companyId, operation: "configure", targetAgentId: agent.id, lock: "update" });
+            await tx.update(agentsTable)
+              .set({ permissions: policy
+                ? sql`jsonb_set(${agentsTable.permissions}, '{authorizationPolicy}', ${JSON.stringify(policy)}::jsonb)`
+                : sql`${agentsTable.permissions} - 'authorizationPolicy'`, updatedAt: new Date() })
+              .where(eq(agentsTable.id, agent.id));
+          });
         } else if (params.resourceType === "project") {
           const project = requireInCompany("Project", await projects.getById(params.resourceId), companyId);
           const executionWorkspacePolicy = project.executionWorkspacePolicy && typeof project.executionWorkspacePolicy === "object"
@@ -3134,16 +3428,18 @@ export function buildHostServices(
             .set({ executionWorkspacePolicy, updatedAt: new Date() })
             .where(eq(projectsTable.id, project.id));
         } else if (params.resourceType === "issue") {
-          const issue = requireInCompany("Issue", await issues.getById(params.resourceId), companyId);
-          const executionPolicy = issue.executionPolicy && typeof issue.executionPolicy === "object"
-            ? { ...(issue.executionPolicy as Record<string, unknown>) }
-            : {};
-          if (policy) executionPolicy.authorizationPolicy = policy;
-          else delete executionPolicy.authorizationPolicy;
-          await db
-            .update(issuesTable)
-            .set({ executionPolicy, updatedAt: new Date() })
-            .where(eq(issuesTable.id, issue.id));
+          await db.transaction(async tx => {
+            const [locked] = await tx.select().from(issuesTable).where(and(
+              eq(issuesTable.id, params.resourceId), eq(issuesTable.companyId, companyId))).for("update");
+            const issue = requireInCompany("Issue", locked ?? null, companyId);
+            await assertAgentInteraction(tx, { companyId, operation: "edit", issueId: issue.id, lock: true });
+            const executionPolicy = issue.executionPolicy && typeof issue.executionPolicy === "object"
+              ? { ...(issue.executionPolicy as Record<string, unknown>) } : {};
+            if (policy) executionPolicy.authorizationPolicy = policy;
+            else delete executionPolicy.authorizationPolicy;
+            await tx.update(issuesTable).set({ executionPolicy, updatedAt: new Date() })
+              .where(and(eq(issuesTable.id, issue.id), eq(issuesTable.companyId, companyId)));
+          });
         } else {
           const company = await companies.getById(params.resourceId);
           if (!company || company.id !== companyId) throw new Error("Company not found");
@@ -3331,54 +3627,82 @@ export function buildHostServices(
         if (notifyWorker) {
           const TERMINAL_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
 
+          let active = true;
           const cleanup = () => {
-            unsubscribe();
+            stopDelivery();
             clearTimeout(timeoutTimer);
             activeSubscriptions.delete(entry);
           };
-
-          const unsubscribe = subscribeCompanyLiveEvents(companyId, (event) => {
-            const payload = event.payload as Record<string, unknown> | undefined;
-            if (!payload || payload.runId !== run.id) return;
-
-            if (event.type === "heartbeat.run.log" || event.type === "heartbeat.run.event") {
-              notifyWorker("agents.sessions.event", {
-                sessionId: params.sessionId,
-                runId: run.id,
-                seq: (payload.seq as number) ?? 0,
-                eventType: "chunk",
-                stream: (payload.stream as string) ?? null,
-                message: (payload.chunk as string) ?? (payload.message as string) ?? null,
-                payload: payload,
-              });
-            } else if (event.type === "heartbeat.run.status") {
-              const status = payload.status as string;
-              if (TERMINAL_STATUSES.has(status)) {
-                notifyWorker("agents.sessions.event", {
-                  sessionId: params.sessionId,
-                  runId: run.id,
-                  seq: 0,
-                  eventType: status === "succeeded" ? "done" : "error",
-                  stream: "system",
-                  message: status === "succeeded"
-                    ? (typeof payload.finalText === "string" ? payload.finalText : null)
-                    : `Run ${status}`,
-                  payload: payload,
-                });
-                cleanup();
-              } else {
-                notifyWorker("agents.sessions.event", {
-                  sessionId: params.sessionId,
-                  runId: run.id,
-                  seq: 0,
-                  eventType: "status",
-                  stream: "system",
-                  message: `Run status: ${status}`,
-                  payload: payload,
-                });
-              }
+          const failDelivery = () => {
+            if (!active) return;
+            cleanup();
+            try {
+              notifyWorker("agents.sessions.event", { sessionId: params.sessionId, runId: run.id,
+                seq: 0, eventType: "error", stream: "system", message: "Run event delivery unavailable",
+                payload: { reason: "delivery_unavailable" } });
+            } catch (err) {
+              logger.warn({ err, pluginId, runId: run.id }, "plugin session delivery unavailable");
             }
+          };
+          const delivery = createLiveEventDelivery({
+            socket: {
+              get readyState() { return active ? 1 : 3; },
+              send(encoded, callback) {
+                const event = JSON.parse(encoded) as import("@paperclipai/shared").LiveEvent;
+                const payload = event.payload;
+                if (event.type === "heartbeat.run.log" || event.type === "heartbeat.run.event") {
+                  notifyWorker("agents.sessions.event", {
+                    sessionId: params.sessionId,
+                    runId: run.id,
+                    seq: (payload.seq as number) ?? 0,
+                    eventType: "chunk",
+                    stream: (payload.stream as string) ?? null,
+                    message: (payload.chunk as string) ?? (payload.message as string) ?? null,
+                    payload: payload,
+                  });
+                } else if (event.type === "heartbeat.run.status") {
+                  const status = payload.status as string;
+                  if (TERMINAL_STATUSES.has(status)) {
+                    notifyWorker("agents.sessions.event", {
+                      sessionId: params.sessionId,
+                      runId: run.id,
+                      seq: 0,
+                      eventType: status === "succeeded" ? "done" : "error",
+                      stream: "system",
+                      message: status === "succeeded"
+                        ? (typeof payload.finalText === "string" ? payload.finalText : null)
+                        : `Run ${status}`,
+                      payload: payload,
+                    });
+                    cleanup();
+                  } else {
+                    notifyWorker("agents.sessions.event", {
+                      sessionId: params.sessionId,
+                      runId: run.id,
+                      seq: 0,
+                      eventType: "status",
+                      stream: "system",
+                      message: `Run status: ${status}`,
+                      payload: payload,
+                    });
+                  }
+                }
+                callback?.();
+              },
+              close: failDelivery,
+            },
+            authorize: createLiveRunEventRedactor(db),
+            decorate: async event => event,
+            onError: err => {
+              logger.warn({ err, pluginId, runId: run.id }, "plugin session event redaction failed");
+              failDelivery();
+            },
           });
+          const unsubscribe = subscribeCompanyLiveEvents(companyId, event => {
+            if (event.payload.runId === run.id &&
+                ["heartbeat.run.log", "heartbeat.run.event", "heartbeat.run.status"].includes(event.type)) delivery.enqueue(event);
+          });
+          const stopDelivery = () => { active = false; delivery.dispose(); unsubscribe(); };
 
           // Safety-net timeout: if the run never reaches a terminal status,
           // force-cleanup the subscription to prevent unbounded leaks.
@@ -3387,10 +3711,10 @@ export function buildHostServices(
               { pluginId, pluginKey, runId: run.id },
               "session event subscription timed out — forcing cleanup",
             );
-            cleanup();
+            failDelivery();
           }, SESSION_EVENT_SUBSCRIPTION_TIMEOUT_MS);
 
-          const entry = { unsubscribe, timer: timeoutTimer };
+          const entry = { unsubscribe: stopDelivery, timer: timeoutTimer };
           activeSubscriptions.add(entry);
         }
 

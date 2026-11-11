@@ -1,5 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer as createUnboundServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -16,12 +16,21 @@ import {
   setupRunnerPrpWebSocketServer,
 } from "./runner-prp-ws.js";
 
+// Routing-only fixtures expose a bound address; HTTP server tests exercise the
+// real listen/close and DNS boundaries without replacing this router's logic.
+function createBoundServer(port: number) {
+  const server = createUnboundServer();
+  vi.spyOn(server, "listening", "get").mockReturnValue(true);
+  vi.spyOn(server, "address").mockReturnValue({ address: "127.0.0.1", family: "IPv4", port });
+  setupRunnerPrpWebSocketServer(server);
+  return server;
+}
+
 describe("runner PRP websocket route", () => {
   afterEach(() => runnerPrpWebSocketInternals.resetForTests());
 
   it("routes only the registered run and releases it by generation", async () => {
-    const server = createServer();
-    setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3210" });
+    const server = createBoundServer(3210);
     const handleUpgrade = vi.fn();
     const runId = "00000000-0000-4000-8000-000000000777";
     const registration = await registerRunnerPrpAuthority({
@@ -68,8 +77,7 @@ describe("runner PRP websocket route", () => {
       "404 Not Found",
     ],
   ])("fails closed for %s", (path, expectedStatus) => {
-    const server = createServer();
-    setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3211" });
+    const server = createBoundServer(3211);
     const socket = new PassThrough();
     const writes: Buffer[] = [];
     socket.on("data", (chunk) => writes.push(Buffer.from(chunk)));
@@ -79,8 +87,7 @@ describe("runner PRP websocket route", () => {
   });
 
   it("does not replace an active registration", async () => {
-    const server = createServer();
-    setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3212" });
+    const server = createBoundServer(3212);
     const runId = "00000000-0000-4000-8000-000000000779";
     const authority = {
       handleUpgrade: vi.fn(),
@@ -98,8 +105,7 @@ describe("runner PRP websocket route", () => {
   });
 
   it("routes live commands only to the newest generation", async () => {
-    const server = createServer();
-    setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3214" });
+    const server = createBoundServer(3214);
     const oldRunId = "00000000-0000-4000-8000-000000000781";
     const newRunId = "00000000-0000-4000-8000-000000000782";
     const oldQueueCommand = vi.fn(() => ({
@@ -166,8 +172,7 @@ describe("runner PRP websocket route", () => {
   });
 
   it("queues one company-bound, idempotent runtime request resolution", async () => {
-    const server = createServer();
-    setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3213" });
+    const server = createBoundServer(3213);
     const queueCommand = vi.fn(() => ({ commandId: "command-resolution-1" }));
     const runId = "00000000-0000-4000-8000-000000000780";
     const registration = await registerRunnerPrpAuthority({
@@ -266,8 +271,7 @@ describe("runner PRP websocket route", () => {
     "rejects a retained old route after real authority rotation (cached=%s)",
     async (cached) => {
       const directory = mkdtempSync(join(tmpdir(), "runner-route-rotation-"));
-      const server = createServer();
-      setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3214" });
+      const server = createBoundServer(3214);
       const identity = {
         runnerInstanceId: "runner-route-test",
         environmentLeaseId: "environment-route-test",

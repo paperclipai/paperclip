@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createClientMetadataResolver, mcpRedirectMatches } from "../services/public-mcp/client-metadata.js";
+import { createClientMetadataResolver, mcpRedirectMatches, type MetadataFetch } from "../services/public-mcp/client-metadata.js";
 import { mcpInvitation, mcpSetupMarkdown } from "@paperclipai/shared";
 import { renderMcpSetup } from "../services/public-mcp/setup.js";
 
@@ -20,7 +20,7 @@ describe("public MCP client metadata", () => {
     expect(mcpRedirectMatches(["http://127.0.0.1/callback"], "http://localhost:55023/callback", true)).toBe(false);
   });
   it("validates the client identity and bounds cache reuse", async () => {
-    const fetch = vi.fn(async () => response(document, { "cache-control": "max-age=300" }));
+    const fetch = vi.fn<MetadataFetch>(async () => response(document, { "cache-control": "max-age=300" }));
     const resolve = createClientMetadataResolver(fetch);
     expect((await resolve(id)).client_name).toBe("Example");
     await resolve(id); expect(fetch).toHaveBeenCalledTimes(1);
@@ -32,6 +32,17 @@ describe("public MCP client metadata", () => {
     expect((await createClientMetadataResolver(async () => response(metadata))(id)).grant_types).toEqual(["authorization_code", "refresh_token"]);
     expect((await createClientMetadataResolver(async () => response({ ...metadata, grant_types: ["client_credentials"] }))(id)).grant_types).toEqual([]);
     await expect(createClientMetadataResolver(async () => response({ ...metadata, grant_types: [null] }))(id)).rejects.toThrow();
+  });
+  it("selects public PKCE only when broader client authentication capabilities include none", async () => {
+    const metadata = { ...document, token_endpoint_auth_method: "private_key_jwt",
+      token_endpoint_auth_methods_supported: ["none", "private_key_jwt"] };
+    expect((await createClientMetadataResolver(async () => response(metadata))(id)).token_endpoint_auth_method).toBe("none");
+    for (const unsupported of [
+      { ...metadata, token_endpoint_auth_methods_supported: ["private_key_jwt"] },
+      { ...metadata, token_endpoint_auth_methods_supported: undefined },
+      { ...metadata, token_endpoint_auth_method: "none", token_endpoint_auth_methods_supported: ["private_key_jwt"] },
+      { ...metadata, token_endpoint_auth_methods_supported: [null] },
+    ]) await expect(createClientMetadataResolver(async () => response(unsupported))(id)).rejects.toThrow();
   });
   it("recognizes older loopback-only native metadata without widening declared web clients", async () => {
     expect((await createClientMetadataResolver(async () => response(document))(id)).application_type).toBe("native");

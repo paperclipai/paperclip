@@ -21,7 +21,11 @@ const metadataSchema = z.object({
   client_id: z.string().max(2048), client_name: z.string().trim().min(1).max(100),
   application_type: z.enum(["native", "web"]).optional(),
   redirect_uris: z.array(z.string().max(2048).refine(validMcpRedirect)).max(10),
-  token_endpoint_auth_method: z.literal("none").default("none"),
+  // A global CIMD may prefer JWT authentication while also supporting public
+  // PKCE clients (ChatGPT publishes both). Select this server's advertised
+  // method only when the client declares it; never downgrade a JWT-only client.
+  token_endpoint_auth_method: z.string().min(1).max(100).default("none"),
+  token_endpoint_auth_methods_supported: z.array(z.string().min(1).max(100)).max(20).optional(),
   // CIMD describes a client's capabilities across authorization servers. An
   // extra capability (Claude web publishes jwt-bearer) must not disable PKCE.
   // Retain only grants this server implements; token dispatch still rejects others.
@@ -29,7 +33,11 @@ const metadataSchema = z.object({
     .transform(grants => [...new Set(grants)].filter(grant =>
       ["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"].includes(grant))),
   response_types: z.array(z.literal("code")).default(["code"]),
-});
+}).refine(metadata => metadata.token_endpoint_auth_methods_supported
+  ? metadata.token_endpoint_auth_methods_supported.includes("none")
+  : metadata.token_endpoint_auth_method === "none", {
+  message: "Client must support public PKCE token authentication.",
+}).transform(metadata => ({ ...metadata, token_endpoint_auth_method: "none" as const }));
 type Metadata = z.infer<typeof metadataSchema>;
 export type MetadataFetch = (url: URL, init: RequestInit) => Promise<Response>;
 const guardedFetch: MetadataFetch = (url, init) => guardedRemoteHttpFetch(url, init, {

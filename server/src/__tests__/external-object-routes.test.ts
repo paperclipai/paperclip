@@ -13,10 +13,16 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 
-const mockAccessService = vi.hoisted(() => ({
-  decide: vi.fn(),
-  hasPermission: vi.fn(),
-}));
+const mockAccessService = vi.hoisted(() => {
+  const decide = vi.fn();
+  return {
+    decide,
+    // The batched read asks the mocked decision once per task.
+    decideReads: async (actor: unknown, resources: unknown[]) =>
+      Promise.all(resources.map((resource) => decide({ actor, action: "issue:read", resource }))),
+    hasPermission: vi.fn(),
+  };
+});
 
 const mockAgentService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -224,11 +230,13 @@ describe("external object routes", () => {
     const app = await createApp(ownerActor());
 
     const summary = await request(app).get(`/api/issues/${issueId}/external-object-summary`);
-    expect(summary.status).toBe(403);
+    expect(summary.status).toBe(404);
+    expect(summary.body.error).toBe("Issue not found");
     expect(mockExternalObjectsService.getIssueSummary).not.toHaveBeenCalled();
 
     const list = await request(app).get(`/api/issues/${issueId}/external-objects`);
-    expect(list.status).toBe(403);
+    expect(list.status).toBe(404);
+    expect(list.body.error).toBe("Issue not found");
     expect(mockExternalObjectsService.listForIssue).not.toHaveBeenCalled();
   });
 

@@ -38,14 +38,14 @@
     "embedded-postgres"
   ],
   "scripts": {
-    "check:migrations": "tsx src/check-migration-numbering.ts && tsx src/check-migration-safety.ts",
+    "check:migrations": "tsx src/check-migration-numbering.ts && tsx src/check-migration-safety.ts && tsx scripts/migration-compatibility.ts --check",
     "build": "pnpm run check:migrations && tsc && rm -rf dist/migrations && mkdir -p dist/migrations/meta && cp src/migrations/*.sql dist/migrations/ && cp src/migrations/meta/_journal.json dist/migrations/meta/",
     "clean": "rm -rf dist",
     "typecheck": "pnpm run check:migrations && tsc --noEmit",
     "generate": "pnpm run check:migrations && pnpm run clean && tsc -p tsconfig.json && drizzle-kit generate && pnpm run prune:snapshots",
     "prune:snapshots": "ls src/migrations/meta/*_snapshot.json | sort -r | tail -n +6 | xargs rm -f",
     "migrate": "pnpm run check:migrations && tsx src/migrate.ts",
-    "seed": "tsx src/seed.ts"
+    "seed": "pnpm --filter @paperclipai/server exec tsx scripts/seed.ts"
   },
   "dependencies": {
     "@paperclipai/shared": "workspace:*",
@@ -55,7 +55,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "drizzle-kit": "^0.31.10",
+    "drizzle-kit": "^0.31.11",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.0.3"

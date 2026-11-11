@@ -39,4 +39,3 @@ export type Capability = {
   name: string; description: string; schema: z.ZodObject; write?: boolean; configure?: boolean; destructive?: boolean; ephemeral?: boolean;
   run: (p: McpPrincipal, args: Record<string, unknown>, api: ApiDispatch, origin: string, transfers?: PublicMcpTransfers) => Promise<Record<string, unknown>>;
 };
-

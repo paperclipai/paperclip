@@ -1,3 +1,4 @@
+import "./check-agent-lifecycle-boundaries.test.mjs";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -87,4 +88,58 @@ test("scanModuleBoundaries rejects outward dependencies and module-internal impo
 
 test("the repository's feature modules satisfy their import boundaries", () => {
   assert.deepEqual(scanModuleBoundaries(), []);
+});
+
+test("only the company deletion coordinator can import module deletion entry points", () => {
+  const serverSrc = mkdtempSync(join(tmpdir(), "paperclip-company-deletion-boundaries-"));
+  const modulesRoot = join(serverSrc, "modules");
+  try {
+    mkdirSync(join(serverSrc, "services"));
+    mkdirSync(join(serverSrc, "routes"));
+    const integration = 'import { deletion } from "../modules/example/company-deletion.js";';
+    writeFileSync(join(serverSrc, "services", "company-deletion.ts"), integration);
+    writeFileSync(join(serverSrc, "services", "other.ts"), integration);
+    writeFileSync(join(serverSrc, "routes", "companies.ts"), integration);
+    const violations = scanModuleBoundaries({ serverSrc, modulesRoot });
+    assert.equal(violations.length, 2);
+    assert(violations.some(({ file }) => file.endsWith("services/other.ts")));
+    assert(violations.some(({ file }) => file.endsWith("routes/companies.ts")));
+  } finally {
+    rmSync(serverSrc, { recursive: true, force: true });
+  }
+});
+
+test("configuration integration is limited to its composition and workflow callers", () => {
+  const serverSrc = mkdtempSync(join(tmpdir(), "paperclip-configuration-boundaries-"));
+  const modulesRoot = join(serverSrc, "modules");
+  try {
+    mkdirSync(join(serverSrc, "services"));
+    mkdirSync(join(serverSrc, "routes"));
+    const integration = 'import { update } from "../modules/agent-lifecycle/configuration.js";';
+    const workflow = 'import { update } from "./agent-configuration-transaction.js";';
+    writeFileSync(join(serverSrc, "services", "agent-configuration-transaction.ts"), integration);
+    writeFileSync(join(serverSrc, "services", "secret-proposals.ts"), workflow);
+    writeFileSync(join(serverSrc, "services", "other.ts"), workflow);
+    writeFileSync(join(serverSrc, "routes", "agents.ts"), integration);
+    const violations = scanModuleBoundaries({ serverSrc, modulesRoot });
+    assert.equal(violations.length, 2);
+    assert(violations.some(({ file }) => file.endsWith("services/other.ts")));
+    assert(violations.some(({ file }) => file.endsWith("routes/agents.ts")));
+  } finally {
+    rmSync(serverSrc, { recursive: true, force: true });
+  }
+});
+
+test("agent lifecycle adapters and entry point cannot depend on services", () => {
+  const serverSrc = mkdtempSync(join(tmpdir(), "paperclip-lifecycle-boundaries-"));
+  const modulesRoot = join(serverSrc, "modules");
+  try {
+    mkdirSync(join(modulesRoot, "agent-lifecycle", "adapters"), { recursive: true });
+    writeFileSync(join(modulesRoot, "agent-lifecycle", "index.ts"), 'import "../../services/example.js";');
+    writeFileSync(join(modulesRoot, "agent-lifecycle", "adapters", "records.ts"), 'import "../../../services/example.js";');
+    assert.equal(scanModuleBoundaries({ serverSrc, modulesRoot }).filter(item =>
+      item.reason === "agent lifecycle must receive service integrations through its ports").length, 2);
+  } finally {
+    rmSync(serverSrc, { recursive: true, force: true });
+  }
 });

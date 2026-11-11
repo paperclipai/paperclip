@@ -31,6 +31,7 @@ function runtimeInput(
   entryPath: string,
 ): NativeExecutionInput {
   return {
+    provider: { kind: "codex" },
     runtimeContext: {
       prompt: { text: "Paperclip runtime." },
       instructions: { bundle: { rootPath }, entryPath },
@@ -76,7 +77,8 @@ describe("native runtime context files", () => {
     }
     expect(PRP_COMPLETION_TOOL_DESCRIPTION).toContain("do not claim completion while gated");
     expect(PRP_COMPLETION_TOOL_DESCRIPTION).toContain("supplied link and action");
-    expect(PRP_COMPLETION_TOOL_DESCRIPTION).toContain("explicit wait for the next response");
+    expect(PRP_COMPLETION_TOOL_DESCRIPTION).toContain("yielded with response_wake for a response");
+    expect(PRP_COMPLETION_TOOL_DESCRIPTION).toContain("monitor after set_task_monitor confirms a schedule on this task");
     expect(PRP_BLOCK_TOOL_DESCRIPTION).toContain("its owner, and the action needed to unblock it");
     expect(constraints).not.toContain(
       "final response exactly once before invoking",

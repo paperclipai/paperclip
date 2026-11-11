@@ -8,6 +8,7 @@ const mockFeedbackService = vi.hoisted(() => ({
   listIssueVotesForUser: vi.fn(),
   listFeedbackTraces: vi.fn(),
   saveIssueVote: vi.fn(),
+  flushPendingFeedbackTraces: vi.fn(() => new Promise(() => {})),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -18,9 +19,6 @@ const mockIssueService = vi.hoisted(() => ({
   findMentionedAgents: vi.fn(),
 }));
 
-const mockFeedbackExportService = vi.hoisted(() => ({
-  flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 1, sent: 1, failed: 0 })),
-}));
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
   hasPermission: vi.fn(),
@@ -138,7 +136,7 @@ async function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any, { feedbackExportService: mockFeedbackExportService }));
+  app.use("/api", issueRoutes({} as any, {} as any));
   const routeErrors: string[] = [];
   app.locals.routeErrors = routeErrors;
   app.use((error: unknown, _req: express.Request, _res: express.Response, next: express.NextFunction) => {
@@ -152,11 +150,6 @@ async function createApp(actor: Record<string, unknown>) {
 describe("issue feedback trace routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockFeedbackExportService.flushPendingFeedbackTraces.mockResolvedValue({
-      attempted: 1,
-      sent: 1,
-      failed: 0,
-    });
     mockHeartbeatService.wakeup.mockResolvedValue(undefined);
     mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
     mockHeartbeatService.getRun.mockResolvedValue(null);
@@ -174,7 +167,7 @@ describe("issue feedback trace routes", () => {
     mockLogActivity.mockResolvedValue(undefined);
   });
 
-  it("flushes a newly shared feedback trace immediately after saving the vote", async () => {
+  it("returns the saved vote without waiting for feedback uploads", async () => {
     const targetId = "11111111-1111-4111-8111-111111111111";
     mockIssueService.getById.mockResolvedValue({
       id: "issue-1",
@@ -211,11 +204,9 @@ describe("issue feedback trace routes", () => {
       });
 
     expect([200, 201]).toContain(res.status);
-    expect(mockFeedbackExportService.flushPendingFeedbackTraces).toHaveBeenCalledWith({
-      companyId: "company-1",
-      traceId: "trace-1",
-      limit: 1,
-    });
+    expect(mockFeedbackService.saveIssueVote).toHaveBeenCalledTimes(1);
+    expect(mockFeedbackService.flushPendingFeedbackTraces).not.toHaveBeenCalled();
+
   });
 
   it("rejects non-board callers before fetching a feedback trace", async () => {

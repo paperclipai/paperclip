@@ -97,11 +97,12 @@ export const reassignTaskAction = {
             "minLength": 1,
             "description": "Existing task ID from search_tasks."
           },
+          "assigneeUserId": { "type": ["string", "null"], "description": "Company person ID from list_people. Mutually exclusive with assigneeActorId." },
           "assigneeActorId": {
-            "type": "string",
-            "minLength": 1,
-            "description": "New company agent ID from list_agents."
+            "type": ["string", "null"],
+            "description": "New company agent ID from list_agents; null when assigning a person."
           },
+          "expectedAssigneeUserId": { "type": ["string", "null"], "description": "Current assigneeUserId from search_tasks; omit only when there is no person assigned." },
           "expectedAssigneeActorId": {
             "type": [
               "string",
@@ -197,11 +198,12 @@ export const reassignTaskAction = {
             "minLength": 1,
             "description": "Existing task ID from search_tasks."
           },
+          "assigneeUserId": { "type": ["string", "null"], "description": "Company person ID from list_people. Mutually exclusive with assigneeActorId." },
           "assigneeActorId": {
-            "type": "string",
-            "minLength": 1,
-            "description": "New company agent ID from list_agents."
+            "type": ["string", "null"],
+            "description": "New company agent ID from list_agents; null when assigning a person."
           },
+          "expectedAssigneeUserId": { "type": ["string", "null"], "description": "Current assigneeUserId from search_tasks; omit only when there is no person assigned." },
           "expectedAssigneeActorId": {
             "type": [
               "string",

@@ -18,6 +18,7 @@ import {
   isRetainableCodexPayload,
   redactCodexValue,
   validateCodexWorkingDirectory,
+  validatePreparedLaunchWorkingDirectory,
 } from "./codex-boundaries.js";
 
 describe("Codex value and workspace boundaries", () => {
@@ -236,5 +237,23 @@ describe("Codex value and workspace boundaries", () => {
         idempotencyKey: "same-agent-1",
       },
     })).toBe(false);
+  });
+});
+
+describe("runner-prepared launch working directory", () => {
+  it("accepts the reported VM directory without a Core workspace or local filesystem", () => {
+    for (const cwd of ["/home/agent", "/projects/repository/worktrees/workspace"]) {
+      expect(validateCodexWorkingDirectory(cwd, {}, "runner_prepared_launch")).toBe(cwd);
+    }
+  });
+
+  it.each([
+    ["relative", "home/agent", "normalized absolute path"],
+    ["unnormalized", "/home/agent/../root", "normalized absolute path"],
+    ["control character", "/home/agent\n", "normalized absolute path"],
+    ["root", "/", "filesystem root"],
+    ["non-string", 7, "normalized absolute path"],
+  ])("rejects a %s directory", (_label, cwd, message) => {
+    expect(() => validatePreparedLaunchWorkingDirectory(cwd)).toThrow(message);
   });
 });

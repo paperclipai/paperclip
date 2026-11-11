@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { evalProviderTransportOptions } from "./eval-provider-runtime.js";
 
 describe("direct eval provider runtime", () => {
-  it("uses the installed pinned Codex dependency without requiring a global CLI", () => {
+  it("uses the installed Codex dependency without requiring a global CLI", () => {
     const options = evalProviderTransportOptions("codex");
     expect(isAbsolute(options.codexCommand!)).toBe(true);
     expect(existsSync(options.codexCommand!)).toBe(true);

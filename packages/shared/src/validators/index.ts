@@ -350,6 +350,8 @@ export {
   builtInAgentResetSchema,
   createAgentHireSchema,
   updateAgentSchema,
+  agentRuntimeSettingsPatchSchema,
+  type AgentRuntimeSettingsPatch,
   agentRuntimeConfigSchema,
   agentInstructionsBundleModeSchema,
   updateAgentInstructionsBundleSchema,
@@ -365,8 +367,10 @@ export {
   wakeAgentSchema,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
+  qualifyAgentRunnerSchema,
   agentPermissionsSchema,
   updateAgentPermissionsSchema,
+  addAgentProjectAccessSchema,
   type CreateAgent,
   type BuiltInAgentProvision,
   type BuiltInAgentReset,
@@ -390,12 +394,14 @@ export {
   projectDiscoverySchema,
   createProjectSchema,
   updateProjectSchema,
+  addProjectAccessMemberSchema,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
   projectExecutionWorkspacePolicySchema,
   projectWorkspaceRuntimeConfigSchema,
   type CreateProject,
   type UpdateProject,
+  type AddProjectAccessMember,
   type CreateProjectWorkspace,
   type UpdateProjectWorkspace,
   type ProjectExecutionWorkspacePolicy,
@@ -418,6 +424,8 @@ export {
 
 export {
   createIssueSchema,
+  issueSummariesQuerySchema,
+  issueChatBootstrapQuerySchema,
   setIssueTitleSchema,
   type SetIssueTitle,
   createIssueInputSchema,
@@ -433,10 +441,20 @@ export {
   updateIssueSchema,
   stalledReviewDecisionSchema,
   issueExecutionPolicySchema,
+  requiredQualityReviewSchema,
+  issueExecutionMonitorPolicySchema,
   issueExecutionStateSchema,
   issueRecoveryActionReadModelSchema,
   resolveIssueRecoveryActionSchema,
+  isValidExistingBranchName,
   retryWorkspaceExportSchema,
+  recoverWorkspaceSchema,
+  taskRetrySchema,
+  reconstructWorkspaceSchema,
+  resumeWorkspaceFinalizationSchema,
+  confirmNativeControllerStoppedSchema,
+  confirmRunStoppedSchema,
+  confirmOwnerGoneSchema,
   issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
@@ -446,6 +464,8 @@ export {
   issueCommentMetadataSectionSchema,
   issueCommentMetadataSchema,
   addIssueCommentSchema,
+  sendChatMessageSchema,
+  markIssueReadSchema,
   issueThreadInteractionStatusSchema,
   issueThreadInteractionKindSchema,
   issueThreadInteractionCanonicalResolverPolicySchema,
@@ -467,6 +487,7 @@ export {
   askUserQuestionsAnswerSchema,
   askUserQuestionsResultSchema,
   requestConfirmationIssueDocumentTargetSchema,
+  requestConfirmationIssueAttachmentTargetSchema,
   requestConfirmationCustomTargetSchema,
   requestConfirmationTargetSchema,
   requestConfirmationPayloadSchema,
@@ -711,7 +732,7 @@ export {
 } from "./routine.js";
 
 export {
-  createCostEventSchema,
+  createCostEventSchema, createServiceCostEventSchema,
   updateBudgetSchema,
   type CreateCostEvent,
   type UpdateBudget,
@@ -730,26 +751,6 @@ export {
   type CreateAssetImageMetadata,
 } from "./asset.js";
 
-export {
-  pipelineAutomationRetryCleanupOptionsSchema,
-  pipelineAutomationRetryRequestSchema,
-  pipelineAutomationRetryScopeSchema,
-  pipelineStageAutomationSchema,
-  pipelineStageApproverSchema,
-  pipelineStageConfigSchema,
-  pipelineStageKindSchema,
-  pipelineStageOnEnterSchema,
-  pipelineStageVariableSchema,
-  type PipelineAutomationRetryCleanupOptions,
-  type PipelineAutomationRetryRequest,
-  type PipelineAutomationRetryScope,
-  type PipelineStageAutomationConfig,
-  type PipelineStageApprover,
-  type PipelineStageConfig,
-  type PipelineStageKind,
-  type PipelineStageOnEnter,
-  type PipelineStageVariable,
-} from "./pipeline.js";
 
 export {
   createCompanyInviteSchema,
@@ -769,6 +770,8 @@ export {
   updateCompanyMemberWithPermissionsSchema,
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
+  updateAgentPermissionGrantSchema,
+  type UpdateAgentPermissionGrant,
   searchAdminUsersQuerySchema,
   updateUserCompanyAccessSchema,
   type CreateCompanyInvite,
@@ -992,3 +995,5 @@ export { restoreAgentInstructionSchema } from "./agent.js";
 
 export * from "./skill-source.js";
 export * from "./agent-commentary.js";
+export * from "./task-workspace.js";
+export * from "./workspace-repository.js";

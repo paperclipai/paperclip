@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { and, eq, sql } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
@@ -127,6 +128,7 @@ export async function rekeyCompanyIssueIdentifiers(
   // overload, which returns NULL for a non-pattern argument.
   const tailStart = sql`${fromPrefix.length + 1}::int`;
 
+  await notifyStatusCardIssueChange(tx, companyId);
   const rekeyedIssues = await tx
     .update(issues)
     .set({ identifier: sql`${toPrefix} || substring(${issues.identifier} from ${tailStart})` })

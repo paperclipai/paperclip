@@ -1,6 +1,9 @@
+import { configuredEnvironment } from "../../configured-environment.js";
+import type { DurableRecoveryIdentity } from "../../contracts/durable-recovery.js";
 import type { NativeTurnControlCapabilities } from "../../contracts/types.js";
+import type { NativeRunRuntimeGrant } from "../../contracts/runtime-context.js";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import type { HarnessRuntimeRequestResolution } from "../../contracts/harness-driver.js";
+import type { HarnessRuntimeRequestResolution, HarnessSession } from "../../contracts/harness-driver.js";
 import { githubCredentialEnvironment } from "../../github-credential-environment.js";
 import { redactCodexDiagnostic } from "./diagnostic-redaction.js";
 
@@ -34,6 +37,8 @@ export type CodexServerRequestHandler = (
 ) => Promise<Record<string, unknown>>;
 
 export interface CodexAppServerTransport {
+  settleCancelledTurn?: HarnessSession["settleCancelledTurn"];
+  supportsTurnReasoning?(): boolean;
   /** Runner-owned live capability projection; absent on native Codex transports. */
   turnControlCapabilities?(): NativeTurnControlCapabilities | null;
   request(
@@ -43,6 +48,20 @@ export interface CodexAppServerTransport {
   notify(method: string, params?: Record<string, unknown>): void;
   notifications(): AsyncIterable<CodexRpcNotification>;
   setServerRequestHandler(handler: CodexServerRequestHandler): void;
+  /** Establish a fresh owned provider lifetime before reading a retained conversation. */
+  prepareConversationResume?(params: Record<string, unknown>): Promise<void>;
+  /** One-shot requests authenticated by an adopted live provider, never a saved checkpoint alone. */
+  takeRestoredRuntimeRequests?(): CodexRpcServerRequest[];
+  /**
+   * The provider turn that this run's latest durable `turn.start` command
+   * result accepted, or null when no such authenticated result exists. A
+   * controller can die after the runner accepts its turn/start but before the
+   * controller checkpoints the turn; recovery uses this to adopt that turn.
+   */
+  controllerAcceptedTurnId?(): string | null;
+  /** The provider turn the latest completed turn.start accepted, live or not; the
+   * driver adopts it only when provider history shows that exact turn completed. */
+  controllerAcceptedCompletedTurnId?(): string | null;
   /**
    * Optional provider-neutral resolution path used when a transport has
    * already normalized a native server request behind another PRP boundary.
@@ -56,14 +75,22 @@ export interface CodexAppServerTransport {
    * Close the provider transport. The optional reason is controller-owned
    * diagnostic context; transports must not forward it to the provider.
    */
-  close(reason?: string): Promise<void>;
+  close(reason?: string, options?: { retainUnsettledRemoteRunner?: boolean }): Promise<void>;
+  /** After close: the runner settled and its process exit was observed. */
+  runnerExitConfirmed?(): boolean;
+  /** Return the confirmed released source, or false when active use was not released. */
+  release?(): Promise<DurableRecoveryIdentity | false>;
   /** Relinquish controller authority while leaving durable runner work alive. */
   detachControllerForRestart?(): Promise<void>;
   processInfo?(): CodexTransportProcessInfo;
+  beginRunAttachment?(input: { runId: string }): boolean;
   attachRun?(input: {
     runId: string;
     turnId: string;
     itemId: string;
+    currentRunGrant?: NativeRunRuntimeGrant;
+    /** The attaching run's own completion contract. */
+    completionContract?: { revision: string; criterionIds: readonly string[] };
   }): Promise<void>;
   /** Records post-rehydration driver mapping without affecting run authority. */
   recordTraceInterpretation?(input: CodexTraceInterpretation): void;
@@ -200,6 +227,7 @@ class BoundedLineDecoder {
 }
 
 const SAFE_ENVIRONMENT_KEYS = [
+  "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT", "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
   "AGENT_HOME",
   "ALL_PROXY",
   "CODEX_HOME",
@@ -213,6 +241,10 @@ const SAFE_ENVIRONMENT_KEYS = [
   "NO_PROXY",
   "NODE_EXTRA_CA_CERTS",
   "PAPERCLIP_RUNNER_EXTERNAL_SANDBOX",
+  "PAPERCLIP_RUNNER_HOME_MODE",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_CACHE_HOME",
   "PATH",
   "PATHEXT",
   "SSL_CERT_FILE",
@@ -240,10 +272,14 @@ export function createSanitizedCodexEnvironment(
     if (key.includes("PROXY") && proxyContainsCredentials(value)) continue;
     environment[key] = value;
   }
-  for (const key of ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"]) {
+  // Secret-bearing launch material must come from the controller's explicit environment.
+  for (const key of [
+    "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
+    "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+  ]) {
     if (explicit?.[key] !== undefined) environment[key] = explicit[key];
   }
-  Object.assign(environment, githubCredentialEnvironment(source));
+  Object.assign(environment, githubCredentialEnvironment(source), configuredEnvironment(explicit));
   return environment;
 }
 

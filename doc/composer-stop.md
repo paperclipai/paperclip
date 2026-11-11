@@ -18,7 +18,9 @@ terminal tasks. Resume/restore retain the optional wake-agents checkbox.
 
 ## Resume and execution recovery
 
-Resume releases a hold. Waking agents is optional and only applies to tasks in
+Resume releases a hold. Work the pause interrupted is re-dispatched once
+automatically, under current admission gates (see `doc/execution-semantics.md`).
+Waking other agents is optional and only applies to tasks in
 `todo`, `in_progress`, or `in_review`; parked and terminal tasks stay untouched.
 The current execution-recovery policy requires verified outcomes before a stopped
 provider can restart. If any affected task still needs that reconciliation,
@@ -159,7 +161,9 @@ pnpm exec playwright test --config tests/e2e/playwright-composer-stop.config.ts
 The suite boots a disposable local-trusted instance on port 3199 (override with
 `PAPERCLIP_E2E_PORT`). It never attaches to an existing server. Native coverage
 is explicitly skipped without the fixture; it must not use a logged-in provider
-as a fallback. Test companies are archived during cleanup.
+as a fallback. The acceptance server pins its Codex command resolver to the fixture
+and uses an empty credential home, because an installed Codex dependency takes
+precedence over `PATH`. Test companies are archived during cleanup.
 
 For each runner, the journey starts a parent, child, and unrelated task, plus a
 terminal child. It sends while running and verifies the durable queue, clicks

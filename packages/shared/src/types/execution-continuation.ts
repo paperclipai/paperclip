@@ -58,6 +58,20 @@ export interface ExecutionContinuationEnvelope {
     operationId: string;
     result: unknown;
   }>;
+  /** Verified snapshots attached separately to the new workspace. Paths are
+   * relative to the new working directory and include a provenance record. */
+  recoveredFiles?: Array<{ operationId: string; sourceRunId: string; path: string }>;
+  /** A fresh attempt starts from committed files. The previous attempt's local
+   * directory is retained unmodified at this absolute path; changedFiles lists
+   * its uncommitted paths (bounded) so the agent can recover that work. */
+  priorWorkspace?: {
+    sourceRunId: string;
+    path: string;
+    branchName: string | null;
+    changedFilesKnown: boolean;
+    changedFileCount: number;
+    changedFiles: string[];
+  };
   unresolvedInteractionIds: string[];
   coverage: {
     kind: "full_task_history" | "task_history_delta";
