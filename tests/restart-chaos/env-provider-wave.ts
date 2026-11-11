@@ -65,8 +65,11 @@ async function sample(api: ChaosApi, record: EpTaskRecord): Promise<{ issue: Jso
     const [issue, runs, recovery] = await Promise.all([
       api.get<Json>(`/api/issues/${record.issueId}`, 5_000),
       api.get<Json[]>(`/api/issues/${record.issueId}/runs`, 5_000),
+      // A failed read is recorded, never taken as "no actions": the grade needs this evidence.
       api.get<Json>(`/api/issues/${record.issueId}/recovery-actions`, 5_000).catch(() => null),
     ]);
+    if (recovery && Array.isArray(recovery.actions)) record.recoveryReads += 1;
+    else record.recoveryReadFailures += 1;
     const known = new Map(record.runs.map(run => [run.id, run]));
     for (const run of runs ?? []) {
       const id = String(run.runId ?? run.id);
@@ -117,7 +120,7 @@ async function runWave(options: WaveOptions, waveDir: string, timeline: Timeline
       const adapter = options.adapters[index % options.adapters.length]!;
       const nonce = randomUUID().slice(0, 8);
       const record: EpTaskRecord = { taskId: `t${String(index + 1).padStart(2, "0")}`, nonce, fault: options.fault, issueId: null, harnessError: null,
-        runs: [], activeRecoveryActions: [], rested: null, retryClicked: false, finalStatus: null, briefOk: null };
+        runs: [], activeRecoveryActions: [], recoveryReads: 0, recoveryReadFailures: 0, rested: null, retryClicked: false, finalStatus: null, briefOk: null };
       records.push(record);
       try {
         const issue = await api.post<Json>(`/api/companies/${lab.companyId}/issues`, { title: `Chaos ${options.fault} ${nonce}`,

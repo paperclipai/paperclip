@@ -5,7 +5,7 @@ import { AUTOMATIC_RETRY_BOUND, ENV_PROVIDER_FAULTS, gradeEnvProviderTask, lease
 
 const base = (overrides: Partial<EpTaskRecord>): EpTaskRecord => ({
   taskId: "t01", nonce: "n", fault: "EP1", issueId: "issue", harnessError: null, runs: [], activeRecoveryActions: [],
-  rested: null, retryClicked: false, finalStatus: "done", briefOk: true, ...overrides,
+  recoveryReads: 3, recoveryReadFailures: 0, rested: null, retryClicked: false, finalStatus: "done", briefOk: true, ...overrides,
 });
 const failedRun = (id: string, errorCode = "environment_provider_unavailable") => ({ id, status: "failed", errorCode });
 
@@ -30,6 +30,12 @@ describe("EP1 environment-provider faults", () => {
       activeRecoveryActions: [{ ownerType: "board", kind: "stranded_assigned_issue", cause: "stranded_assigned_issue" }] }));
     expect(grade.checks.filter(check => !check.pass).map(check => check.name))
       .toEqual(["bounded_retry", "no_board_recovery_action", "completes_without_user", "brief_oracle"]);
+  });
+
+  it("fails when recovery actions could not be read", () => {
+    const runs = [failedRun("a"), failedRun("b"), { id: "c", status: "succeeded", errorCode: null }];
+    expect(gradeEnvProviderTask(base({ runs, recoveryReadFailures: 1 })).checks.find(check => check.name === "recovery_evidence_read")?.pass).toBe(false);
+    expect(gradeEnvProviderTask(base({ runs, recoveryReads: 0 })).pass).toBe(false);
   });
 
   it("requires a never-clearing fault to rest on Retry and finish after it", () => {

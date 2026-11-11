@@ -64,6 +64,9 @@ export interface EpTaskRecord {
   runs: EpRunSample[];
   /** Every recovery action seen active on the task at any poll. */
   activeRecoveryActions: Array<{ ownerType: string; kind: string; cause: string | null }>;
+  /** Polls that read the task's recovery actions, and polls where that read failed. */
+  recoveryReads: number;
+  recoveryReadFailures: number;
   /** EP1N: the resting state before Retry. */
   rested: { issueStatus: string; canRetry: boolean; observedRunId: string | null } | null;
   retryClicked: boolean;
@@ -84,6 +87,8 @@ export function gradeEnvProviderTask(record: EpTaskRecord): EpGrade {
     { name: "no_harness_error", pass: record.harnessError === null, detail: record.harnessError ?? "ok" },
     { name: "bounded_retry", pass: failed === expected && generic === 0,
       detail: `${failed} environment_provider_unavailable run(s), expected ${expected}; ${generic} setup_failed` },
+    { name: "recovery_evidence_read", pass: record.recoveryReads > 0 && record.recoveryReadFailures === 0,
+      detail: `${record.recoveryReads} read(s), ${record.recoveryReadFailures} failed` },
     { name: "no_board_recovery_action", pass: board.length === 0,
       detail: board.length ? board.map(action => `${action.kind}/${action.cause ?? "-"}`).join(", ") : "none" },
   ];
