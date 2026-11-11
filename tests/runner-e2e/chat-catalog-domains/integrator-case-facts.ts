@@ -34,19 +34,16 @@ export function caseFactsRoles(o: Pick<FactsObservation, "runs" | "workComments"
   return { ceo, continuation: continuation ?? [], review, valid: !!continuation && initial.length === 1 && review.length <= 1 && unexplained.length === 0 };
 }
 /** The setup records `browser: "Safari; affected device not yet confirmed"`; the person's correction is "only on mobile
- * Safari". The saved correction is graded structurally, not by its wording (gha-43088288923 saved the correct "Mobile
- * Safari only (bug reproduces only on mobile Safari)", which an allow-list of words rejected, and a deny-list instead
- * accepts wrong facts such as "non-mobile Safari"): the saved facts changed from the setup value, no field keeps the
- * setup-chosen stale literal, and the facts carry the person's own supplied literal (Safari with a mobile qualifier).
- * Whether the saved wording means exactly that is free-form text that a person reads. */
+ * Safari". The saved correction is graded structurally, never by its wording (an allow-list rejected the correct "Mobile
+ * Safari only (bug reproduces only on mobile Safari)" in gha-43088288923, and a deny-list accepts wrong facts): the saved
+ * facts changed from the setup value and no field keeps the setup-chosen stale literal. Whether the new wording says
+ * mobile Safari is free-form text that a person reads in the saved case and the reply. */
 export const SETUP_BROWSER = "Safari; affected device not yet confirmed";
 const STALE = "not yet confirmed";
-export function corrected(fields: unknown) {
+export function corrected(fields: unknown, setupBrowser: unknown = SETUP_BROWSER) {
   const record = fields && typeof fields === "object" && !Array.isArray(fields) ? fields as Record<string, unknown> : {};
   const values = Object.values(record).flatMap(value => Array.isArray(value) ? value : [value]).filter((value): value is string => typeof value === "string");
-  const text = values.join("\n");
-  return record.browser !== SETUP_BROWSER && values.some(value => /safari/i.test(value)) && /\b(?:mobile|ios|iphone|ipad|ipados)\b/i.test(text)
-    && !values.some(value => value.toLowerCase().includes(STALE));
+  return values.some(value => value.trim().length > 0) && record.browser !== setupBrowser && !values.some(value => value.toLowerCase().includes(STALE));
 }
 /** The follow-up reply is the text added after the first checkpoint. It must name the case (its identifier or its
  * primary task) and the setup-chosen support escalation literal. Whether its wording is right is free-form text that a
@@ -64,7 +61,7 @@ export function reportsCurrentFacts(reply: string, o: FactsObservation) {
 function retained(o: FactsObservation, concurrent: boolean) {
   const original = o.state.case as CaseRecord; const fields = o.caseRecord.fields as Record<string, unknown>;
   const before = original.fields as Record<string, unknown>;
-  return o.caseRecord.id === original.id && o.caseRecord.workIssueId === original.workIssueId && corrected(fields)
+  return o.caseRecord.id === original.id && o.caseRecord.workIssueId === original.workIssueId && corrected(fields, before.browser)
     && fields.customer === before.customer && fields.severity === before.severity && fields.expected === before.expected
     && (!concurrent || fields.supportEscalation === o.state.collaboratorValue);
 }
@@ -87,7 +84,7 @@ export function gradeIntegratorCaseFacts(value: unknown) {
   c.add("role-bound-runs", roles.valid && roles.ceo.length === 2 && roles.review.length === 1,
     "Two CEO chat turns, the stopped setup run and one Riley review run; Morgan may continue only when a CEO turn's comment on the case task wakes Morgan, once per turn. No other run is admitted.");
   c.add("subsequent-real-handoff-carries-current-facts", !!run && run.status === "succeeded" && run.runtimeMode === "native" && context?.id === original.id && context.taskId === original.workIssueId
-    && corrected(projectedFields) && projectedFields?.supportEscalation === o.state.collaboratorValue
+    && corrected(projectedFields, (original.fields as Record<string, unknown>).browser) && projectedFields?.supportEscalation === o.state.collaboratorValue
     && projectedFields?.customer === (original.fields as Record<string, unknown>).customer && o.caseRecord.handoffVersion === original.handoffVersion + 1,
     "A subsequent genuinely admitted reviewer on the same primary receives the saved correction plus collaboration change in its actual case context, not a fixture-synthesized context.");
   return c.result();

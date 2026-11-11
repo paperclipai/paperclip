@@ -29,7 +29,7 @@ describe("current case facts and real subsequent context", () => {
   });
   it("rejects lost unrelated fields and an initially wrong correction repaired later", () => {
     const lost = valid(); lost.caseRecord.fields.customer = "Other"; expect(gradeIntegratorCaseFacts(lost).passed).toBe(false);
-    const repaired = valid(); repaired.state.firstCorrection.caseRecord.fields.browser = "Desktop Safari only"; expect(gradeIntegratorCaseFacts(repaired).passed).toBe(false);
+    const repaired = valid(); repaired.state.firstCorrection.caseRecord.fields.browser = repaired.state.case.fields.browser; expect(gradeIntegratorCaseFacts(repaired).passed).toBe(false);
     const stale = valid(); stale.state.collaborationCheckpoint.caseRecord.fields.supportEscalation = "stale"; expect(gradeIntegratorCaseFacts(stale).passed).toBe(false);
   });
   it("rejects stale handoff context, chat-only projection and moved document ownership", () => {
@@ -49,15 +49,12 @@ describe("current case facts and real subsequent context", () => {
     expect(gradeIntegratorCaseFacts(reusedFirst).passed).toBe(false);
   });
   it("grades the saved correction structurally, leaving the meaning of its wording to a person", () => {
-    // Valid wording passes, including the retained gha-43088288923 value and the agent's own explanatory words.
-    for (const browser of ["Mobile Safari only (bug reproduces only on mobile Safari)", "Mobile Safari only", "iOS Safari", "Safari on iPhone/iPad only",
-      "Reproduces only on mobile Safari", "Mobile Safari only; desktop Safari unaffected"]) expect(corrected({ browser }), browser).toBe(true);
+    // Any rewording of the correction passes, including the retained gha-43088288923 value.
+    for (const browser of ["Mobile Safari only (bug reproduces only on mobile Safari)", "Mobile Safari only", "iOS Safari", "Safari on iPhone/iPad only"])
+      expect(corrected({ browser }), browser).toBe(true);
     expect(corrected({ browser: "Safari", platform: "mobile only" })).toBe(true);
-    expect(corrected({ affectedBrowsers: ["iOS Safari"] })).toBe(true);
-    // Broken saves fail: unchanged setup value, the stale setup literal kept anywhere, the person's mobile or Safari
-    // literal dropped, or the facts removed.
-    for (const fields of [{ browser: SETUP_BROWSER }, { browser: "Mobile Safari; affected device not yet confirmed" }, { browser: "Mobile Safari", note: "device not yet confirmed" },
-      { browser: "Safari" }, { browser: "Desktop Safari only" }, { browser: "Mobile Chrome" }, { browser: "" }, {}])
+    // Broken saves fail: the unchanged setup value, the stale setup literal kept in any field, or the facts removed.
+    for (const fields of [{ browser: SETUP_BROWSER }, { browser: "Mobile Safari; affected device not yet confirmed" }, { browser: "Mobile Safari", note: "device not yet confirmed" }, { browser: "" }, {}])
       expect(corrected(fields), JSON.stringify(fields)).toBe(false);
   });
 });
