@@ -787,9 +787,11 @@ Q1 is not a default workload.
 
 **Q4** is Q1 twice in a row. The first answer wakes a resolved-interaction continuation run, and
 that run saves the second question. A provider fault on a Q4 task takes the task's second matching
-message (`occurrence` 2 in the rule), so shutdown confirmation of the retained execution is late
-(PV1) or lost (PV2) after the second governed wait is saved. That run's same-run resume must settle
-the wait by itself. Staging run e892cf75 (2026-11-11) instead ended `cancelled` with
+message (`occurrence` 2 in the rule): the interruption terminal of the second governed wait is late
+(PV1) or lost (PV2). The wait must still settle without a failed or cancelled run. On a local Codex
+runner the cancelled turn still settles inside the 30 s bound (waves w-20261111T151810-s111 and
+w-20261111T152016-s111), so this cell does not by itself reach `native_governed_wait_settlement_pending`;
+the run-dispatch adapter test covers that state's same-run resume. Staging run e892cf75 (2026-11-11) instead ended `cancelled` with
 `execution_reconciliation_required`: the dispatch gate of the continuation treated the run's own
 scheduled resume as a reconciliation hold, and the task stayed blocked with no Retry.
 

@@ -38,7 +38,7 @@ describe("Q4 second saved question from a continuation", () => {
     expect(plain.options.workloads).not.toContain("Q4");
     const [planned] = withProviderFaultRules([{ taskId: "t01", index: 0, workload: "Q4", adapter: "codex", fault: "PV2",
       fireAfterMs: 0, holdMs: 0, followUpAfterMs: null, nonce: NONCE }], {});
-    expect(planned!.providerFault).toMatchObject({ kind: "PV2", message: "terminal", occurrence: 2, stallShutdownMs: 45_000 });
+    expect(planned!.providerFault).toMatchObject({ kind: "PV2", message: "terminal", occurrence: 2 });
   });
 
   it("answers each question once, after its asking run settled, with the nonce's options", async () => {

@@ -111,16 +111,7 @@ process.stdin.on("data", chunk => {
     }
   }
 });
-// `stallShutdownMs` on an applied rule: the provider is slow to stop. Until the stall ends, stop
-// requests (stdin end, SIGTERM/SIGINT/SIGHUP) are held, so shutdown of the retained execution cannot
-// be confirmed in time. SIGKILL still ends the shim at once, as it would a real provider.
-let stallUntil = 0;
-const stalled = () => Date.now() < stallUntil;
-function afterStall(action) {
-  if (!stalled()) { action(); return; }
-  setTimeout(action, stallUntil - Date.now());
-}
-process.stdin.on("end", () => afterStall(() => child.stdin.end()));
+process.stdin.on("end", () => child.stdin.end());
 child.stdin.on("error", () => undefined);
 
 /** Held PV1 messages: timer -> the rule it belongs to. */
@@ -156,11 +147,6 @@ function relay(line) {
   if (!target || !rule || !claim(rule)) { emit(line); return; }
   const base = { event: "applied", nonce: rule.nonce, kind: rule.kind, message: target.message, turnStatus: target.turnStatus,
     requestId: message.id ?? null, sinceSpawnMs: Date.now() - startedAt };
-  const stallMs = Number(rule.stallShutdownMs ?? 0);
-  if (Number.isFinite(stallMs) && stallMs > 0) {
-    stallUntil = Date.now() + stallMs;
-    log({ event: "shutdown_stalled", nonce: rule.nonce, kind: rule.kind, stallMs });
-  }
   if (rule.kind === "PV2") { log({ ...base, action: "drop" }); return; }
   if (rule.kind === "PV3") { emit(line); emit(line); log({ ...base, action: "duplicate" }); return; }
   const delayMs = Number(rule.delayMs ?? 0);
@@ -190,7 +176,7 @@ child.stdout.on("end", () => {
 });
 
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
-  process.on(signal, () => afterStall(() => { try { child.kill(signal); } catch { /* already gone */ } }));
+  process.on(signal, () => { try { child.kill(signal); } catch { /* already gone */ } });
 }
 
 child.on("error", error => {
