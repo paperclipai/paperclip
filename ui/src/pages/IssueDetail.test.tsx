@@ -4604,6 +4604,95 @@ describe("IssueDetail", () => {
     });
   });
 
+  it.each(["still starting", "sealed into its first turn"] as const)(
+    "shows a message the booting run's first turn takes as sent, not queued (%s)",
+    async (stage) => {
+      const followUp = createIssueComment({ id: "boot-follow-up", body: "Steer while the sandbox boots",
+        createdAt: new Date("2026-04-21T00:00:05.000Z"), updatedAt: new Date("2026-04-21T00:00:05.000Z") });
+      mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1",
+        executionRunId: "run-boot" }));
+      mockIssuesApi.listComments.mockResolvedValue([followUp]);
+      mockIssuesApi.recentComments.mockResolvedValue({ comments: [followUp], latestCommentId: followUp.id, hasMore: false });
+      const bootingRun = {
+        id: "run-boot", status: "running", invocationSource: "assignment", triggerDetail: null,
+        contextCommentId: null, contextWakeCommentId: null,
+        startedAt: "2026-04-21T00:00:00.000Z", finishedAt: null, createdAt: "2026-04-21T00:00:00.000Z",
+        agentId: "agent-1", agentName: "Codie", adapterType: "paperclip_runner", issueId: "issue-1",
+      };
+      mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(bootingRun);
+      mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([bootingRun]);
+      // Staging PAP-4454: the server hides a sealed message from the queue,
+      // and steering is unavailable until the sandbox's session is up.
+      mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({
+        queueId: "boot-wake", state: "deferred", targetRunId: "run-boot",
+        steeringDisposition: "temporarily_unavailable",
+        entries: stage === "still starting" ? [{ comment: followUp, position: 0, canEdit: true, canDiscard: true }] : [],
+        firstTurnCommentIds: [followUp.id],
+      }));
+      await act(async () => renderIssueView());
+      await waitForAssertion(() => {
+        expect(mockIssuesApi.getQueuedComments).toHaveBeenCalled();
+        const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+        const bubble = props?.comments.find((comment: IssueComment) => comment.id === followUp.id);
+        expect(bubble).toMatchObject({ body: followUp.body, consumedByRunId: "run-boot" });
+        expect(bubble?.queueState).toBeUndefined();
+        expect(props?.queuedCommentQueue?.entries ?? []).toEqual([]);
+      });
+    },
+  );
+
+  it("keeps queue controls for a new message after the run that took an earlier one hands off", async () => {
+    const runnerRun = (id: string, startedAt: string) => ({
+      id, status: "running" as const, invocationSource: "assignment" as const, triggerDetail: null,
+      contextCommentId: null, contextWakeCommentId: null, startedAt, finishedAt: null, createdAt: startedAt,
+      agentId: "agent-1", agentName: "Codie", adapterType: "paperclip_runner", issueId: "issue-1",
+    });
+    const bootRun = runnerRun("run-boot", "2026-04-21T00:00:00.000Z");
+    const bootMessage = createIssueComment({ id: "boot-message", body: "Sent while the sandbox boots",
+      createdAt: new Date("2026-04-21T00:00:05.000Z"), updatedAt: new Date("2026-04-21T00:00:05.000Z") });
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1",
+      executionRunId: "run-boot" }));
+    mockIssuesApi.addComment.mockResolvedValue(bootMessage);
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(bootRun);
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([bootRun]);
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({
+      queueId: null, state: null, targetRunId: null, steeringDisposition: "temporarily_unavailable", entries: [],
+    }));
+    await act(async () => renderIssueView());
+    await flushReact();
+    const bootProps = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as { onAdd: (body: string) => Promise<void> };
+    await act(async () => { await bootProps.onAdd(bootMessage.body); });
+    await flushReact();
+
+    // The boot run's first turn took the message and finished; a successor runs.
+    // The server queue never lists the boot message, only the new follow-up.
+    const nextRun = runnerRun("run-next", "2026-04-21T00:10:00.000Z");
+    const newMessage = createIssueComment({ id: "new-message", body: "Merge the PR when checks pass",
+      createdAt: new Date("2026-04-21T00:11:00.000Z"), updatedAt: new Date("2026-04-21T00:11:00.000Z") });
+    mockIssuesApi.listComments.mockResolvedValue([bootMessage, newMessage]);
+    mockIssuesApi.recentComments.mockResolvedValue({ comments: [bootMessage, newMessage],
+      latestCommentId: newMessage.id, hasMore: false });
+    const nextQueue = createQueuedCommentQueue({ queueId: "next-wake", state: "deferred", targetRunId: "run-next",
+      steeringDisposition: "available",
+      entries: [{ comment: newMessage, position: 0, canEdit: true, canDiscard: true }] });
+    mockIssuesApi.getQueuedComments.mockResolvedValue(nextQueue);
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue(nextRun);
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([nextRun]);
+    mockIssuesApi.get.mockResolvedValue(createIssue({ status: "in_progress", assigneeAgentId: "agent-1",
+      executionRunId: "run-next" }));
+    await act(async () => {
+      await queryClient.invalidateQueries();
+      await queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments("issue-1") });
+    });
+    await waitForAssertion(() => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+      // A stale local entry must not withhold Steer and Discard from the real queue.
+      expect(props?.queuedCommentQueue?.entries.map((entry: { comment: IssueComment }) => entry.comment.id))
+        .toEqual([newMessage.id]);
+      expect(props?.queuedCommentQueue?.queueId).toBe("next-wake");
+    });
+  });
+
   it("does not mark the wake comment for the current live run as queued when active-run cache is stale", async () => {
     mockIssuesApi.get.mockResolvedValue(
       createIssue({

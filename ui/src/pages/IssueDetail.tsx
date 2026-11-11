@@ -1851,6 +1851,26 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         queueIds: inputPlacementByCommentId.get(commentId)?.queueIds ?? new Set(),
       });
     }
+    // A run that is still starting (a booting sandbox, say) cannot be steered,
+    // but its first turn takes these messages. They are sent: show them at
+    // their submission time in the conversation, not in the queue.
+    const firstTurnRunId = authoritativeQueuedCommentQueue?.targetRunId ?? null;
+    if (firstTurnRunId) {
+      const createdAtById = new Map(comments.map((comment) => [comment.id, comment.createdAt]));
+      authoritativeQueuedCommentQueue?.firstTurnCommentIds?.forEach((commentId, sequence) => {
+        const createdAt = createdAtById.get(commentId);
+        if (inputPlacementByCommentId.has(commentId) || !createdAt) return;
+        const anchorAt = new Date(createdAt).toISOString();
+        inputPlacementByCommentId.set(commentId, {
+          runId: firstTurnRunId,
+          anchorAt,
+          sequence,
+          anchorMs: new Date(anchorAt).getTime(),
+          kind: "run_start",
+          queueIds: new Set(authoritativeQueuedCommentQueue.queueId ? [authoritativeQueuedCommentQueue.queueId] : []),
+        });
+      });
+    }
     for (const [commentId, placement] of localSteeringPlacements) {
       if (inputPlacementByCommentId.has(commentId)) continue;
       inputPlacementByCommentId.set(commentId, {
@@ -2136,6 +2156,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         });
     return [...projectedComments, ...responseComments];
   }, [
+    authoritativeQueuedCommentQueue,
     comments,
     classicTaskInterfaceEnabled,
     interactions,
@@ -2194,6 +2215,11 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           : comment.queueState === "queued"
             ? (comment.queueTargetRunId ?? null)
             : null);
+      // A saved message the server queue never listed (a run's first turn
+      // took it) is not pending once that run settles. Keeping it would
+      // withhold the queue id, and with it Steer and Discard, from every
+      // later message. A request still in flight keeps its original target.
+      if (targetRunId && !liveRunIds.has(targetRunId) && !comment.id.startsWith("optimistic-")) return [];
       return targetRunId ? [{ comment, targetRunId }] : [];
     });
     const fallbackProtocol =
@@ -2213,6 +2239,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     consumedQueuedCommentIds,
     discardedQueuedCommentIds,
     issueId,
+    liveRunIds,
     liveRuntimeRun,
     assigneeUsesPaperclipRunner,
     locallyQueuedCommentRunIds,
