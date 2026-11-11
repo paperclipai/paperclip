@@ -27,9 +27,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { agents, chatActions, chatConversations, chatDeliveries, chatEndpointResources, chatEndpoints,
+import { chatActions, chatConversations, chatDeliveries, chatEndpointResources, chatEndpoints,
   chatExternalPrincipals, chatGitHubReviews, chatIdentityLinks, chatMessageLinks, companies, companyMemberships,
-  createDb, heartbeatRuns, issueComments, issues, runIdentityContexts, toolApplications, toolConnections,
+  createDb, heartbeatRuns, issueComments, runIdentityContexts, toolApplications, toolConnections,
   type Db } from "@paperclipai/db";
 import { defaultGitHubReviewPolicy } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "../src/__tests__/helpers/embedded-postgres.js";
@@ -87,7 +87,9 @@ try {
   const endpointId = randomUUID(), resourceId = randomUUID(), principalId = randomUUID();
   const repository = "synthetic/repository", repositoryId = "42", headSha = "1".repeat(40), user = "operator";
   await db.insert(companies).values({ id: companyId, name: "Synthetic review", issuePrefix: "SYN" });
-  await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", adapterType: "process" });
+  // A fixture agent that never runs. It is not created through the agent lifecycle module.
+  await sql.unsafe("insert into agents (id, company_id, name, adapter_type) values ($1::uuid, $2::uuid, 'Reviewer', 'process')",
+    [agentId, companyId]);
   await db.insert(toolApplications).values({ id: applicationId, companyId, name: "GitHub", type: "chat" });
   await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId, name: "GitHub",
     uid: connectionId, transport: "chat_sdk", connectionPurpose: "channel", enabled: true, status: "active" });
