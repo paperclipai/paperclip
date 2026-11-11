@@ -585,7 +585,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const discordGatewayStopTasks = new Set<Promise<void>>();
   let shuttingDown = false;
   let receiverWork: ReturnType<typeof registerChatReceiverWork> | undefined;
-  const { discordGatewayNotOwnedError, isDiscordGatewayNotOwnedError, releaseDiscordGatewayLeaseRow, stopDiscordGatewayOwnership, renewDiscordGatewayOwnershipForMessageAdmission, ensureDiscordGatewayRuntimeIsCurrent, acquireDiscordGatewayOwnership, discordGatewayRuntimeIsCurrent } = createChatReceiverOwnership(db, { runtime, runtimeVersions, runtimeCallbackEndpoint, redactError, leasedChatProvider, discordGatewayOwnerships, discordGatewayStopTasks, isShuttingDown: () => shuttingDown, isRuntimeInitializing: (endpointId, context) => { const pending = runtimeInitializations.get(endpointId); return pending?.context === context && pending.discordGatewayOwned; }, onStopped: id => receiverWork?.changed(id), get discordGatewayLeaseTtlMs() { return options.discordGatewayLeaseTtlMs; }, get discordGatewayLeaseRenewalIntervalMs() { return options.discordGatewayLeaseRenewalIntervalMs; }, get discordGatewayLeaseWaitMs() { return options.discordGatewayLeaseWaitMs; }, get renewDiscordGatewayLease() { return options.renewDiscordGatewayLease; } });
+  const { withReceiverLease, discordGatewayNotOwnedError, isDiscordGatewayNotOwnedError, releaseDiscordGatewayLeaseRow, stopDiscordGatewayOwnership, renewDiscordGatewayOwnershipForMessageAdmission, ensureDiscordGatewayRuntimeIsCurrent, acquireDiscordGatewayOwnership, discordGatewayRuntimeIsCurrent } = createChatReceiverOwnership(db, { runtime, runtimeVersions, runtimeCallbackEndpoint, redactError, leasedChatProvider, discordGatewayOwnerships, discordGatewayStopTasks, isShuttingDown: () => shuttingDown, isRuntimeInitializing: (endpointId, context) => { const pending = runtimeInitializations.get(endpointId); return pending?.context === context && pending.discordGatewayOwned; }, onStopped: id => receiverWork?.changed(id), get discordGatewayLeaseTtlMs() { return options.discordGatewayLeaseTtlMs; }, get discordGatewayLeaseRenewalIntervalMs() { return options.discordGatewayLeaseRenewalIntervalMs; }, get discordGatewayLeaseWaitMs() { return options.discordGatewayLeaseWaitMs; }, get renewDiscordGatewayLease() { return options.renewDiscordGatewayLease; } });
   const { receiveSdkMessages } = createChatSdkMessageReceiver({
     endpointRecord, processMessage,
     ingressOnly: (provider) => provider === "imessage-photon"
@@ -913,6 +913,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const photonConnector = photonConnectorConfig ? createPaperclipCloudConnector({ config: photonConnectorConfig }) : undefined;
   const photonExternalRuntimeOwner = createPhotonExternalRuntimeOwner(db, {
     broker: () => photonConnector,
+    withReceiverLease: (record, work) => withReceiverLease(record.endpoint, runtimeContextForRecord(record), ownership => work({ token: ownership.token })),
     endpointRecord, runtimeFor, context: instance => runtimeContexts.get(instance),
     ownership: id => discordGatewayOwnerships.get(id), currentRuntime: id => runtime.get(id),
     release: ownership => stopDiscordGatewayOwnership(ownership, { removeRuntime: false, notifyStopped: false }),
@@ -1089,16 +1090,15 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           recordChatWebhookStage("runtime_initializing", record.endpoint.id);
           const credentials = await resolveCredentials(record.endpoint);
           await prepareDiscordRuntimeCommand(db, record.endpoint, context);
+          const providerConfig = runtimeConfig(record.endpoint, record.endpoint.botUsername ?? record.assignedAgentName, credentials);
+          const photonAllocation = providerConfig.provider === "imessage-photon" && discordOwnership
+            ? await photonExternalRuntimeOwner.reserveLocalRuntime(record, context, discordOwnership, providerConfig) : null;
           instance = record.endpoint.provider === "speko"
             ? await replaceSpekoChannelRuntime(runtime, record, persistence)
             : await runtime.replaceEndpoint({
             companyId: record.endpoint.companyId,
             endpointId: record.endpoint.id,
-            providerConfig: runtimeConfig(
-              record.endpoint,
-              record.endpoint.botUsername ?? record.assignedAgentName,
-              credentials,
-            ),
+            providerConfig,
             persistence,
             concurrency: record.endpoint.concurrencyPolicy,
             enableDiscordGateway: discordOwnership !== null,
@@ -1166,6 +1166,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
                   : undefined,
             },
           });
+          if (photonAllocation) photonExternalRuntimeOwner.attachLocalRuntime(photonAllocation, instance);
           context.endpointRuntime = instance;
           runtimeContexts.set(instance as object, context);
           if (discordOwnership && !(await ensureDiscordGatewayRuntimeIsCurrent(endpoint.id, context, { renewLease: true }))) {

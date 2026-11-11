@@ -194,6 +194,17 @@ handoff and publication identities rather than replacing uncertain work with a
 new send. An unknown retirement keeps its credential-cleanup responsibility
 until normal acceptance and resource closure are confirmed.
 
+After process replacement, a current authorized receiver lease may recover useful
+intake from the exact tagged durable checkpoint even while an old local resource
+is physically unconfirmed. This restores business delivery, not a close receipt.
+The old descriptor and retirement debt remain; a missing UUID, expired lease, or
+controller fence never means that its SDK sockets closed. Newly allocated local
+receivers save their real process birth and namespace before construction. Normal
+Retry can join the same original resource or use actual matching-namespace
+process-exit evidence. A foreign or older opaque descriptor stays in attention
+without a recurring retry loop; current business recovery does not erase it or
+permit credential cleanup to report complete.
+
 ## Troubleshooting
 
 | State or symptom | Action |

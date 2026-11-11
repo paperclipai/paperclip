@@ -13,8 +13,9 @@ import type { EndpointRecord, RuntimeContext, DiscordGatewayOwnership, InternalS
 import { credentialFingerprint } from "../credential-fingerprint.js";
 import { createPhotonExternalStore, PHOTON_EXTERNAL_STATE } from "./external-store.js";
 import { createPhotonExternalOwner, PhotonLocalResources, type PhotonExternalBroker } from "./external-owner.js";
-import { readPhotonExternalState, parsePhotonExternalDelivery, type PhotonExternalIdentity } from "./external-contract.js";
-import { createHash } from "node:crypto";
+import { readPhotonExternalState, parsePhotonExternalDelivery, photonHash, type PhotonExternalIdentity } from "./external-contract.js";
+import { currentControllerProcess, UNKNOWN_PROCESS_SPACE } from "../../controller-process-identity.js";
+import { randomUUID, createHash } from "node:crypto";
 
 export type PhotonCloudDelivery = { id: string; event: string; createdAt: string; installationId: string | null; bindingIds: readonly string[]; payload: Record<string, unknown> };
 type Ingress = (event: PhotonCloudDelivery) => Promise<void>;
@@ -61,6 +62,7 @@ export async function readPhotonRetainedConsumer(db: Db, identity: { instanceId:
 }
 export function createPhotonExternalRuntimeOwner(db: Db, options: {
   broker(): PhotonExternalBroker | undefined;
+  withReceiverLease<T>(record: EndpointRecord, work: (lease: { token: string }) => Promise<T>): Promise<T>;
   endpointRecord(id: string): Promise<EndpointRecord | null>;
   runtimeFor(endpoint: EndpointRecord["endpoint"], input: { requireDiscordOwnership?: boolean }): Promise<ChatEndpointRuntime>;
   context(runtime: ChatEndpointRuntime): RuntimeContext | undefined;
@@ -89,6 +91,29 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     if (record.endpoint.provider !== "imessage-photon") return null;
     return selected(record);
   }
+  async function reserveLocalRuntime(record: EndpointRecord, context: RuntimeContext, lease: { token: string }, config: ResolvedPhotonChatConfig): Promise<string | null> {
+    const subject = (record.endpoint.setup as InternalSetupState).photonExternalSubject, broker = options.broker();
+    if (!subject || !broker || record.endpoint.provider !== "imessage-photon") return null;
+    const identity: PhotonExternalIdentity = { companyId: record.endpoint.companyId, endpointId: record.endpoint.id,
+      connectionId: record.endpoint.connectionId, runtimeGeneration: context.generation, credentialReferences: context.credentialFingerprint, subject };
+    const prior = await store.read(identity);
+    if (prior && prior.phase !== "retired") {
+      if (prior.phase === "external") return null; // Normal lazy useful sender; no receiver allocation.
+      options.notify(record.endpoint.id);
+      throw conflict("Photon original handoff must recover before a replacement receiver allocation");
+    }
+    const controller = await currentControllerProcess();
+    if (controller.hostHash === UNKNOWN_PROCESS_SPACE || !controller.processStartedAt)
+      throw conflict("Photon local allocation requires its actual process birth and namespace");
+    const id = randomUUID();
+    // Durable descriptor precedes construction/initialize, not an after-crash backfill.
+    await createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) }).prepare({
+      identity, lease, config, localResourceId: id, localResource: { id, controller, leaseDigest: photonHash(lease.token), closed: false } });
+    return id;
+  }
+  function attachLocalRuntime(id: string, runtime: ChatEndpointRuntime): void {
+    resources.attach(id, runtime, () => runtime.shutdown());
+  }
   async function reconcile(id: string): Promise<void> {
     const pending = active.get(id); if (pending) return pending;
     const run = (async () => {
@@ -104,8 +129,23 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
         await createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) }).retire(previous);
         return;
       }
-      const external = await placement(record);
+      const optionsConfig = await options.config(record);
+      const originalRuntime = options.currentRuntime(id);
+      const originalResourceCurrent = previous?.localResourceId && originalRuntime
+        ? resources.owns(previous.localResourceId, originalRuntime) : false;
+      if (previous && ["enrolling", "joining"].includes(previous.phase) && !originalResourceCurrent) {
+        // Recover BUSINESS authority without constructing/capturing an ignored
+        // replacement receiver. The normal finite renewable lease fences old writes.
+        const originalResourceId = previous.localResourceId;
+        await options.withReceiverLease(record, lease => createPhotonExternalOwner({ store, broker, resources,
+          notify: value => options.notify(value.endpointId) }).reconcile({ identity, lease, config: optionsConfig, localResourceId: originalResourceId }));
+        return;
+      }
+      let external = await placement(record);
       if (external) {
+        if (external.localResourceId !== null && !external.localClosureConfirmed) {
+          external = (await createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) }).repair(external)).state;
+        }
         const adapter = options.currentRuntime(id)?.getProviderAdapter();
         if (adapter instanceof PhotonChatAdapter) await adapter.drainUsefulClient();
         else if (external.failure?.code === "sender_close" && !await options.removeRuntime(id)) throw new Error("Photon original sender physical closure is unknown");
@@ -198,7 +238,9 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
       }
       if (state.phase === "retired" || scope?.kind === "connection" && state.identity.connectionId !== scope.id) continue;
       values.push({ id: row.endpointId, companyId: row.companyId, connectionId: state.identity.connectionId,
-        dueAt: state.phase === "external" && !state.failure ? null : state.failure?.nextAttemptAt ? Date.parse(state.failure.nextAttemptAt) : 0 });
+        dueAt: state.failure ? (state.failure.nextAttemptAt ? Date.parse(state.failure.nextAttemptAt) : null)
+          : state.localResourceDebt ? (state.localResourceDebt.nextAttemptAt ? Date.parse(state.localResourceDebt.nextAttemptAt) : null)
+          : state.phase === "external" ? null : 0 });
     }
     return values;
   }
@@ -209,8 +251,10 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     const state = await store.read({ companyId: record.endpoint.companyId, endpointId: id, connectionId: record.endpoint.connectionId,
       runtimeGeneration: context.generation, credentialReferences: context.credentialFingerprint, subject });
     if (!state?.localResourceId || !resources.owns(state.localResourceId, context.endpointRuntime)
-      || !["joining", "retiring"].includes(state.phase)) return { kind: "obsolete" };
-    await store.retained(state, value => ({ ...value, failure: { code: "local_join", attempts: (value.failure?.attempts ?? 0) + 1, nextAttemptAt: new Date().toISOString() } }));
+      || !["joining", "external", "retiring"].includes(state.phase) || state.localClosureConfirmed) return { kind: "obsolete" };
+    await store.retained(state, value => value.phase === "external"
+      ? { ...value, localResourceDebt: { attempts: (value.localResourceDebt?.attempts ?? 0) + 1, nextAttemptAt: new Date().toISOString() } }
+      : { ...value, failure: { code: "local_join", attempts: (value.failure?.attempts ?? 0) + 1, nextAttemptAt: new Date().toISOString() } });
     options.notify(id);
     return { kind: "recorded" };
   }
@@ -228,12 +272,16 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     if (!state || state.handoffId !== actionId || state.binding.instanceId !== connector.instanceId || state.binding.environment !== connector.environment)
       throw conflict("Photon retained retry identity changed");
     if (state.phase === "retired") return { actionId, state: "complete" as const };
-    if (state.localResourceId !== null && !resources.known(state.localResourceId) && ["joining", "retiring"].includes(state.phase))
-      throw conflict("Photon original stream closure is unknown; restore its owning process or establish real resource closure before retry");
+    // Retry is real current-authorized business recovery/physical repair. An
+    // unknown old UUID remains debt; it is never certified closed by this action.
+    if (state.phase === "external" || state.phase === "retiring")
+      await createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) }).repair(state);
     if (state.phase === "external") await broker.photonReceiverOperation({ subject: management.responsibleUserId, companyId: state.identity.companyId,
       operation: { kind: "retry", binding: state.binding } });
     await management.reauthorize();
-    await store.retained(state, value => ({ ...value, failure: value.failure ? { ...value.failure, nextAttemptAt: new Date().toISOString() } : null }), async tx => {
+    const current = await store.read(state.identity);
+    if (!current || current.handoffId !== state.handoffId || !isDeepStrictEqual(current.binding, state.binding)) throw conflict("Photon retry owner changed");
+    await store.retained(current, value => ({ ...value, failure: value.failure ? { ...value.failure, nextAttemptAt: new Date().toISOString() } : null }), async tx => {
       await management.reauthorize();
       await logActivity(tx, { ...management.audit, companyId: state.identity.companyId, action: "chat.photon_external_owner.retry",
         entityType: "chat_endpoint", entityId: endpointId, details: { handoffId: actionId, phase: state.phase } });
@@ -243,7 +291,7 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
     return { actionId, state: "scheduled" as const };
   }
   ingress.set(db, receive);
-  return { reconcile, placement, senderDebt, retire, retained, cleanupFailure, retry, close() { if (ingress.get(db) === receive) ingress.delete(db); return Promise.all([...active.values()]).then(() => undefined); } };
+  return { reserveLocalRuntime, attachLocalRuntime, reconcile, placement, senderDebt, retire, retained, cleanupFailure, retry, close() { if (ingress.get(db) === receive) ingress.delete(db); return Promise.all([...active.values()]).then(() => undefined); } };
 }
 
 /** Called by normal configuration SQL with its actual authorized actor. Existing

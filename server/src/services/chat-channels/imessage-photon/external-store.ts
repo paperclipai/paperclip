@@ -79,6 +79,12 @@ export function createPhotonExternalStore(db: Db) {
             || next.handoffId !== current.handoffId || next.localResourceId !== current.localResourceId
             || next.initialSequence !== current.initialSequence || next.phase === "external" && current.phase !== "external")
             throw new Error("Photon retained update cannot change authority");
+          if (!isDeepStrictEqual(next.businessHandoff, current.businessHandoff)
+            || current.localClosureConfirmed === true && next.localClosureConfirmed !== true
+            || !isDeepStrictEqual(next.localResource ? { ...next.localResource, closed: false } : undefined,
+              current.localResource ? { ...current.localResource, closed: false } : undefined)
+            || current.localResource?.closed === true && next.localResource?.closed !== true)
+            throw new Error("Photon retained cleanup cannot rewrite business or allocation identity");
           const parsed = readPhotonExternalState(next);
           if (!parsed) throw new Error("Photon retained result disappeared");
           return parsed;

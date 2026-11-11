@@ -30,6 +30,10 @@ export function assertPhotonExternalBinding(identity: PhotonExternalIdentity, bi
 export const photonExternalStateSchema = z.object({
   version: z.literal(1), identity: photonExternalIdentitySchema,
   handoffId: z.string().uuid(), localResourceId: z.string().uuid().nullable(),
+  localResource: z.object({ id: z.string().uuid(), controller: z.unknown(), leaseDigest: z.string().regex(/^[a-f0-9]{64}$/), closed: z.boolean() }).strict().optional(),
+  localResourceDebt: z.object({ attempts: sequence.positive(), nextAttemptAt: z.string().datetime().nullable() }).strict().optional(),
+  localClosureConfirmed: z.literal(true).optional(),
+  businessHandoff: z.object({ sequence: sequence.nullable(), leaseDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(),
   phase: z.enum(["enrolling", "joining", "external", "retiring", "retired"]),
   // The complete non-secret enrollment input survives an ambiguous broker reply.
   binding: photonExternalBindingSchema,
@@ -44,7 +48,14 @@ export function readPhotonExternalState(value: unknown): PhotonExternalState | n
   if (value === null) return null;
   const state = photonExternalStateSchema.parse(value);
   assertPhotonExternalBinding(state.identity, state.binding);
-  if (state.phase === "external" && state.joinedSequence === null && state.initialSequence !== null
+  if (state.localResource?.closed === true && state.localClosureConfirmed !== true
+    || state.localClosureConfirmed === true && state.localResource && state.localResource.closed !== true)
+    throw new Error("Photon physical close receipt and original descriptor disagree");
+  if (state.localResource && state.localResource.id !== state.localResourceId) throw new Error("Photon resource descriptor identity changed");
+  if (state.businessHandoff && (state.initialSequence !== null && (state.businessHandoff.sequence === null || state.businessHandoff.sequence < state.initialSequence)
+    || state.acceptedSequence !== null && state.businessHandoff.sequence !== null && state.acceptedSequence < state.businessHandoff.sequence))
+    throw new Error("Photon current business admission prefix regressed");
+  if (state.phase === "external" && !state.businessHandoff && state.joinedSequence === null && state.initialSequence !== null
     || state.pending && state.pending.sequence <= (state.acceptedSequence ?? -1)) throw new Error("Photon external custody invariant changed");
   return state;
 }

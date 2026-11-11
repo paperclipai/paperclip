@@ -1,3 +1,5 @@
+import { readControllerProcess } from "../../controller-process-identity.js";
+import { photonResourceProcessEnded } from "./resource-process.js";
 import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -10,6 +12,7 @@ import { PHOTON_EXTERNAL_STATE, type PhotonExternalStore, type PhotonExternalLea
 import { assertPhotonExternalBinding, photonExternalBindingSchema, photonHash, readPhotonExternalState,
   parsePhotonExternalDelivery, type PhotonExternalBinding, type PhotonExternalIdentity, type PhotonExternalState } from "./external-contract.js";
 
+class PhotonPhysicalResourceUnknown extends Error {}
 const CHECKPOINT_AUTHORITY = "checkpoint-authority";
 const checkpointIdentity = ({ subject: _subject, ...identity }: PhotonExternalIdentity) => identity;
 type Checkpoint = { schema: 1; lineId: string; sequence: number };
@@ -49,6 +52,10 @@ export class PhotonLocalResources {
     const existing = this.objects.get(object); if (existing) return existing;
     const id = randomUUID(); this.objects.set(object, id); this.resources.set(id, { close, closed: false }); return id;
   }
+  attach(id: string, object: object, close: () => Promise<void>): void {
+    if (this.resources.has(id) || this.objects.has(object)) throw new Error("Photon allocation identity is already attached");
+    this.objects.set(object, id); this.resources.set(id, { close, closed: false });
+  }
   async join(id: string): Promise<void> {
     const resource = this.resources.get(id);
     if (!resource) throw new Error("Photon original local resource closure is unknown");
@@ -59,45 +66,70 @@ export class PhotonLocalResources {
   known(id: string): boolean { return this.resources.has(id); }
   owns(id: string, object: object): boolean { return this.objects.get(object) === id && this.resources.has(id); }
 }
+export type PhotonExternalHandoffInput = { identity: PhotonExternalIdentity; lease: PhotonExternalLease; config: ResolvedPhotonChatConfig;
+  localResourceId: string | null; localResource?: NonNullable<PhotonExternalState["localResource"]> };
 export function createPhotonExternalOwner(options: { store: PhotonExternalStore; broker: PhotonExternalBroker;
   resources: PhotonLocalResources; notify(identity: PhotonExternalIdentity): void; now?: () => Date }) {
   const now = options.now ?? (() => new Date());
-  async function failure(expected: PhotonExternalState, code: NonNullable<PhotonExternalState["failure"]>["code"]) {
+  async function failure(expected: PhotonExternalState, code: NonNullable<PhotonExternalState["failure"]>["code"], retryable = true) {
     const attempts = (expected.failure?.attempts ?? 0) + 1;
     // Existing receiver coordinator consumes this deadline/notification; no timer.
-    const nextAttemptAt = new Date(now().getTime() + Math.min(300_000, 30_000 * 2 ** Math.min(attempts - 1, 4))).toISOString();
+    const nextAttemptAt = retryable ? new Date(now().getTime() + Math.min(300_000, 30_000 * 2 ** Math.min(attempts - 1, 4))).toISOString() : null;
     await options.store.retained(expected, value => ({ ...value, failure: { code, attempts, nextAttemptAt } }));
     options.notify(expected.identity);
   }
-  async function fail(expected: PhotonExternalState, code: NonNullable<PhotonExternalState["failure"]>["code"], primary: unknown): Promise<never> {
-    try { await failure(expected, code); }
+  async function fail(expected: PhotonExternalState, code: NonNullable<PhotonExternalState["failure"]>["code"], primary: unknown, retryable = true): Promise<never> {
+    try { await failure(expected, code, retryable); }
     catch (cleanup) { throw new AggregateError([primary, cleanup], "Photon operation and responsibility persistence failed"); }
     throw primary;
   }
-  async function reconcile(input: { identity: PhotonExternalIdentity; lease: PhotonExternalLease; config: ResolvedPhotonChatConfig;
-    localResourceId: string | null }): Promise<PhotonExternalState> {
-    const { identity, lease, config } = input;
+  function bindingFor(identity: PhotonExternalIdentity, config: ResolvedPhotonChatConfig): PhotonExternalBinding {
     const instance = options.broker.instanceIdentity();
     const fingerprint = photonHash([instance.instanceId, instance.environment, identity.companyId, identity.endpointId, identity.connectionId,
       identity.runtimeGeneration, config.credentials.projectId, config.credentials.lineId, config.credentials.phoneNumber,
       (config.credentials.allocation ?? "dedicated"), photonHash(config.credentials.projectSecret)]);
-    const binding = photonExternalBindingSchema.parse({ version: 1, ...instance, companyId: identity.companyId, endpointId: identity.endpointId,
+    return photonExternalBindingSchema.parse({ version: 1, ...instance, companyId: identity.companyId, endpointId: identity.endpointId,
       connectionId: identity.connectionId, runtimeGeneration: identity.runtimeGeneration, projectId: config.credentials.projectId,
       lineId: config.credentials.lineId, phoneNumber: config.credentials.phoneNumber, allocation: config.credentials.allocation ?? "dedicated",
       credentialFingerprint: fingerprint, bindingId: `photon-receiver:${photonHash([instance.instanceId, identity.companyId, identity.endpointId, identity.connectionId, identity.runtimeGeneration, fingerprint])}`,
       intakeAfter: new Date(config.intakeAfter).toISOString(), maxFrameBytes: MAX_ATTACHMENT_BYTES + 1024 * 1024 });
-    let retained = await options.store.current(identity, lease, async (state, current) => {
+  }
+  async function prepare(input: PhotonExternalHandoffInput): Promise<PhotonExternalState> {
+    const { identity, lease } = input, binding = bindingFor(identity, input.config);
+    if (input.localResource && (input.localResource.id !== input.localResourceId || input.localResource.closed
+      || input.localResource.leaseDigest !== photonHash(lease.token) || !readControllerProcess(input.localResource.controller))) throw new Error("Photon new allocation descriptor is invalid");
+    return options.store.current(identity, lease, async (state, current) => {
       if (current && current.phase !== "retired") {
         if (!isDeepStrictEqual(current.binding, binding)) throw new Error("Photon original enrollment must finish retirement");
+        if (input.localResource && current.localResourceId !== input.localResource.id)
+          throw new Error("Photon retained resource must recover before another receiver allocation");
         return current;
       }
       const initialSequence = await handoffCheckpoint(state, identity, binding.lineId);
       return state.update<PhotonExternalState>(PHOTON_EXTERNAL_STATE, raw => {
         if (!isDeepStrictEqual(readPhotonExternalState(raw), current)) throw new Error("Photon external intent was installed concurrently");
         return { version: 1, identity, binding, handoffId: randomUUID(), localResourceId: input.localResourceId,
+          ...(input.localResource ? { localResource: input.localResource } : {}),
           phase: "enrolling", acceptedRetirement: current ? { binding: current.binding, handoffId: current.handoffId } : null, initialSequence, joinedSequence: null, acceptedSequence: null, pending: null, failure: null };
       });
     });
+  }
+  async function repair(expected: PhotonExternalState): Promise<{ state: PhotonExternalState; closed: boolean }> {
+    if (expected.localResourceId === null || expected.localClosureConfirmed === true) return { state: expected, closed: true };
+    let closed = false;
+    if (options.resources.known(expected.localResourceId)) { await options.resources.join(expected.localResourceId); closed = true; }
+    else closed = await photonResourceProcessEnded(expected);
+    if (!closed) return { state: expected, closed: false };
+    const state = await options.store.retained(expected, value => {
+      const next: PhotonExternalState = { ...value, localClosureConfirmed: true,
+        ...(value.localResource ? { localResource: { ...value.localResource, closed: true } } : {}) };
+      delete next.localResourceDebt; return next;
+    });
+    return { state, closed: true };
+  }
+  async function reconcile(input: PhotonExternalHandoffInput): Promise<PhotonExternalState> {
+    const { identity, lease, config } = input, binding = bindingFor(identity, config);
+    let retained = await prepare(input);
     if (retained.phase === "external") return retained;
     if (!["enrolling", "joining"].includes(retained.phase)) throw new Error("Photon receiver requires retirement reconciliation");
     if (retained.phase === "enrolling") {
@@ -116,13 +148,24 @@ export function createPhotonExternalOwner(options: { store: PhotonExternalStore;
       } catch (error) { return fail(retained, "enrollment", error); }
     }
     try {
-      if (retained.localResourceId !== null) await options.resources.join(retained.localResourceId);
+      const physical = await repair(retained); retained = physical.state;
+      if (!physical.closed && retained.localResource?.leaseDigest === photonHash(lease.token))
+        throw new Error("Photon original receiver lease has not been fenced");
       const expected = retained;
       retained = await options.store.current(identity, lease, async (state, current) => {
         if (!current || !isDeepStrictEqual(current, expected)) throw new Error("Photon handoff changed while joining");
-        const joinedSequence = await handoffCheckpoint(state, identity, binding.lineId);
-        if (expected.initialSequence !== null && (joinedSequence === null || joinedSequence < expected.initialSequence)) throw new Error("Photon joined checkpoint regressed");
-        return state.update<PhotonExternalState>(PHOTON_EXTERNAL_STATE, () => ({ ...expected, phase: "external", joinedSequence, acceptedSequence: joinedSequence, failure: null }));
+        const prefix = await handoffCheckpoint(state, identity, binding.lineId);
+        if (expected.initialSequence !== null && (prefix === null || prefix < expected.initialSequence)) throw new Error("Photon current checkpoint regressed");
+        // The current SQL lease fences old admission/checkpoint writes. This
+        // commits a tagged BUSINESS prefix, never an unknown physical receipt.
+        return state.update<PhotonExternalState>(PHOTON_EXTERNAL_STATE, () => {
+          const next: PhotonExternalState = { ...expected, phase: "external",
+            joinedSequence: physical.closed ? prefix : expected.joinedSequence, acceptedSequence: prefix,
+            businessHandoff: { sequence: prefix, leaseDigest: photonHash(lease.token) }, failure: null };
+          if (physical.closed) delete next.localResourceDebt;
+          else next.localResourceDebt = { attempts: (expected.localResourceDebt?.attempts ?? 0) + 1, nextAttemptAt: null };
+          return next;
+        });
       });
       options.notify(identity);
       return retained;
@@ -135,13 +178,15 @@ export function createPhotonExternalOwner(options: { store: PhotonExternalStore;
     const decoded = parsePhotonExternalDelivery(input.delivery, retained);
     const pending = await options.store.current(input.identity, input.lease, async (state, current) => {
       if (!current || current.phase !== "external" || !isDeepStrictEqual(current.binding, retained.binding)) throw new Error("Photon delivery owner changed");
-      // The joined checkpoint already admitted the complete local prefix.
-      if (decoded.packet.sequence <= (current.joinedSequence ?? -1)) return false;
+      const floor = current.businessHandoff ? current.businessHandoff.sequence : current.joinedSequence;
+      // A current tagged prefix can exclude duplicates without claiming that
+      // an unknown old process/socket has closed.
+      if (decoded.packet.sequence <= (floor ?? -1)) return false;
       if (decoded.packet.sequence <= (current.acceptedSequence ?? -1)) return false;
       if (current.pending && !isDeepStrictEqual(current.pending, decoded.receipt)) throw new Error("Photon earlier delivery admission remains outstanding");
       const previous = decoded.packet.previousSequence;
       if (previous !== (current.acceptedSequence ?? null)
-        && !(current.acceptedSequence === current.joinedSequence && (previous ?? -1) <= (current.joinedSequence ?? -1)))
+        && !(current.acceptedSequence === floor && (previous ?? -1) <= (floor ?? -1)))
         throw new Error("Photon durable predecessor has not been admitted");
       await state.update<PhotonExternalState>(PHOTON_EXTERNAL_STATE, () => ({ ...current, pending: decoded.receipt }));
       return true;
@@ -162,7 +207,8 @@ export function createPhotonExternalOwner(options: { store: PhotonExternalStore;
     if (retained.phase === "retired") return;
     if (retained.phase !== "retiring") retained = await options.store.retained(retained, value => ({ ...value, phase: "retiring" }));
     try {
-      if (retained.localResourceId !== null) await options.resources.join(retained.localResourceId);
+      const physical = await repair(retained); retained = physical.state;
+      if (!physical.closed) throw new PhotonPhysicalResourceUnknown("Photon original local resource closure is unknown; physical retirement remains held");
       const request = { subject: retained.identity.subject, companyId: retained.identity.companyId };
       await options.broker.photonReceiverOperation({ ...request, operation: { kind: "retire", binding: retained.binding } });
       const response = z.object({ binding: photonExternalBindingSchema, handoffId: z.string().uuid(),
@@ -171,7 +217,7 @@ export function createPhotonExternalOwner(options: { store: PhotonExternalStore;
       if (response.phase !== "retired") throw new Error("Photon original physical close or queue drain remains outstanding");
       await options.store.retained(retained, value => ({ ...value, phase: "retired", failure: null }));
       options.notify(retained.identity);
-    } catch (error) { return fail(retained, "retirement", error); }
+    } catch (error) { return fail(retained, "retirement", error, !(error instanceof PhotonPhysicalResourceUnknown)); }
   }
-  return { reconcile, dispatch, retire };
+  return { prepare, repair, reconcile, dispatch, retire };
 }
