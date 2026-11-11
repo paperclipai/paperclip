@@ -21268,11 +21268,16 @@ describe("remoteProviderStateNeverOpened", () => {
   const prepared = {
     schema: "paperclip.runner.acpx-provider-state.v3", launchProfileDigest: `sha256:${"c".repeat(64)}`, lifecycle: "prepared",
     descriptor: { kind: "acpx", provider: "acpx", driver: "acpx_runtime", agent: "claude", model: "explicit-model" },
-    toolSet: {}, identity: null, activeTurnId: null, attemptedTurnControls: [], providerExitUnconfirmed: false,
-    semanticResult: null, goalProjection: null,
+    toolSet: { schema: "paperclip.runner.authorized-tools.v1", schemaVersion: 1, catalogDigest: `sha256:${"d".repeat(64)}`, operations: [] },
+    identity: null, activeTurnId: null, attemptedTurnControls: [], providerExitUnconfirmed: false,
+    semanticResult: null, goalProjection: null, turnControls: { steering: false, queuedFollowUp: false },
+    goalRevision: 0, goalSourceRevision: null, pendingEvents: [], pendingRuntimeRequests: {}, nextEventSequence: 1,
+    openSemanticCalls: [], retiredSemanticCalls: [],
   };
   it("accepts the ACPX state a rejected session.open leaves, and nothing that may hold a turn", () => {
     expect(remoteProviderStateNeverOpened(acpx, prepared)).toBe(true);
+    const { providerExitUnconfirmed: _exit, activeTurnId: _turn, identity: _identity, ...beforeDefaults } = prepared;
+    expect(remoteProviderStateNeverOpened(acpx, beforeDefaults)).toBe(true);
     for (const changed of [{ lifecycle: "session_open" }, { lifecycle: "turn_active", activeTurnId: "turn" }, { activeTurnId: "turn" },
       { providerExitUnconfirmed: true }, { lifecycle: "closed", providerExitUnconfirmed: true }, { schema: "paperclip.runner.acpx-provider-state.v2" },
       { identity: { kind: "acpx", acpxRecordId: "record" } }]) {

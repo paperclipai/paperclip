@@ -7607,14 +7607,13 @@ function providerSessionIdentityIsPresent(value: unknown): boolean {
   );
 }
 
-/** Closed diagnostic categories; durable state may contain private provider data. */
 export function remoteProviderStateNeverOpened(execution: NativeExecutionInput, providerState: unknown): boolean {
   const state = record(providerState);
   if (state.lifecycle !== "prepared") return false;
   switch (execution.provider.kind) {
     case "acpx":
       return state.schema === ACPX_PROVIDER_STATE_SCHEMA && (state.identity ?? null) === null
-        && (state.activeTurnId ?? null) === null && state.providerExitUnconfirmed === false;
+        && (state.activeTurnId ?? null) === null && (state.providerExitUnconfirmed ?? false) === false;
     case "cursor_cloud":
     case "codex":
     case "opencode":
@@ -7626,6 +7625,7 @@ export function remoteProviderStateNeverOpened(execution: NativeExecutionInput, 
   }
 }
 
+/** Closed diagnostic categories; durable state may contain private provider data. */
 export function durableProviderCheckpointFailureReason(execution: NativeExecutionInput, providerState: unknown): string {
   if (execution.provider.kind !== "acpx") return "identity_binding";
   const state = record(providerState);
