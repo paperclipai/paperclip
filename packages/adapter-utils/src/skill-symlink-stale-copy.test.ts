@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ensurePaperclipSkillSymlink,
   materializePaperclipSkillCopy,
+  readInstalledSkillTargets,
 } from "./server-utils.js";
 
 const cleanupRoots: string[] = [];
@@ -38,9 +39,9 @@ async function makeStaleCopy(root: string): Promise<{ source: string; target: st
 }
 
 async function abandonRepairCopy(source: string, target: string): Promise<string> {
-  const copy = `${target}.paperclip-stale-123-456`;
+  const copy = path.join(path.dirname(target), ".paperclip-stale-skill-copies", path.basename(target), "123-456");
+  await fs.mkdir(path.dirname(copy), { recursive: true });
   await materializePaperclipSkillCopy(source, copy);
-  await fs.writeFile(path.join(copy, ".paperclip-stale-owner"), path.basename(target), "utf8");
   return copy;
 }
 
@@ -72,7 +73,6 @@ describe("ensurePaperclipSkillSymlink vs a stale materialized copy", () => {
     expect((await fs.lstat(target)).isDirectory()).toBe(true);
     expect(await fs.readFile(path.join(target, "SKILL.md"), "utf8")).toBe("STUB\n");
     expect(await fs.readdir(path.dirname(target))).toEqual([path.basename(target)]);
-    expect(await fs.readdir(target)).not.toContain(".paperclip-stale-owner");
   });
 
   it("keeps a link that a concurrent sync created first", async () => {
@@ -141,29 +141,28 @@ describe("ensurePaperclipSkillSymlink vs a stale materialized copy", () => {
     ).rejects.toBe(eperm);
     expect((await fs.lstat(target)).isDirectory()).toBe(true);
     expect(await fs.readdir(path.dirname(target))).toEqual([path.basename(target)]);
-    expect(await fs.readdir(target)).not.toContain(".paperclip-stale-owner");
   });
 
-  it("repairs a skill whose previous repair stopped after marking it and before moving it", async () => {
+  it("does not move a skill into a planted link instead of the stale-copies directory", async () => {
     const root = await makeRoot();
     const { source, target } = await makeStaleCopy(root);
-    await fs.writeFile(path.join(target, ".paperclip-stale-owner"), path.basename(target), "utf8");
+    const outside = path.join(root, "outside");
+    await fs.mkdir(outside);
+    await fs.symlink(outside, path.join(path.dirname(target), ".paperclip-stale-skill-copies"));
 
-    expect(await ensurePaperclipSkillSymlink(source, target)).toBe("repaired");
-    expect(await fs.readlink(target)).toBe(source);
-    expect(await fs.readdir(path.dirname(target))).toEqual([path.basename(target)]);
+    expect(await ensurePaperclipSkillSymlink(source, target)).toBe("skipped");
+    expect(await fs.readFile(path.join(target, "SKILL.md"), "utf8")).toBe("STUB\n");
+    expect(await fs.readdir(outside)).toEqual([]);
   });
 
-  it("does not write the ownership marker through a symlink planted in the copy", async () => {
+  it("does not report the stale-copies directory as an installed skill", async () => {
     const root = await makeRoot();
-    const { source, target } = await makeStaleCopy(root);
-    const outside = path.join(root, "outside.txt");
-    await fs.writeFile(outside, "UNTOUCHED\n", "utf8");
-    await fs.symlink(outside, path.join(target, ".paperclip-stale-owner"));
+    const source = await makeSource(root, "REAL CONTENT\n");
+    const target = path.join(root, "home", "sample-skill--0a8c11691b");
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await abandonRepairCopy(source, target);
 
-    expect(await ensurePaperclipSkillSymlink(source, target)).toBe("repaired");
-    expect(await fs.readFile(outside, "utf8")).toBe("UNTOUCHED\n");
-    expect(await fs.readdir(path.dirname(target))).toEqual([path.basename(target)]);
+    expect([...(await readInstalledSkillTargets(path.dirname(target))).keys()]).toEqual([]);
   });
 
   it("leaves a fresh managed copy alone", async () => {

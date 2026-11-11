@@ -3876,6 +3876,8 @@ export async function listPaperclipSkillEntries(
   }
 }
 
+const STALE_SKILL_COPIES_DIR = ".paperclip-stale-skill-copies";
+
 export async function readInstalledSkillTargets(
   skillsHome: string,
 ): Promise<Map<string, InstalledSkillTarget>> {
@@ -3884,6 +3886,7 @@ export async function readInstalledSkillTargets(
     .catch(() => []);
   const out = new Map<string, InstalledSkillTarget>();
   for (const entry of entries) {
+    if (entry.name === STALE_SKILL_COPIES_DIR) continue;
     const fullPath = path.join(skillsHome, entry.name);
     const linkedPath = entry.isSymbolicLink()
       ? await fs.readlink(fullPath).catch(() => null)
@@ -4430,50 +4433,50 @@ export function writePaperclipSkillSyncPreference(
   return next;
 }
 
-const STALE_SKILL_COPY_MARKER = ".paperclip-stale-";
-const STALE_SKILL_COPY_OWNER_FILE = ".paperclip-stale-owner";
+async function realDirectory(dir: string): Promise<boolean> {
+  const stat = await fs.lstat(dir).catch(() => null);
+  return Boolean(stat?.isDirectory());
+}
 
-function staleSkillCopyPattern(target: string): RegExp {
-  const base = path.basename(target).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^${base}\\.paperclip-stale-\\d+-\\d+$`);
+function staleSkillCopiesDir(target: string): string {
+  return path.join(path.dirname(target), STALE_SKILL_COPIES_DIR, path.basename(target));
 }
 
 async function listStaleSkillCopies(target: string): Promise<string[]> {
-  const dir = path.dirname(target);
-  const owner = path.basename(target);
-  const pattern = staleSkillCopyPattern(target);
+  const root = path.join(path.dirname(target), STALE_SKILL_COPIES_DIR);
+  const dir = staleSkillCopiesDir(target);
+  if (!(await realDirectory(root)) || !(await realDirectory(dir))) return [];
   const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
-  const copies: string[] = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !pattern.test(entry.name)) continue;
-    const copy = path.join(dir, entry.name);
-    const marker = path.join(copy, STALE_SKILL_COPY_OWNER_FILE);
-    const markerStat = await fs.lstat(marker).catch(() => null);
-    if (!markerStat?.isFile()) continue;
-    const recordedOwner = await fs.readFile(marker, "utf8").catch(() => null);
-    if (recordedOwner === owner) copies.push(copy);
-  }
-  return copies;
+  return entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(dir, entry.name));
+}
+
+async function pruneStaleSkillCopiesDir(target: string): Promise<void> {
+  const dir = staleSkillCopiesDir(target);
+  if (await realDirectory(dir)) await fs.rmdir(dir).catch(() => {});
+  const root = path.dirname(dir);
+  if (await realDirectory(root)) await fs.rmdir(root).catch(() => {});
 }
 
 async function removeStaleSkillCopies(target: string): Promise<void> {
   for (const copy of await listStaleSkillCopies(target)) {
     await fs.rm(copy, { recursive: true, force: true }).catch(() => {});
   }
+  await pruneStaleSkillCopiesDir(target);
 }
 
-async function markStaleSkillCopy(dir: string, owner: string): Promise<boolean> {
-  const marker = path.join(dir, STALE_SKILL_COPY_OWNER_FILE);
-  await fs.rm(marker, { force: true }).catch(() => {});
-  return fs
-    .writeFile(marker, owner, { encoding: "utf8", flag: "wx" })
-    .then(() => true)
-    .catch(() => false);
+async function prepareStaleSkillCopiesDir(target: string): Promise<string | null> {
+  const root = path.join(path.dirname(target), STALE_SKILL_COPIES_DIR);
+  const dir = staleSkillCopiesDir(target);
+  await fs.mkdir(root).catch(() => {});
+  if (!(await realDirectory(root))) return null;
+  await fs.mkdir(dir).catch(() => {});
+  if (!(await realDirectory(dir))) return null;
+  return dir;
 }
 
 async function restoreStaleSkillCopy(copy: string, target: string): Promise<void> {
   await fs.rename(copy, target);
-  await fs.rm(path.join(target, STALE_SKILL_COPY_OWNER_FILE), { force: true }).catch(() => {});
+  await pruneStaleSkillCopiesDir(target);
 }
 
 async function isSymlinkTo(target: string, source: string): Promise<boolean> {
@@ -4523,12 +4526,13 @@ export async function ensurePaperclipSkillSymlink(
     if (await materializedSkillFingerprintMatches(target, sourceFingerprint)) {
       return "skipped";
     }
-    const staleCopy = `${target}${STALE_SKILL_COPY_MARKER}${process.pid}-${Date.now()}`;
-    if (!(await markStaleSkillCopy(target, path.basename(target)))) return "skipped";
+    const copiesDir = await prepareStaleSkillCopiesDir(target);
+    if (!copiesDir) return "skipped";
+    const staleCopy = path.join(copiesDir, `${process.pid}-${Date.now()}`);
     try {
       await fs.rename(target, staleCopy);
     } catch (err) {
-      await fs.rm(path.join(target, STALE_SKILL_COPY_OWNER_FILE), { force: true }).catch(() => {});
+      await pruneStaleSkillCopiesDir(target);
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return "skipped";
       throw err;
     }
@@ -4542,7 +4546,10 @@ export async function ensurePaperclipSkillSymlink(
       }
       const occupied = await fs.lstat(target).then(() => true).catch(() => false);
       if (!occupied) await restoreStaleSkillCopy(staleCopy, target);
-      else await fs.rm(staleCopy, { recursive: true, force: true }).catch(() => {});
+      else {
+        await fs.rm(staleCopy, { recursive: true, force: true }).catch(() => {});
+        await pruneStaleSkillCopiesDir(target);
+      }
       throw err;
     }
     await fs.rm(staleCopy, { recursive: true, force: true }).catch(() => {});
