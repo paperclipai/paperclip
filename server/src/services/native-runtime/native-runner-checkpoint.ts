@@ -1,13 +1,19 @@
 import { readNativeCheckpointRetirement } from "./native-runner-checkpoint-retirement.js";
-import { NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
+import { NATIVE_PREPARATION_FENCING_VERSION, NATIVE_PREPARATION_HANDOFF_VERSION } from "./native-active-runs.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql } from "drizzle-orm";
-import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
+import { checkpointDb, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
+import { hostname } from "node:os";
+import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
+import { nativeGenericWarmAttachmentPublication, type NativeGenericWarmAttachmentPublication } from "./native-generic-warm-attachment.js";
+import { nativeSha256 } from "./canonical.js";
 import { inspectDurablePrpCheckpointHeader, inspectUnclaimedBootstrapCheckpoint, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
 import { assertNativeSourceCheckpointConsumer, lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
 import { runnerdStateHasNoProviderTurn, runnerdStateIsIncompleteBootstrap } from "./native-bootstrap-proof.js";
+import { nativePreparationPublication, preparationSha256, rebindNativeLaunchMaterials, type NativePreparationPublication } from "./native-preparation-checkpoint.js";
 
 type Binding = { companyId: string; issueId: string; runId: string };
 export const NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES = 1024 * 1024;
@@ -120,9 +126,25 @@ export async function assertNativeRunnerCheckpointOwner(tx: CheckpointTransactio
 export function nativeRunnerCheckpointWriter(db: Db, owner: NativeRunnerCheckpointOwner) {
   const persistenceDb = checkpointDb(db);
   let previousWork = new Set<string>();
+  let preparationPublished = false;
+  let startDeclared = false;
+  let warmPublished = false;
   return async (checkpoint: DurablePrpCheckpoint): Promise<void> => {
     if (checkpoint.runId !== owner.runId) throw new Error("native_runner_checkpoint_binding_mismatch");
-    const changed = encryptParts(owner, checkpoint.changedRecords);
+    const publication = nativePreparationPublication(checkpoint, owner);
+    const warmPublication = nativeGenericWarmAttachmentPublication(checkpoint, owner);
+    const changedRecords = new Map(checkpoint.changedRecords);
+    const headerText = checkpoint.records.get("header");
+    if (headerText && (publication || preparationPublished || warmPublication || warmPublished)) changedRecords.set("header", headerText);
+    const changed = encryptParts(owner, changedRecords);
+    if (headerText && (publication || warmPublication)) {
+      const header = changed.find(row => row.part === "header")!;
+      const cipher = createLocalEncryptedCipher("write");
+      header.material = cipher.encrypt(JSON.stringify({ companyId: owner.companyId, issueId: owner.issueId,
+        runId: owner.runId, part: "header", contents: headerText,
+        ...(publication ? { preparationPublication: publication } : {}),
+        ...(warmPublication ? { warmAttachmentPublication: warmPublication } : {}) }));
+    }
     await persistenceDb.transaction(async tx => {
       if (owner.runId !== owner.authorityRunId) {
         await lockSourceRecoveryCoordinators(tx, owner.companyId, [owner.runId, owner.authorityRunId]);
@@ -142,6 +164,13 @@ export function nativeRunnerCheckpointWriter(db: Db, owner: NativeRunnerCheckpoi
           eq(heartbeatRuns.nativeSessionId, checkpoint.predecessor.normalizedSessionId)));
         if (!prior) throw new Error("native_runner_checkpoint_binding_mismatch");
       }
+      if (publication) {
+        const [priorHeader] = await tx.select({ material: nativeRunnerCheckpoints.material }).from(nativeRunnerCheckpoints).where(and(
+          eq(nativeRunnerCheckpoints.companyId, owner.companyId), eq(nativeRunnerCheckpoints.runId, owner.runId),
+          eq(nativeRunnerCheckpoints.part, "header"))).limit(1);
+        const prior = priorHeader && inspectNativePreparationPublication(owner, priorHeader.material)?.publication;
+        if (prior) await rebindPreparationLaunchRows(tx as unknown as Db, owner, prior, publication);
+      }
       await notifyLiveRunRecovery(tx, { companyId: owner.companyId, runId: owner.runId });
       if (checkpoint.reset) await tx.delete(nativeRunnerCheckpoints).where(and(
         eq(nativeRunnerCheckpoints.companyId, owner.companyId), eq(nativeRunnerCheckpoints.runId, owner.runId)));
@@ -151,8 +180,28 @@ export function nativeRunnerCheckpointWriter(db: Db, owner: NativeRunnerCheckpoi
       if (changed.length) await tx.insert(nativeRunnerCheckpoints).values(changed)
         .onConflictDoUpdate({ target: [nativeRunnerCheckpoints.runId, nativeRunnerCheckpoints.part],
           set: { material: sql`excluded.material`, updatedAt: sql`now()` } });
+      if (!startDeclared && owner.runId === owner.authorityRunId) {
+        const [run] = await tx.select({ agentId: heartbeatRuns.agentId, attempt: nativeRunFinalizations.attempt,
+          version: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativePreparationHandoffVersion'` })
+          .from(heartbeatRuns).innerJoin(nativeRunFinalizations, and(eq(nativeRunFinalizations.runId, heartbeatRuns.id),
+            eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId)))
+          .where(and(eq(heartbeatRuns.companyId, owner.companyId), eq(heartbeatRuns.id, owner.runId))).limit(1);
+        if (run?.version === NATIVE_PREPARATION_HANDOFF_VERSION) {
+          const [declared] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+            eq(heartbeatRunEvents.companyId, owner.companyId), eq(heartbeatRunEvents.runId, owner.runId),
+            eq(heartbeatRunEvents.eventType, PROCESS_START_REQUESTED),
+            sql`${heartbeatRunEvents.payload}->>'providerAttempt' = ${String(run.attempt)}`)).limit(1);
+          if (!declared) await appendHeartbeatRunEvent(tx as unknown as Db, { companyId: owner.companyId, runId: owner.runId,
+            agentId: run.agentId, eventType: PROCESS_START_REQUESTED, stream: "system", level: "info",
+            message: "Native execution requested; prior local stop evidence no longer applies.",
+            payload: { hostname: hostname(), providerAttempt: run.attempt, requestedAt: new Date().toISOString() } });
+        }
+      }
     });
     previousWork = new Set(checkpoint.workCommandIds);
+    preparationPublished = publication !== null;
+    startDeclared = true;
+    warmPublished = warmPublication !== null;
   };
 }
 
@@ -192,6 +241,9 @@ export async function registerNativeRunnerCheckpoint(input: {
     eq(nativeRunFinalizations.controllerBootId, input.bootId),
     gt(nativeRunFinalizations.leaseExpiresAt, sql`now()`)));
   if (!owner?.leaseOwner) throw new Error("native_runner_checkpoint_owner_lost");
+  const [run] = await input.db.select({ version: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativePreparationHandoffVersion'` })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.binding.companyId), eq(heartbeatRuns.id, authorityRunId))).limit(1);
+  if (run?.version === NATIVE_PREPARATION_HANDOFF_VERSION) input.authority.enablePreparationHandoff();
   let writers = authorities.get(input.authority);
   if (!writers) {
     writers = new Map();
@@ -305,7 +357,7 @@ export async function nativeRunnerCheckpointRemoteBootstrapProof(
     };
     const header = read("header");
     const cursor = read("cursor");
-    if (header?.schema !== "paperclip.runner.controller-checkpoint.v2" || !cursor
+    if (!["paperclip.runner.controller-checkpoint.v2", "paperclip.runner.controller-checkpoint.v3"].includes(String(header?.schema)) || !cursor
       || cursor.commandCount !== commandParts.length) return null;
     const state: Record<string, unknown> = {
       ...(header.state as Record<string, unknown>),
@@ -365,4 +417,130 @@ export function inspectNativeRunnerUpgradeHeader(binding: Binding, material: Rec
     const contents = decryptPart(createLocalEncryptedCipher("read"), binding, "header", material);
     return inspectDurablePrpCheckpointHeader(contents);
   } catch { return null; }
+}
+
+export function inspectNativePreparationPublication(binding: Binding, material: Record<string, unknown>) {
+  try {
+    const envelope = JSON.parse(createLocalEncryptedCipher("read").decrypt(material));
+    if (envelope.companyId !== binding.companyId || envelope.issueId !== binding.issueId
+      || envelope.runId !== binding.runId || envelope.part !== "header"
+      || !inspectDurablePrpCheckpointHeader(envelope.contents)) return null;
+    return { contents: envelope.contents as string,
+      publication: envelope.preparationPublication as ReturnType<typeof nativePreparationPublication> };
+  } catch { return null; }
+}
+
+export async function readNativePreparationPublication(db: Pick<Db, "select">, binding: Binding) {
+  const parts = await db.select({ part: nativeRunnerCheckpoints.part,
+    material: sql<Record<string, unknown> | null>`case when ${nativeRunnerCheckpoints.part} in ('header', 'cursor')
+      and pg_column_size(${nativeRunnerCheckpoints.material}) <= ${NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES}
+      then ${nativeRunnerCheckpoints.material} else null end`,
+  }).from(nativeRunnerCheckpoints).where(and(eq(nativeRunnerCheckpoints.companyId, binding.companyId),
+    eq(nativeRunnerCheckpoints.issueId, binding.issueId), eq(nativeRunnerCheckpoints.runId, binding.runId))).limit(21);
+  if (!parts.length) return { kind: "absent" as const };
+  if (parts.length > 20) return null;
+  const header = parts.find(part => part.part === "header"), cursor = parts.find(part => part.part === "cursor");
+  if (!header?.material || !cursor?.material) return null;
+  const inspected = inspectNativePreparationPublication(binding, header.material);
+  const publication = inspected?.publication;
+  if (!inspected || !publication || publication.schema !== "paperclip.native-preparation-publication.v1"
+    || !["preparing", "launching"].includes(publication.kind)
+    || publication.identity?.runId !== binding.runId || publication.headerSha256 !== preparationSha256(inspected.contents)
+    || publication.partsSha256 !== preparationSha256(JSON.stringify(parts.map(part => part.part).sort()))) return null;
+  try {
+    const cursorText = decryptPart(createLocalEncryptedCipher("read"), binding, "cursor", cursor.material);
+    if (publication.cursorSha256 !== preparationSha256(cursorText)) return null;
+    return { kind: "published" as const, publication: publication as NativePreparationPublication, header: inspected.contents };
+  } catch { return null; }
+}
+
+export async function readNativeCheckpointPublicationIdentity(db: Pick<Db, "execute">, binding: Binding) {
+  const [row] = await db.execute<{ header: Record<string, unknown> | null; cursor: Record<string, unknown> | null;
+    commands: number; events: number; templates: number; other: number }>(sql`
+    with census as (
+      select count(*) filter (where part ~ '^command:[0-9]+$')::int as commands,
+        count(*) filter (where part ~ '^event:[0-9]+$')::int as events,
+        count(*) filter (where part='staged-attachment-template')::int as templates,
+        count(*) filter (where part not in ('header','cursor','staged-attachment-template')
+          and part !~ '^(command|event):[0-9]+$')::int as other
+      from native_runner_checkpoints where company_id=${binding.companyId}::uuid
+        and issue_id=${binding.issueId}::uuid and run_id=${binding.runId}::uuid
+    ) select case when pg_column_size(h.material)<=${NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES} then h.material else null end as header,
+      case when pg_column_size(c.material)<=${NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES} then c.material else null end as cursor,
+      census.* from census
+      join native_runner_checkpoints h on h.company_id=${binding.companyId}::uuid and h.issue_id=${binding.issueId}::uuid
+        and h.run_id=${binding.runId}::uuid and h.part='header'
+      join native_runner_checkpoints c on c.company_id=h.company_id and c.issue_id=h.issue_id and c.run_id=h.run_id and c.part='cursor'`);
+  if (!row?.header || !row.cursor || row.other !== 0 || readNativeCheckpointRetirement(row.header, binding)) return null;
+  try {
+    const cipher = createLocalEncryptedCipher("read"), header = decryptPart(cipher, binding, "header", row.header);
+    const identity = inspectDurablePrpCheckpointHeader(header), cursor = JSON.parse(decryptPart(cipher, binding, "cursor", row.cursor));
+    const state = JSON.parse(header).state;
+    if (!identity || identity.runId !== binding.runId || cursor.commandCount !== row.commands || cursor.eventCount !== row.events
+      || row.templates !== (state.stagedRunAttachment?.commandId === null ? 1 : 0)) return null;
+    return { identity, header };
+  } catch { return null; }
+}
+
+export async function readNativeGenericWarmPublication(db: Pick<Db, "select">, binding: Binding) {
+  const [row] = await db.select({ material: sql<Record<string, unknown> | null>`case
+    when pg_column_size(${nativeRunnerCheckpoints.material})<=${NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES}
+    then ${nativeRunnerCheckpoints.material} else null end` }).from(nativeRunnerCheckpoints).where(and(
+      eq(nativeRunnerCheckpoints.companyId, binding.companyId), eq(nativeRunnerCheckpoints.issueId, binding.issueId),
+      eq(nativeRunnerCheckpoints.runId, binding.runId), eq(nativeRunnerCheckpoints.part, "header"))).limit(1);
+  if (!row?.material) return null;
+  try {
+    const envelope = JSON.parse(createLocalEncryptedCipher("read").decrypt(row.material));
+    const publication = envelope.warmAttachmentPublication as NativeGenericWarmAttachmentPublication | undefined;
+    if (envelope.companyId !== binding.companyId || envelope.issueId !== binding.issueId || envelope.runId !== binding.runId
+      || envelope.part !== "header" || !publication || publication.schema !== "paperclip.native-generic-warm-attachment.v1"
+      || publication.targetIdentity.runId !== binding.runId || publication.headerSha256 !== preparationSha256(envelope.contents)
+      || !inspectDurablePrpCheckpointHeader(envelope.contents)) return null;
+    return { publication, header: envelope.contents as string };
+  } catch { return null; }
+}
+
+async function rebindPreparationLaunchRows(db: Db, scope: Binding, previous: NativePreparationPublication, next: NativePreparationPublication) {
+  const [row] = await db.select({ materials: sql<Record<string, unknown>>`jsonb_build_object(
+    'nativeRunnerLaunchIntent', case when pg_column_size(${heartbeatRuns.runnerProfileJson}->'nativeRunnerLaunchIntent')<=1048576
+      then ${heartbeatRuns.runnerProfileJson}->'nativeRunnerLaunchIntent' else null end,
+    'nativeRemoteRunnerLaunchIntent', case when pg_column_size(${heartbeatRuns.runnerProfileJson}->'nativeRemoteRunnerLaunchIntent')<=1048576
+      then ${heartbeatRuns.runnerProfileJson}->'nativeRemoteRunnerLaunchIntent' else null end)` })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, scope.companyId), eq(heartbeatRuns.id, scope.runId))).limit(1);
+  const patch = rebindNativeLaunchMaterials(row?.materials ?? {}, scope, previous, next);
+  if (Object.keys(patch).length) await db.update(heartbeatRuns).set({ runnerProfileJson: sql`${heartbeatRuns.runnerProfileJson} || ${JSON.stringify(patch)}::jsonb` })
+    .where(and(eq(heartbeatRuns.companyId, scope.companyId), eq(heartbeatRuns.id, scope.runId)));
+}
+
+export async function rebindNativePreparationAuthority(db: Db, scope: Binding,
+  previous: { bootId: string | null; generation: number; leaseOwner: string | null },
+  next: { bootId: string; generation: number; leaseOwner: string }) {
+  const [header] = await db.select({ material: nativeRunnerCheckpoints.material }).from(nativeRunnerCheckpoints).where(and(
+    eq(nativeRunnerCheckpoints.companyId, scope.companyId), eq(nativeRunnerCheckpoints.issueId, scope.issueId),
+    eq(nativeRunnerCheckpoints.runId, scope.runId), eq(nativeRunnerCheckpoints.part, "header"))).limit(1);
+  if (!header) return;
+  const inspected = inspectNativePreparationPublication(scope, header.material), publication = inspected?.publication;
+  const envelope = JSON.parse(createLocalEncryptedCipher("read").decrypt(header.material));
+  const warm = envelope.warmAttachmentPublication as NativeGenericWarmAttachmentPublication | undefined;
+  if (!publication && !warm) return;
+  for (const proof of [publication, warm]) {
+    if (proof && (proof.bootId !== previous.bootId || proof.generation !== previous.generation || proof.leaseOwner !== previous.leaseOwner)) {
+      throw new Error("native_runner_launch_authority_unproven");
+    }
+  }
+  if (publication) {
+    const rebound = { ...publication, bootId: next.bootId, generation: next.generation, leaseOwner: next.leaseOwner };
+    await rebindPreparationLaunchRows(db, scope, publication, rebound);
+    envelope.preparationPublication = rebound;
+  }
+  if (warm) {
+    if (warm.targetIdentity.runId !== scope.runId || warm.headerSha256 !== preparationSha256(envelope.contents)) {
+      throw new Error("native_runner_launch_authority_unproven");
+    }
+    envelope.warmAttachmentPublication = { ...warm, bootId: next.bootId, generation: next.generation, leaseOwner: next.leaseOwner };
+  }
+  const material = createLocalEncryptedCipher("write").encrypt(JSON.stringify(envelope));
+  await db.update(nativeRunnerCheckpoints).set({ material, updatedAt: new Date() }).where(and(
+    eq(nativeRunnerCheckpoints.companyId, scope.companyId), eq(nativeRunnerCheckpoints.runId, scope.runId),
+    eq(nativeRunnerCheckpoints.part, "header")));
 }

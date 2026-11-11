@@ -117,6 +117,7 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     f.input.runtimeEnv = { PAPERCLIP_RUNNER_BINARY: "relative-ignored-injected-runnerd" };
     expect((await selectHeartbeatRuntime(db, f.input)).selected).toBe(true);
     expect((await read(f.run.id)).runtimeMode).toBe("native");
+    expect((await read(f.run.id)).runnerProfileJson?.nativePreparationHandoffVersion).toBe(1);
     expect(await coordinators(f.run.id)).toHaveLength(1);
   });
 
@@ -142,6 +143,22 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect(resumed).toMatchObject({ selected: true, nativeExecution: selected.nativeExecution, nativeRunnerInstanceId: selected.nativeRunnerInstanceId });
     expect((await read(f.run.id)).runnerProfileJson).toEqual(saved.runnerProfileJson);
     expect(await coordinators(f.run.id)).toHaveLength(1);
+  });
+
+  it("does not grant the new preparation handoff capability to a retained session", async () => {
+    const f = await fixture();
+    const first = await selectHeartbeatRuntime(db, f.input);
+    if (!first.selected || !first.nativeExecution) throw new Error("Expected native selection");
+    const saved = await read(f.run.id);
+    const { nativePreparationHandoffVersion: _version, ...legacyProfile } = saved.runnerProfileJson!;
+    await db.update(heartbeatRuns).set({ runnerProfileJson: legacyProfile }).where(eq(heartbeatRuns.id, saved.id));
+    f.input.run = { ...saved, runnerProfileJson: legacyProfile };
+    f.input.session.persistedRunnerProfile = legacyProfile;
+    f.input.session.persistedNativeExecutionInput = first.nativeExecution;
+    f.input.agent.adapterConfig = { ...f.input.agent.adapterConfig, model: "changed-after-admission" };
+    const resumed = await selectHeartbeatRuntime(db, f.input);
+    expect(resumed).toMatchObject({ selected: true, nativeExecution: first.nativeExecution });
+    expect((await read(f.run.id)).runnerProfileJson?.nativePreparationHandoffVersion).toBeUndefined();
   });
 
   async function connectorFixture(durable = true) {
@@ -348,13 +365,16 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
       } },
     }).where(eq(heartbeatRuns.id, run.id));
     const [nextRun] = await db.insert(heartbeatRuns).values({ companyId: agent.companyId, agentId: agent.id,
-      issueId: issue.id, scopeKind: "issue", status: "running", nativeSessionId: sessionId,
+      issueId: issue.id, scopeKind: "issue", status: "running",
       createdAt: new Date(run.createdAt.getTime() + 1000),
     }).returning();
     input.run = nextRun!;
+    input.session.taskSessionForRun = { lastRunId: run.id };
+    input.session.taskSessionDecodedParams = { sessionId };
     const selected = await selectHeartbeatRuntime(db, input);
     if (!selected.selected) throw new Error("Expected follow-up native selection");
     const saved = await read(nextRun!.id);
+    expect(saved.runnerProfileJson).toMatchObject({ nativePreparationHandoffVersion: 1, nativePreparationHandoffSourceRunId: run.id });
     if (priorIdentity) {
       expect(saved).toMatchObject({ processPid: 11_356, processGroupId: 11_356 });
       expect(saved.runnerProfileJson?.inheritedProcessIdentityRunId).toBe(run.id);

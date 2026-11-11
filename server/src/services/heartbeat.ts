@@ -637,6 +637,7 @@ const activeRunExecutionPromises = new Set<Promise<void>>();
 // can await a wake that is still before run registration. A caller that tears
 // down a shared database (a test afterEach) then cannot race a late wake.
 const activeWakeupPromises = new Set<Promise<unknown>>();
+const recoverableWakeupPromises = new Set<Promise<unknown>>();
 const nativeSessionResumeDispatchTimers = new Map<
   string,
   ReturnType<typeof setTimeout>
@@ -659,12 +660,15 @@ export function getTaskDrainStatus(): {
   expiresAt: Date | null;
   activeRuns: number;
   pendingWakes: number;
+  recoverablePendingWakes: number;
+  blockingPendingWakes: number;
   quiescent: boolean;
   ownerId?: string;
 } {
   const state = readTaskDrain(new Date());
   const activeRuns = activeRunExecutionPromises.size;
   const pendingWakes = activeWakeupPromises.size;
+  const recoverablePendingWakes = [...activeWakeupPromises].filter(promise => recoverableWakeupPromises.has(promise)).length;
   return {
     ...(state?.ownerId ? { ownerId: state.ownerId } : {}),
     draining: state !== null,
@@ -672,6 +676,8 @@ export function getTaskDrainStatus(): {
     expiresAt: state?.expiresAt ?? null,
     activeRuns,
     pendingWakes,
+    recoverablePendingWakes,
+    blockingPendingWakes: pendingWakes - recoverablePendingWakes,
     quiescent: activeRuns === 0 && pendingWakes === 0,
   };
 }
@@ -1339,6 +1345,7 @@ export function heartbeatService(
     executeRun,
     activeRunExecutionPromises,
     activeWakeupPromises,
+    recoverableWakeupPromises,
     instanceSettings,
     getRun,
     sweepPendingCleanupLeases,
@@ -1914,6 +1921,8 @@ export function heartbeatService(
     let legacyAdapterEntered = false;
     let legacyLocalAdapterEntered = false;
     let legacyPreparationFailedBeforeDispatch = false;
+    let preparationHandedOff = false;
+    let nativeRuntimePromoted = false;
     let persistUsageCaptureFailure: (() => Promise<void>) | undefined;
     let run = await getRun(runId);
     if (!run) return;
@@ -2069,7 +2078,16 @@ export function heartbeatService(
     const nativeDispatchMayHaveStarted = () => nativeDispatchStarted || dispatchGateEntered || nativeOwnershipHeld
       || Boolean(runOptions.nativeRestartRecovery || runOptions.nativeLeaseOwner);
     const leaveToNextController = async (error: unknown) => {
-      if (!shutdownHandedOff() || legacyAdapterEntered || nativeDispatchStarted) return false;
+      if (legacyAdapterEntered || nativeDispatchStarted) return false;
+      if (!nativeRuntimePromoted && run.runtimeMode === "legacy" && run.controllerBootId) {
+        const current = await getRun(run.id);
+        if (!current || current.controllerBootId !== run.controllerBootId) {
+          preparationHandedOff = true;
+          nativeSessionResumeScheduled = true;
+          return true;
+        }
+      }
+      if (!shutdownHandedOff()) return false;
       nativeSessionResumeScheduled = true;
       const reason = error instanceof Error ? error.message : String(error);
       const errorCode = /^[a-z][a-z0-9_]{0,80}$/.test(reason) ? reason : null;
@@ -2092,6 +2110,12 @@ export function heartbeatService(
       ProviderResourceDisposition | undefined;
     const preserveNativeWorkspaceOnFailure = async () => {
       const failureRun = await getRun(run.id);
+      if (!nativeRuntimePromoted && !legacyAdapterEntered && !nativeDispatchStarted && run.runtimeMode === "legacy"
+        && run.controllerBootId && (!failureRun || failureRun.controllerBootId !== run.controllerBootId)) {
+        preparationHandedOff = true;
+        nativeSessionResumeScheduled = true;
+        return false;
+      }
       if (failureRun?.runtimeMode === "native"
         && (parseObject(failureRun.runnerProfileJson?.nativeWorkspaceSync).state === "prepared"
           || parseObject(failureRun.runnerProfileJson?.remoteWorkspace).state === "prepared")) {
@@ -3522,7 +3546,7 @@ export function heartbeatService(
           onNativeOwnershipHeld: () => {
             nativeOwnershipHeld = true;
           },
-          stopControllerLease: () => controllerLease.stop(),
+          stopControllerLease: () => { nativeRuntimePromoted = true; controllerLease.stop(); },
         }, {
           measure: timePreparation,
           prepareInstructions: async nativeLifecyclePolicy => {
@@ -3917,14 +3941,16 @@ export function heartbeatService(
         );
       } else if (!(await leaveToNextController(outerErr))) {
         await preserveNativeWorkspaceOnFailure();
-        if (!nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError) {
-          await runCompletion.failRunSetup({
+        if (!preparationHandedOff && !nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError) {
+          const failure = await runCompletion.failRunSetup({
             run, runId, outerErr, signal: executionControl.controller.signal,
             providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted,
+            nativeRuntimePromoted,
             nativeDispatchMayHaveStarted: nativeDispatchMayHaveStarted(),
             identityRedactor, readFailureReportSecrets,
           });
-          legacyPreparationFailedBeforeDispatch = !legacyAdapterEntered && !nativeDispatchStarted;
+          if (failure.preparationHandedOff) { preparationHandedOff = true; nativeSessionResumeScheduled = true; }
+          legacyPreparationFailedBeforeDispatch = !preparationHandedOff && !legacyAdapterEntered && !nativeDispatchStarted;
         }
         // A failed re-preparation must not keep its recovery claim open.
         if (runOptions.nativeRestartRecovery && !legacyAdapterEntered && !nativeDispatchStarted)
@@ -3935,9 +3961,9 @@ export function heartbeatService(
     } finally {
       let caseHandoffCleanupSettled = false;
       let failedProcessCancellationSeen = failedProcessRunCancellations.has(run.id);
-      await instructionWorkingCopy?.nativeInstructionReservation?.release().catch(error => logger.warn({ runId: run.id, err: error }, "Managed warm session preparation cleanup failed"));
-      if (managedAiRuntime) await managedAiRuntime.cleanup().catch(() => logger.warn({ runId: run.id }, "AI connection refresh or cleanup failed"));
-      let latestRun = await getRun(run.id).catch(() => null);
+      if (!preparationHandedOff) await instructionWorkingCopy?.nativeInstructionReservation?.release().catch(error => logger.warn({ runId: run.id, err: error }, "Managed warm session preparation cleanup failed"));
+      if (!preparationHandedOff && managedAiRuntime) await managedAiRuntime.cleanup().catch(() => logger.warn({ runId: run.id }, "AI connection refresh or cleanup failed"));
+      let latestRun = preparationHandedOff ? null : await getRun(run.id).catch(() => null);
       try {
         if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
           await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx
@@ -4159,14 +4185,14 @@ export function heartbeatService(
             logger.warn({ err: error, runId: run.id }, "failed to acknowledge Stop after native process settlement");
           });
         }
-        await db.update(heartbeatRuns).set({
+        if (!preparationHandedOff) await db.update(heartbeatRuns).set({
           executionStage: sql`case when ${heartbeatRuns.status} = 'cancelled' then 'settled' else ${heartbeatRuns.executionStage} end`,
           controllerLeaseExpiresAt: null,
         }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.runtimeMode, "legacy"),
           eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
           inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"])));
 
-        latestRun = await getRun(run.id).catch(() => null);
+        latestRun = preparationHandedOff ? null : await getRun(run.id).catch(() => null);
         if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status) && !isNativeRunnerOwnershipHeld(latestRun)) {
           await appendRunEvent(run, { eventType: "lifecycle", stream: "system", level: "info", message: "task.run.measured",
             payload: { phase: "task.run.measured", durationMs: Date.now() - (latestRun.startedAt ?? latestRun.createdAt).getTime(),

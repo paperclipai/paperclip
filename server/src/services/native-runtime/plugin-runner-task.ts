@@ -10,12 +10,18 @@ import type { NativeExecutionContext } from "./native-execution-context.js";
 
 export async function verifyPluginRunnerTaskReattachment(
   task: (operation: unknown) => Promise<unknown>, identity: unknown,
+  options: { deadline?: number; pollMs?: number } = {},
 ): Promise<void> {
   const operation = environmentTaskOperationSchema.parse({ kind: "read_state", identity });
   if (operation.kind !== "read_state") throw new Error("Plugin Runner recovery identity unavailable");
-  const status = environmentTaskResultSchema.parse(await task({ kind: "status" }));
-  if (status.kind !== "status" || status.executionStopped || status.phase !== "running") {
-    throw new Error("Plugin Runner is not running");
+  const deadline = options.deadline ?? Date.now() + 30_000;
+  for (;;) {
+    const status = environmentTaskResultSchema.parse(await task({ kind: "status" }));
+    if (status.kind !== "status" || status.executionStopped
+      || status.phase !== "running" && status.phase !== "preparing") throw new Error("Plugin Runner is not running");
+    if (status.phase === "running") break;
+    if (Date.now() >= deadline) throw new Error("native_runner_launch_pending");
+    await delay(Math.min(options.pollMs ?? 250, Math.max(1, deadline - Date.now())));
   }
   const result = environmentTaskResultSchema.parse(await task(operation));
   if (result.kind !== "state" || result.state.schema !== "paperclip.runner.durable.state.v1"
@@ -45,7 +51,8 @@ export function createPluginRunnerTaskOwner(input: {
   onCredentials?: (credential: PluginEnvironmentTaskCredential) => Promise<void>;
   onCredentialsUpdated?: (event: PrpEvent) => Promise<void>;
   onSessionRetained?: (state: Record<string, unknown>) => Promise<void>;
-  onDispatched?: () => Promise<void> | void;
+  onDispatched?: (operation: PluginEnvironmentTaskOperation) => Promise<void> | void;
+  pendingLaunch?: Extract<PluginEnvironmentTaskOperation, { kind: "submit" }>;
   pollMs?: number;
   warmTaskVersion?: 1;
   releaseResumeVersion?: 1;
@@ -241,7 +248,7 @@ export function createPluginRunnerTaskOwner(input: {
       environmentTaskOperationSchema.parse(operation);
       // Persist/mark dispatch before crossing the provider boundary. A lost reply
       // must reconcile this attempt and must never launch another task.
-      await input.onDispatched?.();
+      await input.onDispatched?.(operation);
       if (released || stopRequested) {
         failReady(new Error("Plugin Runner startup cancelled"));
         confirmStopped(1);
@@ -298,6 +305,15 @@ export function createPluginRunnerTaskOwner(input: {
       activate: () => {
         activation = (async () => {
           if (input.adoptIdentity) {
+            if (input.pendingLaunch) {
+              const pending = environmentTaskOperationSchema.parse(input.pendingLaunch);
+              if (pending.kind !== "submit" || pending.runner.runnerId !== input.adoptIdentity.runnerInstanceId
+                || pending.runner.leaseId !== input.adoptIdentity.environmentLeaseId || pending.runner.runId !== input.adoptIdentity.runId
+                || pending.runner.sessionId !== input.adoptIdentity.normalizedSessionId || pending.runner.turnId !== input.adoptIdentity.turnId
+                || pending.runner.itemId !== input.adoptIdentity.itemId) throw new Error("Plugin Runner adoption identity mismatch");
+              await input.onDispatched?.(pending);
+              await call(pending);
+            }
             if (!desired || runId === input.adoptIdentity.runId) {
               if (desired && Object.entries(input.adoptIdentity).some(([key, value]) => desired[key as keyof DurableRecoveryIdentity] !== value)) {
                 throw new Error("Plugin Runner adoption identity mismatch");
@@ -376,6 +392,7 @@ export function createPluginRunnerTaskOwner(input: {
     get authorityRunId() { return input.authorityRunId ?? input.executionContext?.execution.binding.runId; },
     get codexSourceRecoveryVersion() { return input.codexSourceRecoveryVersion; },
     prepareLaunch, authorizeRunnerAdoption, readRunnerState, runnerProcessLauncher: launcher,
+    pendingBootstrapTicket: input.pendingLaunch?.bootstrapTicket,
     // The provider resolves the authorized retained task before each state operation.
     prepareExternalRunnerState: async () => {},
     archiveExternalRunnerState: async archive => {

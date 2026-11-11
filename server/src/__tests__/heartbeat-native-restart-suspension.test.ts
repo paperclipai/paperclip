@@ -38,6 +38,9 @@ import { currentProcessProbe, proveOwnerGone } from "../services/owner-proof.js"
 import { createRunLogWriterAuthority } from "../services/heartbeat/run-log-authority.js";
 import { resolveHotRestartIntentPath, writeHotRestartIntent } from "../services/hot-restart.js";
 import fs from "node:fs/promises";
+import * as legacyControllerLease from "../services/legacy-controller-lease.js";
+import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
+import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
 import { detachNativeSessionsForRestart } from "../services/native-runtime/native-session-executor.js";
 
 const preparationFault = vi.hoisted(() => ({
@@ -88,6 +91,66 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       completionContractSha256: null }).where(eq(heartbeatRuns.id, f.runId));
     return f;
   }
+
+  it("leaves the same-run successor and its preparation resources untouched when the old executor fails late", async () => {
+    const isolated = await freshExecutionAgent();
+    const userId = randomUUID();
+    await isolated.db.insert(authUsers).values({ id: userId, name: "Operator", email: `${userId}@example.invalid`, createdAt: new Date(), updatedAt: new Date() });
+    await isolated.db.insert(companyMemberships).values({ companyId: fixture.current.companyId, principalType: "user", principalId: userId, membershipRole: "owner" });
+    await instanceSettingsService(isolated.db).updateExperimental({ enableNativeRunner: true });
+    const [task] = await isolated.db.insert(issues).values({ companyId: fixture.current.companyId,
+      title: "Preserve the preparing successor", status: "in_progress", assigneeAgentId: isolated.agentId, responsibleUserId: userId }).returning();
+    let originalRunId: string | undefined;
+    let successor: typeof heartbeatRuns.$inferSelect | undefined;
+    let wake: typeof agentWakeupRequests.$inferSelect | undefined;
+    let leaseRows: Array<typeof environmentLeases.$inferSelect> = [];
+    let issue: typeof issues.$inferSelect | undefined;
+    let agent: typeof agents.$inferSelect | undefined;
+    const backend = vi.fn(() => { throw new Error("A fenced old preparation must never launch"); });
+    const service = heartbeatService(isolated.db, { nativeSessionBackendFactory: backend,
+      beforeNativeRuntimeSelection: async runId => {
+        if (originalRunId) throw new Error("The old executor must not create another run");
+        originalRunId = runId;
+        const [old] = await isolated.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        await isolated.db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: sql`clock_timestamp() - interval '1 second'` }).where(eq(heartbeatRuns.id, runId));
+        const revoked = await legacyControllerLease.revokeExpiredLegacyControllerWithState(isolated.db, old);
+        if (!revoked) throw new Error("Expected owner revocation");
+        expect(await legacyControllerLease.requeueRevokedLegacyPreparation(isolated.db, old, revoked)).toBe(true);
+        const [queued] = await isolated.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        const deps = createHeartbeatQueueTestDependencies(isolated.db);
+        deps.getAgent.mockImplementation(id => isolated.db.select().from(agents).where(eq(agents.id, id)).then(rows => rows[0] ?? null));
+        const claim = legacyControllerLease.legacyControllerClaim;
+        const nextBoot = randomUUID();
+        const nextProcess = { ...old.controllerProcess, bootId: nextBoot };
+        const differentProcess = vi.spyOn(legacyControllerLease, "legacyControllerClaim").mockImplementation(mode => ({
+          ...claim(mode), controllerBootId: nextBoot, controllerProcess: nextProcess,
+        }));
+        try { successor = await createHeartbeatQueue(isolated.db, deps).claimQueuedRun(queued) ?? undefined; }
+        finally { differentProcess.mockRestore(); }
+        expect(successor).toMatchObject({ id: runId, status: "running", controllerBootId: nextBoot });
+        [wake] = await isolated.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, old.wakeupRequestId!));
+        [issue] = await isolated.db.select().from(issues).where(eq(issues.id, task.id));
+        [agent] = await isolated.db.select().from(agents).where(eq(agents.id, isolated.agentId));
+        leaseRows = await isolated.db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, runId));
+        throw new legacyControllerLease.LegacyControllerLeaseLostError("renewal_rejected");
+      },
+    });
+    try {
+      const admitted = await service.wakeup(isolated.agentId, { source: "on_demand", triggerDetail: "manual", reason: "issue_assigned",
+        requestedByActorType: "user", requestedByActorId: userId, manualUserWake: true,
+        payload: { issueId: task.id }, contextSnapshot: { issueId: task.id, responsibleUserId: userId } });
+      await service.drainActiveRunExecutions();
+      expect(successor).toBeDefined();
+      expect(admitted?.id).toBe(successor!.id);
+      expect((await isolated.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, successor!.id)))[0]).toEqual(successor);
+      expect((await isolated.db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake!.id)))[0]).toEqual(wake);
+      expect((await isolated.db.select().from(issues).where(eq(issues.id, task.id)))[0]).toEqual(issue);
+      expect((await isolated.db.select().from(agents).where(eq(agents.id, isolated.agentId)))[0]).toEqual(agent);
+      expect(await isolated.db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, successor!.id))).toEqual(leaseRows);
+      expect(leaseRows.length).toBeGreaterThan(0);
+      expect(backend).not.toHaveBeenCalled();
+    } finally { await isolated.db.$client.end(); }
+  }, 90_000);
 
   it.each(["before_budget_reservation", "before_dispatch_gate"] as const)(
     "leaves a recovery execution suspended %s for the next controller",

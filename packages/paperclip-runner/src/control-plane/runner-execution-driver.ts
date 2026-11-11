@@ -25,6 +25,17 @@ export interface RunnerExecutionDriver {
   authorityRunId?: string;
   /** Own provider configuration and file preparation in the execution environment. */
   prepareLaunch?: RunnerLaunchPreparer;
+  controlPlaneCheckpointRegistration?: (
+    authority: DurablePrpControlPlane,
+    identity?: DurableRecoveryIdentity,
+  ) => Promise<void>;
+  pendingBootstrapTicket?: string;
+  genericWarmAttachment?: {
+    sourceIdentity: DurableRecoveryIdentity;
+    targetIdentity: DurableRecoveryIdentity;
+    commandSha256: string | null;
+    runnerState: Record<string, unknown>;
+  };
   /** Reauthorize retained resources before adoption without preparing them again.
    * The ID is bound to the exact execution in the durable controller checkpoint.
    * Omission preserves prepareLaunch's existing recovery/authorization path.

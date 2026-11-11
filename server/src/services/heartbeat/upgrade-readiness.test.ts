@@ -25,6 +25,28 @@ describe("upgrade readiness", () => {
   it("retains an execution without positive recovery evidence as a blocker", () => {
     expect(report({ rows: [{ id: "remote", recoverable: false }] })).toMatchObject({ ready: false, blockingRuns: 1 });
   });
+  it("allows durable pending admissions while recoverable work keeps arriving", () => {
+    const before = { ...idle, activeRuns: 1, pendingWakes: 2,
+      recoverablePendingWakes: 2, blockingPendingWakes: 0 };
+    const after = { ...before, pendingWakes: 3, recoverablePendingWakes: 3 };
+    expect(report({ before, after })).toMatchObject({ version: 2, ready: true,
+      activeRuns: 1, recoverableRuns: 1, blockingRuns: 0,
+      pendingWakes: 3, recoverablePendingWakes: 3, blockingPendingWakes: 0 });
+  });
+  it("retains an unjournaled admission observed on either side of the readiness census", () => {
+    const pending = { ...idle, activeRuns: 1, pendingWakes: 2,
+      recoverablePendingWakes: 1, blockingPendingWakes: 1 };
+    const durable = { ...pending, pendingWakes: 1, blockingPendingWakes: 0 };
+    for (const [before, after] of [[pending, durable], [durable, pending]]) {
+      expect(report({ before, after })).toMatchObject({ ready: false,
+        pendingWakes: 2, recoverablePendingWakes: 1, blockingPendingWakes: 1 });
+    }
+  });
+  it("rejects inconsistent durable pending-admission evidence", () => {
+    const invalid = { ...idle, activeRuns: 1, pendingWakes: 1,
+      recoverablePendingWakes: 2, blockingPendingWakes: 0 };
+    expect(report({ before: invalid, after: invalid }).ready).toBe(false);
+  });
   it("blocks a new execution that appears while the query is in flight", () => {
     expect(report({ activeRunIds: ["remote", "new"], after: { ...idle, activeRuns: 2 } })).toMatchObject({ ready: false, activeRuns: 2, blockingRuns: 1 });
   });

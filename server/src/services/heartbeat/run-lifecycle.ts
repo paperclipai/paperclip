@@ -1206,7 +1206,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
     failureReport?: RunFailureReportOptions,
-    options?: { setupFailure: true },
+    options?: { setupFailure: true; expectedLegacyControllerBootId?: string },
   ) {
     return setRunStatusFromLive(runId, status, ["running"], patch, failureReport, undefined, options);
   }
@@ -1225,6 +1225,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     cancellationCondition?: ReturnType<typeof nativeRetryCancellationCommitCondition>,
     options?: {
       setupFailure?: true;
+      expectedLegacyControllerBootId?: string;
       /**
        * Write only while no native executor lease on the run is live. Locks the
        * coordinator row first, the order the owner takes back a lapsed lease in
@@ -1242,6 +1243,14 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     const previousStatus = previous?.run ?? null;
+    const preparationOwnerCondition = options?.expectedLegacyControllerBootId
+      ? and(eq(heartbeatRuns.controllerBootId, options.expectedLegacyControllerBootId),
+        eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.executionStage, "preparing"))
+      : undefined;
+    if (options?.expectedLegacyControllerBootId && (previousStatus?.controllerBootId !== options.expectedLegacyControllerBootId
+      || previousStatus.runtimeMode !== "legacy" || previousStatus.executionStage !== "preparing")) {
+      return { updated: false, run: previousStatus };
+    }
     if (status === "failed" && patch?.errorCode === "process_lost" && previousStatus?.runtimeMode === "native" && readNativeStartupCleanup(previousStatus)) {
       return { updated: false, run: previousStatus };
     }
@@ -1297,7 +1306,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             patch,
             fromStatuses,
             reconcileIfNeeded: true,
-            writeConditions: [nativeRunnerOwnershipNotHeldCondition(), ...(cancellationCondition ? [cancellationCondition] : [])],
+            writeConditions: [nativeRunnerOwnershipNotHeldCondition(), ...(preparationOwnerCondition ? [preparationOwnerCondition] : []),
+              ...(cancellationCondition ? [cancellationCondition] : [])],
           })
         : writer
             .update(heartbeatRuns)
@@ -1313,6 +1323,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
               and(
                 eq(heartbeatRuns.id, runId),
                 inArray(heartbeatRuns.status, fromStatuses),
+                preparationOwnerCondition,
                 // A result can commit after the orphan candidate was read.
                 // Reject that stale process-loss transition before reporting,
                 // issue promotion, or release of the unfinished source lease.

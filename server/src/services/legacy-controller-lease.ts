@@ -1,6 +1,7 @@
 import { notifyActiveExecutionRecovery, notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
 import { and, eq, gt, lte, sql } from "drizzle-orm";
-import { heartbeatRuns, livenessDb, type Db } from "@paperclipai/db";
+import { agents, agentWakeupRequests, heartbeatRuns, issues, livenessDb, type Db } from "@paperclipai/db";
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import type { LegacyControllerLeaseLossCause, LegacyControllerLeaseLossTiming } from "./run-cancellation.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -117,7 +118,84 @@ export async function hasLiveLegacyController(db: Db, run: Run): Promise<boolean
   return (await liveLegacyControllerExpiresAt(db, run)) !== null;
 }
 
-export type RevokedLegacyControllerState = Pick<Run, "executionStage" | "processPid" | "processGroupId">;
+export type RevokedLegacyControllerState = Pick<Run, "executionStage" | "processPid" | "processGroupId" | "controllerBootId">;
+
+function isRequeueablePreparation(run: Run, adapterType: string): boolean {
+  const contextIssueId = run.contextSnapshot?.issueId;
+  const admittedAdapter = (run.runnerProfileJson?.adapterDispatch as { adapterType?: unknown } | undefined)?.adapterType;
+  return adapterType === "paperclip_runner" && (admittedAdapter == null || admittedAdapter === adapterType)
+    && run.runtimeMode === "legacy" && run.status === "running" && run.finishedAt === null
+    && run.executionStage === "preparing" && Boolean(run.controllerBootId) && Boolean(run.wakeupRequestId)
+    && run.processPid === null && run.processGroupId === null && run.processStartedAt === null
+    && run.runnerInstanceId === null && run.nativeSessionId === null && run.nativeIssueId === null
+    && run.externalRunId === null && run.nativePhase === null
+    && !run.resultJson?.startupCancellation
+    && (contextIssueId == null || contextIssueId === run.issueId)
+    && (run.scopeKind === "issue" ? Boolean(run.issueId) : run.issueId === null);
+}
+
+async function preparationBindingsMatch(db: Db, run: Run): Promise<boolean> {
+  const [wake] = await db.select().from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.id, run.wakeupRequestId!), eq(agentWakeupRequests.companyId, run.companyId),
+    eq(agentWakeupRequests.agentId, run.agentId), eq(agentWakeupRequests.runId, run.id),
+  ));
+  if (!wake || !["queued", "claimed"].includes(wake.status)) return false;
+  if (!run.issueId) return true;
+  const [issue] = await db.select().from(issues).where(and(
+    eq(issues.id, run.issueId), eq(issues.companyId, run.companyId),
+    eq(issues.assigneeAgentId, run.agentId), eq(issues.executionRunId, run.id),
+  ));
+  return Boolean(issue);
+}
+
+export async function readLegacyPreparationHandoffReadiness(
+  db: Db, input: { companyId: string; runId: string },
+): Promise<boolean> {
+  const [row] = await db.select({ run: heartbeatRuns, adapterType: agents.adapterType, wake: agentWakeupRequests, issue: issues }).from(heartbeatRuns)
+    .innerJoin(agents, and(eq(agents.id, heartbeatRuns.agentId), eq(agents.companyId, heartbeatRuns.companyId)))
+    .innerJoin(agentWakeupRequests, and(eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId),
+      eq(agentWakeupRequests.companyId, heartbeatRuns.companyId), eq(agentWakeupRequests.agentId, heartbeatRuns.agentId),
+      eq(agentWakeupRequests.runId, heartbeatRuns.id)))
+    .leftJoin(issues, and(eq(issues.id, heartbeatRuns.issueId), eq(issues.companyId, heartbeatRuns.companyId),
+      eq(issues.assigneeAgentId, heartbeatRuns.agentId), eq(issues.executionRunId, heartbeatRuns.id)))
+    .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
+      gt(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`)));
+  return Boolean(row && legacyControllerOwnerStamp(row.run)
+    && isRequeueablePreparation(row.run, row.adapterType) && ["queued", "claimed"].includes(row.wake.status)
+    && (!row.run.issueId || row.issue));
+}
+
+export async function requeueRevokedLegacyPreparation(
+  db: Db, observed: Run, revoked: RevokedLegacyControllerState,
+): Promise<boolean> {
+  if (!observed.controllerBootId || !revoked.controllerBootId || revoked.controllerBootId === observed.controllerBootId
+    || revoked.executionStage !== "preparing") return false;
+  return db.transaction(async transaction => {
+    const tx = transaction as unknown as Db;
+    if (observed.issueId) await tx.select({ id: issues.id }).from(issues)
+      .where(and(eq(issues.id, observed.issueId), eq(issues.companyId, observed.companyId))).for("update");
+    if (observed.wakeupRequestId) await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.id, observed.wakeupRequestId), eq(agentWakeupRequests.companyId, observed.companyId))).for("update");
+    const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, observed.id),
+      eq(heartbeatRuns.companyId, observed.companyId), eq(heartbeatRuns.controllerBootId, revoked.controllerBootId))).for("update");
+    if (!run || run.wakeupRequestId !== observed.wakeupRequestId || run.issueId !== observed.issueId) return false;
+    const [agent] = await tx.select({ adapterType: agents.adapterType }).from(agents)
+      .where(and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)));
+    if (!agent || !isRequeueablePreparation(run, agent.adapterType) || !await preparationBindingsMatch(tx, run)) return false;
+    await notifyRunDispatch(tx, { companyId: run.companyId });
+    await tx.update(heartbeatRuns).set({ status: "queued", startedAt: null, controllerBootId: null,
+      controllerProcess: null, controllerLeaseExpiresAt: null, executionStage: null, updatedAt: new Date() })
+      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
+    await tx.update(agentWakeupRequests).set({ status: "queued", claimedAt: null, updatedAt: new Date() })
+      .where(and(eq(agentWakeupRequests.id, run.wakeupRequestId!), eq(agentWakeupRequests.companyId, run.companyId),
+        eq(agentWakeupRequests.runId, run.id)));
+    if (run.issueId) await tx.update(issues).set({ executionRunId: null, executionLockedAt: null,
+      executionAgentNameKey: null, updatedAt: new Date() }).where(and(eq(issues.id, run.issueId),
+        eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
+    return true;
+  });
+}
 
 /** Atomically revoke an expired controller. Renewal and revocation serialize on
  * the run row. Expiry permits cleanup, never dispatch of a replacement agent.
@@ -129,7 +207,7 @@ export async function revokeExpiredLegacyControllerWithState(
   run: Run,
 ): Promise<RevokedLegacyControllerState | null> {
   if (run.runtimeMode === "native" || !run.controllerBootId) {
-    return { executionStage: run.executionStage, processPid: run.processPid, processGroupId: run.processGroupId };
+    return { executionStage: run.executionStage, processPid: run.processPid, processGroupId: run.processGroupId, controllerBootId: run.controllerBootId };
   }
   const controllerBootId = run.controllerBootId;
   const [revoked] = await db.transaction(async tx => {
@@ -146,6 +224,7 @@ export async function revokeExpiredLegacyControllerWithState(
     executionStage: heartbeatRuns.executionStage,
     processPid: heartbeatRuns.processPid,
     processGroupId: heartbeatRuns.processGroupId,
+    controllerBootId: heartbeatRuns.controllerBootId,
   });
   });
   return revoked ?? null;

@@ -87,6 +87,7 @@ describe("heartbeat queue module boundary", () => {
     const firstCheck = expect(first).rejects.toThrow("first lookup failed");
     const secondCheck = expect(second).rejects.toThrow("second lookup failed");
     expect(deps.activeWakeupPromises).toEqual(new Set([first, second]));
+    expect(deps.recoverableWakeupPromises.size).toBe(0);
     rejectFirst(new Error("first lookup failed"));
     await firstCheck;
     await Promise.resolve();
@@ -255,6 +256,37 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       .toMatchObject({ status: "in_review", conversationState: "waiting", assigneeAgentId: f.agent.id });
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.issue.id))).toHaveLength(0);
     expect(f.deps.executeRun).not.toHaveBeenCalled();
+  });
+
+  it("marks only a committed bound admission recoverable while post-commit preparation is pending", async () => {
+    const f = await waitingCompactionFixture();
+    let reached!: () => void, release!: () => void;
+    const atPostCommit = new Promise<void>(resolve => { reached = resolve; });
+    const continuePostCommit = new Promise<void>(resolve => { release = resolve; });
+    f.deps.getSchedulingSuppression.mockReset().mockImplementation(async () => {
+      const [committed] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, f.agent.id));
+      if (!committed) return { suppressed: false, reason: null };
+      reached();
+      await continuePostCommit;
+      return { suppressed: true, reason: "task_drain" };
+    });
+    const service = contextCompactionService(db, { wakeup: f.queue.trackWakeup });
+    const pending = service.request({ companyId: f.company.id, issue: f.issue, userId: f.user.id });
+    try {
+      await Promise.race([atPostCommit, pending.then(() => { throw new Error("Expected pending post-commit dispatch"); })]);
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id));
+      expect(run).toMatchObject({ status: "queued", responsibleUserId: f.user.id });
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, run.wakeupRequestId!)))[0])
+        .toMatchObject({ runId: run.id, status: "queued", companyId: f.company.id, agentId: f.agent.id });
+      expect(f.deps.activeWakeupPromises.size).toBe(1);
+      expect(f.deps.recoverableWakeupPromises).toEqual(f.deps.activeWakeupPromises);
+      expect(f.deps.executeRun).not.toHaveBeenCalled();
+    } finally { release(); }
+    await pending;
+    await Promise.resolve();
+    expect(f.deps.activeWakeupPromises.size).toBe(0);
+    expect(f.deps.recoverableWakeupPromises.size).toBe(0);
   });
 
   it("admits only one of two simultaneous waiting-conversation compaction requests", async () => {

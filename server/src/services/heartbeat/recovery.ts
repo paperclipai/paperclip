@@ -44,6 +44,7 @@ import {
   legacyControllerProvenGone,
   liveLegacyControllerExpiresAt,
   revokeExpiredLegacyControllerWithState,
+  requeueRevokedLegacyPreparation,
 } from "../legacy-controller-lease.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { readEnvironmentStopFailure, type PluginEnvironmentStopFailure } from "@paperclipai/plugin-sdk";
@@ -2642,6 +2643,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime());
       const revokedState = await revokeExpiredLegacyControllerWithState(db, run);
       if (!revokedState) continue;
+      if (await requeueRevokedLegacyPreparation(db, run, revokedState)) continue;
       // The scan snapshot can predate a child the old controller saved just
       // before it died. The child checks above used that snapshot, so a proven
       // gone controller is never enough here: when revocation reports a child

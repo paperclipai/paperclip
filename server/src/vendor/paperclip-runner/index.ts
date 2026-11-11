@@ -97,6 +97,7 @@ export const safeErrorCauseCode = runner.safeErrorCauseCode;
 export const decodeDurablePrpCheckpoint = runner.decodeDurablePrpCheckpoint;
 export const captureLegacyDurablePrpCheckpoint = runner.captureLegacyDurablePrpCheckpoint;
 export const inspectDurablePrpCheckpointHeader = runner.inspectDurablePrpCheckpointHeader;
+export const inspectPendingBootstrapTicket = runner.inspectPendingBootstrapTicket;
 export const inspectUnclaimedBootstrapCheckpoint = runner.inspectUnclaimedBootstrapCheckpoint;
 export const inspectUnclaimedBootstrapState = runner.inspectUnclaimedBootstrapState;
 export const RUNNER_PRP_PROTOCOL_MIN = runner.RUNNER_PRP_PROTOCOL_MIN;

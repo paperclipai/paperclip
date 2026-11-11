@@ -81,7 +81,7 @@ import {
   materializeExternalChatQuestionResponseInput,
 } from "../native-runtime/external-chat-question-response-input.js";
 import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY } from "../chat-control-recovery-stop.js";
-import { NATIVE_PREPARATION_FENCING_VERSION } from "../native-runtime/native-active-runs.js";
+import { NATIVE_PREPARATION_FENCING_VERSION, NATIVE_PREPARATION_HANDOFF_VERSION } from "../native-runtime/native-active-runs.js";
 import type { issueService } from "../issues.js";
 import { buildPlanReviewContext } from "../plan-review-context.js";
 import { normalizePaperclipWakePayload, selectPaperclipTaskMarkdown } from "@paperclipai/adapter-utils/server-utils";
@@ -1020,6 +1020,12 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             ...lockedProfile,
             ...(runtimeSkillPreservation ? { nativeRuntimeSkillPreservation: runtimeSkillPreservation } : {}),
             ...(nativeExecution?.provider.kind === "cursor_cloud" ? { executionPlacement: resolveProviderApiPlacement({ agent, run }) } : {}),
+            nativePreparationHandoffVersion: !lockedRun.runnerInstanceId && !lockedRun.nativeSessionId && !lockedRun.runtimeModeResolvedAt
+              ? NATIVE_PREPARATION_HANDOFF_VERSION
+              : lockedProfile.nativePreparationHandoffVersion,
+            nativePreparationHandoffSourceRunId: !lockedRun.runnerInstanceId && !lockedRun.nativeSessionId && !lockedRun.runtimeModeResolvedAt
+              ? nativeResumeCheckpoint && previousNativeRun ? previousNativeRun.id : null
+              : lockedProfile.nativePreparationHandoffSourceRunId,
             nativePreparationFencingVersion: !lockedRun.runnerInstanceId && !lockedRun.nativeSessionId
               ? NATIVE_PREPARATION_FENCING_VERSION
               : lockedProfile.nativePreparationFencingVersion,

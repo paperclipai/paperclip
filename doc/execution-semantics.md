@@ -2114,6 +2114,30 @@ Automatic retries that can continue source work use the agent's configured model
 
 Deploys and restarts routinely separate saving run state from resuming it. Saved launch configuration, provider and runner pack identity, leases and listeners, session or checkpoint schema, and workspace authority must either carry forward to the next release or be refused with a permanent, named error code. Recovery does not retry that refusal or replace the saved state over it, and it is never reported as a generic retryable interruption such as `native_session_interrupted`. See [`rules/upgrade-safe-run-state.mdc`](../rules/upgrade-safe-run-state.mdc).
 
+An uninterrupted server replacement also covers admitted turns that have not
+started their provider process. A preparing legacy controller can hand the same
+run and wake request back to the normal queue only after its ownership is
+revoked and its durable bindings still match. The former controller cannot
+dispatch, fail, or release the successor's work. Native preparation publishes
+its fenced controller checkpoint before external preparation. Launch records
+the exact launch intent before submission. A successor reconciles that intent
+and adopts the same Runner; a missing launch acknowledgement does not permit a
+second process. Uncertain launch evidence remains held.
+
+Upgrade readiness version 2 distinguishes committed admissions from admissions
+that still depend on a local promise. Only committed admissions with durable
+recovery proof may remain pending during replacement. Preparing and launching
+runs also need their current owner, workspace and checkpoint or no-start proof.
+The readiness observation does not freeze admission or grant execution
+authority. Ordinary drain and idle-sleep checks still require their existing
+quiescence contract. Replacements must support the reported readiness version.
+
+Existing version 2 controller checkpoints retain their previous recovery path.
+New runs that use preparation handoff write version 3 controller headers. New
+readers accept both versions. Older readers refuse version 3 without replacing
+the saved checkpoint or starting a provider. This is a controller checkpoint
+change; it does not change the Runner wire protocol.
+
 ## 10. Startup and Periodic Reconciliation
 
 Startup recovery and periodic recovery are different from normal wakeup delivery.

@@ -8,11 +8,24 @@ import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "../native-runtime/native-runne
 import { currentNativeControllerIdentity } from "../native-runtime/native-restart-recovery.js";
 import { readNativeControllerRecoveryInventory } from "../native-runtime/native-controller-recovery-inventory.js";
 import { readNativeFinalizationUpgradeReadiness } from "../native-runtime/native-finalization-upgrade-readiness.js";
+import { readLegacyPreparationHandoffReadiness } from "../legacy-controller-lease.js";
+import { readNativePreparationHandoffReadiness } from "../native-runtime/native-preparation-handoff.js";
 
 const MAX_UPGRADE_RUNS = 1_000;
 const POST_RESULT_INSPECTION_BUDGET_MS = 2_000;
-type Counters = { activeRuns: number; pendingWakes: number; draining: boolean };
-type Candidate = { id: string; recoverable: boolean; retainedUnowned?: boolean };
+type Counters = {
+  activeRuns: number;
+  pendingWakes: number;
+  recoverablePendingWakes?: number;
+  blockingPendingWakes?: number;
+  draining: boolean;
+};
+type Candidate = {
+  id: string;
+  recoverable: boolean;
+  retainedUnowned?: boolean;
+  handoffKind?: "preparing" | "launching";
+};
 
 /** An observation for Cloud's optional rollout policy, never execution authority.
  * Only explicit upgrade probes read the database; ordinary drain reads stay local.
@@ -28,13 +41,15 @@ export async function readUpgradeReadiness(db: Db, input: {
   const owner = await currentNativeControllerIdentity();
   const rows = await db.transaction(async tx => {
     await tx.execute(sql`set local statement_timeout = '2s'`);
-    return tx.execute<Candidate & { companyId: string; issueId: string; runnerId: string; sessionId: string; workspace: unknown; remoteWorkspace: unknown; hasRemoteWorkspace: boolean; hasResult: boolean; pluginLeaseId: string | null; material: Record<string, unknown> | null }>(sql`
+    return tx.execute<Candidate & { companyId: string; issueId: string; runtimeMode: string; adapterType: string; runnerId: string; sessionId: string; workspace: unknown; remoteWorkspace: unknown; hasRemoteWorkspace: boolean; hasResult: boolean; headerPresent: boolean; pluginLeaseId: string | null; material: Record<string, unknown> | null }>(sql`
     select r.id, r.company_id as "companyId", r.native_issue_id as "issueId",
+      r.runtime_mode as "runtimeMode", a.adapter_type as "adapterType",
       r.runner_instance_id as "runnerId", r.native_session_id as "sessionId",
       r.runner_profile_json->'nativeWorkspaceSync' as workspace,
       r.runner_profile_json->'remoteWorkspace' as "remoteWorkspace",
       r.runner_profile_json ? 'remoteWorkspace' as "hasRemoteWorkspace", p.id as "pluginLeaseId",
       f.result_id is not null as "hasResult",
+      c.run_id is not null as "headerPresent",
       (r.runtime_mode = 'native' and a.adapter_type = 'paperclip_runner' and r.native_phase = 'observed'
         and f.recovery_state = 'awaiting_evidence' and f.phase = 'observed' and f.result_id is null and f.failure_code is null
         and f.controller_boot_id is not null and f.controller_boot_id <> '' and f.controller_boot_id <> ${owner.bootId}
@@ -71,6 +86,12 @@ export async function readUpgradeReadiness(db: Db, input: {
   }, { accessMode: "read only" });
   const candidates: Candidate[] = [];
   for (const row of rows) {
+    if (row.runtimeMode === "legacy" && row.adapterType === "paperclip_runner"
+      && performance.now() < inspectionDeadline
+      && await readLegacyPreparationHandoffReadiness(db, { companyId: row.companyId, runId: row.id }).catch(() => false)) {
+      candidates.push({ id: row.id, recoverable: true, handoffKind: "preparing" });
+      continue;
+    }
     const remote = remoteWorkspaceRunReferenceSchema.safeParse(row.remoteWorkspace);
     // A remote reference owns the logical workspace identity. Corruption or conflicting
     // plugin authority must not fall back to a different recoverable-looking record.
@@ -86,7 +107,18 @@ export async function readUpgradeReadiness(db: Db, input: {
       && performance.now() < inspectionDeadline
       ? await readNativeFinalizationUpgradeReadiness(db, { companyId: row.companyId, runId: row.id,
         controller: owner, supportedOutageMs: 300_000 }).catch(() => false) : false;
-    candidates.push({ id: row.id, recoverable: bound && (row.recoverable || finalization), retainedUnowned: row.retainedUnowned });
+    const executionRecoverable = bound && (row.recoverable || finalization);
+    // Preparation must use the same durable ownership proof as takeover. A
+    // rejected or oversized header cannot escape the census limits through
+    // the preparation reader's independent bounded inspection.
+    const preparation = !executionRecoverable && row.runtimeMode === "native"
+      && row.adapterType === "paperclip_runner" && row.issueId
+      && (!row.headerPresent || row.material !== null) && performance.now() < inspectionDeadline
+      ? await readNativePreparationHandoffReadiness(db, { companyId: row.companyId, issueId: row.issueId,
+        runId: row.id, controllerBootId: owner.bootId,
+        deadline: Date.now() + Math.max(0, inspectionDeadline - performance.now()) }).catch(() => null) : null;
+    candidates.push({ id: row.id, recoverable: executionRecoverable || preparation !== null,
+      retainedUnowned: row.retainedUnowned, ...(preparation ? { handoffKind: preparation.kind } : {}) });
   }
   // Additive evidence does not strengthen or redefine the existing ready flag.
   const retained = await readNativeControllerRecoveryInventory(db).catch(() => ({
@@ -95,7 +127,11 @@ export async function readUpgradeReadiness(db: Db, input: {
   }));
   const summary = summarizeUpgradeReadiness({ rows: candidates, before, after: input.counters(),
     activeRunIds: [...new Set([...beforeIds, ...input.activeRunIds])], controllerBootId: owner.bootId });
-  return { ...summary, nativeControllerRecovery: { activeExecutionAdoption: {
+  return { ...summary, nativeControllerRecovery: { preparationHandoff: {
+    version: 1 as const,
+    preparingRuns: candidates.filter(row => row.recoverable && row.handoffKind === "preparing").length,
+    launchingRuns: candidates.filter(row => row.recoverable && row.handoffKind === "launching").length,
+  }, activeExecutionAdoption: {
     recoverableRuns: summary.recoverableRuns, blockingRuns: summary.blockingRuns,
     retainedBlockedRuns: summary.retainedBlockedRuns, truncated: summary.truncated,
   }, retained } };
@@ -115,10 +151,25 @@ export function summarizeUpgradeReadiness(input: {
   const recoverableRuns = eligible.size;
   const blockingRuns = activeRuns - recoverableRuns;
   const pendingWakes = Math.max(input.before.pendingWakes, input.after.pendingWakes);
+  const admissionEvidence = [input.before, input.after].map(counters => {
+    // A caller without the new durable-admission proof keeps its old barrier.
+    const recoverable = counters.recoverablePendingWakes ?? 0;
+    const blocking = counters.blockingPendingWakes ?? counters.pendingWakes - recoverable;
+    const valid = [counters.pendingWakes, recoverable, blocking]
+      .every(count => Number.isSafeInteger(count) && count >= 0)
+      && recoverable + blocking === counters.pendingWakes;
+    return { valid, blocking: valid ? blocking : counters.pendingWakes };
+  });
+  // Keep any unjournaled admission seen before or after the census. Completed
+  // durable admissions need no process-local promise to survive replacement.
+  const blockingPendingWakes = Math.max(...admissionEvidence.map(evidence => evidence.blocking));
+  const recoverablePendingWakes = pendingWakes - blockingPendingWakes;
   const draining = input.before.draining || input.after.draining;
   const truncated = input.rows.length > MAX_UPGRADE_RUNS;
-  return { version: 1 as const, observedAt: new Date().toISOString(), controllerBootId: input.controllerBootId,
-    ready: !draining && !truncated && blockingRuns === 0 && pendingWakes === 0,
-    activeRuns, recoverableRuns, blockingRuns, retainedBlockedRuns: retained.length, pendingWakes, draining, truncated,
+  return { version: 2 as const, observedAt: new Date().toISOString(), controllerBootId: input.controllerBootId,
+    ready: !draining && !truncated && blockingRuns === 0 && blockingPendingWakes === 0
+      && admissionEvidence.every(evidence => evidence.valid),
+    activeRuns, recoverableRuns, blockingRuns, retainedBlockedRuns: retained.length,
+    pendingWakes, recoverablePendingWakes, blockingPendingWakes, draining, truncated,
     supportedOutageMs: 300_000, recoveryGraceMs: REMOTE_RUNNER_RECONNECT_GRACE_MS };
 }

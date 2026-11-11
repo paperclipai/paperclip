@@ -100,6 +100,11 @@ export async function prepareNativeRemoteRunner(input: RemotePreparation) {
 export function createNativeRunnerExecutionDriver(input: NativeRunnerExecutionDriverInput): RunnerExecutionDriver {
   return {
     ...input.process,
+    controlPlaneCheckpointRegistration: input.controllerPersistence && input.binding.issueId
+      ? nativeRunnerCheckpointRegistration({ ...input.controllerPersistence,
+          binding: { companyId: input.binding.companyId, issueId: input.binding.issueId, runId: input.binding.runId },
+        })
+      : undefined,
     onStagedRunAttachment: input.controllerPersistence && input.binding.issueId
       ? async (authority, proof) => {
           // Both journals use the current business lease. Install persistence

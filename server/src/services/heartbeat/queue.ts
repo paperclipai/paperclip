@@ -228,6 +228,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   activeRunExecutions: Set<string>;
   activeRunExecutionPromises: Set<Promise<void>>;
   activeWakeupPromises: Set<Promise<unknown>>;
+  recoverableWakeupPromises: Set<Promise<unknown>>;
   liveRunExecutions: { has(id: string): boolean };
   isHeartbeatRunTerminalStatus: (status: string | null | undefined) => boolean;
   isSameTaskScope: (left: string | null, right: string | null) => boolean;
@@ -438,6 +439,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     canStartNewExternalBotWork,
     activeRunExecutionPromises,
     activeWakeupPromises,
+    recoverableWakeupPromises,
     instanceSettings,
     getRun,
     sweepPendingCleanupLeases,
@@ -1633,6 +1635,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued"),
             )).returning().then((rows) => rows[0] ?? null);
             await bindClaimedIssueExecution(claimTx as unknown as Db, issueClaim.ownsIssue, claimedRun);
+            crashPoint("wake.claim.after_run_running_before_wakeup_claimed");
+            if (claimedRun?.wakeupRequestId) await claimTx.update(agentWakeupRequests)
+              .set({ status: "claimed", claimedAt, updatedAt: claimedAt })
+              .where(and(eq(agentWakeupRequests.id, claimedRun.wakeupRequestId),
+                eq(agentWakeupRequests.companyId, claimedRun.companyId), eq(agentWakeupRequests.runId, claimedRun.id)));
             return claimedRun;
           });
         });
@@ -1658,50 +1665,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       },
     });
     publishRunLifecyclePluginEvent(claimed);
-
-    if (!nativeReviewContext) {
-      crashPoint("wake.claim.after_run_running_before_wakeup_claimed");
-      await setWakeupStatus(claimed.wakeupRequestId, "claimed", { claimedAt });
-    }
-
-    // Fix A (lazy locking): stamp executionRunId now that the run is actually running,
-    // not at queue time. Guard is idempotent — safe if called more than once.
-    const claimedContext = parseObject(claimed.contextSnapshot);
-    const claimedIssueId = readNonEmptyString(claimedContext.issueId);
-    const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
-    if (
-      !nativeReviewContext && claimedIssueId &&
-      claimedWakeReason !== "source_scoped_recovery_action"
-    ) {
-      const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            // Mention/context runs can touch an issue, but only the current assignee
-            // owns the issue execution lock shown as the active run.
-            eq(issues.assigneeAgentId, claimed.agentId),
-            ["native_safe_replacement", "native_provider_overloaded"].includes(claimed.scheduledRetryReason ?? "")
-              ? or(
-                  isNull(issues.checkoutRunId),
-                  eq(issues.checkoutRunId, claimed.id),
-                )
-              : undefined,
-            or(
-              isNull(issues.executionRunId),
-              eq(issues.executionRunId, claimed.id),
-            ),
-          ),
-        );
-    }
 
     return claimed;
   }
@@ -2341,17 +2304,30 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     agentId: string,
     opts: WakeupOptions = {},
   ): ReturnType<typeof enqueueWakeup> {
-    const promise = enqueueWakeup(agentId, opts);
+    const promise = enqueueWakeup(agentId, opts, undefined, undefined, () => {
+      recoverableWakeupPromises.add(promise);
+    });
     activeWakeupPromises.add(promise);
     void promise
       .catch(() => {})
       .finally(() => {
         activeWakeupPromises.delete(promise);
+        recoverableWakeupPromises.delete(promise);
       });
     return promise;
   }
 
-  async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string, savedInteractionOrigin?: unknown) {
+  async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string, savedInteractionOrigin?: unknown, onDurableAdmission?: () => void) {
+    async function markDurableRun(runId: string | null | undefined) {
+      if (!onDurableAdmission || !runId) return;
+      const [receipt] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+        .innerJoin(agentWakeupRequests, and(eq(agentWakeupRequests.id, heartbeatRuns.wakeupRequestId),
+          eq(agentWakeupRequests.companyId, heartbeatRuns.companyId), eq(agentWakeupRequests.agentId, heartbeatRuns.agentId),
+          eq(agentWakeupRequests.runId, heartbeatRuns.id)))
+        .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agentId),
+          inArray(agentWakeupRequests.status, ["queued", "claimed", "completed", "coalesced"])));
+      if (receipt) onDurableAdmission();
+    }
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = {
@@ -2620,6 +2596,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     };
     const priorReceipt = await existingDurableReceipt(db);
     if (priorReceipt) {
+      await markDurableRun(priorReceipt.runId);
       // Replaying an admission receipt is not fresh authority to dispatch it.
       // The normal queue owns dispatch and its current execution-policy checks.
       return priorReceipt.runId ? getRun(priorReceipt.runId) : null;
@@ -4766,6 +4743,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           throw error;
         });
 
+      if (outcome.kind === "queued") onDurableAdmission?.();
+      else if (outcome.kind === "durable") await markDurableRun(outcome.receipt.runId);
+      else if (outcome.kind === "coalesced" || outcome.kind === "replayed") await markDurableRun(outcome.run.id);
+
       for (const publication of issueActivityPublications) publishActivity(publication);
       await executeIssuePostCommitActions(db, issuePostCommitActions);
 
@@ -5008,6 +4989,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
     if (queueOutcome.kind === "skipped") return null;
     const newRun = queueOutcome.run;
+    onDurableAdmission?.();
 
     publishLiveEvent({
       companyId: newRun.companyId,

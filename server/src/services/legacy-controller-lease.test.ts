@@ -1,14 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, ne, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, closeLivenessDb, companies, createDb, heartbeatRuns, livenessDb, subscribeDatabaseWork } from "@paperclipai/db";
+import { agents, agentWakeupRequests, authUsers, closeLivenessDb, companies, companyMemberships, createDb, heartbeatRuns, issues, livenessDb, subscribeDatabaseWork } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { heartbeatService } from "./heartbeat.js";
+import { readUpgradeReadiness } from "./heartbeat/upgrade-readiness.js";
+import { createHeartbeatQueue } from "./heartbeat/queue.js";
+import { createHeartbeatQueueTestDependencies } from "../__tests__/helpers/heartbeat-queue.js";
 import { hasLiveLegacyController, LEGACY_CONTROLLER_LEASE_MS, LEGACY_CONTROLLER_RENEW_MS,
   LEGACY_CONTROLLER_RENEWAL_RETRY_DELAY_MS, legacyControllerBootId, legacyControllerClaim, LegacyControllerLeaseLostError,
-  legacyControllerOwnerStamp, renewLegacyControllerLease, revokeExpiredLegacyController,
+  legacyControllerOwnerStamp, readLegacyPreparationHandoffReadiness, requeueRevokedLegacyPreparation, renewLegacyControllerLease, revokeExpiredLegacyController,
   revokeExpiredLegacyControllerWithState, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { currentProcessSpaceHash, currentProcessStartedAtMs } from "./controller-process-identity.js";
 import { proveOwnerGone } from "./owner-proof.js";
@@ -72,6 +75,68 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(saved.status).toBe("running");
     expect(saved.errorCode).toBeNull();
   });
+  async function acceptedPreparation() {
+    const run = await seed(), issueId = randomUUID(), wakeId = randomUUID(), userId = randomUUID();
+    const context = { issueId, acceptedRequest: "preserve original admission" };
+    const profile = { adapterDispatch: { adapterType: "paperclip_runner" }, nativeExecutionInput: { provider: { model: "admitted-model" }, binding: { runId: run.id } }, selectedConfig: { revision: "previous-release" } };
+    await db.insert(authUsers).values({ id: userId, name: "Preparation owner", email: `${userId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId: run.companyId, principalType: "user", principalId: userId,
+      membershipRole: "owner", status: "active" });
+    await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, run.agentId));
+    await db.insert(issues).values({ id: issueId, companyId: run.companyId, title: "Accepted preparation",
+      assigneeAgentId: run.agentId, responsibleUserId: userId, status: "in_progress", executionRunId: run.id });
+    await db.insert(agentWakeupRequests).values({ id: wakeId, companyId: run.companyId, agentId: run.agentId,
+      status: "claimed", source: "on_demand", runId: run.id, payload: { issueId }, requestedByActorType: "user",
+      requestedByActorId: userId, claimedAt: new Date() });
+    await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId, contextSnapshot: context, responsibleUserId: userId,
+      wakeupRequestId: wakeId, runnerProfileJson: profile }).where(eq(heartbeatRuns.id, run.id));
+    return { run: (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]!, issueId, wakeId, userId, context, profile };
+  }
+  it("requeues the same accepted Runner preparation after its controller lease expires", async () => {
+    const { run, issueId, wakeId, userId, context, profile } = await acceptedPreparation();
+    expect(await readUpgradeReadiness(db, { activeRunIds: new Set([run.id]), counters: () => ({
+      activeRuns: 1, pendingWakes: 0, recoverablePendingWakes: 0, blockingPendingWakes: 0, draining: false,
+    }) })).toMatchObject({ ready: true, version: 2, activeRuns: 1, recoverableRuns: 1, blockingRuns: 0 });
+    await db.update(heartbeatRuns).set({ controllerBootId: randomUUID() }).where(eq(heartbeatRuns.id, run.id));
+    await expire(run.id);
+    await heartbeatService(db).reapOrphanedRuns({ staleThresholdMs: 0 });
+    const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(saved).toMatchObject({ status: "queued", responsibleUserId: userId, contextSnapshot: context,
+      wakeupRequestId: wakeId, runnerProfileJson: profile, controllerBootId: null, controllerLeaseExpiresAt: null, executionStage: null });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, run.agentId))).toHaveLength(1);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0])
+      .toMatchObject({ status: "queued", runId: run.id, claimedAt: null });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].executionRunId).toBeNull();
+    expect(await renewLegacyControllerLease(db, run, "dispatching")).toBe(false);
+    await db.update(agents).set({ adapterConfig: { model: "edited-after-admission" } }).where(eq(agents.id, run.agentId));
+    const deps = createHeartbeatQueueTestDependencies(db);
+    deps.getAgent.mockImplementation(id => db.select().from(agents).where(eq(agents.id, id)).then(rows => rows[0] ?? null));
+    const queue = createHeartbeatQueue(db, deps);
+    expect(await queue.claimQueuedRun(saved)).toMatchObject({ id: run.id, responsibleUserId: userId, contextSnapshot: context, runnerProfileJson: profile });
+    expect(await queue.claimQueuedRun(saved)).toBeNull();
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0]).toMatchObject({ status: "claimed", runId: run.id });
+  });
+  it.each(["stop", "dispatch", "child", "new-owner", "native-promotion", "wake-binding", "issue-claim"] as const)(
+    "refuses preparation handoff and requeue after %s wins", async change => {
+      const { run, issueId, wakeId } = await acceptedPreparation();
+      expect(await readLegacyPreparationHandoffReadiness(db, { companyId: run.companyId, runId: run.id })).toBe(true);
+      await expire(run.id);
+      const revoked = await revokeExpiredLegacyControllerWithState(db, run);
+      if (!revoked) throw new Error("Expected revocation");
+      if (change === "stop") await db.update(heartbeatRuns).set({ resultJson: { startupCancellation: { reason: "operator_stop" } } }).where(eq(heartbeatRuns.id, run.id));
+      if (change === "dispatch") await db.update(heartbeatRuns).set({ executionStage: "dispatching" }).where(eq(heartbeatRuns.id, run.id));
+      if (change === "child") await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, run.id));
+      if (change === "new-owner") await db.update(heartbeatRuns).set({ controllerBootId: randomUUID() }).where(eq(heartbeatRuns.id, run.id));
+      if (change === "native-promotion") await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeSessionId: randomUUID() }).where(eq(heartbeatRuns.id, run.id));
+      if (change === "wake-binding") await db.update(agentWakeupRequests).set({ runId: null }).where(eq(agentWakeupRequests.id, wakeId));
+      if (change === "issue-claim") await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, issueId));
+      const before = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0];
+      expect(await readLegacyPreparationHandoffReadiness(db, { companyId: run.companyId, runId: run.id })).toBe(false);
+      expect(await requeueRevokedLegacyPreparation(db, run, revoked)).toBe(false);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(before);
+    },
+  );
   it.each([false, true])("shutdown preserves a foreign controller (expired: %s)", async expired => {
     const run = await seed();
     await db.update(heartbeatRuns).set({ controllerBootId: randomUUID() }).where(eq(heartbeatRuns.id, run.id));
@@ -134,7 +199,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await expire(stale.id);
     expect(stale.executionStage).toBe("preparing");
     expect(await revokeExpiredLegacyControllerWithState(db, stale)).toEqual({
-      executionStage: "dispatching", processPid: null, processGroupId: null,
+      executionStage: "dispatching", processPid: null, processGroupId: null, controllerBootId: expect.any(String),
     });
     expect(await revokeExpiredLegacyControllerWithState(db, stale)).toBeNull();
   });

@@ -510,6 +510,14 @@ server-authored event among these three types; provider
 source events cannot supply stop authority. These records stay in the local run
 log and do not add Telemetry or OpenTelemetry data.
 
+For a new remote Runner turn with preparation handoff enabled, the existing
+checkpoint writer records `native.process_start_requested` atomically with the
+first current-run controller checkpoint, once per provider attempt. This moves
+the declaration out of generic session admission while keeping it before
+external preparation, launch or turn attachment. A successor can distinguish
+preparation that never reached that boundary from an uncertain launch. Older
+runs and other backends retain their existing declaration point.
+
 The server writes `native.prior_owner_fence_refused` when its runner-state
 check refuses a run before any launch, because the conversation's saved runner
 state belongs to an earlier run that cannot be proven finished. The payload

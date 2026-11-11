@@ -10,3 +10,4 @@ export function subscribeActiveNativeExecutions(listener: () => void) {
   return () => { listeners.delete(listener); };
 }
 export const NATIVE_PREPARATION_FENCING_VERSION = 1;
+export const NATIVE_PREPARATION_HANDOFF_VERSION = 1;

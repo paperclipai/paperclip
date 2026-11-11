@@ -50,6 +50,7 @@ export {
   decodeDurablePrpCheckpoint,
   captureLegacyDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
+  inspectPendingBootstrapTicket,
   inspectUnclaimedBootstrapCheckpoint,
   inspectUnclaimedBootstrapState,
   type PrpWireConnection,

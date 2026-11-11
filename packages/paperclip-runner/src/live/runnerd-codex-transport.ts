@@ -4881,6 +4881,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     let activationStarted = false;
     try {
       this.#assertStartupOpen();
+      await core.prepareRunAttachment(desired);
       const connection: RunnerProcessConnection =
         registration?.connection ??
         (registration?.connectUrl
@@ -6095,6 +6096,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#core = core;
     this.#followCommittedEvents(core);
     this.#carriedCommandCount = core.store.state.commands.length;
+    await this.options.controlPlaneCheckpointRegistration?.(core, identity);
+    this.#assertStartupOpen();
     // Externally launched runners own their state directory (for example in a
     // Daytona sandbox). Do not create an empty controller-side placeholder:
     // prior-run authority checks must be able to distinguish absent remote
@@ -6300,10 +6303,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       "runner",
       "runner-state.json",
     );
-    let candidateRunnerState =
+    let candidateRunnerState = this.options.genericWarmAttachment?.runnerState ?? (
       localStateOwner && existsSync(localRunnerStatePath)
         ? readRunnerState(localRunnerStatePath)
-        : null;
+        : null);
     const hasRunnerWarmBoundary =
       candidateRunnerState?.warmTransition !== undefined ||
       candidateRunnerState?.schema ===
@@ -6331,6 +6334,22 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     let identity = controlPlaneState
       ? controlPlaneIdentity(controlPlaneState)
       : desiredIdentity;
+    const genericAttachment = this.options.genericWarmAttachment;
+    if (genericAttachment) {
+      if (!controlPlaneState || !recoveryIdentityMatches(genericAttachment.targetIdentity, desiredIdentity)
+        || ![genericAttachment.sourceIdentity, genericAttachment.targetIdentity].some(value => recoveryIdentityMatches(value, identity))) {
+        throw new Error("native_runner_generic_attachment_identity_mismatch");
+      }
+      const command = (Array.isArray(controlPlaneState.commands) ? controlPlaneState.commands : []).map(record)
+        .findLast(value => value.type === "run.attach"
+          && recoveryIdentityMatches(record(record(record(value.payload).paperclipNextAuthority).identity) as unknown as DurableRecoveryIdentity, genericAttachment.targetIdentity));
+      if (genericAttachment.commandSha256 !== null) {
+        if (!command) throw new Error("native_runner_generic_attachment_identity_mismatch");
+        const { status: _status, result: _result, ...wire } = command;
+        if (commandDigest(wire).slice(7) !== genericAttachment.commandSha256) throw new Error("native_runner_generic_attachment_identity_mismatch");
+      } else if (!recoveryIdentityMatches(record(record(controlPlaneState.preparingRunAttachment).targetIdentity) as unknown as DurableRecoveryIdentity,
+        genericAttachment.targetIdentity)) throw new Error("native_runner_generic_attachment_identity_mismatch");
+    }
     const predecessor = this.#authorityRunId() !== undefined
       && this.#authorityRunId() !== identity.runId && recoveryIdentityMatches(identity, desiredIdentity);
     const lostPredecessor = predecessor && !this.options.adoptExistingRunner;
@@ -6401,8 +6420,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         !candidateRunnerState ||
         (this.options.controlPlaneRegistration !== undefined &&
           this.options.warmTransitionRegistrationMode !== "routed_connect"
-          && !(staged && this.options.adoptExistingRunner && this.options.warmTransitionRegistrationMode === "routed_same_endpoint")) ||
-        (this.options.adoptExistingRunner !== undefined && !staged)
+          && !((staged || this.options.genericWarmAttachment) && this.options.adoptExistingRunner && this.options.warmTransitionRegistrationMode === "routed_same_endpoint")) ||
+        (this.options.adoptExistingRunner !== undefined && !staged && !this.options.genericWarmAttachment)
       ) {
         throw new Error(
           "native_runner_warm_transition_requires_exact_owned_endpoint",
@@ -6420,6 +6439,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       });
       if (!proof)
         throw new Error("native_runner_warm_transition_snapshot_mismatch");
+      if (this.options.genericWarmAttachment && (!recoveryIdentityMatches(proof.receipt.oldIdentity, this.options.genericWarmAttachment.sourceIdentity)
+        || !recoveryIdentityMatches(proof.receipt.newIdentity, this.options.genericWarmAttachment.targetIdentity))) {
+        throw new Error("native_runner_warm_transition_snapshot_mismatch");
+      }
       const receipt = proof.receipt;
       const connection = receipt.connection;
       const endpoint =
@@ -6427,7 +6450,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ? new URL(connection.connectUrl)
           : null;
       if (
-        (connection.mode !== "connect" && !((connection.mode === "listen" || connection.mode === "external" && this.options.readRunnerState) && staged
+        (connection.mode !== "connect" && !((connection.mode === "listen" || connection.mode === "external" && this.options.readRunnerState) && (staged || this.options.genericWarmAttachment)
           && this.options.adoptExistingRunner && this.options.controlPlaneRegistration
           && this.options.warmTransitionRegistrationMode === "routed_same_endpoint")) ||
         (connection.mode === "connect" && (endpoint === null || endpoint.search || endpoint.hash || endpoint.username || endpoint.password)) ||
@@ -6464,8 +6487,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       throw new Error("native_runner_queued_attachment_requires_verified_live_source");
     }
     let sourceAttachmentTarget: DurableRecoveryIdentity | null = null;
-    if (controlPlaneState && warmRecovery === null && (this.options.provider ?? "codex") === "codex"
-      && !this.options.prepareLaunch && (staged || this.options.onStagedRunAttachment || this.options.onRecoveryAccountingEvent)
+    if (controlPlaneState && warmRecovery === null
+      && (this.options.genericWarmAttachment || (this.options.provider ?? "codex") === "codex" && !this.options.prepareLaunch)
+      && (this.options.genericWarmAttachment || staged || this.options.onStagedRunAttachment || this.options.onRecoveryAccountingEvent)
       && identity.runId !== desiredIdentity.runId) {
       // Restore and acknowledge the source under its own authority. The target
       // remains a durable, undispatched intent until every old obligation settles.
@@ -6675,6 +6699,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     // Reusing resources still requires current environment authorization. The
     // optional hook avoids re-preparation after controller storage is lost.
     // Existing consumers retain the preparation callback's authorization path.
+    await this.options.controlPlaneCheckpointRegistration?.(core, desiredIdentity);
+    if (this.options.genericWarmAttachment && sourceAttachmentTarget) {
+      await this.options.controlPlaneCheckpointRegistration?.(core, sourceAttachmentTarget);
+      await core.prepareRunAttachment(sourceAttachmentTarget);
+    }
+    if (warmRecovery && this.options.genericWarmAttachment && this.options.adoptExistingRunner) core.prepareWarmTransitionAdoption({
+      transitionId: warmRecovery.transitionId, runnerState: warmRecovery.runnerState,
+      expectedTarget: this.options.genericWarmAttachment.targetIdentity });
+    if (this.options.pendingBootstrapTicket) await core.renewPendingBootstrapTicket(this.options.pendingBootstrapTicket);
     const authorizeAdoption = !this.options.recoveryLaunch
       && this.options.adoptExistingRunner && this.options.authorizeRunnerAdoption;
     if (this.options.prepareLaunch && authorizeAdoption) {

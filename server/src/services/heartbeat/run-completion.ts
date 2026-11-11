@@ -167,6 +167,7 @@ export interface FailHeartbeatRunInput extends RunCompletionInput {
 }
 
 export interface FailHeartbeatRunSetupInput {
+  nativeRuntimePromoted?: boolean;
   run: Run;
   runId: string;
   outerErr: unknown;
@@ -1704,7 +1705,10 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     }, { error: outerErr, phase: "setup", secretValues: readFailureReportSecrets(),
       // The Sentry report waits for the bounded retry decision below.
       ...(reviewedChatBindingNotReady ? { reviewedChatRetry: "pending" as const } : {}),
-    }, { setupFailure: true }).catch(() => ({ run: null, updated: false as const }));
+    }, { setupFailure: true,
+      ...(!input.nativeRuntimePromoted && !providerDispatchStarted && run.runtimeMode === "legacy" && run.controllerBootId
+        ? { expectedLegacyControllerBootId: run.controllerBootId } : {}),
+    }).catch(() => ({ run: null, updated: false as const }));
     let reviewedChatRetryScheduled = false;
     if (!setupFailureWrite.updated) {
       logger.info(
@@ -1861,6 +1865,10 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         keepIdleOnFailure: Boolean(nonRetryablePreflightCode) || controllerLeaseLost,
       }).catch(() => undefined);
     }
+    return { ...setupFailureWrite, preparationHandedOff: !input.nativeRuntimePromoted && !setupFailureWrite.updated && !providerDispatchStarted
+      && run.runtimeMode === "legacy" && Boolean(run.controllerBootId)
+      && (!setupFailureWrite.run || setupFailureWrite.run.runtimeMode !== "legacy"
+        || setupFailureWrite.run.controllerBootId !== run.controllerBootId) };
   }
 
   return { completeRun, failRun, failRunSetup };

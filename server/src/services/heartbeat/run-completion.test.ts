@@ -642,6 +642,19 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     } else expect(f.deps.finalizeAgentStatus).not.toHaveBeenCalled();
   });
 
+  it("a revoked preparation cannot fail its same-run successor or settle its agent", async () => {
+    const f = await fixture({ controllerBootId: randomUUID(), executionStage: "preparing" });
+    await db.update(heartbeatRuns).set({ controllerBootId: randomUUID() }).where(eq(heartbeatRuns.id, f.run.id));
+    const successor = await read(f.run.id);
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_rejected"));
+    expect(await f.completion.failRunSetup(f.setup(f.controller.signal.reason))).toMatchObject({ updated: false, preparationHandedOff: true });
+    expect(await read(f.run.id)).toEqual(successor);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id)))[0].status).toBe("claimed");
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.run.id))).toEqual([]);
+    expect(f.deps.finalizeAgentStatus).not.toHaveBeenCalled();
+    expect(f.deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
+  });
+
   it("attributes an adapter stop caused by a lost controller lease", async () => {
     const f = await fixture();
     Object.assign(f.input.adapterResult, { exitCode: null, errorCode: "cancelled", errorMessage: "Grok execution was cancelled" });

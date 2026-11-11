@@ -15,9 +15,10 @@ import { notifyInstructionCollection } from "../instruction-collection-notificat
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { preserveNativeFailedWorkspace } from "./native-failed-workspace-recovery.js";
 import { hasNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader,
-  nativeRunnerCheckpointRemoteBootstrapProof } from "./native-runner-checkpoint.js";
+  nativeRunnerCheckpointRemoteBootstrapProof, rebindNativePreparationAuthority } from "./native-runner-checkpoint.js";
 import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
 import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
+import { readNativePreparationRecoveryProof } from "./native-preparation-handoff.js";
 import { activeNativeExecutionRunIds, NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
 import {
   PROCESS_IDENTITY_RECORDED,
@@ -743,7 +744,7 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   /** Durable evidence proves a claimed remote bootstrap reached no provider work. */
   remoteBootstrapProvenIncomplete?: boolean;
   remoteBootstrapIncompleteReason?: "remote_runner_never_launched" | "remote_session_opened_without_turn"
-    | "remote_runner_exited_before_provider_work" | "remote_runner_never_received_commands";
+    | "remote_runner_exited_before_provider_work" | "remote_runner_never_received_commands" | "durable_preparation_before_launch";
   processStartMatches: boolean;
   knownProviderProcessAlive?: boolean;
   knownProviderProcessIdentityAmbiguous?: boolean;
@@ -752,6 +753,8 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   hasProviderEvidence: boolean;
   checkpointFailed?: boolean;
   stagedAttachmentVerified?: boolean;
+  preparationLaunchVerified?: boolean;
+  genericWarmAttachmentVerified?: boolean;
   providerAttempt?: number;
   /** False when resuming keeps the current attempt (a clean drain). */
   resumeChargesAttempt?: boolean;
@@ -768,6 +771,10 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   // inspection; the executor must prove the original lease and authenticate
   // the surviving runner before it can resume delivery.
   if (input.remoteSandbox) {
+    if (input.genericWarmAttachmentVerified) return { claimKind: "reattach_remote_runner", reason: "durable_warm_attachment_requires_exact_adoption" };
+    if (input.preparationLaunchVerified) {
+      return { claimKind: "reattach_remote_runner", reason: "durable_pre_session_launch_requires_exact_adoption" };
+    }
     if (input.stagedAttachmentVerified === true) {
       return { claimKind: "reattach_remote_runner", reason: "staged_remote_attachment_requires_sandbox_verification" };
     }
@@ -1643,12 +1650,19 @@ export async function claimNativeRestartRecoveries(input: {
         ? { keepsAttempt: true, noProgressRestarts: previousNoProgressRestarts(row.coordinator.recoveryHistory) }
         : await restartResumeKeepsAttempt(tx, { runId: row.run.id, coordinator: row.coordinator });
       const resumeKeepsAttempt = restartCredit.keepsAttempt;
+      const preparation = row.coordinator.controllerBootId ? await readNativePreparationRecoveryProof(tx as unknown as Db, {
+        companyId: row.run.companyId, issueId: row.coordinator.issueId, runId: row.run.id,
+        controllerBootId: row.coordinator.controllerBootId,
+      }) : null;
       const classification = classifyNativeRunnerRecoveryEvidence({
-        remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority),
+        remoteSandbox: remoteSandbox || Boolean(pluginTask && (durableAuthority || preparation)),
         unclaimedBootstrap,
         remoteBootstrapProvenIncomplete: remoteBootstrapProvenIncomplete || remoteRunnerNeverLaunched
-          || remoteRunnerExitedBeforeProviderWork || remoteRunnerNeverReceivedCommands,
-        remoteBootstrapIncompleteReason: remoteRunnerNeverLaunched ? "remote_runner_never_launched"
+          || remoteRunnerExitedBeforeProviderWork || remoteRunnerNeverReceivedCommands || preparation?.kind === "preparing",
+        preparationLaunchVerified: preparation?.kind === "launching" && !("warmAttachment" in preparation),
+        genericWarmAttachmentVerified: preparation?.kind === "launching" && "warmAttachment" in preparation,
+        remoteBootstrapIncompleteReason: preparation?.kind === "preparing" ? "durable_preparation_before_launch"
+          : remoteRunnerNeverLaunched ? "remote_runner_never_launched"
           : remoteRunnerExitedBeforeProviderWork ? "remote_runner_exited_before_provider_work"
           : remoteRunnerNeverReceivedCommands ? "remote_runner_never_received_commands"
           : remoteBootstrapProof === "session_opened_without_turn" ? "remote_session_opened_without_turn" : undefined,
@@ -1658,13 +1672,13 @@ export async function claimNativeRestartRecoveries(input: {
         knownProviderProcessAlive: providerProcesses.livePids.length > 0,
         knownProviderProcessIdentityAmbiguous:
           providerProcesses.ambiguousLivePids.length > 0,
-        hasCheckpoint: hasCheckpoint && !remoteRunnerNeverReceivedCommands && !(unclaimedBootstrap && inheritedCheckpointOnly)
+        hasCheckpoint: preparation?.kind !== "preparing" && hasCheckpoint && !remoteRunnerNeverReceivedCommands && !(unclaimedBootstrap && inheritedCheckpointOnly)
           && !remoteRunnerNeverLaunched && !(remoteBootstrapProvenIncomplete && reboundSessionOnly),
         stagedAttachmentVerified: stagedAttachment !== null,
         checkpointIdentityMatches:
           checkpointIdentityMatches &&
           (!remoteSandbox || remoteWorkspace !== null),
-        hasProviderEvidence: hasProviderEvidence && !(unclaimedBootstrap && inheritedCheckpointOnly),
+        hasProviderEvidence: preparation?.kind !== "preparing" && hasProviderEvidence && !(unclaimedBootstrap && inheritedCheckpointOnly),
         checkpointFailed:
           (checkpointRecord.terminal as Record<string, unknown> | undefined)
             ?.runTerminalState === "failed" &&
@@ -1908,6 +1922,10 @@ export async function claimNativeRestartRecoveries(input: {
           reason: "concurrent_recovery_claim",
         } as const;
       }
+      if (preparation) await rebindNativePreparationAuthority(tx as unknown as Db, {
+        companyId: row.run.companyId, issueId: row.coordinator.issueId, runId: row.run.id,
+      }, { bootId: row.coordinator.controllerBootId, generation: row.coordinator.controllerGeneration,
+        leaseOwner: row.coordinator.leaseOwner }, { bootId: controller.bootId, generation, leaseOwner });
 
       // A successful ordinary claim has now reconciled this exact earlier
       // authority. Retire only its namespace attention; stale/other incidents
@@ -1922,7 +1940,7 @@ export async function claimNativeRestartRecoveries(input: {
 
       if (
         claimKind !== "reattach_existing_runner" &&
-        claimKind !== "reattach_remote_runner"
+        claimKind !== "reattach_remote_runner" && !(preparation && "warmSource" in preparation)
       ) {
         await recordNativeLocalProcessStopInTransaction(tx as unknown as Db, row.run);
       }
@@ -1937,7 +1955,7 @@ export async function claimNativeRestartRecoveries(input: {
           nativePhase: "observed",
           nativePhaseUpdatedAt: now,
           ...(claimKind === "reattach_existing_runner" ||
-          claimKind === "reattach_remote_runner"
+          claimKind === "reattach_remote_runner" || preparation && "warmSource" in preparation
             ? {}
             : {
                 processPid: null,

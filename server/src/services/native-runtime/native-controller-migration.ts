@@ -18,6 +18,8 @@ import type { StorageService } from "../../storage/types.js";
 import { durableNativeHarnessStorage } from "./native-harness-backup-storage.js";
 import { archiveFailedLegacyNativeController, hasArchivedLegacyNativeController } from "./native-controller-archive.js";
 import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
+import { readNativePreparationHandoffReadiness } from "./native-preparation-handoff.js";
+import { readNativeWarmPreparation } from "./native-warm-preparation.js";
 import { archiveSettledFailedNativeController } from "./native-controller-archive-source.js";
 import { nativeControllerSourceDigest } from "./native-controller-source-digest.js";
 
@@ -267,6 +269,7 @@ export async function hasLocalNativeControllerObligations(db: Db, storage?: Stor
     if (source.status === "failed" && source.runnerProfileJson.sessionCheckpoint == null
       && preservedFailedCheckpoint(source, selected.sessionId, await loadNativeRunnerCheckpoint(db, binding))) continue;
     const paths = await localPaths(source);
+    if (await preservedPreparationCheckpoint(db, selected, source, paths)) continue;
     if (await preservedActiveCheckpoint(db, selected, source, paths)) continue;
     const present = await lstat(paths.controlFile).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return undefined; throw error;
@@ -283,6 +286,30 @@ export async function hasLocalNativeControllerObligations(db: Db, storage?: Stor
     if (present || await hasNativeRunnerCheckpoint(db, binding)) return true;
   }
   return false;
+}
+
+async function preservedPreparationCheckpoint(db: Db, selected: Selected,
+  source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>, paths: Awaited<ReturnType<typeof localPaths>>) {
+  if (source.status !== "running" || source.runtimeMode !== "native") return false;
+  const [owner] = await db.select({ bootId: nativeRunFinalizations.controllerBootId }).from(nativeRunFinalizations).where(and(
+    eq(nativeRunFinalizations.companyId, selected.companyId), eq(nativeRunFinalizations.issueId, selected.issueId),
+    eq(nativeRunFinalizations.runId, source.id))).limit(1);
+  if (!owner?.bootId || !await readNativePreparationHandoffReadiness(db, { companyId: selected.companyId,
+    issueId: selected.issueId, runId: source.id, controllerBootId: owner.bootId })) return false;
+  try {
+    const bytes = await readPrivateSource(paths.controlFile, 4096);
+    if (bytes === undefined) return true;
+    const marker = record(JSON.parse(bytes));
+    if (marker.schema !== "paperclip.runner.external-control-plane-state.v1"
+      || Object.keys(marker).sort().join(",") !== "identity,schema") return false;
+    const identity = record(marker.identity);
+    if (identity.runId === source.id && identity.runnerInstanceId === source.runnerInstanceId
+      && identity.normalizedSessionId === selected.sessionId) return true;
+    if (!source.runnerInstanceId) return false;
+    const warm = await readNativeWarmPreparation(db, { companyId: selected.companyId, agentId: selected.agentId,
+      issueId: selected.issueId, runId: source.id, runnerInstanceId: source.runnerInstanceId, nativeSessionId: selected.sessionId });
+    return Boolean(warm && nativeSha256(warm.identity) === nativeSha256(identity));
+  } catch { return false; }
 }
 
 function hasMatchingControllerRecovery(selected: Selected,

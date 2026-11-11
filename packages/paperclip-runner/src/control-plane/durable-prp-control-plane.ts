@@ -2,6 +2,7 @@ import { safeErrorCauseCode } from "./safe-error-cause.js";
 import { AGENT_OBSERVABILITY_ENV_KEYS } from "../drivers/agent-observability.js";
 import { configuredEnvironment } from "../configured-environment.js";
 import { spawn } from "node:child_process";
+import { isDeepStrictEqual } from "node:util";
 import {
   createCipheriv,
   createDecipheriv,
@@ -173,6 +174,8 @@ interface StoredCoreState {
   identity: DurableRecoveryIdentity;
   /** External checkpoints contain control state, not a duplicate output log. */
   checkpointEventPolicy?: "control-v1";
+  preparationHandoff?: { version: 1; pendingBootstrap?: BootstrapTicketRecord };
+  preparingRunAttachment?: { sourceIdentity: DurableRecoveryIdentity; targetIdentity: DurableRecoveryIdentity };
   bootstrapHistory?: {
     schema: "paperclip.runner.bootstrap-history.v1";
     originIdentity: DurableRecoveryIdentity;
@@ -361,7 +364,7 @@ export interface DurablePrpCheckpoint {
 }
 
 type CheckpointHeader = {
-  schema: "paperclip.runner.controller-checkpoint.v2";
+  schema: "paperclip.runner.controller-checkpoint.v2" | "paperclip.runner.controller-checkpoint.v3";
   runnerVersion: string;
   runnerDigest: string;
   state: Omit<StoredCoreState, "commands" | "committedEvents" | "ackedSourceSeq" | "replayDeliveries" | "stagedRunAttachment">
@@ -369,6 +372,7 @@ type CheckpointHeader = {
 };
 
 function checkpointRunId(state: StoredCoreState): string {
+  if (state.preparingRunAttachment) return state.preparingRunAttachment.targetIdentity.runId;
   if (state.stagedRunAttachment) return state.stagedRunAttachment.targetIdentity.runId;
   if (state.warmTransition) return state.warmTransition.receipt.newIdentity.runId;
   const attachment = state.commands.findLast(command => command.type === "run.attach");
@@ -409,7 +413,8 @@ function captureCheckpoint(state: StoredCoreState, runnerVersion: string, runner
   const recoveryEvents = committedEvents.filter(event => !isStreamingEvent(event) || event === latestUsage);
   for (const command of commands) records.set(`command:${command.controllerSeq}`, JSON.stringify(command));
   for (const event of recoveryEvents) records.set(`event:${event.sourceSeq}`, JSON.stringify(event));
-  const header: CheckpointHeader = { schema: "paperclip.runner.controller-checkpoint.v2",
+  const header: CheckpointHeader = { schema: state.preparationHandoff?.version === 1
+    ? "paperclip.runner.controller-checkpoint.v3" : "paperclip.runner.controller-checkpoint.v2",
     runnerVersion, runnerDigest, state: { ...metadata, ...(stagedDescriptor ? { stagedRunAttachment: stagedDescriptor } : {}), checkpointEventPolicy: "control-v1" } };
   records.set("header", JSON.stringify(header));
   records.set("cursor", JSON.stringify({ ackedSourceSeq: state.ackedSourceSeq, replayDeliveries: state.replayDeliveries,
@@ -466,7 +471,7 @@ function parseCheckpointHeader(contents: string): Record<string, unknown> & {
   state: Record<string, unknown> & { identity: DurableRecoveryIdentity };
 } {
   const header: unknown = JSON.parse(contents);
-  if (!isRecord(header) || !["paperclip.runner.controller-checkpoint.v1", "paperclip.runner.controller-checkpoint.v2"].includes(String(header.schema))
+  if (!isRecord(header) || !["paperclip.runner.controller-checkpoint.v1", "paperclip.runner.controller-checkpoint.v2", "paperclip.runner.controller-checkpoint.v3"].includes(String(header.schema))
     || typeof header.runnerVersion !== "string" || !header.runnerVersion
     || typeof header.runnerDigest !== "string" || !runnerDigestPattern.test(header.runnerDigest)
     || !isRecord(header.state) || !exactIdentity(header.state.identity)) throw new Error("native_runner_checkpoint_invalid");
@@ -479,12 +484,23 @@ function parseCheckpointHeader(contents: string): Record<string, unknown> & {
 export function inspectDurablePrpCheckpointHeader(contents: string): DurableRecoveryIdentity | null {
   try {
     const header = parseCheckpointHeader(contents);
-    if (header.schema !== "paperclip.runner.controller-checkpoint.v2"
+    if (!["paperclip.runner.controller-checkpoint.v2", "paperclip.runner.controller-checkpoint.v3"].includes(String(header.schema))
       || header.state.checkpointEventPolicy !== "control-v1"
       || ![coreStateSchema, legacyCoreStateSchema, transitionCoreStateSchema, stagedCoreStateSchema].includes(String(header.state.schema))
       || (header.state.schema === stagedCoreStateSchema && !validStagedRunAttachment(header.state as unknown as StoredCoreState, true))) return null;
     return { ...header.state.identity };
   } catch { return null; }
+}
+
+export function inspectPendingBootstrapTicket(contents: string, ticket: string): boolean {
+  try {
+    const header = parseCheckpointHeader(contents);
+    const credential = credentialMaterial(ticket), state = header.state as unknown as StoredCoreState;
+    const pending = state.tickets?.[credential.credentialId];
+    return pending?.usedAt === null && pending.authKeyDigest === `sha256:${credential.authKey.toString("hex")}`
+      && canonicalJson(pending.identity) === canonicalJson(state.identity)
+      && pending.runnerVersion === header.runnerVersion && pending.runnerDigest === header.runnerDigest;
+  } catch { return false; }
 }
 
 /** Bounded checkpoint metadata inspection; never itself grants recovery authority. */
@@ -497,7 +513,7 @@ export function inspectStagedRunAttachmentHeader(contents: string): {
   try {
     if (Buffer.byteLength(contents) > maxStateBytes) return null;
     const header = parseCheckpointHeader(contents), state = header.state as unknown as StoredCoreState;
-    if (header.schema !== "paperclip.runner.controller-checkpoint.v2"
+    if (!["paperclip.runner.controller-checkpoint.v2", "paperclip.runner.controller-checkpoint.v3"].includes(String(header.schema))
       || state.checkpointEventPolicy !== "control-v1" || !validStagedRunAttachment(state, true)
       || !state.stagedRunAttachment) return null;
     const transition = state.warmTransition;
@@ -525,7 +541,7 @@ function checkpointState(records: ReadonlyMap<string, string>) {
     if (value === undefined) throw new Error("native_runner_checkpoint_incomplete");
     return JSON.parse(value);
   };
-  const v2 = header.schema === "paperclip.runner.controller-checkpoint.v2";
+  const v2 = header.schema !== "paperclip.runner.controller-checkpoint.v1";
   const keys = (prefix: string) => [...records.keys()].filter(key => key.startsWith(prefix))
     .sort((a, b) => Number(a.slice(prefix.length)) - Number(b.slice(prefix.length)));
   const commandKeys = v2 ? keys("command:") : header.commands;
@@ -1097,6 +1113,29 @@ function isStoredCoreState(
         .every(key => typeof origin[key] === "string" && stableIdPattern.test(origin[key]))
       || !Number.isSafeInteger(history.credentialsIssued) || (history.credentialsIssued as number) < 0
       || typeof history.adopted !== "boolean") return false;
+  }
+  if (value.preparationHandoff !== undefined) {
+    const preparation = value.preparationHandoff;
+    if (!isRecord(preparation) || preparation.version !== 1) return false;
+    if (preparation.pendingBootstrap !== undefined) {
+      const ticket = preparation.pendingBootstrap;
+      if (!isRecord(ticket) || !exactIdentity(ticket.identity) || !Number.isSafeInteger(ticket.expiresAtUnixMs)
+        || typeof ticket.credentialId !== "string" || !runnerDigestPattern.test(ticket.credentialId)
+        || typeof ticket.authKeyDigest !== "string" || !runnerDigestPattern.test(ticket.authKeyDigest)
+        || typeof ticket.recordId !== "string" || typeof ticket.runnerVersion !== "string"
+        || typeof ticket.runnerDigest !== "string" || !runnerDigestPattern.test(ticket.runnerDigest)
+        || typeof ticket.expiresAt !== "string" || ticket.usedAt !== null) return false;
+    }
+  }
+  if (value.preparingRunAttachment !== undefined) {
+    const preparing = value.preparingRunAttachment;
+    if (!isRecord(preparing) || !exactIdentity(preparing.sourceIdentity) || !exactIdentity(preparing.targetIdentity)
+      || !isDeepStrictEqual(preparing.sourceIdentity, value.identity)
+      || preparing.sourceIdentity.runId === preparing.targetIdentity.runId
+      || !["runnerInstanceId", "environmentLeaseId", "normalizedSessionId"].every(key =>
+        (preparing.sourceIdentity as DurableRecoveryIdentity)[key as keyof DurableRecoveryIdentity]
+          === (preparing.targetIdentity as DurableRecoveryIdentity)[key as keyof DurableRecoveryIdentity])
+      || !isRecord(value.preparationHandoff) || value.preparationHandoff.version !== 1) return false;
   }
   if (!validStoredWarmTransition(value as unknown as StoredCoreState))
     return false;
@@ -2628,6 +2667,7 @@ export class DurablePrpControlPlane {
           ? null
           : structuredClone(runAttachTemplate),
     });
+    delete this.#store.state.preparingRunAttachment;
     this.#identity = structuredClone(identity);
     this.#store.save();
   }
@@ -2712,19 +2752,53 @@ export class DurablePrpControlPlane {
       usedAt: null,
     };
     this.#store.state.freshBootstraps += 1;
+    if (this.#store.state.preparationHandoff) {
+      this.#store.state.preparationHandoff.pendingBootstrap = structuredClone(this.#store.state.tickets[material.credentialId]);
+    }
     if (this.#store.state.bootstrapHistory) this.#store.state.bootstrapHistory.credentialsIssued += 1;
     this.#store.save();
     return ticket;
   }
 
+  async renewPendingBootstrapTicket(ticket: string): Promise<void> {
+    this.#store.assertWritable();
+    const credential = credentialMaterial(ticket);
+    const pending = this.#store.state.tickets[credential.credentialId]
+      ?? this.#store.state.preparationHandoff?.pendingBootstrap;
+    if (!pending) {
+      if (this.#store.state.lastLeaseId !== null) return;
+      throw new Error("native_runner_pending_bootstrap_unavailable");
+    }
+    if (pending.authKeyDigest !== `sha256:${credential.authKey.toString("hex")}`
+      || pending.credentialId !== credential.credentialId
+      || canonicalJson(pending.identity) !== canonicalJson(this.#identity)
+      || pending.runnerVersion !== this.#expectedRunnerVersion || pending.runnerDigest !== this.#expectedRunnerDigest) {
+      throw new Error("native_runner_pending_bootstrap_identity_mismatch");
+    }
+    if (pending.usedAt !== null || this.#store.state.lastLeaseId !== null || this.#store.state.connectionCount > 0) return;
+    pending.expiresAtUnixMs = Date.now() + 60_000;
+    pending.expiresAt = new Date(pending.expiresAtUnixMs).toISOString();
+    this.#store.state.tickets[credential.credentialId] = pending;
+    this.#store.save();
+    await this.flushCheckpoint();
+  }
+
+  enablePreparationHandoff(): void {
+    this.#store.assertWritable();
+    if (this.#store.state.preparationHandoff) return;
+    this.#store.state.preparationHandoff = { version: 1 };
+    this.#store.save();
+  }
+
   /** Import exact durable handoff evidence for a caller-verified surviving participant; issues no credential. */
-  prepareWarmTransitionAdoption(input: { transitionId: string; runnerState: Record<string, unknown> }): void {
+  prepareWarmTransitionAdoption(input: { transitionId: string; runnerState: Record<string, unknown>; expectedTarget?: DurableRecoveryIdentity }): void {
     this.#store.assertWritable();
     const pending = input.runnerState.warmTransition;
     const proof = warmTransitionRecoveryProof({ controlPlaneState: this.#store.state, runnerState: input.runnerState,
       expectedNewIdentity: (isRecord(pending) && isRecord(pending.receipt) ? pending.receipt.newIdentity : null) as DurableRecoveryIdentity,
       expectedRunnerVersion: this.#expectedRunnerVersion, expectedRunnerDigest: this.#expectedRunnerDigest });
-    if (!proof || proof.transition.receipt.transitionId !== input.transitionId || !this.#store.state.stagedRunAttachment) {
+    if (!proof || proof.transition.receipt.transitionId !== input.transitionId
+      || !this.#store.state.stagedRunAttachment && !isDeepStrictEqual(input.expectedTarget, proof.transition.receipt.newIdentity)) {
       throw new Error("Warm transition adoption snapshot proof is not authorized.");
     }
     if (this.#store.state.warmTransition && canonicalJson(this.#store.state.warmTransition) === canonicalJson(proof.transition)) return;
@@ -2817,12 +2891,27 @@ export class DurablePrpControlPlane {
       return;
     }
     const candidate = structuredClone(this.#store.state);
+    delete candidate.preparingRunAttachment;
     candidate.schema = stagedCoreStateSchema;
     candidate.stagedRunAttachment = { sourceIdentity: structuredClone(candidate.identity),
       targetIdentity: structuredClone(targetIdentity), runAttachTemplate: structuredClone(runAttachTemplate),
       templateDigest: `sha256:${canonicalDigest(runAttachTemplate)}`, commandId: null };
     if (!validStagedRunAttachment(candidate)) throw new Error("Staged run attachment binding is invalid.");
     this.#store.commit(candidate);
+  }
+
+  async prepareRunAttachment(targetIdentity: DurableRecoveryIdentity): Promise<void> {
+    this.#store.assertWritable();
+    if (!this.#store.state.preparationHandoff || targetIdentity.runId === this.#identity.runId) return;
+    if (!exactIdentity(targetIdentity) || !["runnerInstanceId", "environmentLeaseId", "normalizedSessionId"].every(key =>
+      targetIdentity[key as keyof DurableRecoveryIdentity] === this.#identity[key as keyof DurableRecoveryIdentity])) {
+      throw new Error("native_runner_preparing_attachment_identity_mismatch");
+    }
+    const pending = this.#store.state.preparingRunAttachment;
+    if (pending && !isDeepStrictEqual(pending.targetIdentity, targetIdentity)) throw new Error("native_runner_preparing_attachment_identity_mismatch");
+    this.#store.state.preparingRunAttachment = { sourceIdentity: structuredClone(this.#identity), targetIdentity: structuredClone(targetIdentity) };
+    this.#store.save();
+    await this.flushCheckpoint();
   }
 
   queueCommand(
@@ -2932,6 +3021,14 @@ export class DurablePrpControlPlane {
     if (Buffer.byteLength(JSON.stringify(command)) > maxCommandBytes)
       throw new CommandJournalLimitError("command_payload_too_large");
     this.#store.state.commands.push(command);
+    if (type === "run.attach" && this.#store.state.preparingRunAttachment) {
+      if (!isRecord(payload.paperclipNextAuthority)
+        || !isDeepStrictEqual(payload.paperclipNextAuthority.identity, this.#store.state.preparingRunAttachment.targetIdentity)) {
+        this.#store.state.commands.pop();
+        throw new Error("native_runner_preparing_attachment_identity_mismatch");
+      }
+      delete this.#store.state.preparingRunAttachment;
+    }
     if (staged && !retireStaged && type === "run.attach") {
       const { runAttachTemplate: _template, ...descriptor } = staged;
       this.#store.state.stagedRunAttachment = { ...descriptor, commandId: command.commandId };
