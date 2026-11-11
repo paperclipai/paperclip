@@ -269,8 +269,10 @@ deadline. A provider that cannot prepare asynchronously returns
 `{ kind: "unsupported" }` before starting work, so Core can use the original
 operation. Otherwise the provider returns the completed result or a
 `{ kind: "pending", deadline }` receipt. The provider sets and enforces that
-operation deadline. Core rejects offers beyond the workspace lifecycle lock
-budget before polling. It honors accepted deadlines as supplied. Replayed submission must not duplicate an active prepare.
+operation deadline. Core holds the workspace lifecycle lock during preparation
+and rejects offers beyond the previous synchronous RPC budget before polling.
+It honors accepted deadlines as supplied. Replayed submission must not duplicate
+an active prepare.
 
 Core sends `phase: "poll"` with the same operation identity and the deadline
 from the receipt. The provider returns the same receipt while work is pending

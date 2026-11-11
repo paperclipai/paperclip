@@ -14,7 +14,6 @@ export async function invokeWorkspaceProvider(workers: WorkspaceWorker, params: 
     const result = await prepareWorkspaceWithPolling(workers, params);
     if (result) return result;
   }
-  // Compatibility for providers without asynchronous preparation.
   const timeout = verifyExisting ? 10_000 : params.operation.kind === "finalize" ? 30_000 : legacyWorkspaceOperationMs;
   const request = { ...params, deadline: new Date(Date.now() + timeout).toISOString() };
   return parseWorkspaceProviderResult(request, await workers.call(
@@ -23,14 +22,12 @@ export async function invokeWorkspaceProvider(workers: WorkspaceWorker, params: 
 }
 
 async function prepareWorkspaceWithPolling(workers: Pick<PluginWorkerManager, "call">, params: ProviderRequest) {
-  const rpcTimeout = 15_000; // Transport bound. The provider selects the operation deadline.
+  const rpcTimeout = 15_000;
   const submit = { ...params, phase: "submit" as const, deadline: new Date(Date.now() + rpcTimeout).toISOString() };
   const receipt = parseWorkspacePrepareResult(submit, await workers.call(params.pluginId, "workspacePrepare", submit, rpcTimeout));
   if (receipt.kind === "unsupported") return null;
   if (receipt.kind === "prepared") return receipt;
   const offeredMs = Date.parse(receipt.deadline) - Date.now();
-  // Preparation owns a workspace lifecycle lock. Refuse an offer that would
-  // hold it beyond the previous RPC budget. Accepted offers keep their deadline.
   if (offeredMs > legacyWorkspaceOperationMs + legacyRpcGraceMs)
     throw new WorkspaceProviderFailureError({
       kind: "provider", reason: "unsupported_operation", retryable: false,
