@@ -35,6 +35,15 @@ export const PROVIDER_LOCKFILES = [
 ];
 export const LOCKFILES = [LOCKFILE, ...PROVIDER_LOCKFILES];
 export const REPORT_LOCK_FILES = ['tests/runner-e2e/report-lock.json', 'tests/runner-e2e/report-lock.patch'];
+// One bootstrap authorization, reviewed on the base branch, for papermarketing PR #1.
+// Root lock bytes are upstream c8ae02e5; the reporting proof adds the reviewed
+// XYFlow resolution. This does not authorize other PRs, provider locks, or bytes.
+export const PAPERMARKETING_BOOTSTRAP_LOCKS = Object.freeze({
+  "pnpm-lock.yaml": "95768cd5cb240ff86e849a21ecd8bab76d8da78d657e66a638c44e5cdae097a7",
+  "tests/runner-e2e/report-lock.json": "1a42aa1e44458266bd83be8efcfd1e32b4db18aeb778f77a4549f6a10e0333a7",
+  "tests/runner-e2e/report-lock.patch": "748934bfbb7f8a72f0088d9ce2c16963734c2cf472e37d33b1b3c7c2240942da"
+});
+
 export const DEPENDABOT_LOGIN = 'dependabot[bot]';
 export const REFRESH_BRANCH = 'chore/refresh-lockfile';
 export const REFRESH_PR_AUTHOR = 'github-actions[bot]';
@@ -72,9 +81,9 @@ export function findDependabotLockCommit({ lockBlob, commits, lockBlobAt }) {
  * Classify the lock-content change in a pull request.
  * `dependabotLockCommits` maps each changed lockfile to the verified Dependabot commit that holds
  * its exact bytes, or to null.
- * @returns {{ allowed: boolean, writer: 'none' | 'dependabot' | 'refresh-bot', reason: string }}
+ * @returns {{ allowed: boolean, writer: 'none' | 'dependabot' | 'refresh-bot' | 'reviewed-fork-bootstrap', reason: string }}
  */
-export function classifyPullRequest({ changedPaths, author, headRepo, baseRepo, headRef, dependabotLockCommits = {} }) {
+export function classifyPullRequest({ changedPaths, author, headRepo, baseRepo, headRef, dependabotLockCommits = {}, pullNumber = '', lockedContentSha256 = {} }) {
   const changedLockfiles = LOCKFILES.filter((file) => changedPaths.includes(file));
   const proofChanged = changedPaths.some((file) => REPORT_LOCK_FILES.includes(file));
   if (changedLockfiles.length === 0 && !proofChanged) {
@@ -82,6 +91,15 @@ export function classifyPullRequest({ changedPaths, author, headRepo, baseRepo, 
   }
 
   const sameRepo = Boolean(headRepo) && headRepo === baseRepo;
+  if (sameRepo && baseRepo === 'arthurbonora/papermarketing' && String(pullNumber) === '1'
+    && headRef === 'feat/agent-graph-dashboard-consolidated'
+    && [...changedLockfiles, ...REPORT_LOCK_FILES.filter(file => changedPaths.includes(file))]
+      .every(file => Object.hasOwn(PAPERMARKETING_BOOTSTRAP_LOCKS, file))
+    && Object.entries(PAPERMARKETING_BOOTSTRAP_LOCKS)
+      .every(([file, digest]) => lockedContentSha256[file] === digest)) {
+    return { allowed: true, writer: 'reviewed-fork-bootstrap',
+      reason: 'PR #1 matches the exact dependency artifacts authorized by the papermarketing base-branch bootstrap policy.' };
+  }
   if (sameRepo && author === REFRESH_PR_AUTHOR && headRef === REFRESH_BRANCH) {
     return { allowed: true, writer: 'refresh-bot', reason: 'The lockfile refresh workflow opened this pull request.' };
   }
@@ -172,7 +190,18 @@ function checkPullRequest() {
     }
   }
 
+  const lockedContentSha256 = {};
+  if (repository === 'arthurbonora/papermarketing' && process.env.PR_NUMBER === '1') {
+    for (const file of Object.keys(PAPERMARKETING_BOOTSTRAP_LOCKS)) {
+      try {
+        lockedContentSha256[file] = createHash('sha256').update(
+          execFileSync('git', ['show', `${headSha}:${file}`], { maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] })
+        ).digest('hex');
+      } catch { /* Missing or unreadable artifacts fail closed in the classifier. */ }
+    }
+  }
   const result = classifyPullRequest({
+    pullNumber: process.env.PR_NUMBER ?? '', lockedContentSha256,
     changedPaths, author, headRepo: process.env.HEAD_REPO ?? '', baseRepo: repository,
     headRef: process.env.HEAD_REF ?? '', dependabotLockCommits,
   });
