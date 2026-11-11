@@ -78,6 +78,34 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it("lets managed OpenRouter/OpenCode defer model availability to the real probe", async () => {
+    const owner = "opencode-openrouter-model-probe";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const token = "fixture-opencode-openrouter-key";
+    const account = await service.save(companyId, owner, {
+      provider: "openrouter", method: "api_key", ownership: "personal", name: owner,
+      apiKey: token, agentIds: [], allAgents: true,
+    }, token);
+    await service.setDefault(companyId, owner, account.grantId);
+    const runtime = await prepareManagedAiRuntime(db, {
+      companyId,
+      agentId,
+      responsibleUserId: owner,
+      adapterType: "opencode_local",
+      binding: { provider: "openrouter", method: "api_key", mode: "responsible_user" },
+      config: { model: "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free" },
+    });
+    try {
+      expect(runtime.config.env).toMatchObject({
+        OPENCODE_ALLOW_ALL_MODELS: "true",
+        OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+      });
+      expect(runtime.config.env.OPENCODE_CONFIG_CONTENT).toContain("openrouter");
+    } finally {
+      await runtime.cleanup();
+    }
+  });
+
   it.each([
     { provider: "openrouter", envKey: "OPENROUTER_API_KEY", routed: false },
     { provider: "openrouter", envKey: "OPENROUTER_API_KEY", routed: true },
