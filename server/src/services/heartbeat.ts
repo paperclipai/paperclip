@@ -31,7 +31,7 @@ import { registerCancelledWorkspacePreservationWork } from "./native-runtime/nat
 import { readUpgradeReadiness } from "./heartbeat/upgrade-readiness.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { writeExecutionControl } from "./execution-control-notifications.js";
-import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
+import { readFreshWorkspaceReadiness, verifyRetryWorkspace } from "./fresh-workspace-continuation.js";
 import { settleFailedNativeRecoveryPreparation } from "./native-runtime/native-recovery-preparation-failure.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
 import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
@@ -2254,7 +2254,7 @@ export function heartbeatService(
       const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
       const sessionCodec = getAdapterSessionCodec(agent.adapterType);
       const issueId = readNonEmptyString(context.issueId);
-      const freshWorkspace = await timePreparation("workspace_selection", async () => {
+      let freshWorkspace = await timePreparation("workspace_selection", async () => {
         const readiness = await readFreshWorkspaceReadiness(db, run);
         if (issueId && canApplyTaskWorkspaceSelectionAtAdmission({ admittedInput: parseObject(run.runnerProfileJson).nativeExecutionInput, restarting: Boolean(runOptions.nativeRestartRecovery), hasLeaseOwner: Boolean(runOptions.nativeLeaseOwner) })) {
           const changed = await executionWorkspacesSvc.applyPendingTaskWorkspaceSelection({ companyId: agent.companyId,
@@ -2537,6 +2537,11 @@ export function heartbeatService(
       // Initialization has persisted the active context, including an explicit
       // absence of identity inherited from an automatic continuation.
       responsibleUserId = identityContext.responsibleUserId;
+      if (issueId && freshWorkspace?.mode === "fresh_isolated_workspace") {
+        const fallback = freshWorkspace;
+        freshWorkspace = await timePreparation("workspace_verification", () =>
+          verifyRetryWorkspace(db, options.pluginWorkerManager, run, issueId, responsibleUserId, fallback));
+      }
       run = {
         ...run,
         activeIdentityContextId: identityContext.id,
