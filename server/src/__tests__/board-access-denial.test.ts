@@ -52,6 +52,7 @@ describe("board-only denial", () => {
     ["get", `/api/companies/${COMPANY_ID}/environments/capabilities`, "[Open environment settings](/<prefix>/company/settings/instance/environments)"],
     ["post", `/api/environments/${AGENT_ID}/probe`, "[Open environment settings](/<prefix>/company/settings/instance/environments)"],
     ["get", `/api/environment-leases/${AGENT_ID}`, "[Open environment settings](/<prefix>/company/settings/instance/environments)"],
+    ["get", `/api/environment-custom-image-setup-sessions/${AGENT_ID}`, "[Open environment settings](/<prefix>/company/settings/instance/environments)"],
   ] as const)("tells an agent %s %s is final and names the board page", async (method, path, link) => {
     const res = await request(createApp(agentActor))[method](path).expect(403);
     expect(res.body.error).toBe("Board access required");
@@ -127,12 +128,9 @@ describe("board-only denial", () => {
   });
 
   it("tells an agent denied an environment route that testing and changing computers are board-only too", async () => {
-    // An agent asked which computer can run a harness reads the capabilities first. That
-    // denial must also settle probing, or the agent keeps searching for a route to test one.
     const res = await request(createApp(agentActor, assertBoardOrgAccess)).get(`/api/companies/${COMPANY_ID}/environments/capabilities`).expect(403);
     expect(res.body.remediation).toContain("Execution environments are board-only throughout");
     expect(res.body.remediation).toContain("testing (probing) them");
-    // The agent-readable project environment options are a different route.
     const other = await request(createApp(agentActor)).get(`/api/companies/${COMPANY_ID}/project-environments`).expect(403);
     expect(other.body.remediation).not.toContain("Execution environments");
     expect(other.body.remediation).not.toContain("/instance/environments");

@@ -95,11 +95,7 @@ function pluginControlPage(path: string): [string, string] | null {
 const PLUGIN_ROUTE = /^\/plugins(?:\/|$)/;
 const PLUGIN_ADMINISTRATION_SCOPE = "Plugin management is board-only throughout: listing, installing, configuring (including choosing a secret for a plugin setting), enabling, disabling, upgrading and removing plugins have no agent route either.";
 
-// Execution environments (the computers agents run on) are managed on one settings
-// page. Every environment route is board-only, so a denial on the first one an agent
-// reads (usually the list or the capabilities) also answers testing and changing them.
-// An operator can hide the page, so link it only while it is visible.
-const ENVIRONMENT_ROUTE = /^\/(?:companies\/[^/]+\/)?environments(?:\/|$)|^\/environment-leases(?:\/|$)/;
+const ENVIRONMENT_ROUTE = /^\/(?:companies\/[^/]+\/)?environments(?:\/|$)|^\/environment-(?:leases|custom-image-setup-sessions)(?:\/|$)/;
 const ENVIRONMENT_ADMINISTRATION_SCOPE = "Execution environments are board-only throughout: listing computers, reading which coding harnesses they support, testing (probing) them and changing them have no agent route either.";
 function environmentControlPage(path: string): [string, string] | null {
   if (!ENVIRONMENT_ROUTE.test(path) || getHiddenSettings().has("instance.environments")) return null;

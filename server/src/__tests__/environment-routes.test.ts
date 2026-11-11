@@ -1526,6 +1526,24 @@ describe("environment routes", () => {
     expect(mockEnvironmentService.list).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["get", "/api/companies/company-1/environments/capabilities"],
+    ["post", "/api/companies/company-1/environments"],
+    ["post", "/api/environments/env-1/probe"],
+    ["patch", "/api/environments/env-1"],
+    ["delete", "/api/environments/env-1"],
+    ["get", "/api/environments/env-1/leases"],
+  ] as const)("gives an agent denied %s %s the final environment settings guidance", async (method, path) => {
+    const app = createApp({ type: "agent", agentId: "agent-1", companyId: "company-1", source: "agent_key", runId: "run-1" });
+    const res = await request(app)[method](path).send(method === "post" && path.endsWith("/environments") ? { name: "Agent computer", driver: "local", config: {} } : {});
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Board access required");
+    expect(res.body.remediation).toContain("this denial is final");
+    expect(res.body.remediation).toContain("Execution environments are board-only throughout");
+    expect(res.body.remediation).toContain("[Open environment settings](/<prefix>/company/settings/instance/environments)");
+    expect(mockEnvironmentService.create).not.toHaveBeenCalled();
+  });
+
   it("rejects agent detail reads for instance-scoped environments", async () => {
     mockEnvironmentService.getById.mockResolvedValue(createEnvironment());
     mockAgentService.getById.mockResolvedValue({
@@ -1679,7 +1697,7 @@ describe("environment routes", () => {
       });
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toContain("board operators");
+    expect(res.body.error).toBe("Board access required");
     expect(mockEnvironmentService.create).not.toHaveBeenCalled();
   });
 
@@ -2577,7 +2595,7 @@ describe("environment routes", () => {
     });
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toContain("board operators");
+    expect(res.body.error).toBe("Board access required");
     expect(mockEnvironmentService.create).not.toHaveBeenCalled();
   });
 
