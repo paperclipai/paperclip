@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyPendingMigrations, agents, chatEndpointLeases, chatEndpoints, companies, chatSdkState, companySecrets, createDb, toolConnections } from "@paperclipai/db";
+import { applyPendingMigrations, agents, chatEndpointLeases, chatEndpoints, chatConversations, chatEndpointResources, companies, chatSdkState, companySecrets, createDb, toolConnections } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "../helpers/external-test-database.js";
 import { createChatMilestoneFixtures } from "../helpers/chat-milestone-fixtures.js";
 import { chatChannelService } from "../../services/chat-channels.js";
@@ -18,7 +18,12 @@ import { createPhotonExternalRuntimeOwner } from "../../services/chat-channels/i
 import { PHOTON_EXTERNAL_STATE, photonStateFor } from "../../services/chat-channels/imessage-photon/external-store.js";
 import { photonHash, photonExternalStateSchema, readPhotonExternalState } from "../../services/chat-channels/imessage-photon/external-contract.js";
 
-import { memoryPersistence, photonFixture } from "./fixture.js";
+import { photonFixture } from "./fixture.js";
+import * as photonExternalRuntime from "../../services/chat-channels/imessage-photon/external-runtime.js";
+import * as photonStores from "../../services/chat-channels/imessage-photon/external-store.js";
+import { startAgentLifecycle, createAgentLifecycle } from "../../services/agent-lifecycle.js";
+import { createLifecycleDriver } from "../../services/agent-lifecycle-driver.js";
+import { createPluginWorkerManager } from "../../services/plugin-worker-manager.js";
 import * as photonClients from "../../services/photon/owned-client.js";
 import * as cloudConnectors from "../../services/paperclip-cloud-connector.js";
 import { createDeliveryWorkCoordinator } from "../../services/delivery-work-coordinator.js";
@@ -33,7 +38,6 @@ import { toolAccessService } from "../../services/tool-access.js";
 import { preparePhotonCompanyDeletion, assertPhotonCompanyRetired, lockPhotonCompanyMutation, registerPhotonRemovalOwner } from "../../services/chat-channels/imessage-photon/company-retirement.js";
 import { chatCompanyDeletion } from "../../services/chat-channels/company-deletion.js";
 import { notifyChatCompanyConfiguration } from "../../services/chat-channels/configuration-work-notifications.js";
-import type { RuntimeContext } from "../../services/chat-channels/runtime-types.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_PHOTON_REVIEW_TEST_DATABASE_URL");
 if (process.env.PHOTON_REVIEW_EXPECT_PG === "1" && !external) throw new Error("Photon review controls require their exact external test database");
@@ -203,9 +207,9 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
         data: { type: "dedicated", auth: { line: "controlled-line-token" }, numbers: { line: "+15555550100" }, expiresIn: 300 } });
       throw new Error("unexpected controlled Spectrum request");
     };
-    const runtime = createChatSdkRuntime(); runtimes.push(runtime);
+    let runtime = createChatSdkRuntime(); runtimes.push(runtime);
     const heartbeat = heartbeatService(db); heartbeats.push(heartbeat);
-    const service = chatChannelService(db, { runtime, heartbeat, fetch: fetchProvider, publicBaseUrl: "https://tenant.example" }); services.push(service);
+    let service = chatChannelService(db, { runtime, heartbeat, fetch: fetchProvider, publicBaseUrl: "https://tenant.example" }); services.push(service);
     const endpoint = await service.create(f.companyId, { provider: "imessage-photon", assignedAgentId: f.agentId }, f.userId);
     if (!endpoint) throw new Error("normal Photon endpoint creation failed");
     await service.configure(endpoint.id, { action: "configure", credentials: { projectSecret: "controlled-project-secret" },
@@ -234,7 +238,52 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
       requests.push(structuredClone(operation));
       return operation.kind === "status" ? { binding, handoffId: retained.handoffId, phase: retirement } : { binding };
     });
-    return { service, runtime, endpoint, connection, state, retained, requests, pendingRetirement() { retirement = "retiring"; }, finishRetirement() { retirement = "retired"; } };
+    return { get service() { return service; }, get runtime() { return runtime; }, endpoint, connection, state, retained, requests,
+      async reconstructExternal(control: ReturnType<typeof photonFixture>) {
+        // Retain controlled enrolled history, but really join the original local
+        // service and its receiver lease before reconstructing the normal owner.
+        await service.shutdown();
+        runtime = createChatSdkRuntime(); runtimes.push(runtime);
+        service = chatChannelService(db, { runtime, heartbeat, fetch: fetchProvider, publicBaseUrl: "https://tenant.example" }); services.push(service);
+        vi.spyOn(photonClients, "createOwnedPhotonClient").mockReturnValue(control.adapter.client);
+        let observedCloudBirth = false;
+        const replace = runtime.replaceEndpoint.bind(runtime);
+        vi.spyOn(runtime, "replaceEndpoint").mockImplementation(async options => {
+          const selected = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+          expect(selected).toMatchObject({ phase: "external", handoffId: retained.handoffId,
+            binding: retained.binding, identity: retained.identity });
+          expect(selected?.senderResource?.closed).toBe(false);
+          expect(typeof options.callbacks.onPhotonUsefulClientDebt).toBe("function");
+          expect(typeof options.callbacks.onPhotonSenderRuntimeClosed).toBe("function");
+          observedCloudBirth = true;
+          return replace(options); // Actual normal Runtime/SDK; callbacks unchanged.
+        });
+        // Complete existing direct-message history, matching normal inbound
+        // ensureResource: same company/endpoint/canonical thread, available DM.
+        // This creates no publication, delivery, ACK or provider outcome.
+        expect(control.chat.isArchived).toBe(false);
+        const [currentEndpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpoint.id));
+        expect(currentEndpoint?.allowDirectMessages).toBe(true); // Policy unchanged.
+        const [resource] = await db.insert(chatEndpointResources).values({ companyId: f.companyId,
+          endpointId: endpoint.id, type: "direct_message", providerResourceId: control.threadId,
+          label: "Controlled Photon direct conversation", availability: "available", enabled: true }).returning();
+        if (!resource) throw new Error("existing Photon direct-message resource fixture absent");
+        const [conversation] = await db.insert(chatConversations).values({ companyId: f.companyId,
+          endpointId: endpoint.id, resourceId: resource.id, issueId: f.issueId, externalConversationId: control.threadId,
+          externalThreadId: control.threadId, externalLabel: "Controlled Photon direct conversation", isDirectMessage: true }).returning();
+        if (!conversation) throw new Error("normal outbound conversation fixture absent");
+        const published = await service.publishBoardMessage(endpoint.id, conversation.id,
+          "Controlled ordinary sender bootstrap", randomUUID(), f.userId);
+        expect(published?.redactedError, "ordinary publication must not retain a redacted failure").toBeNull();
+        expect(published?.state).toBe("published");
+        expect(control.client.messages.sendText).toHaveBeenCalledOnce();
+        expect(observedCloudBirth).toBe(true);
+        const selected = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+        expect(selected).toMatchObject({ phase: "external", handoffId: retained.handoffId, binding: retained.binding });
+        if (!selected?.senderResource || selected.senderResource.closed || !runtime.get(endpoint.id))
+          throw new Error("normal external sender was not retained after its ordinary publication");
+      },
+      pendingRetirement() { retirement = "retiring"; }, finishRetirement() { retirement = "retired"; } };
   }
 
   it("normal receiver worker settles a paused or archived Photon owner after exact retirement", async () => {
@@ -246,6 +295,7 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
     await vi.waitFor(async () => {
       expect(readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE))?.phase).toBe("retired");
       expect(idleWorkSnapshot().active).toBe(0);
+      expect(coordinator.nextWakeAt()).toBeNull();
     }, { timeout: 5000 });
     expect(errors, "a retired inactive Photon receiver must settle without runtime construction retries").toEqual([]);
     expect(coordinator.nextWakeAt()).toBeNull(); expect(c.runtime.get(c.endpoint.id)).toBeNull();
@@ -279,14 +329,16 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
   it("normal receiver retries the same useful sender close without another message and replacement never treats absence as closure", async () => {
     // Actual Runtime/adapter/useful-client, service callback and retained SQL;
     // unary result/close failures and durable unknown image are controlled ports.
-    const c = await managedConfiguration(), endpointRuntime = c.runtime.get(c.endpoint.id);
+    const c = await managedConfiguration(), control = photonFixture();
+    await c.reconstructExternal(control);
+    const factoryCallsBeforeFailure = vi.mocked(photonClients.createOwnedPhotonClient).mock.calls.length;
+    const endpointRuntime = c.runtime.get(c.endpoint.id);
     if (!endpointRuntime) throw new Error("normal endpoint runtime absent");
     const adapter = endpointRuntime.getProviderAdapter();
     if (!(adapter instanceof PhotonChatAdapter)) throw new Error("normal Photon adapter absent");
-    await adapter.useExternalIntake();
-    const control = photonFixture(), closeFailure = new Error("controlled same-sender close debt"); let closeFails = true;
-    vi.spyOn(photonClients, "createOwnedPhotonClient").mockReturnValue(control.adapter.client);
+    const closeFailure = new Error("controlled same-sender close debt"); let closeFails = true;
     control.client.close.mockImplementation(async () => { if (closeFails) throw closeFailure; });
+    let primary: { error: unknown } | undefined;
     try {
       await expect(adapter.withClient(async () => "actual controlled known result")).resolves.toBe("actual controlled known result");
       expect(readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE))?.failure?.code).toBe("sender_close");
@@ -303,7 +355,7 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
         expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
       }, { timeout: 5000 });
       expect(control.client.close.mock.calls.length).toBeGreaterThan(attempts);
-      expect(photonClients.createOwnedPhotonClient).toHaveBeenCalledTimes(1);
+      expect(photonClients.createOwnedPhotonClient).toHaveBeenCalledTimes(factoryCallsBeforeFailure + 1);
       await coordinator.stop(); vi.useRealTimers();
       // Controlled restart image contains a recorded failed close but no owned
       // runtime handle. A new normal owner cannot synthesize a close receipt.
@@ -326,10 +378,15 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
       await expect(replacement.reconcile(c.endpoint.id)).rejects.toThrow("original sender physical closure is unknown");
       expect(readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE))).toMatchObject({ phase: "external", failure: { code: "sender_close", nextAttemptAt: null } });
       expect((await replacement.retained({ kind: "endpoint", id: c.endpoint.id }))[0]?.dueAt).toBeNull();
-    } finally {
+    } catch (error) { primary = { error }; }
+    finally {
       closeFails = false; vi.useRealTimers();
-      await control.adapter.disconnect();
+      const failures: unknown[] = [];
+      try { await c.runtime.removeEndpoint(c.endpoint.id); } catch (error) { failures.push(error); }
+      try { await control.adapter.disconnect(); } catch (error) { failures.push(error); }
+      if (failures.length) throw new AggregateError([...(primary ? [primary.error] : []), ...failures], "Photon sender fixture normal cleanup remains incomplete");
     }
+    if (primary) throw primary.error;
   });
 
   it("real SQL sender reservation and reconstructed birth proof preserve identity, rollback and monotonic closure", async () => {
@@ -383,75 +440,88 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
   });
 
   it("normal company removal preserves retirement and permits a lost joined-sender receipt retry after deletion", async () => {
-    // Real normal company-removal participant/FK cascade plus actual Runtime/SDK
-    // lifecycle. Provider/auth ports remain controlled; no remote Cloud close or
-    // full company-deletion/deployed socket claim is made by this local case.
-    const c = await managedConfiguration();
-    const registry = createChatSdkRuntime(); runtimes.push(registry);
-    const token = randomUUID();
-    await db.insert(chatEndpointLeases).values({ companyId: f.companyId, endpointId: c.endpoint.id,
-      leaseKey: "photon_receiver_runtime", token, expiresAt: new Date(Date.now() + 60_000) });
-    const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, c.endpoint.id));
-    if (!endpoint) throw new Error("normal endpoint absent");
-    const record = { endpoint, assignedAgentName: "Agent", connectionName: c.connection.name,
-      applicationId: c.connection.applicationId, credentialSecretRefs: c.connection.credentialSecretRefs };
-    const context: RuntimeContext = { generation: c.retained.identity.runtimeGeneration,
-      credentialFingerprint: c.retained.identity.credentialReferences, localEpoch: 0, version: "controlled-original-sender" };
-    const contexts = new WeakMap<object, RuntimeContext>(); let businessViewRemoved = false; let loseCloseReply = true;
-    const owner = createPhotonExternalRuntimeOwner(db, {
-      broker: () => ({ instanceIdentity: () => ({ instanceId: "instance", environment: "test" as const }),
-        photonReceiverOperation: async () => { throw new Error("local close must not claim remote retirement"); } }),
-      withReceiverLease: async () => { throw new Error("this current fixture lease was already explicitly acquired"); },
-      endpointRecord: async () => { if (businessViewRemoved) throw new Error("physical cleanup must not consult removed business joins"); return record; },
-      runtimeFor: async () => { throw new Error("reservation cannot construct an unowned replacement"); }, context: value => contexts.get(value),
-      ownership: () => undefined, release: async () => { throw new Error("no business lease transfer in this case"); },
-      currentRuntime: id => registry.get(id), removeRuntime: id => registry.removeEndpoint(id),
-      config: async () => ({ provider: "imessage-photon", userName: "Agent", intakeAfter: 1,
-        credentials: { allocation: "dedicated", projectId: "project", projectSecret: "controlled-project-secret", lineId: "line", phoneNumber: "+15555550100" } }),
-      admit: async () => { throw new Error("local close cannot admit work"); }, notify: () => {},
-    }); owners.push(owner);
-    const allocation = await owner.reserveSenderRuntime(record, context, { token });
-    expect(readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE))?.senderResource?.id).toBe(allocation.resourceId);
-    const runtime = await registry.replaceEndpoint({ companyId: f.companyId, endpointId: c.endpoint.id, logger: "silent", persistence: memoryPersistence(),
-      providerConfig: { provider: "imessage-photon", userName: "Agent", intakeAfter: 1,
-        credentials: { allocation: "dedicated", projectId: "project", projectSecret: "controlled-project-secret", lineId: "line", phoneNumber: "+15555550100" } },
-      callbacks: { onMessage: async () => { throw new Error("no business message in close case"); },
-        onPhotonEvent: async () => { throw new Error("no incoming event in close case"); }, onPhotonAssertOwned: async () => {},
-        onPhotonCheckpoint: async () => {}, onPhotonFailure: async () => {}, onPhotonUsefulClientDebt: () => owner.senderDebt(c.endpoint.id, context),
-        onPhotonIntakePlacement: async () => ({ kind: "cloud", bindingId: c.retained.binding.bindingId }),
-        onPhotonSenderRuntimeClosed: async () => {
-          await owner.senderRuntimeClosed(allocation, context);
-          if (loseCloseReply) throw new Error("controlled successful sender receipt reply lost");
-        } } });
-    owner.attachSenderRuntime(allocation.resourceId, runtime); context.endpointRuntime = runtime; contexts.set(runtime, context);
-    await runtime.initialize();
-    const disconnect = vi.spyOn(PhotonChatAdapter.prototype, "disconnect");
+    // The real service reserves and initializes the Cloud-placement sender. Only
+    // the reply AFTER its real SQL close commit is lost; callbacks remain intact.
+    const makeStore = photonStores.createPhotonExternalStore;
+    let loseCloseReply = true;
+    const lost = new Error("controlled successful sender receipt reply lost");
+    vi.spyOn(photonStores, "createPhotonExternalStore").mockImplementation(database => {
+      const store = makeStore(database);
+      return { ...store, async retained(...args: Parameters<typeof store.retained>) {
+        const next = await store.retained(...args);
+        if (loseCloseReply && next.phase === "retiring" && next.senderResource?.closed) {
+          loseCloseReply = false; throw lost;
+        }
+        return next;
+      } };
+    });
+    const makeOwner = photonExternalRuntime.createPhotonExternalRuntimeOwner;
+    const actualOwners: ReturnType<typeof makeOwner>[] = [];
+    const closeObservers = new Map<ReturnType<typeof makeOwner>, {
+      calls: Parameters<ReturnType<typeof makeOwner>["senderRuntimeClosed"]>[];
+    }>();
+    vi.spyOn(photonExternalRuntime, "createPhotonExternalRuntimeOwner").mockImplementation((database, options) => {
+      const owner = makeOwner(database, options); actualOwners.push(owner);
+      // Observe the exact normal callback arguments; spy delegates unchanged.
+      closeObservers.set(owner, vi.spyOn(owner, "senderRuntimeClosed").mock);
+      return owner;
+    });
+    const c = await managedConfiguration(), control = photonFixture();
+    let primary: { error: unknown } | undefined;
+    try {
+    await c.reconstructExternal(control);
+    const owner = actualOwners.at(-1);
+    if (!owner) throw new Error("normal sender owner absent");
+    const sender = c.runtime.get(c.endpoint.id);
+    if (!sender) throw new Error("normal Cloud-placement sender absent");
+    const retained = readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE));
+    if (!retained?.senderResource) throw new Error("normal sender birth absent");
     await expect(db.transaction(tx => chatCompanyDeletion.deleteCompanyData(tx, f.companyId)))
       .rejects.toMatchObject({ status: 409, details: { code: "photon_retirement_pending" } });
-    expect(await c.state.read(PHOTON_EXTERNAL_STATE)).not.toBeNull();
-    await expect(registry.removeEndpoint(c.endpoint.id)).rejects.toThrow("controlled successful sender receipt reply lost");
+    await expect(c.service.configure(c.endpoint.id, { action: "remove" }, f.userId)).rejects.toBe(lost);
     expect(readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE))?.senderResource?.closed).toBe(true);
-    expect(registry.hasUnsettledLifecycle()).toBe(true);
-    loseCloseReply = false;
-    // Normal provider removal now observes the actual committed physical receipt,
-    // settles the controlled Cloud retirement and only then clears credentials.
+    expect(c.runtime.hasUnsettledLifecycle()).toBe(true);
+    // Same normal remove joins that same retired Runtime and settles the actual
+    // controlled Cloud retirement before clearing credentials or deleting rows.
     await c.service.configure(c.endpoint.id, { action: "remove" }, f.userId);
     expect(readPhotonExternalState(await c.state.read(PHOTON_EXTERNAL_STATE))?.phase).toBe("retired");
+    expect(c.runtime.hasUnsettledLifecycle()).toBe(false);
     await db.transaction(async tx => {
       await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, f.companyId)).for("no key update");
       await notifyChatCompanyConfiguration(tx, f.companyId);
       await chatCompanyDeletion.deleteCompanyData(tx, f.companyId);
     });
-    businessViewRemoved = true;
-    expect(await c.state.read(PHOTON_EXTERNAL_STATE)).toBeNull(); // Actual FK cascade, no hand deletion of state/outcomes.
-    await expect(registry.removeEndpoint(c.endpoint.id)).resolves.toBe(true);
-    expect(disconnect).toHaveBeenCalled(); expect(registry.hasUnsettledLifecycle()).toBe(false);
+    expect(await c.state.read(PHOTON_EXTERNAL_STATE)).toBeNull();
+    await expect(sender.shutdown()).resolves.toBeUndefined();
+    const original = closeObservers.get(owner)?.calls.find(([allocation]) => allocation.resourceId === retained.senderResource?.id);
+    if (!original) throw new Error("normal sender close callback was not observed");
+    const [allocation, context] = original;
+    // Retry that exact normal completion callback after its real SDK joins and
+    // FK cascade. Missing rows permit no mutation, never an unknown close proof.
+    await expect(owner.senderRuntimeClosed(allocation, context)).resolves.toBeUndefined();
     await expect(owner.senderRuntimeClosed({ ...allocation, resourceId: randomUUID() }, context)).rejects.toThrow("exact runtime owner");
     await expect(owner.senderRuntimeClosed({ ...allocation, identity: { ...allocation.identity, companyId: randomUUID() } }, context)).rejects.toThrow("exact runtime owner");
     expect(await c.state.read(PHOTON_EXTERNAL_STATE)).toBeNull();
+    } catch (error) { primary = { error }; }
+    finally {
+      loseCloseReply = false;
+      const failures: unknown[] = [];
+      try { await c.runtime.removeEndpoint(c.endpoint.id); } catch (error) { failures.push(error); }
+      try { await control.adapter.disconnect(); } catch (error) { failures.push(error); }
+      if (failures.length) throw new AggregateError([...(primary ? [primary.error] : []), ...failures], "normal captured-sender cleanup remains incomplete");
+    }
+    if (primary) throw primary.error;
   });
   it("normal company deletion returns pending before agent termination and retries the exact Cloud retirement", async () => {
     const c = await managedConfiguration(); c.pendingRetirement();
+    const manager = createPluginWorkerManager();
+    const driver = createLifecycleDriver(db, manager);
+    let holdHost = true;
+    const lifecycleOwner = startAgentLifecycle(db, { ...driver,
+      runHost: agent => holdHost ? Promise.resolve<"pending">("pending") : driver.runHost(agent),
+    }, () => true);
+    let primary: { error: unknown } | undefined;
+    try {
     const [beforeAgent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
     await expect(deleteCompany(db, f.companyId)).rejects.toMatchObject({ status: 409,
       details: { code: "photon_retirement_pending" } });
@@ -464,9 +534,23 @@ describe.skipIf(!external)("Photon normal configuration and retained receiver au
     // Real retained consumer remains registered and the exact state remains for
     // authenticated no-effect/ACK progress; this controlled status is not queue proof.
     c.finishRetirement();
+    await expect(deleteCompany(db, f.companyId)).rejects.toThrow("Complete termination");
+    expect(await db.select().from(companies).where(eq(companies.id, f.companyId))).toHaveLength(1);
+    expect((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0]?.lifecycleState).toBe("terminating");
+    holdHost = false;
+    await createAgentLifecycle(db).retry(f.agentId);
+    await lifecycleOwner.sweep();
     await expect(deleteCompany(db, f.companyId)).resolves.not.toBeNull();
     expect(await db.select().from(companies).where(eq(companies.id, f.companyId))).toEqual([]);
     expect(await c.state.read(PHOTON_EXTERNAL_STATE)).toBeNull();
+    } catch (error) { primary = { error }; }
+    finally {
+      const failures: unknown[] = [];
+      try { await lifecycleOwner.stop(); } catch (error) { failures.push(error); }
+      try { await manager.stopAll(); } catch (error) { failures.push(error); }
+      if (failures.length) throw new AggregateError([...(primary ? [primary.error] : []), ...failures], "normal lifecycle fixture cleanup remains incomplete");
+    }
+    if (primary) throw primary.error;
   });
 
   it("normal generic connection removal retains credentials until Photon retirement settles", async () => {
