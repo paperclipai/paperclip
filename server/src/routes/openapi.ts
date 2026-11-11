@@ -1708,9 +1708,6 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
   "GET /api/heartbeat-runs/{runId}/provider-trace/download",
   "POST /api/tools/oauth/cloud-connector/enrollment",
   "GET /api/tools/oauth/cloud-connector/enrollment-callback",
-  // Environment management: every write/admin handler in `environments.ts` opens
-  // with `assertCanAccessInstanceEnvironments`, which matches `assertInstanceAdmin`
-  // exactly (board actor, then local-implicit or instance admin).
   "POST /api/companies/{companyId}/environments",
   "POST /api/companies/{companyId}/environments/probe-config",
   "GET /api/environments/{id}/delete-blast-radius",
@@ -1727,10 +1724,6 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
   "POST /api/environment-custom-image-setup-sessions/{sessionId}/cancel",
   "POST /api/environment-custom-image-setup-sessions/{sessionId}/finish",
   "POST /api/environment-custom-image-setup-sessions/{sessionId}/terminal-session-token",
-  // Instance settings and task drain: every write handler in
-  // `instance-settings.ts` opens with `assertCanManageInstanceSettings`, which
-  // matches `assertInstanceAdmin` exactly (board actor, then local-implicit or
-  // instance admin).
   "PATCH /api/instance/settings",
   "PATCH /api/instance/settings/general",
   "POST /api/instance/task-drain",
@@ -13661,13 +13654,6 @@ export function buildOpenApiDocument(): any {
 
 export const buildOpenApiSpec = buildOpenApiDocument;
 
-// Exported for the drift guard in `__tests__/openapi-routes.test.ts`: an entry
-// that stops matching a served operation is dead — `resolveOperationAuthLevel`
-// silently falls through to `authenticated` for unmatched auth keys, and the
-// status overrides simply no-op — so a renamed path or a typo would change the
-// published contract without any test noticing. The guard asserts every entry
-// still keys into the spec, and that no operation sits in two auth tables
-// (precedence would silently shadow one).
 export const SPEC_OPERATION_TABLES = {
   public: PUBLIC_OPERATIONS,
   runtimeTools: RUNTIME_TOOLS_OPERATIONS,
