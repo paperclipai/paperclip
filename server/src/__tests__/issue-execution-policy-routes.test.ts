@@ -20,12 +20,12 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
-  wakeup: vi.fn(async () => undefined),
+  wakeup: vi.fn(async (): Promise<{ id: string } | null | undefined> => undefined),
   triggerIssueMonitor: vi.fn(async (): Promise<{ outcome: "triggered" } | { outcome: "skipped"; reason: string }> => ({ outcome: "triggered" })),
   reportRunActivity: vi.fn(async () => undefined),
-  getRun: vi.fn(async () => null),
-  getActiveRunForAgent: vi.fn(async () => null),
-  cancelRun: vi.fn(async () => null),
+  getRun: vi.fn(async (): Promise<unknown> => null),
+  getActiveRunForAgent: vi.fn(async (): Promise<unknown> => null),
+  cancelRun: vi.fn(async (): Promise<unknown> => null),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -55,10 +55,13 @@ const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
 })));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn((_table: unknown): { where: (...args: never[]) => unknown } => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
+const mockDbInsertValues = vi.hoisted(() => vi.fn(async () => undefined));
+const mockDbInsert = vi.hoisted(() => vi.fn(() => ({ values: mockDbInsertValues })));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
-  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect }) => Promise<unknown>) =>
-    callback({ select: mockDbSelect })),
+  insert: mockDbInsert,
+  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect; insert: typeof mockDbInsert }) => Promise<unknown>) =>
+    callback({ select: mockDbSelect, insert: mockDbInsert })),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async (_db: unknown, _input: unknown) => undefined));
@@ -1359,5 +1362,427 @@ describe("issue execution policy routes", () => {
         details: expect.not.objectContaining({ externalRef: expect.anything() }),
       }),
     );
+  });
+
+  describe("POST /issues/:id/execution-policy/reassign", () => {
+    const qaAgentId = "44444444-4444-4444-8444-444444444444";
+    const otherAgentId = "66666666-6666-4666-8666-666666666666";
+    const ctoUserId = "cto-user";
+    const reviewStageId = "11111111-1111-4111-8111-111111111111";
+
+    function twoParticipantPolicy() {
+      return normalizeIssueExecutionPolicy({
+        stages: [
+          {
+            id: reviewStageId,
+            type: "review",
+            participants: [
+              { type: "agent", agentId: qaAgentId },
+              { type: "user", userId: ctoUserId },
+            ],
+          },
+        ],
+      })!;
+    }
+
+    function pendingIssue() {
+      const policy = twoParticipantPolicy();
+      return {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+        status: "in_review",
+        assigneeAgentId: qaAgentId,
+        assigneeUserId: null,
+        createdByUserId: "local-board",
+        identifier: "PAP-2001",
+        title: "Pending reassignment stage",
+        executionPolicy: policy,
+        executionState: {
+          status: "pending",
+          currentStageId: reviewStageId,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: qaAgentId },
+          returnAssignee: { type: "agent", agentId: otherAgentId },
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      };
+    }
+
+    function mockUpdateMergesPatch(issue: ReturnType<typeof pendingIssue>) {
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+    }
+
+    it("lets the current participant reassign to another configured participant", async () => {
+      const issue = pendingIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockUpdateMergesPatch(issue);
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: qaAgentId,
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({
+          toParticipant: { type: "user", userId: ctoUserId },
+          comment: "Needs a human sign-off on this one",
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.issue.executionState).toMatchObject({
+        status: "pending",
+        currentStageId: reviewStageId,
+        currentParticipant: { type: "user", userId: ctoUserId },
+        lastReassignment: {
+          fromParticipant: { type: "agent", agentId: qaAgentId },
+          toParticipant: { type: "user", userId: ctoUserId },
+          comment: "Needs a human sign-off on this one",
+        },
+      });
+      expect(res.body.decision).toMatchObject({
+        stageId: reviewStageId,
+        stageType: "review",
+        outcome: "reassigned",
+        body: "Needs a human sign-off on this one",
+      });
+      expect(mockDbInsert).toHaveBeenCalled();
+      expect(mockDbInsertValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: "reassigned",
+          stageId: reviewStageId,
+          actorAgentId: qaAgentId,
+          actorUserId: null,
+        }),
+      );
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        issue.id,
+        expect.objectContaining({
+          actorAgentId: qaAgentId,
+          actorRunId: "55555555-5555-4555-8555-555555555555",
+        }),
+        expect.anything(),
+      );
+    });
+
+    it("rejects a configured participant who lacks read access to the issue", async () => {
+      const issue = pendingIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockUpdateMergesPatch(issue);
+      mockAccessService.decide.mockImplementation(async (input: { actor?: { type?: string; source?: string }; action?: string }) => {
+        if (input.action === "issue:read") {
+          return {
+            allowed: false,
+            action: input.action,
+            reason: "deny_issue_private",
+            explanation: "This task is private.",
+          };
+        }
+        const allowed = input.actor?.type === "agent" && [
+          "company_scope:read",
+          "issue:mutate",
+          "runtime:manage",
+        ].includes(input.action ?? "");
+        return {
+          allowed,
+          action: input.action,
+          reason: allowed ? "allow_explicit_grant" : "deny_missing_grant",
+          explanation: allowed ? "Allowed by test grant." : `Missing permission: ${input.action ?? "action"}`,
+        };
+      });
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: qaAgentId,
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({
+          toParticipant: { type: "user", userId: ctoUserId },
+          comment: "Reassigning a task I have no read access to",
+        });
+
+      expect(res.status).toBe(404);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects a reassignment without a comment", async () => {
+      const issue = pendingIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockUpdateMergesPatch(issue);
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: qaAgentId,
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({ toParticipant: { type: "user", userId: ctoUserId } });
+
+      expect(res.status).toBe(422);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects a reassignment to a principal not configured on the stage", async () => {
+      const issue = pendingIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockUpdateMergesPatch(issue);
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: qaAgentId,
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({
+          toParticipant: { type: "agent", agentId: otherAgentId },
+          comment: "Passing this along",
+        });
+
+      expect(res.status).toBe(422);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects a non-participant, non-board agent attempting to reassign", async () => {
+      const issue = pendingIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockUpdateMergesPatch(issue);
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: otherAgentId,
+        companyId: "company-1",
+        runId: "77777777-7777-4777-8777-777777777777",
+      }))
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({
+          toParticipant: { type: "user", userId: ctoUserId },
+          comment: "Trying to hand this off without being the active reviewer",
+        });
+
+      expect(res.status).toBe(403);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("allows a board actor to reassign on behalf of a stuck stage", async () => {
+      const issue = pendingIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockUpdateMergesPatch(issue);
+
+      const res = await request(await createApp())
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({
+          toParticipant: { type: "user", userId: ctoUserId },
+          comment: "Escalating because the agent reviewer is stuck",
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.issue.executionState.currentParticipant).toEqual({
+        type: "user",
+        userId: ctoUserId,
+      });
+      expect(mockDbInsertValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: "reassigned",
+          actorAgentId: null,
+          actorUserId: "local-board",
+        }),
+      );
+    });
+
+    it("rejects a reassignment that races a concurrent decision resolved under the update lock", async () => {
+      const issue = pendingIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.getByIdForUpdate.mockResolvedValue({
+        ...issue,
+        status: "done",
+        executionState: {
+          ...issue.executionState,
+          status: "completed",
+        },
+      });
+      mockUpdateMergesPatch(issue);
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: qaAgentId,
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({
+          toParticipant: { type: "user", userId: ctoUserId },
+          comment: "Trying to hand this off after it was already resolved",
+        });
+
+      expect(res.status).toBe(422);
+      expect(mockIssueService.getByIdForUpdate).toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockDbInsertValues).not.toHaveBeenCalled();
+    });
+
+    it("rejects a reassignment back to the executor whose own work is under review", async () => {
+      const executorAsParticipantPolicy = normalizeIssueExecutionPolicy({
+        stages: [
+          {
+            id: reviewStageId,
+            type: "review",
+            participants: [
+              { type: "agent", agentId: qaAgentId },
+              { type: "agent", agentId: otherAgentId },
+            ],
+          },
+        ],
+      })!;
+      const issue = {
+        ...pendingIssue(),
+        executionPolicy: executorAsParticipantPolicy,
+      };
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockUpdateMergesPatch(issue);
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: qaAgentId,
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({
+          toParticipant: { type: "agent", agentId: otherAgentId },
+          comment: "Handing this back to the executor",
+        });
+
+      expect(res.status).toBe(422);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("stops the outgoing reviewer's active run before completing the handoff", async () => {
+      const issue = pendingIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockUpdateMergesPatch(issue);
+      const activeRun = {
+        id: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        agentId: qaAgentId,
+        runtimeMode: "native",
+        status: "running",
+        contextSnapshot: { issueId: issue.id },
+      };
+      mockHeartbeatService.getActiveRunForAgent.mockResolvedValueOnce(activeRun);
+      mockHeartbeatService.cancelRun.mockResolvedValueOnce({ ...activeRun, status: "cancelled" });
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: qaAgentId,
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({
+          toParticipant: { type: "user", userId: ctoUserId },
+          comment: "Handing this off while my own run is still active",
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
+        activeRun.id,
+        "Cancelled before issue reassignment",
+        expect.objectContaining({ errorCode: "issue_reassigned" }),
+      );
+      expect(mockHeartbeatService.cancelRun.mock.invocationCallOrder[0])
+        .toBeLessThan(mockIssueService.update.mock.invocationCallOrder[0]!);
+    });
+
+    it("rejects the handoff when the outgoing reviewer's run cannot be confirmed stopped", async () => {
+      const issue = pendingIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockUpdateMergesPatch(issue);
+      const activeRun = {
+        id: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        agentId: qaAgentId,
+        runtimeMode: "native",
+        status: "running",
+        contextSnapshot: { issueId: issue.id },
+      };
+      mockHeartbeatService.getActiveRunForAgent.mockResolvedValueOnce(activeRun);
+      mockHeartbeatService.cancelRun.mockResolvedValueOnce(activeRun);
+      mockHeartbeatService.getRun.mockResolvedValueOnce(activeRun);
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: qaAgentId,
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({
+          toParticipant: { type: "user", userId: ctoUserId },
+          comment: "Trying to hand off without a confirmed stop",
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.details).toMatchObject({
+        code: "runner_goal_reassignment_stop_unconfirmed",
+        runId: activeRun.id,
+      });
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("queues a wake for a newly reassigned agent participant", async () => {
+      const secondAgentId = "88888888-8888-4888-8888-888888888888";
+      const threeParticipantPolicy = normalizeIssueExecutionPolicy({
+        stages: [
+          {
+            id: reviewStageId,
+            type: "review",
+            participants: [
+              { type: "agent", agentId: qaAgentId },
+              { type: "agent", agentId: secondAgentId },
+              { type: "user", userId: ctoUserId },
+            ],
+          },
+        ],
+      })!;
+      const issue = {
+        ...pendingIssue(),
+        executionPolicy: threeParticipantPolicy,
+      };
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockUpdateMergesPatch(issue);
+      mockHeartbeatService.wakeup.mockResolvedValueOnce({
+        id: "99999999-9999-4999-8999-999999999999",
+      });
+
+      const res = await request(await createApp({
+        type: "agent",
+        agentId: qaAgentId,
+        companyId: "company-1",
+        runId: "55555555-5555-4555-8555-555555555555",
+      }))
+        .post(`/api/issues/${issue.id}/execution-policy/reassign`)
+        .send({
+          toParticipant: { type: "agent", agentId: secondAgentId },
+          comment: "Passing this to the other reviewer",
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.wakeQueued).toBe(true);
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        secondAgentId,
+        expect.objectContaining({ reason: "execution_review_requested" }),
+      );
+    });
   });
 });

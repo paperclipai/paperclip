@@ -151,6 +151,7 @@ import {
   rejectIssueThreadInteractionSchema,
   restoreIssueDocumentRevisionSchema,
   respondIssueThreadInteractionSchema,
+  reassignIssueExecutionStageSchema,
   stalledReviewDecisionSchema,
   submitIssueThreadInteractionVerdictsSchema,
   updateIssueWorkProductSchema,
@@ -373,8 +374,10 @@ import {
 } from "../services/company-search-rate-limit.js";
 import {
   applyIssueExecutionPolicyTransition,
+  applyIssueExecutionStageReassignment,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
+  patchForPrincipal,
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
@@ -7536,6 +7539,76 @@ export function issueRoutes(
     return runToInterrupt?.status === "running" ? runToInterrupt : null;
   }
 
+  async function stopOutgoingRunBeforeReassignment(input: {
+    existing: { id: string; companyId: string; assigneeAgentId: string | null };
+    assigneeWillChange: boolean;
+    actorType: string;
+    actorSource: string | null | undefined;
+    actorAgentId: string | null;
+    actorRunId: string | null;
+    nextAssigneeAgentId: string | null;
+    nextAssigneeUserId: string | null;
+    issueMutationStopId: string;
+  }): Promise<string | null> {
+    const {
+      existing, assigneeWillChange, actorType, actorSource, actorAgentId,
+      actorRunId, nextAssigneeAgentId, nextAssigneeUserId, issueMutationStopId,
+    } = input;
+    if (actorSource === "mcp_oauth" || !assigneeWillChange || !existing.assigneeAgentId) {
+      return null;
+    }
+    await stopRunnerGoalForOwnershipChange({
+      companyId: existing.companyId,
+      issueId: existing.id,
+      agentId: existing.assigneeAgentId,
+    });
+    const runToStop = await resolveActiveIssueRun(existing);
+    if (!runToStop) return null;
+    const isHumanSelfHandoff =
+      actorType === "agent" &&
+      actorSource === "agent_jwt" &&
+      nextAssigneeAgentId === null &&
+      typeof nextAssigneeUserId === "string" &&
+      actorAgentId === existing.assigneeAgentId &&
+      runToStop.runtimeMode === "legacy" &&
+      runToStop.id === actorRunId &&
+      runToStop.agentId === actorAgentId &&
+      runToStop.companyId === existing.companyId &&
+      runToStop.contextSnapshot?.issueId === existing.id;
+    if (isHumanSelfHandoff) return null;
+    let cancelled: Awaited<ReturnType<typeof heartbeat.cancelRun>> = null;
+    try {
+      cancelled = await heartbeat.cancelRun(
+        runToStop.id,
+        "Cancelled before issue reassignment",
+        {
+          errorCode: "issue_reassigned",
+          resultJson: { reassignmentStopConfirmed: true, issueMutationStopId },
+          eventMessage: "run cancelled before issue reassignment",
+          eventPayload: { issueId: existing.id },
+        },
+      );
+    } catch (error) {
+      if (!(error instanceof HttpError && parseObject(error.details).code === "native_stop_pending")) throw error;
+    }
+    if (!cancelled || cancelled.status !== "cancelled") {
+      const current = await heartbeat.getRun(runToStop.id, { includeExecutionEvidence: true });
+      const finishedWithoutRetry = Boolean(current) && (
+        ["succeeded", "cancelled", "timed_out", "interrupted"].includes(current!.status) ||
+        (current!.status === "failed" && current!.runtimeMode !== "native"));
+      const stopDurablyRequested = current?.runtimeMode === "native" &&
+        ["running", "queued"].includes(current.status) &&
+        parseObject(current.resultJson).reassignmentStopRequested === true;
+      if (!finishedWithoutRetry && !stopDurablyRequested) {
+        throw conflict(
+          "The active agent run could not be stopped before reassignment",
+          { code: "runner_goal_reassignment_stop_unconfirmed", runId: runToStop.id },
+        );
+      }
+    }
+    return runToStop.id;
+  }
+
   type IssueQueueDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
   type IssueQueueTx = Parameters<Parameters<Db["transaction"]>[0]>[0];
   type IssueQueueWake = typeof agentWakeupRequests.$inferSelect;
@@ -14521,6 +14594,160 @@ export function issueRoutes(
     },
   );
 
+  router.post(
+    "/issues/:id/execution-policy/reassign",
+    validate(reassignIssueExecutionStageSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const existing = await getAccessibleResource(
+        req,
+        res,
+        svc.getById(id),
+        "Issue not found",
+      );
+      if (!existing) return;
+      if (!(await assertIssueReadAllowed(req, res, existing))) return;
+
+      const actor = getActorInfo(req);
+      const decisionId = randomUUID();
+      const issueMutationStopId = randomUUID();
+
+      const nextAssigneePatch = patchForPrincipal(req.body.toParticipant);
+      const nextAssigneeAgentId = nextAssigneePatch.assigneeAgentId;
+      const nextAssigneeUserId = nextAssigneePatch.assigneeUserId;
+      const assigneeWillChange =
+        nextAssigneeAgentId !== existing.assigneeAgentId ||
+        nextAssigneeUserId !== existing.assigneeUserId;
+      const interruptedRunId = await stopOutgoingRunBeforeReassignment({
+        existing,
+        assigneeWillChange,
+        actorType: req.actor.type,
+        actorSource: req.actor.source,
+        actorAgentId: req.actor.agentId ?? null,
+        actorRunId: req.actor.runId ?? null,
+        nextAssigneeAgentId,
+        nextAssigneeUserId,
+        issueMutationStopId,
+      });
+
+      let transition:
+        | ReturnType<typeof applyIssueExecutionStageReassignment>
+        | undefined;
+      let previousExecutionState: ParsedExecutionState | null = null;
+
+      const issue = await db.transaction(async (tx) => {
+        const locked = await svc.getByIdForUpdate(id, tx);
+        if (!locked) return null;
+
+        previousExecutionState = parseIssueExecutionState(locked.executionState);
+        const policy = normalizeIssueExecutionPolicy(locked.executionPolicy ?? null);
+        transition = applyIssueExecutionStageReassignment({
+          issue: locked,
+          policy,
+          actor: {
+            agentId: actor.agentId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          },
+          isBoardActor: req.actor.type === "board",
+          toParticipant: req.body.toParticipant,
+          comment: req.body.comment,
+        });
+
+        const nextExecutionState = transition.patch.executionState;
+        if (!nextExecutionState || typeof nextExecutionState !== "object") {
+          throw new Error("Execution policy reassignment patch is missing executionState");
+        }
+        transition.patch.executionState = {
+          ...nextExecutionState,
+          lastDecisionId: decisionId,
+        };
+
+        const updated = await svc.update(
+          id,
+          {
+            ...transition.patch,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            actorRunId: actor.runId ?? null,
+            actorRunStopId: actor.agentId && interruptedRunId === actor.runId ? issueMutationStopId : null,
+          },
+          tx,
+        );
+        if (!updated) return null;
+        await tx.insert(issueExecutionDecisions).values({
+          id: decisionId,
+          companyId: updated.companyId,
+          issueId: updated.id,
+          stageId: transition.decision.stageId,
+          stageType: transition.decision.stageType,
+          actorAgentId: actor.agentId ?? null,
+          actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          outcome: transition.decision.outcome,
+          body: transition.decision.body,
+          createdByRunId: actor.runId ?? null,
+        });
+        return updated;
+      });
+      if (!issue || !transition) {
+        res.status(404).json({ error: "Issue not found" });
+        return;
+      }
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.execution_policy_reassigned",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          stageId: transition.decision.stageId,
+          stageType: transition.decision.stageType,
+          toParticipant: req.body.toParticipant,
+        },
+      });
+
+      let wakeQueued = false;
+      const executionStageWakeup = buildExecutionStageWakeup({
+        issueId: issue.id,
+        previousState: previousExecutionState,
+        nextState: parseIssueExecutionState(issue.executionState),
+        interruptedRunId,
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
+      if (executionStageWakeup) {
+        try {
+          const wake = await heartbeat.wakeup(
+            executionStageWakeup.agentId,
+            executionStageWakeup.wakeup,
+          );
+          wakeQueued = wake !== null;
+        } catch (err) {
+          logger.warn(
+            { err, issueId: issue.id, agentId: executionStageWakeup.agentId },
+            "failed to enqueue execution-policy reassignment wake",
+          );
+        }
+      }
+
+      res.json({
+        issue,
+        decision: {
+          id: decisionId,
+          stageId: transition.decision.stageId,
+          stageType: transition.decision.stageType,
+          outcome: transition.decision.outcome,
+          body: transition.decision.body,
+        },
+        wakeQueued,
+      });
+    },
+  );
+
   router.put("/issues/:id/title", validateIssueMutationBody(setIssueTitleSchema), async (req, res) => {
     const existing = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
     if (!existing) return;
@@ -15520,72 +15747,18 @@ export function issueRoutes(
       // Only this request may finish a mutation that intentionally stops its
       // own run (for example handing work to a signoff reviewer).
       const issueMutationStopId = randomUUID();
-      if (req.actor.source !== "mcp_oauth" && assigneeWillChange && existing.assigneeAgentId) {
-        await stopRunnerGoalForOwnershipChange({
-          companyId: existing.companyId,
-          issueId: existing.id,
-          agentId: existing.assigneeAgentId,
-        });
-        const runToStopForReassignment = await resolveActiveIssueRun(existing);
-        const isHumanSelfHandoff =
-          req.actor.type === "agent" &&
-          req.actor.source === "agent_jwt" &&
-          nextAssigneeAgentId === null &&
-          typeof nextAssigneeUserId === "string" &&
-          req.actor.agentId === existing.assigneeAgentId &&
-          runToStopForReassignment?.runtimeMode === "legacy" &&
-          runToStopForReassignment.id === req.actor.runId &&
-          runToStopForReassignment.agentId === req.actor.agentId &&
-          runToStopForReassignment.companyId === existing.companyId &&
-          runToStopForReassignment.contextSnapshot?.issueId === existing.id;
-        if (runToStopForReassignment && !isHumanSelfHandoff) {
-          let cancelled: Awaited<ReturnType<typeof heartbeat.cancelRun>> = null;
-          try {
-            cancelled = await heartbeat.cancelRun(
-              runToStopForReassignment.id,
-              "Cancelled before issue reassignment",
-              {
-                errorCode: "issue_reassigned",
-                resultJson: { reassignmentStopConfirmed: true, issueMutationStopId },
-                eventMessage: "run cancelled before issue reassignment",
-                eventPayload: { issueId: existing.id },
-              },
-            );
-          } catch (error) {
-            // The durable Stop intent is committed; only its remote owner's
-            // acknowledgement is outstanding. Settle below like any pending Stop.
-            if (!(error instanceof HttpError && parseObject(error.details).code === "native_stop_pending")) throw error;
-          }
-          if (!cancelled || cancelled.status !== "cancelled") {
-            // A native Stop can outlast this request. Once its durable fence is
-            // committed the stop will complete, so apply the reassignment now:
-            // the new assignee's wake defers behind the stopping run and is
-            // promoted when it releases the issue. Refusing here would stop the
-            // work but drop the reassignment. A run that already finished on its
-            // own needs no stop. A failed native run may still own a same-run
-            // retry, so it keeps requiring a confirmed stop.
-            // Read the server-owned Stop fence through the bounded evidence projection,
-            // which is available even where the presentation projection hides resultJson.
-            const current = await heartbeat.getRun(runToStopForReassignment.id, { includeExecutionEvidence: true });
-            const finishedWithoutRetry = Boolean(current) && (
-              ["succeeded", "cancelled", "timed_out", "interrupted"].includes(current!.status) ||
-              (current!.status === "failed" && current!.runtimeMode !== "native"));
-            const stopDurablyRequested = current?.runtimeMode === "native" &&
-              ["running", "queued"].includes(current.status) &&
-              parseObject(current.resultJson).reassignmentStopRequested === true;
-            if (!finishedWithoutRetry && !stopDurablyRequested) {
-              throw conflict(
-                "The active agent run could not be stopped before reassignment",
-                {
-                  code: "runner_goal_reassignment_stop_unconfirmed",
-                  runId: runToStopForReassignment.id,
-                },
-              );
-            }
-          }
-          interruptedRunId = runToStopForReassignment.id;
-        }
-      }
+      const reassignmentInterruptedRunId = await stopOutgoingRunBeforeReassignment({
+        existing,
+        assigneeWillChange,
+        actorType: req.actor.type,
+        actorSource: req.actor.source,
+        actorAgentId: req.actor.agentId ?? null,
+        actorRunId: req.actor.runId ?? null,
+        nextAssigneeAgentId,
+        nextAssigneeUserId,
+        issueMutationStopId,
+      });
+      if (reassignmentInterruptedRunId) interruptedRunId = reassignmentInterruptedRunId;
 
       const terminalizingIssue =
         typeof updateFields.status === "string" &&

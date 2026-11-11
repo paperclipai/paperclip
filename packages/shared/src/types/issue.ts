@@ -825,6 +825,12 @@ export interface IssueReviewRequest {
   instructions: string;
 }
 
+export interface IssueExecutionReassignment {
+  fromParticipant: IssueExecutionStagePrincipal;
+  toParticipant: IssueExecutionStagePrincipal;
+  comment: string;
+}
+
 export interface IssueExecutionState {
   status: IssueExecutionStateStatus;
   currentStageId: string | null;
@@ -839,6 +845,7 @@ export interface IssueExecutionState {
   monitor?: IssueExecutionMonitorState | null;
   /** Consecutive agent-initiated changes-requested rounds on the current stage. */
   changesRequestedCount?: number;
+  lastReassignment?: IssueExecutionReassignment | null;
 }
 
 export interface IssueExecutionDecision {

@@ -551,6 +551,14 @@ export const issueReviewRequestSchema = z
   })
   .strict();
 
+export const issueExecutionReassignmentSchema = z
+  .object({
+    fromParticipant: issueExecutionStagePrincipalSchema,
+    toParticipant: issueExecutionStagePrincipalSchema,
+    comment: z.string().min(1),
+  })
+  .strict();
+
 export const issueExecutionStateSchema = z.object({
   status: z.enum(ISSUE_EXECUTION_STATE_STATUSES),
   currentStageId: z.string().guid().nullable(),
@@ -564,6 +572,7 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),
   changesRequestedCount: z.number().int().nonnegative().optional().default(0),
+  lastReassignment: issueExecutionReassignmentSchema.nullable().optional().default(null),
 });
 
 export const issueRecoveryActionReadModelSchema = z.object({
@@ -1054,6 +1063,15 @@ export const stalledReviewDecisionSchema = z
   });
 
 export type StalledReviewDecision = z.infer<typeof stalledReviewDecisionSchema>;
+
+export const reassignIssueExecutionStageSchema = z
+  .object({
+    toParticipant: issueExecutionStagePrincipalSchema,
+    comment: multilineTextSchema.pipe(z.string().trim().min(1)).optional(),
+  })
+  .strict();
+
+export type ReassignIssueExecutionStage = z.infer<typeof reassignIssueExecutionStageSchema>;
 
 export const checkoutIssueSchema = z.object({
   agentId: z.string().guid(),
