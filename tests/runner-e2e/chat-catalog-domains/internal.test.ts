@@ -918,6 +918,8 @@ describe("completion gate setup readiness", () => {
       "task.status=done (want in_review)", "executionState.status=null (want pending)",
       "executionState.currentParticipant=null (want the configured reviewer)", "active worker runs=1 (want 0)",
       "worker deliveries from a succeeded worker run=0 of 0 attachments (want at least 1)"]);
+    const failedBeside = ready(); failedBeside.runs.push({ id: "lost", agentId: "morgan", status: "failed" });
+    expect(unmetPriorDeliveryReview(failedBeside, "morgan", "riley")).toEqual(["failed worker runs=1 (want 0)"]);
     const other = ready(); other.task.executionState.currentParticipant.userId = "someone";
     expect(unmetPriorDeliveryReview(other, "morgan", "riley")).toEqual(["executionState.currentParticipant=user:other (want the configured reviewer)"]);
   });

@@ -36,6 +36,8 @@ export function unmetPriorDeliveryReview(value: ReadinessSnapshot, workerId: str
     unmet.push(`executionState.currentParticipant=${participant ? `${participant.type}:${participant.userId === reviewerId ? "reviewer" : "other"}` : "null"} (want the configured reviewer)`);
   const others = value.runs.filter(row => row.agentId !== workerId);
   if (others.length) unmet.push(`runs by other agents=${others.length} (want 0 before the query)`);
+  const failed = value.runs.filter(row => TERMINAL_RUN.includes(row.status) && row.status !== "succeeded");
+  if (failed.length) unmet.push(`failed worker runs=${failed.length} (want 0)`);
   const active = value.runs.filter(row => !TERMINAL_RUN.includes(row.status));
   if (active.length) unmet.push(`active worker runs=${active.length} (want 0)`);
   const succeeded = value.runs.filter(row => row.agentId === workerId && row.status === "succeeded");
